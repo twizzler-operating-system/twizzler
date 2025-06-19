@@ -1,5 +1,7 @@
 use std::alloc::Layout;
 
+use twizzler_abi::object::ObjID;
+
 use super::Allocator;
 use crate::ptr::{GlobalPtr, Ref};
 
@@ -31,5 +33,15 @@ impl<T, A: Allocator> OwnedGlobalPtr<T, A> {
 
     pub fn allocator(&self) -> &A {
         &self.alloc
+    }
+
+    /// Returns the object ID of the global pointer.
+    pub fn id(&self) -> ObjID {
+        self.global().id()
+    }
+
+    /// Returns the offset of the global pointer.
+    pub fn offset(&self) -> u64 {
+        self.global().offset()
     }
 }

@@ -149,3 +149,124 @@ impl AsRef<ObjectHandle> for ArenaObject {
         self.obj.handle()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::ObjectBuilder;
+
+    #[test]
+    fn test_arena_object_new() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        // Verify the object was created successfully
+        assert!(arena.object().handle().id() != ObjID::new(0));
+    }
+
+    #[test]
+    fn test_arena_allocator() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+        let allocator = arena.allocator();
+
+        // Test basic allocation
+        let layout = Layout::new::<u64>();
+        let ptr = allocator.alloc(layout).expect("Failed to allocate");
+
+        // Verify the pointer is valid
+        assert!(ptr.offset() >= NULLPAGE_SIZE as u64 * 2);
+    }
+
+    #[test]
+    fn test_arena_alloc_value() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        let value = 42u64;
+        let owned_ptr = arena.alloc(value).expect("Failed to allocate value");
+
+        // Verify the allocated value
+        let resolved = { owned_ptr.resolve() };
+        assert_eq!(*resolved, 42u64);
+    }
+
+    #[test]
+    fn test_arena_alloc_inplace() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        let owned_ptr = arena
+            .alloc_inplace(|mut uninit| Ok(uninit.write(100u32)))
+            .expect("Failed to allocate in place");
+
+        // Verify the allocated value
+        let resolved = { owned_ptr.resolve() };
+        assert_eq!(*resolved, 100u32);
+    }
+
+    #[test]
+    fn test_arena_multiple_allocations() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        // Allocate multiple values
+        let ptr1 = arena.alloc(1u64).expect("Failed to allocate first value");
+        let ptr2 = arena.alloc(2u64).expect("Failed to allocate second value");
+        let ptr3 = arena.alloc(3u64).expect("Failed to allocate third value");
+
+        // Verify all values are correct and pointers are different
+        let val1 = { ptr1.resolve() };
+        let val2 = { ptr2.resolve() };
+        let val3 = { ptr3.resolve() };
+
+        assert_eq!(*val1, 1u64);
+        assert_eq!(*val2, 2u64);
+        assert_eq!(*val3, 3u64);
+
+        // Verify pointers are at different offsets
+        assert_ne!(ptr1.offset(), ptr2.offset());
+        assert_ne!(ptr2.offset(), ptr3.offset());
+        assert_ne!(ptr1.offset(), ptr3.offset());
+    }
+
+    #[test]
+    fn test_arena_tx_object() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        let tx_obj = arena.as_tx().expect("Failed to create tx object");
+        let owned_ptr = tx_obj.alloc(999u64).expect("Failed to allocate in tx");
+
+        // Verify the allocated value
+        let resolved = { owned_ptr.resolve() };
+        assert_eq!(*resolved, 999u64);
+    }
+
+    #[test]
+    fn test_arena_alignment() {
+        let builder = ObjectBuilder::default();
+        let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+
+        // Allocate values with different alignments
+        let ptr1 = arena.alloc(1u8).expect("Failed to allocate u8");
+        let ptr2 = arena.alloc(2u64).expect("Failed to allocate u64");
+
+        // Verify alignment requirements are met
+        assert_eq!(ptr1.offset() % ArenaBase::MIN_ALIGN as u64, 0);
+        assert_eq!(ptr2.offset() % ArenaBase::MIN_ALIGN as u64, 0);
+    }
+
+    #[test]
+    fn test_arena_from_objid() {
+        let builder = ObjectBuilder::default();
+        let arena1 = ArenaObject::new(builder).expect("Failed to create ArenaObject");
+        let obj_id = arena1.object().id();
+
+        // Create a new ArenaObject from the same object ID
+        let arena2 = ArenaObject::from_objid(obj_id).expect("Failed to create from objid");
+
+        // Verify they reference the same object
+        assert_eq!(arena1.object().id(), arena2.object().id());
+    }
+}

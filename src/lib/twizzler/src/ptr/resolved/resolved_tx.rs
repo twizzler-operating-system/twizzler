@@ -58,6 +58,11 @@ impl<T> TxRef<T> {
     pub fn global(&self) -> GlobalPtr<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
     }
+
+    pub unsafe fn cast<U>(self) -> TxRef<U> {
+        let ptr = self.ptr.cast();
+        TxRef::from_raw_parts(self.into_tx(), ptr)
+    }
 }
 
 impl<T> TxRef<MaybeUninit<T>> {
