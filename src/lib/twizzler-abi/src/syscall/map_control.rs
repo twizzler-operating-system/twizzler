@@ -64,7 +64,7 @@ impl SyncInfo {
     }
 }
 
-/// Possible map control commands for [sys_map_control].
+/// Possible map control commands for [sys_map_ctrl].
 #[derive(Clone, Copy, Debug)]
 pub enum MapControlCmd {
     /// Sync an entire mapping

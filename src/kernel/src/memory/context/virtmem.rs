@@ -41,7 +41,7 @@ mod tests;
 
 pub use fault::page_fault;
 
-/// A type that implements [Context] for virtual memory systems.
+/// A type that implements [super::Context] for virtual memory systems.
 pub struct VirtContext {
     secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
     // We keep a cache of the actual switch targets so that we don't need to take the above mutex

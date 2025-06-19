@@ -1,6 +1,6 @@
 use std::alloc::{AllocError, Layout};
 
-use crate::{ptr::GlobalPtr, tx::TxHandle};
+use crate::ptr::GlobalPtr;
 
 pub mod arena;
 mod global;
@@ -8,25 +8,28 @@ pub mod invbox;
 
 pub use global::OwnedGlobalPtr;
 
+/// Basic allocation trait.
 pub trait Allocator: Clone {
+    /// Allocate based on layout within this allocator. Returns a global pointer
+    /// to the start of the allocation.
+    ///
+    /// Note: Using this function by itself can leak memory, particularly on failure.
+    /// Users should consider using InvBox instead.
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
+
+    /// Free an allocation.
+    ///
+    /// # Safety
+    /// Caller must ensure that the pointer is valid and was allocated by this allocator, and
+    /// refers to memory that matches the provided layout.
     unsafe fn dealloc(&self, ptr: GlobalPtr<u8>, layout: Layout);
 
-    fn alloc_tx(&self, layout: Layout, _tx: &impl TxHandle) -> crate::tx::Result<GlobalPtr<u8>> {
-        self.alloc(layout).map_err(|e| e.into())
-    }
-    
-    unsafe fn dealloc_tx(
-        &self,
-        ptr: GlobalPtr<u8>,
-        layout: Layout,
-        _tx: &impl TxHandle,
-    ) -> crate::tx::Result<()> {
-        self.dealloc(ptr, layout);
-        Ok(())
-    }
-
-    fn realloc(
+    /// Reallocate an allocation.
+    ///
+    /// # Safety
+    /// Caller must ensure that the pointer is valid and was allocated by this allocator, and
+    /// refers to memory that matches the provided layout.
+    unsafe fn realloc(
         &self,
         ptr: GlobalPtr<u8>,
         layout: Layout,
@@ -38,7 +41,7 @@ pub trait Allocator: Clone {
         let new_alloc = self.alloc(new_layout)?;
         unsafe {
             if !ptr.is_null() {
-                let new_res = new_alloc.resolve().mutable();
+                let new_res = new_alloc.resolve().into_mut();
                 let old_res = ptr.resolve();
                 let copy_len = std::cmp::min(layout.size(), new_layout.size());
                 new_res.raw().copy_from(old_res.raw(), copy_len);
@@ -46,15 +49,7 @@ pub trait Allocator: Clone {
         }
         Ok(new_alloc)
     }
-    fn realloc_tx(
-        &self,
-        ptr: GlobalPtr<u8>,
-        layout: Layout,
-        newsize: usize,
-        _tx: &impl TxHandle,
-    ) -> Result<GlobalPtr<u8>, AllocError> {
-        self.realloc(ptr, layout, newsize)
-    }
 }
 
+/// Allocator ensures that all allocations will take place within one object.
 pub trait SingleObjectAllocator {}

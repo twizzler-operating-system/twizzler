@@ -188,7 +188,7 @@ impl ThreadSync {
 /// sleep until the timeout expires.
 ///
 /// Returns either Ok(ready_count), indicating how many operations were immediately ready, or
-/// Err([ThreadSyncError]), indicating failure. After return, the kernel may have modified the
+/// Err([TwzError]), indicating failure. After return, the kernel may have modified the
 /// ThreadSync entries to indicate additional information about each request, with Err to indicate
 /// error and Ok(n) to indicate success. For sleep requests, n is 0 if the operation went to sleep
 /// or 1 otherwise. For wakeup requests, n indicates the number of threads woken up by this

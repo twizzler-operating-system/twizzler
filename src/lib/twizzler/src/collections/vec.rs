@@ -10,8 +10,8 @@ use twizzler_rt_abi::error::{ArgumentError, ResourceError};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
-    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
-    tx::{Result, TxCell, TxHandle, TxObject, TxRef},
+    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut, TxRef, TxRefSlice},
+    Result,
 };
 
 mod vec_object;
@@ -29,20 +29,20 @@ impl<T: Invariant> VecInner<T> {
         newcap: usize,
         newlen: usize,
         alloc: &Alloc,
-        tx: &TxObject<()>,
-    ) -> crate::tx::Result<RefMut<T>> {
+    ) -> Result<RefMut<T>> {
+        let place = unsafe { Ref::from_ptr(self) };
         if newcap <= self.cap {
             // TODO: shrinking.
-            return Ok(unsafe { self.start.resolve().mutable() });
+            return Ok(unsafe { self.start.resolve().into_mut() });
         }
 
         let new_layout = Layout::array::<T>(newcap).map_err(|_| AllocError)?;
         let old_layout = Layout::array::<T>(self.cap).map_err(|_| AllocError)?;
 
         let old_global = self.start.global().cast();
-        let new_alloc = alloc.realloc_tx(old_global, old_layout, new_layout.size(), tx)?;
-
-        self.start = InvPtr::new(tx, new_alloc.cast())?;
+        let new_alloc = unsafe { alloc.realloc(old_global, old_layout, new_layout.size()) }?;
+        let new_start = InvPtr::new(place, new_alloc.cast())?;
+        self.start = new_start;
         self.cap = newcap;
         self.len = newlen;
         tracing::trace!(
@@ -52,18 +52,17 @@ impl<T: Invariant> VecInner<T> {
             self.cap
         );
 
-        Ok(unsafe { new_alloc.cast::<T>().resolve().owned().mutable() })
+        Ok(unsafe { new_alloc.cast::<T>().resolve().owned().into_mut() })
     }
 
-    fn do_remove(&mut self, idx: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let tx = tx.as_ref();
-        let mut rslice =
-            unsafe { RefSliceMut::from_ref(self.start.resolve().mutable().cast::<u8>(), self.cap) };
+    fn do_remove(&mut self, idx: usize) -> Result<()> {
+        let mut rslice = unsafe {
+            RefSliceMut::from_ref(
+                self.start.resolve().into_mut().cast::<u8>(),
+                self.cap * size_of::<T>(),
+            )
+        };
         let slice = rslice.as_slice_mut();
-        let ptr = tx
-            .as_ref()
-            .tx_mut(slice.as_ptr(), slice.len() * size_of::<T>())?;
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, slice.len() * size_of::<T>()) };
         let byte_idx_start = (idx + 1) * size_of::<T>();
         let byte_idx = idx * size_of::<T>();
         let byte_end = self.len * size_of::<T>();
@@ -95,32 +94,25 @@ impl<T: Invariant> VecInner<T> {
 
     fn with_mut_slice<R>(
         &mut self,
-        tx: &impl TxHandle,
         range: impl RangeBounds<usize>,
-        f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
-    ) -> crate::tx::Result<R> {
-        let r = unsafe { self.start.resolve() };
-        let mut slice = unsafe { RefSlice::from_ref(r, self.len).tx(range, tx)? };
-        f(slice.as_slice_mut())
+        f: impl FnOnce(&mut [T]) -> Result<R>,
+    ) -> Result<R> {
+        let r = unsafe { self.start.resolve().into_mut() };
+        let slice = unsafe { RefSliceMut::from_ref(r, self.len) };
+        f(slice.slice(range).as_slice_mut())
     }
 
-    fn with_mut<R>(
-        &mut self,
-        idx: usize,
-        tx: &impl TxHandle,
-        f: impl FnOnce(&mut T) -> crate::tx::Result<R>,
-    ) -> crate::tx::Result<R> {
-        let r = unsafe { self.start.resolve() };
-        let slice = unsafe { RefSlice::from_ref(r, self.len) };
-        let item = slice.get_ref(idx).unwrap();
-        let mut item = item.tx(tx)?;
+    fn with_mut<R>(&mut self, idx: usize, f: impl FnOnce(&mut T) -> Result<R>) -> Result<R> {
+        let r = unsafe { self.start.resolve().into_mut() };
+        let mut slice = unsafe { RefSliceMut::from_ref(r, self.len) };
+        let mut item = slice.get_mut(idx).unwrap();
         f(&mut *item)
     }
 }
 
 #[derive(twizzler_derive::BaseType)]
 pub struct Vec<T: Invariant, Alloc: Allocator> {
-    inner: TxCell<VecInner<T>>,
+    inner: VecInner<T>,
     alloc: Alloc,
 }
 
@@ -154,44 +146,35 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
     }
 
     #[inline]
-    pub fn get(&self, idx: usize) -> Option<&T> {
-        let slice = self.as_slice();
-        slice.as_slice().get(idx)
-    }
-
-    #[inline]
     pub fn get_ref(&self, idx: usize) -> Option<Ref<'_, T>> {
         let slice = self.as_slice();
         slice.get_ref(idx)
     }
 
-    pub fn get_mut(
-        &self,
-        idx: usize,
-        tx: impl AsRef<TxObject>,
-    ) -> crate::tx::Result<Option<RefMut<'_, T>>> {
+    #[inline]
+    pub unsafe fn get_mut(&mut self, idx: usize) -> Option<RefMut<'_, T>> {
+        let mut slice = self.as_mut_slice();
+        slice.get_mut(idx)
+    }
+
+    #[inline]
+    pub unsafe fn get_tx(&self, idx: usize) -> Result<Option<TxRef<T>>> {
         let slice = self.as_slice();
-        slice
-            .get_ref(idx)
-            .map(|f| f.owned().tx(tx.as_ref()))
-            .transpose()
+        slice.get_ref(idx).map(|f| f.owned().into_tx()).transpose()
     }
 
     pub fn new_in(alloc: Alloc) -> Self {
         Self {
-            inner: TxCell::new(VecInner {
+            inner: VecInner {
                 cap: 0,
                 len: 0,
                 start: InvPtr::null(),
-            }),
+            },
             alloc,
         }
     }
 
-    fn get_slice_grow(
-        &self,
-        tx: impl AsRef<TxObject>,
-    ) -> crate::tx::Result<RefMut<'_, MaybeUninit<T>>> {
+    fn get_slice_grow(&mut self) -> Result<RefMut<'_, MaybeUninit<T>>> {
         let oldlen = self.inner.len;
         tracing::trace!("len: {}, cap: {}", self.inner.len, self.inner.cap);
         if self.inner.len == self.inner.cap {
@@ -201,16 +184,15 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
                 return Err(ResourceError::OutOfMemory.into());
             }
             let newcap = std::cmp::max(self.inner.cap, 1) * 2;
-            let inner = self.inner.get_mut(tx.as_ref())?;
-            let r = inner.do_realloc(newcap, oldlen + 1, &self.alloc, tx.as_ref())?;
+            let r = self.inner.do_realloc(newcap, oldlen + 1, &self.alloc)?;
             tracing::trace!("grow {:p}", r.raw());
             Ok(Self::maybe_uninit_slice(r, newcap)
                 .get_mut(oldlen)
                 .unwrap()
                 .owned())
         } else {
-            self.inner.get_mut(tx.as_ref())?.len += 1;
-            let resptr = unsafe { self.inner.start.resolve().mutable() };
+            self.inner.len += 1;
+            let resptr = unsafe { self.inner.start.resolve().into_mut() };
             tracing::trace!("no grow {:p}", resptr.raw());
             Ok(Self::maybe_uninit_slice(resptr, self.inner.cap)
                 .get_mut(oldlen)
@@ -219,11 +201,11 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         }
     }
 
-    fn do_push(&self, item: T, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let mut r = self.get_slice_grow(&tx)?;
+    fn do_push(&mut self, item: T) -> Result<()> {
+        let r = self.get_slice_grow()?;
         // write item, tracking in tx
         tracing::trace!("store value: {:p}", r.raw());
-        tx.as_ref().write_uninit(&mut *r, item)?;
+        r.write(item);
         Ok(())
     }
 
@@ -235,9 +217,9 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         self.inner.cap
     }
 
-    pub fn reserve(&self, additional: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        inner.do_realloc(inner.cap + additional, inner.len, &self.alloc, tx.as_ref())?;
+    pub fn reserve(&mut self, additional: usize) -> Result<()> {
+        self.inner
+            .do_realloc(self.inner.cap + additional, self.inner.len, &self.alloc)?;
         Ok(())
     }
 
@@ -248,92 +230,238 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         slice
     }
 
-    pub fn remove_inplace(&self, idx: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        if idx >= inner.len {
+    #[inline]
+    pub fn as_tx_slice(&self) -> Result<TxRefSlice<T>> {
+        let r = unsafe { self.inner.start.resolve().into_tx() }?;
+        let slice = unsafe { TxRefSlice::from_ref(r, self.inner.len) };
+        Ok(slice)
+    }
+
+    #[inline]
+    pub unsafe fn as_mut_slice(&mut self) -> RefSliceMut<'_, T> {
+        let r = unsafe { self.inner.start.resolve().into_mut() };
+        let slice = unsafe { RefSliceMut::from_ref(r, self.inner.len) };
+        slice
+    }
+
+    pub fn remove_inplace(&mut self, idx: usize) -> Result<()> {
+        if idx >= self.inner.len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        inner.with_mut(idx, tx.as_ref(), |item| {
+        self.inner.with_mut(idx, |item| {
             unsafe { core::ptr::drop_in_place(item) };
             Ok(())
         })?;
-        inner.do_remove(idx, tx)?;
+        self.inner.do_remove(idx)?;
         Ok(())
     }
 
-    pub fn truncate(&self, newlen: usize, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        let oldlen = inner.len;
+    pub fn truncate(&mut self, newlen: usize) -> Result<()> {
+        let oldlen = self.inner.len;
         if newlen >= oldlen {
             return Ok(());
         }
-        inner.with_mut_slice(tx.as_ref(), newlen..oldlen, |slice| {
+        self.inner.with_mut_slice(newlen..oldlen, |slice| {
             for item in slice {
                 unsafe { core::ptr::drop_in_place(item) };
             }
             Ok(())
         })?;
-        inner.len = newlen;
+        self.inner.len = newlen;
         Ok(())
     }
 
-    pub fn shrink_to_fit(&self, tx: impl AsRef<TxObject>) -> crate::tx::Result<()> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        inner.cap = inner.len;
+    pub fn shrink_to_fit(&mut self) -> Result<()> {
+        self.inner.cap = self.inner.len;
         // TODO: release memory
         Ok(())
     }
 
+    pub fn with_slice<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
+        self.inner.with_slice(f)
+    }
+
     pub fn with_mut_slice<R>(
-        &self,
+        &mut self,
         range: impl RangeBounds<usize>,
-        tx: impl AsRef<TxObject>,
-        f: impl FnOnce(&mut [T]) -> crate::tx::Result<R>,
-    ) -> crate::tx::Result<R> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        inner.with_mut_slice(tx.as_ref(), range, f)
+        f: impl FnOnce(&mut [T]) -> Result<R>,
+    ) -> Result<R> {
+        self.inner.with_mut_slice(range, f)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        self.truncate(0)
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        unsafe {
+            let mut slice = self.as_mut_slice();
+            let slice_mut = slice.as_slice_mut();
+            slice_mut.swap(a, b);
+        }
+    }
+
+    pub fn first_ref(&self) -> Option<Ref<'_, T>> {
+        self.get_ref(0)
+    }
+
+    pub fn last_ref(&self) -> Option<Ref<'_, T>> {
+        if self.inner.len == 0 {
+            None
+        } else {
+            self.get_ref(self.inner.len - 1)
+        }
+    }
+
+    pub fn contains(&self, item: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.contains(item))
+    }
+
+    pub fn starts_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.starts_with(needle))
+    }
+
+    pub fn ends_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.with_slice(|slice| slice.ends_with(needle))
+    }
+
+    pub fn binary_search(&self, x: &T) -> std::result::Result<usize, usize>
+    where
+        T: Ord,
+    {
+        self.with_slice(|slice| slice.binary_search(x))
+    }
+
+    pub fn binary_search_by<F>(&self, f: F) -> std::result::Result<usize, usize>
+    where
+        F: FnMut(&T) -> std::cmp::Ordering,
+    {
+        self.with_slice(|slice| slice.binary_search_by(f))
+    }
+
+    pub fn reverse(&mut self) -> Result<()> {
+        self.with_mut_slice(.., |slice| {
+            slice.reverse();
+            Ok(())
+        })
+    }
+
+    pub fn sort(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort();
+            Ok(())
+        })
+    }
+
+    pub fn sort_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable(&mut self) -> Result<()>
+    where
+        T: Ord,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable();
+            Ok(())
+        })
+    }
+
+    pub fn sort_unstable_by<F>(&mut self, compare: F) -> Result<()>
+    where
+        F: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
+        self.with_mut_slice(.., |slice| {
+            slice.sort_unstable_by(compare);
+            Ok(())
+        })
+    }
+
+    pub fn retain<F>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&T) -> bool,
+    {
+        let mut del = 0;
+        let len = self.len();
+
+        for i in 0..len {
+            let should_retain = self.with_slice(|slice| f(&slice[i - del]));
+            if !should_retain {
+                self.remove_inplace(i - del)?;
+                del += 1;
+            }
+        }
+
+        Ok(())
     }
 }
 
 impl<T: Invariant + StoreCopy, Alloc: Allocator> Vec<T, Alloc> {
-    pub fn push(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
-        self.do_push(item, tx)
+    pub fn push(&mut self, item: T) -> Result<()> {
+        self.do_push(item)
     }
 
-    pub fn pop(&self, tx: impl AsRef<TxObject>) -> Result<Option<T>> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        if inner.len == 0 {
+    pub fn pop(&mut self) -> Result<Option<T>> {
+        if self.inner.len == 0 {
             return Ok(None);
         }
-        let val = inner.with_slice(|slice| unsafe { ((&slice[inner.len - 1]) as *const T).read() });
-        inner.do_remove(inner.len - 1, tx)?;
+        let new_len = self.inner.len - 1;
+        let val = self
+            .inner
+            .with_slice(|slice| unsafe { ((&slice[new_len]) as *const T).read() });
+        self.inner.do_remove(new_len)?;
         Ok(Some(val))
     }
 
-    pub fn remove(&self, idx: usize, tx: impl AsRef<TxObject>) -> Result<T> {
-        let inner = self.inner.get_mut(tx.as_ref())?;
-        if idx >= inner.len {
+    pub fn remove(&mut self, idx: usize) -> Result<T> {
+        //let mut inner = self.inner.get()?;
+        if idx >= self.inner.len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let val = inner.with_slice(|slice| unsafe { ((&slice[idx]) as *const T).read() });
-        inner.do_remove(idx, tx)?;
+        let val = self
+            .inner
+            .with_slice(|slice| unsafe { ((&slice[idx]) as *const T).read() });
+        self.inner.do_remove(idx)?;
         Ok(val)
     }
 }
 
 impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
-    pub fn push_inplace(&self, item: T, tx: impl AsRef<TxObject>) -> Result<()> {
-        self.do_push(item, tx)
+    pub fn push_inplace(&mut self, item: T) -> Result<()> {
+        self.do_push(item)
     }
 
-    fn push_ctor<B, F>(&self, tx: TxObject<B>, ctor: F) -> crate::tx::Result<()>
+    fn push_ctor<F>(&mut self, ctor: F) -> Result<()>
     where
-        F: FnOnce(TxRef<MaybeUninit<T>>) -> crate::tx::Result<TxRef<T>>,
+        F: FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
     {
-        let mut r = self.get_slice_grow(&tx)?;
-        let txref = unsafe { TxRef::from_raw_parts(tx, &mut *r) };
-        let val = ctor(txref)?;
-        val.into_tx().commit()?;
+        let r = self.get_slice_grow()?;
+        let _val = ctor(r)?;
         Ok(())
     }
 }
@@ -362,11 +490,11 @@ mod tests {
 
     impl Node {
         pub fn new_inplace(
-            place: TxRef<MaybeUninit<Self>>,
+            place: RefMut<MaybeUninit<Self>>,
             ptr: impl Into<GlobalPtr<Simple>>,
-        ) -> crate::tx::Result<TxRef<Self>> {
+        ) -> Result<RefMut<Self>> {
             let ptr = InvPtr::new(&place, ptr)?;
-            place.write(Self { ptr })
+            Ok(place.write(Self { ptr }))
         }
     }
 
@@ -379,16 +507,17 @@ mod tests {
             .build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))
             .unwrap();
 
-        let tx = vobj.tx().unwrap();
-        tx.base().push(Simple { x: 42 }, &tx).unwrap();
-        tx.base().push(Simple { x: 43 }, &tx).unwrap();
-        let vobj = tx.commit().unwrap();
+        let mut tx = vobj.into_tx().unwrap();
+        tx.base_mut().push(Simple { x: 42 }).unwrap();
+        tx.base_mut().push(Simple { x: 43 }).unwrap();
+        tx.commit().unwrap();
 
+        let vobj = tx.into_object().unwrap();
         let base = vobj.base();
         assert_eq!(base.len(), 2);
-        let item = base.get(0).unwrap();
+        let item = base.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item2 = base.get(1).unwrap();
+        let item2 = base.get_ref(1).unwrap();
         assert_eq!(item2.x, 43);
     }
 
@@ -397,7 +526,7 @@ mod tests {
         let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
         vec_obj.push(Simple { x: 42 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
     }
 
@@ -406,7 +535,7 @@ mod tests {
         let mut vec_obj = VecObject::new(ObjectBuilder::default()).unwrap();
         vec_obj.push(Simple { x: 42 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
         let ritem = vec_obj.remove(0).unwrap();
 
@@ -420,23 +549,23 @@ mod tests {
         vec_obj.push(Simple { x: 43 }).unwrap();
         vec_obj.push(Simple { x: 44 }).unwrap();
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item = vec_obj.get(1).unwrap();
+        let item = vec_obj.get_ref(1).unwrap();
         assert_eq!(item.x, 43);
-        let item = vec_obj.get(2).unwrap();
+        let item = vec_obj.get_ref(2).unwrap();
         assert_eq!(item.x, 44);
-        let item = vec_obj.get(3);
+        let item = vec_obj.get_ref(3);
         assert!(item.is_none());
 
         let ritem = vec_obj.remove(1).unwrap();
         assert_eq!(ritem.x, 43);
 
-        let item = vec_obj.get(0).unwrap();
+        let item = vec_obj.get_ref(0).unwrap();
         assert_eq!(item.x, 42);
-        let item = vec_obj.get(1).unwrap();
+        let item = vec_obj.get_ref(1).unwrap();
         assert_eq!(item.x, 44);
-        let item = vec_obj.get(2);
+        let item = vec_obj.get_ref(2);
         assert!(item.is_none());
     }
 
@@ -448,7 +577,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            let item = vec_obj.get(i as usize).unwrap();
+            let item = vec_obj.get_ref(i as usize).unwrap();
             assert_eq!(item.x, i * i);
         }
     }
@@ -460,31 +589,29 @@ mod tests {
             .build_inplace(|tx| tx.write(Vec::new_in(VecObjectAlloc)))
             .unwrap();
 
-        let tx = vobj.tx().unwrap();
-        let base = tx.base_ref().owned();
-        base.push_inplace(
-            Node {
-                ptr: InvPtr::new(&tx, simple_obj.base_ref()).unwrap(),
-            },
-            &tx,
-        )
+        let mut tx = vobj.into_tx().unwrap();
+        let mut base = tx.base_mut().owned();
+        base.push_inplace(Node {
+            ptr: InvPtr::new(&tx, simple_obj.base_ref()).unwrap(),
+        })
         .unwrap();
-        let vobj = tx.commit().unwrap();
+        tx.commit().unwrap();
 
+        let vobj = tx.into_object().unwrap();
         let rbase = vobj.base();
-        let item = rbase.get(0).unwrap();
+        let item = rbase.get_ref(0).unwrap();
         assert_eq!(unsafe { item.ptr.resolve() }.x, 3);
     }
 
     #[test]
     fn vec_object() {
         let simple_obj = ObjectBuilder::default().build(Simple { x: 3 }).unwrap();
-        let vo = VecObject::new(ObjectBuilder::default()).unwrap();
+        let mut vo = VecObject::new(ObjectBuilder::default()).unwrap();
         vo.push_ctor(|place| {
             let node = Node {
                 ptr: InvPtr::new(&place, simple_obj.base_ref())?,
             };
-            place.write(node)
+            Ok(place.write(node))
         })
         .unwrap();
 
@@ -492,7 +619,7 @@ mod tests {
             .unwrap();
 
         let base = vo.object().base();
-        let item = base.get(0).unwrap();
+        let item = base.get_ref(0).unwrap();
         assert_eq!(unsafe { item.ptr.resolve().x }, 3);
     }
 }

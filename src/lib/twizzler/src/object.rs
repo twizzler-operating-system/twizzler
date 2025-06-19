@@ -1,20 +1,23 @@
 //! Traits and types for working with objects.
 
-use std::marker::PhantomData;
-
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
 
-use crate::{marker::BaseType, ptr::Ref, tx::TxObject};
+use crate::{marker::BaseType, ptr::Ref};
 
 mod builder;
 mod fot;
 mod meta;
+mod mutable;
+mod object;
+mod tx;
 
 pub use builder::*;
 pub use fot::*;
 pub use meta::*;
-pub use twizzler_rt_abi::object::{MapFlags, ObjID};
+pub use mutable::MutObject;
+pub use object::Object;
+pub use twizzler_rt_abi::object::{MapFlags, ObjID, ObjectHandle};
+pub use tx::TxObject;
 
 /// Operations common to structured objects.
 pub trait TypedObject {
@@ -95,95 +98,5 @@ pub trait RawObject {
 impl RawObject for ObjectHandle {
     fn handle(&self) -> &ObjectHandle {
         self
-    }
-}
-
-pub struct Object<Base> {
-    handle: ObjectHandle,
-    _pd: PhantomData<*const Base>,
-}
-
-unsafe impl<Base> Sync for Object<Base> {}
-unsafe impl<Base> Send for Object<Base> {}
-
-impl<B> Clone for Object<B> {
-    fn clone(&self) -> Self {
-        Self {
-            handle: self.handle.clone(),
-            _pd: PhantomData,
-        }
-    }
-}
-
-impl<Base> Object<Base> {
-    pub fn tx(self) -> crate::tx::Result<TxObject<Base>> {
-        TxObject::new(self)
-    }
-
-    pub unsafe fn from_handle_unchecked(handle: ObjectHandle) -> Self {
-        Self {
-            handle,
-            _pd: PhantomData,
-        }
-    }
-
-    pub fn from_handle(handle: ObjectHandle) -> Result<Self, TwzError> {
-        // TODO: check base fingerprint
-        unsafe { Ok(Self::from_handle_unchecked(handle)) }
-    }
-
-    pub fn into_handle(self) -> ObjectHandle {
-        self.handle
-    }
-
-    pub unsafe fn cast<U>(self) -> Object<U> {
-        Object {
-            handle: self.handle,
-            _pd: PhantomData,
-        }
-    }
-
-    pub fn map(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
-        // TODO: check base fingerprint
-        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
-        tracing::debug!("map: {} {:?} => {:?}", id, flags, handle.start());
-        Self::from_handle(handle)
-    }
-
-    pub fn update(self) -> crate::tx::Result<Self> {
-        let id = self.id();
-        let flags = self.handle().map_flags();
-        drop(self);
-
-        Self::map(id, flags)
-    }
-
-    pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self, TwzError> {
-        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
-        unsafe { Ok(Self::from_handle_unchecked(handle)) }
-    }
-
-    pub fn id(&self) -> ObjID {
-        self.handle.id()
-    }
-}
-
-impl<Base> RawObject for Object<Base> {
-    fn handle(&self) -> &ObjectHandle {
-        &self.handle
-    }
-}
-
-impl<Base: BaseType> TypedObject for Object<Base> {
-    type Base = Base;
-
-    fn base_ref(&self) -> Ref<'_, Self::Base> {
-        let base = self.base_ptr();
-        unsafe { Ref::from_raw_parts(base, self.handle()) }
-    }
-
-    #[inline]
-    fn base(&self) -> &Self::Base {
-        unsafe { self.base_ptr::<Self::Base>().as_ref().unwrap_unchecked() }
     }
 }

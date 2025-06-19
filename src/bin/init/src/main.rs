@@ -38,15 +38,17 @@ impl embedded_io::Write for TwzIo {
 fn initialize_pager() -> ObjID {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
-    let queue_obj = twizzler::object::ObjectBuilder::<()>::default()
-        .build_ctor(|obj| {
-            twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::init(
-                obj.handle(),
-                DEFAULT_PAGER_QUEUE_LEN,
-                DEFAULT_PAGER_QUEUE_LEN,
-            )
-        })
-        .expect("failed to create pager queue");
+    let queue_obj = unsafe {
+        twizzler::object::ObjectBuilder::<()>::default()
+            .build_ctor(|obj| {
+                twizzler_queue::Queue::<RequestFromKernel, CompletionToKernel>::init(
+                    obj.handle(),
+                    DEFAULT_PAGER_QUEUE_LEN,
+                    DEFAULT_PAGER_QUEUE_LEN,
+                )
+            })
+            .expect("failed to create pager queue")
+    };
     let queue = Queue::<RequestFromKernel, CompletionToKernel>::from(queue_obj.into_handle());
 
     sys_new_handle(
@@ -56,15 +58,17 @@ fn initialize_pager() -> ObjID {
     )
     .expect("failed to setup pager queue");
 
-    let queue2_obj = twizzler::object::ObjectBuilder::<()>::default()
-        .build_ctor(|obj| {
-            twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::init(
-                obj.handle(),
-                DEFAULT_PAGER_QUEUE_LEN,
-                DEFAULT_PAGER_QUEUE_LEN,
-            )
-        })
-        .expect("failed to create pager queue");
+    let queue2_obj = unsafe {
+        twizzler::object::ObjectBuilder::<()>::default()
+            .build_ctor(|obj| {
+                twizzler_queue::Queue::<RequestFromPager, CompletionToPager>::init(
+                    obj.handle(),
+                    DEFAULT_PAGER_QUEUE_LEN,
+                    DEFAULT_PAGER_QUEUE_LEN,
+                )
+            })
+            .expect("failed to create pager queue")
+    };
     let queue2 = Queue::<RequestFromPager, CompletionToPager>::from(queue2_obj.into_handle());
     sys_new_handle(
         queue2.handle().id(),

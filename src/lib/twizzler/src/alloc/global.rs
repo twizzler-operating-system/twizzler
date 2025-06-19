@@ -3,6 +3,7 @@ use std::alloc::Layout;
 use super::Allocator;
 use crate::ptr::{GlobalPtr, Ref};
 
+/// A global pointer that owns the memory it points to, and will free it on drop.
 pub struct OwnedGlobalPtr<T, A: Allocator> {
     global: GlobalPtr<T>,
     alloc: A,

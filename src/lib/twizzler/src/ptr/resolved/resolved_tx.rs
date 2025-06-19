@@ -1,9 +1,16 @@
-use std::{mem::MaybeUninit, ops::Deref};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    mem::MaybeUninit,
+    ops::{Deref, DerefMut},
+};
 
 use twizzler_rt_abi::object::ObjectHandle;
 
-use super::TxObject;
-use crate::{object::RawObject, ptr::RefMut};
+use super::RefMut;
+use crate::{
+    object::{RawObject, TxObject},
+    ptr::GlobalPtr,
+};
 
 pub struct TxRef<T> {
     ptr: *mut T,
@@ -23,6 +30,11 @@ impl<T> TxRef<T> {
         }
     }
 
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.handle().ptr_local(self.ptr.cast()).unwrap() as u64
+    }
+
     pub fn tx(&self) -> &TxObject<()> {
         self.tx.as_ref().unwrap()
     }
@@ -38,15 +50,29 @@ impl<T> TxRef<T> {
     pub fn raw(&self) -> *mut T {
         self.ptr
     }
+
+    pub fn handle(&self) -> &ObjectHandle {
+        self.tx().handle()
+    }
+
+    pub fn global(&self) -> GlobalPtr<T> {
+        GlobalPtr::new(self.handle().id(), self.offset())
+    }
 }
 
 impl<T> TxRef<MaybeUninit<T>> {
-    pub fn write(mut self, val: T) -> crate::tx::Result<TxRef<T>> {
+    pub fn write(mut self, val: T) -> crate::Result<TxRef<T>> {
         unsafe {
             let ptr = self.ptr.as_mut().unwrap_unchecked();
             let tx = self.tx.take().unwrap();
             Ok(TxRef::<T>::from_raw_parts(tx, ptr.write(val)))
         }
+    }
+}
+
+impl<T> From<TxRef<T>> for GlobalPtr<T> {
+    fn from(value: TxRef<T>) -> Self {
+        GlobalPtr::new(value.handle().id(), value.offset())
     }
 }
 
@@ -58,10 +84,34 @@ impl<T> Deref for TxRef<T> {
     }
 }
 
+impl<T> DerefMut for TxRef<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.ptr.as_mut().unwrap_unchecked() }
+    }
+}
+
+impl<T> AsMut<T> for TxRef<T> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut *self
+    }
+}
+
+impl<T> Borrow<T> for TxRef<T> {
+    fn borrow(&self) -> &T {
+        &*self
+    }
+}
+
+impl<T> BorrowMut<T> for TxRef<T> {
+    fn borrow_mut(&mut self) -> &mut T {
+        &mut *self
+    }
+}
+
 impl<T> Drop for TxRef<T> {
     #[track_caller]
     fn drop(&mut self) {
-        let _ = self.tx.take().map(|tx| tx.commit());
+        let _ = self.tx.take().map(|mut tx| tx.commit());
     }
 }
 
@@ -74,5 +124,11 @@ impl<T> Into<ObjectHandle> for TxRef<T> {
 impl<T> Into<ObjectHandle> for &TxRef<T> {
     fn into(self) -> ObjectHandle {
         self.tx().handle().clone()
+    }
+}
+
+impl<T> AsRef<ObjectHandle> for TxRef<T> {
+    fn as_ref(&self) -> &ObjectHandle {
+        self.tx().handle()
     }
 }
