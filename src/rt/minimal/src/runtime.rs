@@ -1,4 +1,4 @@
-//! This mod implements the [twizzler_runtime_api::Runtime] trait as the "minruntime", or minimal
+//! This mod implements the Twizzler runtime as the "minruntime", or minimal
 //! runtime implementation. The word minimal is pretty subjective, but here we're roughly saying
 //! "it's the runtime that you can use to interact with the kernel and twizzler-abi directly, with
 //! no additional support".

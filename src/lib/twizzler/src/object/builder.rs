@@ -8,10 +8,10 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::Object;
+use super::{Object, TxObject};
 use crate::{
     marker::{BaseType, StoreCopy},
-    tx::TxObject,
+    Result,
 };
 
 /// An object builder, for constructing objects using a builder API.
@@ -59,15 +59,32 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    pub fn build(&self, base: Base) -> crate::tx::Result<Object<Base>> {
+    /// Build an object using the provided base vale.
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = builder.build(42u32).unwrap();
+    /// ```
+    pub fn build(&self, base: Base) -> Result<Object<Base>> {
         self.build_inplace(|tx| tx.write(base))
     }
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
-    pub fn build_inplace<F>(&self, ctor: F) -> crate::tx::Result<Object<Base>>
+    /// Build an object using the provided constructor function.
+    ///
+    /// The constructor should call the .write() method on the TxObject, and
+    /// return the result.
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = builder.build_inplace(|tx| tx.write(42u32)).unwrap();
+    /// ```
+    pub fn build_inplace<F>(&self, ctor: F) -> Result<Object<Base>>
     where
-        F: FnOnce(TxObject<MaybeUninit<Base>>) -> crate::tx::Result<TxObject<Base>>,
+        F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
         let id = twizzler_abi::syscall::sys_object_create(
             self.spec,
@@ -79,27 +96,39 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             flags.insert(MapFlags::PERSIST);
         }
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let object = ctor(mu_object.tx()?)?;
-        object.commit()
+        let object = ctor(mu_object.into_tx()?)?;
+        object.into_object()
     }
 
-    pub fn build_ctor<F>(&self, ctor: F) -> crate::tx::Result<Object<Base>>
+    /// Build an object using the provided constructor function.
+    ///
+    /// The constructor should call the .write() method on the TxObject or
+    /// otherwise ensure that it is safe to call .assume_init on the underlying
+    /// MaybeUninit.
+    ///
+    /// # Safety
+    /// The caller must ensure that the base is initialized, see MaybeUninit::assume_init.
+    ///
+    /// # Example
+    /// ```
+    /// # use twizzler::object::ObjectBuilder;
+    /// let builder = ObjectBuilder::default();
+    /// let obj = unsafe {
+    ///     builder
+    ///         .build_ctor(|tx| {
+    ///             tx.write(42u32);
+    ///         })
+    ///         .unwrap()
+    /// };
+    /// ```
+    pub unsafe fn build_ctor<F>(&self, ctor: F) -> Result<Object<Base>>
     where
         F: FnOnce(&mut TxObject<MaybeUninit<Base>>),
     {
-        let id = twizzler_abi::syscall::sys_object_create(
-            self.spec,
-            self.src_objs.as_slice(),
-            self.ties.as_slice(),
-        )?;
-        let mut flags = MapFlags::READ | MapFlags::WRITE;
-        if self.spec.lt == LifetimeType::Persistent {
-            flags.insert(MapFlags::PERSIST);
-        }
-        let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let mut tx = mu_object.tx()?;
-        ctor(&mut tx);
-        Ok(unsafe { tx.commit()?.cast() })
+        self.build_inplace(|mut tx| {
+            ctor(&mut tx);
+            Ok(tx.assume_init())
+        })
     }
 }
 

@@ -48,7 +48,7 @@ impl From<KernelConsoleReadFlags> for u64 {
 /// a serial port, the input mechanism is the reading side of the serial console. To read from the
 /// kernel console output buffer, use [sys_kernel_console_read_buffer].
 ///
-/// Returns the number of bytes read on success and [KernelConsoleReadError] on failure.
+/// Returns the number of bytes read on success.
 pub fn sys_kernel_console_read(buffer: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
     let (code, val) = unsafe {
         raw_syscall(
@@ -84,7 +84,7 @@ impl From<KernelConsoleReadBufferFlags> for u64 {
 /// placed in the buffer and copied out to the underlying console device in the kernel. If you want
 /// to read from the INPUT device, see [sys_kernel_console_read].
 ///
-/// Returns the number of bytes read on success and [KernelConsoleReadBufferError] on failure.
+/// Returns the number of bytes read on success.
 pub fn sys_kernel_console_read_buffer(
     buffer: &mut [u8],
     flags: KernelConsoleReadBufferFlags,

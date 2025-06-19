@@ -1,8 +1,11 @@
 use std::alloc::Layout;
 
+use twizzler_abi::object::ObjID;
+
 use super::Allocator;
 use crate::ptr::{GlobalPtr, Ref};
 
+/// A global pointer that owns the memory it points to, and will free it on drop.
 pub struct OwnedGlobalPtr<T, A: Allocator> {
     global: GlobalPtr<T>,
     alloc: A,
@@ -30,5 +33,15 @@ impl<T, A: Allocator> OwnedGlobalPtr<T, A> {
 
     pub fn allocator(&self) -> &A {
         &self.alloc
+    }
+
+    /// Returns the object ID of the global pointer.
+    pub fn id(&self) -> ObjID {
+        self.global().id()
+    }
+
+    /// Returns the offset of the global pointer.
+    pub fn offset(&self) -> u64 {
+        self.global().offset()
     }
 }

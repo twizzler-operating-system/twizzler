@@ -5,11 +5,15 @@ use miette::{IntoDiagnostic, Result};
 use naming::GetFlags;
 use twizzler::{
     Invariant,
-    alloc::{arena::ArenaAllocator, invbox::InvBox},
+    alloc::{
+        arena::{ArenaAllocator, ArenaObject},
+        invbox::InvBox,
+    },
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder},
 };
+use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
 
 #[allow(dead_code)]
 #[derive(Invariant)]
@@ -26,6 +30,15 @@ impl Debug for Foo {
             .field("data (val)", &*self.data.resolve())
             .finish()
     }
+}
+
+fn create_arena() -> Result<ArenaObject> {
+    let obj = ObjectBuilder::default().persist();
+    ArenaObject::new(obj).into_diagnostic()
+}
+
+fn open_arena(id: ObjID) -> Result<ArenaObject> {
+    ArenaObject::from_objid(id).into_diagnostic()
 }
 
 fn create_vector_object<T: Debug + Invariant>() -> Result<VecObject<T, VecObjectAlloc>> {
@@ -60,6 +73,21 @@ enum SubCommand {
     Read,
 }
 
+fn open_or_create_arena() -> Result<ArenaObject> {
+    let mut nh = naming::static_naming_factory().unwrap();
+    let name = format!("/data/ptest-arena");
+    let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
+        println!("reopened-arena: {:?}", node.id);
+        open_arena(node.id)
+    } else {
+        let vo = create_arena()?;
+        println!("new-arena: {:?}", vo.object().id());
+        let _ = nh.remove(&name);
+        nh.put(&name, vo.object().id()).into_diagnostic()?;
+        Ok(vo)
+    };
+    vo
+}
 fn open_or_create_vector_object<T: Debug + Invariant>(
     name: &str,
 ) -> Result<VecObject<T, VecObjectAlloc>> {
@@ -76,6 +104,38 @@ fn open_or_create_vector_object<T: Debug + Invariant>(
         Ok(vo)
     };
     vo
+}
+
+impl Foo {
+    fn new_in(
+        place: impl AsRef<ObjectHandle>,
+        val: u32,
+        alloc: ArenaAllocator,
+    ) -> Result<Self, TwzError> {
+        Ok(Self {
+            data: InvBox::new_in(place, val, alloc)?,
+            local_data: val,
+        })
+    }
+}
+
+fn do_push_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
+    let val = vo.len() as u32;
+    vo.push_ctor(|r| {
+        let foo = Foo::new_in(&r, val, arena.allocator())?;
+        Ok(r.write(foo))
+    })
+    .unwrap();
+}
+
+fn do_append_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
+    for i in 0..100 {
+        vo.push_ctor(|r| {
+            let foo = Foo::new_in(&r, i, arena.allocator())?;
+            Ok(r.write(foo))
+        })
+        .unwrap();
+    }
 }
 
 fn do_push(vo: VecObject<u32, VecObjectAlloc>) {
@@ -102,33 +162,72 @@ fn main() {
 
     let mut nh = naming::static_naming_factory().unwrap();
     match cli.sub {
-        SubCommand::New => {
-            let _ = nh.remove("/data/ptest-obj-u32");
-            let vo = create_vector_object::<u32>().unwrap();
-            println!("new: {:?}", vo.object().id());
-            nh.put("/data/ptest-obj-u32", vo.object().id()).unwrap();
-        }
-        SubCommand::Push => {
-            let vo = open_or_create_vector_object::<u32>("u32").unwrap();
-            let start = std::time::Instant::now();
-            do_push(vo);
-            let end = std::time::Instant::now();
-            println!("done!: {:?}", end - start);
-        }
+        SubCommand::New => match cli.ty {
+            VecTy::U32 => {
+                let _ = nh.remove("/data/ptest-obj-u32");
+                let vo = create_vector_object::<u32>().unwrap();
+                println!("new: {:?}", vo.object().id());
+                nh.put("/data/ptest-obj-u32", vo.object().id()).unwrap();
+            }
+            VecTy::Foo => {
+                let _ = nh.remove("/data/ptest-obj-foo");
+                let _ = nh.remove("/data/ptest-arena");
+                let vo = create_vector_object::<u32>().unwrap();
+                println!("new: {:?}", vo.object().id());
+                nh.put("/data/ptest-obj-foo", vo.object().id()).unwrap();
+
+                let vo = create_arena().unwrap();
+                println!("new arena: {:?}", vo.object().id());
+                nh.put("/data/ptest-arena", vo.object().id()).unwrap();
+            }
+        },
+        SubCommand::Push => match cli.ty {
+            VecTy::U32 => {
+                let vo = open_or_create_vector_object::<u32>("u32").unwrap();
+                let start = std::time::Instant::now();
+                do_push(vo);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
+            }
+            VecTy::Foo => {
+                let vo = open_or_create_vector_object::<Foo>("foo").unwrap();
+                let arena = open_or_create_arena().unwrap();
+                let start = std::time::Instant::now();
+                do_push_foo(vo, arena);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
+            }
+        },
         SubCommand::Append => {
             let vo = open_or_create_vector_object::<u32>("u32").unwrap();
             let start = std::time::Instant::now();
-            do_append(vo);
+            match cli.ty {
+                VecTy::U32 => do_append(vo),
+                VecTy::Foo => {
+                    let vo = open_or_create_vector_object::<Foo>("foo").unwrap();
+                    let arena = open_or_create_arena().unwrap();
+                    do_append_foo(vo, arena)
+                }
+            }
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
         }
-        SubCommand::Read => {
-            let vo = open_or_create_vector_object::<u32>("u32").unwrap();
-            let start = std::time::Instant::now();
-            do_read(vo);
-            let end = std::time::Instant::now();
-            println!("done!: {:?}", end - start);
-        }
+        SubCommand::Read => match cli.ty {
+            VecTy::U32 => {
+                let vo = open_or_create_vector_object::<u32>("u32").unwrap();
+                let start = std::time::Instant::now();
+                do_read(vo);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
+            }
+            VecTy::Foo => {
+                let vo = open_or_create_vector_object::<Foo>("foo").unwrap();
+                let start = std::time::Instant::now();
+                do_read(vo);
+                let end = std::time::Instant::now();
+                println!("done!: {:?}", end - start);
+            }
+        },
     }
 
     /*

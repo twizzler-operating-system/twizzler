@@ -28,8 +28,8 @@ impl ClockInfo {
         ClockFlags::MONOTONIC,
     );
 
-    /// Construct a new ClockInfo. You probably want to be getting these from [sys_read_clock_info],
-    /// though.
+    /// Construct a new ClockInfo. You probably want to be getting these from
+    /// [super::sys_read_clock_info], though.
     pub const fn new(
         current: TimeSpan,
         precision: FemtoSeconds,
