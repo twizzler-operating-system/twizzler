@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
 use naming::GetFlags;
+use tracing::Level;
 use twizzler::{
     Invariant,
     alloc::{
@@ -157,6 +158,12 @@ fn do_read<T: Debug + Invariant>(vo: VecObject<T, VecObjectAlloc>) {
 }
 
 fn main() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(Level::INFO)
+            .finish(),
+    )
+    .unwrap();
     let cli = Cli::parse();
     println!("==> {:?}", cli);
 

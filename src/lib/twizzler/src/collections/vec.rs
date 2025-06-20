@@ -11,6 +11,7 @@ use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
     ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut, TxRef, TxRefSlice},
+    util::same_object,
     Result,
 };
 
@@ -32,7 +33,11 @@ impl<T: Invariant> VecInner<T> {
     }
 
     fn resolve_start_tx(&self) -> Result<TxRef<T>> {
-        unsafe { self.start.resolve().into_tx() }
+        let mut tx = unsafe { self.start.resolve().into_tx() }?;
+        if same_object(tx.raw(), self) {
+            tx.nosync();
+        }
+        Ok(tx)
     }
 
     fn do_realloc<Alloc: Allocator>(
@@ -204,7 +209,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
         } else {
             self.inner.len += 1;
             let r = self.inner.resolve_start_tx()?;
-            tracing::trace!("no grow {:p}", r.raw());
+            tracing::trace!("no grow {:p} {}", r.raw(), r.is_nosync());
             Ok(Self::maybe_uninit_slice(r, self.inner.cap)
                 .get_into(oldlen)
                 .unwrap())
@@ -213,9 +218,9 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
 
     fn do_push(&mut self, item: T) -> Result<()> {
         let r = self.get_slice_grow()?;
-        // write item, tracking in tx
         tracing::trace!("store value: {:p}", r.raw());
-        r.write(item)?;
+        let r = r.write(item)?;
+        drop(r);
         Ok(())
     }
 

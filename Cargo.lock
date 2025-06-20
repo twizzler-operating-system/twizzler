@@ -5103,6 +5103,8 @@ dependencies = [
  "clap",
  "miette",
  "naming",
+ "tracing",
+ "tracing-subscriber",
  "twizzler",
  "twizzler-rt-abi",
  "twizzler-runtime",

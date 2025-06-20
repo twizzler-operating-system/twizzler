@@ -10,3 +10,5 @@ twizzler-runtime = { path = "../../rt" }
 naming = { path = "../../lib/naming" }
 clap = { version = "*", features = ["derive"] }
 miette = "*"
+tracing = "*"
+tracing-subscriber = "*"
