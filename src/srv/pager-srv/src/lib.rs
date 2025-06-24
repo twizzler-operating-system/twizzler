@@ -145,7 +145,7 @@ async fn listen_queue<R, C, F>(
     kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
     ctx: &'static PagerContext,
     handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
-    ex: &'static Executor<'static>,
+    _ex: &'static Executor<'static>,
 ) where
     F: std::future::Future<Output = C> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
