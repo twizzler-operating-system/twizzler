@@ -157,12 +157,8 @@ async fn listen_queue<R, C, F>(
         let (id, request) = q.receive().await.unwrap();
         tracing::trace!("got request: ({},{:?})", id, request);
 
-        let qc = Arc::clone(&q);
-        ex.spawn(async move {
-            let comp = handler(ctx, request).await;
-            notify(&qc, id, comp).await;
-        })
-        .detach();
+        let comp = handler(ctx, request).await;
+        notify(&q, id, comp).await;
     }
 }
 

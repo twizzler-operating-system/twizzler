@@ -1,5 +1,6 @@
 use std::io::stderr;
 
+#[allow(unreachable_code, unused)]
 fn main() {
     let outdir = std::env::var("OUT_DIR").unwrap();
     let target = std::env::var("TARGET").unwrap();
@@ -7,7 +8,7 @@ fn main() {
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
-    let _ = std::fs::remove_dir_all(&cmake_build);
+    //let _ = std::fs::remove_dir_all(&cmake_build);
 
     let mut proc = std::process::Command::new("cmake");
     proc.current_dir("lwext4")

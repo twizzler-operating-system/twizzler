@@ -6121,8 +6121,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "tar"
 version = "0.4.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
+source = "git+https://github.com/twizzler-operating-system/tar-rs.git?branch=twizzler#bd665b77e2c2b17955e9e66aef8c4777caa5362c"
 dependencies = [
  "filetime",
  "libc",

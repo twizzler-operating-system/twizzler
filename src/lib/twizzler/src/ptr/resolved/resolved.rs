@@ -92,6 +92,14 @@ impl<'obj, T> Ref<'obj, T> {
         let tx = unsafe { TxObject::from_mut_object(mo) };
         Ok(unsafe { TxRef::from_raw_parts(tx, ptr) })
     }
+
+    pub unsafe fn add(self, offset: usize) -> Self {
+        Self::new(self.ptr.add(offset), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_add(self, offset: usize) -> Self {
+        Self::new(self.ptr.byte_add(offset), self.lazy_handle)
+    }
 }
 
 impl<'obj, T: core::fmt::Debug> core::fmt::Debug for Ref<'obj, T> {
