@@ -88,10 +88,17 @@ impl<'obj, T> Ref<'obj, T> {
 
     pub fn as_tx(&self) -> crate::Result<TxRef<T>> {
         let (handle, ptr) = maybe_remap(self.handle().clone(), self.ptr as *mut T);
-
         let mo = unsafe { MutObject::<()>::from_handle_unchecked(handle) };
         let tx = unsafe { TxObject::from_mut_object(mo) };
         Ok(unsafe { TxRef::from_raw_parts(tx, ptr) })
+    }
+
+    pub unsafe fn add(self, offset: usize) -> Self {
+        Self::new(self.ptr.add(offset), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_add(self, offset: usize) -> Self {
+        Self::new(self.ptr.byte_add(offset), self.lazy_handle)
     }
 }
 

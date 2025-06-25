@@ -317,7 +317,11 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> Result<()> {
-        self.obj.with_tx(|tx| tx.base_mut().push(val))
+        self.obj.with_tx(|tx| {
+            tx.base_mut().push(val)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> Result<()> {

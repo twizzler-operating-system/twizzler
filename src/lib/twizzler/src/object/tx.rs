@@ -82,6 +82,15 @@ impl<T> TxObject<T> {
             sync_on_drop: true,
         }
     }
+
+    pub(crate) fn nosync(&mut self) {
+        self.sync_on_drop = false;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_nosync(&self) -> bool {
+        !self.sync_on_drop
+    }
 }
 
 impl<B> TxObject<MaybeUninit<B>> {
@@ -140,7 +149,13 @@ impl<B: BaseType> TypedObject for TxObject<B> {
 }
 
 impl<B> Drop for TxObject<B> {
+    #[track_caller]
     fn drop(&mut self) {
+        tracing::trace!(
+            "TxObject {:?} drop from {}",
+            self.id(),
+            core::panic::Location::caller()
+        );
         if self.sync_on_drop {
             let _ = self
                 .obj

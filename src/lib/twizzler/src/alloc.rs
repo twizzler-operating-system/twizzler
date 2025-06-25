@@ -1,6 +1,9 @@
-use std::alloc::{AllocError, Layout};
+use std::{
+    alloc::{AllocError, Layout},
+    mem::MaybeUninit,
+};
 
-use crate::ptr::GlobalPtr;
+use crate::ptr::{GlobalPtr, RefMut};
 
 pub mod arena;
 mod global;
@@ -16,6 +19,21 @@ pub trait Allocator: Clone {
     /// Note: Using this function by itself can leak memory, particularly on failure.
     /// Users should consider using InvBox instead.
     fn alloc(&self, layout: Layout) -> Result<GlobalPtr<u8>, AllocError>;
+
+    /// Allocate based on layout within this allocator. Returns a global pointer
+    /// to the start of the allocation.
+    ///
+    /// Note: Using this function by itself can leak memory, particularly on failure.
+    /// Users should consider using InvBox instead.
+    fn alloc_with<T>(
+        &self,
+        f: impl FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>, AllocError>,
+    ) -> Result<GlobalPtr<u8>, AllocError> {
+        let res = self.alloc(Layout::new::<T>())?;
+        let res = res.cast::<MaybeUninit<T>>();
+        let res = unsafe { res.resolve_mut() };
+        Ok(f(res)?.global().cast())
+    }
 
     /// Free an allocation.
     ///
@@ -41,8 +59,8 @@ pub trait Allocator: Clone {
         let new_alloc = self.alloc(new_layout)?;
         unsafe {
             if !ptr.is_null() {
-                let new_res = new_alloc.resolve().into_mut();
-                let old_res = ptr.resolve();
+                let new_res = new_alloc.resolve_mut();
+                let old_res = ptr.resolve_mut();
                 let copy_len = std::cmp::min(layout.size(), new_layout.size());
                 new_res.raw().copy_from(old_res.raw(), copy_len);
             }

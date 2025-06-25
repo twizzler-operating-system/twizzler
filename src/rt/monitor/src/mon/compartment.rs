@@ -413,9 +413,13 @@ impl super::Monitor {
             .map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("load {}: env: {:?}", compname, env);
 
+        let mondebug = env
+            .iter()
+            .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
+            .is_some();
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-            loader::RunCompLoader::new(*dynlink, compname, root, new_comp_flags)
+            loader::RunCompLoader::new(*dynlink, compname, root, new_comp_flags, mondebug)
         }
         .map_err(|_| GenericError::Internal)?;
 
@@ -424,14 +428,14 @@ impl super::Monitor {
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             // TODO: dynlink err map
             loader
-                .build_rcs(&mut *cmp, &mut *dynlink)
+                .build_rcs(&mut *cmp, &mut *dynlink, mondebug)
                 .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);
 
         let desc = self.get_compartment_handle(caller, root_comp)?;
 
-        self.start_compartment(root_comp, &args, &env)?;
+        self.start_compartment(root_comp, &args, &env, mondebug)?;
 
         Ok(desc)
     }

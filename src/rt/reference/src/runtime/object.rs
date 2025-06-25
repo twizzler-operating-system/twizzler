@@ -101,9 +101,20 @@ impl ReferenceRuntime {
         let handle = unsafe { &*handle };
         // TODO: track max FOT entry
         let _meta = unsafe { &*handle.meta };
+        let new_fot = unsafe { fot.cast::<FotEntry>().read() };
         for i in 1..u32::MAX {
             let ptr = unsafe { &mut *handle.meta.cast::<FotEntry>().sub((i + 1) as usize) };
             let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
+
+            if flags.contains(FotFlags::ALLOCATED)
+                && flags.contains(FotFlags::ACTIVE)
+                && !flags.contains(FotFlags::DELETED)
+            {
+                if ptr.values == new_fot.values && ptr.resolver == new_fot.resolver {
+                    return Ok(i);
+                }
+            }
+
             if flags.contains(FotFlags::DELETED)
                 || (!flags.contains(FotFlags::ACTIVE) && !flags.contains(FotFlags::ALLOCATED))
             {
@@ -113,7 +124,6 @@ impl ReferenceRuntime {
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 ) {
-                    let new_fot = unsafe { fot.cast::<FotEntry>().read() };
                     let mut flags =
                         FotFlags::from_bits_truncate(new_fot.flags.load(Ordering::SeqCst));
                     flags.set(FotFlags::DELETED, false);

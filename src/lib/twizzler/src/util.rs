@@ -1,5 +1,6 @@
 use std::ops::{Bound, RangeBounds};
 
+use twizzler_abi::object::MAX_SIZE;
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use crate::object::RawObject;
@@ -43,6 +44,12 @@ pub(crate) fn maybe_remap<T>(handle: ObjectHandle, ptr: *mut T) -> (ObjectHandle
     } else {
         (handle, ptr)
     }
+}
+
+pub(crate) fn same_object<A, B>(a: *const A, b: *const B) -> bool {
+    let slota = a.addr() / MAX_SIZE;
+    let slotb = b.addr() / MAX_SIZE;
+    slota == slotb
 }
 
 #[cfg(test)]

@@ -137,6 +137,7 @@ impl RunCompLoader {
         comp_name: &str,
         root_unlib: UnloadedLibrary,
         new_comp_flags: NewCompartmentFlags,
+        mondebug: bool,
     ) -> miette::Result<Self> {
         struct UnloadOnDrop(Vec<LoadIds>);
         impl Drop for UnloadOnDrop {
@@ -208,6 +209,48 @@ impl RunCompLoader {
             *load_ctx.set.get(&root_comp_id).unwrap(),
             is_binary,
         )?;
+
+        if mondebug {
+            let print_comp = |cmp: &LoadInfo| -> miette::Result<()> {
+                let dcmp = dynlink.get_compartment(cmp.comp_id)?;
+                tracing::info!("Loaded libraries for {}:", &dcmp.name);
+                for lid in dcmp.library_ids() {
+                    let lib = dynlink.get_library(lid)?;
+                    let mut flags = ["-", "-", "-"];
+                    if lib.is_binary() {
+                        flags[0] = "B";
+                    } else {
+                        flags[0] = "l";
+                    }
+                    if lib.id() == cmp.rt_id {
+                        flags[1] = "r";
+                    } else if lib.id() == cmp.root_id {
+                        flags[1] = "R";
+                    }
+                    if lib.allows_gates() {
+                        flags[2] = "g";
+                    }
+                    let flags = flags.join("");
+                    tracing::info!("{:16x} {} {}", lib.base_addr(), flags, &lib.name);
+                    if let Some(isg) = lib.iter_secgates() {
+                        for gate in isg {
+                            tracing::info!(
+                                "    GATE {:16x} {}",
+                                gate.imp,
+                                gate.name().to_string_lossy()
+                            )
+                        }
+                    }
+                }
+                Ok(())
+            };
+            tracing::info!("Load info for {}", comp_name);
+            let _ = print_comp(&root_comp);
+            for cmp in &extra_compartments {
+                let _ = print_comp(cmp);
+            }
+        }
+
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
         Ok(RunCompLoader {
@@ -220,6 +263,7 @@ impl RunCompLoader {
         self,
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
+        _mondebug: bool,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |id| {
             Space::safe_create_and_map_runtime_object(
@@ -305,7 +349,11 @@ impl Monitor {
         instance: ObjID,
         args: &[&CStr],
         env: &[&CStr],
+        mondebug: bool,
     ) -> Result<(), TwzError> {
+        if mondebug {
+            tracing::info!("start compartment {}: {:?} {:?}", instance, args, env);
+        }
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance)?;
@@ -318,7 +366,7 @@ impl Monitor {
             rc.deps.clone()
         };
         for dep in deps {
-            self.start_compartment(dep, &[], env)?;
+            self.start_compartment(dep, &[], env, false)?;
         }
         // Check the state of this compartment.
         let state = self.load_compartment_flags(instance);

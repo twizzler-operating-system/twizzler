@@ -65,11 +65,10 @@ impl ArenaObject {
         &self,
         f: impl FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
     ) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
-        let layout = Layout::new::<T>();
-        let alloc = self.allocator().alloc(layout)?.cast::<MaybeUninit<T>>();
-        let ptr = unsafe { alloc.resolve().into_mut() };
-        let ptr = f(ptr)?;
-        Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), self.allocator()) })
+        let gp = self
+            .allocator()
+            .alloc_with(|x| f(x).map_err(|_| AllocError))?;
+        Ok(unsafe { OwnedGlobalPtr::from_global(gp.cast(), self.allocator()) })
     }
 }
 
@@ -121,26 +120,49 @@ impl Allocator for ArenaAllocator {
         Ok(gp)
     }
 
+    fn alloc_with<T>(
+        &self,
+        f: impl FnOnce(
+            RefMut<MaybeUninit<T>>,
+        ) -> core::result::Result<RefMut<T>, std::alloc::AllocError>,
+    ) -> core::result::Result<GlobalPtr<u8>, AllocError> {
+        let mut allocator = unsafe { self.ptr.resolve().into_tx() }.map_err(|_| AllocError)?;
+        let reserve = allocator
+            .reserve(Layout::new::<T>())
+            .map_err(|_| AllocError)?;
+        let gp = GlobalPtr::<u8>::new(allocator.handle().id(), reserve);
+        let res = gp.cast::<MaybeUninit<T>>();
+        let res = unsafe { res.resolve_mut() };
+        Ok(f(res)?.global().cast())
+    }
+
     unsafe fn dealloc(&self, _ptr: GlobalPtr<u8>, _layout: std::alloc::Layout) {}
 }
 
 impl TxObject<ArenaBase> {
-    pub fn alloc<T>(&self, value: T) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
+    pub fn alloc<T>(&mut self, value: T) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         self.alloc_inplace(|p| Ok(p.write(value)))
     }
 
     pub fn alloc_inplace<T>(
-        &self,
+        &mut self,
         f: impl FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
     ) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
-        let layout = Layout::new::<T>();
-        let alloc = ArenaAllocator {
+        let reserve = self
+            .base_mut()
+            .reserve(Layout::new::<T>())
+            .map_err(|_| AllocError)?;
+        let gp = GlobalPtr::<u8>::new(self.id(), reserve);
+        let res = gp.cast::<MaybeUninit<T>>();
+        let res = unsafe { res.resolve_mut() };
+        let gp = f(res)?.global();
+        Ok(unsafe { OwnedGlobalPtr::from_global(gp.cast(), self.allocator()) })
+    }
+
+    pub fn allocator(&self) -> ArenaAllocator {
+        ArenaAllocator {
             ptr: GlobalPtr::new(self.id(), NULLPAGE_SIZE as u64),
-        };
-        let allocation = alloc.alloc(layout)?.cast::<MaybeUninit<T>>();
-        let mut ptr = unsafe { allocation.resolve().into_tx() }?;
-        f(ptr.as_mut())?;
-        Ok(unsafe { OwnedGlobalPtr::from_global(ptr.global().cast(), alloc) })
+        }
     }
 }
 
@@ -197,7 +219,7 @@ mod tests {
         let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
 
         let owned_ptr = arena
-            .alloc_inplace(|mut uninit| Ok(uninit.write(100u32)))
+            .alloc_inplace(|uninit| Ok(uninit.write(100u32)))
             .expect("Failed to allocate in place");
 
         // Verify the allocated value
@@ -235,7 +257,7 @@ mod tests {
         let builder = ObjectBuilder::default();
         let arena = ArenaObject::new(builder).expect("Failed to create ArenaObject");
 
-        let tx_obj = arena.as_tx().expect("Failed to create tx object");
+        let mut tx_obj = arena.as_tx().expect("Failed to create tx object");
         let owned_ptr = tx_obj.alloc(999u64).expect("Failed to allocate in tx");
 
         // Verify the allocated value

@@ -51,7 +51,9 @@ impl<T> TxRefSlice<T> {
     #[inline]
     pub fn get_into(mut self, idx: usize) -> Option<TxRef<T>> {
         let ptr = self.as_slice_mut().get_mut(idx)? as *mut T;
-        Some(unsafe { TxRef::from_raw_parts(self.ptr.into_tx(), ptr) })
+        let r = unsafe { TxRef::from_raw_parts(self.ptr.into_tx(), ptr) };
+
+        Some(r)
     }
 
     pub fn len(&self) -> usize {

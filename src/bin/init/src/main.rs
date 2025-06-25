@@ -238,8 +238,29 @@ fn main() {
         if cmd.len() == 0 {
             continue;
         }
+
+        // Find env vars
+        let cmd = cmd.into_iter().map(|s| as_env(s)).collect::<Vec<_>>();
+        let vars = cmd
+            .iter()
+            .filter_map(|r| match r {
+                Ok((k, v)) => Some((k, v)),
+                Err(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let cmd = cmd
+            .iter()
+            .filter_map(|r| match r {
+                Ok(_) => None,
+                Err(s) => Some(s),
+            })
+            .collect::<Vec<_>>();
+
+        tracing::debug!("got env: {:?}, cmd: {:?}", vars, cmd);
+
         let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
             .args(&cmd)
+            .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
             .load();
         if let Ok(comp) = comp {
             let mut flags = comp.info().flags;
@@ -250,6 +271,11 @@ fn main() {
             warn!("failed to start {}", cmd[0]);
         }
     }
+}
+
+fn as_env<'a>(s: &'a str) -> Result<(&'a str, &'a str), &'a str> {
+    let mut split = s.split("=");
+    Ok((split.next().ok_or(s)?, split.next().ok_or(s)?))
 }
 
 /*

@@ -339,6 +339,7 @@ impl PageRangeTree {
             return PageStatus::Ready(page, shared);
         }
         if let Some(allocator) = allocator {
+            log::debug!("split into three: {} {:?}", pn, flags);
             if !self.split_into_three(pn, false, allocator) {
                 return PageStatus::AllocFail;
             }

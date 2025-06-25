@@ -327,8 +327,8 @@ impl CompartmentLoader {
     }
 
     /// Set the environment for the compartment
-    pub fn env(&mut self, env: Vec<String>) -> &mut Self {
-        self.env = Some(env);
+    pub fn env<S: ToString>(&mut self, env: impl IntoIterator<Item = S>) -> &mut Self {
+        self.env = Some(env.into_iter().map(|s| s.to_string()).collect());
         self
     }
 

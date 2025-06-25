@@ -15,6 +15,7 @@ use crate::{
 pub struct TxRef<T> {
     ptr: *mut T,
     tx: Option<TxObject<()>>,
+    sync_on_drop: bool,
 }
 
 impl<T> TxRef<T> {
@@ -26,6 +27,7 @@ impl<T> TxRef<T> {
     pub unsafe fn from_raw_parts<B>(tx: TxObject<B>, ptr: *mut T) -> Self {
         Self {
             ptr,
+            sync_on_drop: !tx.is_nosync(),
             tx: Some(tx.into_unit()),
         }
     }
@@ -44,7 +46,12 @@ impl<T> TxRef<T> {
     }
 
     pub fn into_tx(mut self) -> TxObject<()> {
-        self.tx.take().unwrap()
+        let mut txobj = self.tx.take().unwrap();
+        if !self.sync_on_drop {
+            txobj.nosync();
+        }
+        self.nosync();
+        txobj
     }
 
     pub fn raw(&self) -> *mut T {
@@ -59,9 +66,24 @@ impl<T> TxRef<T> {
         GlobalPtr::new(self.handle().id(), self.offset())
     }
 
-    pub unsafe fn cast<U>(self) -> TxRef<U> {
-        let ptr = self.ptr.cast();
-        TxRef::from_raw_parts(self.into_tx(), ptr)
+    pub unsafe fn cast<U>(mut self) -> TxRef<U> {
+        let old_sod = self.sync_on_drop;
+        self.sync_on_drop = false;
+        let ptr = self.ptr.cast::<U>();
+        let mut new = TxRef::from_raw_parts(self.into_tx(), ptr);
+        if !old_sod {
+            new.nosync();
+        }
+        new
+    }
+
+    pub(crate) fn nosync(&mut self) {
+        self.sync_on_drop = false;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_nosync(&self) -> bool {
+        !self.sync_on_drop
     }
 }
 
@@ -70,7 +92,12 @@ impl<T> TxRef<MaybeUninit<T>> {
         unsafe {
             let ptr = self.ptr.as_mut().unwrap_unchecked();
             let tx = self.tx.take().unwrap();
-            Ok(TxRef::<T>::from_raw_parts(tx, ptr.write(val)))
+            let mut new = TxRef::<T>::from_raw_parts(tx, ptr.write(val));
+            if !self.sync_on_drop {
+                new.nosync();
+            }
+            self.sync_on_drop = false;
+            Ok(new)
         }
     }
 }
@@ -116,7 +143,20 @@ impl<T> BorrowMut<T> for TxRef<T> {
 impl<T> Drop for TxRef<T> {
     #[track_caller]
     fn drop(&mut self) {
-        let _ = self.tx.take().map(|mut tx| tx.commit());
+        tracing::trace!(
+            "TxRef {:?} drop from {}: {} {}",
+            self.tx.as_ref().map(|t| t.id()),
+            core::panic::Location::caller(),
+            self.sync_on_drop,
+            self.tx.is_some()
+        );
+        let _ = self.tx.take().map(|mut tx| {
+            if self.sync_on_drop {
+                tx.commit()
+            } else {
+                Ok(())
+            }
+        });
     }
 }
 
