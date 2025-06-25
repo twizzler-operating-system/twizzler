@@ -82,6 +82,7 @@ impl<Base> MutObject<Base> {
 
     pub fn sync(&mut self) -> Result<(), TwzError> {
         let flags = self.handle.map_flags();
+        tracing::trace!("sync on {:?} with flags {:?}", self.id(), flags);
         if flags.contains(MapFlags::PERSIST) {
             let release = AtomicU64::new(0);
             let release_ptr = addr_of!(release);

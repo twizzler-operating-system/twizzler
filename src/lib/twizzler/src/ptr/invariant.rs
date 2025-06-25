@@ -17,6 +17,8 @@ pub struct InvPtr<T: Invariant> {
     _pd: PhantomData<*const T>,
 }
 
+unsafe impl<T: Invariant> Invariant for InvPtr<T> {}
+
 impl<T: Invariant> InvPtr<T> {
     fn get_this(this: *const Self) -> ObjectHandle {
         twizzler_rt_abi::object::twz_rt_get_object_handle(this.cast()).unwrap()
@@ -76,12 +78,22 @@ impl<T: Invariant> InvPtr<T> {
         Self::from_raw_parts(0, 0)
     }
 
+    pub fn is_null(&self) -> bool {
+        self.offset() == 0
+    }
+
     pub fn from_raw_parts(idx: u32, offset: u64) -> Self {
         Self {
             value: ((idx as u64) << 48) | offset,
             _pse: PhantomStoreEffect,
             _pd: PhantomData,
         }
+    }
+
+    pub fn set(&mut self, gp: impl Into<GlobalPtr<T>>) -> crate::Result<()> {
+        let tx = Self::get_this(self);
+        *self = Self::new(tx, gp)?;
+        Ok(())
     }
 
     #[inline(always)]

@@ -86,6 +86,10 @@ impl<'a, T> RefSlice<'a, T> {
         let len = self.len();
         Ok(unsafe { RefSliceMut::from_ref(self.ptr.as_mut(), len) })
     }
+
+    pub fn into_ref(self) -> Ref<'a, T> {
+        self.ptr
+    }
 }
 
 impl<'a, T> From<RefSlice<'a, T>> for GlobalPtr<T> {

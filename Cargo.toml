@@ -115,3 +115,4 @@ iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }

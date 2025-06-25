@@ -145,7 +145,7 @@ async fn listen_queue<R, C, F>(
     kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
     ctx: &'static PagerContext,
     handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
-    ex: &'static Executor<'static>,
+    _ex: &'static Executor<'static>,
 ) where
     F: std::future::Future<Output = C> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
@@ -157,12 +157,8 @@ async fn listen_queue<R, C, F>(
         let (id, request) = q.receive().await.unwrap();
         tracing::trace!("got request: ({},{:?})", id, request);
 
-        let qc = Arc::clone(&q);
-        ex.spawn(async move {
-            let comp = handler(ctx, request).await;
-            notify(&qc, id, comp).await;
-        })
-        .detach();
+        let comp = handler(ctx, request).await;
+        notify(&q, id, comp).await;
     }
 }
 
