@@ -39,6 +39,7 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
+
     "src/ports/lwext4-rs",
 
 
@@ -116,3 +117,9 @@ hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", 
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
+hwlocality = { path = "src/ports/hwlocality" }
+hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys", features = [
+    "vendored",
+] }
+errno = { path = "src/ports/rust-errno" }
+libc = { path = "src/ports/libc" }
