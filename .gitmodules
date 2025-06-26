@@ -21,3 +21,19 @@
 [submodule "src/ports/lwext4-rs/lwext4"]
 	path = src/ports/lwext4-rs/lwext4
 	url = ../../twizzler-operating-system/lwext4.git
+[submodule "src/ports/hwlocality"]
+	path = src/ports/hwlocality
+	url = ../../twizzler-operating-system/hwlocality.git
+	branch = twizzler
+[submodule "src/ports/rust-errno"]
+	path = src/ports/rust-errno
+	url = ../../twizzler-operating-system/rust-errno.git
+	branch = twizzler
+[submodule "src/ports/hwloc"]
+	path = src/ports/hwloc
+	url = ../../twizzler-operating-system/hwloc.git
+	branch = twizzler
+[submodule "src/ports/libc"]
+	path = src/ports/libc
+	url = ../../twizzler-operating-system/libc.git
+	branch = twizzler-2025-04
