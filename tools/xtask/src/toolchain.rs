@@ -224,10 +224,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
     install_build_tools(&cli)?;
     let current_dir = std::env::current_dir().unwrap();
-    std::env::set_var(
-        "PYTHONPATH",
-        current_dir.join("toolchain/install/python"),
-    );
+    std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
 
     let _ = std::fs::remove_file("toolchain/src/rust/config.toml");
     generate_config_toml()?;
@@ -586,10 +583,7 @@ pub(crate) fn init_for_build(abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var("RUSTDOC", &get_rustdoc_path()?);
     std::env::set_var("CARGO_CACHE_RUSTC_INFO", "0");
     let current_dir = std::env::current_dir().unwrap();
-    std::env::set_var(
-        "PYTHONPATH",
-        current_dir.join("toolchain/install/python"),
-    );
+    std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
 
     let compiler_rt_path = "toolchain/src/rust/src/llvm-project/compiler-rt";
     std::env::set_var(
