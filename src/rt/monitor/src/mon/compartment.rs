@@ -413,13 +413,26 @@ impl super::Monitor {
             .map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("load {}: env: {:?}", compname, env);
 
+        let extras = env
+            .iter()
+            .filter_map(|item| {
+                let item = item.to_str().ok()?;
+                if item.starts_with("LD_PRELOAD=") {
+                    Some(UnloadedLibrary::new(item.trim_start_matches("LD_PRELOAD=")))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        tracing::debug!("ld preload extras: {:?}", extras);
+
         let mondebug = env
             .iter()
             .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
             .is_some();
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-            loader::RunCompLoader::new(*dynlink, compname, root, new_comp_flags, mondebug)
+            loader::RunCompLoader::new(*dynlink, compname, root, &extras, new_comp_flags, mondebug)
         }
         .map_err(|_| GenericError::Internal)?;
 
