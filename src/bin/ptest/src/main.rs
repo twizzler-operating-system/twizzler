@@ -41,8 +41,8 @@ impl Display for Foo {
             self,
             &self.local_data,
             &self.data.as_ptr().raw(),
-        )
-        //write!(f, "{}", &*self.data.resolve())
+        )?;
+        write!(f, "{}", &*self.data.resolve())
     }
 }
 
