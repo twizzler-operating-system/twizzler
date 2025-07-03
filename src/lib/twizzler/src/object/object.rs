@@ -1,9 +1,6 @@
 use std::marker::PhantomData;
 
-use twizzler_abi::{
-    object::{ObjID, MAX_SIZE},
-    syscall::{sys_map_ctrl, MapControlCmd},
-};
+use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{
     object::{MapFlags, ObjectHandle},
     Result,
@@ -69,7 +66,11 @@ impl<Base> Object<Base> {
     /// ```
     pub fn with_tx<R>(&mut self, f: impl FnOnce(&mut TxObject<Base>) -> Result<R>) -> Result<R> {
         let mut tx = self.as_tx()?;
-        f(&mut tx)
+        let r = f(&mut tx)?;
+        let _ = self
+            .update()
+            .inspect_err(|e| tracing::warn!("failed to update {} on with_tx: {}", self.id(), e));
+        Ok(r)
     }
 
     /// Create a new mutable object handle from this object.
@@ -147,7 +148,7 @@ impl<Base> Object<Base> {
     /// Update the underlying mapping of the object. This invalidates all references to
     /// the object (hence why it takes &mut self).
     pub fn update(&mut self) -> Result<()> {
-        sys_map_ctrl(self.handle.start(), MAX_SIZE, MapControlCmd::Update, 0)
+        twizzler_rt_abi::object::twz_rt_update_handle(&mut self.handle)
     }
 }
 

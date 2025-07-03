@@ -41,8 +41,8 @@ impl Display for Foo {
             self,
             &self.local_data,
             &self.data.as_ptr().raw(),
-        )
-        //write!(f, "{}", &*self.data.resolve())
+        )?;
+        write!(f, "{}", &*self.data.resolve())
     }
 }
 
@@ -85,6 +85,7 @@ enum SubCommand {
     Push,
     Append,
     Read,
+    Hw,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
@@ -172,6 +173,8 @@ fn do_read<T: Debug + Invariant + Display>(vo: VecObject<T, VecObjectAlloc>) {
     }
 }
 
+#[link(name = "c")]
+unsafe extern "C" {}
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::FmtSubscriber::builder()
@@ -184,6 +187,12 @@ fn main() {
 
     let mut nh = naming::dynamic_naming_factory().unwrap();
     match cli.sub {
+        SubCommand::Hw => {
+            let top = hwlocality::topology::Topology::new().unwrap();
+            println!("{:#?}", top);
+            let cpus = top.complete_cpuset();
+            println!("==> {:?}", cpus);
+        }
         SubCommand::New => match cli.ty {
             VecTy::U32 => {
                 let _ = nh.remove("/data/ptest-obj-u32");
