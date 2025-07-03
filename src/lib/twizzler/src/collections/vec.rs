@@ -269,7 +269,7 @@ impl<T: Invariant, Alloc: Allocator> Vec<T, Alloc> {
 
     #[inline]
     pub unsafe fn as_mut_slice(&mut self) -> RefSliceMut<'_, T> {
-        let r = unsafe { self.inner.start.resolve().into_mut() };
+        let r = unsafe { self.inner.start.resolve_mut() };
         let slice = unsafe { RefSliceMut::from_ref(r, self.inner.len) };
         slice
     }
@@ -486,12 +486,11 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
         self.do_push(item)
     }
 
-    fn push_ctor<F>(&mut self, ctor: F) -> Result<()>
+    pub fn push_ctor<F>(&mut self, ctor: F) -> Result<()>
     where
         F: FnOnce(RefMut<MaybeUninit<T>>) -> Result<RefMut<T>>,
     {
         let mut r = self.get_slice_grow()?;
-        tracing::info!("run push ctor");
         let _val = ctor(r.as_mut())?;
         Ok(())
     }

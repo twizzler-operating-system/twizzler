@@ -107,5 +107,9 @@ mod tests {
             .unwrap();
         let base = obj.base();
         assert_eq!(*base.x.resolve(), 3);
+        // Do this multiple times to check that the cache works as well.
+        assert_eq!(*base.x.resolve(), 3);
+        assert_eq!(*base.x.resolve(), 3);
+        assert_eq!(*base.x.resolve(), 3);
     }
 }
