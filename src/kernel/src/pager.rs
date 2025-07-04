@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use inflight::InflightManager;
 use request::ReqKind;
 use twizzler_abi::{
-    object::ObjID,
+    object::{ObjID, MAX_SIZE},
     pager::PhysRange,
     syscall::{ObjectCreate, SyncInfo},
 };
@@ -144,6 +144,29 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
     if !obj.use_pager() {
         return;
     }
+
+    let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
+    let needed_additional =
+        DEFAULT_PAGER_OUTSTANDING_FRAMES.saturating_sub(avail_pager_mem.saturating_sub(len));
+    let wait_for_additional =
+        avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
+    let low_mem = crate::memory::tracker::is_low_mem();
+
+    log::debug!(
+        "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
+        obj.id(),
+        start.num(),
+        len,
+        avail_pager_mem,
+        needed_additional,
+        wait_for_additional,
+        low_mem,
+    );
+
+    if needed_additional > 0 && !low_mem {
+        provide_pager_memory(needed_additional, wait_for_additional);
+    }
+
     for i in 0..len {
         let page = start.offset(i);
         get_page_and_wait(obj.id(), page);
@@ -151,7 +174,12 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
 }
 
 pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
-    ensure_in_core(obj, pn, 1);
+    let max = PageNumber::from_offset(MAX_SIZE);
+    if pn >= max {
+        log::warn!("invalid page number: {:?}", pn);
+    }
+    let count_to_end = max - pn;
+    ensure_in_core(obj, pn, count_to_end.min(16));
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -174,8 +202,9 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
-            count += PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
-            crate::memory::tracker::track_page_pager(frame);
+            let thiscount = PHYS_LEVEL_LAYOUTS[level].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            count += thiscount;
+            crate::memory::tracker::track_page_pager(thiscount);
             ranges.push(PhysRange::new(
                 frame.start_address().raw(),
                 frame.start_address().offset(frame.size()).unwrap().raw(),
@@ -186,7 +215,7 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
                 PHYS_LEVEL_LAYOUTS[0],
             ) {
                 count += 1;
-                crate::memory::tracker::track_page_pager(frame);
+                crate::memory::tracker::track_page_pager(1);
                 ranges.push(PhysRange::new(
                     frame.start_address().raw(),
                     frame.start_address().offset(frame.size()).unwrap().raw(),
@@ -204,7 +233,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     }
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
-    logln!(
+    log::trace!(
         "allocated {} ranges for pager (min_frames = {}, total = {} KB)",
         ranges.len(),
         min_frames,

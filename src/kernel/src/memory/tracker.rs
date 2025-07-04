@@ -193,14 +193,12 @@ impl MemoryTracker {
         self.reclaimed.fetch_add(count, Ordering::SeqCst);
     }
 
-    fn track_frame_pager(&self, frame: FrameRef) {
-        self.pager_outstanding
-            .fetch_add(frame.size() / FRAME_SIZE, Ordering::SeqCst);
+    fn track_frame_pager(&self, count: usize) {
+        self.pager_outstanding.fetch_add(count, Ordering::SeqCst);
     }
 
-    fn untrack_frame_pager(&self, frame: FrameRef) {
-        self.pager_outstanding
-            .fetch_sub(frame.size() / FRAME_SIZE, Ordering::SeqCst);
+    fn untrack_frame_pager(&self, count: usize) {
+        self.pager_outstanding.fetch_sub(count, Ordering::SeqCst);
     }
 
     fn pager_outstanding(&self) -> usize {
@@ -286,19 +284,19 @@ pub fn free_frame(frame: FrameRef) {
 }
 
 /// Track a page as owned by the pager.
-pub fn track_page_pager(frame: FrameRef) {
+pub fn track_page_pager(count: usize) {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .track_frame_pager(frame)
+        .track_frame_pager(count)
 }
 
 /// Track a page as owned by the pager.
-pub fn untrack_page_pager(frame: FrameRef) {
+pub fn untrack_page_pager(count: usize) {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .untrack_frame_pager(frame)
+        .untrack_frame_pager(count)
 }
 
 /// Get outstanding pager pages
@@ -307,6 +305,14 @@ pub fn get_outstanding_pager_pages() -> usize {
         .poll()
         .expect("page tracker not initialized")
         .pager_outstanding()
+}
+
+/// Check if the system is low on memory
+pub fn is_low_mem() -> bool {
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .should_reclaim()
 }
 
 pub fn get_waiting_threads() -> usize {

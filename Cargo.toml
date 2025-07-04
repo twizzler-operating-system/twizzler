@@ -121,9 +121,7 @@ ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", b
 memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 hwlocality = { path = "src/ports/hwlocality" }
-hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys", features = [
-    "vendored",
-] }
+hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
 

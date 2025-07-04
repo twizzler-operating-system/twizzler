@@ -27,6 +27,7 @@ use crate::{
     disk::DiskPageRequest,
     handle::PagerClient,
     helpers::{page_in, page_out_many, PAGE},
+    stats::RecentStats,
     PagerContext,
 };
 
@@ -89,7 +90,7 @@ impl PerObject {
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
-    ) -> CompletionToKernel {
+    ) -> (usize, CompletionToKernel) {
         let pages = {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
@@ -131,40 +132,50 @@ impl PerObject {
                 )
             })
             .collect_vec();
+        let count = match page_out_many(ctx, self.id, reqs).await {
+            Err(e) => {
+                let mut inner = self.inner.1.lock().await;
+                inner.syncing = false;
+                self.inner.0.notify_all();
+                return (
+                    0,
+                    CompletionToKernel::new(
+                        KernelCompletionData::Error(e.into()),
+                        KernelCompletionFlags::DONE,
+                    ),
+                );
+            }
+            Ok(count) => count,
+        };
 
-        if let Err(e) = page_out_many(ctx, self.id, reqs).await {
-            let mut inner = self.inner.1.lock().await;
-            inner.syncing = false;
-            self.inner.0.notify_all();
-            return CompletionToKernel::new(
-                KernelCompletionData::Error(e.into()),
-                KernelCompletionFlags::DONE,
-            );
-        }
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_all();
 
-        CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE)
+        (
+            count,
+            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
+        )
     }
 
     pub async fn sync_region(
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
-    ) -> CompletionToKernel {
+    ) -> (usize, CompletionToKernel) {
         tracing::debug!("push pending sync: {:?}", info);
         if info.flags.contains(ObjectEvictFlags::FENCE) {
             self.do_sync_region(ctx, info).await
         } else {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
-            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
+            (
+                0,
+                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty()),
+            )
         }
     }
-}
 
-impl PerObject {
     pub fn new(id: ObjID) -> Self {
         Self {
             id,
@@ -205,6 +216,16 @@ impl PagerData {
         drop(inner);
         Err(MemoryWaiter::new(pos, self.inner.clone()))
     }
+
+    pub fn print_stats(&self) {
+        let inner = self.inner.lock().unwrap();
+        inner.print_stats();
+    }
+
+    pub fn reset_stats(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.reset_stats();
+    }
 }
 
 pub struct PagerDataInner {
@@ -212,6 +233,7 @@ pub struct PagerDataInner {
     waiters: StableVec<Option<Waker>>,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
+    pub recent_stats: RecentStats,
 }
 
 pub struct MemoryWaiter {
@@ -308,6 +330,10 @@ impl Memory {
         }
         None
     }
+
+    pub fn available_memory(&self) -> usize {
+        self.regions.iter().map(|r| r.avail()).sum()
+    }
 }
 
 impl PagerDataInner {
@@ -320,6 +346,7 @@ impl PagerDataInner {
             memory: Memory::default(),
             handles: HandleMgr::new(None),
             waiters: StableVec::new(),
+            recent_stats: RecentStats::new(),
         }
     }
 
@@ -331,6 +358,33 @@ impl PagerDataInner {
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
+    }
+
+    pub fn print_stats(&self) {
+        let dt = self.recent_stats.dt();
+        if self.recent_stats.had_activity() {
+            tracing::info!(
+                "PAGER STATS: Available memory: {} (dt = {} seconds)",
+                self.memory.available_memory(),
+                dt.as_secs_f32(),
+            );
+        }
+        for (id, stats) in self.recent_stats.recorded_stats() {
+            let read = crate::stats::pages_to_kbytes_per_sec(stats.pages_read, dt);
+            let write = crate::stats::pages_to_kbytes_per_sec(stats.pages_written, dt);
+            tracing::info!(
+                "{}: read {:3.3} KB/s ({:8.8} pages), write {:3.3} KB/s ({:8.8} pages)",
+                id,
+                read,
+                stats.pages_read,
+                write,
+                stats.pages_written
+            );
+        }
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.recent_stats.reset();
     }
 }
 
@@ -375,7 +429,7 @@ impl PagerData {
             let page = match self.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
-                    tracing::debug!("out of memory -- task waiting");
+                    tracing::warn!("out of memory -- task waiting");
                     mw.await
                 }
             };
@@ -384,6 +438,14 @@ impl PagerData {
         };
         page_in(ctx, id, obj_range, phys_range).await?;
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .recent_stats
+                .read_pages(id, obj_range.len() / PAGE as usize);
+        }
+
         return Ok(phys_range);
     }
 
@@ -419,7 +481,12 @@ impl PagerData {
             inner.get_per_object(info.obj_id).clone()
         };
 
-        po.sync_region(ctx, info).await
+        let (count, compl) = po.sync_region(ctx, info).await;
+        if count > 0 {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recent_stats.write_pages(info.obj_id, count);
+        }
+        compl
     }
 
     pub fn with_handle<R>(

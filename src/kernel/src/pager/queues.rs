@@ -122,12 +122,22 @@ pub(super) fn pager_request_handler_main() {
 }
 
 fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+    let pcount = phys_range.pages().count();
+    log::trace!(
+        "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
+        phys_range,
+        pcount,
+        crate::memory::tracker::get_outstanding_pager_pages()
+    );
+    crate::memory::tracker::untrack_page_pager(pcount);
+
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
 
         for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
+
             // TODO: will need to supply allocator
             let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
             let page = PageRef::new(Arc::new(page), 0, 1);
@@ -139,6 +149,7 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             .lock()
             .pages_ready(objid, obj_range.pages().map(|x| x as usize));
     } else {
+        // TODO
         logln!("kernel: pager: got unknown object ID");
     }
 }

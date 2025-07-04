@@ -1,10 +1,13 @@
 #![feature(naked_functions)]
 #![feature(io_error_more)]
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use async_executor::Executor;
-use async_io::block_on;
+use async_io::{block_on, Timer};
 use disk::{Disk, DiskPageRequest};
 use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -27,6 +30,7 @@ mod helpers;
 mod nvme;
 mod physrw;
 mod request_handle;
+mod stats;
 
 pub use handle::{pager_close_handle, pager_open_handle};
 
@@ -237,6 +241,17 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         let _ = report_ready(&ctx, ex).await.unwrap();
     }));
     tracing::info!("pager ready");
+
+    let _ = ex
+        .spawn(async {
+            let pager = PAGER_CTX.get().unwrap();
+            loop {
+                pager.data.print_stats();
+                pager.data.reset_stats();
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        })
+        .detach();
 
     let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
         tracing::info!("creating new naming object");
