@@ -10,3 +10,7 @@ twizzler-runtime = { path = "../../rt" }
 naming = { path = "../../lib/naming" }
 clap = { version = "*", features = ["derive"] }
 miette = "*"
+tracing = "*"
+tracing-subscriber = "*"
+hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
+libc = "*"

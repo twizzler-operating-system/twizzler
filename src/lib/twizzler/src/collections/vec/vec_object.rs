@@ -284,11 +284,44 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
             Ok(())
         })
     }
+
+    pub fn starts_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.as_slice().as_slice().starts_with(needle)
+    }
+
+    pub fn ends_with(&self, needle: &[T]) -> bool
+    where
+        T: PartialEq,
+    {
+        self.as_slice().as_slice().ends_with(needle)
+    }
+
+    pub fn contains(&self, x: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.as_slice().as_slice().contains(x)
+    }
+
+    pub fn with_slice<R>(&self, f: impl FnOnce(&[T]) -> R) -> R {
+        f(self.as_slice().as_slice())
+    }
+
+    pub fn with_slice_mut<R>(&mut self, f: impl FnOnce(&mut [T]) -> Result<R>) -> Result<R> {
+        self.with_mut_slice(.., f)
+    }
 }
 
 impl<T: Invariant + StoreCopy, A: Allocator> VecObject<T, A> {
     pub fn push(&mut self, val: T) -> Result<()> {
-        self.obj.with_tx(|tx| tx.base_mut().push(val))
+        self.obj.with_tx(|tx| {
+            tx.base_mut().push(val)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     pub fn append(&mut self, vals: impl IntoIterator<Item = T>) -> Result<()> {

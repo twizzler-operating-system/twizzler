@@ -1,11 +1,8 @@
-use std::{alloc::Layout, mem::MaybeUninit};
-
 use twizzler_rt_abi::object::ObjectHandle;
 
 use super::{Allocator, OwnedGlobalPtr};
 use crate::{
     marker::Invariant,
-    object::{Object, TxObject},
     ptr::{GlobalPtr, InvPtr, Ref},
 };
 
@@ -20,15 +17,8 @@ impl<T: Invariant, Alloc: Allocator> InvBox<T, Alloc> {
     }
 
     pub fn new_in(tx: impl AsRef<ObjectHandle>, val: T, alloc: Alloc) -> crate::Result<Self> {
-        let layout = Layout::new::<T>();
-        let p = alloc.alloc(layout)?;
-        let p = p.cast::<MaybeUninit<T>>();
-        let p = unsafe { p.resolve().into_tx() }?;
-        let mut txo =
-            TxObject::new(unsafe { Object::<()>::from_handle_unchecked(p.handle().clone()) })?;
-        let p = p.write(val)?;
-        txo.commit()?;
-        let ogp = unsafe { OwnedGlobalPtr::from_global(p.global(), alloc) };
+        let p = alloc.alloc_with(|r| Ok(r.write(val)))?;
+        let ogp = unsafe { OwnedGlobalPtr::from_global(p.cast(), alloc) };
         Self::from_in(tx, ogp)
     }
 
@@ -79,7 +69,7 @@ mod tests {
     fn box_simple() {
         let arena = ArenaObject::new(ObjectBuilder::default()).unwrap();
         let alloc = arena.allocator();
-        let tx = arena.into_tx().unwrap();
+        let mut tx = arena.into_tx().unwrap();
         let foo = tx
             .alloc(Foo {
                 x: InvBox::new_in(&tx, 3, alloc).unwrap(),
@@ -116,6 +106,10 @@ mod tests {
             })
             .unwrap();
         let base = obj.base();
+        assert_eq!(*base.x.resolve(), 3);
+        // Do this multiple times to check that the cache works as well.
+        assert_eq!(*base.x.resolve(), 3);
+        assert_eq!(*base.x.resolve(), 3);
         assert_eq!(*base.x.resolve(), 3);
     }
 }

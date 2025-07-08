@@ -1,8 +1,9 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
 use naming::GetFlags;
+use tracing::Level;
 use twizzler::{
     Invariant,
     alloc::{
@@ -29,6 +30,19 @@ impl Debug for Foo {
             .field("data (ptr)", &self.data.global())
             .field("data (val)", &*self.data.resolve())
             .finish()
+    }
+}
+
+impl Display for Foo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Foo ({:p}): local {}, ptr: {:x} :: ",
+            self,
+            &self.local_data,
+            &self.data.as_ptr().raw(),
+        )?;
+        write!(f, "{}", &*self.data.resolve())
     }
 }
 
@@ -71,10 +85,11 @@ enum SubCommand {
     Push,
     Append,
     Read,
+    Hw,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
-    let mut nh = naming::static_naming_factory().unwrap();
+    let mut nh = naming::dynamic_naming_factory().unwrap();
     let name = format!("/data/ptest-arena");
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
         println!("reopened-arena: {:?}", node.id);
@@ -91,7 +106,7 @@ fn open_or_create_arena() -> Result<ArenaObject> {
 fn open_or_create_vector_object<T: Debug + Invariant>(
     name: &str,
 ) -> Result<VecObject<T, VecObjectAlloc>> {
-    let mut nh = naming::static_naming_factory().unwrap();
+    let mut nh = naming::dynamic_naming_factory().unwrap();
     let name = format!("/data/ptest-obj-{}", name);
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
         println!("reopened: {:?}", node.id);
@@ -129,12 +144,14 @@ fn do_push_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
 }
 
 fn do_append_foo(mut vo: VecObject<Foo, VecObjectAlloc>, arena: ArenaObject) {
-    for i in 0..100 {
+    for i in 0..8 {
+        tracing::info!("PUSH {}", i);
         vo.push_ctor(|r| {
             let foo = Foo::new_in(&r, i, arena.allocator())?;
             Ok(r.write(foo))
         })
         .unwrap();
+        tracing::info!("DONE: {}", i);
     }
 }
 
@@ -150,18 +167,32 @@ fn do_append(vo: VecObject<u32, VecObjectAlloc>) {
     }
 }
 
-fn do_read<T: Debug + Invariant>(vo: VecObject<T, VecObjectAlloc>) {
+fn do_read<T: Debug + Invariant + Display>(vo: VecObject<T, VecObjectAlloc>) {
     for i in vo.iter().enumerate() {
-        println!("entry {}: {:?}", i.0, i.1);
+        println!("entry {}: {}", i.0, i.1);
     }
 }
 
+#[link(name = "c")]
+unsafe extern "C" {}
 fn main() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::FmtSubscriber::builder()
+            .with_max_level(Level::INFO)
+            .finish(),
+    )
+    .unwrap();
     let cli = Cli::parse();
     println!("==> {:?}", cli);
 
-    let mut nh = naming::static_naming_factory().unwrap();
+    let mut nh = naming::dynamic_naming_factory().unwrap();
     match cli.sub {
+        SubCommand::Hw => {
+            let top = hwlocality::topology::Topology::new().unwrap();
+            println!("{:#?}", top);
+            let cpus = top.complete_cpuset();
+            println!("==> {:?}", cpus);
+        }
         SubCommand::New => match cli.ty {
             VecTy::U32 => {
                 let _ = nh.remove("/data/ptest-obj-u32");

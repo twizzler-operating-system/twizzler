@@ -11,7 +11,6 @@ use crate::{
 };
 use std::hash::{BuildHasher, Hash};
 use equivalent::Equivalent;
-/*
 
 pub(crate) fn make_hasher<Q, V, S>(hash_builder: &S) -> impl Fn(&(Q, V)) -> u64 + '_
 where
@@ -158,29 +157,4 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
         self.table.base().get(hash, equivalent_key(k))
     }
 }
-
-    pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let hash = make_hash::<K, S>(&self.hash_builder, &k);
-        match self.find_or_find_insert_slot(hash, &k) {
-            Ok(bucket) => Some(mem::replace(unsafe { &mut bucket.as_mut().1 }, v)),
-            Err(slot) => {
-                unsafe {
-                    self.table.insert_in_slot(hash, slot, (k, v));
-                }
-                None
-            }
-        }
-    }
-
-    pub fn get<Q>(&self, k: &Q) -> Option<&V>
-    where
-        Q: Hash + Equivalent<K> + ?Sized,
-    {
-        // Avoid `Option::map` because it bloats LLVM IR.
-        match self.get_inner(k) {
-            Some((_, v)) => Some(v),
-            None => None,
-        }
-    }
-*/
 

@@ -596,6 +596,15 @@ pub unsafe extern "C-unwind" fn twz_rt_release_handle(handle: *mut object_handle
 check_ffi_type!(twz_rt_release_handle, _);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_update_handle(handle: *mut object_handle) -> twz_error {
+    match OUR_RUNTIME.update_handle(handle) {
+        Ok(_) => 0,
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_update_handle, _);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_object_handle(ptr: *mut c_void) -> object_handle {
     OUR_RUNTIME
         .get_object_handle_from_ptr(ptr.cast())
@@ -617,22 +626,36 @@ pub unsafe extern "C-unwind" fn twz_rt_resolve_fot(
     handle: *mut object_handle,
     idx: u64,
     valid_len: usize,
+    map_flags: map_flags,
 ) -> map_result {
-    OUR_RUNTIME.resolve_fot(handle, idx, valid_len).into()
+    OUR_RUNTIME
+        .resolve_fot(
+            handle,
+            idx,
+            valid_len,
+            MapFlags::from_bits_truncate(map_flags),
+        )
+        .into()
 }
-check_ffi_type!(twz_rt_resolve_fot, _, _, _);
+check_ffi_type!(twz_rt_resolve_fot, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_resolve_fot_local(
     ptr: *mut c_void,
     idx: u64,
     valid_len: usize,
+    map_flags: map_flags,
 ) -> *mut c_void {
     OUR_RUNTIME
-        .resolve_fot_local(ptr.cast(), idx, valid_len)
+        .resolve_fot_local(
+            ptr.cast(),
+            idx,
+            valid_len,
+            MapFlags::from_bits_truncate(map_flags),
+        )
         .cast()
 }
-check_ffi_type!(twz_rt_resolve_fot_local, _, _, _);
+check_ffi_type!(twz_rt_resolve_fot_local, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
