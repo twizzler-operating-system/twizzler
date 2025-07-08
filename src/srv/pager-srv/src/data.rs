@@ -11,7 +11,7 @@ use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
-    object::Protections,
+    object::{Protections, MAX_SIZE},
     pager::{
         CompletionToKernel, KernelCompletionData, KernelCompletionFlags, ObjectEvictFlags,
         ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 use crate::{
     disk::DiskPageRequest,
     handle::PagerClient,
-    helpers::{page_in, page_out_many, PAGE},
+    helpers::{page_in, page_in_many, page_out_many, PAGE},
     stats::RecentStats,
     PagerContext,
 };
@@ -206,6 +206,10 @@ impl PagerData {
         self.inner.lock().unwrap().get_next_available_page()
     }
 
+    pub fn free_page(&self, page: u64) {
+        self.inner.lock().unwrap().free_page(page);
+    }
+
     pub fn try_alloc_page(&self) -> core::result::Result<u64, MemoryWaiter> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(page) = inner.get_next_available_page() {
@@ -291,6 +295,7 @@ impl Region {
             stack: Vec::new(),
         }
     }
+
     pub fn get_page(&mut self) -> Option<u64> {
         self.stack.pop().or_else(|| {
             if self.unused_start == self.end {
@@ -303,11 +308,21 @@ impl Region {
         })
     }
 
-    pub fn release_page(&mut self, page: u64) {
+    pub fn release_page(&mut self, page: u64) -> bool {
         if self.unused_start - PAGE == page {
             self.unused_start -= PAGE;
         } else {
             self.stack.push(page);
+        }
+        true
+    }
+
+    pub fn try_release_page(&mut self, page: u64) -> bool {
+        if self.unused_start - PAGE == page {
+            self.unused_start -= PAGE;
+            true
+        } else {
+            false
         }
     }
 }
@@ -329,6 +344,20 @@ impl Memory {
             }
         }
         None
+    }
+
+    pub fn free_page(&mut self, page: u64) {
+        for region in &mut self.regions {
+            if region.try_release_page(page) {
+                return;
+            }
+        }
+
+        for region in &mut self.regions {
+            if region.release_page(page) {
+                return;
+            }
+        }
     }
 
     pub fn available_memory(&self) -> usize {
@@ -356,13 +385,17 @@ impl PagerDataInner {
         self.memory.get_page()
     }
 
+    fn free_page(&mut self, page: u64) {
+        self.memory.free_page(page);
+    }
+
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 
     pub fn print_stats(&self) {
         let dt = self.recent_stats.dt();
-        if self.recent_stats.had_activity() {
+        if true || self.recent_stats.had_activity() {
             tracing::info!(
                 "PAGER STATS: Available memory: {} (dt = {} seconds)",
                 self.memory.available_memory(),
@@ -409,6 +442,89 @@ impl PagerData {
         }
     }
 
+    async fn do_fill_pages(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<PhysRange>> {
+        let mut pages = vec![];
+        for _ in 0..obj_range.pages().count() {
+            let page = match self.try_alloc_page() {
+                Ok(page) => page,
+                Err(mw) => {
+                    tracing::warn!("out of memory -- task waiting");
+                    mw.await
+                }
+            };
+            let phys_range = PhysRange::new(page, page + PAGE);
+            pages.push(phys_range);
+        }
+
+        let start_page = obj_range.pages().next().unwrap();
+        let nr_pages = pages.len();
+        assert_eq!(nr_pages, obj_range.pages().count());
+        let reqs = vec![PageRequest::new(
+            ctx.disk
+                .new_paging_request::<DiskPageRequest>(pages.iter().map(|pd| pd.start)),
+            start_page as i64,
+            nr_pages as u32,
+        )];
+        //tracing::info!("PIM: {:?}", reqs);
+        let _count = page_in_many(ctx, id, reqs).await?;
+        //tracing::info!("PIM: done: {}", count);
+        // TODO: free pages in incomplete requests.
+        Ok(pages)
+    }
+
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub async fn fill_mem_pages(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<(ObjectRange, PhysRange)>> {
+        if obj_range.start == (MAX_SIZE as u64) - PAGE {
+            return self.fill_mem_pages_legacy(ctx, id, obj_range).await;
+        }
+        //tracing::info!("fill: {} {:?} {}", id, obj_range, obj_range.pages().count());
+        let pages = self.do_fill_pages(ctx, id, obj_range).await?;
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recent_stats.read_pages(id, pages.len());
+        }
+        Ok(pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, phys_page)| {
+                let start = obj_range.start + (i as u64) * PAGE;
+                let range = ObjectRange::new(start, start + PAGE);
+                (range, phys_page)
+            })
+            .collect())
+    }
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub async fn fill_mem_pages_legacy(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<(ObjectRange, PhysRange)>> {
+        let mut r = Vec::new();
+        for i in 0..(obj_range.pages().count() as u64) {
+            let range = ObjectRange::new(
+                obj_range.start + i * PAGE,
+                obj_range.start + i * PAGE + PAGE,
+            );
+            r.push((range, self.fill_mem_page(ctx, id, range).await?));
+        }
+        Ok(r)
+    }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.

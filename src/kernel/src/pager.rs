@@ -64,12 +64,12 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
+pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), 1));
+    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len));
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req);
@@ -152,7 +152,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
         avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::debug!(
+    log::trace!(
         "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
         start.num(),
@@ -167,10 +167,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
-    for i in 0..len {
-        let page = start.offset(i);
-        get_page_and_wait(obj.id(), page);
-    }
+    get_pages_and_wait(obj.id(), start, len);
 }
 
 pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
@@ -179,7 +176,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
         log::warn!("invalid page number: {:?}", pn);
     }
     let count_to_end = max - pn;
-    ensure_in_core(obj, pn, count_to_end.min(16));
+    ensure_in_core(obj, pn, count_to_end.min(128));
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {

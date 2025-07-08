@@ -145,15 +145,16 @@ fn spawn_queues(
         .detach();
 }
 
-async fn listen_queue<R, C, F>(
+async fn listen_queue<R, C, F, I>(
     kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
     ctx: &'static PagerContext,
     handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
     _ex: &'static Executor<'static>,
 ) where
-    F: std::future::Future<Output = C> + Send + 'static,
+    F: std::future::Future<Output = I> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
+    I: IntoIterator<Item = C> + Send + Sync + 'static,
 {
     let q = Arc::new(kernel_rq);
     loop {
@@ -162,7 +163,9 @@ async fn listen_queue<R, C, F>(
         tracing::trace!("got request: ({},{:?})", id, request);
 
         let comp = handler(ctx, request).await;
-        notify(&q, id, comp).await;
+        for comp in comp {
+            notify(&q, id, comp).await;
+        }
     }
 }
 
@@ -242,16 +245,18 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     }));
     tracing::info!("pager ready");
 
-    let _ = ex
-        .spawn(async {
-            let pager = PAGER_CTX.get().unwrap();
-            loop {
-                pager.data.print_stats();
-                pager.data.reset_stats();
-                Timer::after(Duration::from_secs(1)).await;
-            }
-        })
-        .detach();
+    if true {
+        let _ = ex
+            .spawn(async {
+                let pager = PAGER_CTX.get().unwrap();
+                loop {
+                    pager.data.print_stats();
+                    pager.data.reset_stats();
+                    Timer::after(Duration::from_millis(1000)).await;
+                }
+            })
+            .detach();
+    }
 
     let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
         tracing::info!("creating new naming object");

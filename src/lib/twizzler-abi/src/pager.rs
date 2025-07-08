@@ -72,6 +72,14 @@ impl CompletionToKernel {
     pub fn flags(&self) -> KernelCompletionFlags {
         self.flags
     }
+
+    pub fn set_flags(&mut self, flags: KernelCompletionFlags) {
+        self.flags |= flags;
+    }
+
+    pub fn clear_flags(&mut self, flags: KernelCompletionFlags) {
+        self.flags &= !flags;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

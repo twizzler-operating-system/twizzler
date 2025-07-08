@@ -159,7 +159,6 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
 }
 
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
-    //logln!("sleep: {:?}, {:?}", ops, timeout);
     if let Some(ref timeout) = timeout {
         if ops.is_empty() {
             simple_timed_sleep(timeout);

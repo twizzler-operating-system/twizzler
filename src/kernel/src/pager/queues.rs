@@ -123,6 +123,7 @@ pub(super) fn pager_request_handler_main() {
 
 fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
     let pcount = phys_range.pages().count();
+    //log::info!("got : {} {:?} {:?}", objid, obj_range, phys_range);
     log::trace!(
         "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
         phys_range,

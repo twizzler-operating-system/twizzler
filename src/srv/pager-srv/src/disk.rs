@@ -93,7 +93,7 @@ impl PagingImp for DiskPageRequest {
         });
         let mut count = 0;
         for (dp, pp) in runs {
-            tracing::debug!("  seqread: {:?} => {:?}", dp, pp);
+            tracing::trace!("  seqread: {:?} => {:?}", dp, pp);
             let len = self.ctrl.sequential_read::<PAGE_SIZE>(dp[0], pp)?;
             assert_eq!(len, pp.len());
             count += len;

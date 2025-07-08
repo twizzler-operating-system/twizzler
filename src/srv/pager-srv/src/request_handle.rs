@@ -2,7 +2,7 @@ use blocking::unblock;
 use twizzler::object::{MetaFlags, MetaInfo, ObjID};
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
-    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange, RequestFromKernel,
+    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, RequestFromKernel,
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
@@ -11,12 +11,36 @@ use crate::PagerContext;
 async fn handle_page_data_request(
     ctx: &'static PagerContext,
     id: ObjID,
-    range: ObjectRange,
-) -> Result<PhysRange> {
-    ctx.data
-        .fill_mem_page(ctx, id, range)
+    req_range: ObjectRange,
+) -> Vec<CompletionToKernel> {
+    match ctx
+        .data
+        .fill_mem_pages(ctx, id, req_range)
         .await
         .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
+    {
+        Ok(v) => {
+            let mut r = v
+                .into_iter()
+                .map(|x| {
+                    CompletionToKernel::new(
+                        KernelCompletionData::PageDataCompletion(id, x.0, x.1),
+                        KernelCompletionFlags::empty(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            if let Some(last) = r.last_mut() {
+                last.set_flags(KernelCompletionFlags::DONE);
+            }
+            //tracing::info!("page in done; sending response: {:?}", r);
+            r
+        }
+        Err(e) => vec![CompletionToKernel::new(
+            KernelCompletionData::Error(e.into()),
+            KernelCompletionFlags::DONE,
+        )],
+    }
 }
 
 async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
@@ -39,17 +63,12 @@ async fn handle_sync_region(
 pub async fn handle_kernel_request(
     ctx: &'static PagerContext,
     request: RequestFromKernel,
-) -> CompletionToKernel {
+) -> Vec<CompletionToKernel> {
     tracing::trace!("handling kernel request {:?}", request);
 
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range) => {
-            match handle_page_data_request(ctx, obj_id, range).await {
-                Ok(phys_range) => {
-                    KernelCompletionData::PageDataCompletion(obj_id, range, phys_range)
-                }
-                Err(e) => KernelCompletionData::Error(e.into()),
-            }
+            return handle_page_data_request(ctx, obj_id, range).await;
         }
         KernelCommand::ObjectInfoReq(obj_id) => match object_info_req(ctx, obj_id).await {
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
@@ -114,10 +133,10 @@ pub async fn handle_kernel_request(
             KernelCompletionData::Okay
         }
         KernelCommand::ObjectEvict(info) => {
-            return handle_sync_region(ctx, info).await;
+            return vec![handle_sync_region(ctx, info).await];
         }
     };
 
     tracing::debug!("done; sending response: {:?}", data);
-    CompletionToKernel::new(data, KernelCompletionFlags::DONE)
+    vec![CompletionToKernel::new(data, KernelCompletionFlags::DONE)]
 }
