@@ -3,7 +3,8 @@
 
 extern "C" {
 int testcxx() {
-    std::cout << "Hello, World!" << std::endl;
+    auto x = new int(3);
+    std::cout << "Hello, World! " << x << ", " << *x << std::endl;
     return 0;
 }
 }

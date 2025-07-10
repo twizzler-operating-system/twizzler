@@ -1,8 +1,11 @@
 fn main() {
     println!("Hello, world!");
+    unsafe {
+        testcxx();
+    }
 }
 
-#[link("testcxx")]
-extern "C" {
+#[link(name = "cxxtest")]
+unsafe extern "C" {
     fn testcxx() -> i32;
 }
