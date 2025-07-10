@@ -145,6 +145,10 @@ impl PageNumber {
     pub fn offset(&self, off: usize) -> Self {
         Self(self.0 + off)
     }
+
+    pub fn byte_offset(&self, off: usize) -> Self {
+        Self(self.0 + off / Self::PAGE_SIZE)
+    }
 }
 
 impl From<usize> for PageNumber {

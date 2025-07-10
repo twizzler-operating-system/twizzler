@@ -176,7 +176,31 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
         log::warn!("invalid page number: {:?}", pn);
     }
     let count_to_end = max - pn;
-    ensure_in_core(obj, pn, count_to_end.min(128));
+    let count = count_to_end.min(128);
+
+    let tree = obj.lock_page_tree();
+    let mut range = tree.range(pn..pn.offset(count));
+    let first_present = range.next().map(|r| r.0);
+
+    let count = if let Some(first_present) = first_present {
+        if first_present.num() <= pn.num() {
+            1
+        } else {
+            log::info!(
+                "found partial in check for range {:?}: {:?}",
+                pn..pn.offset(count),
+                first_present
+            );
+            first_present.num().saturating_sub(pn.num())
+        }
+    } else {
+        count_to_end.min(128)
+    };
+    drop(tree);
+    if count == 0 {
+        return;
+    }
+    ensure_in_core(obj, pn, count);
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -230,7 +254,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     }
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
-    log::trace!(
+    log::info!(
         "allocated {} ranges for pager (min_frames = {}, total = {} KB)",
         ranges.len(),
         min_frames,

@@ -123,7 +123,7 @@ pub(super) fn pager_request_handler_main() {
 
 fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
     let pcount = phys_range.pages().count();
-    //log::info!("got : {} {:?} {:?}", objid, obj_range, phys_range);
+    log::trace!("got : {} {:?} {:?}", objid, obj_range, phys_range);
     log::trace!(
         "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
         phys_range,
@@ -131,6 +131,10 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
         crate::memory::tracker::get_outstanding_pager_pages()
     );
     crate::memory::tracker::untrack_page_pager(pcount);
+    if crate::memory::tracker::get_outstanding_pager_pages() < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
+    {
+        super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+    }
 
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
@@ -178,6 +182,7 @@ pub(super) fn pager_compl_handler_main() {
     let sender = SENDER.wait();
     loop {
         let completion = sender.1.recv_completion();
+        //log::info!("got: {:?}", completion);
         let Some(request) = sender.2.lock().get(&completion.0).copied() else {
             logln!("warn -- received completion for unknown request");
             continue;
@@ -218,7 +223,7 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
-    //log::debug!("submitting pager request: {:?}", item);
+    log::info!("submitting pager request: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     let old = sender.2.lock().insert(id, item);

@@ -5258,6 +5258,7 @@ dependencies = [
  "nvme",
  "object-store",
  "polling",
+ "rand 0.8.5",
  "secgate",
  "slab",
  "stable-vec",
@@ -7414,6 +7415,7 @@ dependencies = [
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
+ "twizzler-abi",
 ]
 
 [[package]]

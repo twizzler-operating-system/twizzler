@@ -5,7 +5,7 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
         ObjectCreate, ObjectCreateFlags, ObjectSource,
@@ -25,7 +25,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -266,6 +266,22 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             }
             crate::obj::scan_deleted();
         }
+        ObjectControlCmd::Preload => {
+            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
+                let start = PageNumber::base_page();
+                let end = start.byte_offset(MAX_SIZE - NULLPAGE_SIZE);
+                for x in (0..(MAX_SIZE / NULLPAGE_SIZE)).into_iter().step_by(512) {
+                    crate::pager::ensure_in_core(
+                        &obj,
+                        PageNumber::from_offset(x * NULLPAGE_SIZE),
+                        512,
+                    );
+                }
+            } else {
+                return (1, TwzError::INVALID_ARGUMENT.raw());
+            }
+        }
+
         _ => {}
     }
     (0, 0)

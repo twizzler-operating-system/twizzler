@@ -1,18 +1,87 @@
 use blocking::unblock;
-use twizzler::object::{MetaFlags, MetaInfo, ObjID};
+use twizzler::{
+    error::RawTwzError,
+    object::{MetaFlags, MetaInfo, ObjID},
+};
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
     ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, RequestFromKernel,
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
-use crate::PagerContext;
+use crate::{helpers::PAGE, PagerContext, EXECUTOR};
+
+async fn handle_page_data_request_task(
+    ctx: &'static PagerContext,
+    qid: u32,
+    id: ObjID,
+    req_range: ObjectRange,
+) {
+    let mut total = req_range.pages().count() as u64;
+    let mut count = 0;
+    while count < total {
+        tracing::debug!("reading {} page {} of {}", id, count, total);
+        let range = ObjectRange::new(req_range.start + count * PAGE, req_range.end);
+        let pages = match ctx
+            .data
+            .fill_mem_pages_partial(ctx, id, range)
+            .await
+            .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
+        {
+            Ok(pages) => pages,
+            Err(e) => {
+                let comp = CompletionToKernel::new(
+                    KernelCompletionData::Error(RawTwzError::new(e.raw())),
+                    KernelCompletionFlags::DONE,
+                );
+                ctx.notify_kernel(qid, comp).await;
+                return;
+            }
+        };
+        let thiscount = pages.len() as u64;
+        let mut comps = pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let start = req_range.start + (count + i as u64) * PAGE;
+                let range = ObjectRange::new(start, start + PAGE);
+                CompletionToKernel::new(
+                    KernelCompletionData::PageDataCompletion(id, range, x),
+                    KernelCompletionFlags::empty(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for comp in comps {
+            ctx.notify_kernel(qid, comp).await;
+        }
+        count += thiscount;
+    }
+    let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
+    ctx.notify_kernel(qid, done).await;
+}
 
 async fn handle_page_data_request(
     ctx: &'static PagerContext,
+    qid: u32,
     id: ObjID,
     req_range: ObjectRange,
 ) -> Vec<CompletionToKernel> {
+    tracing::debug!(
+        "{}: {:?} {} pages",
+        id,
+        req_range,
+        req_range.pages().count()
+    );
+    let _task = EXECUTOR
+        .get()
+        .unwrap()
+        .spawn(async move {
+            handle_page_data_request_task(ctx, qid, id, req_range).await;
+        })
+        .detach();
+    vec![]
+    /*
+
     match ctx
         .data
         .fill_mem_pages(ctx, id, req_range)
@@ -41,6 +110,7 @@ async fn handle_page_data_request(
             KernelCompletionFlags::DONE,
         )],
     }
+    */
 }
 
 async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
@@ -62,13 +132,14 @@ async fn handle_sync_region(
 
 pub async fn handle_kernel_request(
     ctx: &'static PagerContext,
+    qid: u32,
     request: RequestFromKernel,
 ) -> Vec<CompletionToKernel> {
     tracing::trace!("handling kernel request {:?}", request);
 
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range) => {
-            return handle_page_data_request(ctx, obj_id, range).await;
+            return handle_page_data_request(ctx, qid, obj_id, range).await;
         }
         KernelCommand::ObjectInfoReq(obj_id) => match object_info_req(ctx, obj_id).await {
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),

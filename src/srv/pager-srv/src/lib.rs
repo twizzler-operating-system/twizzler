@@ -1,5 +1,6 @@
 #![feature(naked_functions)]
 #![feature(io_error_more)]
+#![feature(test)]
 
 use std::{
     sync::{Arc, OnceLock},
@@ -42,7 +43,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
@@ -137,7 +138,7 @@ fn pager_init(
 
 fn spawn_queues(
     ctx: &'static PagerContext,
-    kernel_rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
+    kernel_rq: Arc<twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>>,
     ex: &'static Executor<'static>,
 ) {
     tracing::debug!("spawning queues...");
@@ -146,9 +147,9 @@ fn spawn_queues(
 }
 
 async fn listen_queue<R, C, F, I>(
-    kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
+    kernel_rq: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>,
     ctx: &'static PagerContext,
-    handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
+    handler: impl Fn(&'static PagerContext, u32, R) -> F + Copy + Send + Sync + 'static,
     _ex: &'static Executor<'static>,
 ) where
     F: std::future::Future<Output = I> + Send + 'static,
@@ -156,15 +157,14 @@ async fn listen_queue<R, C, F, I>(
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
     I: IntoIterator<Item = C> + Send + Sync + 'static,
 {
-    let q = Arc::new(kernel_rq);
     loop {
         tracing::trace!("queue receiving...");
-        let (id, request) = q.receive().await.unwrap();
+        let (id, request) = kernel_rq.receive().await.unwrap();
         tracing::trace!("got request: ({},{:?})", id, request);
 
-        let comp = handler(ctx, request).await;
+        let comp = handler(ctx, id, request).await;
         for comp in comp {
-            notify(&q, id, comp).await;
+            notify(&kernel_rq, id, comp).await;
         }
     }
 }
@@ -200,6 +200,8 @@ async fn report_ready(
 struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    kernel_notify:
+        Arc<twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>>,
     paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
     disk: Disk,
 }
@@ -219,6 +221,10 @@ impl PagerContext {
         })
         .await
     }
+
+    pub async fn notify_kernel(&'static self, id: u32, comp: CompletionToKernel) {
+        notify(&self.kernel_notify, id, comp).await;
+    }
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
@@ -231,13 +237,16 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let ext4_store = Ext4Store::<DiskPageRequest>::new(disk, "/").unwrap();
 
     let sq = Arc::new(sq);
+    let rq = Arc::new(rq);
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
+        kernel_notify: rq.clone(),
         paged_ostore: Box::new(ext4_store),
         disk: diskc,
     });
     let ctx = PAGER_CTX.get().unwrap();
+
     spawn_queues(ctx, rq, ex);
 
     block_on(ex.run(async move {
@@ -245,6 +254,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     }));
     tracing::info!("pager ready");
 
+    //disk::benches::bench_disk(ctx);
     if true {
         let _ = ex
             .spawn(async {

@@ -447,12 +447,21 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
+        partial: bool,
     ) -> Result<Vec<PhysRange>> {
         let mut pages = vec![];
         for _ in 0..obj_range.pages().count() {
             let page = match self.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
+                    if partial && !pages.is_empty() {
+                        tracing::warn!(
+                            "oom on partial -- reading {} / {} pages",
+                            pages.len(),
+                            obj_range.pages().count()
+                        );
+                        break;
+                    }
                     tracing::warn!("out of memory -- task waiting");
                     mw.await
                 }
@@ -463,7 +472,6 @@ impl PagerData {
 
         let start_page = obj_range.pages().next().unwrap();
         let nr_pages = pages.len();
-        assert_eq!(nr_pages, obj_range.pages().count());
         let reqs = vec![PageRequest::new(
             ctx.disk
                 .new_paging_request::<DiskPageRequest>(pages.iter().map(|pd| pd.start)),
@@ -474,6 +482,33 @@ impl PagerData {
         let _count = page_in_many(ctx, id, reqs).await?;
         //tracing::info!("PIM: done: {}", count);
         // TODO: free pages in incomplete requests.
+        Ok(pages)
+    }
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub async fn fill_mem_pages_partial(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<PhysRange>> {
+        if obj_range.start == (MAX_SIZE as u64) - PAGE {
+            return Ok(self
+                .fill_mem_pages_legacy(ctx, id, obj_range)
+                .await?
+                .into_iter()
+                .map(|p| p.1)
+                .collect());
+        }
+
+        let pages = self.do_fill_pages(ctx, id, obj_range, true).await?;
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recent_stats.read_pages(id, pages.len());
+        }
+
         Ok(pages)
     }
 
@@ -490,7 +525,7 @@ impl PagerData {
             return self.fill_mem_pages_legacy(ctx, id, obj_range).await;
         }
         //tracing::info!("fill: {} {:?} {}", id, obj_range, obj_range.pages().count());
-        let pages = self.do_fill_pages(ctx, id, obj_range).await?;
+        let pages = self.do_fill_pages(ctx, id, obj_range, false).await?;
 
         {
             let mut inner = self.inner.lock().unwrap();
@@ -516,6 +551,7 @@ impl PagerData {
         obj_range: ObjectRange,
     ) -> Result<Vec<(ObjectRange, PhysRange)>> {
         let mut r = Vec::new();
+        tracing::info!("FMPL");
         for i in 0..(obj_range.pages().count() as u64) {
             let range = ObjectRange::new(
                 obj_range.start + i * PAGE,
@@ -523,6 +559,7 @@ impl PagerData {
             );
             r.push((range, self.fill_mem_page(ctx, id, range).await?));
         }
+        tracing::info!("FMPL: done");
         Ok(r)
     }
     /// Allocate a memory page and associate it with an object and range.
