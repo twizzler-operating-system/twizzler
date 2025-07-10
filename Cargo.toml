@@ -51,10 +51,15 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest", "src/bin/debug",
+    "src/bin/ptest",
+    "src/bin/debug",
 ]
 
-exclude = ["toolchain/src/rust", "src/ports/candle-test/candle", "src/ports/candle-test/gemm"]
+exclude = [
+    "toolchain/src/rust",
+    "src/ports/candle-test/candle",
+    "src/ports/candle-test/gemm",
+]
 resolver = "2"
 
 [workspace.metadata]
@@ -116,6 +121,8 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #lock_api = { path = "src/ports/parking_lot/lock_api" }
 #blocking = { path = "src/ports/blocking" }
 
+
+candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }
@@ -129,9 +136,8 @@ hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
-
-
-candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
+rocksdb = { path = "src/ports/rust-rocksdb" }
+librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }

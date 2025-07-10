@@ -37,3 +37,6 @@
 	path = src/ports/libc
 	url = ../../twizzler-operating-system/libc.git
 	branch = twizzler-2025-04
+[submodule "src/ports/rust-rocksdb"]
+	path = src/ports/rust-rocksdb
+	url = ../../twizzler-operating-system/rust-rocksdb.git

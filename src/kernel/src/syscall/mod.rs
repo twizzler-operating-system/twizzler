@@ -91,8 +91,18 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
 }
 
 fn write_sysinfo(info: &mut SysInfo) {
-    // TODO
-    info.cpu_count = 4;
+    info.cpu_count = crate::processor::all_processors().iter().fold(0, |acc, p| {
+        acc + match &p {
+            Some(p) => {
+                if p.is_running() {
+                    1
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        }
+    });
     info.flags = 0;
     info.version = 1;
     info.page_size = 0x1000;
