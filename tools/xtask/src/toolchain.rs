@@ -489,17 +489,48 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             "toolchain/src/rust/build/{}/native/libcxx",
             target_triple.to_string()
         ));
-        let sysroot_include = sysroot_dir.join("include");
 
-        println!("copying c++ headers");
+        let cxxabi_install_dir = current_dir.join(&format!(
+            "toolchain/src/rust/build/{}/native/libcxxabi",
+            target_triple.to_string()
+        ));
+        let sysroot_include = sysroot_dir.join("include");
+        let sysroot_lib = sysroot_dir.join("lib");
+
+        println!("copying c++ headers and stdlib");
         let status = Command::new("cp")
             .arg("-R")
             .arg(cxx_install_dir.join("include/c++"))
-            .arg(sysroot_include)
+            .arg(&sysroot_include)
             .status()?;
         if !status.success() {
-            anyhow::bail!("failed to copy twizzler ABI headers");
+            anyhow::bail!("failed to copy C++ headers");
         }
+        let status = Command::new("cp")
+            .arg("-R")
+            .arg(cxxabi_install_dir.join("include/c++"))
+            .arg(&sysroot_include)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to copy C++ ABI headers");
+        }
+
+        std::fs::copy(
+            cxx_install_dir.join("lib/libc++.a"),
+            sysroot_lib.join("libc++.a"),
+        )?;
+        std::fs::copy(
+            cxx_install_dir.join("lib/libc++experimental.a"),
+            sysroot_lib.join("jibc++experimental.a"),
+        )?;
+        std::fs::copy(
+            cxxabi_install_dir.join("lib/libc++abi.a"),
+            sysroot_lib.join("libc++abi.a"),
+        )?;
+        std::fs::copy(
+            cxxabi_install_dir.join("lib/libc++abi.so"),
+            sysroot_lib.join("libc++abi.so"),
+        )?;
 
         let usr_link = sysroot_dir.join("usr");
         let _ = std::fs::remove_file(&usr_link);
@@ -570,9 +601,18 @@ pub fn set_cc(target: &Triple) {
         target.to_string(),
         sysroot_path.display(),
     );
+    let cxxflags = format!(
+        "-fno-stack-protector -cxx-isystem {} -stdlib++-isystem {} -isysroot {} -target {} --sysroot {} ",
+        sysroot_path.join("include/c++/v1").display(),
+        sysroot_path.join("include/c++/v1").display(),
+        sysroot_path.display(),
+        target.to_string(),
+        sysroot_path.display(),
+    );
     std::env::set_var("CFLAGS", &cflags);
     std::env::set_var("LDFLAGS", &cflags);
     std::env::set_var("CXXFLAGS", &cflags);
+    std::env::set_var("CXXFLAGS", &cxxflags);
 }
 
 pub fn clear_cc() {
