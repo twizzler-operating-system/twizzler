@@ -14,6 +14,32 @@ code to help boot Twizzler through their boot protocol.
 
 To run qemu through the build system, you'll need qemu installed.
 
+## WSL Setup
+
+WSL needs additional setup to enable KVM virtualization:
+
+1. **Enable nested virtualization** - Add to `.wslconfig` in your Windows user directory (you may have to create the file):
+   ```
+   [wsl2]
+   nestedVirtualization=true
+   ```
+
+2. **Add yourself to `kvm` group** - In WSL:
+   ```
+   sudo usermod -a -G kvm ${USER}
+   ```
+
+3. **Change default group of `/dev/kvm`** - Add to `/etc/wsl.conf` in WSL:
+   ```
+   [boot]
+   command = /bin/bash -c 'chown -v root:kvm /dev/kvm && chmod 660 /dev/kvm'
+   ```
+
+4. **Restart WSL**
+   ```
+   wsl --shutdown
+   ```
+
 ## Overview
 
 Installing the tools:
