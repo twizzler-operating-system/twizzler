@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[repr(C)]
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct InvPtr<T: Invariant> {
     value: u64,
     _pse: PhantomStoreEffect,
@@ -100,7 +100,7 @@ impl<T: Invariant> InvPtr<T> {
         Ok((ptr, Some(re)))
     }
 
-    pub const fn null() -> Self {
+    pub fn null() -> Self {
         Self::from_raw_parts(0, 0)
     }
 
@@ -123,22 +123,22 @@ impl<T: Invariant> InvPtr<T> {
     }
 
     #[inline(always)]
-    pub const fn fot_index(&self) -> u64 {
+    pub fn fot_index(&self) -> u64 {
         self.value >> 48
     }
 
     #[inline(always)]
-    pub const fn is_local(&self) -> bool {
+    pub fn is_local(&self) -> bool {
         self.fot_index() == 0
     }
 
     #[inline(always)]
-    pub const fn offset(&self) -> u64 {
+    pub fn offset(&self) -> u64 {
         self.value & ((1 << 48) - 1)
     }
 
     #[inline]
-    pub const fn raw(&self) -> u64 {
+    pub fn raw(&self) -> u64 {
         self.value
     }
 

@@ -292,9 +292,3 @@ mod tests {
         assert_eq!(arena1.object().id(), arena2.object().id());
     }
 }
-
-impl AsRef<ObjectHandle> for ArenaObject {
-    fn as_ref(&self) -> &ObjectHandle {
-        self.obj.handle()
-    }
-}
