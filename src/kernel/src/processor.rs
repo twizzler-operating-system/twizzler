@@ -232,7 +232,7 @@ impl Processor {
             .store(true, core::sync::atomic::Ordering::SeqCst);
     }
 
-    fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 

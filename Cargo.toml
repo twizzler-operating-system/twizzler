@@ -52,7 +52,7 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest",
+    "src/bin/ptest", "src/ports/hw-cxx",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -123,3 +123,5 @@ hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys", features = [
 ] }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
+rocksdb = { path = "src/ports/rust-rocksdb" }
+librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }

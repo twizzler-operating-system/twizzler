@@ -485,6 +485,22 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             anyhow::bail!("failed to install mlibc");
         }
 
+        let cxx_install_dir = current_dir.join(&format!(
+            "toolchain/src/rust/build/{}/native/libcxx",
+            target_triple.to_string()
+        ));
+        let sysroot_include = sysroot_dir.join("include");
+
+        println!("copying c++ headers");
+        let status = Command::new("cp")
+            .arg("-R")
+            .arg(cxx_install_dir.join("include/c++"))
+            .arg(sysroot_include)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to copy twizzler ABI headers");
+        }
+
         let usr_link = sysroot_dir.join("usr");
         let _ = std::fs::remove_file(&usr_link);
         std::os::unix::fs::symlink(".", usr_link)?;
