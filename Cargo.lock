@@ -3255,8 +3255,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
-=======
 name = "hwlocality"
 version = "1.0.0-alpha.8"
 dependencies = [
@@ -3287,7 +3285,6 @@ dependencies = [
 ]
 
 [[package]]
->>>>>>> a8dc391bae08818056941a594bf75afb5f25003b
 name = "hyper"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
