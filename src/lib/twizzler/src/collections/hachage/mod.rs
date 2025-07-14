@@ -5,3 +5,5 @@ mod scopeguard;
 mod control;
 
 pub mod map;
+
+pub use map::PersistentHashMap;
