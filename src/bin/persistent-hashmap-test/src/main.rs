@@ -27,19 +27,19 @@ fn main() {
     println!("fetching");
     let now = Instant::now();
     for i in 0..90000 {
-        let foo = phm.get_pair(&i).unwrap();
-        assert_eq!(foo.0, i);
-        assert_eq!(foo.0, foo.1);
+        let foo = phm.get(&i).unwrap();
+        assert_eq!(&i, foo);
         //println!("val: {} {}", foo.0, foo.1);
     }
     println!("fetching took {} milli seconds", now.elapsed().as_millis());
 
 
     println!("regular hashmap");
+    let mut hm = HashMap::<u64, u64>::with_capacity(1048576);
+
     println!("inserting");
     let now = Instant::now();
 
-    let mut hm = HashMap::<u64, u64>::with_capacity(1048576);
     for i in 0..90000 {
         //println!("inserting {}", i);
         hm.insert(i, i);
@@ -49,9 +49,8 @@ fn main() {
     println!("inserted!");
     let now = Instant::now();
     for i in 0..90000 {
-        let foo = hm.get_key_value(&i).unwrap();
-        assert_eq!(foo.0, &i);
-        assert_eq!(foo.0, foo.1);
+        let foo = hm.get(&i).unwrap();
+        assert_eq!(&i, foo);
         //println!("val: {} {}", foo.0, foo.1);
     }
     println!("fetching took {} milli seconds", now.elapsed().as_millis());
