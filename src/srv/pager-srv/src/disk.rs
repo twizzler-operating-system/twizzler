@@ -82,7 +82,7 @@ impl PagingImp for DiskPageRequest {
             .zip(self.phys_addrs())
             .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
             .collect::<Vec<_>>();
-        tracing::trace!("page-in: pairs: {:?}", pairs);
+        //tracing::trace!("page-in: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
         let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         let mut offset = 0;
@@ -95,11 +95,10 @@ impl PagingImp for DiskPageRequest {
         for (dp, mut pp) in runs {
             let mut offset = 0;
             while pp.len() > 0 {
-                tracing::trace!("  seqread: {:?} => {:?}", dp, pp);
+                //tracing::trace!("  seqread: {:?} => {:?}", dp, pp);
                 let len = self
                     .ctrl
                     .sequential_read::<PAGE_SIZE>(dp[0] + offset as u64, pp)?;
-                tracing::debug!("seqread got {} (out of {})", len, pp.len());
                 count += len;
                 offset += len;
                 pp = &pp[len..];
@@ -152,10 +151,8 @@ pub struct Disk {
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
         let ctrl = init_nvme().await.expect("failed to open nvme controller");
-        tracing::info!("getting len");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
-        tracing::info!("disk ready");
         Ok(Disk {
             ctrl,
             pos: 0,

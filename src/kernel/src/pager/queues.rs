@@ -223,7 +223,7 @@ pub(super) fn pager_compl_handler_main() {
 }
 
 pub fn submit_pager_request(item: RequestFromKernel) {
-    log::info!("submitting pager request: {:?}", item);
+    log::trace!("submitting pager request: {:?}", item);
     let sender = SENDER.wait();
     let id = sender.0.next_simple().value() as u32;
     let old = sender.2.lock().insert(id, item);

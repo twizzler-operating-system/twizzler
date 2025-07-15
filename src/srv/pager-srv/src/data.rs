@@ -551,7 +551,6 @@ impl PagerData {
         obj_range: ObjectRange,
     ) -> Result<Vec<(ObjectRange, PhysRange)>> {
         let mut r = Vec::new();
-        tracing::info!("FMPL");
         for i in 0..(obj_range.pages().count() as u64) {
             let range = ObjectRange::new(
                 obj_range.start + i * PAGE,
@@ -559,7 +558,6 @@ impl PagerData {
             );
             r.push((range, self.fill_mem_page(ctx, id, range).await?));
         }
-        tracing::info!("FMPL: done");
         Ok(r)
     }
     /// Allocate a memory page and associate it with an object and range.

@@ -304,7 +304,6 @@ impl Object {
         ) {
             if self.use_pager() {
                 drop(page_tree);
-                log::info!("ensure from : {:?}", core::panic::Location::caller());
                 crate::pager::get_object_page(self, page_number);
                 page_tree = self.lock_page_tree();
             } else {

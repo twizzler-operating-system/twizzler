@@ -197,7 +197,7 @@ fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize) {
         let more_a = inner.admin_requester.check_completions();
         let more_d = inner.data_requester.check_completions();
 
-        tracing::debug!("==> {} {} {}", more, more_a, more_d);
+        //tracing::trace!("==> {} {} {}", more, more_a, more_d);
         if !more && !more_a && !more_d {
             inner.device.repr().wait_for_interrupt(inum, None);
         }

@@ -28,6 +28,7 @@ mod data;
 mod disk;
 mod handle;
 mod helpers;
+mod memstore;
 mod nvme;
 mod physrw;
 mod request_handle;
@@ -43,7 +44,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
@@ -175,7 +176,7 @@ where
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
     q.complete(id, res).await.unwrap();
-    tracing::trace!("request {} complete", id);
+    //tracing::trace!("request {} complete", id);
 }
 
 async fn report_ready(

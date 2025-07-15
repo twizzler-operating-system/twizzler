@@ -66,8 +66,10 @@ pub async fn page_in(
                     ::core::mem::size_of::<T>(),
                 )
             }
-            let len =
-                blocking::unblock(move || ctx.paged_ostore.find_external(obj_id.raw())).await?;
+
+            let len = blocking::unblock(move || ctx.paged_ostore.find_external(obj_id.raw()))
+                .await
+                .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -125,9 +127,11 @@ pub async fn page_in_many(
         Ok(ctx
             .paged_ostore
             .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?)
+            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?)
     })
     .await
+    //.inspect(|_| twizzler_abi::klog_println!("PIM: done"))
+    //.inspect_err(|e| twizzler_abi::klog_println!("PIM: err: {}", e))
 }
 
 #[cfg(test)]
