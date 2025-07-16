@@ -11,6 +11,13 @@ use crate::{
     syscall::{BackingType, LifetimeType},
 };
 
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct PagerFlags : u32 {
+        const PREFETCH = 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
     cmd: KernelCommand,
@@ -27,7 +34,7 @@ impl RequestFromKernel {
 
     pub fn id(&self) -> Option<ObjID> {
         match self.cmd() {
-            KernelCommand::PageDataReq(objid, _) => Some(objid),
+            KernelCommand::PageDataReq(objid, _, _) => Some(objid),
             KernelCommand::ObjectInfoReq(objid) => Some(objid),
             KernelCommand::ObjectEvict(info) => Some(info.obj_id),
             KernelCommand::ObjectDel(objid) => Some(objid),
@@ -39,7 +46,7 @@ impl RequestFromKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
-    PageDataReq(ObjID, ObjectRange),
+    PageDataReq(ObjID, ObjectRange, PagerFlags),
     ObjectInfoReq(ObjID),
     ObjectEvict(ObjectEvictInfo),
     ObjectDel(ObjID),

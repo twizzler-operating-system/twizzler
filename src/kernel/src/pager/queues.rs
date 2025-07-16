@@ -180,8 +180,31 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
 
 pub(super) fn pager_compl_handler_main() {
     let sender = SENDER.wait();
+
+    let mut count = 0;
+    let mut elapsed = 0;
     loop {
+        //log::info!("waiting for completion");
+        let start = crate::clock::get_current_ticks();
         let completion = sender.1.recv_completion();
+        let end = crate::clock::get_current_ticks();
+        count += 1;
+        elapsed += end - start;
+
+        if end - start > 1000 {
+            log::info!("pager completion thread woke up after a long sleep");
+        }
+
+        if elapsed > 200 {
+            log::info!(
+                "pager completion thread processed {} entries over the last {}ms",
+                count,
+                elapsed
+            );
+            count = 0;
+            elapsed = 0;
+        }
+
         //log::info!("got: {:?}", completion);
         let Some(request) = sender.2.lock().get(&completion.0).copied() else {
             logln!("warn -- received completion for unknown request");
@@ -266,7 +289,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     }
     if SENDER.poll().is_some() && RECEIVER.poll().is_some() {
         // TODO: these should be higher?
-        start_new_kernel(Priority::USER, pager_compl_handler_entry, 0);
+        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry, 0);
         start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
         log::debug!("pager queues and handlers initialized");
     }

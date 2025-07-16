@@ -223,13 +223,22 @@ impl RawQueueHdr {
         flags: SubmissionFlags,
         wait: W,
     ) -> Result<u32, QueueError> {
-        let h = self.head.fetch_add(1, Ordering::SeqCst);
         let mut waiter = false;
         let mut attempts = 1000;
-        loop {
+        let h = loop {
+            let h = self.head.load(Ordering::SeqCst);
             let t = self.tail.load(Ordering::SeqCst);
             if !self.is_full(h, t) {
-                break;
+                if self
+                    .head
+                    .compare_exchange(h, h + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break h;
+                } else {
+                    core::hint::spin_loop();
+                    continue;
+                }
             }
 
             if flags.contains(SubmissionFlags::NON_BLOCK) {
@@ -251,7 +260,7 @@ impl RawQueueHdr {
             if self.is_full(h, t) {
                 wait(&self.tail, t);
             }
-        }
+        };
 
         if waiter {
             self.dec_submit_waiting();
@@ -281,13 +290,13 @@ impl RawQueueHdr {
         raw_buf: *const QueueEntry<T>,
     ) -> Result<u64, QueueError> {
         let mut attempts = 1000;
-        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
-        loop {
+        let t = loop {
+            let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
             let b = self.bell.load(Ordering::SeqCst);
             let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
 
             if !self.is_empty(b, t) && self.is_turn(t, item) {
-                break;
+                break t;
             }
 
             if flags.contains(ReceiveFlags::NON_BLOCK) {
@@ -305,7 +314,7 @@ impl RawQueueHdr {
             if self.is_empty(b, t) || !self.is_turn(t, item) {
                 wait(&self.bell, b);
             }
-        }
+        };
 
         if attempts == 0 {
             self.consumer_set_waiting(false);

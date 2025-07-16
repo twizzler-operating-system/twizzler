@@ -3,7 +3,8 @@ use alloc::{collections::btree_set::BTreeSet, sync::Arc, vec::Vec};
 use twizzler_abi::{
     object::ObjID,
     pager::{
-        KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectRange, PhysRange, RequestFromKernel,
+        KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectRange, PagerFlags, PhysRange,
+        RequestFromKernel,
     },
     syscall::{ObjectCreate, SyncInfo},
 };
@@ -48,7 +49,7 @@ impl Ord for SyncRegionInfo {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub enum ReqKind {
     Info(ObjID),
-    PageData(ObjID, usize, usize),
+    PageData(ObjID, usize, usize, PagerFlags),
     Sync(ObjID),
     SyncRegion(SyncRegionInfo),
     Del(ObjID),
@@ -61,8 +62,8 @@ impl ReqKind {
         ReqKind::Info(obj_id)
     }
 
-    pub fn new_page_data(obj_id: ObjID, start: usize, len: usize) -> Self {
-        ReqKind::PageData(obj_id, start, len)
+    pub fn new_page_data(obj_id: ObjID, start: usize, len: usize, flags: PagerFlags) -> Self {
+        ReqKind::PageData(obj_id, start, len, flags)
     }
 
     pub fn new_sync(obj_id: ObjID) -> Self {
@@ -184,7 +185,7 @@ impl ReqKind {
 
     pub fn pages(&self) -> impl Iterator<Item = usize> {
         match self {
-            ReqKind::PageData(_, start, len) => (*start..(*start + *len)).into_iter(),
+            ReqKind::PageData(_, start, len, _) => (*start..(*start + *len)).into_iter(),
             _ => (0..0).into_iter(),
         }
     }
@@ -206,7 +207,7 @@ impl ReqKind {
     pub fn objid(&self) -> Option<ObjID> {
         Some(match self {
             ReqKind::Info(obj_id) => *obj_id,
-            ReqKind::PageData(obj_id, _, _) => *obj_id,
+            ReqKind::PageData(obj_id, _, _, _) => *obj_id,
             ReqKind::Sync(obj_id) => *obj_id,
             ReqKind::SyncRegion(info) => info.id,
             ReqKind::Del(obj_id) => *obj_id,

@@ -4,7 +4,7 @@ use inflight::InflightManager;
 use request::ReqKind;
 use twizzler_abi::{
     object::{ObjID, MAX_SIZE},
-    pager::PhysRange,
+    pager::{PagerFlags, PhysRange},
     syscall::{ObjectCreate, SyncInfo},
 };
 
@@ -29,7 +29,7 @@ pub use queues::init_pager_queue;
 pub use request::Request;
 
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
-pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024;
+pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 8;
 
 static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
 
@@ -64,23 +64,25 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize) {
+pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len));
+    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len, flags));
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req);
     });
 
-    let mut mgr = inflight_mgr().lock();
-    let thread = current_thread_ref().unwrap();
-    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-        drop(mgr);
-        finish_blocking(guard);
-    };
+    if !flags.contains(PagerFlags::PREFETCH) {
+        let mut mgr = inflight_mgr().lock();
+        let thread = current_thread_ref().unwrap();
+        if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+            drop(mgr);
+            finish_blocking(guard);
+        };
+    }
 }
 
 fn cmd_object(req: ReqKind) {
@@ -140,7 +142,7 @@ pub fn sync_region(
     };
 }
 
-pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
+pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: PagerFlags) {
     if !obj.use_pager() {
         return;
     }
@@ -163,11 +165,15 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
         low_mem,
     );
 
+    if flags.contains(PagerFlags::PREFETCH) && low_mem {
+        return;
+    }
+
     if needed_additional > 0 && !low_mem {
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
-    get_pages_and_wait(obj.id(), start, len);
+    get_pages_and_wait(obj.id(), start, len, flags);
 }
 
 pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
@@ -200,7 +206,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
     if count == 0 {
         return;
     }
-    ensure_in_core(obj, pn, count);
+    ensure_in_core(obj, pn, count, PagerFlags::empty());
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {

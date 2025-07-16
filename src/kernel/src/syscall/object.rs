@@ -5,7 +5,8 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{ObjID, Protections, MAX_SIZE},
+    pager::PagerFlags,
     syscall::{
         CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
         ObjectCreate, ObjectCreateFlags, ObjectSource,
@@ -268,15 +269,16 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
         }
         ObjectControlCmd::Preload => {
             if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
-                let start = PageNumber::base_page();
-                let end = start.byte_offset(MAX_SIZE - NULLPAGE_SIZE);
-                for x in (0..(MAX_SIZE / NULLPAGE_SIZE)).into_iter().step_by(512) {
-                    crate::pager::ensure_in_core(
-                        &obj,
-                        PageNumber::from_offset(x * NULLPAGE_SIZE),
-                        512,
-                    );
-                }
+                //let start = PageNumber::base_page();
+                //let end = start.byte_offset(MAX_SIZE - NULLPAGE_SIZE);
+                //for x in (0..(MAX_SIZE / NULLPAGE_SIZE)).into_iter().step_by(512 * 8) {
+                crate::pager::ensure_in_core(
+                    &obj,
+                    PageNumber::from_offset(0),
+                    MAX_SIZE / PageNumber::PAGE_SIZE,
+                    PagerFlags::PREFETCH,
+                );
+                //}
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());
             }

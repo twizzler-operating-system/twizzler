@@ -434,6 +434,7 @@ impl PagerData {
     /// Initialize the starting memory range for the pager.
     pub fn add_memory_range(&self, range: PhysRange) {
         let mut inner = self.inner.lock().unwrap();
+        tracing::debug!("add memory range: {} pages", range.pages().count());
         inner.memory.push(Region::new(range));
         for item in inner.waiters.values() {
             if let Some(waker) = item {
@@ -450,7 +451,15 @@ impl PagerData {
         partial: bool,
     ) -> Result<Vec<PhysRange>> {
         let mut pages = vec![];
-        for _ in 0..obj_range.pages().count() {
+        let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
+        let max_pages = (current_mem_pages / 2).min(128);
+        tracing::info!(
+            "req: {}, cur: {} ({})",
+            obj_range.pages().count(),
+            current_mem_pages,
+            current_mem_pages / 2
+        );
+        for _ in 0..obj_range.pages().count().min(max_pages.max(1)) {
             let page = match self.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
@@ -478,9 +487,7 @@ impl PagerData {
             start_page as i64,
             nr_pages as u32,
         )];
-        //tracing::info!("PIM: {:?}", reqs);
         let _count = page_in_many(ctx, id, reqs).await?;
-        //tracing::info!("PIM: done: {}", count);
         // TODO: free pages in incomplete requests.
         Ok(pages)
     }
@@ -524,7 +531,6 @@ impl PagerData {
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return self.fill_mem_pages_legacy(ctx, id, obj_range).await;
         }
-        //tracing::info!("fill: {} {:?} {}", id, obj_range, obj_range.pages().count());
         let pages = self.do_fill_pages(ctx, id, obj_range, false).await?;
 
         {

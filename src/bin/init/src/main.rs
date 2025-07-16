@@ -37,7 +37,7 @@ impl embedded_io::Write for TwzIo {
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
-    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024 * 8;
+    const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue_obj = unsafe {
         twizzler::object::ObjectBuilder::<()>::default()
             .build_ctor(|obj| {
