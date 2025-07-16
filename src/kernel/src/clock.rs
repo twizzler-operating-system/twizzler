@@ -4,6 +4,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use twizzler_abi::syscall::{Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds};
 use twizzler_rt_abi::{error::ArgumentError, Result};
 
+use log::debug; 
+use log::warn;
+
 use crate::{
     condvar::CondVar,
     once::Once,
@@ -219,9 +222,9 @@ static TIMEOUT_THREAD_CONDVAR: CondVar = CondVar::new();
 
 pub fn print_info() {
     if TIMEOUT_THREAD_CONDVAR.has_waiters() {
-        logln!("timeout thread is blocked");
+        warn!("timeout thread is blocked");
     }
-    logln!("timeout queue: {:?}", *TIMEOUT_QUEUE.lock());
+    debug!("timeout queue: {:?}", *TIMEOUT_QUEUE.lock());
 }
 
 fn timeout_thread_set_has_work() {}

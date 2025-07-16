@@ -4,6 +4,8 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use fixedbitset::FixedBitSet;
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
+use log::debug;
+
 use crate::{
     clock::Nanoseconds,
     interrupt,
@@ -520,7 +522,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
 
     if PRINT_STATS && s % 200 == 0 {
-        logln!(
+        debug!(
             "STAT {}; {}({}): load {:2}, i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
             cp.id,
             cur.as_ref().unwrap().id(),
@@ -537,7 +539,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!(
+                debug!(
                     "thread {}: {:?} {:?} {:x}",
                     t.id(),
                     t.stats,
