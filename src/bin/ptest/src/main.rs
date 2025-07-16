@@ -86,6 +86,7 @@ enum SubCommand {
     Append,
     Read,
     Hw,
+    Rdb,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
@@ -259,6 +260,18 @@ fn main() {
                 println!("done!: {:?}", end - start);
             }
         },
+        SubCommand::Rdb => {
+            println!("rocksdb test");
+            let start = std::time::Instant::now();
+            let db = rocksdb::DB::open_default("db").unwrap();
+            println!("rocksdb test: put");
+            db.put("test", "value").unwrap();
+            let val = db.get("test").unwrap().unwrap();
+            let val = String::from_utf8(val).unwrap();
+            println!("rocksdb test: get: {}", val);
+            let end = std::time::Instant::now();
+            println!("done!: {:?}", end - start);
+        }
     }
 
     /*

@@ -596,13 +596,13 @@ pub fn set_cc(target: &Triple) {
     // We don't yet support stack protector. Also, don't pull in standard lib includes, as those may
     // go to the system includes.
     let cflags = format!(
-        "-fno-stack-protector -isysroot {} -target {} --sysroot {}",
+        "-fno-stack-protector -isysroot {} -target {} --sysroot {} -D__Twizzler__",
         sysroot_path.display(),
         target.to_string(),
         sysroot_path.display(),
     );
     let cxxflags = format!(
-        "-fno-stack-protector -cxx-isystem {} -stdlib++-isystem {} -isysroot {} -target {} --sysroot {} ",
+        "-fno-stack-protector -cxx-isystem {} -stdlib++-isystem {} -isysroot {} -target {} --sysroot {} -D__Twizzler__",
         sysroot_path.join("include/c++/v1").display(),
         sysroot_path.join("include/c++/v1").display(),
         sysroot_path.display(),
@@ -613,6 +613,7 @@ pub fn set_cc(target: &Triple) {
     std::env::set_var("LDFLAGS", &cflags);
     std::env::set_var("CXXFLAGS", &cflags);
     std::env::set_var("CXXFLAGS", &cxxflags);
+    std::env::set_var("CXXSTDLIB", "c++");
 }
 
 pub fn clear_cc() {
