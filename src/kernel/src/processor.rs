@@ -8,6 +8,8 @@ use core::{
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
 
+use log::warn;
+
 use crate::{
     arch::{self, interrupt::GENERIC_IPI_VECTOR, processor::ArchProcessor},
     image::TlsInfo,
@@ -403,7 +405,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
 
 pub fn register(id: u32, bsp_id: u32) {
     if id as usize >= all_processors().len() {
-        logln!("processor ID {} not supported (too large)", id);
+        warn!("processor ID {} not supported (too large)", id);
         return;
     }
 
