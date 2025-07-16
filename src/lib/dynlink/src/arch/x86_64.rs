@@ -64,7 +64,7 @@ impl Context {
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;
-            let flags = LookupFlags::empty();
+            let flags = LookupFlags::ALLOW_WEAK;
             strings
                 .get(sym.st_name as usize)
                 .map(|name| (name, self.lookup_symbol(lib.id(), name, flags)))

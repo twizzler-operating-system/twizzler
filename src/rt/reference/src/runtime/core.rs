@@ -235,6 +235,7 @@ impl ReferenceRuntime {
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {
         for ctor in ctor_array {
+            twizzler_abi::klog_println!("run ctors: {:?}", ctor);
             unsafe {
                 if let Some(legacy_init) = ctor.legacy_init {
                     (core::mem::transmute::<_, extern "C" fn()>(legacy_init))();
@@ -245,6 +246,7 @@ impl ReferenceRuntime {
                         ctor.init_array_len,
                     );
                     for call in init_slice.iter().cloned() {
+                        twizzler_abi::klog_println!("call: {}", call);
                         (core::mem::transmute::<_, extern "C" fn()>(call))();
                     }
                 }

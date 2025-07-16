@@ -868,3 +868,15 @@ pub unsafe extern "C-unwind" fn __is_monitor_ready() -> bool {
 pub unsafe extern "C-unwind" fn __is_monitor() -> *mut c_void {
     OUR_RUNTIME.is_monitor().unwrap_or(core::ptr::null_mut())
 }
+
+#[linkage = "weak"]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn _ZdlPv() {}
+
+#[linkage = "weak"]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn _ZdlPvj() {}
+
+#[linkage = "weak"]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn _ZdlPvm() {}
