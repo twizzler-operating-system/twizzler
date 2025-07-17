@@ -1,5 +1,7 @@
 use alloc::sync::Arc;
 
+use twizzler_abi::pager::PagerFlags;
+
 use super::{
     pages::{Page, PageRef},
     range::{GetPageFlags, PageRange, PageRangeTree, PageStatus},
@@ -155,7 +157,7 @@ pub fn copy_ranges(
             (0, _) | (_, 0) => 1,
             (_, _) => 2,
         };
-    crate::pager::ensure_in_core(src, src_start, nr_pages);
+    crate::pager::ensure_in_core(src, src_start, nr_pages, PagerFlags::empty());
     // Step 1: lock the page trees for the objects, in a canonical order.
     let (mut src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
 

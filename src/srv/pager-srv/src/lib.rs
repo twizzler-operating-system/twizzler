@@ -1,10 +1,14 @@
 #![feature(naked_functions)]
 #![feature(io_error_more)]
+#![feature(test)]
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use async_executor::Executor;
-use async_io::block_on;
+use async_io::{block_on, Timer};
 use disk::{Disk, DiskPageRequest};
 use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -24,9 +28,13 @@ mod data;
 mod disk;
 mod handle;
 mod helpers;
+// in-progress
+#[allow(unused)]
+mod memstore;
 mod nvme;
 mod physrw;
 mod request_handle;
+mod stats;
 
 pub use handle::{pager_close_handle, pager_open_handle};
 
@@ -133,7 +141,7 @@ fn pager_init(
 
 fn spawn_queues(
     ctx: &'static PagerContext,
-    kernel_rq: twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>,
+    kernel_rq: Arc<twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>>,
     ex: &'static Executor<'static>,
 ) {
     tracing::debug!("spawning queues...");
@@ -141,24 +149,26 @@ fn spawn_queues(
         .detach();
 }
 
-async fn listen_queue<R, C, F>(
-    kernel_rq: twizzler_queue::CallbackQueueReceiver<R, C>,
+async fn listen_queue<R, C, F, I>(
+    kernel_rq: Arc<twizzler_queue::CallbackQueueReceiver<R, C>>,
     ctx: &'static PagerContext,
-    handler: impl Fn(&'static PagerContext, R) -> F + Copy + Send + Sync + 'static,
+    handler: impl Fn(&'static PagerContext, u32, R) -> F + Copy + Send + Sync + 'static,
     _ex: &'static Executor<'static>,
 ) where
-    F: std::future::Future<Output = C> + Send + 'static,
+    F: std::future::Future<Output = I> + Send + 'static,
     R: std::fmt::Debug + Copy + Send + Sync + 'static,
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
+    I: IntoIterator<Item = C> + Send + Sync + 'static,
 {
-    let q = Arc::new(kernel_rq);
     loop {
         tracing::trace!("queue receiving...");
-        let (id, request) = q.receive().await.unwrap();
+        let (id, request) = kernel_rq.receive().await.unwrap();
         tracing::trace!("got request: ({},{:?})", id, request);
 
-        let comp = handler(ctx, request).await;
-        notify(&q, id, comp).await;
+        let comp = handler(ctx, id, request).await;
+        for comp in comp {
+            notify(&kernel_rq, id, comp).await;
+        }
     }
 }
 
@@ -168,7 +178,7 @@ where
     C: std::fmt::Debug + Copy + Send + Sync + 'static,
 {
     q.complete(id, res).await.unwrap();
-    tracing::trace!("request {} complete", id);
+    //tracing::trace!("request {} complete", id);
 }
 
 async fn report_ready(
@@ -193,6 +203,8 @@ async fn report_ready(
 struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
+    kernel_notify:
+        Arc<twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>>,
     paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
     disk: Disk,
 }
@@ -212,6 +224,10 @@ impl PagerContext {
         })
         .await
     }
+
+    pub async fn notify_kernel(&'static self, id: u32, comp: CompletionToKernel) {
+        notify(&self.kernel_notify, id, comp).await;
+    }
 }
 
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
@@ -224,19 +240,36 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let ext4_store = Ext4Store::<DiskPageRequest>::new(disk, "/").unwrap();
 
     let sq = Arc::new(sq);
+    let rq = Arc::new(rq);
     let _ = PAGER_CTX.set(PagerContext {
         data,
         sender: sq,
+        kernel_notify: rq.clone(),
         paged_ostore: Box::new(ext4_store),
         disk: diskc,
     });
     let ctx = PAGER_CTX.get().unwrap();
+
     spawn_queues(ctx, rq, ex);
 
     block_on(ex.run(async move {
         let _ = report_ready(&ctx, ex).await.unwrap();
     }));
     tracing::info!("pager ready");
+
+    //disk::benches::bench_disk(ctx);
+    if false {
+        let _ = ex
+            .spawn(async {
+                let pager = PAGER_CTX.get().unwrap();
+                loop {
+                    pager.data.print_stats();
+                    pager.data.reset_stats();
+                    Timer::after(Duration::from_millis(1000)).await;
+                }
+            })
+            .detach();
+    }
 
     let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
         tracing::info!("creating new naming object");

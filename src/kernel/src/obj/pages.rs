@@ -292,6 +292,7 @@ impl Object {
         }
     }
 
+    #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a Arc<Object>,
         mut page_tree: LockGuard<'a, PageRangeTree>,
