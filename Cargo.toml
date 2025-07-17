@@ -42,8 +42,6 @@ members = [
 
     "src/ports/lwext4-rs",
 
-    "src/ports/candle-test",
-
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
     #"src/bin/random_validation",
@@ -76,8 +74,6 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
-
-    "crate:twzcandle",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -137,5 +133,4 @@ libc = { path = "src/ports/libc" }
 candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
-
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
