@@ -37,6 +37,3 @@
 	path = src/ports/libc
 	url = ../../twizzler-operating-system/libc.git
 	branch = twizzler-2025-04
-#[submodule "src/ports/candle-test"]
-#	path = src/ports/candle-test
-#	url = git@github.com:elephance/candle-test.git
