@@ -281,21 +281,21 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.9.1"
-source = "git+https://github.com/twizzler-operating-system/async-executor.git?branch=twizzler#6db91013bf7ec4590a2fd60973cb579501ee3c52"
+version = "1.13.2"
+source = "git+https://github.com/twizzler-operating-system/async-executor.git?branch=twizzler#709a4548e93ffa23ba705b2735a3d304f8f3d0dd"
 dependencies = [
- "async-lock",
  "async-task",
  "concurrent-queue",
  "fastrand",
  "futures-lite",
+ "pin-project-lite",
  "slab",
 ]
 
 [[package]]
 name = "async-io"
-version = "2.3.2"
-source = "git+https://github.com/twizzler-operating-system/async-io.git?branch=twizzler#90d7586871d1b7ad696f39daa056891b541d6646"
+version = "2.4.1"
+source = "git+https://github.com/twizzler-operating-system/async-io.git?branch=twizzler#2bca7376acf322131678ec236697e07ac79a40bd"
 dependencies = [
  "async-lock",
  "cfg-if 1.0.0",
@@ -308,7 +308,7 @@ dependencies = [
  "slab",
  "tracing",
  "twizzler-futures",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -562,9 +562,9 @@ dependencies = [
 
 [[package]]
 name = "blocking"
-version = "1.6.1"
+version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "703f41c54fc768e63e091340b424302bb1c29ef4aa0c7f10fe849dfb114d29ea"
+checksum = "e83f8d02be6967315521be875afa792a316e28d57b5a2d401897e2a7921b7f21"
 dependencies = [
  "async-channel",
  "async-task",
@@ -1433,7 +1433,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "lock_api",
  "once_cell",
- "parking_lot_core 0.9.10 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parking_lot_core 0.9.10",
 ]
 
 [[package]]
@@ -1812,7 +1812,7 @@ name = "errno"
 version = "0.3.13"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3143,9 +3143,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.3.9"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
+checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hex"
@@ -3999,10 +3999,9 @@ dependencies = [
 
 [[package]]
 name = "lock_api"
-version = "0.4.12"
-source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
+version = "0.4.13"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#c3412b96b467f83ac0357e9e69f901f46f3d064f"
 dependencies = [
- "autocfg",
  "scopeguard",
 ]
 
@@ -4809,6 +4808,7 @@ dependencies = [
  "nvme",
  "object-store",
  "polling",
+ "rand 0.9.0",
  "secgate",
  "slab",
  "stable-vec",
@@ -4833,11 +4833,11 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
-version = "0.12.3"
-source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
+version = "0.12.4"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#c3412b96b467f83ac0357e9e69f901f46f3d064f"
 dependencies = [
  "lock_api",
- "parking_lot_core 0.9.10 (git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler)",
+ "parking_lot_core 0.9.11",
 ]
 
 [[package]]
@@ -4855,8 +4855,8 @@ dependencies = [
 
 [[package]]
 name = "parking_lot_core"
-version = "0.9.10"
-source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#81ce3c45b8ab118bc8ab543b435e4fe4fe509ca9"
+version = "0.9.11"
+source = "git+https://github.com/twizzler-operating-system/parking_lot.git?branch=twizzler#c3412b96b467f83ac0357e9e69f901f46f3d064f"
 dependencies = [
  "cfg-if 1.0.0",
  "libc",
@@ -5084,18 +5084,19 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "polling"
-version = "3.6.0"
-source = "git+https://github.com/twizzler-operating-system/polling.git?branch=twizzler#83586e3bbde74954cc24e5d571a5d004a9d00c24"
+version = "3.8.0"
+source = "git+https://github.com/twizzler-operating-system/polling.git?branch=twizzler#33b12f8145325115dc3cd2ca662f6fc954be30be"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if 1.0.0",
  "concurrent-queue",
  "hermit-abi",
  "pin-project-lite",
+ "rustix 1.0.7",
  "tracing",
  "twizzler-abi",
  "twizzler-futures",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5570,9 +5571,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.0.3"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e56a18552996ac8d29ecc3b190b4fdbb2d91ca4ec396de7bbffaf43f3d637e96"
+checksum = "c71e83d6afe7ff64890ec6b71d6a69bb8a610ab78ce364b3352876bb4c801266"
 dependencies = [
  "bitflags 2.9.0",
  "errno 0.3.13",
@@ -6236,7 +6237,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.3.1",
  "once_cell",
- "rustix 1.0.3",
+ "rustix 1.0.7",
  "windows-sys 0.59.0",
 ]
 
@@ -6246,7 +6247,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45c6481c4829e4cc63825e62c49186a34538b7b2750b73b266581ffb612fb5ed"
 dependencies = [
- "rustix 1.0.3",
+ "rustix 1.0.7",
  "windows-sys 0.59.0",
 ]
 
@@ -8028,7 +8029,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d65cbf2f12c15564212d48f4e3dfb87923d25d611f2aed18f4cb23f0413d89e"
 dependencies = [
  "libc",
- "rustix 1.0.3",
+ "rustix 1.0.7",
 ]
 
 [[package]]
@@ -8211,3 +8212,23 @@ dependencies = [
  "quote",
  "syn 2.0.100",
 ]
+
+[[patch.unused]]
+name = "candle-core"
+version = "0.9.1"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+
+[[patch.unused]]
+name = "candle-nn"
+version = "0.9.1"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+
+[[patch.unused]]
+name = "candle-transformers"
+version = "0.9.1"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+
+[[patch.unused]]
+name = "gemm-common"
+version = "0.18.2"
+source = "git+https://github.com/dbittman/gemm.git?branch=dbittman-fixes#2aed8d805f6a82c31e80a191a660bfc396bdcd5f"

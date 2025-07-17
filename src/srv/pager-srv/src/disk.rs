@@ -82,7 +82,7 @@ impl PagingImp for DiskPageRequest {
             .zip(self.phys_addrs())
             .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
             .collect::<Vec<_>>();
-        tracing::debug!("page-in: pairs: {:?}", pairs);
+        //tracing::trace!("page-in: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
         let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
         let mut offset = 0;
@@ -92,11 +92,17 @@ impl PagingImp for DiskPageRequest {
             pair
         });
         let mut count = 0;
-        for (dp, pp) in runs {
-            tracing::debug!("  seqread: {:?} => {:?}", dp, pp);
-            let len = self.ctrl.sequential_read::<PAGE_SIZE>(dp[0], pp)?;
-            assert_eq!(len, pp.len());
-            count += len;
+        for (dp, mut pp) in runs {
+            let mut offset = 0;
+            while pp.len() > 0 {
+                //tracing::trace!("  seqread: {:?} => {:?}", dp, pp);
+                let len = self
+                    .ctrl
+                    .sequential_read::<PAGE_SIZE>(dp[0] + offset as u64, pp)?;
+                count += len;
+                offset += len;
+                pp = &pp[len..];
+            }
         }
         Ok(count)
     }
@@ -145,10 +151,8 @@ pub struct Disk {
 impl Disk {
     pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
         let ctrl = init_nvme().await.expect("failed to open nvme controller");
-        tracing::info!("getting len");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
-        tracing::info!("disk ready");
         Ok(Disk {
             ctrl,
             pos: 0,
@@ -271,5 +275,79 @@ impl Seek for Disk {
             self.pos = new_pos as usize;
             Ok(self.pos.try_into().unwrap_or(u64::MAX))
         }
+    }
+}
+
+pub mod benches {
+    use rand::{rng, seq::SliceRandom};
+    use twizzler_driver::dma::{PhysAddr, PhysInfo};
+
+    use crate::{disk::PAGE_SIZE, PagerContext};
+
+    extern crate test;
+
+    pub fn do_bench<F: FnMut() -> usize>(mut f: F) -> String {
+        let mut bytes = 0;
+        let mut i = 0;
+        let summary = test::bench::iter(&mut || {
+            i += 1;
+            bytes += f();
+        });
+        let ns_iter = std::cmp::max(summary.median as usize, 1);
+        let mb_s = (bytes * 1000 / i) / ns_iter;
+        let samples = test::bench::BenchSamples {
+            ns_iter_summ: summary,
+            mb_s,
+        };
+        test::bench::fmt_bench_samples(&samples)
+    }
+
+    #[allow(unused)]
+    pub fn bench_disk(ctx: &'static PagerContext) {
+        const NR_PAGES: usize = 128;
+        let mut phys = (0..NR_PAGES)
+            .map(|_| PhysInfo::new(PhysAddr(ctx.data.alloc_page().unwrap())))
+            .collect::<Vec<_>>();
+        // Check if the vector is sorted and each element is sequential
+        let is_sequential = phys
+            .windows(2)
+            .all(|window| window[0].addr().0 + PAGE_SIZE as u64 == window[1].addr().0);
+
+        let phys_size = phys.len() * PAGE_SIZE;
+        if is_sequential {
+            tracing::info!(
+                "benching disk sequential read (with sequential memory): {} KB",
+                phys_size / 1024
+            );
+            let result = do_bench(|| {
+                let r = ctx
+                    .disk
+                    .ctrl
+                    .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
+                    .unwrap();
+                assert_eq!(r, NR_PAGES);
+                std::hint::black_box(r);
+                phys_size
+            });
+            tracing::info!(" ==> {}", result);
+        }
+
+        phys.shuffle(&mut rng());
+
+        tracing::info!(
+            "benching disk sequential read (with random memory): {} KB",
+            phys_size / 1024
+        );
+        let result = do_bench(&mut || {
+            let r = ctx
+                .disk
+                .ctrl
+                .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
+                .unwrap();
+            assert_eq!(r, NR_PAGES);
+            std::hint::black_box(r);
+            phys_size
+        });
+        tracing::info!(" ==> {}", result);
     }
 }

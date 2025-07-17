@@ -88,7 +88,7 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
 
 fn write_sysinfo(info: &mut SysInfo) {
     // TODO
-    info.cpu_count = 1;
+    info.cpu_count = 4;
     info.flags = 0;
     info.version = 1;
     info.page_size = 0x1000;

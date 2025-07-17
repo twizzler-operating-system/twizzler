@@ -34,9 +34,10 @@ impl Inflight {
         }
         let cmd = match &self.rk {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(*obj_id),
-            ReqKind::PageData(obj_id, s, l) => KernelCommand::PageDataReq(
+            ReqKind::PageData(obj_id, s, l, f) => KernelCommand::PageDataReq(
                 *obj_id,
                 ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
+                *f,
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectEvict(ObjectEvictInfo {
                 obj_id: *obj_id,
