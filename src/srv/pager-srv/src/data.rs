@@ -531,34 +531,6 @@ impl PagerData {
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
-    pub async fn fill_mem_pages(
-        &self,
-        ctx: &'static PagerContext,
-        id: ObjID,
-        obj_range: ObjectRange,
-    ) -> Result<Vec<(ObjectRange, PhysRange)>> {
-        if obj_range.start == (MAX_SIZE as u64) - PAGE {
-            return self.fill_mem_pages_legacy(ctx, id, obj_range).await;
-        }
-        let pages = self.do_fill_pages(ctx, id, obj_range, false).await?;
-
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.recent_stats.read_pages(id, pages.len());
-        }
-        Ok(pages
-            .into_iter()
-            .enumerate()
-            .map(|(i, phys_page)| {
-                let start = obj_range.start + (i as u64) * PAGE;
-                let range = ObjectRange::new(start, start + PAGE);
-                (range, phys_page)
-            })
-            .collect())
-    }
-    /// Allocate a memory page and associate it with an object and range.
-    /// Page in the data from disk
-    /// Returns the physical range corresponding to the allocated page.
     pub async fn fill_mem_pages_legacy(
         &self,
         ctx: &'static PagerContext,

@@ -279,12 +279,9 @@ impl Seek for Disk {
 }
 
 pub mod benches {
-    use std::time::{Duration, Instant};
-
-    use rand::{seq::SliceRandom, thread_rng};
+    use rand::{rng, seq::SliceRandom};
     use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
-    use super::Disk;
     use crate::{disk::PAGE_SIZE, PagerContext};
 
     extern crate test;
@@ -335,7 +332,7 @@ pub mod benches {
             tracing::info!(" ==> {}", result);
         }
 
-        phys.shuffle(&mut thread_rng());
+        phys.shuffle(&mut rng());
 
         tracing::info!(
             "benching disk sequential read (with random memory): {} KB",

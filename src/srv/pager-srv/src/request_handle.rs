@@ -32,7 +32,7 @@ async fn handle_page_data_request_task(
         }
     }
 
-    let mut total = req_range.pages().count() as u64;
+    let total = req_range.pages().count() as u64;
     let mut count = 0;
     while count < total {
         tracing::trace!(
@@ -61,7 +61,6 @@ async fn handle_page_data_request_task(
         };
         let thiscount = pages.len() as u64;
         // try to compress page ranges
-        //tracing::info!("starting with: {:?}", pages);
         let runs = crate::helpers::consecutive_slices(pages.as_slice());
         let mut acc = 0;
         let pages = runs
@@ -73,8 +72,7 @@ async fn handle_page_data_request_task(
                 ret
             })
             .collect::<Vec<_>>();
-        //tracing::info!("down to: {:?}", pages);
-        let mut comps = pages
+        let comps = pages
             .into_iter()
             .map(|(i, x)| {
                 let start = req_range.start + (count + i as u64) * PAGE;
@@ -85,9 +83,8 @@ async fn handle_page_data_request_task(
                 )
             })
             .collect::<Vec<_>>();
-        //tracing::info!("comps: {:?}", comps);
         tracing::trace!("sending {} kernel notifs for {}", comps.len(), id);
-        for (i, comp) in comps.iter().enumerate() {
+        for comp in comps.iter() {
             ctx.notify_kernel(qid, *comp).await;
         }
         count += thiscount;
