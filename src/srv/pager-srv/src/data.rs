@@ -395,23 +395,32 @@ impl PagerDataInner {
 
     pub fn print_stats(&self) {
         let dt = self.recent_stats.dt();
-        if true || self.recent_stats.had_activity() {
-            tracing::info!(
-                "PAGER STATS: Available memory: {} (dt = {} seconds)",
-                self.memory.available_memory(),
-                dt.as_secs_f32(),
-            );
-        }
+        let mut total_read_kbps = 0.;
+        let mut total_write_kbps = 0.;
+        let mut count = 0;
         for (id, stats) in self.recent_stats.recorded_stats() {
             let read = crate::stats::pages_to_kbytes_per_sec(stats.pages_read, dt);
             let write = crate::stats::pages_to_kbytes_per_sec(stats.pages_written, dt);
-            tracing::info!(
+            tracing::debug!(
                 "{}: read {:3.3} KB/s ({:8.8} pages), write {:3.3} KB/s ({:8.8} pages)",
                 id,
                 read,
                 stats.pages_read,
                 write,
                 stats.pages_written
+            );
+
+            count += 1;
+            total_read_kbps += read;
+            total_write_kbps += write;
+        }
+        if true || self.recent_stats.had_activity() {
+            tracing::info!(
+                "PAGER STATS: Available memory: {:10.10} KB, r {:3.3} KB/s w {:3.3} KB/s c {:2.2} (dt: {:2.2}s)",
+                self.memory.available_memory() / 1024,
+                total_read_kbps,total_write_kbps,
+                count,
+                dt.as_secs_f32(),
             );
         }
     }
@@ -453,7 +462,7 @@ impl PagerData {
         let mut pages = vec![];
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(128);
-        tracing::info!(
+        tracing::trace!(
             "req: {}, cur: {} ({})",
             obj_range.pages().count(),
             current_mem_pages,
@@ -464,14 +473,14 @@ impl PagerData {
                 Ok(page) => page,
                 Err(mw) => {
                     if partial && !pages.is_empty() {
-                        tracing::warn!(
+                        tracing::debug!(
                             "oom on partial -- reading {} / {} pages",
                             pages.len(),
                             obj_range.pages().count()
                         );
                         break;
                     }
-                    tracing::warn!("out of memory -- task waiting");
+                    tracing::debug!("out of memory -- task waiting");
                     mw.await
                 }
             };

@@ -185,7 +185,9 @@ impl ReqKind {
 
     pub fn pages(&self) -> impl Iterator<Item = usize> {
         match self {
-            ReqKind::PageData(_, start, len, _) => (*start..(*start + *len)).into_iter(),
+            ReqKind::PageData(_, start, len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
+                (*start..(*start + *len)).into_iter()
+            }
             _ => (0..0).into_iter(),
         }
     }

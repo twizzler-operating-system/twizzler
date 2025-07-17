@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use twizzler_abi::syscall::{ClockInfo, FemtoSeconds};
+use twizzler_abi::syscall::{ClockInfo, FemtoSeconds, FEMTOS_PER_NANO};
 
 use crate::spinlock::Spinlock;
 
@@ -8,6 +8,12 @@ use crate::spinlock::Spinlock;
 pub struct Ticks {
     pub value: u64,
     pub rate: FemtoSeconds,
+}
+
+impl Ticks {
+    pub fn as_nanos(&self) -> u128 {
+        (self.value as u128 * self.rate.0 as u128) / FEMTOS_PER_NANO as u128
+    }
 }
 
 pub trait ClockHardware {

@@ -216,6 +216,18 @@ impl PhysRange {
     }
 }
 
+impl core::ops::Add<u64> for PhysRange {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        if rhs == 0 {
+            Self::new(self.start, self.end)
+        } else {
+            Self::new(self.end, self.end + NULLPAGE_SIZE as u64)
+        }
+    }
+}
+
 impl ObjectRange {
     pub fn new(start: u64, end: u64) -> Self {
         Self { start, end }

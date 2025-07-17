@@ -37,7 +37,7 @@ fn get_requeue_list() -> &'static Requeue {
 pub fn requeue_all() {
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    for (_, thread) in list.extract_if(|_, v| v.reset_sync_sleep_done()) {
+    for (_, thread) in list.extract_if(|_, v| !v.is_critical() && v.reset_sync_sleep_done()) {
         crate::sched::schedule_thread(thread);
     }
 }
@@ -126,7 +126,7 @@ fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent> 
     })
 }
 
-fn undo_sleep(sleep: SleepEvent) {
+fn undo_sleep(sleep: &SleepEvent) {
     sleep.obj.remove_from_sleep_word(sleep.offset);
 }
 
@@ -145,16 +145,17 @@ fn thread_sync_cb_timeout(thread: ThreadRef) {
 fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
     thread.set_sync_sleep();
-    requeue_all();
-    let guard = thread.enter_critical();
-    thread.set_sync_sleep_done();
     let timeout_key = crate::clock::register_timeout_callback(
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
         thread.clone(),
     );
+    requeue_all();
+    let guard = thread.enter_critical();
+    thread.set_sync_sleep_done();
     finish_blocking(guard);
+    remove_from_requeue(&thread);
     drop(timeout_key);
 }
 
@@ -198,10 +199,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     }
     let thread = current_thread_ref().unwrap();
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
-    let was_timedout = {
-        requeue_all();
-        let guard = thread.enter_critical();
-        thread.set_sync_sleep_done();
+    let timeout_key = {
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
@@ -215,19 +213,33 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         } else {
             None
         };
+        requeue_all();
+        let guard = thread.enter_critical();
+        thread.set_sync_sleep_done();
         if should_sleep {
             finish_blocking(guard);
         } else {
-            drop(guard);
+            if thread.reset_sync_sleep() {
+                add_to_requeue(thread.clone());
+            }
+            requeue_all();
+            if unsleeps.len() > 0 {
+                finish_blocking(guard);
+            } else {
+                drop(guard);
+            }
         }
-        // If we have a timeout key, AND we don't find it during release, the timeout fired.
-        timeout_key.map(|tk| !tk.release()).unwrap_or(false)
+        timeout_key
     };
-    for op in unsleeps {
+    for op in &unsleeps {
         undo_sleep(op);
     }
     thread.reset_sync_sleep_done();
     thread.reset_sync_sleep();
+    remove_from_requeue(&thread);
+    drop(unsleeps);
+    // If we have a timeout key, AND we don't find it during release, the timeout fired.
+    let was_timedout = timeout_key.map(|tk| !tk.release()).unwrap_or(false);
     if was_timedout && ready_count == 0 {
         Err(GenericError::TimedOut.into())
     } else {

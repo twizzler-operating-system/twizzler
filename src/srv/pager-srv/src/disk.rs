@@ -305,6 +305,7 @@ pub mod benches {
         test::bench::fmt_bench_samples(&samples)
     }
 
+    #[allow(unused)]
     pub fn bench_disk(ctx: &'static PagerContext) {
         const NR_PAGES: usize = 128;
         let mut phys = (0..NR_PAGES)

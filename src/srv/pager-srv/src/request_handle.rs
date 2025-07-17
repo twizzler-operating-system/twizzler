@@ -5,7 +5,8 @@ use twizzler::{
 };
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
-    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PagerFlags, RequestFromKernel,
+    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PagerFlags, PhysRange,
+    RequestFromKernel,
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
@@ -22,7 +23,7 @@ async fn handle_page_data_request_task(
 
     if prefetch {
         if let Ok(len) = blocking::unblock(move || ctx.paged_ostore.len(id.raw())).await {
-            tracing::info!(
+            tracing::debug!(
                 "==> prefetch request reduce len: {} -> {}",
                 req_range.end,
                 len
@@ -34,7 +35,7 @@ async fn handle_page_data_request_task(
     let mut total = req_range.pages().count() as u64;
     let mut count = 0;
     while count < total {
-        tracing::info!(
+        tracing::trace!(
             "reading {} page {} of {} (pre = {})",
             id,
             count,
@@ -59,23 +60,36 @@ async fn handle_page_data_request_task(
             }
         };
         let thiscount = pages.len() as u64;
+        // try to compress page ranges
+        //tracing::info!("starting with: {:?}", pages);
+        let runs = crate::helpers::consecutive_slices(pages.as_slice());
+        let mut acc = 0;
+        let pages = runs
+            .map(|run| {
+                let start = run[0];
+                let last = run.last().unwrap();
+                let ret = (acc, PhysRange::new(start.start, last.end));
+                acc += run.len();
+                ret
+            })
+            .collect::<Vec<_>>();
+        //tracing::info!("down to: {:?}", pages);
         let mut comps = pages
             .into_iter()
-            .enumerate()
             .map(|(i, x)| {
                 let start = req_range.start + (count + i as u64) * PAGE;
-                let range = ObjectRange::new(start, start + PAGE);
+                let range = ObjectRange::new(start, start + x.len() as u64);
                 CompletionToKernel::new(
                     KernelCompletionData::PageDataCompletion(id, range, x),
                     KernelCompletionFlags::empty(),
                 )
             })
             .collect::<Vec<_>>();
-        tracing::info!("sending {} kernel notifs for {}", comps.len(), id);
+        //tracing::info!("comps: {:?}", comps);
+        tracing::trace!("sending {} kernel notifs for {}", comps.len(), id);
         for (i, comp) in comps.iter().enumerate() {
             ctx.notify_kernel(qid, *comp).await;
         }
-        tracing::info!("{}: ok", id);
         count += thiscount;
     }
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);

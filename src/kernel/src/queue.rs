@@ -79,7 +79,6 @@ impl<T: Copy> Queue<T> {
             .raw
             .receive(
                 |word, val| {
-                    log::info!("recv sleep {} {}", word.load(Ordering::SeqCst), val);
                     sys_thread_sync(
                         &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
                             ThreadSyncReference::Virtual(word),
@@ -90,10 +89,8 @@ impl<T: Copy> Queue<T> {
                         None,
                     )
                     .unwrap();
-                    log::info!("recv woke");
                 },
                 |word| {
-                    log::info!("recv wake");
                     sys_thread_sync(
                         &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                             ThreadSyncReference::Virtual(word),

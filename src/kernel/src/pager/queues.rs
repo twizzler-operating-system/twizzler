@@ -8,7 +8,7 @@ use twizzler_abi::{
         ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
-    syscall::MapFlags,
+    syscall::{MapFlags, NANOS_PER_SEC},
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -183,23 +183,26 @@ pub(super) fn pager_compl_handler_main() {
 
     let mut count = 0;
     let mut elapsed = 0;
+    let mut last_ticks;
+    let mut current_ticks = None;
     loop {
-        //log::info!("waiting for completion");
-        let start = crate::clock::get_current_ticks();
+        last_ticks = current_ticks;
+        current_ticks = crate::time::bench_clock().map(|bc| bc.read());
         let completion = sender.1.recv_completion();
-        let end = crate::clock::get_current_ticks();
-        count += 1;
-        elapsed += end - start;
 
-        if end - start > 1000 {
-            log::info!("pager completion thread woke up after a long sleep");
+        count += 1;
+
+        if let Some(current_ticks) = current_ticks {
+            if let Some(last_ticks) = last_ticks {
+                elapsed += (current_ticks.as_nanos() - last_ticks.as_nanos()) as u64;
+            }
         }
 
-        if elapsed > 200 {
-            log::info!(
+        if elapsed >= NANOS_PER_SEC {
+            log::trace!(
                 "pager completion thread processed {} entries over the last {}ms",
                 count,
-                elapsed
+                elapsed / (NANOS_PER_SEC / 1000),
             );
             count = 0;
             elapsed = 0;

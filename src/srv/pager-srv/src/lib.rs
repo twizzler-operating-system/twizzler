@@ -28,6 +28,8 @@ mod data;
 mod disk;
 mod handle;
 mod helpers;
+// in-progress
+#[allow(unused)]
 mod memstore;
 mod nvme;
 mod physrw;
@@ -256,7 +258,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
-    if true {
+    if false {
         let _ = ex
             .spawn(async {
                 let pager = PAGER_CTX.get().unwrap();
