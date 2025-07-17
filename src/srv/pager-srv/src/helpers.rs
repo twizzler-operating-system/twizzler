@@ -128,8 +128,6 @@ pub async fn page_in_many(
             .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?)
     })
     .await
-    //.inspect(|_| twizzler_abi::klog_println!("PIM: done"))
-    //.inspect_err(|e| twizzler_abi::klog_println!("PIM: err: {}", e))
 }
 
 #[cfg(test)]

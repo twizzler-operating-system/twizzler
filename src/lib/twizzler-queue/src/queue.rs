@@ -145,9 +145,6 @@ impl<S: Copy, C: Copy> Queue<S, C> {
     pub fn complete(&self, id: u32, item: C, flags: SubmissionFlags) -> Result<(), QueueError> {
         self.completion
             .submit(QueueEntry::new(id, item), wait, ring, flags)
-            .inspect_err(|e| {
-                twizzler_abi::klog_println!("QUEUE FULL? {}", e);
-            })
     }
 
     /// Receive a completion item and id from the completion subqueue.
