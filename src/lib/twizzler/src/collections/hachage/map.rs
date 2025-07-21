@@ -1,18 +1,13 @@
-use core::hash;
-
 use crate::collections::hachage::raw::*;
 use crate::collections::hachage::{DefaultHashBuilder};
-use crate::object::RawObject;
 use crate::{
-    alloc::{Allocator, SingleObjectAllocator},
-    marker::{Invariant, StoreCopy},
+    alloc::Allocator,
+    marker::Invariant,
     object::{Object, ObjectBuilder, TypedObject},
-    ptr::{Ref, RefSlice},
 };
 use crate::Result;
 use std::hash::{BuildHasher, Hash};
 use equivalent::Equivalent;
-use twizzler_abi::syscall::ObjectCreate;
 
 pub(crate) fn make_hasher<Q, V, S>(hash_builder: &S) -> impl Fn(&(Q, V)) -> u64 + '_
 where
@@ -27,7 +22,7 @@ where
     Q: Hash + ?Sized,
     S: BuildHasher,
 {
-    use core::hash::Hasher;
+    use std::hash::Hasher;
     let mut state = hash_builder.build_hasher();
     val.hash(&mut state);
     state.finish()
@@ -38,13 +33,6 @@ where
     Q: Equivalent<K> + ?Sized,
 {
     move |x| k.equivalent(&x.0)
-}
-
-pub struct PHMBuilder<K: Invariant, V: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
-    builder: Option<ObjectBuilder<RawTable<(K, V), S, A>>>,
-    capacity: usize, 
-    allocator: Option<A>,
-    hasher: Option<S>
 }
 
 pub struct PersistentHashMap<K: Invariant, V: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
@@ -62,20 +50,18 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
     }
 }
 
-impl<K: Invariant, V: Invariant, S> PersistentHashMap<K, V, S> {
-    pub fn with_capacity_and_hasher(builder: ObjectBuilder<RawTable<(K, V), S, HashTableAlloc>>, hasher: S, capacity: usize) -> Result<Self> {
-        Self::with_capacity_in(builder, hasher, HashTableAlloc::default(), capacity)
-    }
-}
-
 impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> {
+    pub fn object(&self) -> &Object<RawTable<(K, V), S, A>> {
+        &self.table
+    }
+
+    pub fn into_object(self) -> Object<RawTable<(K, V), S, A>> {
+        self.table
+    } 
+
     #[inline]
     pub fn allocator(&self) -> &A {
         self.table.base().allocator()
-    }
-
-    pub fn with_alloc_in(builder: ObjectBuilder<RawTable<(K, V), S, A>>, alloc: A) -> Result<Self> {
-        todo!()
     }
 
     pub fn with_hasher_in(builder: ObjectBuilder<RawTable<(K, V), S, A>>, hasher: S, alloc: A) -> Result<Self> {
@@ -86,70 +72,23 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
         })
     }
 
-    pub fn with_capacity_in(builder: ObjectBuilder<RawTable<(K, V), S, A>>, hasher: S, alloc: A, capacity: usize) -> Result<Self> {
-        todo!()
-        /*// Hack because alloc needs to exist in the object before any allocation can happen
-        let dummy = Self {
-            table: builder.build_inplace(|tx: crate::tx::TxObject<std::mem::MaybeUninit<RawTable<(K, V), S, A>>>| {
-                tx.id()
-            })?
-        };
-        
-        Ok(Self {
-            table: builder.build_inplace(|tx: crate::tx::TxObject<std::mem::MaybeUninit<RawTable<(K, V), S, A>>>| {
-                let table = RawTable::with_hasher_in(hasher, dummy.allocator());
-                let r = tx.write(table)?;
-            })?
-        })*/
-    }
-}
-
-impl<K: Invariant, V: Invariant, S: BuildHasher, A: Allocator> PersistentHashMap<K, V, S, A> {
-
-}
-
-impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> PersistentHashMap<K, V, S, A> {
-    pub fn hasher(&self) -> &S {
-        self.table.base().hasher()
-    }
-
-    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>> {
-        let mut tx = self.table.as_tx()?;
-        let mut base = tx.base_mut().owned();
-        
-        let hash = make_hash::<K, S>(self.hasher(), &k);
-
-        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher())) {
-            Ok(bucket) => {
-                let mut tx_ref = bucket.as_tx()?;
-                let mut mut_bucket = tx_ref.as_mut();
-                Ok(Some(std::mem::replace( unsafe { &mut mut_bucket.1 }, v)))
-            },
-            Err(slot) => unsafe {
-                base.insert_in_slot(hash, slot, (k, v));
-                Ok(None)
-            },
+    pub fn from(value: Object<RawTable<(K, V), S, A>>) -> Self {
+        Self {
+            table: value
         }
     }
 
-    pub unsafe fn resize(&mut self, capacity: usize) -> Result<()> {
-        let mut tx = self.table.as_tx()?;
-        let mut base = tx.base_mut().owned();
-
-        base.resize(capacity, make_hasher(self.hasher()));
-
-        Ok(())
+    pub fn len(&self) -> usize {
+        self.table.base().len()
     }
 
-    /*pub(crate) fn find_or_find_insert_slot<Q: Equivalent<K> + ?Sized>(
-        &mut self,
-        hash: u64,
-        key: &Q,
-        tx: impl AsRef<TxObject>
-    ) -> std::result::Result<Ref<(K, V)>, usize> {
-       todo!()
-    }*/
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    
+}
 
+impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> PersistentHashMap<K, V, S, A> {
     pub fn get<Q>(&self, k: &Q) -> Option<&V>
     where
         Q: Hash + Equivalent<K> + ?Sized,
@@ -176,5 +115,90 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
         let hash = make_hash::<Q, S>(self.hasher(), k);
         self.table.base().get(hash, equivalent_key(k))
     }
+
+    pub fn hasher(&self) -> &S {
+        self.table.base().hasher()
+    }
+
+    pub fn remove_entry(&mut self, k: &K) -> Option<(K, V)> 
+    {
+        let hash = make_hash::<K, S>(self.hasher(), k);
+        let mut tx = self.table.as_tx().ok()?;
+        let mut base = tx.base_mut().owned();
+
+        base.remove(hash, equivalent_key(k))
+    }
+
+    pub fn remove(&mut self, k: &K) -> Option<V> {
+        match self.remove_entry(k) {
+            Some((_ , v)) => Some(v),
+            None => None
+        }
+    }
+}
+
+impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K, V, S, HashTableAlloc> {
+    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+        
+        let hash = make_hash::<K, S>(self.hasher(), &k);
+
+        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher())) {
+            Ok(bucket) => {
+                let mut tx_ref = bucket.as_tx()?;
+                let mut mut_bucket = tx_ref.as_mut();
+                Ok(Some(std::mem::replace(&mut mut_bucket.1, v)))
+            },
+            Err(slot) => unsafe {
+                base.insert_in_slot(hash, slot, (k, v));
+                Ok(None)
+            },
+        }
+    }
+
+    // An insert function that takes in the previous value as an argument, and returns the previous argument
+    pub fn alter_or_insert(&mut self, k: K, f: impl FnOnce(&K, Option<&V>) -> V) -> Result<Option<V>> 
+    {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+        
+        let hash = make_hash::<K, S>(self.hasher(), &k);
+
+        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher())) {
+            Ok(bucket) => {
+                let mut tx_ref = bucket.as_tx()?;
+                let mut mut_bucket = tx_ref.as_mut();
+                let new_v = f(&k, Some(&mut_bucket.1));
+                Ok(Some(std::mem::replace(&mut mut_bucket.1, new_v)))
+            },
+            Err(slot) => unsafe {
+                let new_v = f(&k, None);
+                base.insert_in_slot(hash, slot, (k, new_v));
+                Ok(None)
+            },
+        }
+    }
+
+
+    pub unsafe fn resize(&mut self, capacity: usize) -> Result<()> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+
+        base.resize(capacity, make_hasher(self.hasher()))?;
+
+        Ok(())
+    }
+
+    /*pub(crate) fn find_or_find_insert_slot<Q: Equivalent<K> + ?Sized>(
+        &mut self,
+        hash: u64,
+        key: &Q,
+        tx: impl AsRef<TxObject>
+    ) -> std::result::Result<Ref<(K, V)>, usize> {
+       todo!()
+    }*/
+
+
 }
 

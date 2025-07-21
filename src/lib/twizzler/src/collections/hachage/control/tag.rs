@@ -1,7 +1,7 @@
 use core::{fmt, mem};
 use crate::{
     marker::Invariant,
-    ptr::{RefSlice, RefSliceMut}
+    ptr::RefSliceMut
 };
 
 /// Single tag in a control group.

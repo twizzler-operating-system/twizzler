@@ -21,6 +21,7 @@ pub(crate) const BITMASK_ITER_MASK: BitMaskWord = !0;
 pub(crate) struct Group(x86::__m128i);
 
 // FIXME: https://github.com/rust-lang/rust-clippy/issues/3859
+#[allow(dead_code)]
 #[allow(clippy::use_self)]
 impl Group {
     /// Number of bytes in the group.

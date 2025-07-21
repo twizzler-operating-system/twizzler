@@ -57,7 +57,7 @@ macro_rules! cfg_if {
 
 // Helper macro for specialization. This also helps avoid parse errors if the
 // default fn syntax for specialization changes in the future.
-#[cfg(feature = "nightly")]
+/*#[cfg(feature = "nightly")]
 macro_rules! default_fn {
 	(#[$($a:tt)*] $($tt:tt)*) => {
         #[$($a)*] default $($tt)*
@@ -69,7 +69,7 @@ macro_rules! default_fn {
         $($tt)*
     }
 }
-
+*/
 
 cfg_if! {
     // Use the SSE2 implementation if possible: it allows us to scan 16 buckets
@@ -98,7 +98,7 @@ cfg_if! {
         mod neon;
         use neon as imp;
     } else if #[cfg(all(
-        feature = "nightly",
+        //feature = "nightly",
         target_arch = "loongarch64",
         target_feature = "lsx",
         not(miri),
@@ -110,7 +110,8 @@ cfg_if! {
         use generic as imp;
     }
 }
-pub(crate) use self::imp::Group;
+
+//pub(crate) use self::imp::Group;
 pub(super) use self::imp::{
     BitMaskWord, NonZeroBitMaskWord, BITMASK_ITER_MASK, BITMASK_MASK, BITMASK_STRIDE,
 };

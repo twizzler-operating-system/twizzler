@@ -18,10 +18,12 @@ use super::group::{
 /// To iterate over a bit mask, it must be converted to a form where only 1 bit
 /// is set per element. This is done by applying `BITMASK_ITER_MASK` on the
 /// mask bits.
+#[allow(dead_code)]
 #[derive(Copy, Clone)]
 pub(crate) struct BitMask(pub(crate) BitMaskWord);
 
 #[allow(clippy::use_self)]
+#[allow(dead_code)]
 impl BitMask {
     /// Returns a new `BitMask` with all bits inverted.
     #[inline]

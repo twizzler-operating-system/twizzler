@@ -1,57 +1,80 @@
-use core::hash;
 use std::{
-    alloc::{handle_alloc_error, AllocError, Layout},
-    collections::TryReserveError,
-    hash::Hash,
-    intrinsics::ptr_offset_from,
+    alloc::{AllocError, Layout},
     marker::PhantomData,
-    mem::{self, needs_drop, MaybeUninit},
-    ops::{Add, Index, IndexMut, RangeBounds, RangeInclusive},
-    ptr::{copy_nonoverlapping, NonNull},
-    slice,
 };
 
-use equivalent::Equivalent;
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::{
-    error::{ArgumentError, RawTwzError, ResourceError, TwzError},
-    object::ObjectHandle,
-};
+use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use super::DefaultHashBuilder;
 use crate::{
-    alloc::{Allocator, SingleObjectAllocator},
-    collections::hachage::{
-        control::*,
-        scopeguard::{guard, ScopeGuard},
-    },
-    marker::{BaseType, Invariant, StoreCopy},
-    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSlice, RefSliceMut},
+    alloc::Allocator,
+    collections::hachage::control::*,
+    marker::{BaseType, Invariant},
+    ptr::{GlobalPtr, InvPtr, Ref, RefSlice, RefSliceMut},
     Result,
 };
 
+// todo figure out a better way to parameterize size
+// generic feels too clunky, so does a const usize
 #[derive(Default, Clone, Copy)]
-pub struct HashTableAlloc;
+pub struct HashTableAlloc {}
+
+const MAX_ALIGNMENT: usize = 4096;
+// We need some leeway for aligning the data
+const MAX_SPACE: usize = MAX_SIZE - NULLPAGE_SIZE * 4 - MAX_ALIGNMENT;
+
+// We need to have a set group width since invariant pointers mean that computers that use SSE2 or AVX512 can interpret
+// the same hash table. 64 bytes is a good middle ground.
+const INVARIANT_GROUP_WIDTH: usize = 64;
+
+// This is a bit of a hack, but this assumes that the hash table is on a single object with no other 
+// allocations on the object. So we know the size of the tag, and the layout provides information
+// on the data. However we do need to store the size, since Layout shows the total space of the allocation
+// and not just the size of data. Also we can't just feed the Layout for the data array because we also
+// want the hashtable to use other traditional allocators. Though this means this yields a pointer
+// that overlaps with a previous allocation. 
 
 impl Allocator for HashTableAlloc {
     fn alloc(
         &self,
-        layout: Layout,
+        _layout: Layout,
     ) -> std::result::Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
-        // 1 for null page, 2 for metadata pages, 1 for base
-        if layout.size() > MAX_SIZE - NULLPAGE_SIZE * 4 {
-            return Err(std::alloc::AllocError);
-        }
-        let obj = twizzler_rt_abi::object::twz_rt_get_object_handle((self as *const Self).cast())
-        .unwrap();
-
-        Ok(GlobalPtr::new(obj.id(), (NULLPAGE_SIZE * 2) as u64))
+        panic!("unsupported")
     }
 
     unsafe fn dealloc(&self, _ptr: crate::ptr::GlobalPtr<u8>, _layout: Layout) {}
+
+    unsafe fn realloc(
+        &self,
+        _ptr: GlobalPtr<u8>,
+        _layout: Layout,
+        _newsize: usize,
+    ) -> std::result::Result<GlobalPtr<u8>, AllocError> {
+        panic!("unsupported")
+    }
 }
 
-impl SingleObjectAllocator for HashTableAlloc {}
+impl HashTableAlloc {
+    // This will return a pointer to the middle of the allocation, specifically the ptr right after the data portion or the first Tag 
+    fn allocate(
+        &self,
+        table_layout: &TableLayout,
+        buckets: usize
+    ) -> std::result::Result<crate::ptr::GlobalPtr<u8>, std::alloc::AllocError> {
+        assert!(buckets.is_power_of_two());
+        let (layout, _) = table_layout.calculate_layout_for(buckets).ok_or(std::alloc::AllocError)?;
+        if layout.align() > MAX_ALIGNMENT { return Err(std::alloc::AllocError)}
+        // 1 for null page, 2 for metadata pages, 1 for base
+        if layout.size() > MAX_SPACE {
+            return Err(std::alloc::AllocError);
+        }
+        let offset = (MAX_SPACE / (table_layout.size + 1)) * table_layout.size; 
+        let corrected_offset = offset + (MAX_ALIGNMENT - offset % MAX_ALIGNMENT);
+        let obj = twizzler_rt_abi::object::twz_rt_get_object_handle((self as *const Self).cast()).unwrap();
+
+        Ok(GlobalPtr::new(obj.id(), (NULLPAGE_SIZE * 2 + corrected_offset) as u64))
+    }
+}
 
 #[inline]
 #[allow(clippy::cast_possible_truncation)]
@@ -62,8 +85,8 @@ fn h1(hash: u64) -> usize {
 
 #[derive(Copy, Clone)]
 struct TableLayout {
-    size: usize,
-    ctrl_align: usize,
+    pub size: usize,
+    pub ctrl_align: usize,
 }
 
 impl TableLayout {
@@ -72,76 +95,45 @@ impl TableLayout {
         let layout = Layout::new::<T>();
         Self {
             size: layout.size(),
-            ctrl_align: if layout.align() > Group::WIDTH {
+            ctrl_align: if layout.align() > INVARIANT_GROUP_WIDTH {
                 layout.align()
             } else {
-                Group::WIDTH
+                INVARIANT_GROUP_WIDTH
             },
         }
     }
 
-    fn calculate_data_offset(&self, buckets: usize) -> usize {
-        match self.ctrl_align > buckets {
-            true => self.ctrl_align,
-            false => buckets,
-        }
+    fn calculate_ctrl_offset(&self, buckets: usize) -> usize {
+        self.size * buckets + (self.ctrl_align - 1) & !(self.ctrl_align - 1)
     }
 
     #[inline]
     fn calculate_layout_for(&self, buckets: usize) -> Option<(Layout, usize)> {
         debug_assert!(buckets.is_power_of_two());
 
-        // The layout is CTRL DATA
-        // So we want data_offset to be aligned with the data
-        let data_offset = self.calculate_data_offset(buckets);
-        let len = data_offset + self.size * buckets;
-        // We need an additional check to ensure that the allocation doesn't
-        // exceed `isize::MAX` (https://github.com/rust-lang/rust/pull/95295).
-        if len > isize::MAX as usize - (self.ctrl_align - 1) {
-            return None;
-        }
+        // TODO: fix this for regular allocators and do bounds checking
+        // maybe enforce a minimum element count? 
+        // Well I guess we can just check it twice maybe.
+        // This calculates the nearest alignment value for buckets * self.size 
+        let ctrl_offset = self.calculate_ctrl_offset(buckets);
+        let len = ctrl_offset + buckets + INVARIANT_GROUP_WIDTH;
 
         Some((
             unsafe { Layout::from_size_align_unchecked(len, self.ctrl_align) },
-            data_offset,
+            ctrl_offset,
         ))
     }
 }
 
 struct ProbeSeq {
     pos: usize,
-    stride: usize,
 }
 
 impl ProbeSeq {
     fn move_next(&mut self, bucket_mask: usize) {
-        self.stride += Group::WIDTH;
-        self.pos += self.stride;
-        self.pos &= bucket_mask;
-    }
-}
-
-struct LinearProbeSeq {
-    pos: usize,
-}
-
-impl LinearProbeSeq {
-    fn new(hash: u64, mask: usize) -> LinearProbeSeq {
-        LinearProbeSeq {
-            pos: h1(hash) & mask,
-        }
-    }
-
-    fn move_next(&mut self, bucket_mask: usize) {
         self.pos += 1;
         self.pos &= bucket_mask
     }
-}
-
-fn capacity_to_buckets(cap: usize, table_layout: TableLayout) -> Option<usize> {
-    debug_assert_ne!(cap, 0);
-
-    Some(cap.next_power_of_two())
 }
 
 /// Returns the maximum effective capacity for the given bucket mask, taking
@@ -194,6 +186,10 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         &self.alloc
     }
 
+    pub fn len(&self) -> usize {
+        self.table.items
+    }
+
     pub fn with_hasher_in(hasher: S, alloc: A) -> Self {
         Self {
             table: RawTableInner::new(),
@@ -218,17 +214,40 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         }
     }
 
+    pub fn remove(&mut self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<T> {
+        match unsafe { self.table.find_inner(hash, &mut |index| eq(&self.bucket(index))) } {
+            Some(bucket) => Some(
+                unsafe { 
+                    let item = self.bucket(bucket).raw().read();
+                    self.table.erase(bucket);
+                    item
+                }
+
+            ),
+            None => None,
+        }
+    }
+
     pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
-        //unsafe { println!("{:?}", RefSlice::from_ref(self.table.ctrl.resolve(), self.table.buckets() * (1 + size_of::<T>())).as_slice()); }
         match self.find(hash, eq) {
             Some(r) => unsafe { r.raw().as_ref() },
             None => None,
         }
     }
 
+    fn bucket(&self, index: usize) -> Ref<T> {
+        unsafe { self.table.bucket::<T>(index) }
+    }
+
+    pub unsafe fn replace_hasher(&mut self, _hasher: S) -> Result<()> {
+        todo!()
+    }
+}
+
+impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
     pub fn reserve(&mut self, additional: usize, hasher: impl Fn(&T) -> u64) {
         if additional > self.table.growth_left {
-            unsafe { self.reserve_rehash(additional, hasher).unwrap() }
+            self.reserve_rehash(additional, hasher).unwrap()
         }
     }
 
@@ -253,6 +272,8 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         )
     }
 
+    // replace the hasher, changing the hashing state and essentially shuffling the values
+
     pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) {
         unsafe {
             let mut index = self.table.find_insert_slot(hash);
@@ -274,7 +295,6 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         hasher: impl Fn(&T) -> u64,
     ) -> std::result::Result<Ref<T>, usize> {
         self.reserve(1, hasher);
-        let foo = unsafe { RefSlice::from_ref(self.table.ctrl.resolve(), size_of::<T>() * (self.table.buckets() + 1))};
 
         unsafe {
             match self
@@ -293,16 +313,6 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
 
         let mut bucket = self.table.bucket::<T>(slot).as_mut();
         *bucket = value;
-        //let mut bucket_mut = bucket.as_mut();
-    }
-
-    fn bucket(&self, index: usize) -> Ref<T> {
-        unsafe {
-            self.table
-                .data_ref(&Self::TABLE_LAYOUT)
-                .cast::<T>()
-                .add(index)
-        }
     }
 }
 
@@ -342,8 +352,8 @@ impl RawTableInner {
 }
 
 impl RawTableInner {
-    fn probe_seq(&self, hash: u64) -> LinearProbeSeq {
-        LinearProbeSeq {
+    fn probe_seq(&self, hash: u64) -> ProbeSeq {
+        ProbeSeq {
             pos: h1(hash) & self.bucket_mask,
         }
     }
@@ -363,7 +373,6 @@ impl RawTableInner {
         let mut probe_seq = self.probe_seq(hash);
 
         let ctrl = self.ctrl_slice();
-
         loop {
             let tag = ctrl[probe_seq.pos];
 
@@ -382,22 +391,14 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn prepare_insert_slot(&mut self, hash: u64) -> usize {
-        let index = self.find_insert_slot(hash);
-        self.set_ctrl_hash(index, hash);
-        index
-    }
-
     unsafe fn find_insert_slot(&self, hash: u64) -> usize {
         let mut probe_seq = self.probe_seq(hash);
         let ctrl_slice = self.ctrl_slice();
-
         loop {
             let tag = ctrl_slice.get(probe_seq.pos).unwrap();
             if tag.is_special() {
                 return probe_seq.pos;
             }
-
             probe_seq.move_next(self.bucket_mask);
         }
     }
@@ -424,122 +425,144 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn prepare_rehash_in_place(&mut self) {
-        todo!()
-    }
-
-    // Returns a stack allocated object 
-    fn prepare_resize<'a, A: Allocator>(
-        &self,
-        alloc: &'a A,
-        table_layout: &TableLayout,
-        capacity: usize,
-    ) -> Result<ScopeGuard<Self, impl FnMut(&mut Self) + 'a>> {
-        debug_assert!(self.items <= capacity);
-        debug_assert!(capacity.is_power_of_two());
-
-        let mut rt = RawTableInner::new();
-
-        Ok(guard(rt, move |self_| {
-            // I haven't figured out dropping quite yet
-            // todo!()
-        }))
-    }
-
-    unsafe fn reserve_rehash_inner<A: Allocator>(
+    unsafe fn reserve_rehash_inner(
         &mut self,
-        alloc: &A,
+        alloc: &HashTableAlloc,
         additional: usize,
         hasher: &dyn Fn(&mut Self, usize) -> u64,
         table_layout: &TableLayout,
-        _drop: Option<unsafe fn(*mut u8)>,
+        drop: Option<unsafe fn(*mut u8)>,
     ) -> Result<()> {
         let new_items = self.items + additional;
         let full_capacity = bucket_mask_to_capacity(self.bucket_mask);
-        self.resize_inner(
-            alloc,
-            usize::max(new_items, full_capacity + 1),
-            hasher,
-            table_layout,
-        )
+        if new_items <= full_capacity / 2 {
+            self.rehash_in_place(hasher, table_layout.size, drop);
+        } else {
+            self.resize_inner(
+                alloc,
+                usize::max(new_items, full_capacity + 1),
+                hasher,
+                table_layout,
+            )?
+        }
+
+        Ok(())
+    }
+
+    // to avoid unnecessary work between rehash_in_place and resize_inner
+    unsafe fn rehash_in_place(
+        &mut self,
+        hasher: &dyn Fn(&mut Self, usize) -> u64,
+        size_of: usize,
+        drop: Option<unsafe fn(*mut u8)>, 
+    ) {
+        self.prepare_rehash_in_place();
+
+        self.rehash_in_place_inner(hasher, size_of, self.buckets(), drop);
+    }
+
+    unsafe fn rehash_in_place_inner(
+        &mut self,
+        hasher: &dyn Fn(&mut Self, usize) -> u64,
+        size_of: usize,
+        workable_buckets: usize,
+        _drop: Option<unsafe fn(*mut u8)>,
+    ) {        
+        let instant = std::time::Instant::now();
+        
+        // since this is also called by resize inner, in that case we don't need to work on all the buckets just the area 
+        // that may contain deleted entries.
+        'outer: for i in 0..workable_buckets {
+            if *self.ctrl(i) != Tag::DELETED {
+                continue;
+            }
+
+            let i_p = self.bucket_ptr(i, size_of);
+            'inner: loop {
+                let hash = hasher(self, i);
+    
+                let new_i = self.find_insert_slot(hash);
+
+                if i == new_i {
+                    self.replace_ctrl_hash(new_i, hash);
+                    continue 'outer;
+                }
+
+                let new_i_p = self.bucket_ptr(new_i, size_of);
+                
+                let prev_ctrl = self.replace_ctrl_hash(new_i, hash);
+                if prev_ctrl == Tag::EMPTY {
+                    self.set_ctrl(i, Tag::EMPTY);
+                    std::ptr::copy_nonoverlapping(i_p, new_i_p, size_of);
+                    continue 'outer;
+                }
+                else {
+                    debug_assert_eq!(prev_ctrl, Tag::DELETED);
+                    std::ptr::swap_nonoverlapping(i_p, new_i_p, size_of);
+                    continue 'inner;
+                }
+            }
+        }
+        //println!("rehash in place took {}", instant.elapsed().as_millis());
+        self.growth_left = bucket_mask_to_capacity(self.bucket_mask) - self.items;
+    }
+
+    unsafe fn prepare_rehash_in_place(&mut self) {
+        if self.is_empty() {return;}
+
+        let mut slice = RefSliceMut::<Tag>::from_ref(self.ctrl.resolve().cast::<Tag>().into_mut(), self.buckets());
+        for i in 0..self.buckets() {
+            if slice[i].is_full() {
+                slice[i] = Tag::DELETED;
+            }
+            else {
+                slice[i] = Tag::EMPTY;
+            }
+        }
     }
 
     // I'm using alloc instead of realloc here, making an assumption about how the allocator works
     // but this gets me half the potential capacity of an object I need to do a rehash in place
     // instead but with two different sizes on the same array?
     // But once I create a sharding wrapper the amount a single object holds matters less.
-    unsafe fn resize_inner<A: Allocator>(
+    // TODO: Redo this once a real allocation function is made
+    unsafe fn resize_inner(
         &mut self,
-        alloc: &A,
+        alloc: &HashTableAlloc,
         capacity: usize,
         hasher: &dyn Fn(&mut Self, usize) -> u64,
         table_layout: &TableLayout,
     ) -> Result<()> {
         debug_assert!(self.items <= capacity);
-        println!("desired capacity: {}", capacity);
-        println!("pre_resize: {:?}", self);
-        let buckets = capacity.next_power_of_two();
 
-        let layout = table_layout.calculate_layout_for(buckets).unwrap().0;
-        let global = unsafe { alloc.alloc(layout)? };
+        let old_buckets = self.buckets();
 
-        let res_global = global.resolve_mut();
-        let mut ref_slice: RefSliceMut<'_, Tag> = unsafe { RefSliceMut::from_ref(res_global.cast::<Tag>(), buckets) };
-        ref_slice.fill_empty();
-
-        let new_bucket_mask = buckets - 1;
-
-        //let mut new_table = self.prepare_resize(alloc, table_layout, capacity)?;
-
-        // Due to invariant pointers being unable to point to static objects, we're forced to allocate memory to reference things
-        // therefore we need to check if the hashtable is null. Which is the case when the hashtable is empty. 
-        // Also since invariant pointers require existing in an object, we can't take advantage of the RawTableInner functions
-        // and thus have to duplicate their functionality but through a global pointer
-        // TODO: Find a way better way to do this.
-        if !self.is_empty() {
-            println!("hi");
-            for i in 0..self.buckets() {
-                if self.ctrl_slice()[i].is_special() { continue; }
-
-                let hash = hasher(self, i);
-                // index =  find_insert_slot
-                // prepare insert slot
-                let index = 'resize_inner_exit: {
-                    let mut probe_seq = LinearProbeSeq::new(hash, new_bucket_mask);
-
-                    for i in 0..buckets {
-                        let tag = ref_slice.get(probe_seq.pos).unwrap();
-                        if tag.is_special() {
-                            break 'resize_inner_exit probe_seq.pos;
-                        }
-
-                        probe_seq.move_next(self.bucket_mask);
-                    }
-
-                    panic!("how did we get here?");
-                };
-                ref_slice[index] = Tag::full(hash);
-
-                let new_raw_ptr = ref_slice.as_mut_ptr().cast::<u8>().add(buckets).byte_add(index * table_layout.size);
-                std::ptr::copy_nonoverlapping::<u8>(
-                    self.bucket_ptr(i, table_layout),
-                    new_raw_ptr,
-                    table_layout.size,
-                );
+        // To not waste work, we are preparing resize before we empty the tags to not operate on tags we know are empty
+        
+        // Allocate the tags in place, and empty them out
+        let buckets = std::cmp::max((capacity* 8 / 7).next_power_of_two() , 8);
+        let global = alloc.allocate(table_layout, buckets)?;
+        if !self.is_empty_singleton() {
+            self.prepare_rehash_in_place();
+            {
+                let r = self.ctrl.resolve();
+                let newly_allocated_range = r.add(self.buckets()).cast::<Tag>().into_mut();
+                let mut slice = RefSliceMut::from_ref(newly_allocated_range, buckets - self.buckets());
+                slice.fill_empty();
             }
+
+            self.bucket_mask = buckets - 1;
+            self.growth_left = bucket_mask_to_capacity(self.bucket_mask) - self.items;
+            self.rehash_in_place_inner(hasher, table_layout.size,  old_buckets, None);
         }
+        else {
+            self.ctrl = InvPtr::new(Ref::from_ptr(self), global)?;
+            self.bucket_mask = buckets - 1;
+            self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
+            self.items = 0;
 
-        // Since we are moving an invariant pointer, which depends on the object fot in which it's placed
-        // we need to readd the FOT 
-        /*let new_ctrl = new_table.ctrl.global();
-        new_table.growth_left -= self.items;
-        new_table.items = self.items;*/
-        //mem::swap(self, &mut new_table);
-
-        self.ctrl = InvPtr::new(Ref::from_ptr(self), global)?;
-        self.bucket_mask = new_bucket_mask;
-        self.growth_left = capacity - self.items;
-        println!("post resize: {:?}", self);
+            self.ctrl_slice_mut().fill_empty();
+        }
 
         Ok(())
     }
@@ -549,36 +572,29 @@ impl RawTableInner {
         self.items -= 1;
     }
 
-    unsafe fn bucket_ptr(&self, index: usize, table_layout: &TableLayout) -> *mut u8 {
-        let data_offset = table_layout.calculate_data_offset(self.buckets());
-        self.ctrl
-            .resolve()
-            .add(self.buckets() + index * table_layout.size)
-            .as_mut()
-            .raw()
+    unsafe fn bucket_ptr(&self, index: usize, layout_size: usize) -> *mut u8 {
+        let base: *mut u8 = self.ctrl.resolve().sub((index + 1) * layout_size).as_mut().raw();
+        base
     }
 
-    fn bucket<T: Invariant>(&self, index: usize) -> Ref<T> {
+    unsafe fn bucket<T: Invariant>(&self, index: usize) -> Ref<T> {
         unsafe {
             self.ctrl
                 .resolve()
-                .add(self.buckets())
                 .cast::<T>()
-                .add(index)
+                .sub(index + 1)
         }
     }
 
-    // Gets the pointer to the first bucket
-    fn data_ref(&self, table_layout: &TableLayout) -> Ref<'_, u8> {
-        let data_offset = table_layout.calculate_data_offset(self.buckets());
-        unsafe { self.ctrl.resolve().add(self.buckets()) }
+    unsafe fn replace_ctrl_hash(&mut self, index: usize, hash: u64) -> Tag {
+        let prev_ctrl = *self.ctrl(index);
+        self.set_ctrl_hash(index, hash);
+        prev_ctrl
     }
 
-    // Gets the pointer to the first bucket
-    unsafe fn data_ref_mut(&self, table_layout: &TableLayout) -> RefMut<'_, u8> {
-        let data_offset = table_layout.calculate_data_offset(self.buckets());
-        self.ctrl.resolve().add(data_offset).as_mut()
-    }
+    unsafe fn ctrl(&self, index: usize) -> *mut Tag {
+        self.ctrl.resolve().add(index).into_mut().raw().cast()
+    } 
 
     unsafe fn set_ctrl_hash(&mut self, index: usize, hash: u64) {
         self.set_ctrl(index, Tag::full(hash));

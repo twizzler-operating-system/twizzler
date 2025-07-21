@@ -5,6 +5,7 @@ use core::{
     ptr,
 };
 
+#[allow(dead_code)]
 pub struct ScopeGuard<T, F>
 where
     F: FnMut(&mut T),
@@ -14,6 +15,7 @@ where
 }
 
 #[inline]
+#[allow(dead_code)]
 pub fn guard<T, F>(value: T, dropfn: F) -> ScopeGuard<T, F>
 where
     F: FnMut(&mut T),
@@ -21,6 +23,7 @@ where
     ScopeGuard { dropfn, value }
 }
 
+#[allow(dead_code)]
 impl<T, F> ScopeGuard<T, F>
 where
     F: FnMut(&mut T),
