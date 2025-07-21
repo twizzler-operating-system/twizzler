@@ -23,6 +23,8 @@ pub enum ObjectControlCmd {
     Delete(DeleteFlags),
     /// Sync an entire object (non-transactionally)
     Sync,
+    /// Preload an object's data
+    Preload,
 }
 
 impl From<ObjectControlCmd> for (u64, u64) {
@@ -31,6 +33,7 @@ impl From<ObjectControlCmd> for (u64, u64) {
             ObjectControlCmd::CreateCommit => (0, 0),
             ObjectControlCmd::Delete(x) => (1, x.bits()),
             ObjectControlCmd::Sync => (2, 0),
+            ObjectControlCmd::Preload => (3, 0),
         }
     }
 }
@@ -44,6 +47,7 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
                 DeleteFlags::from_bits(value.1).ok_or(ArgumentError::InvalidArgument)?,
             ),
             2 => ObjectControlCmd::Sync,
+            3 => ObjectControlCmd::Preload,
             _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }
