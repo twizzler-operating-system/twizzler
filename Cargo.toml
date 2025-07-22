@@ -51,7 +51,7 @@ members = [
     #"src/ports/candle-test",
 
     "src/bin/sec",
-    
+
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
     #"src/bin/random_validation",
@@ -61,13 +61,14 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-  "src/bin/ptest",
-  #"src/bin/sqlite_test",
+    "src/bin/stdnet_test",
+    "src/bin/ptest",
+    #"src/bin/sqlite_test",
     "src/bin/ptest",
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest",  
+    "src/bin/schedtest",
     "src/bin/sec",
     "src/bin/gfxtest",
 
