@@ -255,7 +255,7 @@ impl RunCompLoader {
             extra_lids.as_slice(),
         )?;
 
-        if true || mondebug {
+        if mondebug {
             let print_comp = |cmp: &LoadInfo| -> miette::Result<()> {
                 let dcmp = dynlink.get_compartment(cmp.comp_id)?;
                 tracing::info!("Loaded libraries for {}:", &dcmp.name);

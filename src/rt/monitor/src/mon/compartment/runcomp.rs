@@ -314,9 +314,6 @@ impl RunComp {
         debug_assert!(self.main.is_none());
         // Unwrap-Ok: we only take this once, when starting the main thread.
         let (stack, entry, ctors) = self.init_info.take().unwrap();
-        for c in &ctors {
-            tracing::info!("==> {:?}", c);
-        }
         let mut build_init_info = || -> Option<_> {
             let comp_config_info =
                 self.comp_config_object.get_comp_config() as *mut SharedCompConfig;

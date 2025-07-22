@@ -41,6 +41,7 @@ impl ReferenceRuntime {
         self.get_alloc()
     }
 
+    #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
             twizzler_abi::syscall::sys_thread_exit(code as u64);
@@ -235,7 +236,6 @@ impl ReferenceRuntime {
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {
         for ctor in ctor_array {
-            twizzler_abi::klog_println!("run ctors: {:?}", ctor);
             unsafe {
                 if let Some(legacy_init) = ctor.legacy_init {
                     (core::mem::transmute::<_, extern "C" fn()>(legacy_init))();
@@ -246,7 +246,6 @@ impl ReferenceRuntime {
                         ctor.init_array_len,
                     );
                     for call in init_slice.iter().cloned() {
-                        twizzler_abi::klog_println!("call: {}", call);
                         (core::mem::transmute::<_, extern "C" fn()>(call))();
                     }
                 }
@@ -266,30 +265,3 @@ impl ReferenceRuntime {
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
 }
-
-#[allow(improper_ctypes)]
-extern "C" {
-    fn twizzler_call_lang_start(
-        main: fn(),
-        argc: isize,
-        argv: *const *const u8,
-        sigpipe: u8,
-    ) -> isize;
-}
-
-#[no_mangle]
-#[linkage = "weak"]
-pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
-    //TODO: sigpipe?
-    unsafe { twizzler_call_lang_start(dead_end, argc as isize, argv, 0) as i32 }
-}
-
-fn dead_end() {
-    twizzler_abi::syscall::sys_thread_exit(0);
-}
-
-// TODO: we should probably get this for real.
-#[cfg(not(test))]
-#[no_mangle]
-#[linkage = "weak"]
-pub extern "C" fn _init() {}
