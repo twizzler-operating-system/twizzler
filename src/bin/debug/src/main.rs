@@ -30,7 +30,7 @@ struct Cli {
 fn main() -> miette::Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::TRACE)
             .finish(),
     )
     .into_diagnostic()?;

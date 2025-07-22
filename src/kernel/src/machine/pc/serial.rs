@@ -7,6 +7,7 @@ use core::{
 use crate::{
     interrupt::{Destination, TriggerMode},
     once::Once,
+    panic::is_panicing,
 };
 
 pub struct SerialPort {
@@ -146,6 +147,9 @@ impl<T> SimpleLock<T> {
     }
     fn lock(&self) -> SimpleGuard<'_, T> {
         let int = crate::interrupt::disable();
+        if is_panicing() {
+            return SimpleGuard { lock: self, int };
+        }
         while self
             .state
             .compare_exchange_weak(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -215,35 +219,64 @@ pub fn late_init() {
         crate::interrupt::PinPolarity::ActiveHigh,
         Destination::Bsp,
     );
+    crate::arch::set_interrupt(
+        35,
+        false,
+        TriggerMode::Edge,
+        crate::interrupt::PinPolarity::ActiveHigh,
+        Destination::Bsp,
+    );
     interrupt_handler();
 }
 
-pub fn interrupt_handler() {
-    let mut serial = serial1().lock();
+fn do_interrupt(serial: &mut SerialPort, mut buf: &mut [u8]) -> usize {
     let status = serial.read_iid();
+    let mut count = 0;
     match (status >> 1) & 7 {
         0 => {
             let _msr = serial.read_modem_status();
+            0
         }
         _ => loop {
             let x = serial.receive();
-            drop(serial);
-            crate::log::push_input_byte(x);
-            serial = serial1().lock();
-            if !serial.line_sts().contains(LineStsFlags::INPUT_FULL) {
-                break;
+            buf[0] = x;
+            buf = &mut buf[1..];
+            count += 1;
+            if !serial.line_sts().contains(LineStsFlags::INPUT_FULL) || buf.len() == 0 {
+                break count;
             }
         },
     }
 }
 
-pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
+pub fn interrupt_handler() {
+    let mut serial = serial1().lock();
+    let mut buf = [0; 128];
+    let count = do_interrupt(&mut *serial, &mut buf);
+    drop(serial);
+    for b in &buf[0..count] {
+        crate::log::push_input_byte(*b, false);
+    }
+
+    let mut serial = serial2().lock();
+    let mut buf = [0; 128];
+    let count = do_interrupt(&mut *serial, &mut buf);
+    drop(serial);
+    for b in &buf[0..count] {
+        crate::log::push_input_byte(*b, true);
+    }
+}
+
+pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bool) {
     unsafe {
-        let _ = serial1()
-            .lock()
-            .write_str(core::str::from_utf8_unchecked(data));
-        let _ = serial2()
-            .lock()
-            .write_str(core::str::from_utf8_unchecked(data));
+        if debug {
+            let _ = serial2()
+                .lock()
+                .write_str(core::str::from_utf8_unchecked(data));
+        } else {
+            let _ = serial1()
+                .lock()
+                .write_str(core::str::from_utf8_unchecked(data));
+        }
     }
 }

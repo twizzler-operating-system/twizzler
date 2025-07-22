@@ -3,6 +3,7 @@
 use std::{
     fs::File,
     io::{Read, Write},
+    num::NonZero,
     os::fd::{AsFd, FromRawFd},
     time::Duration,
 };
@@ -22,7 +23,7 @@ use gdbstub::{
     },
 };
 use miette::IntoDiagnostic;
-use monitor_api::CompartmentHandle;
+use monitor_api::{CompartmentFlags, CompartmentHandle};
 use twizzler_abi::syscall::{KernelConsoleReadFlags, KernelConsoleWriteFlags};
 use twizzler_rt_abi::error::TwzError;
 
@@ -56,7 +57,7 @@ impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
                     .read()
                     .map_err(|e| WaitForStopReasonError::Connection(e))?;
                 return Ok(Event::IncomingData(byte));
-            } else if false {
+            } else if target.comp.info().flags.contains(CompartmentFlags::EXITED) {
                 return Ok(Event::TargetStopped(MultiThreadStopReason::Exited(0)));
             } else {
                 std::thread::sleep(Duration::from_millis(10));
@@ -121,7 +122,8 @@ impl MultiThreadBase for TwizzlerTarget {
         &mut self,
         thread_is_active: &mut dyn FnMut(gdbstub::common::Tid),
     ) -> Result<(), Self::Error> {
-        todo!()
+        thread_is_active(NonZero::new(1).unwrap());
+        Ok(())
     }
 }
 
@@ -191,7 +193,10 @@ impl Connection for TwizzlerConn {
     type Error = TwzError;
 
     fn write(&mut self, byte: u8) -> Result<(), Self::Error> {
-        twizzler_abi::syscall::sys_kernel_console_write(&[byte], KernelConsoleWriteFlags::empty());
+        twizzler_abi::syscall::sys_kernel_console_write(
+            &[byte],
+            KernelConsoleWriteFlags::DEBUG_CONSOLE,
+        );
         Ok(())
     }
 
@@ -206,7 +211,7 @@ impl ConnectionExt for TwizzlerConn {
             return Ok(byte);
         }
         let mut bytes = [0];
-        let r = twizzler_abi::syscall::sys_kernel_console_read(
+        let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
             &mut bytes,
             KernelConsoleReadFlags::empty(),
         )?;
@@ -222,7 +227,7 @@ impl ConnectionExt for TwizzlerConn {
             return Ok(Some(*byte));
         }
         let mut bytes = [0];
-        let r = twizzler_abi::syscall::sys_kernel_console_read(
+        let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
             &mut bytes,
             KernelConsoleReadFlags::NONBLOCKING,
         );

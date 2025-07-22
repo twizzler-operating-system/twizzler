@@ -6,7 +6,8 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleReadSource, MapFlags, ReadClockListFlags, SysInfo, Syscall,
+        KernelConsoleReadSource, KernelConsoleWriteFlags, MapFlags, ReadClockListFlags, SysInfo,
+        Syscall,
     },
 };
 use twizzler_rt_abi::{
@@ -61,7 +62,11 @@ unsafe fn create_user_nullable_ptr<'a, T>(ptr: u64) -> Option<Option<&'a mut T>>
 }
 
 fn sys_kernel_console_write(data: &[u8], flags: twizzler_abi::syscall::KernelConsoleWriteFlags) {
-    let _res = crate::log::write_bytes(data, flags.into());
+    if flags.contains(KernelConsoleWriteFlags::DEBUG_CONSOLE) {
+        let _res = crate::log::write_bytes(data, flags.into(), true);
+    } else {
+        let _res = crate::log::write_bytes(data, flags.into(), false);
+    }
 }
 
 fn type_sys_object_create(
@@ -279,12 +284,19 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let source: KernelConsoleReadSource = source.into();
             let res: Result<_> = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
                 match source {
+                    KernelConsoleReadSource::DebugConsole => {
+                        let flags =
+                            twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
+                                context.arg3(),
+                            );
+                        crate::log::read_bytes(slice, flags, true).map_err(|x| x.into())
+                    }
                     KernelConsoleReadSource::Console => {
                         let flags =
                             twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
                                 context.arg3(),
                             );
-                        crate::log::read_bytes(slice, flags).map_err(|x| x.into())
+                        crate::log::read_bytes(slice, flags, false).map_err(|x| x.into())
                     }
                     KernelConsoleReadSource::Buffer => {
                         let _flags =

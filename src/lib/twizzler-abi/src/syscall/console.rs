@@ -13,6 +13,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u64)]
 /// Possible sources for a kernel console read syscall.
 pub enum KernelConsoleReadSource {
@@ -20,6 +21,8 @@ pub enum KernelConsoleReadSource {
     Console = 0,
     /// Read from the kernel write buffer.
     Buffer = 1,
+    /// Read from the debug console.
+    DebugConsole = 2,
 }
 
 impl From<KernelConsoleReadSource> for u64 {
@@ -32,6 +35,7 @@ impl From<u64> for KernelConsoleReadSource {
     fn from(x: u64) -> Self {
         match x {
             1 => Self::Buffer,
+            2 => Self::DebugConsole,
             _ => Self::Console,
         }
     }
@@ -56,6 +60,24 @@ pub fn sys_kernel_console_read(buffer: &mut [u8], flags: KernelConsoleReadFlags)
             Syscall::KernelConsoleRead,
             &[
                 KernelConsoleReadSource::Console.into(),
+                buffer.as_mut_ptr() as u64,
+                buffer.len() as u64,
+                flags.into(),
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
+}
+
+pub fn sys_kernel_console_read_debug(
+    buffer: &mut [u8],
+    flags: KernelConsoleReadFlags,
+) -> Result<usize> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::KernelConsoleRead,
+            &[
+                KernelConsoleReadSource::DebugConsole.into(),
                 buffer.as_mut_ptr() as u64,
                 buffer.len() as u64,
                 flags.into(),
@@ -111,6 +133,8 @@ bitflags! {
     pub struct KernelConsoleWriteFlags: u64 {
         /// If the buffer is full, discard this write instead of overwriting old data.
         const DISCARD_ON_FULL = 1;
+        /// Write directly to the debug kernel device, if present.
+        const DEBUG_CONSOLE = 2;
     }
 }
 

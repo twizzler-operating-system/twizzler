@@ -547,7 +547,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         34 => {
             // TODO (urgent): why is this being raised?
         }
-        36 => {
+        36 | 35 => {
             crate::machine::serial::interrupt_handler();
         }
         _ => crate::interrupt::external_interrupt_entry(number as u32),

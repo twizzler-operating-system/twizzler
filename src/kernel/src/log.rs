@@ -263,22 +263,35 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     }
 }
 
-pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
+pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags, debug: bool) -> Result<()> {
     let writer = KernelConsoleRef {
-        console: &NORMAL_CONSOLE,
+        console: if debug {
+            &DEBUG_CONSOLE
+        } else {
+            &NORMAL_CONSOLE
+        },
     };
     writer.write(slice, flags)
 }
 
-pub fn read_bytes(slice: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
-    NORMAL_CONSOLE.read_bytes(slice, flags)
+pub fn read_bytes(slice: &mut [u8], flags: KernelConsoleReadFlags, debug: bool) -> Result<usize> {
+    if debug {
+        DEBUG_CONSOLE.read_bytes(slice, flags)
+    } else {
+        NORMAL_CONSOLE.read_bytes(slice, flags)
+    }
 }
 
 pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize> {
     NORMAL_CONSOLE.read_buffer_bytes(slice)
 }
 
-pub fn push_input_byte(byte: u8) {
+pub fn push_input_byte(byte: u8, debug: bool) {
+    if debug {
+        DEBUG_CONSOLE.read_lock.lock().push_input_byte(byte);
+        DEBUG_CONSOLE.read_cv.signal();
+        return;
+    }
     let byte = match byte {
         13 => 10,
         127 => 8,
@@ -291,7 +304,7 @@ pub fn push_input_byte(byte: u8) {
 static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, EmergencyMessage> =
     KernelConsole {
         inner: &KERNEL_CONSOLE_MAIN,
-        hardware: crate::machine::MachineConsoleHardware::new(),
+        hardware: crate::machine::MachineConsoleHardware::new(false),
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
@@ -301,12 +314,35 @@ static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, 
 static NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
     KernelConsole {
         inner: &KERNEL_CONSOLE_MAIN,
-        hardware: crate::machine::MachineConsoleHardware::new(),
+        hardware: crate::machine::MachineConsoleHardware::new(false),
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
         read_cv: CondVar::new(),
     };
+
+static DEBUG_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
+    KernelConsole {
+        inner: &KERNEL_CONSOLE_MAIN,
+        hardware: crate::machine::MachineConsoleHardware::new(true),
+        _pd: core::marker::PhantomData,
+        lock: Spinlock::new(()),
+        read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
+        read_cv: CondVar::new(),
+    };
+
+#[doc(hidden)]
+pub fn _print_debug(args: ::core::fmt::Arguments) {
+    let istate = interrupt::disable();
+    {
+        let _guard = DEBUG_CONSOLE.lock.lock();
+        let mut writer = KernelConsoleRef {
+            console: &DEBUG_CONSOLE,
+        };
+        writer.write_fmt(args).expect("printing to serial failed");
+    }
+    interrupt::set(istate);
+}
 
 #[doc(hidden)]
 pub fn _print_normal(args: ::core::fmt::Arguments) {
