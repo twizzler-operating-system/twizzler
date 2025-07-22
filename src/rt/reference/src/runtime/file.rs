@@ -1,12 +1,10 @@
 use std::{
-    ffi::c_void,
-    io::{ErrorKind, Read, SeekFrom, Write},
-    sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    ffi::c_void, io::{ErrorKind, Read, SeekFrom, Write}, net::TcpListener, sync::{Arc, Mutex, OnceLock}, time::Duration
 };
 
 use bitflags::bitflags;
 use file_desc::FileDesc;
+use socket::SocketKind;
 use lazy_static::lazy_static;
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
@@ -33,6 +31,7 @@ use super::ReferenceRuntime;
 
 mod file_desc;
 mod raw_file;
+mod socket;
 
 #[derive(Clone)]
 enum FdKind {
@@ -41,6 +40,7 @@ enum FdKind {
     Stdio,
     Dir(ObjID),
     SymLink,
+    Socket(SocketKind),
 }
 
 impl FdKind {
@@ -114,6 +114,7 @@ impl Read for FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
+            FdKind::Socket(socket) => socket.read(buf),
         }
     }
 }
@@ -133,6 +134,7 @@ impl Write for FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
+            FdKind::Socket(socket) => socket.write(buf),
         }
     }
 
@@ -143,6 +145,7 @@ impl Write for FdKind {
             FdKind::Stdio => Ok(()),
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
+            FdKind::Socket(socket) => socket.flush(),
         }
     }
 }
@@ -335,13 +338,38 @@ impl ReferenceRuntime {
 
     pub fn open_anon(
         &self,
-        _kind: OpenAnonKind,
+        kind: OpenAnonKind,
         open_opt: OperationOptions,
-        _bind_info: *mut c_void,
+        bind_info: *mut c_void,
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<RawFd> {
-        let elem = FdKind::Stdio;
+        let elem = match kind {
+            OpenAnonKind::Pipe => FdKind::Stdio, //TODO: make sure this is correct
+            OpenAnonKind::SocketConnect => {
+                let addr = bind_info as *const std::net::SocketAddr;
+                FdKind::Socket(SocketKind::connect(unsafe { &*addr })?)
+            }
+            OpenAnonKind::SocketBind => {
+                let addr = bind_info as *const std::net::SocketAddr;
+                FdKind::Socket(SocketKind::bind(unsafe { &*addr })?)
+            }
+            OpenAnonKind::SocketAccept => {
+                let fd = bind_info as *const RawFd;
+                let binding = get_fd_slots().lock().unwrap();
+                let Some(fd) = binding.get(unsafe { *fd as usize }) else {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                };
+                
+                let socket = match fd {
+                    FdKind::Socket(socket) => socket.clone(),
+                    _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid socket kind").into()),
+                };
+                drop(binding);
+
+                FdKind::Socket(SocketKind::accept(&socket)?)
+            }
+        };
 
         let mut binding = get_fd_slots().lock().unwrap();
 

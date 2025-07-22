@@ -15,6 +15,7 @@ tracing-subscriber = { workspace = true }
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 dynlink = { workspace = true }
 bitflags = "2.4"
+smoltcp = "0.11.0"
 talc = { workspace = true }
 lazy_static = { workspace = true }
 atomic = { workspace = true }
