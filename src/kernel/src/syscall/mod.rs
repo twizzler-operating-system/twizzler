@@ -282,14 +282,14 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
                     KernelConsoleReadSource::Console => {
                         let flags =
                             twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
-                                context.arg2(),
+                                context.arg3(),
                             );
                         crate::log::read_bytes(slice, flags).map_err(|x| x.into())
                     }
                     KernelConsoleReadSource::Buffer => {
                         let _flags =
                             twizzler_abi::syscall::KernelConsoleReadBufferFlags::from_bits_truncate(
-                                context.arg2(),
+                                context.arg3(),
                             );
                         crate::log::read_buffer_bytes(slice).map_err(|x| x.into())
                     }

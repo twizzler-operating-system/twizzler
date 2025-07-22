@@ -6,6 +6,7 @@ use crate::arch::syscall::raw_syscall;
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read].
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub struct KernelConsoleReadFlags: u64 {
         /// If the read would block, return instead.
         const NONBLOCKING = 1;
@@ -66,6 +67,7 @@ pub fn sys_kernel_console_read(buffer: &mut [u8], flags: KernelConsoleReadFlags)
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_read_buffer].
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub struct KernelConsoleReadBufferFlags: u64 {
         /// If the operation would block, return instead.
         const NONBLOCKING = 1;
@@ -105,6 +107,7 @@ pub fn sys_kernel_console_read_buffer(
 
 bitflags! {
     /// Flags to pass to [sys_kernel_console_write].
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     pub struct KernelConsoleWriteFlags: u64 {
         /// If the buffer is full, discard this write instead of overwriting old data.
         const DISCARD_ON_FULL = 1;
