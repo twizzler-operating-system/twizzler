@@ -14,10 +14,10 @@
 	url = ../../twizzler-operating-system/tiny-http-twizzler.git
 [submodule "src/srv/pager-srv/object-store"]
 	path = src/srv/pager-srv/object-store
-	url = https://github.com/twizzler-operating-system/object-store.git
+	url = ../../twizzler-operating-system/object-store.git
 [submodule "toolchain/src/mlibc"]
 	path = toolchain/src/mlibc
-	url = https://github.com/twizzler-operating-system/mlibc.git
+	url = ../../twizzler-operating-system/mlibc.git
 [submodule "src/ports/lwext4-rs/lwext4"]
 	path = src/ports/lwext4-rs/lwext4
 	url = ../../twizzler-operating-system/lwext4.git
