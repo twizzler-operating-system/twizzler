@@ -5,6 +5,12 @@ use std::{
     io::{Read, Write},
     num::NonZero,
     os::fd::{AsFd, FromRawFd},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -29,6 +35,39 @@ use twizzler_rt_abi::error::TwzError;
 
 pub struct TwizzlerGdb {}
 
+type ChanMsg = Event<MultiThreadStopReason<u64>>;
+
+impl TwizzlerGdb {
+    fn mon_main(inner: Arc<TargetInner>) {
+        let mut flags: CompartmentFlags = inner.comp.info().flags;
+        while !inner.done.load(Ordering::SeqCst) {
+            if flags.contains(CompartmentFlags::EXITED) {
+                let _ = inner
+                    .send
+                    .send(Event::TargetStopped(MultiThreadStopReason::Exited(
+                        0, //inner.comp.info().code,
+                    )));
+                break;
+            }
+            flags = inner.comp.wait(flags);
+        }
+    }
+
+    fn chan_main(inner: Arc<TargetInner>) {
+        while !inner.done.load(Ordering::SeqCst) {
+            let mut bytes = [0];
+            let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
+                &mut bytes,
+                KernelConsoleReadFlags::empty(),
+            );
+            if matches!(r, Ok(1)) {
+                inner.conn.send(bytes[0]);
+            }
+            inner.send.send(Event::IncomingData(0));
+        }
+    }
+}
+
 impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
     type Target = TwizzlerTarget;
 
@@ -42,44 +81,83 @@ impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
     ) -> Result<
         Event<Self::StopReason>,
         WaitForStopReasonError<
-            <Self::Target as gdbstub::target::Target>::Error,
-            <Self::Connection as gdbstub::conn::Connection>::Error,
+            <Self::Target as Target>::Error,
+            <Self::Connection as Connection>::Error,
         >,
     > {
-        tracing::debug!("waiting for stop reason or data");
         loop {
-            if conn
-                .peek()
-                .map_err(|e| WaitForStopReasonError::Connection(e))?
-                .is_some()
-            {
-                let byte = conn
-                    .read()
-                    .map_err(|e| WaitForStopReasonError::Connection(e))?;
-                return Ok(Event::IncomingData(byte));
-            } else if target.comp.info().flags.contains(CompartmentFlags::EXITED) {
-                return Ok(Event::TargetStopped(MultiThreadStopReason::Exited(0)));
-            } else {
-                std::thread::sleep(Duration::from_millis(10));
+            let event = target.recv.recv().unwrap();
+            match event {
+                Event::IncomingData(_) => {
+                    if conn
+                        .peek()
+                        .map_err(|e| WaitForStopReasonError::Connection(e))?
+                        .is_some()
+                    {
+                        let byte = conn
+                            .read()
+                            .map_err(|e| WaitForStopReasonError::Connection(e))?;
+                        return Ok(Event::IncomingData(byte));
+                    }
+                }
+                Event::TargetStopped(_) => {
+                    return Ok(event);
+                }
             }
         }
     }
 
     fn on_interrupt(
         target: &mut Self::Target,
-    ) -> Result<Option<Self::StopReason>, <Self::Target as gdbstub::target::Target>::Error> {
+    ) -> Result<Option<Self::StopReason>, <Self::Target as Target>::Error> {
         // TODO
         Ok(None)
     }
 }
 
-pub struct TwizzlerTarget {
+pub struct TargetInner {
+    done: AtomicBool,
     comp: CompartmentHandle,
+    send: Sender<ChanMsg>,
+    conn: Sender<u8>,
+}
+
+pub struct TwizzlerTarget {
+    recv: Receiver<ChanMsg>,
+    inner: Arc<TargetInner>,
+    mon_t: JoinHandle<()>,
+    chan_t: JoinHandle<()>,
+}
+
+impl Drop for TwizzlerTarget {
+    fn drop(&mut self) {
+        self.inner.done.store(true, Ordering::SeqCst);
+    }
 }
 
 impl TwizzlerTarget {
-    pub fn new(comp: CompartmentHandle) -> Self {
-        Self { comp }
+    pub fn new(comp: CompartmentHandle, conn: Sender<u8>) -> Self {
+        let (send, recv) = std::sync::mpsc::channel();
+        let inner = Arc::new(TargetInner {
+            done: AtomicBool::new(false),
+            comp,
+            send,
+            conn,
+        });
+        let inner_t = inner.clone();
+        let chan_t = std::thread::spawn(|| {
+            TwizzlerGdb::chan_main(inner_t);
+        });
+        let inner_t = inner.clone();
+        let mon_t = std::thread::spawn(|| {
+            TwizzlerGdb::mon_main(inner_t);
+        });
+        Self {
+            recv,
+            inner,
+            mon_t,
+            chan_t,
+        }
     }
 }
 
@@ -89,7 +167,7 @@ impl MultiThreadBase for TwizzlerTarget {
         regs: &mut <Self::Arch as gdbstub::arch::Arch>::Registers,
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<(), Self> {
-        todo!()
+        Ok(())
     }
 
     fn write_registers(
@@ -97,7 +175,7 @@ impl MultiThreadBase for TwizzlerTarget {
         regs: &<Self::Arch as gdbstub::arch::Arch>::Registers,
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<(), Self> {
-        todo!()
+        Ok(())
     }
 
     fn read_addrs(
@@ -106,7 +184,7 @@ impl MultiThreadBase for TwizzlerTarget {
         data: &mut [u8],
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<usize, Self> {
-        todo!()
+        Ok(0)
     }
 
     fn write_addrs(
@@ -115,7 +193,7 @@ impl MultiThreadBase for TwizzlerTarget {
         data: &[u8],
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<(), Self> {
-        todo!()
+        Ok(())
     }
 
     fn list_active_threads(
@@ -153,7 +231,7 @@ impl SwBreakpoint for TwizzlerTarget {
         addr: <Self::Arch as gdbstub::arch::Arch>::Usize,
         kind: <Self::Arch as gdbstub::arch::Arch>::BreakpointKind,
     ) -> gdbstub::target::TargetResult<bool, Self> {
-        todo!()
+        Ok(false)
     }
 
     fn remove_sw_breakpoint(
@@ -161,7 +239,7 @@ impl SwBreakpoint for TwizzlerTarget {
         addr: <Self::Arch as gdbstub::arch::Arch>::Usize,
         kind: <Self::Arch as gdbstub::arch::Arch>::BreakpointKind,
     ) -> gdbstub::target::TargetResult<bool, Self> {
-        todo!()
+        Ok(false)
     }
 }
 
@@ -181,11 +259,12 @@ impl Target for TwizzlerTarget {
 
 pub struct TwizzlerConn {
     peek: Option<u8>,
+    recv: Receiver<u8>,
 }
 
 impl TwizzlerConn {
-    pub fn new() -> Self {
-        Self { peek: None }
+    pub fn new(recv: Receiver<u8>) -> Self {
+        Self { peek: None, recv }
     }
 }
 
@@ -210,34 +289,18 @@ impl ConnectionExt for TwizzlerConn {
         if let Some(byte) = self.peek.take() {
             return Ok(byte);
         }
-        let mut bytes = [0];
-        let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
-            &mut bytes,
-            KernelConsoleReadFlags::empty(),
-        )?;
-        if r == 0 {
-            std::thread::sleep(Duration::from_millis(10));
-            return self.read();
-        }
-        Ok(bytes[0])
+        Ok(self.recv.recv().unwrap())
     }
 
     fn peek(&mut self) -> Result<Option<u8>, Self::Error> {
         if let Some(byte) = &self.peek {
             return Ok(Some(*byte));
         }
-        let mut bytes = [0];
-        let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
-            &mut bytes,
-            KernelConsoleReadFlags::NONBLOCKING,
-        );
-        if matches!(r, Err(TwzError::WOULD_BLOCK)) {
-            return Ok(None);
+        if let Ok(byte) = self.recv.try_recv() {
+            self.peek = Some(byte);
+            Ok(Some(byte))
+        } else {
+            Ok(None)
         }
-        if r? == 0 {
-            return Ok(None);
-        }
-        self.peek = Some(bytes[0]);
-        Ok(Some(bytes[0]))
     }
 }

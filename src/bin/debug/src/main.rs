@@ -30,7 +30,7 @@ struct Cli {
 fn main() -> miette::Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_max_level(tracing::Level::DEBUG)
             .finish(),
     )
     .into_diagnostic()?;
@@ -57,8 +57,9 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
     comp.args(&run_cli.cmdline);
     let comp = comp.load().into_diagnostic()?;
 
-    let gdb = GdbStub::new(TwizzlerConn::new());
-    let mut target = TwizzlerTarget::new(comp);
+    let (send, recv) = std::sync::mpsc::channel();
+    let gdb = GdbStub::new(TwizzlerConn::new(recv));
+    let mut target = TwizzlerTarget::new(comp, send);
     let r = gdb
         .run_blocking::<TwizzlerGdb>(&mut target)
         .into_diagnostic()?;
