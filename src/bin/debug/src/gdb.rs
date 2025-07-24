@@ -2,13 +2,14 @@
 
 use core::slice;
 use std::{
-    fs::File,
+    collections::HashMap,
+    fs::{File, OpenOptions},
     io::{Read, Write},
     num::NonZero,
     os::fd::{AsFd, FromRawFd},
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{Receiver, Sender},
     },
     thread::JoinHandle,
@@ -16,9 +17,10 @@ use std::{
 };
 
 use gdbstub::{
+    common::Signal,
     conn::{Connection, ConnectionExt},
     stub::{
-        MultiThreadStopReason,
+        BaseStopReason, MultiThreadStopReason,
         run_blocking::{Event, WaitForStopReasonError},
     },
     target::{
@@ -29,6 +31,9 @@ use gdbstub::{
                 multithread::{MultiThreadBase, MultiThreadResume, MultiThreadResumeOps},
             },
             breakpoints::{Breakpoints, SwBreakpoint},
+            exec_file::ExecFile,
+            host_io::{HostIo, HostIoErrno, HostIoError, HostIoOpen, HostIoPread},
+            libraries::LibrariesSvr4,
         },
     },
 };
@@ -198,8 +203,11 @@ impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
     fn on_interrupt(
         target: &mut Self::Target,
     ) -> Result<Option<Self::StopReason>, <Self::Target as Target>::Error> {
-        // TODO
-        Ok(None)
+        twizzler_abi::syscall::sys_thread_change_state(
+            target.get_thread_repr_id(NonZero::new(1).unwrap()),
+            ExecutionState::Running,
+        )?;
+        Ok(Some(BaseStopReason::Signal(Signal::SIGINT)))
     }
 }
 
@@ -208,6 +216,65 @@ pub struct TargetInner {
     comp: CompartmentHandle,
     send: Sender<ChanMsg>,
     conn: Sender<u8>,
+    files: Mutex<FileMgr>,
+}
+
+struct FileMgr {
+    next: u32,
+    map: HashMap<u32, File>,
+}
+
+impl FileMgr {
+    fn new() -> Self {
+        Self {
+            next: 1,
+            map: HashMap::new(),
+        }
+    }
+
+    fn open(
+        &mut self,
+        filename: &str,
+        flags: &std::fs::OpenOptions,
+    ) -> Result<u32, std::io::Error> {
+        let file = flags.open(filename)?;
+        let fd = self.next;
+        self.next += 1;
+        self.map.insert(fd, file);
+        Ok(fd)
+    }
+
+    fn pread(&mut self, fd: u32, buf: &mut [u8], offset: u64) -> Result<usize, std::io::Error> {
+        if let Some(file) = self.map.get_mut(&fd) {
+            use std::io::{Seek, SeekFrom};
+            let current_pos = file.stream_position()?;
+            file.seek(SeekFrom::Start(offset))?;
+            let bytes_read = file.read(buf)?;
+            file.seek(SeekFrom::Start(current_pos))?;
+            Ok(bytes_read)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid file descriptor",
+            ))
+        }
+    }
+
+    fn pwrite(&mut self, fd: u32, buf: &[u8], offset: u64) -> Result<usize, std::io::Error> {
+        if let Some(file) = self.map.get_mut(&fd) {
+            use std::io::{Seek, SeekFrom};
+            let current_pos = file.stream_position()?;
+            file.seek(SeekFrom::Start(offset))?;
+            let bytes_written = file.write(buf)?;
+            file.seek(SeekFrom::Start(current_pos))?;
+            Ok(bytes_written)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid file descriptor",
+            ))
+        }
+    }
 }
 
 pub struct TwizzlerTarget {
@@ -216,6 +283,7 @@ pub struct TwizzlerTarget {
     mon_t: JoinHandle<()>,
     chan_t: JoinHandle<()>,
     thread_repr_id: ObjID,
+    libs: Vec<(String, ObjID)>,
 }
 
 impl Drop for TwizzlerTarget {
@@ -232,11 +300,16 @@ impl TwizzlerTarget {
             .nth(0)
             .map(|t| t.repr_id)
             .unwrap_or(ObjID::new(0));
+        let libs = comp
+            .libs()
+            .map(|l| (l.info().name.clone(), l.info().objid))
+            .collect();
         let inner = Arc::new(TargetInner {
             done: AtomicBool::new(false),
             comp,
             send,
             conn,
+            files: Mutex::new(FileMgr::new()),
         });
         let inner_t = inner.clone();
         let chan_t = std::thread::spawn(|| {
@@ -253,6 +326,7 @@ impl TwizzlerTarget {
             mon_t,
             chan_t,
             thread_repr_id,
+            libs,
         }
     }
 
@@ -407,6 +481,85 @@ impl MultiThreadResume for TwizzlerTarget {
     }
 }
 
+impl ExecFile for TwizzlerTarget {
+    fn get_exec_file(
+        &self,
+        pid: Option<gdbstub::common::Pid>,
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> gdbstub::target::TargetResult<usize, Self> {
+        let name = self.libs[0].0.as_bytes();
+        let offset = offset as usize;
+        let copy_len = length.min(buf.len()).min(name.len().saturating_sub(offset));
+        if copy_len > 0 {
+            (&mut buf[0..copy_len]).copy_from_slice(&name[offset..(copy_len + offset)]);
+        }
+        Ok(copy_len)
+    }
+}
+
+impl LibrariesSvr4 for TwizzlerTarget {
+    fn get_libraries_svr4(
+        &self,
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> gdbstub::target::TargetResult<usize, Self> {
+        Ok(0)
+    }
+}
+
+impl HostIoOpen for TwizzlerTarget {
+    fn open(
+        &mut self,
+        filename: &[u8],
+        flags: gdbstub::target::ext::host_io::HostIoOpenFlags,
+        mode: gdbstub::target::ext::host_io::HostIoOpenMode,
+    ) -> gdbstub::target::ext::host_io::HostIoResult<u32, Self> {
+        let mut fm = self.inner.files.lock().unwrap();
+        fm.open(
+            unsafe { str::from_utf8_unchecked(filename) },
+            OpenOptions::new().read(true),
+        )
+        .map_err(|e| HostIoError::Errno(HostIoErrno::EUNKNOWN))
+    }
+}
+
+impl HostIoPread for TwizzlerTarget {
+    fn pread(
+        &mut self,
+        fd: u32,
+        count: usize,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> gdbstub::target::ext::host_io::HostIoResult<usize, Self> {
+        let mut fm = self.inner.files.lock().unwrap();
+        let count = count.min(buf.len());
+        fm.pread(fd, &mut buf[0..count], offset)
+            .map_err(|e| HostIoError::Errno(HostIoErrno::EUNKNOWN))
+    }
+}
+impl HostIo for TwizzlerTarget {
+    fn support_open(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoOpenOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_close(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoCloseOps<'_, Self>> {
+        None
+    }
+
+    fn support_pread(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoPreadOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_pwrite(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::host_io::HostIoPwriteOps<'_, Self>> {
+        None
+    }
+}
+
 impl Breakpoints for TwizzlerTarget {
     fn support_sw_breakpoint(
         &mut self,
@@ -456,6 +609,22 @@ impl Target for TwizzlerTarget {
 
     fn guard_rail_implicit_sw_breakpoints(&self) -> bool {
         true
+    }
+
+    fn support_exec_file(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::exec_file::ExecFileOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_host_io(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_libraries_svr4(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::libraries::LibrariesSvr4Ops<'_, Self>> {
+        Some(self)
     }
 }
 

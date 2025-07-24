@@ -273,7 +273,7 @@ impl Context {
 
         let comp = self.get_compartment(comp_id)?;
         Ok(Library::new(
-            unlib.name,
+            backing.full_name().to_owned(),
             idx,
             comp.id,
             comp.name.clone(),
