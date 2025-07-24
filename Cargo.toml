@@ -109,6 +109,7 @@ initrd = [
 
     #"crate:twzcandle",
     "crate:st",
+    "crate:stdnet_test",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
