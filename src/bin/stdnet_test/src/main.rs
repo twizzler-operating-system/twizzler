@@ -2,8 +2,8 @@ use std::net::TcpListener;
 use std::io::{Read, Write};
 
 fn main() {
-    let listener = TcpListener::bind("0.0.0.0:9000").expect("bind failed");
-    println!("Listening on 0.0.0.0:9000. Waiting for a client...");
+    let listener = TcpListener::bind("0.0.0.0:5555").expect("bind failed");
+    println!("Listening on 0.0.0.0:5555. Waiting for a client...");
 
     for stream in listener.incoming() {
         match stream {
@@ -25,7 +25,13 @@ fn main() {
                     stream.write_all(&buf[..n]).expect("write failed");
                 }
             }
-            Err(e) => eprintln!("Connection failed: {}", e),
+            Err(e) => {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                eprintln!("Bind failed with error: {:?}", e);
+                eprintln!("Error kind: {:?}", e.kind());
+                eprintln!("Error message: {}", e);
+            
+            }
         }
     }
 }

@@ -355,15 +355,16 @@ impl ReferenceRuntime {
                 FdKind::Socket(SocketKind::bind(unsafe { &*addr })?)
             }
             OpenAnonKind::SocketAccept => {
-                let fd = bind_info as *const RawFd;
+                let fd_ptr = bind_info as *const RawFd;
+                let fd = unsafe { *fd_ptr };
                 let binding = get_fd_slots().lock().unwrap();
-                let Some(fd) = binding.get(unsafe { *fd as usize }) else {
+                let Some(fd) = binding.get(fd.try_into().unwrap()) else {
                     return Err(TwzError::INVALID_ARGUMENT);
                 };
                 
                 let socket = match fd {
                     FdKind::Socket(socket) => socket.clone(),
-                    _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid socket kind").into()),
+                    _ => return Err(TwzError::INVALID_ARGUMENT),
                 };
                 drop(binding);
 
