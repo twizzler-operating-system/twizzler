@@ -391,6 +391,12 @@ impl Handle for CompartmentHandle {
     }
 }
 
+impl Drop for CompartmentHandle {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl Handle for LibraryHandle {
     type OpenError = TwzError;
 
@@ -406,12 +412,6 @@ impl Handle for LibraryHandle {
 
     fn release(&mut self) {
         let _ = gates::monitor_rt_drop_library_handle(self.desc);
-    }
-}
-
-impl Drop for CompartmentHandle {
-    fn drop(&mut self) {
-        self.release();
     }
 }
 
@@ -479,6 +479,11 @@ impl CompartmentHandle {
         LibraryIter::new(self)
     }
 
+    /// Get an iterator over the libraries for this compartment.
+    pub fn threads(&self) -> CompartmentThreadsIter<'_> {
+        CompartmentThreadsIter::new(self)
+    }
+
     pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
         CompartmentFlags::from_bits_truncate(
             gates::monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
@@ -510,7 +515,7 @@ impl<'a> Iterator for LibraryIter<'a> {
     }
 }
 
-/// An iterator over a compartmen's dependencies.
+/// An iterator over a compartment's dependencies.
 pub struct CompartmentDepsIter<'a> {
     n: usize,
     comp: &'a CompartmentHandle,
@@ -529,6 +534,33 @@ impl<'a> Iterator for CompartmentDepsIter<'a> {
         let desc = gates::monitor_rt_get_compartment_deps(self.comp.desc, self.n).ok()?;
         self.n += 1;
         Some(CompartmentHandle { desc: Some(desc) })
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.n += n;
+        self.next()
+    }
+}
+
+/// An iterator over a compartment's threads.
+pub struct CompartmentThreadsIter<'a> {
+    n: usize,
+    comp: &'a CompartmentHandle,
+}
+
+impl<'a> CompartmentThreadsIter<'a> {
+    fn new(comp: &'a CompartmentHandle) -> Self {
+        Self { n: 0, comp }
+    }
+}
+
+impl<'a> Iterator for CompartmentThreadsIter<'a> {
+    type Item = ThreadInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let info = gates::monitor_rt_get_compartment_thread(self.comp.desc, self.n).ok()?;
+        self.n += 1;
+        Some(info)
     }
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {

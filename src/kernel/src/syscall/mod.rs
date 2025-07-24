@@ -435,8 +435,17 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             }
         }
         Syscall::ThreadCtrl => {
-            let [code, val] =
-                thread_ctrl(context.arg0::<u64>().into(), context.arg1(), context.arg2());
+            let target = ObjID::from_parts([context.arg0::<u64>(), context.arg1::<u64>()]);
+            let [code, val] = thread_ctrl(
+                context.arg2::<u64>().into(),
+                if target.raw() == 0 {
+                    None
+                } else {
+                    Some(target)
+                },
+                context.arg3(),
+                context.arg4(),
+            );
             context.set_return_values(code, val);
             return;
         }

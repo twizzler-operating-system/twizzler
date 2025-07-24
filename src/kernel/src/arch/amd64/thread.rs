@@ -4,12 +4,14 @@ use core::{
 };
 
 use twizzler_abi::{
-    arch::XSAVE_LEN,
+    arch::{ArchRegisters, XSAVE_LEN},
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    thread::ExecutionState,
     upcall::{
         UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
     },
 };
+use twizzler_rt_abi::error::TwzError;
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
@@ -457,6 +459,39 @@ impl Thread {
 
     pub unsafe fn init(&mut self, f: extern "C" fn()) {
         self.init_va(f as usize as u64);
+    }
+
+    pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
+        if self.get_state() != ExecutionState::Suspended {
+            return Err(TwzError::Generic(
+                twizzler_rt_abi::error::GenericError::AccessDenied,
+            ));
+        }
+        let mut frame = *self.arch.upcall_restore_frame.borrow();
+        if frame.is_none() {
+            frame = Some(match *self.arch.entry_registers.borrow() {
+                Registers::None => {
+                    unreachable!()
+                }
+                Registers::Interrupt(int, _) => {
+                    let int = unsafe { &mut *int };
+                    (*int).into()
+                }
+                Registers::Syscall(sys, _) => {
+                    let sys = unsafe { &mut *sys };
+                    (*sys).into()
+                }
+            });
+        }
+        Ok(ArchRegisters {
+            frame: frame.unwrap(),
+            fs: 0,
+            gs: 0,
+            es: 0,
+            ds: 0,
+            ss: 0,
+            cs: 0,
+        })
     }
 }
 

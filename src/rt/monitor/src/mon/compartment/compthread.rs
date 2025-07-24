@@ -1,6 +1,9 @@
 use dynlink::{compartment::MONITOR_COMPARTMENT_ID, context::Context};
 use miette::IntoDiagnostic;
-use twizzler_abi::{object::MAX_SIZE, upcall::UpcallFrame};
+use twizzler_abi::{
+    object::MAX_SIZE,
+    upcall::{ResumeFlags, UpcallFrame},
+};
 use twizzler_rt_abi::object::ObjID;
 
 use crate::mon::{
@@ -26,11 +29,17 @@ impl CompThread {
         main_thread_comp: Option<ObjID>,
         entry: usize,
         arg: usize,
+        suspend_on_start: bool,
     ) -> miette::Result<Self> {
         let frame = stack.get_entry_frame(instance, entry, arg);
         let start = move || {
             twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
-            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
+            let flags = if suspend_on_start {
+                ResumeFlags::SUSPEND
+            } else {
+                ResumeFlags::empty()
+            };
+            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, flags) };
         };
         let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         let mt = tmgr

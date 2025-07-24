@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
 
 use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
-    COMP_IS_BINARY, COMP_READY,
+    COMP_IS_BINARY, COMP_READY, COMP_STARTED,
 };
 use crate::mon::{
     get_monitor,
@@ -393,6 +393,7 @@ impl Monitor {
         args: &[&CStr],
         env: &[&CStr],
         mondebug: bool,
+        suspend_on_start: bool,
     ) -> Result<(), TwzError> {
         if mondebug {
             tracing::info!("start compartment {}: {:?} {:?}", instance, args, env);
@@ -409,7 +410,7 @@ impl Monitor {
             rc.deps.clone()
         };
         for dep in deps {
-            self.start_compartment(dep, &[], env, false)?;
+            self.start_compartment(dep, &[], env, false, false)?;
         }
         // Check the state of this compartment.
         let state = self.load_compartment_flags(instance);
@@ -429,12 +430,25 @@ impl Monitor {
             if state & COMP_READY != 0 {
                 return Ok(());
             }
+            if suspend_on_start {
+                // We can't wait for ready, since that need the thread to run.
+                if state & COMP_STARTED != 0 {
+                    return Ok(());
+                }
+            }
             let info = {
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *self.locks.lock(ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance)?;
 
-                rc.start_main_thread(state, &mut *tmgr, &mut *dynlink, args, env)
+                rc.start_main_thread(
+                    state,
+                    &mut *tmgr,
+                    &mut *dynlink,
+                    args,
+                    env,
+                    suspend_on_start,
+                )
             };
             if info.is_none() {
                 return Err(GenericError::Internal.into());

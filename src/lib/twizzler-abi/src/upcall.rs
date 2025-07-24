@@ -1,5 +1,6 @@
 //! Functions for handling upcalls from the kernel.
 
+use bitflags::bitflags;
 use twizzler_rt_abi::error::RawTwzError;
 
 pub use crate::arch::upcall::UpcallFrame;
@@ -235,4 +236,12 @@ pub struct UpcallOptions {
     pub flags: UpcallFlags,
     /// The mode for the upcall.
     pub mode: UpcallMode,
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct ResumeFlags: u64 {
+        /// Suspend the thread during resume.
+        const SUSPEND = 1;
+    }
 }

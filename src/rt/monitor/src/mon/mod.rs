@@ -15,7 +15,10 @@ use monitor_api::{
 use secgate::util::HandleMgr;
 use space::Space;
 use thread::DEFAULT_STACK_SIZE;
-use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
+use twizzler_abi::{
+    syscall::sys_thread_exit,
+    upcall::{ResumeFlags, UpcallFrame},
+};
 use twizzler_rt_abi::{
     error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
@@ -182,7 +185,9 @@ impl Monitor {
                 args.start,
                 args.arg,
             );
-            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
+            unsafe {
+                twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, ResumeFlags::empty())
+            };
         }))?;
         Ok(thread.id)
     }

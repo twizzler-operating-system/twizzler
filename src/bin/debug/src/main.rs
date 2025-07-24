@@ -39,6 +39,7 @@ fn main() -> miette::Result<()> {
     let cli = Cli::parse();
     tracing::info!("Twizzler Debugging Starting");
 
+    unsafe { std::env::set_var("MONDEBUG", "1") };
     match cli.cmd {
         Commands::Run(run_cli) => {
             run_debug_program(&run_cli)?;
@@ -53,10 +54,11 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
     let name = &run_cli.cmdline[0];
     let compname = format!("debug-{}", name);
 
-    let mut comp = CompartmentLoader::new(compname, name, NewCompartmentFlags::empty());
+    let mut comp = CompartmentLoader::new(compname, name, NewCompartmentFlags::DEBUG);
     comp.args(&run_cli.cmdline);
     let comp = comp.load().into_diagnostic()?;
 
+    tracing::info!("Compartment loaded, starting debugging monitor");
     let (send, recv) = std::sync::mpsc::channel();
     let gdb = GdbStub::new(TwizzlerConn::new(recv));
     let mut target = TwizzlerTarget::new(comp, send);

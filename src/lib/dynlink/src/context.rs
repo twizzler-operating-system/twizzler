@@ -291,5 +291,6 @@ bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct NewCompartmentFlags : u32 {
         const EXPORT_GATES = 0x1;
+        const DEBUG = 0x2;
     }
 }
