@@ -1494,6 +1494,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "twizzler",
  "twizzler-abi",
  "twizzler-rt-abi",
 ]

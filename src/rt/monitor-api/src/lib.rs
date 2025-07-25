@@ -36,7 +36,7 @@ mod gates {
 
 pub use gates::*;
 use twizzler_rt_abi::{
-    debug::{DlPhdrInfo, LoadedImageId},
+    debug::{DlPhdrInfo, LinkMap, LoadedImageId},
     error::{ArgumentError, TwzError},
 };
 
@@ -200,6 +200,8 @@ pub struct LibraryInfo<'a> {
     pub len: usize,
     /// The DlPhdrInfo for this library
     pub dl_info: DlPhdrInfo,
+    /// The link_map structure for this library
+    pub link_map: LinkMap,
     /// The slot of the library text.
     pub slot: usize,
     _pd: PhantomData<&'a ()>,
@@ -219,6 +221,7 @@ impl<'a> LibraryInfo<'a> {
             slot: raw.slot,
             _pd: PhantomData,
             internal_name: name,
+            link_map: raw.link_map,
         };
         this.dl_info.name = this.internal_name.as_ptr().cast();
         this

@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
 use twizzler_rt_abi::{
-    debug::DlPhdrInfo,
+    debug::{DlPhdrInfo, LinkMap},
     error::{ArgumentError, ResourceError, TwzError},
     object::ObjID,
     thread::ThreadSpawnArgs,
@@ -89,6 +89,7 @@ pub struct LibraryInfo {
     pub start: *const u8,
     pub len: usize,
     pub dl_info: DlPhdrInfo,
+    pub link_map: LinkMap,
     pub desc: Descriptor,
 }
 

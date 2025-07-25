@@ -32,22 +32,36 @@ use gdbstub::{
             },
             breakpoints::{Breakpoints, SwBreakpoint},
             exec_file::ExecFile,
-            host_io::{HostIo, HostIoErrno, HostIoError, HostIoOpen, HostIoPread},
+            host_io::{
+                HostIo, HostIoClose, HostIoErrno, HostIoError, HostIoFstat, HostIoFstatOps,
+                HostIoOpen, HostIoOpenMode, HostIoPread, HostIoPwrite, HostIoPwriteOps,
+                HostIoReadlink, HostIoResult, HostIoStat,
+            },
             libraries::LibrariesSvr4,
+            memory_map::MemoryMap,
         },
     },
 };
 use gdbstub_arch::x86::reg::{X86SegmentRegs, X87FpuInternalRegs};
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle};
+use twizzler::object::Object;
 use twizzler_abi::{
     arch::{ArchRegisters, XSAVE_LEN},
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
-    syscall::{KernelConsoleReadFlags, KernelConsoleWriteFlags, sys_object_read_map},
-    thread::ExecutionState,
+    syscall::{
+        KernelConsoleReadFlags, KernelConsoleWriteFlags, ThreadSync, ThreadSyncOp,
+        sys_object_read_map, sys_thread_sync,
+    },
+    thread::{ExecutionState, ThreadRepr},
     upcall::UpcallFrame,
 };
-use twizzler_rt_abi::error::{GenericError, ObjectError, ResourceError, SecurityError, TwzError};
+use twizzler_rt_abi::{
+    bindings::twz_rt_map_object,
+    debug::LinkMap,
+    error::{GenericError, ObjectError, ResourceError, SecurityError, TwzError},
+    object::MapFlags,
+};
 
 pub struct TwizzlerGdb {}
 
@@ -135,14 +149,43 @@ impl TwizzlerGdb {
         let mut flags: CompartmentFlags = inner.comp.info().flags;
         while !inner.done.load(Ordering::SeqCst) {
             if flags.contains(CompartmentFlags::EXITED) {
+                /*
                 let _ = inner
                     .send
                     .send(Event::TargetStopped(MultiThreadStopReason::Exited(
                         0, //inner.comp.info().code,
                     )));
+                    */
                 break;
             }
             flags = inner.comp.wait(flags);
+        }
+    }
+
+    fn thread_main(inner: Arc<TargetInner>, id: ObjID) {
+        use twizzler::object::TypedObject;
+        let repr = unsafe { Object::<ThreadRepr>::map_unchecked(id, MapFlags::READ) }.unwrap();
+        let mut old_state = repr.base().get_state();
+        while !inner.done.load(Ordering::SeqCst) {
+            let cur_state = repr.base().get_state();
+            if cur_state != old_state {
+                let reason = match cur_state {
+                    ExecutionState::Suspended => {
+                        Some(MultiThreadStopReason::Signal(Signal::SIGSTOP))
+                    }
+                    ExecutionState::Exited => {
+                        Some(MultiThreadStopReason::Exited(repr.base().get_code() as u8))
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = reason {
+                    let _ = inner.send.send(Event::TargetStopped(reason));
+                }
+                old_state = cur_state;
+            } else {
+                let wait = repr.base().waitable_until_not(old_state);
+                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None);
+            }
         }
     }
 
@@ -247,10 +290,8 @@ impl FileMgr {
     fn pread(&mut self, fd: u32, buf: &mut [u8], offset: u64) -> Result<usize, std::io::Error> {
         if let Some(file) = self.map.get_mut(&fd) {
             use std::io::{Seek, SeekFrom};
-            let current_pos = file.stream_position()?;
             file.seek(SeekFrom::Start(offset))?;
             let bytes_read = file.read(buf)?;
-            file.seek(SeekFrom::Start(current_pos))?;
             Ok(bytes_read)
         } else {
             Err(std::io::Error::new(
@@ -275,6 +316,17 @@ impl FileMgr {
             ))
         }
     }
+
+    fn close(&mut self, fd: u32) -> Result<(), std::io::Error> {
+        if let Some(_file) = self.map.remove(&fd) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid file descriptor",
+            ))
+        }
+    }
 }
 
 pub struct TwizzlerTarget {
@@ -282,8 +334,9 @@ pub struct TwizzlerTarget {
     inner: Arc<TargetInner>,
     mon_t: JoinHandle<()>,
     chan_t: JoinHandle<()>,
+    t_t: JoinHandle<()>,
     thread_repr_id: ObjID,
-    libs: Vec<(String, ObjID)>,
+    libs: Vec<(String, ObjID, u64, Box<LinkMap>)>,
 }
 
 impl Drop for TwizzlerTarget {
@@ -302,7 +355,14 @@ impl TwizzlerTarget {
             .unwrap_or(ObjID::new(0));
         let libs = comp
             .libs()
-            .map(|l| (l.info().name.clone(), l.info().objid))
+            .map(|l| {
+                (
+                    l.info().name.clone(),
+                    l.info().objid,
+                    l.info().dl_info.addr as u64,
+                    Box::new(l.info().link_map),
+                )
+            })
             .collect();
         let inner = Arc::new(TargetInner {
             done: AtomicBool::new(false),
@@ -319,12 +379,17 @@ impl TwizzlerTarget {
         let mon_t = std::thread::spawn(|| {
             TwizzlerGdb::mon_main(inner_t);
         });
+        let inner_t = inner.clone();
+        let t_t = std::thread::spawn(move || {
+            TwizzlerGdb::thread_main(inner_t, thread_repr_id);
+        });
 
         Self {
             recv,
             inner,
             mon_t,
             chan_t,
+            t_t,
             thread_repr_id,
             libs,
         }
@@ -506,7 +571,31 @@ impl LibrariesSvr4 for TwizzlerTarget {
         length: usize,
         buf: &mut [u8],
     ) -> gdbstub::target::TargetResult<usize, Self> {
-        Ok(0)
+        let mut xml = format!(
+            "<library-list-svr4 version=\"1.0\" main-lm=\"{:p}\">",
+            self.libs[0].3
+        );
+        for lib in &self.libs {
+            xml.push_str(&format!(
+                "<library name=\"{}\" lm=\"{:p}\" l_addr=\"{:#x}\" l_ld=\"{:p}\" lmid=\"0x0\"/>",
+                lib.0,
+                lib.3,
+                lib.2,
+                (&*lib.3).0.ld,
+            ));
+        }
+        xml.push_str("</library-list-svr4>");
+        tracing::debug!("get libraries: {}", xml);
+        let xml_bytes = xml.as_bytes();
+
+        let offset = offset as usize;
+        let copy_len = length
+            .min(buf.len())
+            .min(xml_bytes.len().saturating_sub(offset));
+        if copy_len > 0 {
+            (&mut buf[0..copy_len]).copy_from_slice(&xml_bytes[offset..(copy_len + offset)]);
+        }
+        Ok(copy_len)
     }
 }
 
@@ -523,6 +612,13 @@ impl HostIoOpen for TwizzlerTarget {
             OpenOptions::new().read(true),
         )
         .map_err(|e| HostIoError::Errno(HostIoErrno::EUNKNOWN))
+        .inspect(|x| {
+            tracing::debug!(
+                "open: {} -> {}",
+                unsafe { str::from_utf8_unchecked(filename) },
+                x
+            )
+        })
     }
 }
 
@@ -535,28 +631,99 @@ impl HostIoPread for TwizzlerTarget {
         buf: &mut [u8],
     ) -> gdbstub::target::ext::host_io::HostIoResult<usize, Self> {
         let mut fm = self.inner.files.lock().unwrap();
-        let count = count.min(buf.len());
-        fm.pread(fd, &mut buf[0..count], offset)
-            .map_err(|e| HostIoError::Errno(HostIoErrno::EUNKNOWN))
+        tracing::debug!("pread: {}: {} {} {}", fd, count, buf.len(), offset);
+        let read_count = fm
+            .pread(fd, buf, offset)
+            .map_err(|e| HostIoError::Errno(HostIoErrno::EUNKNOWN))?;
+        Ok(read_count)
     }
 }
+
+impl HostIoFstat for TwizzlerTarget {
+    fn fstat(&mut self, fd: u32) -> HostIoResult<HostIoStat, Self> {
+        let mut fm = self.inner.files.lock().unwrap();
+        let file = fm
+            .map
+            .get_mut(&fd)
+            .ok_or(HostIoError::Errno(HostIoErrno::EBADF))?;
+        let metadata = file.metadata()?;
+
+        macro_rules! time_to_secs {
+            ($time:expr) => {
+                $time
+                    .map_err(|_| HostIoError::Errno(HostIoErrno::EACCES))?
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map_err(|_| HostIoError::Errno(HostIoErrno::EACCES))?
+                    .as_secs() as u32
+            };
+        }
+        let atime = time_to_secs!(metadata.accessed());
+        let mtime = time_to_secs!(metadata.modified());
+        let ctime = time_to_secs!(metadata.created());
+
+        tracing::debug!("fstat: ret len {}", metadata.len());
+
+        Ok(HostIoStat {
+            st_dev: 0,
+            st_ino: fd,
+            st_mode: HostIoOpenMode::S_IFREG,
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0,
+            st_size: metadata.len(),
+            st_blksize: 0,
+            st_blocks: 0,
+            st_atime: atime,
+            st_mtime: mtime,
+            st_ctime: ctime,
+        })
+    }
+}
+
+impl HostIoReadlink for TwizzlerTarget {
+    fn readlink(&mut self, filename: &[u8], buf: &mut [u8]) -> HostIoResult<usize, Self> {
+        use std::os::twizzler::ffi::OsStrExt;
+        let target = std::fs::read_link(unsafe { str::from_utf8_unchecked(filename) })?;
+        let target_bytes = target.as_os_str().as_bytes();
+
+        let offset = 0;
+        let copy_len = buf.len().min(target_bytes.len().saturating_sub(offset));
+        if copy_len > 0 {
+            (&mut buf[0..copy_len]).copy_from_slice(&target_bytes[offset..(copy_len + offset)]);
+        }
+        Ok(copy_len)
+    }
+}
+
+impl HostIoClose for TwizzlerTarget {
+    fn close(&mut self, fd: u32) -> HostIoResult<(), Self> {
+        self.inner.files.lock().unwrap().close(fd);
+        Ok(())
+    }
+}
+
 impl HostIo for TwizzlerTarget {
     fn support_open(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoOpenOps<'_, Self>> {
         Some(self)
     }
 
     fn support_close(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoCloseOps<'_, Self>> {
-        None
+        Some(self)
     }
 
     fn support_pread(&mut self) -> Option<gdbstub::target::ext::host_io::HostIoPreadOps<'_, Self>> {
         Some(self)
     }
 
-    fn support_pwrite(
+    fn support_fstat(&mut self) -> Option<HostIoFstatOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_readlink(
         &mut self,
-    ) -> Option<gdbstub::target::ext::host_io::HostIoPwriteOps<'_, Self>> {
-        None
+    ) -> Option<gdbstub::target::ext::host_io::HostIoReadlinkOps<'_, Self>> {
+        Some(self)
     }
 }
 

@@ -463,7 +463,12 @@ impl super::Monitor {
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             // TODO: dynlink err map
             loader
-                .build_rcs(&mut *cmp, &mut *dynlink, mondebug)
+                .build_rcs(
+                    &mut *cmp,
+                    &mut *dynlink,
+                    mondebug,
+                    new_comp_flags.contains(NewCompartmentFlags::DEBUG),
+                )
                 .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);

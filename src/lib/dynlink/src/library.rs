@@ -3,7 +3,8 @@
 use std::fmt::{Debug, Display};
 
 use elf::{
-    abi::{DT_FLAGS_1, PT_PHDR, PT_TLS, STB_WEAK},
+    abi::{DT_FLAGS_1, PT_DYNAMIC, PT_PHDR, PT_TLS, STB_WEAK},
+    dynamic::Dyn,
     endian::NativeEndian,
     segment::{Elf64_Phdr, ProgramHeader},
     ParseError,
@@ -141,6 +142,16 @@ impl Library {
 
     pub fn allows_self_gates(&self) -> bool {
         self.allowed_gates == AllowedGates::PublicInclSelf
+    }
+
+    pub fn dynamic_ptr(&self) -> Option<*mut Dyn> {
+        let phdr = self
+            .get_elf()
+            .ok()?
+            .segments()?
+            .iter()
+            .find(|s| s.p_type == PT_DYNAMIC)?;
+        Some(self.laddr_mut(phdr.p_vaddr))
     }
 
     pub fn is_binary(&self) -> bool {

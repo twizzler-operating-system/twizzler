@@ -125,9 +125,6 @@ impl core::fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for byte in s.bytes() {
             self.send(byte);
-            if byte == b'\n' {
-                self.send(b'\r');
-            }
         }
         Ok(())
     }

@@ -86,6 +86,7 @@ impl LoadInfo {
         &self,
         handle: MapHandle,
         stack_object: StackObject,
+        is_debugging: bool,
     ) -> Result<RunComp, DynlinkError> {
         let comp_config =
             CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
@@ -102,6 +103,7 @@ impl LoadInfo {
             stack_object,
             self.entry as usize,
             &self.ctor_info,
+            is_debugging,
         ))
     }
 }
@@ -307,6 +309,7 @@ impl RunCompLoader {
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
         _mondebug: bool,
+        is_debugging: bool,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |id| {
             Space::safe_create_and_map_runtime_object(
@@ -319,6 +322,7 @@ impl RunCompLoader {
         let root_rc = self.root_comp.build_runcomp(
             make_new_handle(self.root_comp.sctx_id)?,
             StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
+            is_debugging,
         )?;
 
         let mut ids = vec![root_rc.instance];
@@ -338,7 +342,7 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .zip(handles)
-            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1))
+            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1, false))
             .try_collect::<Vec<_>>()?;
 
         for rc in extras.drain(..) {

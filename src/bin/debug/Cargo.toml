@@ -14,3 +14,4 @@ tracing-log = "*"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 monitor-api = { path = "../../rt/monitor-api" }
+twizzler = { path = "../../lib/twizzler" }

@@ -32,7 +32,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             current_thread_ref().unwrap().restore_upcall_frame(data);
 
             if flags.contains(ResumeFlags::SUSPEND) {
-                log::info!(
+                log::debug!(
                     "resume-suspend: {:?}",
                     current_thread_ref().unwrap().objid()
                 );
@@ -83,12 +83,11 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                 current_thread_ref()
             };
             let Some(thread) = thread else {
-                log::info!("could not find {:?}", target);
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             };
             let target_state = ExecutionState::from_status(arg);
             let cur_state = thread.get_state();
-            log::info!(
+            log::debug!(
                 "change state {:?}: {:?} => {:?}",
                 target,
                 cur_state,
