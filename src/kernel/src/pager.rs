@@ -8,7 +8,7 @@ use twizzler_abi::{
     syscall::{ObjectCreate, SyncInfo},
 };
 
-use log::info;
+use log::trace;
 
 use crate::{
     memory::{
@@ -206,7 +206,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     }
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
-    info!(
+    log::trace!(
         "allocated {} ranges for pager (min_frames = {}, total = {} KB)",
         ranges.len(),
         min_frames,
