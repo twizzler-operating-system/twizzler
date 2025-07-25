@@ -8,7 +8,7 @@ use twizzler_abi::{
     syscall::{ObjectCreate, SyncInfo},
 };
 
-use log::info;
+use log::trace;
 
 use crate::{
     memory::{
