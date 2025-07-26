@@ -4,6 +4,10 @@
 
 [Building Twizzler](./BUILD.md)
 
+[Developing on Twizzler](./develop.md)
+
+[Debugging Twizzler](./Debug.md)
+
 # Fundamentals
 
 - [Objects](./Object.md)
