@@ -154,7 +154,7 @@ impl TwizzlerGdb {
             }
             flags = inner.comp.wait(flags);
         }
-        tracing::info!("comp mon exit");
+        tracing::debug!("comp mon exit");
     }
 
     fn thread_main(inner: Arc<TargetInner>, id: ObjID) {
@@ -180,13 +180,23 @@ impl TwizzlerGdb {
             } else {
                 let wait = repr.base().waitable_until_not(old_state);
                 let wait2 = repr.base().waitable(ExecutionState::Exited);
+                let wait3 = ThreadSyncSleep::new(
+                    ThreadSyncReference::Virtual(&inner.done),
+                    0,
+                    ThreadSyncOp::Equal,
+                    ThreadSyncFlags::empty(),
+                );
                 let _ = sys_thread_sync(
-                    &mut [ThreadSync::new_sleep(wait), ThreadSync::new_sleep(wait2)],
+                    &mut [
+                        ThreadSync::new_sleep(wait),
+                        ThreadSync::new_sleep(wait2),
+                        ThreadSync::new_sleep(wait3),
+                    ],
                     None,
                 );
             }
         }
-        tracing::info!("thread mon exit");
+        tracing::debug!("thread mon exit");
     }
 
     fn chan_main(inner: Arc<TargetInner>) {
@@ -210,7 +220,7 @@ impl TwizzlerGdb {
             }
             inner.send.send(Event::IncomingData(0));
         }
-        tracing::info!("channel mon exit");
+        tracing::debug!("channel mon exit");
     }
 }
 
@@ -360,7 +370,7 @@ impl Drop for TwizzlerTarget {
             None,
         );
 
-        self.mon_t.take().map(|t| t.join()).unwrap();
+        //self.mon_t.take().map(|t| t.join()).unwrap();
         self.chan_t.take().map(|t| t.join()).unwrap();
         self.t_t.take().map(|t| t.join()).unwrap();
     }
@@ -396,10 +406,10 @@ impl TwizzlerTarget {
         let chan_t = std::thread::spawn(|| {
             TwizzlerGdb::chan_main(inner_t);
         });
-        let inner_t = inner.clone();
-        let mon_t = std::thread::spawn(|| {
-            TwizzlerGdb::mon_main(inner_t);
-        });
+        //let inner_t = inner.clone();
+        //let mon_t = std::thread::spawn(|| {
+        //    TwizzlerGdb::mon_main(inner_t);
+        //});
         let inner_t = inner.clone();
         let t_t = std::thread::spawn(move || {
             TwizzlerGdb::thread_main(inner_t, thread_repr_id);
@@ -408,7 +418,7 @@ impl TwizzlerTarget {
         Self {
             recv,
             inner,
-            mon_t: Some(mon_t),
+            mon_t: None,
             chan_t: Some(chan_t),
             t_t: Some(t_t),
             thread_repr_id,

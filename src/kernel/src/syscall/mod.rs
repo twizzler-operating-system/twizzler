@@ -6,12 +6,11 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleSource, KernelConsoleWriteFlags, MapFlags, ReadClockListFlags, SysInfo,
-        Syscall,
+        KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall,
     },
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, IoError, ResourceError, TwzError},
+    error::{ArgumentError, ResourceError, TwzError},
     Result,
 };
 

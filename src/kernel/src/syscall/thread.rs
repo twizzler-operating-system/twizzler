@@ -32,9 +32,10 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             current_thread_ref().unwrap().restore_upcall_frame(data);
 
             if flags.contains(ResumeFlags::SUSPEND) {
-                log::debug!(
-                    "resume-suspend: {:?}",
-                    current_thread_ref().unwrap().objid()
+                log::info!(
+                    "resume-suspend: {:?} => {}",
+                    current_thread_ref().unwrap().objid(),
+                    data.prior_ctx,
                 );
                 current_thread_ref().unwrap().suspend();
             }

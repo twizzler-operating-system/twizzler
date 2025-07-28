@@ -253,6 +253,7 @@ where
     let data_ptr = data_start as usize as *mut UpcallData;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
+    frame.prior_ctx = upcall_data.source_ctx;
 
     // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
     // and fpu state.

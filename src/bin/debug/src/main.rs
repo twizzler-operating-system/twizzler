@@ -30,14 +30,14 @@ struct Cli {
 fn main() -> miette::Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
+            .without_time()
             .finish(),
     )
     .into_diagnostic()?;
     tracing_log::LogTracer::init().into_diagnostic()?;
 
     let cli = Cli::parse();
-    tracing::info!("Twizzler Debugging Starting");
 
     unsafe { std::env::set_var("MONDEBUG", "1") };
     match cli.cmd {
@@ -54,11 +54,14 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
     let name = &run_cli.cmdline[0];
     let compname = format!("debug-{}", name);
 
-    let mut comp = CompartmentLoader::new(compname, name, NewCompartmentFlags::DEBUG);
+    let mut comp = CompartmentLoader::new(&compname, name, NewCompartmentFlags::DEBUG);
     comp.args(&run_cli.cmdline);
     let comp = comp.load().into_diagnostic()?;
 
-    tracing::info!("Compartment loaded, starting debugging monitor");
+    tracing::info!(
+        "compartment {} loaded, starting debugging monitor",
+        compname
+    );
     let (send, recv) = std::sync::mpsc::channel();
     let gdb = GdbStub::new(TwizzlerConn::new(recv));
     let mut target = TwizzlerTarget::new(comp, send);
@@ -66,6 +69,6 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
         .run_blocking::<TwizzlerGdb>(&mut target)
         .into_diagnostic()?;
 
-    tracing::info!("disconnected: {:?}", r);
+    tracing::info!("disconnected {}: {:?}", compname, r);
     Ok(())
 }

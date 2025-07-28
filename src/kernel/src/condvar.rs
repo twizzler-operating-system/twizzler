@@ -9,7 +9,6 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
-    sched::schedule_thread,
     spinlock::{SpinLockGuard, Spinlock},
     syscall::sync::{add_to_requeue, requeue_all, sys_thread_sync},
     thread::{current_thread_ref, Thread, ThreadRef},

@@ -277,7 +277,8 @@ impl Monitor {
         thread: ObjID,
         len: usize,
     ) -> Result<Vec<u8>, TwzError> {
-        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let t = ThreadKey::get().unwrap();
+        let mut locks = self.locks.lock(t);
         let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread);
@@ -297,7 +298,7 @@ impl Monitor {
         &self,
         frame: &mut UpcallFrame,
         info: &UpcallData,
-    ) -> Result<ResumeFlags, TwzError> {
+    ) -> Result<Option<ResumeFlags>, TwzError> {
         self.comp_mgr
             .write(ThreadKey::get().unwrap())
             .get_mut(frame.prior_ctx)?

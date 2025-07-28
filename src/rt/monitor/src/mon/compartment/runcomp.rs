@@ -439,15 +439,20 @@ impl RunComp {
 
     pub fn upcall_handle(
         &self,
-        _frame: &mut UpcallFrame,
-        _info: &UpcallData,
-    ) -> Result<ResumeFlags, TwzError> {
-        self.set_flag(CompartmentFlags::EXITED.bits());
+        frame: &mut UpcallFrame,
+        info: &UpcallData,
+    ) -> Result<Option<ResumeFlags>, TwzError> {
         let flags = if self.is_debugging {
-            ResumeFlags::SUSPEND
+            tracing::info!("got monitor upcall {:?} {:?}", frame, info);
+            Some(ResumeFlags::SUSPEND)
         } else {
-            // TODO: maybe just exit if not debugging.
-            ResumeFlags::SUSPEND
+            tracing::warn!(
+                "supervisor exception in {}, thread {}: {:?}",
+                self.name,
+                info.thread_id,
+                info.info
+            );
+            None
         };
         Ok(flags)
     }
