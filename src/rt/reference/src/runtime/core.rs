@@ -113,7 +113,22 @@ impl ReferenceRuntime {
                         .unwrap()
                 };
                 let _ = MON_RTINFO.set(None);
-                self.init_for_compartment(init_info);
+                let mut entry_stack = Vec::new();
+                entry_stack.push(rtinfo.argc);
+                if !rtinfo.args.is_null() {
+                    for arg in unsafe { core::slice::from_raw_parts(rtinfo.args, rtinfo.argc) } {
+                        entry_stack.push(*arg as usize);
+                    }
+                }
+                entry_stack.push(0);
+                if !rtinfo.envp.is_null() {
+                    for env in unsafe { core::slice::from_raw_parts(rtinfo.envp, rtinfo.argc) } {
+                        entry_stack.push(*env as usize);
+                    }
+                }
+                entry_stack.push(0);
+                self.init_for_compartment(init_info, entry_stack.as_mut_ptr());
+                std::mem::forget(entry_stack);
             }
             x => {
                 preinit_println!("unsupported runtime kind: {}", x);
@@ -211,7 +226,7 @@ impl ReferenceRuntime {
         self.init_ctors(&init_info.ctors);
     }
 
-    fn init_for_compartment(&self, init_info: &CompartmentInitInfo) {
+    fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -225,6 +240,13 @@ impl ReferenceRuntime {
         let mut tg = TLS_GEN_MGR.lock();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+
+        if !unsafe { __mlibc_entry.is_null() } {
+            let mlibc_entry = unsafe {
+                std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(__mlibc_entry)
+            };
+            mlibc_entry(entry_stack, core::ptr::null_mut());
+        }
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -264,4 +286,9 @@ impl ReferenceRuntime {
         let tls = info.tls_region.get_thread_pointer_value();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
     }
+}
+
+extern "C" {
+    #[linkage = "extern_weak"]
+    static __mlibc_entry: *mut u8;
 }
