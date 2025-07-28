@@ -9,7 +9,7 @@ use std::{
     os::fd::{AsFd, FromRawFd},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         mpsc::{Receiver, Sender},
     },
     thread::JoinHandle,
@@ -50,7 +50,8 @@ use twizzler_abi::{
     arch::{ArchRegisters, XSAVE_LEN},
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::{
-        KernelConsoleReadFlags, KernelConsoleWriteFlags, ThreadSync, ThreadSyncOp,
+        KernelConsoleReadFlags, KernelConsoleSource, KernelConsoleWriteFlags, ThreadSync,
+        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
         sys_object_read_map, sys_thread_sync,
     },
     thread::{ExecutionState, ThreadRepr},
@@ -147,26 +148,20 @@ impl From<&gdbstub_arch::x86::reg::X86_64CoreRegs> for TwzRegs {
 impl TwizzlerGdb {
     fn mon_main(inner: Arc<TargetInner>) {
         let mut flags: CompartmentFlags = inner.comp.info().flags;
-        while !inner.done.load(Ordering::SeqCst) {
+        while inner.done.load(Ordering::SeqCst) == 0 {
             if flags.contains(CompartmentFlags::EXITED) {
-                /*
-                let _ = inner
-                    .send
-                    .send(Event::TargetStopped(MultiThreadStopReason::Exited(
-                        0, //inner.comp.info().code,
-                    )));
-                    */
                 break;
             }
             flags = inner.comp.wait(flags);
         }
+        tracing::info!("comp mon exit");
     }
 
     fn thread_main(inner: Arc<TargetInner>, id: ObjID) {
         use twizzler::object::TypedObject;
         let repr = unsafe { Object::<ThreadRepr>::map_unchecked(id, MapFlags::READ) }.unwrap();
         let mut old_state = repr.base().get_state();
-        while !inner.done.load(Ordering::SeqCst) {
+        while inner.done.load(Ordering::SeqCst) == 0 {
             let cur_state = repr.base().get_state();
             if cur_state != old_state {
                 let reason = match cur_state {
@@ -184,23 +179,38 @@ impl TwizzlerGdb {
                 old_state = cur_state;
             } else {
                 let wait = repr.base().waitable_until_not(old_state);
-                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None);
+                let wait2 = repr.base().waitable(ExecutionState::Exited);
+                let _ = sys_thread_sync(
+                    &mut [ThreadSync::new_sleep(wait), ThreadSync::new_sleep(wait2)],
+                    None,
+                );
             }
         }
+        tracing::info!("thread mon exit");
     }
 
     fn chan_main(inner: Arc<TargetInner>) {
-        while !inner.done.load(Ordering::SeqCst) {
+        let sleep = ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&inner.done),
+            0,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        );
+        while inner.done.load(Ordering::SeqCst) == 0 {
             let mut bytes = [0];
-            let r = twizzler_abi::syscall::sys_kernel_console_read_debug(
+            let r = twizzler_abi::syscall::sys_kernel_console_read_interruptable(
+                KernelConsoleSource::DebugConsole,
                 &mut bytes,
                 KernelConsoleReadFlags::empty(),
+                None,
+                Some(sleep),
             );
             if matches!(r, Ok(1)) {
                 inner.conn.send(bytes[0]);
             }
             inner.send.send(Event::IncomingData(0));
         }
+        tracing::info!("channel mon exit");
     }
 }
 
@@ -255,7 +265,7 @@ impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
 }
 
 pub struct TargetInner {
-    done: AtomicBool,
+    done: AtomicU64,
     comp: CompartmentHandle,
     send: Sender<ChanMsg>,
     conn: Sender<u8>,
@@ -332,16 +342,27 @@ impl FileMgr {
 pub struct TwizzlerTarget {
     recv: Receiver<ChanMsg>,
     inner: Arc<TargetInner>,
-    mon_t: JoinHandle<()>,
-    chan_t: JoinHandle<()>,
-    t_t: JoinHandle<()>,
+    mon_t: Option<JoinHandle<()>>,
+    chan_t: Option<JoinHandle<()>>,
+    t_t: Option<JoinHandle<()>>,
     thread_repr_id: ObjID,
     libs: Vec<(String, ObjID, u64, Box<LinkMap>)>,
 }
 
 impl Drop for TwizzlerTarget {
     fn drop(&mut self) {
-        self.inner.done.store(true, Ordering::SeqCst);
+        self.inner.done.store(1, Ordering::SeqCst);
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.inner.done),
+                usize::MAX,
+            ))],
+            None,
+        );
+
+        self.mon_t.take().map(|t| t.join()).unwrap();
+        self.chan_t.take().map(|t| t.join()).unwrap();
+        self.t_t.take().map(|t| t.join()).unwrap();
     }
 }
 
@@ -365,7 +386,7 @@ impl TwizzlerTarget {
             })
             .collect();
         let inner = Arc::new(TargetInner {
-            done: AtomicBool::new(false),
+            done: AtomicU64::new(0),
             comp,
             send,
             conn,
@@ -387,9 +408,9 @@ impl TwizzlerTarget {
         Self {
             recv,
             inner,
-            mon_t,
-            chan_t,
-            t_t,
+            mon_t: Some(mon_t),
+            chan_t: Some(chan_t),
+            t_t: Some(t_t),
             thread_repr_id,
             libs,
         }
@@ -811,8 +832,9 @@ impl Connection for TwizzlerConn {
 
     fn write(&mut self, byte: u8) -> Result<(), Self::Error> {
         twizzler_abi::syscall::sys_kernel_console_write(
+            KernelConsoleSource::DebugConsole,
             &[byte],
-            KernelConsoleWriteFlags::DEBUG_CONSOLE,
+            KernelConsoleWriteFlags::empty(),
         );
         Ok(())
     }

@@ -1,5 +1,7 @@
 //! Functions for handling upcalls from the kernel.
 
+use core::fmt::Debug;
+
 use bitflags::bitflags;
 use twizzler_rt_abi::error::RawTwzError;
 
@@ -67,13 +69,23 @@ pub enum ObjectMemoryError {
 }
 
 /// Information about a non-object-related memory access violation.
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
 pub struct MemoryContextViolationInfo {
     /// The virtual address that caused the exception.
     pub address: u64,
     /// The kind of memory access.
     pub kind: MemoryAccessKind,
+}
+
+impl Debug for MemoryContextViolationInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "MemoryContextViolationInfo {{ {:?}: {:x} }}",
+            self.kind, self.address
+        )
+    }
 }
 
 impl MemoryContextViolationInfo {

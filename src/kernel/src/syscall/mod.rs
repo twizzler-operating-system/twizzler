@@ -6,12 +6,12 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleReadSource, KernelConsoleWriteFlags, MapFlags, ReadClockListFlags, SysInfo,
+        KernelConsoleSource, KernelConsoleWriteFlags, MapFlags, ReadClockListFlags, SysInfo,
         Syscall,
     },
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, ResourceError, TwzError},
+    error::{ArgumentError, IoError, ResourceError, TwzError},
     Result,
 };
 
@@ -61,12 +61,12 @@ unsafe fn create_user_nullable_ptr<'a, T>(ptr: u64) -> Option<Option<&'a mut T>>
     Some((ptr as *mut T).as_mut())
 }
 
-fn sys_kernel_console_write(data: &[u8], flags: twizzler_abi::syscall::KernelConsoleWriteFlags) {
-    if flags.contains(KernelConsoleWriteFlags::DEBUG_CONSOLE) {
-        let _res = crate::log::write_bytes(data, flags.into(), true);
-    } else {
-        let _res = crate::log::write_bytes(data, flags.into(), false);
-    }
+fn sys_kernel_console_write(
+    target: KernelConsoleSource,
+    data: &[u8],
+    flags: twizzler_abi::syscall::KernelConsoleWriteFlags,
+) {
+    let _res = crate::log::write_bytes(target, data, flags.into());
 }
 
 fn type_sys_object_create(
@@ -204,6 +204,37 @@ fn type_read_clock_list(
     .map(|x| x as u64)
 }
 
+fn type_console_read(
+    source: u64,
+    buffer: u64,
+    len: u64,
+    flags: u64,
+    timeout: u64,
+    waiter: u64,
+) -> Result<usize> {
+    let timeout = unsafe { create_user_nullable_ptr(timeout) }
+        .ok_or(ArgumentError::InvalidArgument)?
+        .map(|t| *t);
+    let waiter = unsafe { create_user_nullable_ptr(waiter) }
+        .ok_or(ArgumentError::InvalidArgument)?
+        .map(|w| *w);
+    let flags = twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(flags);
+    let source: KernelConsoleSource = source.into();
+    if let Some(slice) = unsafe { create_user_slice(buffer, len) } {
+        match source {
+            KernelConsoleSource::DebugConsole => {
+                crate::log::read_bytes(source, slice, flags, timeout, waiter)
+            }
+            KernelConsoleSource::Console => {
+                crate::log::read_bytes(source, slice, flags, timeout, waiter)
+            }
+            KernelConsoleSource::Buffer => crate::log::read_buffer_bytes(slice),
+        }
+    } else {
+        Err(ArgumentError::InvalidArgument.into())
+    }
+}
+
 #[inline]
 fn convert_result_to_codes<T, E, F, G>(result: core::result::Result<T, E>, f: F, g: G) -> (u64, u64)
 where
@@ -273,43 +304,21 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let len = context.arg1();
             let flags =
                 twizzler_abi::syscall::KernelConsoleWriteFlags::from_bits_truncate(context.arg2());
+            let target: KernelConsoleSource = context.arg3::<u64>().into();
             if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
-                sys_kernel_console_write(slice, flags);
+                sys_kernel_console_write(target, slice, flags);
             }
         }
         Syscall::KernelConsoleRead => {
-            let source = context.arg0::<u64>();
-            let ptr = context.arg1();
-            let len = context.arg2();
-            let source: KernelConsoleReadSource = source.into();
-            let res: Result<_> = if let Some(slice) = unsafe { create_user_slice(ptr, len) } {
-                match source {
-                    KernelConsoleReadSource::DebugConsole => {
-                        let flags =
-                            twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
-                                context.arg3(),
-                            );
-                        crate::log::read_bytes(slice, flags, true).map_err(|x| x.into())
-                    }
-                    KernelConsoleReadSource::Console => {
-                        let flags =
-                            twizzler_abi::syscall::KernelConsoleReadFlags::from_bits_truncate(
-                                context.arg3(),
-                            );
-                        crate::log::read_bytes(slice, flags, false).map_err(|x| x.into())
-                    }
-                    KernelConsoleReadSource::Buffer => {
-                        let _flags =
-                            twizzler_abi::syscall::KernelConsoleReadBufferFlags::from_bits_truncate(
-                                context.arg3(),
-                            );
-                        crate::log::read_buffer_bytes(slice).map_err(|x| x.into())
-                    }
-                }
-            } else {
-                Err(ArgumentError::InvalidArgument.into())
-            }
-            .map(|x| x as u64);
+            let res: Result<_> = type_console_read(
+                context.arg0(),
+                context.arg1(),
+                context.arg2(),
+                context.arg3(),
+                context.arg4(),
+                context.arg5(),
+            )
+            .map(|r| r as u64);
             let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
             context.set_return_values(code, val);
         }
