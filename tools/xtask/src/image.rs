@@ -276,6 +276,30 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let data_files = generate_data_folder(&comp);
     let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
 
+    let debug_sysroot = PathBuf::from("target/dynamic/")
+        .join(cli.config.twz_triple().to_string())
+        .join(cli.config.profile.to_string())
+        .join("debug_sysroot");
+
+    tracing::info!("debug sysroot at {}", debug_sysroot.display());
+    std::fs::create_dir_all(debug_sysroot.join("initrd"))?;
+    let mut tar = Command::new("tar");
+    tar.args([
+        "xf",
+        &initrd_path.to_string_lossy(),
+        "-C",
+        &debug_sysroot.join("initrd").to_string_lossy(),
+    ]);
+    if !tar.status()?.success() {
+        anyhow::bail!("failed to extract initrd image for debug sysroot");
+    }
+
+    let _ = std::fs::remove_file("target/debug_sysroot");
+    std::os::unix::fs::symlink(
+        debug_sysroot.strip_prefix("target").unwrap(),
+        "target/debug_sysroot",
+    )?;
+
     crate::print_status_line("disk image", Some(&cli.config));
     let mut cmdline = String::new();
     if cli.tests {

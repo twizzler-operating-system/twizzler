@@ -51,7 +51,7 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest",
+    "src/bin/ptest", "src/bin/debug",
 ]
 
 exclude = ["toolchain/src/rust", "src/ports/candle-test/candle", "src/ports/candle-test/gemm"]
@@ -71,6 +71,7 @@ initrd = [
     "lib:pager-srv",
     "crate:unittest",
     "crate:uuhelper",
+    "crate:debug",
 
     "crate:sec-test",
     "crate:ptest",

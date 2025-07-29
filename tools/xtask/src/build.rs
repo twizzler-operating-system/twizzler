@@ -24,7 +24,7 @@ struct OtherOptions {
 }
 
 use crate::{
-    triple::{valid_targets, Triple},
+    triple::{valid_targets, Arch, Triple},
     BuildOptions, CheckOptions, DocOptions, Profile,
 };
 
@@ -246,7 +246,23 @@ fn build_twizzler<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    // TODO: the debug hook is currently only supported on x86_64.
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .map(|p| p.name().to_string())
+            .filter(|p| match p.as_str() {
+                "debug" => {
+                    if build_config.arch != Arch::X86_64 {
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => true,
+            })
+            .collect(),
+    );
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }

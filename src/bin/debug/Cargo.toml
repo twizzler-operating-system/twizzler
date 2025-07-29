@@ -1,0 +1,17 @@
+[package]
+name = "debug"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gdbstub = "*"
+gdbstub_arch = "*"
+clap = { version = "4", features = ["derive"] }
+miette = { version = "*", features = ["fancy"] }
+tracing = "*"
+tracing-subscriber = "*"
+tracing-log = "*"
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+monitor-api = { path = "../../rt/monitor-api" }
+twizzler = { path = "../../lib/twizzler" }

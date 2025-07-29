@@ -181,6 +181,13 @@ struct QemuOptions {
     repeat: bool,
     #[clap(long, help = "Auto-start a program in init.")]
     autostart: Option<String>,
+    #[clap(
+        long,
+        short,
+        help = "Enable GDB connection via serial, exposed via host TCP <port>. Defaults to :2159.",
+        default_value_t = 2159
+    )]
+    gdb: u16,
 }
 
 impl From<&QemuOptions> for ImageOptions {
