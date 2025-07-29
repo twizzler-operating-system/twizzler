@@ -28,7 +28,9 @@ use gdbstub::{
         ext::{
             base::{
                 BaseOps,
-                multithread::{MultiThreadBase, MultiThreadResume, MultiThreadResumeOps},
+                multithread::{
+                    MultiThreadBase, MultiThreadResume, MultiThreadResumeOps, MultiThreadSingleStep,
+                },
             },
             breakpoints::{Breakpoints, SwBreakpoint},
             exec_file::ExecFile,
@@ -45,14 +47,17 @@ use gdbstub::{
 use gdbstub_arch::x86::reg::{X86SegmentRegs, X87FpuInternalRegs};
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle};
-use twizzler::object::Object;
+use twizzler::{
+    object::{Object, RawObject},
+    ptr::{RefMut, RefSlice, RefSliceMut},
+};
 use twizzler_abi::{
     arch::{ArchRegisters, XSAVE_LEN},
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::{
-        KernelConsoleReadFlags, KernelConsoleSource, KernelConsoleWriteFlags, ThreadSync,
-        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
-        sys_object_read_map, sys_thread_sync,
+        KernelConsoleReadFlags, KernelConsoleSource, KernelConsoleWriteFlags, MapControlCmd,
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake, sys_map_ctrl, sys_object_read_map, sys_thread_sync,
     },
     thread::{ExecutionState, ThreadRepr},
     upcall::UpcallFrame,
@@ -65,6 +70,16 @@ use twizzler_rt_abi::{
 };
 
 pub struct TwizzlerGdb {}
+
+#[cfg(target_arch = "x86_64")]
+type BpWord = u8;
+#[cfg(target_arch = "aarch64")]
+type BpWord = u32;
+
+#[cfg(target_arch = "x86_64")]
+const BREAK_WORD: BpWord = 0xcc;
+#[cfg(target_arch = "aarch64")]
+const BREAK_WORD: BpWord = 0xD4200000;
 
 type ChanMsg = Event<MultiThreadStopReason<u64>>;
 
@@ -274,12 +289,67 @@ impl gdbstub::stub::run_blocking::BlockingEventLoop for TwizzlerGdb {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Breaks {
+    map: HashMap<u64, Breakpoint>,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Breakpoint {
+    saved_data: BpWord,
+    addr: u64,
+}
+
+impl Breaks {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, addr: u64, saved_data: BpWord) -> &Breakpoint {
+        self.map.insert(addr, Breakpoint { saved_data, addr });
+        self.map.get(&addr).unwrap()
+    }
+
+    fn remove(&mut self, addr: u64) -> Option<Breakpoint> {
+        self.map.remove(&addr)
+    }
+
+    fn get(&self, addr: u64) -> Option<&Breakpoint> {
+        self.map.get(&addr)
+    }
+
+    fn get_mut(&mut self, addr: u64) -> Option<&mut Breakpoint> {
+        self.map.get_mut(&addr)
+    }
+}
+
+impl Breakpoint {
+    fn arm(&self, target: &mut TwizzlerTarget) -> Result<(), TwzError> {
+        tracing::debug!("arming breakpoint {:#x}", self.addr);
+        let mut slice = target.mem_slice_mut_writable(self.addr, size_of::<BpWord>())?;
+        let data = BREAK_WORD.to_ne_bytes();
+        slice.copy_from_slice(&data);
+        Ok(())
+    }
+
+    fn restore(&self, target: &mut TwizzlerTarget) -> Result<(), TwzError> {
+        tracing::debug!("restoring breakpoint {:#x}", self.addr);
+        let mut slice = target.mem_slice_mut_writable(self.addr, size_of::<BpWord>())?;
+        let data = self.saved_data.to_ne_bytes();
+        slice.copy_from_slice(&data);
+        Ok(())
+    }
+}
+
 pub struct TargetInner {
     done: AtomicU64,
     comp: CompartmentHandle,
     send: Sender<ChanMsg>,
     conn: Sender<u8>,
     files: Mutex<FileMgr>,
+    bps: Mutex<Breaks>,
 }
 
 struct FileMgr {
@@ -401,6 +471,7 @@ impl TwizzlerTarget {
             send,
             conn,
             files: Mutex::new(FileMgr::new()),
+            bps: Mutex::new(Breaks::new()),
         });
         let inner_t = inner.clone();
         let chan_t = std::thread::spawn(|| {
@@ -466,6 +537,37 @@ impl TwizzlerTarget {
         Ok(slice)
     }
 
+    fn mem_slice_mut_writable(
+        &mut self,
+        addr: <<TwizzlerTarget as gdbstub::target::Target>::Arch as gdbstub::arch::Arch>::Usize,
+        len: usize,
+    ) -> Result<RefSliceMut<u8>, TwzError> {
+        if (addr as usize % MAX_SIZE) < NULLPAGE_SIZE {
+            return Err(TwzError::Generic(GenericError::AccessDenied).into());
+        }
+        let slot = addr as usize / MAX_SIZE;
+        let info = sys_object_read_map(None, slot)?;
+        let slice = if info.prot.contains(Protections::WRITE) && false {
+            unsafe { RefSliceMut::from_ref(RefMut::from_ptr(addr as *mut u8), len) }
+        } else {
+            tracing::debug!("remapping {} as writable", info.id);
+            let handle =
+                unsafe { Object::<()>::map_unchecked(info.id, MapFlags::WRITE | MapFlags::READ) }?;
+            let offset = addr as usize % MAX_SIZE;
+            let ptr = handle
+                .lea_mut(offset, len)
+                .ok_or(TwzError::INVALID_ARGUMENT)?;
+            unsafe {
+                RefSliceMut::from_ref(
+                    RefMut::from_handle(handle.into_handle(), ptr as *mut u8),
+                    len,
+                )
+            }
+        };
+
+        Ok(slice)
+    }
+
     fn get_thread_repr_id(&self, _tid: gdbstub::common::Tid) -> ObjID {
         self.thread_repr_id
     }
@@ -517,6 +619,9 @@ impl MultiThreadBase for TwizzlerTarget {
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<usize, Self> {
         tracing::debug!("read addrs: {:x} {}", start_addr, data.len());
+        if (start_addr as usize) < MAX_SIZE {
+            return Err(TargetError::Errno(1));
+        }
         let len = self.mem_access(start_addr, data.len(), Protections::READ)?;
         let slice = self.mem_slice(start_addr, len)?;
         (&mut data[0..len]).copy_from_slice(slice);
@@ -529,15 +634,27 @@ impl MultiThreadBase for TwizzlerTarget {
         data: &[u8],
         tid: gdbstub::common::Tid,
     ) -> gdbstub::target::TargetResult<(), Self> {
-        tracing::debug!("write addrs: {:x} {}", start_addr, data.len());
-        let len = self.mem_access(start_addr, data.len(), Protections::WRITE)?;
+        tracing::debug!("write addrs: {:x} {}: {:?}", start_addr, data.len(), data);
+        if (start_addr as usize) < MAX_SIZE {
+            return Err(TargetError::Errno(1));
+        }
+        let len = self.mem_access(start_addr, data.len(), Protections::empty())?;
         if len < data.len() {
             return Err(TargetError::Io(
                 TwzError::Generic(GenericError::AccessDenied).into(),
             ));
         }
-        let slice = self.mem_slice_mut(start_addr, len)?;
+        let mut slice = self
+            .mem_slice_mut_writable(start_addr, len)
+            .map_err(|e| TargetError::Fatal(e))?;
+        tracing::debug!("{:x} => w to {:p}", start_addr, slice.as_ptr());
         slice.copy_from_slice(data);
+        let _ = sys_map_ctrl(
+            start_addr as usize as *const u8,
+            data.len(),
+            MapControlCmd::Invalidate,
+            0,
+        );
         Ok(())
     }
 
@@ -572,6 +689,22 @@ impl MultiThreadResume for TwizzlerTarget {
         &mut self,
         tid: gdbstub::common::Tid,
         signal: Option<gdbstub::common::Signal>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn support_single_step(
+        &mut self,
+    ) -> Option<gdbstub::target::ext::base::multithread::MultiThreadSingleStepOps<'_, Self>> {
+        Some(self)
+    }
+}
+
+impl MultiThreadSingleStep for TwizzlerTarget {
+    fn set_resume_action_step(
+        &mut self,
+        tid: gdbstub::common::Tid,
+        signal: Option<Signal>,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -782,9 +915,23 @@ impl SwBreakpoint for TwizzlerTarget {
     fn add_sw_breakpoint(
         &mut self,
         addr: <Self::Arch as gdbstub::arch::Arch>::Usize,
-        kind: <Self::Arch as gdbstub::arch::Arch>::BreakpointKind,
+        _kind: <Self::Arch as gdbstub::arch::Arch>::BreakpointKind,
     ) -> gdbstub::target::TargetResult<bool, Self> {
-        Ok(false)
+        let mut saved_data = [0u8; size_of::<BpWord>()];
+        if self.read_addrs(
+            addr,
+            &mut saved_data,
+            NonZero::new(size_of::<BpWord>()).unwrap(),
+        )? != size_of::<BpWord>()
+        {
+            return Err(TargetError::Fatal(TwzError::Generic(GenericError::Other)));
+        }
+        let val = BpWord::from_ne_bytes(saved_data);
+        let mut bps = self.inner.bps.lock().unwrap();
+        let bp = *bps.insert(addr, val);
+        drop(bps);
+        bp.arm(self).map_err(|e| TargetError::Fatal(e))?;
+        Ok(true)
     }
 
     fn remove_sw_breakpoint(
@@ -792,6 +939,12 @@ impl SwBreakpoint for TwizzlerTarget {
         addr: <Self::Arch as gdbstub::arch::Arch>::Usize,
         kind: <Self::Arch as gdbstub::arch::Arch>::BreakpointKind,
     ) -> gdbstub::target::TargetResult<bool, Self> {
+        let mut bps = self.inner.bps.lock().unwrap();
+        let Some(bp) = bps.remove(addr) else {
+            return Ok(false);
+        };
+        drop(bps);
+        bp.restore(self).map_err(|e| TargetError::Fatal(e))?;
         Ok(false)
     }
 }

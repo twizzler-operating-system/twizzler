@@ -23,10 +23,22 @@ of being added.
 
 TODO
 
+## Some other debugging techniques
+
+ - Loading of compartments and libraries can be printed by specifying MONDEBUG=1 as an environment variable when starting programs.
+ - Many system services use the tracing crate for logging. You can increase the verbosity by changing the log level in the relevant initialization routines. TODO: get these from environment variables.
+ - The kernel uses the log crate, and its verbosity is controlled in main.rs.
+
+## Working features
+
+ - Reading registers
+ - Reading and poking memory
+ - Tracing stopped threads
+
 ## Planned additional features
 
+ - Setting / clearing breakpoints
  - Single stepping
  - Memory map reading
  - Multithreaded debugging
  - Signals
-
