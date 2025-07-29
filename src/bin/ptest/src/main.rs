@@ -261,6 +261,10 @@ fn main() {
             }
         },
         SubCommand::Rdb => {
+            println!("in progress");
+        }
+        /*
+        SubCommand::Rdb => {
             println!("rocksdb test");
             let start = std::time::Instant::now();
             let db = rocksdb::DB::open_default("db").unwrap();
@@ -272,6 +276,7 @@ fn main() {
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
         }
+        */
     }
 
     /*

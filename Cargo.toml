@@ -139,5 +139,5 @@ libc = { path = "src/ports/libc" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
-rocksdb = { path = "src/ports/rust-rocksdb" }
-librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
+#rocksdb = { path = "src/ports/rust-rocksdb" }
+#librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
