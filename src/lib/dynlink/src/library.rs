@@ -261,7 +261,7 @@ impl Library {
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
-        tracing::trace!("lookup {} in {}", name, self.name);
+        tracing::debug!("lookup {} in {}", name, self.name);
 
         /*
         if self.is_relocated() {
@@ -306,16 +306,12 @@ impl Library {
                     {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
-                        tracing::debug!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
-                    tracing::info!("undefined symbol: {}", name);
+                    //tracing::warn!("undefined symbol: {}", name);
                 }
             }
-            return Err(DynlinkErrorKind::NameNotFound {
-                name: name.to_string(),
-            }
-            .into());
         }
 
         // Try the sysv hash table, if present.
@@ -346,14 +342,40 @@ impl Library {
                     {
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
-                        tracing::info!("lookup symbol {} skipping weak binding in {}", name, self);
+                        tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
-                    tracing::info!("undefined symbol: {}", name);
+                    //tracing::warn!("undefined symbol: {}", name);
                 }
             }
         }
 
+        if !self.allows_gates()
+            && !self.allows_self_gates()
+            && self.is_binary()
+            && !name.starts_with("__TWIZZLER_SECURE_GATE")
+        {
+            let dstrs = common.dynsyms_strs.as_ref().unwrap();
+            for sym in common.dynsyms.as_ref().unwrap().iter() {
+                let sym_name = dstrs.get(sym.st_name as usize)?;
+                if name == sym_name {
+                    if sym.st_bind() == STB_WEAK && allow_weak && !self.is_secgate(name) {
+                        /*
+                        tracing::warn!(
+                            "!! lookup symbol {} skipping weak binding in {}",
+                            name,
+                            self
+                        );
+                        */
+                        return Ok(RelocatedSymbol::new_zero(self));
+                    } else {
+                        //tracing::warn!("lookup symbol {} skipping weak binding in {}", name,
+                        // self);
+                    }
+                }
+            }
+        }
+        //tracing::warn!("undefined symbol: {}", name);
         Err(DynlinkErrorKind::NameNotFound {
             name: name.to_string(),
         }

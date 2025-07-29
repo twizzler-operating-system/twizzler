@@ -74,8 +74,10 @@ pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
 // Or, at least, that's what it seems like. In any case, they're no-ops in libunwind and musl, so
 // this is fine for now.
 #[no_mangle]
+#[linkage = "weak"]
 pub extern "C" fn __register_frame_info() {}
 #[no_mangle]
+#[linkage = "weak"]
 pub extern "C" fn __deregister_frame_info() {}
 #[no_mangle]
 #[linkage = "weak"]

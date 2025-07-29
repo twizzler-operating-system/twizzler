@@ -871,4 +871,12 @@ pub unsafe extern "C-unwind" fn __is_monitor() -> *mut c_void {
 
 #[linkage = "weak"]
 #[no_mangle]
+pub unsafe extern "C-unwind" fn _ZdlPv() {}
+
+#[linkage = "weak"]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn _ZdlPvj() {}
+
+#[linkage = "weak"]
+#[no_mangle]
 pub unsafe extern "C-unwind" fn _ZdlPvm() {}

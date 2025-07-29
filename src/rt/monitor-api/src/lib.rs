@@ -681,10 +681,13 @@ mod lazy_sb {
 
 pub const THREAD_STARTED: u32 = 1;
 pub struct RuntimeThreadControl {
+    pub id: UnsafeCell<u32>,
+    pub did_exit: UnsafeCell<u32>,
     // Need to keep a lock for the ID, though we don't expect to use it much.
     pub internal_lock: AtomicU32,
     pub flags: AtomicU32,
-    pub id: UnsafeCell<u32>,
+    pub stack_canary: u64,
+    pub libc_data: [u64; 1000],
 }
 
 impl Default for RuntimeThreadControl {
@@ -699,6 +702,9 @@ impl RuntimeThreadControl {
             internal_lock: AtomicU32::new(0),
             flags: AtomicU32::new(0),
             id: UnsafeCell::new(id),
+            did_exit: UnsafeCell::new(0),
+            stack_canary: 0,
+            libc_data: [0; 1000],
         }
     }
 
