@@ -5,29 +5,40 @@ use crate::library::Library;
 /// A (relocated) symbol. Contains information about the symbol itself, like value and size, along
 /// with a reference to the library that it comes from.
 pub struct RelocatedSymbol<'lib> {
-    sym: elf::symbol::Symbol,
+    sym: Option<elf::symbol::Symbol>,
     pub(crate) lib: &'lib Library,
 }
 
 impl<'lib> RelocatedSymbol<'lib> {
     pub(crate) fn new(sym: elf::symbol::Symbol, lib: &'lib Library) -> Self {
-        Self { sym, lib }
+        Self {
+            sym: Some(sym),
+            lib,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn new_zero(lib: &'lib Library) -> Self {
+        Self { sym: None, lib }
     }
 
     /// Returns the relocated address of the symbol, i.e. the value of the symbol added to the base
     /// address of the library it comes from.
     pub fn reloc_value(&self) -> u64 {
+        if self.sym.is_none() {
+            return 0;
+        }
         self.raw_value() + self.lib.base_addr() as u64
     }
 
     /// Returns the raw symbol value (unrelocated).
     pub fn raw_value(&self) -> u64 {
-        self.sym.st_value
+        self.sym.as_ref().map_or(0, |v| v.st_value)
     }
 
     /// Returns the symbol's size.
     pub fn size(&self) -> u64 {
-        self.sym.st_size
+        self.sym.as_ref().map_or(0, |v| v.st_size)
     }
 }
 
