@@ -81,8 +81,6 @@ initrd = [
     "crate:sec-test",
     "crate:ptest",
 
-    "crate:hw-cxx",
-
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
     #"crate:etl_twizzler",
