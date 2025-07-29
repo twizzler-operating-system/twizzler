@@ -1,11 +1,14 @@
+use core::mem::MaybeUninit;
+
 use num_enum::{FromPrimitive, IntoPrimitive};
 use twizzler_rt_abi::error::TwzError;
 
 use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{
-    arch::syscall::raw_syscall,
+    arch::{syscall::raw_syscall, ArchRegisters},
     object::ObjID,
-    upcall::{UpcallFrame, UpcallTarget},
+    thread::ExecutionState,
+    upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, IntoPrimitive)]
@@ -31,10 +34,10 @@ pub enum ThreadControl {
     SetUpcall = 4,
     /// Get the upcall pointer.
     GetUpcall = 5,
-    /// Read a register from the thread's CPU state. The thread must be suspended.
-    ReadRegister = 6,
-    /// Write a value to a register in the thread's CPU state. The thread must be suspended.
-    WriteRegister = 7,
+    /// Read the thread's CPU state. The thread must be suspended.
+    ReadRegisters = 6,
+    /// Write the thread's CPU state. The thread must be suspended.
+    WriteRegisters = 7,
     /// Send a user-defined async or sync event to the thread.
     SendMessage = 8,
     /// Change the thread's state. Allowed transitions are:
@@ -68,7 +71,10 @@ pub enum ThreadControl {
 /// thread as part of updating the status and code to indicate thread has exited.
 pub fn sys_thread_exit(code: u64) -> ! {
     unsafe {
-        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::Exit as u64, code]);
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[0, 0, ThreadControl::Exit as u64, code],
+        );
     }
     unreachable!()
 }
@@ -78,7 +84,7 @@ pub fn sys_thread_exit(code: u64) -> ! {
 /// is free to ignore this hint.
 pub fn sys_thread_yield() {
     unsafe {
-        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::Yield as u64]);
+        raw_syscall(Syscall::ThreadCtrl, &[0, 0, ThreadControl::Yield as u64]);
     }
 }
 
@@ -86,13 +92,21 @@ pub fn sys_thread_yield() {
 /// segment base to the supplies TLS value.
 pub fn sys_thread_settls(tls: u64) {
     unsafe {
-        raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::SetTls as u64, tls]);
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[0, 0, ThreadControl::SetTls as u64, tls],
+        );
     }
 }
 
 /// Get the repr ID of the calling thread.
 pub fn sys_thread_self_id() -> ObjID {
-    let (hi, lo) = unsafe { raw_syscall(Syscall::ThreadCtrl, &[ThreadControl::GetSelfId as u64]) };
+    let (hi, lo) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[0, 0, ThreadControl::GetSelfId as u64],
+        )
+    };
     ObjID::from_parts([hi, lo])
 }
 
@@ -101,7 +115,7 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
     let (hi, lo) = unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
-            &[ThreadControl::GetActiveSctxId as u64],
+            &[0, 0, ThreadControl::GetActiveSctxId as u64],
         )
     };
     ObjID::from_parts([hi, lo])
@@ -113,6 +127,8 @@ pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
         raw_syscall(
             Syscall::ThreadCtrl,
             &[
+                0,
+                0,
                 ThreadControl::SetActiveSctxId as u64,
                 id.parts()[0],
                 id.parts()[1],
@@ -128,6 +144,8 @@ pub fn sys_thread_set_upcall(target: UpcallTarget) {
         raw_syscall(
             Syscall::ThreadCtrl,
             &[
+                0,
+                0,
                 ThreadControl::SetUpcall as u64,
                 (&target as *const _) as usize as u64,
             ],
@@ -141,17 +159,139 @@ pub fn sys_thread_set_upcall(target: UpcallTarget) {
 /// # Safety
 /// The frame argument must point to a valid upcall frame with
 /// a valid register state.
-pub unsafe fn sys_thread_resume_from_upcall(frame: &UpcallFrame) -> ! {
+pub unsafe fn sys_thread_resume_from_upcall(frame: &UpcallFrame, flags: ResumeFlags) -> ! {
     unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
             &[
+                0,
+                0,
                 ThreadControl::ResumeFromUpcall as u64,
                 frame as *const _ as usize as u64,
+                flags.bits(),
             ],
         );
         unreachable!()
     }
+}
+
+/// Get the current kernel thread's TLS pointer.
+pub fn sys_thread_gettls() -> u64 {
+    let (tls, _) =
+        unsafe { raw_syscall(Syscall::ThreadCtrl, &[0, 0, ThreadControl::GetTls as u64]) };
+    tls
+}
+
+/// Read the thread's CPU state. The thread must be suspended.
+pub fn sys_thread_read_registers(target: ObjID) -> Result<ArchRegisters, TwzError> {
+    let mut regs = MaybeUninit::zeroed();
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::ReadRegisters as u64,
+                regs.as_mut_ptr() as usize as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        move |_, _| unsafe { regs.assume_init() },
+        twzerr,
+    )
+}
+
+/// Write the thread's CPU state. The thread must be suspended.
+pub fn sys_thread_write_registers(target: ObjID, regs: &ArchRegisters) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::WriteRegisters as u64,
+                regs as *const _ as usize as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// Send a user-defined async or sync event to the thread.
+pub fn sys_thread_send_message(target: ObjID, message: u64, flags: u64) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::SendMessage as u64,
+                message,
+                flags,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// Change the thread's state. If successful, returns the previous state.
+pub fn sys_thread_change_state(
+    target: ObjID,
+    new_state: ExecutionState,
+) -> Result<ExecutionState, TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::ChangeState as u64,
+                new_state.to_status(),
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, v| ExecutionState::from_status(v),
+        twzerr,
+    )
+}
+
+/// Set the Trap State for the thread.
+pub fn sys_thread_set_trap_state(target: ObjID, trap_state: u64) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::SetTrapState as u64,
+                trap_state,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// Get the Trap State for the thread.
+pub fn sys_thread_get_trap_state(target: ObjID) -> Result<u64, TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetTrapState as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
 }
 
 pub fn sys_thread_ctrl(

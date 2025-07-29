@@ -74,8 +74,9 @@ fn try_bench(path: &str) {
 fn main() {
     try_bench("/initrd/bench_bins");
     try_bench("/initrd/bench_bin");
-    let Ok(file) = std::fs::File::open("/initrd/test_bins") else {
-        eprintln!("failed to open test bins");
+    let Ok(file) = std::fs::File::open("/initrd/test_bins")
+        .inspect_err(|e| eprintln!("failed to open test bins: {}", e))
+    else {
         return;
     };
 

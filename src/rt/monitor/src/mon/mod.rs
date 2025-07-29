@@ -15,7 +15,10 @@ use monitor_api::{
 use secgate::util::HandleMgr;
 use space::Space;
 use thread::DEFAULT_STACK_SIZE;
-use twizzler_abi::{syscall::sys_thread_exit, upcall::UpcallFrame};
+use twizzler_abi::{
+    syscall::sys_thread_exit,
+    upcall::{ResumeFlags, UpcallData, UpcallFrame},
+};
 use twizzler_rt_abi::{
     error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
@@ -123,6 +126,7 @@ impl Monitor {
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
             &[],
+            false,
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -182,7 +186,9 @@ impl Monitor {
                 args.start,
                 args.arg,
             );
-            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame) };
+            unsafe {
+                twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, ResumeFlags::empty())
+            };
         }))?;
         Ok(thread.id)
     }
@@ -271,7 +277,8 @@ impl Monitor {
         thread: ObjID,
         len: usize,
     ) -> Result<Vec<u8>, TwzError> {
-        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
+        let t = ThreadKey::get().unwrap();
+        let mut locks = self.locks.lock(t);
         let (_, ref mut comps, _, _, _) = *locks;
         let rc = comps.get_mut(sctx)?;
         let pt = rc.get_per_thread(thread);
@@ -285,6 +292,17 @@ impl Monitor {
             .read(ThreadKey::get().unwrap())
             .get(id)
             .map(|rc| rc.name.clone())
+    }
+
+    pub fn upcall_handle(
+        &self,
+        frame: &mut UpcallFrame,
+        info: &UpcallData,
+    ) -> Result<Option<ResumeFlags>, TwzError> {
+        self.comp_mgr
+            .write(ThreadKey::get().unwrap())
+            .get_mut(frame.prior_ctx)?
+            .upcall_handle(frame, info)
     }
 
     /// Perform a compartment control action on the calling compartment.

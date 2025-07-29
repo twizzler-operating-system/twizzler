@@ -16,7 +16,10 @@ use raw_file::RawFile;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, Protections},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        sys_object_create, BackingType, KernelConsoleSource, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::{
     bindings::{create_options, io_ctx, io_vec},
@@ -101,6 +104,7 @@ impl Read for FdKind {
             FdKind::RawFile(arc) => arc.lock().unwrap().read(buf),
             FdKind::Stdio => {
                 let len = twizzler_abi::syscall::sys_kernel_console_read(
+                    KernelConsoleSource::Console,
                     buf,
                     twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
                 )
@@ -121,6 +125,7 @@ impl Write for FdKind {
             FdKind::RawFile(arc) => arc.lock().unwrap().write(buf),
             FdKind::Stdio => {
                 twizzler_abi::syscall::sys_kernel_console_write(
+                    KernelConsoleSource::Console,
                     buf,
                     twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
                 );

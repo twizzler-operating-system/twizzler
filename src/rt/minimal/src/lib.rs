@@ -11,6 +11,8 @@
 #![feature(test)]
 #![feature(c_variadic)]
 
+use twizzler_abi::syscall::KernelConsoleSource;
+
 pub mod arch;
 
 #[allow(unused_extern_crates)]
@@ -25,6 +27,7 @@ unsafe fn internal_abort() -> ! {
 
 pub fn print_err(err: &str) {
     twizzler_abi::syscall::sys_kernel_console_write(
+        KernelConsoleSource::Buffer,
         err.as_bytes(),
         twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
     );

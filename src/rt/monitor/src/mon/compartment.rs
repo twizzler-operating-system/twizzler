@@ -14,7 +14,7 @@ use twizzler_rt_abi::{
     object::ObjID,
 };
 
-use crate::gates::{CompartmentInfo, CompartmentMgrStats};
+use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
 
 mod compconfig;
 mod compthread;
@@ -374,6 +374,28 @@ impl super::Monitor {
         self.get_compartment_handle(caller, dep)
     }
 
+    /// Get the n'th thread's info from a compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn get_compartment_thread_info(
+        &self,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+        t_n: usize,
+    ) -> Result<ThreadInfo, TwzError> {
+        let dep = {
+            let (_, ref mut comps, _, _, ref mut comphandles) =
+                *self.locks.lock(ThreadKey::get().unwrap());
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(caller))
+                .ok_or(ArgumentError::InvalidArgument)?;
+            let comp = comps.get_mut(comp_id)?;
+            comp.get_nth_thread_info(t_n)
+        }
+        .ok_or(TwzError::INVALID_ARGUMENT);
+        dep
+    }
+
     /// Load a new compartment with a root library ID, and return a compartment handle.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn load_compartment(
@@ -441,14 +463,25 @@ impl super::Monitor {
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
             // TODO: dynlink err map
             loader
-                .build_rcs(&mut *cmp, &mut *dynlink, mondebug)
+                .build_rcs(
+                    &mut *cmp,
+                    &mut *dynlink,
+                    mondebug,
+                    new_comp_flags.contains(NewCompartmentFlags::DEBUG),
+                )
                 .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);
 
         let desc = self.get_compartment_handle(caller, root_comp)?;
 
-        self.start_compartment(root_comp, &args, &env, mondebug)?;
+        self.start_compartment(
+            root_comp,
+            &args,
+            &env,
+            mondebug,
+            new_comp_flags.contains(NewCompartmentFlags::DEBUG),
+        )?;
 
         Ok(desc)
     }

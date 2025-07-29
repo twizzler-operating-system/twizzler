@@ -77,6 +77,7 @@ impl Thread {
 
         // goodnight!
         schedule(false);
+        self.set_state(ExecutionState::Running);
 
         // goodmorning! Clear the flags. This is one operation, so we'll never observe
         // THREAD_IS_SUSPENDED without THREAD_MUST_SUSPEND.

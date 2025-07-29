@@ -59,30 +59,43 @@ pub struct Backing {
     start: *mut u8,
     len: usize,
     id: ObjID,
+    full_name: String,
 }
 
 unsafe impl Send for Backing {}
 unsafe impl Sync for Backing {}
 
 impl Backing {
-    pub fn new(inner: ObjectHandle) -> Self {
+    pub fn new(inner: ObjectHandle, full_name: String) -> Self {
         unsafe {
             Self::new_owned(
                 inner.start(),
                 MAX_SIZE - NULLPAGE_SIZE * 2,
                 inner.id(),
                 Arc::new(inner),
+                full_name,
             )
         }
     }
 
-    pub unsafe fn new_owned(start: *mut u8, len: usize, id: ObjID, owner: Arc<dyn Any>) -> Self {
+    pub unsafe fn new_owned(
+        start: *mut u8,
+        len: usize,
+        id: ObjID,
+        owner: Arc<dyn Any>,
+        full_name: String,
+    ) -> Self {
         Self {
             _owner: owner,
             start,
             len,
             id,
+            full_name,
         }
+    }
+
+    pub fn full_name(&self) -> &str {
+        &self.full_name
     }
 }
 

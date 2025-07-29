@@ -1,4 +1,4 @@
-use twizzler_abi::upcall::{UpcallData, UpcallFrame};
+use twizzler_abi::upcall::{ResumeFlags, UpcallData, UpcallFrame};
 use twizzler_rt_abi::thread::TlsDesc;
 
 #[no_mangle]
@@ -13,7 +13,7 @@ pub(crate) unsafe extern "C-unwind" fn twz_rt_upcall_entry_c(
     if std::panic::catch_unwind(handler).is_err() {
         sys_thread_exit(UPCALL_EXIT_CODE);
     }
-    twizzler_abi::syscall::sys_thread_resume_from_upcall(&*frame);
+    twizzler_abi::syscall::sys_thread_resume_from_upcall(&*frame, ResumeFlags::empty());
 }
 
 #[no_mangle]

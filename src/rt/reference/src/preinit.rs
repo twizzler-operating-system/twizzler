@@ -2,14 +2,20 @@
 
 use std::fmt;
 
-use twizzler_abi::syscall::{sys_kernel_console_write, KernelConsoleWriteFlags};
+use twizzler_abi::syscall::{
+    sys_kernel_console_write, KernelConsoleSource, KernelConsoleWriteFlags,
+};
 
 #[repr(C)]
 struct PreinitLogger;
 
 impl fmt::Write for PreinitLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        sys_kernel_console_write(s.as_bytes(), KernelConsoleWriteFlags::empty());
+        sys_kernel_console_write(
+            KernelConsoleSource::Console,
+            s.as_bytes(),
+            KernelConsoleWriteFlags::empty(),
+        );
         Ok(())
     }
 }

@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
 use twizzler_rt_abi::{
-    debug::DlPhdrInfo,
+    debug::{DlPhdrInfo, LinkMap},
     error::{ArgumentError, ResourceError, TwzError},
     object::ObjID,
     thread::ThreadSpawnArgs,
@@ -89,6 +89,7 @@ pub struct LibraryInfo {
     pub start: *const u8,
     pub len: usize,
     pub dl_info: DlPhdrInfo,
+    pub link_map: LinkMap,
     pub desc: Descriptor,
 }
 
@@ -163,6 +164,27 @@ pub fn monitor_rt_get_compartment_deps(
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.get_compartment_deps(caller, desc, dep_n)
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Copy)]
+#[repr(C)]
+pub struct ThreadInfo {
+    pub repr_id: ObjID,
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_get_compartment_thread(
+    info: &secgate::GateCallInfo,
+    desc: Option<Descriptor>,
+    dep_n: usize,
+) -> Result<ThreadInfo, TwzError> {
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.get_compartment_thread_info(caller, desc, dep_n)
 }
 
 #[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]

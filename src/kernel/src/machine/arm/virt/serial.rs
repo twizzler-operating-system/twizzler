@@ -93,7 +93,7 @@ impl PL011 {
     }
 }
 
-pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
+pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, _debug: bool) {
     // We need the memory management system up and running to use MMIO.
     // Other requests to log to the console are ignored. The console is
     // initialized lazily on first access.
@@ -111,7 +111,7 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
 pub fn serial_interrupt_handler() {
     let byte = serial().rx_byte();
     if let Some(x) = byte {
-        crate::log::push_input_byte(x);
+        crate::log::push_input_byte(x, false);
     }
     serial().clear_rx_interrupt();
 }

@@ -61,7 +61,10 @@ impl ContextEngine for Engine {
                     );
                 return Err(DynlinkErrorKind::NewBackingFail.into());
             }
-            Ok((Backing::new(text_handle), Backing::new(data_handle)))
+            Ok((
+                Backing::new(text_handle, src.full_name().to_owned()),
+                Backing::new(data_handle, src.full_name().to_owned()),
+            ))
         };
         dynlink::engines::twizzler::load_segments(src, ld, 0.into(), map)
     }
@@ -71,6 +74,7 @@ impl ContextEngine for Engine {
         Ok(Backing::new(
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ)
                 .map_err(|_err| DynlinkErrorKind::NewBackingFail)?,
+            unlib.name.clone(),
         ))
     }
 

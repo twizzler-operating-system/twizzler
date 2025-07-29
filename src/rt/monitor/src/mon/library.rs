@@ -3,6 +3,8 @@ use happylock::ThreadKey;
 use secgate::util::Descriptor;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
+    bindings::link_map,
+    debug::LinkMap,
     error::{ArgumentError, GenericError, ResourceError, TwzError},
     object::ObjID,
 };
@@ -37,6 +39,7 @@ impl Monitor {
         // write the library name to the per-thread simple buffer
         let pt = comps.get_mut(instance)?.get_per_thread(thread);
         let name_len = pt.write_bytes(lib.name.as_bytes());
+        let dynamic_ptr = lib.dynamic_ptr();
         Ok(LibraryInfo {
             name_len,
             compartment_id: handle.comp,
@@ -55,6 +58,13 @@ impl Monitor {
                 tls_data: core::ptr::null_mut(),
             },
             desc,
+            link_map: LinkMap(link_map {
+                next: core::ptr::null_mut(),
+                prev: core::ptr::null_mut(),
+                name: core::ptr::null_mut(),
+                ld: dynamic_ptr.unwrap_or(core::ptr::null_mut()).cast(),
+                addr: lib.base_addr(),
+            }),
         })
     }
 

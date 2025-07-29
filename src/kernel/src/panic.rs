@@ -164,3 +164,7 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[lang = "eh_personality"]
 pub extern "C" fn rust_eh_personality() {}
+
+pub fn is_panicing() -> bool {
+    DID_PANIC.load(core::sync::atomic::Ordering::SeqCst)
+}

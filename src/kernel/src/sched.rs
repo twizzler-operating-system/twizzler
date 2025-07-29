@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use fixedbitset::FixedBitSet;
-use twizzler_abi::thread::ExecutionState;
+use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use crate::{
     clock::Nanoseconds,
@@ -261,9 +261,18 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
 }
 
 static ALL_THREADS: Spinlock<BTreeMap<u64, ThreadRef>> = Spinlock::new(BTreeMap::new());
+static ALL_THREADS_REPR: Spinlock<BTreeMap<ObjID, ThreadRef>> = Spinlock::new(BTreeMap::new());
 
 pub fn remove_thread(id: u64) {
-    ALL_THREADS.lock().remove(&id);
+    if let Some(t) = ALL_THREADS.lock().remove(&id) {
+        ALL_THREADS_REPR
+            .lock()
+            .remove(&t.control_object.object().id());
+    }
+}
+
+pub fn lookup_thread_repr(id: ObjID) -> Option<ThreadRef> {
+    ALL_THREADS_REPR.lock().get(&id).cloned()
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
@@ -271,6 +280,9 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     let thread = Arc::new(thread);
     {
         ALL_THREADS.lock().insert(thread.id(), thread.clone());
+        ALL_THREADS_REPR
+            .lock()
+            .insert(thread.control_object.object().id(), thread.clone());
     }
     let cpuid = select_cpu(&thread);
     let processor = get_processor(cpuid);

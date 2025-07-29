@@ -134,15 +134,23 @@ impl QemuCommand {
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
-            //.arg("-s") // shorthand for -gdb tcp::1234
             .arg("-serial")
             .arg("mon:stdio");
         //-serial mon:stdio creates a multiplexed stdio backend connected
         // to the serial port and the QEMU monitor, and
         // -nographic also multiplexes the console and the monitor to stdio.
 
+        println!("GDB debugging port: {}", options.gdb);
+        if options.gdb != 0 {
+            self.cmd
+                .arg("-serial")
+                .arg(&format!("tcp::{},server,nowait", options.gdb));
+        }
+
         // add additional options for qemu
         self.cmd.args(&options.qemu_options);
+
+        println!("qemu: {:?}", self.cmd);
 
         //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     }
