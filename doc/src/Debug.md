@@ -37,8 +37,9 @@ TODO
 
 ## Planned additional features
 
- - Setting / clearing breakpoints
- - Single stepping
+ - Setting / clearing breakpoints (in-progress)
+ - Single stepping (in-progress)
  - Memory map reading
  - Multithreaded debugging
  - Signals
+ - Support for aarch64
