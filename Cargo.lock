@@ -4614,6 +4614,8 @@ dependencies = [
  "rand 0.8.5",
  "tracing",
  "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
  "volatile",
 ]
 

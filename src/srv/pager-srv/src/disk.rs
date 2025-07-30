@@ -7,142 +7,14 @@ use std::{
 };
 
 use async_executor::Executor;
-use object_store::PagingImp;
-use twizzler_abi::pager::PhysRange;
+use object_store::PagedDevice;
+use twizzler::error::TwzError;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
-use crate::{
-    nvme::{init_nvme, NvmeController},
-    physrw, EXECUTOR, PAGER_CTX,
-};
+use crate::nvme::{init_nvme, NvmeController};
 
 const PAGE_SIZE: usize = 0x1000;
 const SECTOR_SIZE: usize = 512;
-
-pub struct DiskPageRequest {
-    pub phys_addr_list: Vec<(u64, u64)>,
-    pub ctrl: Arc<NvmeController>,
-}
-
-impl core::fmt::Debug for DiskPageRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskPageRequest")
-            .field("phys_addr_list", &self.phys_addr_list)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PagingImp for DiskPageRequest {
-    fn fill_from_buffer(&self, buf: &[u8]) {
-        let pager = PAGER_CTX.get().unwrap();
-        for (buf, pa) in buf
-            .chunks(Self::page_size())
-            .zip(self.phys_addr_list.iter())
-        {
-            let pr = PhysRange::new(pa.0, pa.0 + pa.1);
-            async_io::block_on(EXECUTOR.get().unwrap().run(physrw::fill_physical_pages(
-                &pager.sender,
-                buf,
-                pr,
-            )))
-            .unwrap();
-        }
-    }
-
-    fn read_to_buffer(&self, buf: &mut [u8]) {
-        let pager = PAGER_CTX.get().unwrap();
-        for (buf, pa) in buf
-            .chunks_mut(Self::page_size())
-            .zip(self.phys_addr_list.iter())
-        {
-            let pr = PhysRange::new(pa.0, pa.0 + pa.1);
-            async_io::block_on(EXECUTOR.get().unwrap().run(physrw::read_physical_pages(
-                &pager.sender,
-                buf,
-                pr,
-            )))
-            .unwrap();
-        }
-    }
-
-    fn phys_addrs(&self) -> &[(u64, u64)] {
-        self.phys_addr_list.as_slice()
-    }
-
-    fn page_in(&self, disk_pages: &[Option<u64>]) -> std::io::Result<usize> {
-        let mut pairs = disk_pages
-            .iter()
-            .zip(
-                self.phys_addrs()
-                    .iter()
-                    .map(|(p, _)| PhysInfo::new(PhysAddr(*p))),
-            )
-            .filter_map(|(x, y)| if let Some(x) = x { Some((*x, y)) } else { None })
-            .collect::<Vec<_>>();
-        //tracing::trace!("page-in: pairs: {:?}", pairs);
-        pairs.sort_by_key(|p| p.0);
-        let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-        let mut offset = 0;
-        let runs = crate::helpers::consecutive_slices(&dp).map(|run| {
-            let pair = (run, &pp[offset..(offset + run.len())]);
-            offset += run.len();
-            pair
-        });
-        let mut count = 0;
-        for (dp, mut pp) in runs {
-            let mut offset = 0;
-            while pp.len() > 0 {
-                //tracing::trace!("  seqread: {:?} => {:?}", dp, pp);
-                let len = self
-                    .ctrl
-                    .sequential_read::<PAGE_SIZE>(dp[0] + offset as u64, pp)?;
-                count += len;
-                offset += len;
-                pp = &pp[len..];
-            }
-        }
-        Ok(count)
-    }
-
-    fn page_out(&self, disk_pages: &[Option<u64>]) -> std::io::Result<usize> {
-        let mut pairs = disk_pages
-            .iter()
-            .zip(
-                self.phys_addrs()
-                    .iter()
-                    .map(|(p, _)| PhysInfo::new(PhysAddr(*p))),
-            )
-            .filter_map(|(x, y)| if let Some(x) = x { Some((*x, y)) } else { None })
-            .collect::<Vec<_>>();
-        tracing::trace!("page-out: pairs: {:?}", pairs);
-        pairs.sort_by_key(|p| p.0);
-        let (dp, pp): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
-        let mut offset = 0;
-        let runs = crate::helpers::consecutive_slices(&dp).map(|run| {
-            let pair = (run, &pp[offset..(offset + run.len())]);
-            offset += run.len();
-            pair
-        });
-        let mut count = 0;
-        for (dp, mut pp) in runs {
-            let mut offset = 0;
-            while pp.len() > 0 {
-                tracing::trace!("  seqwrite: {:?} => {} pages", dp, pp.len());
-                let len = self
-                    .ctrl
-                    .sequential_write::<PAGE_SIZE>(dp[0] + offset as u64, pp)?;
-                count += len;
-                offset += len;
-                pp = &pp[len..];
-            }
-        }
-        Ok(count)
-    }
-
-    fn phys_addrs_mut(&mut self) -> &mut Vec<(u64, u64)> {
-        &mut self.phys_addr_list
-    }
-}
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -170,6 +42,54 @@ impl Disk {
 
     pub fn lba_count(&self) -> usize {
         self.len / SECTOR_SIZE
+    }
+}
+
+impl PagedDevice for Disk {
+    fn sequential_read(
+        &self,
+        start: u64,
+        list: &[object_store::PhysRange],
+    ) -> Result<usize, TwzError> {
+        let phys = list
+            .iter()
+            .map(|r| {
+                (r.start..r.end)
+                    .into_iter()
+                    .step_by(PAGE_SIZE)
+                    .map(|addr| PhysInfo::new(PhysAddr(addr)))
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let count = self
+            .ctrl
+            .sequential_read::<PAGE_SIZE>(start, phys.as_slice())?;
+        Ok(count)
+    }
+
+    fn sequential_write(
+        &self,
+        start: u64,
+        list: &[object_store::PhysRange],
+    ) -> Result<usize, TwzError> {
+        let phys = list
+            .iter()
+            .map(|r| {
+                (r.start..r.end)
+                    .into_iter()
+                    .step_by(PAGE_SIZE)
+                    .map(|addr| PhysInfo::new(PhysAddr(addr)))
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let count = self
+            .ctrl
+            .sequential_write::<PAGE_SIZE>(start, phys.as_slice())?;
+        Ok(count)
+    }
+
+    fn len(&self) -> Result<usize, TwzError> {
+        Ok(self.len)
     }
 }
 

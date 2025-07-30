@@ -120,6 +120,10 @@ impl Drop for Ext4Blockdev {
 }
 
 impl Ext4Blockdev {
+    pub fn iface(&mut self) -> &mut Box<dyn Ext4BlockdevIface> {
+        &mut self.iface.iface
+    }
+
     pub fn new(
         iface: impl Ext4BlockdevIface + 'static,
         bsize: u32,
@@ -273,6 +277,10 @@ impl Drop for Ext4InodeRef {
 }
 
 impl Ext4Fs {
+    pub fn bd(&mut self) -> &mut Ext4Blockdev {
+        &mut self.bd
+    }
+
     pub fn new(bd: Ext4Blockdev, mnt_name: CString, read_only: bool) -> Result<Self> {
         let r = unsafe { ext4_mount(bd.name.as_ptr(), mnt_name.as_ptr(), read_only) };
         errno_to_result(r)?;
