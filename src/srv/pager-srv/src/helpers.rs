@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagingImp};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -8,7 +8,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{object::Nonce, Result};
 
-use crate::{disk::DiskPageRequest, PagerContext};
+use crate::PagerContext;
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -46,13 +46,10 @@ pub async fn page_in(
     obj_range: ObjectRange,
     phys_range: PhysRange,
 ) -> Result<()> {
-    assert_eq!(obj_range.len(), 0x1000);
-    assert_eq!(phys_range.len(), 0x1000);
+    assert_eq!(obj_range.len(), PAGE as usize);
+    assert_eq!(phys_range.len(), PAGE as usize);
 
-    let imp = ctx
-        .paged_ostore(None)?
-        .new_disk_paging_request([phys_range.start]);
-    let mut start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let mut start_page = obj_range.start / PAGE;
 
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
         tracing::debug!("found meta page, using 0 page");
@@ -93,8 +90,8 @@ pub async fn page_in(
         }
     }
 
-    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
-    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    let nr_pages = obj_range.len() / PAGE as usize;
+    let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
     page_in_many(ctx, obj_id, reqs).await.map(|_| ())
 }
 
