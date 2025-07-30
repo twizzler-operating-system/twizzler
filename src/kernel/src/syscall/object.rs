@@ -8,8 +8,7 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     pager::PagerFlags,
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
-        ObjectCreate, ObjectCreateFlags, ObjectSource,
+        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, ObjectSource
     },
 };
 use twizzler_rt_abi::{
@@ -149,6 +148,12 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
         slot,
         flags: MapFlags::empty(),
     })
+}
+
+pub fn sys_object_info(handle: ObjID) -> Result<ObjectInfo> {
+    let obj = crate::obj::lookup_object(handle, LookupFlags::empty())
+        .ok_or(ObjectError::NoSuchObject)?;
+    Ok(obj.info())
 }
 
 pub trait ObjectHandle {
