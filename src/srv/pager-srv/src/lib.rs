@@ -302,7 +302,7 @@ impl PagedObjectStore for Store {
     fn page_out_object<'a>(
         &self,
         id: object_store::ObjID,
-        reqs: &'a [object_store::PageRequest],
+        reqs: &'a mut [object_store::PageRequest],
     ) -> Result<usize> {
         self.inner.page_out_object(id, reqs)
     }

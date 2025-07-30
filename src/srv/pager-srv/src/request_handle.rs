@@ -60,6 +60,7 @@ async fn handle_page_data_request_task(
                 return;
             }
         };
+        let pages = pages.into_iter().map(|p| p.0).collect::<Vec<_>>();
         let thiscount = pages.len() as u64;
         // try to compress page ranges
         let runs = crate::helpers::consecutive_slices(pages.as_slice());

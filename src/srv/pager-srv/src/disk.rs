@@ -2,16 +2,21 @@ use std::{
     collections::HashMap,
     i64,
     io::{Error, ErrorKind, Read, Seek, SeekFrom, Write},
-    sync::Arc,
+    sync::{Arc, Mutex},
     u32, u64,
 };
 
 use async_executor::Executor;
-use object_store::PagedDevice;
-use twizzler::error::TwzError;
+use async_io::block_on;
+use object_store::{PagedDevice, PhysRange, PosIo};
+use twizzler::error::{ResourceError, TwzError};
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
-use crate::nvme::{init_nvme, NvmeController};
+use crate::{
+    helpers::PAGE,
+    nvme::{init_nvme, NvmeController},
+    PAGER_CTX,
+};
 
 const PAGE_SIZE: usize = 0x1000;
 const SECTOR_SIZE: usize = 512;
@@ -21,7 +26,7 @@ const SECTOR_SIZE: usize = 512;
 pub struct Disk {
     pub ctrl: Arc<NvmeController>,
     pub pos: usize,
-    cache: HashMap<u64, Box<[u8; 4096]>>,
+    cache: Arc<Mutex<HashMap<u64, Box<[u8; 4096]>>>>,
     pub len: usize,
     ex: &'static Executor<'static>,
 }
@@ -34,7 +39,7 @@ impl Disk {
         Ok(Disk {
             ctrl,
             pos: 0,
-            cache: HashMap::new(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
             len,
             ex,
         })
@@ -91,6 +96,97 @@ impl PagedDevice for Disk {
     fn len(&self) -> Result<usize, TwzError> {
         Ok(self.len)
     }
+
+    fn phys_addrs(
+        &self,
+        _start: Option<u64>,
+        _len: u64,
+        allow_failed_alloc: bool,
+    ) -> Result<(object_store::PhysRange, bool), TwzError> {
+        let ctx = PAGER_CTX.get().unwrap();
+        let page = match ctx.data.try_alloc_page() {
+            Ok(page) => page,
+            Err(mw) => {
+                if allow_failed_alloc {
+                    return Err(ResourceError::OutOfMemory.into());
+                }
+                block_on(mw)
+            }
+        };
+        let phys_range = PhysRange::new(page, page + PAGE);
+        Ok((phys_range, false))
+    }
+}
+
+impl PosIo for Disk {
+    fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize, TwzError> {
+        let mut pos = start as usize;
+        let mut lba = (pos / PAGE_SIZE) * 8;
+        let mut bytes_written: usize = 0;
+        let mut read_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+        while bytes_written != buf.len() {
+            if lba >= self.lba_count() {
+                break;
+            }
+
+            let left = pos % PAGE_SIZE;
+            let right = if left + buf.len() - bytes_written > PAGE_SIZE {
+                PAGE_SIZE
+            } else {
+                left + buf.len() - bytes_written
+            }; // If I want to write more than the boundary of a page
+
+            self.ctrl
+                .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
+
+            let bytes_to_read = right - left;
+            buf[bytes_written..bytes_written + bytes_to_read]
+                .copy_from_slice(&read_buffer[left..right]);
+
+            bytes_written += bytes_to_read;
+            pos += bytes_to_read;
+            lba += PAGE_SIZE / SECTOR_SIZE;
+        }
+
+        Ok(bytes_written)
+    }
+
+    fn write(&self, start: u64, buf: &[u8]) -> Result<usize, TwzError> {
+        let mut pos = start as usize;
+        let mut lba = (pos / PAGE_SIZE) * 8;
+        let mut bytes_read = 0;
+        let mut write_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+        while bytes_read != buf.len() {
+            if lba >= self.lba_count() {
+                break;
+            }
+
+            let left = self.pos % PAGE_SIZE;
+            let right = if left + buf.len() - bytes_read > PAGE_SIZE {
+                PAGE_SIZE
+            } else {
+                left + buf.len() - bytes_read
+            };
+            if right - left != PAGE_SIZE {
+                let temp_pos: u64 = self.pos.try_into().unwrap();
+                // TODO: check if full read
+                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)?;
+            }
+
+            write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
+            bytes_read += right - left;
+
+            pos += right - left;
+
+            self.ctrl
+                .blocking_write_page(lba as u64, &mut write_buffer, 0)?;
+            lba += PAGE_SIZE / SECTOR_SIZE;
+        }
+
+        Ok(bytes_read)
+    }
 }
 
 impl Read for Disk {
@@ -111,12 +207,15 @@ impl Read for Disk {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
 
-            if let Some(cached) = self.cache.get(&(lba as u64)) {
+            if let Some(cached) = self.cache.lock().unwrap().get(&(lba as u64)) {
                 read_buffer.copy_from_slice(&cached[0..4096]);
             } else {
                 self.ctrl
                     .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
-                self.cache.insert(lba as u64, Box::new(read_buffer));
+                self.cache
+                    .lock()
+                    .unwrap()
+                    .insert(lba as u64, Box::new(read_buffer));
             }
 
             let bytes_to_read = right - left;
@@ -161,7 +260,10 @@ impl Write for Disk {
 
             self.pos += right - left;
 
-            self.cache.insert(lba as u64, Box::new(write_buffer));
+            self.cache
+                .lock()
+                .unwrap()
+                .insert(lba as u64, Box::new(write_buffer));
             self.ctrl
                 .blocking_write_page(lba as u64, &mut write_buffer, 0)?;
             lba += PAGE_SIZE / SECTOR_SIZE;

@@ -100,7 +100,7 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![p.1]))
+                .map(|p| (p.0, vec![(p.1, false)]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -451,8 +451,8 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-        partial: bool,
-    ) -> Result<Vec<PhysRange>> {
+        _partial: bool,
+    ) -> Result<Vec<(PhysRange, bool)>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(128);
         tracing::trace!(
@@ -462,38 +462,16 @@ impl PagerData {
             current_mem_pages / 2
         );
 
-        let mut pages = vec![];
-        todo!("where does this go");
-        for _ in 0..obj_range.pages().count().min(max_pages.max(1)) {
-            let page = match self.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    if partial && !pages.is_empty() {
-                        tracing::debug!(
-                            "oom on partial -- reading {} / {} pages",
-                            pages.len(),
-                            obj_range.pages().count()
-                        );
-                        break;
-                    }
-                    tracing::debug!("out of memory -- task waiting");
-                    mw.await
-                }
-            };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            pages.push(phys_range);
-        }
-
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = pages.len();
+        let nr_pages = obj_range.pages().count().min(max_pages);
         let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
-        let (reqs, count) = page_in_many(ctx, id, reqs).await?;
+        let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
         if count == 0 {
             // TODO: free pages in incomplete requests.
             todo!();
         }
 
-        Ok(reqs[0].phys_list)
+        Ok(reqs.pop().unwrap().into_list())
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
@@ -503,13 +481,13 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<Vec<PhysRange>> {
+    ) -> Result<Vec<(PhysRange, bool)>> {
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)
                 .await?
                 .into_iter()
-                .map(|p| p.1)
+                .map(|p| (p.1, true))
                 .collect());
         }
 
