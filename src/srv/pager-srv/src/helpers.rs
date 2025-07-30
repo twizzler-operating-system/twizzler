@@ -98,16 +98,16 @@ pub async fn page_in(
 pub async fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    reqs: Vec<PageRequest>,
+    mut reqs: Vec<PageRequest>,
 ) -> Result<usize> {
     blocking::unblock(move || {
-        let mut reqslice = &reqs[..];
+        let mut reqslice = &mut reqs[..];
         while reqslice.len() > 0 {
             let donecount = ctx
                 .paged_ostore(None)?
                 .page_out_object(obj_id.raw(), reqslice)
                 .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-            reqslice = &reqslice[donecount..];
+            reqslice = &mut reqslice[donecount..];
         }
         Ok(reqs.len())
     })

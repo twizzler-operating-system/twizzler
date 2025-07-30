@@ -89,7 +89,7 @@ impl PagedObjectStore for PagedMemStore {
     fn page_out_object<'a>(
         &self,
         id: object_store::ObjID,
-        reqs: &'a [object_store::PageRequest],
+        reqs: &'a mut [object_store::PageRequest],
     ) -> Result<usize> {
         todo!();
         Ok(reqs.len())
