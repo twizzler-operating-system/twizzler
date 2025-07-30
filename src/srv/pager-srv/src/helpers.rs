@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use object_store::{objid_to_ino, PageRequest, PagingImp};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagingImp};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -50,8 +50,8 @@ pub async fn page_in(
     assert_eq!(phys_range.len(), 0x1000);
 
     let imp = ctx
-        .disk
-        .new_paging_request::<DiskPageRequest>([phys_range.start]);
+        .paged_ostore(None)?
+        .new_disk_paging_request([phys_range.start]);
     let mut start_page = obj_range.start / DiskPageRequest::page_size() as u64;
 
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
@@ -65,9 +65,10 @@ pub async fn page_in(
                 )
             }
 
-            let len = blocking::unblock(move || ctx.paged_ostore.find_external(obj_id.raw()))
-                .await
-                .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
+            let len =
+                blocking::unblock(move || ctx.paged_ostore(None)?.find_external(obj_id.raw()))
+                    .await
+                    .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -100,13 +101,13 @@ pub async fn page_in(
 pub async fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    reqs: Vec<PageRequest<DiskPageRequest>>,
+    reqs: Vec<PageRequest>,
 ) -> Result<usize> {
     blocking::unblock(move || {
         let mut reqslice = &reqs[..];
         while reqslice.len() > 0 {
             let donecount = ctx
-                .paged_ostore
+                .paged_ostore(None)?
                 .page_out_object(obj_id.raw(), reqslice)
                 .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
             reqslice = &reqslice[donecount..];
@@ -119,13 +120,14 @@ pub async fn page_out_many(
 pub async fn page_in_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    mut reqs: Vec<PageRequest<DiskPageRequest>>,
-) -> Result<usize> {
+    mut reqs: Vec<PageRequest>,
+) -> Result<(Vec<PageRequest>, usize)> {
     blocking::unblock(move || {
-        Ok(ctx
-            .paged_ostore
+        let ret = ctx
+            .paged_ostore(None)?
             .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?)
+            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
+        Ok((reqs, ret))
     })
     .await
 }

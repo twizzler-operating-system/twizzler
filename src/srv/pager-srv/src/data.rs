@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
@@ -24,7 +24,6 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
-    disk::DiskPageRequest,
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, PAGE},
     stats::RecentStats,
@@ -125,8 +124,9 @@ impl PerObject {
                 let nr_pages = p.1.len();
                 assert_eq!(nr_pages, p.0.pages().count());
                 PageRequest::new(
-                    ctx.disk
-                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.start)),
+                    ctx.paged_ostore(None)
+                        .unwrap()
+                        .new_disk_paging_request(p.1.into_iter().map(|pd| pd.start)),
                     start_page as i64,
                     nr_pages as u32,
                 )
@@ -459,7 +459,6 @@ impl PagerData {
         obj_range: ObjectRange,
         partial: bool,
     ) -> Result<Vec<PhysRange>> {
-        let mut pages = vec![];
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(128);
         tracing::trace!(
@@ -468,37 +467,63 @@ impl PagerData {
             current_mem_pages,
             current_mem_pages / 2
         );
-        for _ in 0..obj_range.pages().count().min(max_pages.max(1)) {
-            let page = match self.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    if partial && !pages.is_empty() {
-                        tracing::debug!(
-                            "oom on partial -- reading {} / {} pages",
-                            pages.len(),
-                            obj_range.pages().count()
-                        );
-                        break;
+
+        let reqs = if ctx.paged_ostore(None)?.supplies_phys_addrs() {
+            let start_page = obj_range.pages().next().unwrap();
+            let nr_pages = obj_range.pages().count();
+            vec![PageRequest::new(
+                ctx.paged_ostore(None)?.new_mem_paging_request(),
+                start_page as i64,
+                nr_pages as u32,
+            )]
+        } else {
+            let mut pages = vec![];
+            for _ in 0..obj_range.pages().count().min(max_pages.max(1)) {
+                let page = match self.try_alloc_page() {
+                    Ok(page) => page,
+                    Err(mw) => {
+                        if partial && !pages.is_empty() {
+                            tracing::debug!(
+                                "oom on partial -- reading {} / {} pages",
+                                pages.len(),
+                                obj_range.pages().count()
+                            );
+                            break;
+                        }
+                        tracing::debug!("out of memory -- task waiting");
+                        mw.await
                     }
-                    tracing::debug!("out of memory -- task waiting");
-                    mw.await
-                }
-            };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            pages.push(phys_range);
+                };
+                let phys_range = PhysRange::new(page, page + PAGE);
+                pages.push(phys_range);
+            }
+
+            let start_page = obj_range.pages().next().unwrap();
+            let nr_pages = pages.len();
+            vec![PageRequest::new(
+                ctx.paged_ostore(None)?
+                    .new_disk_paging_request(pages.iter().map(|pd| pd.start)),
+                start_page as i64,
+                nr_pages as u32,
+            )]
+        };
+        let (reqs, count) = page_in_many(ctx, id, reqs).await?;
+        if count == 0 {
+            // TODO: free pages in incomplete requests.
+            todo!();
         }
 
-        let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = pages.len();
-        let reqs = vec![PageRequest::new(
-            ctx.disk
-                .new_paging_request::<DiskPageRequest>(pages.iter().map(|pd| pd.start)),
-            start_page as i64,
-            nr_pages as u32,
-        )];
-        let _count = page_in_many(ctx, id, reqs).await?;
-        // TODO: free pages in incomplete requests.
-        Ok(pages)
+        let newpages = reqs[0]
+            .imp
+            .phys_addrs()
+            .iter()
+            .map(|(p, l)| PhysRange {
+                start: *p,
+                end: *p + l,
+            })
+            .collect::<Vec<_>>();
+
+        Ok(newpages)
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
@@ -590,7 +615,7 @@ impl PagerData {
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            blocking::unblock(move || ctx.paged_ostore.find_external(id.raw())).await?;
+            blocking::unblock(move || ctx.paged_ostore(None)?.find_external(id.raw())).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -599,7 +624,7 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        blocking::unblock(move || ctx.paged_ostore.read_object(id.raw(), 0, &mut b)).await?;
+        blocking::unblock(move || ctx.paged_ostore(None)?.read_object(id.raw(), 0, &mut b)).await?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

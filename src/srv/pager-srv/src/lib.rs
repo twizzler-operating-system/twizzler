@@ -3,13 +3,16 @@
 #![feature(test)]
 
 use std::{
-    sync::{Arc, OnceLock},
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use async_executor::Executor;
 use async_io::{block_on, Timer};
 use disk::{Disk, DiskPageRequest};
+use helpers::PAGE;
+use memstore::{MemDevice, MemPageRequest};
 use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
@@ -205,18 +208,164 @@ struct PagerContext {
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     kernel_notify:
         Arc<twizzler_queue::CallbackQueueReceiver<RequestFromKernel, CompletionToKernel>>,
-    paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
-    disk: Disk,
+
+    //paged_ostore: Box<dyn PagedObjectStore<DiskPageRequest> + 'static + Sync + Send>,
+    //disk: Disk,
+    stores: Mutex<Stores>,
+}
+
+struct Stores {
+    map: HashMap<ObjID, Arc<Store>>,
+    default: ObjID,
+}
+
+impl Stores {
+    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>, TwzError> {
+        match id {
+            Some(id) => Ok(self.map.get(&id).ok_or(TwzError::INVALID_ARGUMENT)?.clone()),
+            None => Ok(self
+                .map
+                .get(&self.default)
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .clone()),
+        }
+    }
+
+    pub fn insert_disk(
+        &mut self,
+        store: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
+        disk: Disk,
+    ) {
+        self.map.insert(
+            ObjID::new(0),
+            Arc::new(Store {
+                inner: store,
+                dev: StoreDevice::Nvme(disk),
+            }),
+        );
+    }
+}
+
+#[allow(dead_code)]
+enum StoreDevice {
+    Nvme(Disk),
+    Mem(Arc<dyn MemDevice + Send + Sync + 'static>),
+}
+
+struct Store {
+    inner: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
+    dev: StoreDevice,
+}
+
+impl PagedObjectStore for Store {
+    fn create_object(&self, id: object_store::ObjID) -> std::io::Result<()> {
+        self.inner.create_object(id)
+    }
+
+    fn delete_object(&self, id: object_store::ObjID) -> std::io::Result<()> {
+        self.inner.delete_object(id)
+    }
+
+    fn len(&self, id: object_store::ObjID) -> std::io::Result<u64> {
+        self.inner.len(id)
+    }
+
+    fn read_object(
+        &self,
+        id: object_store::ObjID,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> std::io::Result<usize> {
+        self.inner.read_object(id, offset, buf)
+    }
+
+    fn write_object(
+        &self,
+        id: object_store::ObjID,
+        offset: u64,
+        buf: &[u8],
+    ) -> std::io::Result<()> {
+        self.inner.write_object(id, offset, buf)
+    }
+
+    fn supplies_phys_addrs(&self) -> bool {
+        self.inner.supplies_phys_addrs()
+    }
+
+    fn get_config_id(&self) -> std::io::Result<object_store::ObjID> {
+        self.inner.get_config_id()
+    }
+
+    fn set_config_id(&self, id: object_store::ObjID) -> std::io::Result<()> {
+        self.inner.set_config_id(id)
+    }
+
+    fn flush(&self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+
+    fn page_in_object<'a>(
+        &self,
+        id: object_store::ObjID,
+        reqs: &'a mut [object_store::PageRequest],
+    ) -> std::io::Result<usize> {
+        self.inner.page_in_object(id, reqs)
+    }
+
+    fn page_out_object<'a>(
+        &self,
+        id: object_store::ObjID,
+        reqs: &'a [object_store::PageRequest],
+    ) -> std::io::Result<usize> {
+        self.inner.page_out_object(id, reqs)
+    }
+
+    fn enumerate_external(&self, _id: object_store::ObjID) -> std::io::Result<Vec<ExternalFile>> {
+        self.inner.enumerate_external(_id)
+    }
+
+    fn find_external(&self, _id: object_store::ObjID) -> std::io::Result<usize> {
+        self.inner.find_external(_id)
+    }
+}
+
+impl Store {
+    pub fn new_disk_paging_request(&self, pages: impl IntoIterator<Item = u64>) -> DiskPageRequest {
+        let ctrl = match &self.dev {
+            StoreDevice::Nvme(disk) => disk.ctrl.clone(),
+            StoreDevice::Mem(_) => {
+                panic!("cannot make a disk paging request to a memory device")
+            }
+        };
+        DiskPageRequest {
+            phys_addr_list: pages.into_iter().map(|addr| (addr, PAGE)).collect(),
+            ctrl,
+        }
+    }
+
+    pub fn new_mem_paging_request(&self) -> MemPageRequest {
+        let ctrl = match &self.dev {
+            StoreDevice::Mem(m) => m,
+            StoreDevice::Nvme(_) => {
+                panic!("cannot make a mem paging request to a disk device")
+            }
+        };
+        MemPageRequest::new(ctrl.clone())
+    }
 }
 
 impl PagerContext {
+    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>, TwzError> {
+        self.stores.lock().unwrap().paged_ostore(id)
+    }
+
     pub async fn enumerate_external(
         &'static self,
         id: ObjID,
     ) -> Result<Vec<ExternalFile>, TwzError> {
         blocking::unblock(move || {
             Ok(self
-                .paged_ostore
+                .paged_ostore(None)?
                 .enumerate_external(id.raw())?
                 .iter()
                 .cloned()
@@ -245,10 +394,17 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         data,
         sender: sq,
         kernel_notify: rq.clone(),
-        paged_ostore: Box::new(ext4_store),
-        disk: diskc,
+        stores: Mutex::new(Stores {
+            map: HashMap::new(),
+            default: ObjID::new(0),
+        }),
     });
     let ctx = PAGER_CTX.get().unwrap();
+
+    ctx.stores
+        .lock()
+        .unwrap()
+        .insert_disk(Arc::new(ext4_store), diskc);
 
     spawn_queues(ctx, rq, ex);
 
@@ -271,13 +427,14 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
             .detach();
     }
 
-    let bootstrap_id = ctx.paged_ostore.get_config_id().unwrap_or_else(|_| {
-        tracing::info!("creating new naming object");
-        let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
-        ctx.paged_ostore
-            .set_config_id(vo.object().id().raw())
-            .unwrap();
-        vo.object().id().raw()
+    let bootstrap_id = ctx.paged_ostore(None).map_or(0u128, |po| {
+        po.get_config_id().unwrap_or_else(|_| {
+            tracing::info!("creating new naming object");
+            let vo =
+                VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
+            po.set_config_id(vo.object().id().raw()).unwrap();
+            vo.object().id().raw()
+        })
     });
     tracing::info!("found root namespace: {:x}", bootstrap_id);
 
@@ -291,7 +448,12 @@ pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID, TwzError> {
 
 #[secgate::secure_gate]
 pub fn adv_lethe() -> Result<(), TwzError> {
-    PAGER_CTX.get().unwrap().paged_ostore.flush().unwrap();
+    PAGER_CTX
+        .get()
+        .unwrap()
+        .paged_ostore(None)?
+        .flush()
+        .unwrap();
     Ok(())
 }
 
@@ -300,7 +462,7 @@ pub fn disk_len(id: ObjID) -> Result<u64, TwzError> {
     PAGER_CTX
         .get()
         .unwrap()
-        .paged_ostore
+        .paged_ostore(None)?
         .len(id.raw())
         // TODO: err
         .map_err(|_| TwzError::NOT_SUPPORTED)

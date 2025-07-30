@@ -20,8 +20,8 @@ const PAGE_SIZE: usize = 0x1000;
 const SECTOR_SIZE: usize = 512;
 
 pub struct DiskPageRequest {
-    phys_addr_list: Vec<PhysInfo>,
-    ctrl: Arc<NvmeController>,
+    pub phys_addr_list: Vec<(u64, u64)>,
+    pub ctrl: Arc<NvmeController>,
 }
 
 impl core::fmt::Debug for DiskPageRequest {
@@ -33,18 +33,13 @@ impl core::fmt::Debug for DiskPageRequest {
 }
 
 impl PagingImp for DiskPageRequest {
-    type PhysAddr = PhysInfo;
-
     fn fill_from_buffer(&self, buf: &[u8]) {
         let pager = PAGER_CTX.get().unwrap();
         for (buf, pa) in buf
             .chunks(Self::page_size())
             .zip(self.phys_addr_list.iter())
         {
-            let pr = PhysRange::new(
-                pa.addr().into(),
-                u64::from(pa.addr()) + Self::page_size() as u64,
-            );
+            let pr = PhysRange::new(pa.0, pa.0 + pa.1);
             async_io::block_on(EXECUTOR.get().unwrap().run(physrw::fill_physical_pages(
                 &pager.sender,
                 buf,
@@ -60,10 +55,7 @@ impl PagingImp for DiskPageRequest {
             .chunks_mut(Self::page_size())
             .zip(self.phys_addr_list.iter())
         {
-            let pr = PhysRange::new(
-                pa.addr().into(),
-                u64::from(pa.addr()) + Self::page_size() as u64,
-            );
+            let pr = PhysRange::new(pa.0, pa.0 + pa.1);
             async_io::block_on(EXECUTOR.get().unwrap().run(physrw::read_physical_pages(
                 &pager.sender,
                 buf,
@@ -73,14 +65,19 @@ impl PagingImp for DiskPageRequest {
         }
     }
 
-    fn phys_addrs(&self) -> impl Iterator<Item = &'_ Self::PhysAddr> {
-        self.phys_addr_list.iter()
+    fn phys_addrs(&self) -> &[(u64, u64)] {
+        self.phys_addr_list.as_slice()
     }
 
-    fn page_in(&self, disk_pages: impl Iterator<Item = Option<u64>>) -> std::io::Result<usize> {
+    fn page_in(&self, disk_pages: &[Option<u64>]) -> std::io::Result<usize> {
         let mut pairs = disk_pages
-            .zip(self.phys_addrs())
-            .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
+            .iter()
+            .zip(
+                self.phys_addrs()
+                    .iter()
+                    .map(|(p, _)| PhysInfo::new(PhysAddr(*p))),
+            )
+            .filter_map(|(x, y)| if let Some(x) = x { Some((*x, y)) } else { None })
             .collect::<Vec<_>>();
         //tracing::trace!("page-in: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
@@ -107,10 +104,15 @@ impl PagingImp for DiskPageRequest {
         Ok(count)
     }
 
-    fn page_out(&self, disk_pages: impl Iterator<Item = Option<u64>>) -> std::io::Result<usize> {
+    fn page_out(&self, disk_pages: &[Option<u64>]) -> std::io::Result<usize> {
         let mut pairs = disk_pages
-            .zip(self.phys_addrs())
-            .filter_map(|(x, y)| if let Some(x) = x { Some((x, y)) } else { None })
+            .iter()
+            .zip(
+                self.phys_addrs()
+                    .iter()
+                    .map(|(p, _)| PhysInfo::new(PhysAddr(*p))),
+            )
+            .filter_map(|(x, y)| if let Some(x) = x { Some((*x, y)) } else { None })
             .collect::<Vec<_>>();
         tracing::trace!("page-out: pairs: {:?}", pairs);
         pairs.sort_by_key(|p| p.0);
@@ -136,12 +138,16 @@ impl PagingImp for DiskPageRequest {
         }
         Ok(count)
     }
+
+    fn phys_addrs_mut(&mut self) -> &mut Vec<(u64, u64)> {
+        &mut self.phys_addr_list
+    }
 }
 
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct Disk {
-    ctrl: Arc<NvmeController>,
+    pub ctrl: Arc<NvmeController>,
     pub pos: usize,
     cache: HashMap<u64, Box<[u8; 4096]>>,
     pub len: usize,
@@ -164,19 +170,6 @@ impl Disk {
 
     pub fn lba_count(&self) -> usize {
         self.len / SECTOR_SIZE
-    }
-
-    pub fn new_paging_request<P: PagingImp>(
-        &self,
-        pages: impl IntoIterator<Item = u64>,
-    ) -> DiskPageRequest {
-        DiskPageRequest {
-            phys_addr_list: pages
-                .into_iter()
-                .map(|addr| PhysInfo::new(PhysAddr(addr)))
-                .collect(),
-            ctrl: self.ctrl.clone(),
-        }
     }
 }
 
@@ -279,6 +272,7 @@ impl Seek for Disk {
 }
 
 pub mod benches {
+    use async_io::block_on;
     use rand::{rng, seq::SliceRandom};
     use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
@@ -314,15 +308,14 @@ pub mod benches {
             .all(|window| window[0].addr().0 + PAGE_SIZE as u64 == window[1].addr().0);
 
         let phys_size = phys.len() * PAGE_SIZE;
+        let ctrl = block_on(crate::disk::init_nvme()).unwrap();
         if is_sequential {
             tracing::info!(
                 "benching disk sequential read (with sequential memory): {} KB",
                 phys_size / 1024
             );
             let result = do_bench(|| {
-                let r = ctx
-                    .disk
-                    .ctrl
+                let r = ctrl
                     .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
                     .unwrap();
                 assert_eq!(r, NR_PAGES);
@@ -339,9 +332,7 @@ pub mod benches {
             phys_size / 1024
         );
         let result = do_bench(&mut || {
-            let r = ctx
-                .disk
-                .ctrl
+            let r = ctrl
                 .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
                 .unwrap();
             assert_eq!(r, NR_PAGES);
