@@ -1,4 +1,5 @@
 use blocking::unblock;
+use object_store::PagedObjectStore;
 use twizzler::{
     error::RawTwzError,
     object::{MetaFlags, MetaInfo, ObjID},
@@ -22,7 +23,7 @@ async fn handle_page_data_request_task(
     let prefetch = flags.contains(PagerFlags::PREFETCH);
 
     if prefetch {
-        if let Ok(len) = blocking::unblock(move || ctx.paged_ostore.len(id.raw())).await {
+        if let Ok(len) = blocking::unblock(move || ctx.paged_ostore(None)?.len(id.raw())).await {
             tracing::debug!(
                 "==> prefetch request reduce len: {} -> {}",
                 req_range.end,
@@ -151,13 +152,15 @@ pub async fn handle_kernel_request(
 
         KernelCommand::ObjectDel(obj_id) => {
             unblock(move || {
-                let res = ctx.paged_ostore.delete_object(obj_id.raw());
+                let res = ctx
+                    .paged_ostore(None)
+                    .map(|po| po.delete_object(obj_id.raw()));
                 match res {
                     Ok(_) => {
-                        let _ = ctx
-                            .paged_ostore
-                            .flush()
-                            .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e));
+                        let _ = ctx.paged_ostore(None).map(|po| {
+                            po.flush()
+                                .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e))
+                        });
                         KernelCompletionData::Okay
                     }
                     Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
@@ -167,8 +170,8 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectCreate(id, object_info) => {
             blocking::unblock(move || {
-                let _ = ctx.paged_ostore.delete_object(id.raw());
-                match ctx.paged_ostore.create_object(id.raw()) {
+                let _ = ctx.paged_ostore(None).map(|po| po.delete_object(id.raw()));
+                match ctx.paged_ostore(None).map(|po| po.create_object(id.raw())) {
                     Ok(_) => {
                         let mut buffer = [0; 0x1000];
                         let meta = MetaInfo {
@@ -189,7 +192,10 @@ pub async fn handle_kernel_request(
                             buffer[0..size_of::<MetaInfo>()]
                                 .copy_from_slice(any_as_u8_slice(&meta));
                         }
-                        ctx.paged_ostore.write_object(id.raw(), 0, &buffer).unwrap();
+                        ctx.paged_ostore(None)
+                            .unwrap()
+                            .write_object(id.raw(), 0, &buffer)
+                            .unwrap();
 
                         KernelCompletionData::ObjectInfoCompletion(id, object_info)
                     }
