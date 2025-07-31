@@ -268,7 +268,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             crate::obj::scan_deleted();
         }
         ObjectControlCmd::Preload => {
-            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
+            if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
                 crate::pager::ensure_in_core(
                     &obj,
                     PageNumber::from_offset(0),

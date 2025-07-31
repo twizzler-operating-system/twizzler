@@ -22,6 +22,10 @@ async fn handle_page_data_request_task(
 ) {
     let prefetch = flags.contains(PagerFlags::PREFETCH);
 
+    if req_range.start == 0 {
+        req_range.start = PAGE;
+    }
+    tracing::debug!("STARTING {}: {:?} {:?}", id, req_range, flags);
     if prefetch {
         if let Ok(len) = blocking::unblock(move || ctx.paged_ostore(None)?.len(id.raw())).await {
             tracing::debug!(
@@ -29,7 +33,7 @@ async fn handle_page_data_request_task(
                 req_range.end,
                 len
             );
-            req_range.end = len.next_multiple_of(PAGE);
+            req_range.end = len.next_multiple_of(PAGE) + PAGE;
         }
     }
 
@@ -62,6 +66,7 @@ async fn handle_page_data_request_task(
         };
         let pages = pages.into_iter().map(|p| p.0).collect::<Vec<_>>();
         let thiscount = pages.len() as u64;
+
         // try to compress page ranges
         let runs = crate::helpers::consecutive_slices(pages.as_slice());
         let mut acc = 0;
@@ -85,12 +90,14 @@ async fn handle_page_data_request_task(
                 )
             })
             .collect::<Vec<_>>();
-        tracing::trace!("sending {} kernel notifs for {}", comps.len(), id);
+
+        tracing::debug!("sending {} kernel notifs for {}", comps.len(), id);
         for comp in comps.iter() {
             ctx.notify_kernel(qid, *comp).await;
         }
         count += thiscount;
     }
+    tracing::debug!("COMPLETED: {:?}", req_range);
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
     ctx.notify_kernel(qid, done).await;
 }

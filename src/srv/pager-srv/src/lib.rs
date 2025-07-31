@@ -32,7 +32,6 @@ mod disk;
 mod handle;
 mod helpers;
 // in-progress
-mod device;
 #[allow(unused)]
 mod memstore;
 mod nvme;
@@ -50,7 +49,7 @@ pub static EXECUTOR: OnceLock<Executor> = OnceLock::new();
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
+            .with_max_level(tracing::Level::INFO)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
@@ -253,6 +252,7 @@ enum StoreDevice {
     Mem(Arc<dyn MemDevice + Send + Sync + 'static>),
 }
 
+#[allow(dead_code)]
 struct Store {
     inner: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
     dev: StoreDevice,
@@ -373,7 +373,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
-    if false {
+    if true {
         let _ = ex
             .spawn(async {
                 let pager = PAGER_CTX.get().unwrap();

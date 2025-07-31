@@ -48,6 +48,7 @@ pub async fn fill_physical_pages(queue: &QueueRef, buf: &[u8], phys: PhysRange) 
 
 /// Reads buf.len() bytes from physical addresses in phys into the buffer. If the supplied physical
 /// range is shorter than the buffer, then the remaining bytes in the buffer are filled with 0.
+#[allow(dead_code)]
 pub async fn read_physical_pages(queue: &QueueRef, buf: &mut [u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
     do_physrw_request(queue, obj.0, obj.1, buf.len(), phys, false).await
