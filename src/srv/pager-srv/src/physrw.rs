@@ -15,6 +15,16 @@ fn get_object(ptr: *const u8) -> (ObjID, usize) {
     })
 }
 
+pub async fn register_phys(queue: &QueueRef, start: u64, len: u64) -> Result<()> {
+    let request = RequestFromPager::new(PagerRequest::RegisterPhys(start, len));
+    let comp = queue.submit_and_wait(request).await?;
+    match comp.data() {
+        twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
+        twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
+        _ => Err(TwzError::INVALID_ARGUMENT),
+    }
+}
+
 async fn do_physrw_request(
     queue: &QueueRef,
     target_object: ObjID,
