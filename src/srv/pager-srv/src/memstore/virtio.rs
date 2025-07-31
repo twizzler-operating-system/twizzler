@@ -44,8 +44,6 @@ impl PosIo for VirtioMem {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
 
-            //self.ctrl
-            //    .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
             let start = self.phys_start + (lba * SECTOR_SIZE) as u64;
             let phys = PhysRange {
                 start,
