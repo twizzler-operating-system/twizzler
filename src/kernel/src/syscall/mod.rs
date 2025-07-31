@@ -520,6 +520,24 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
+        Syscall::ObjectStat => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let id = ObjID::from_parts([hi, lo]);
+            let out = context.arg2();
+            let out: Option<&mut twizzler_abi::syscall::ObjectInfo> = unsafe { create_user_ptr(out) };
+            let result: Result<_> = if let Some(out) = out {
+                object::sys_object_info(id).map(|info| {
+                    *out = info;
+                    0u64
+                })
+            } else {
+                Err(ArgumentError::InvalidArgument.into())
+            };
+
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         _ => {
             context.set_return_values(1u64, 0u64);
         }
