@@ -11,7 +11,10 @@ use std::{
 use async_executor::Executor;
 use async_io::{block_on, Timer};
 use disk::Disk;
-use memstore::MemDevice;
+use memstore::{
+    virtio::{init_virtio, VirtioMem},
+    MemDevice,
+};
 use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
@@ -345,8 +348,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
     let diskc = disk.clone();
 
-    let ext4_store = Ext4Store::new(disk, "/").unwrap();
-
     let sq = Arc::new(sq);
     let rq = Arc::new(rq);
     let _ = PAGER_CTX.set(PagerContext {
@@ -360,6 +361,9 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
     let ctx = PAGER_CTX.get().unwrap();
 
+    let virtio_store = block_on(ex.run(async move { init_virtio().await })).unwrap();
+    let ext4_store = Ext4Store::new(virtio_store, "/").unwrap();
+
     ctx.stores
         .lock()
         .unwrap()
@@ -370,6 +374,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     block_on(ex.run(async move {
         let _ = report_ready(&ctx, ex).await.unwrap();
     }));
+
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);

@@ -123,5 +123,29 @@ pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
             // TODO: on-drop for this object.
             Ok(owned_devices_object.object().id())
         }
+        devmgr::Supported::Vendor(vendor_code, device_code) => {
+            let device_root = twizzler_driver::get_bustree_root();
+            let mut ids = Vec::new();
+            for device in device_root.children() {
+                if device.is_bus() && device.bus_type() == BusType::Pcie {
+                    for child in device.children() {
+                        let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
+                        if info.get_data().device_id == device_code
+                            && info.get_data().vendor_id == vendor_code
+                        {
+                            ids.push(child.id());
+                        }
+                    }
+                }
+            }
+
+            tracing::debug!("found devices {:?} for spec {:?}", ids, spec);
+            let mut owned_devices_object = VecObject::new(ObjectBuilder::default())?;
+            for id in ids {
+                owned_devices_object.push(OwnedDevice { id })?;
+            }
+            // TODO: on-drop for this object.
+            Ok(owned_devices_object.object().id())
+        }
     }
 }
