@@ -122,6 +122,7 @@ pub enum PagerRequest {
         phys: PhysRange,
         write_phys: bool,
     },
+    RegisterPhys(u64, u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

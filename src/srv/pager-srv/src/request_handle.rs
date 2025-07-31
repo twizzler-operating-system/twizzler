@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use blocking::unblock;
 use object_store::PagedObjectStore;
 use twizzler::{
@@ -25,6 +27,7 @@ async fn handle_page_data_request_task(
     if req_range.start == 0 {
         req_range.start = PAGE;
     }
+    let start_time = Instant::now();
     tracing::debug!("STARTING {}: {:?} {:?}", id, req_range, flags);
     if prefetch {
         if let Ok(len) = blocking::unblock(move || ctx.paged_ostore(None)?.len(id.raw())).await {
@@ -91,13 +94,17 @@ async fn handle_page_data_request_task(
             })
             .collect::<Vec<_>>();
 
-        tracing::debug!("sending {} kernel notifs for {}", comps.len(), id);
+        tracing::trace!("sending {} kernel notifs for {}", comps.len(), id);
         for comp in comps.iter() {
             ctx.notify_kernel(qid, *comp).await;
         }
         count += thiscount;
     }
-    tracing::debug!("COMPLETED: {:?}", req_range);
+    tracing::info!(
+        "COMPLETED: {:?} in {} ms",
+        req_range,
+        start_time.elapsed().as_millis()
+    );
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
     ctx.notify_kernel(qid, done).await;
 }

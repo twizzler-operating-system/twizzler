@@ -11,11 +11,8 @@ use std::{
 use async_executor::Executor;
 use async_io::{block_on, Timer};
 use disk::Disk;
-use memstore::{
-    virtio::{init_virtio, VirtioMem},
-    MemDevice,
-};
-use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
+use memstore::virtio::init_virtio;
+use object_store::{Ext4Store, ExternalFile, PagedDevice, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -234,31 +231,20 @@ impl Stores {
         }
     }
 
-    pub fn insert_disk(
+    pub fn insert_device(
         &mut self,
         store: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
-        disk: Disk,
+        dev: Arc<dyn PagedDevice + Send + Sync + 'static>,
     ) {
-        self.map.insert(
-            ObjID::new(0),
-            Arc::new(Store {
-                inner: store,
-                dev: StoreDevice::Nvme(disk),
-            }),
-        );
+        self.map
+            .insert(ObjID::new(0), Arc::new(Store { inner: store, dev }));
     }
-}
-
-#[allow(dead_code)]
-enum StoreDevice {
-    Nvme(Disk),
-    Mem(Arc<dyn MemDevice + Send + Sync + 'static>),
 }
 
 #[allow(dead_code)]
 struct Store {
     inner: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
-    dev: StoreDevice,
+    dev: Arc<dyn PagedDevice + Send + Sync + 'static>,
 }
 
 impl PagedObjectStore for Store {
@@ -346,7 +332,6 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
-    let diskc = disk.clone();
 
     let sq = Arc::new(sq);
     let rq = Arc::new(rq);
@@ -362,12 +347,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let ctx = PAGER_CTX.get().unwrap();
 
     let virtio_store = block_on(ex.run(async move { init_virtio().await })).unwrap();
-    let ext4_store = Ext4Store::new(virtio_store, "/").unwrap();
+    let ext4_store = Ext4Store::new(virtio_store.clone(), "/").unwrap();
 
     ctx.stores
         .lock()
         .unwrap()
-        .insert_disk(Arc::new(ext4_store), diskc);
+        .insert_device(Arc::new(ext4_store), Arc::new(virtio_store));
 
     spawn_queues(ctx, rq, ex);
 
@@ -378,7 +363,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
-    if true {
+    if false {
         let _ = ex
             .spawn(async {
                 let pager = PAGER_CTX.get().unwrap();

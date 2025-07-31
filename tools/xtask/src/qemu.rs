@@ -106,7 +106,7 @@ impl QemuCommand {
             .arg("-device")
             .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
         self.cmd.arg("-object").arg(
-            "memory-backend-file,id=dataset,size=525221888,mem-path=target/nvme.img,share=off",
+            "memory-backend-file,id=dataset,size=107374182400,mem-path=target/nvme.img,share=off",
         );
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");

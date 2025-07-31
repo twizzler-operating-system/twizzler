@@ -10,15 +10,16 @@ use twizzler_abi::{
     },
     syscall::{MapFlags, NANOS_PER_SEC},
 };
-use twizzler_rt_abi::error::{ObjectError, TwzError};
+use twizzler_rt_abi::error::{ObjectError, RawTwzError, TwzError};
 
 use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES};
 use crate::{
-    arch::PhysAddr,
+    arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::start_reclaim_thread,
     },
@@ -30,6 +31,7 @@ use crate::{
     },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
+    security::KERNEL_SCTX,
     thread::{
         entry::{run_closure_in_new_thread, start_new_kernel},
         priority::Priority,
@@ -90,6 +92,21 @@ fn pager_request_copy_user_phys(
     CompletionToPager::new(PagerCompletionData::Okay)
 }
 
+fn pager_register_phys(phys: u64, len: u64) -> Result<(), TwzError> {
+    log::info!("register phys: {:x} - {:x}", phys, phys + len);
+    let paddr = PhysAddr::new(phys).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+    let vaddr = phys_to_virt(paddr);
+    let cursor = MappingCursor::new(vaddr, len as usize);
+    let settings = MappingSettings::new(
+        Protections::READ | Protections::WRITE,
+        CacheType::WriteBack,
+        MappingFlags::GLOBAL,
+    );
+    let mut phys = ContiguousProvider::new(paddr, len as usize, settings);
+    kernel_context().with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+    Ok(())
+}
+
 pub(super) fn pager_request_handler_main() {
     let receiver = RECEIVER.wait();
     loop {
@@ -117,6 +134,12 @@ pub(super) fn pager_request_handler_main() {
                 phys,
                 write_phys,
             } => pager_request_copy_user_phys(target_object, offset, len, phys, write_phys),
+            PagerRequest::RegisterPhys(phys, len) => match pager_register_phys(phys, len) {
+                Ok(_) => CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay),
+                Err(e) => CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Error(
+                    RawTwzError::new(e.raw()),
+                )),
+            },
         });
     }
 }
