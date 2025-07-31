@@ -463,7 +463,7 @@ impl PagerData {
         );
 
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = obj_range.pages().count().min(max_pages);
+        let nr_pages = obj_range.pages().count().min(max_pages).max(1);
         let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
         let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
         if count == 0 {

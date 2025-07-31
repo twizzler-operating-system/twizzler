@@ -107,6 +107,7 @@ impl PagedDevice for Disk {
         let page = match ctx.data.try_alloc_page() {
             Ok(page) => page,
             Err(mw) => {
+                tracing::debug!("OOM: (ok = {})", allow_failed_alloc);
                 if allow_failed_alloc {
                     return Err(ResourceError::OutOfMemory.into());
                 }
