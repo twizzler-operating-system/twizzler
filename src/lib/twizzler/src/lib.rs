@@ -13,6 +13,7 @@ pub use twizzler_derive::*;
 
 pub mod alloc;
 pub mod collections;
+pub mod ext;
 pub mod marker;
 pub mod object;
 pub mod ptr;

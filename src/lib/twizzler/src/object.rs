@@ -2,7 +2,7 @@
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
-use crate::{marker::BaseType, ptr::Ref};
+use crate::{ext::MetaExtension, marker::BaseType, ptr::Ref};
 
 mod builder;
 mod fot;
@@ -92,6 +92,22 @@ pub trait RawObject {
         } else {
             None
         }
+    }
+
+    /// Find the specified meta extension by tag if present.
+    fn find_meta_ext<M: MetaExtension>(&self) -> Option<Ref<'_, M::Data>> {
+        let meta = self.meta_ptr();
+        unsafe {
+            let count = (*meta).extcount;
+            let mut ptr = meta.add(1).cast::<MetaExt>();
+            for c in 0..count {
+                let ext = &*ptr.add(c);
+                if let Some(r) = M::get_data(self, ext) {
+                    return Some(r);
+                }
+            }
+        }
+        None
     }
 }
 
