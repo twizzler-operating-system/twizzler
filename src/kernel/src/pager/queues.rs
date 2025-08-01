@@ -5,7 +5,7 @@ use twizzler_abi::{
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
-        ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
+        ObjectRange, PageFlags, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
     syscall::{MapFlags, NANOS_PER_SEC},
@@ -144,19 +144,28 @@ pub(super) fn pager_request_handler_main() {
     }
 }
 
-fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+fn pager_compl_handle_page_data(
+    objid: ObjID,
+    obj_range: ObjectRange,
+    phys_range: PhysRange,
+    flags: PageFlags,
+) {
     let pcount = phys_range.pages().count();
     log::trace!("got : {} {:?} {:?}", objid, obj_range, phys_range);
-    log::trace!(
-        "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
-        phys_range,
-        pcount,
-        crate::memory::tracker::get_outstanding_pager_pages()
-    );
-    crate::memory::tracker::untrack_page_pager(pcount);
-    if crate::memory::tracker::get_outstanding_pager_pages() < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
-    {
-        super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+
+    if !flags.contains(PageFlags::WIRED) {
+        log::trace!(
+            "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
+            phys_range,
+            pcount,
+            crate::memory::tracker::get_outstanding_pager_pages()
+        );
+        crate::memory::tracker::untrack_page_pager(pcount);
+        if crate::memory::tracker::get_outstanding_pager_pages()
+            < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
+        {
+            super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+        }
     }
 
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
@@ -167,7 +176,19 @@ fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
 
             // TODO: will need to supply allocator
-            let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
+            let page = if flags.contains(PageFlags::WIRED) {
+                Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
+            } else {
+                if let Some(frame) = crate::memory::frame::get_frame(pa) {
+                    Page::new(frame)
+                } else {
+                    log::warn!(
+                        "non-wired physical address, but not known by frame allocator: {:?}",
+                        pa
+                    );
+                    Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
+                }
+            };
             let page = PageRef::new(Arc::new(page), 0, 1);
             object_tree.add_page(pn, page, None);
         }
@@ -242,7 +263,8 @@ pub(super) fn pager_compl_handler_main() {
                 objid,
                 obj_range,
                 phys_range,
-            ) => pager_compl_handle_page_data(objid, obj_range, phys_range),
+                flags,
+            ) => pager_compl_handle_page_data(objid, obj_range, phys_range, flags),
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
                 pager_compl_handle_object_info(id, info)
             }

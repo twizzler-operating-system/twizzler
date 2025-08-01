@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
@@ -100,7 +100,7 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![(p.1, false)]))
+                .map(|p| (p.0, vec![PagedPhysMem::new(p.1)]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -452,7 +452,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
         _partial: bool,
-    ) -> Result<Vec<(PhysRange, bool)>> {
+    ) -> Result<Vec<PagedPhysMem>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(4096);
         tracing::trace!(
@@ -481,13 +481,13 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<Vec<(PhysRange, bool)>> {
+    ) -> Result<Vec<PagedPhysMem>> {
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)
                 .await?
                 .into_iter()
-                .map(|p| (p.1, true))
+                .map(|p| PagedPhysMem::new(p.1).completed())
                 .collect());
         }
 

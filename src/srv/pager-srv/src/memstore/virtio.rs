@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use async_io::block_on;
-use object_store::{PagedDevice, PosIo, PAGE_SIZE};
+use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, PAGE_SIZE};
 use twizzler::{
     error::{NamingError, ResourceError},
     Result,
 };
-use twizzler_abi::pager::PhysRange;
-use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device};
+use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device, dma::PhysInfo};
 
 use crate::{disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, PAGER_CTX};
 
@@ -128,41 +127,37 @@ impl PagedDevice for VirtioMem {
         Ok(self.len as usize)
     }
 
-    fn phys_addrs(
-        &self,
-        start: Option<u64>,
-        len: u64,
-        allow_failed_alloc: bool,
-    ) -> Result<(object_store::PhysRange, bool)> {
+    fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
         // TODO: bounds check
-        let alloc_page = |completed: bool| {
+        let alloc_page = || {
             let ctx = PAGER_CTX.get().unwrap();
             let page = match ctx.data.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
-                    tracing::debug!("OOM: (ok = {})", allow_failed_alloc);
-                    if allow_failed_alloc {
-                        return Err(ResourceError::OutOfMemory.into());
+                    tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
+                    if !phys_list.is_empty() {
+                        return Result::Err(ResourceError::OutOfMemory.into());
                     }
                     block_on(mw)
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);
-            Ok((phys_range, completed))
+            Ok(phys_range)
         };
-        let Some(start) = start else {
-            return alloc_page(false);
+        let (start, len) = match start {
+            DevicePage::Run(start, len) => (start, len as u64),
+            DevicePage::Hole(_len) => {
+                let page = alloc_page()?;
+                phys_list.push(PagedPhysMem::new(page).completed());
+                return Ok(1);
+            }
         };
-        if start == 0 {
-            return alloc_page(true);
-        }
-        Ok((
-            PhysRange::new(
-                start * PAGE + self.phys_start,
-                start * PAGE + self.phys_start + len,
-            ),
-            true,
-        ))
+        let phys_range = PhysRange::new(
+            start * PAGE + self.phys_start,
+            start * PAGE + self.phys_start + len * PAGE,
+        );
+        phys_list.push(PagedPhysMem::new(phys_range).completed().wired());
+        Ok(len as usize)
     }
 }
 

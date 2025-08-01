@@ -278,6 +278,16 @@ impl AllocationRegion {
             // Unwrap-Ok: we know this address is in this region already
             // Safety: we are allocating a new, untouched frame here
             let frame = unsafe { indexer.get_frame_mut(cursor) }.unwrap();
+            for i in 0..PHYS_LEVEL_LAYOUTS[level].size() / PHYS_LEVEL_LAYOUTS[0].size() {
+                let sub_addr = cursor.offset(i * PHYS_LEVEL_LAYOUTS[0].size()).unwrap();
+                unsafe {
+                    indexer.get_frame_mut(sub_addr).unwrap().reset(
+                        sub_addr,
+                        0,
+                        PhysicalFrameFlags::empty(),
+                    )
+                };
+            }
             levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty());
             cursor = cursor.offset(levels[level].alloc_size).unwrap();
         }
