@@ -8,7 +8,7 @@ use twizzler::{
 };
 use twizzler_abi::pager::{
     CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
-    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PagerFlags, PhysRange,
+    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PageFlags, PagerFlags, PhysRange,
     RequestFromKernel,
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
@@ -67,34 +67,44 @@ async fn handle_page_data_request_task(
                 return;
             }
         };
-        let pages = pages.into_iter().map(|p| p.0).collect::<Vec<_>>();
-        let thiscount = pages.len() as u64;
+        let thiscount = pages
+            .iter()
+            .fold(0u64, |acc, x| acc + (x.range.end - x.range.start) / PAGE);
 
         // try to compress page ranges
         let runs = crate::helpers::consecutive_slices(pages.as_slice());
         let mut acc = 0;
-        let pages = runs
+        let comps = runs
             .map(|run| {
                 let start = run[0];
                 let last = run.last().unwrap();
-                let ret = (acc, PhysRange::new(start.start, last.end));
-                acc += run.len();
-                ret
-            })
-            .collect::<Vec<_>>();
-        let comps = pages
-            .into_iter()
-            .map(|(i, x)| {
-                let start = req_range.start + (count + i as u64) * PAGE;
-                let range = ObjectRange::new(start, start + x.len() as u64);
+                let flags = if start.is_wired() {
+                    PageFlags::WIRED
+                } else {
+                    PageFlags::empty()
+                };
+                let phys_range = PhysRange {
+                    start: start.range.start,
+                    end: last.range.end,
+                };
+
+                let start = req_range.start + (count + acc as u64) * PAGE;
+                let range = ObjectRange::new(start, start + phys_range.len() as u64);
+
+                acc += phys_range.pages().count();
                 CompletionToKernel::new(
-                    KernelCompletionData::PageDataCompletion(id, range, x),
+                    KernelCompletionData::PageDataCompletion(id, range, phys_range, flags),
                     KernelCompletionFlags::empty(),
                 )
             })
             .collect::<Vec<_>>();
 
-        tracing::trace!("sending {} kernel notifs for {}", comps.len(), id);
+        tracing::info!(
+            "sending {} kernel notifs for {} ({} pages)",
+            comps.len(),
+            id,
+            thiscount
+        );
         for comp in comps.iter() {
             ctx.notify_kernel(qid, *comp).await;
         }

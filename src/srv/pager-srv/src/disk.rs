@@ -6,8 +6,8 @@ use std::{
 
 use async_executor::Executor;
 use async_io::block_on;
-use object_store::{PagedDevice, PhysRange, PosIo};
-use twizzler::error::{ResourceError, TwzError};
+use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo};
+use twizzler::{error::ResourceError, Result};
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
 use crate::{
@@ -29,7 +29,7 @@ pub struct Disk {
 }
 
 impl Disk {
-    pub async fn new(ex: &'static Executor<'static>) -> Result<Disk, ()> {
+    pub async fn new(ex: &'static Executor<'static>) -> Result<Disk> {
         let ctrl = init_nvme().await.expect("failed to open nvme controller");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
@@ -47,11 +47,7 @@ impl Disk {
 }
 
 impl PagedDevice for Disk {
-    fn sequential_read(
-        &self,
-        start: u64,
-        list: &[object_store::PhysRange],
-    ) -> Result<usize, TwzError> {
+    fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
         let phys = list
             .iter()
             .map(|r| {
@@ -68,11 +64,7 @@ impl PagedDevice for Disk {
         Ok(count)
     }
 
-    fn sequential_write(
-        &self,
-        start: u64,
-        list: &[object_store::PhysRange],
-    ) -> Result<usize, TwzError> {
+    fn sequential_write(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
         let phys = list
             .iter()
             .map(|r| {
@@ -89,34 +81,34 @@ impl PagedDevice for Disk {
         Ok(count)
     }
 
-    fn len(&self) -> Result<usize, TwzError> {
+    fn len(&self) -> Result<usize> {
         Ok(self.len)
     }
 
-    fn phys_addrs(
-        &self,
-        start: Option<u64>,
-        _len: u64,
-        allow_failed_alloc: bool,
-    ) -> Result<(object_store::PhysRange, bool), TwzError> {
+    fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
         let ctx = PAGER_CTX.get().unwrap();
         let page = match ctx.data.try_alloc_page() {
             Ok(page) => page,
             Err(mw) => {
-                tracing::debug!("OOM: (ok = {})", allow_failed_alloc);
-                if allow_failed_alloc {
+                tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
+                if !phys_list.is_empty() {
                     return Err(ResourceError::OutOfMemory.into());
                 }
                 block_on(mw)
             }
         };
         let phys_range = PhysRange::new(page, page + PAGE);
-        Ok((phys_range, start.is_some_and(|s| s == 0)))
+        let mut mem = PagedPhysMem::new(phys_range);
+        if start.as_hole().is_some() {
+            mem.set_completed();
+        }
+        phys_list.push(mem);
+        Ok(1)
     }
 }
 
 impl PosIo for Disk {
-    fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize, TwzError> {
+    fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
@@ -149,7 +141,7 @@ impl PosIo for Disk {
         Ok(bytes_written)
     }
 
-    fn write(&self, start: u64, buf: &[u8]) -> Result<usize, TwzError> {
+    fn write(&self, start: u64, buf: &[u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
