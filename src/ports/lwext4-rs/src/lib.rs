@@ -8,9 +8,9 @@ use std::{
 
 use lwext4::{
     ext4_block, ext4_blockdev, ext4_blockdev_iface, ext4_dir_iterator_fini, ext4_dir_iterator_init,
-    ext4_dir_iterator_next, ext4_file, ext4_fs_init_inode_dblk_idx, ext4_fs_insert_inode_dblk,
-    ext4_fs_put_inode_ref, ext4_get_mount, ext4_inode_get_size, ext4_inode_ref, ext4_mount, EOK,
-    SEEK_CUR, SEEK_END, SEEK_SET,
+    ext4_dir_iterator_next, ext4_extent_get_blocks, ext4_file, ext4_fs_init_inode_dblk_idx,
+    ext4_fs_insert_inode_dblk, ext4_fs_put_inode_ref, ext4_fsblk_t, ext4_get_mount,
+    ext4_inode_get_size, ext4_inode_ref, ext4_mount, EOK, SEEK_CUR, SEEK_END, SEEK_SET,
 };
 
 #[allow(unused, nonstandard_style)]
@@ -228,6 +228,28 @@ impl Ext4InodeRef {
             })?;
         }
         Ok(fblock)
+    }
+
+    pub fn get_data_blocks(
+        &mut self,
+        block: u32,
+        max_blocks: u32,
+        create: bool,
+    ) -> Result<(ext4_fsblk_t, u32)> {
+        let mut count = 0;
+        let mut dblock = 0;
+        errno_to_result(unsafe {
+            ext4_extent_get_blocks(
+                &mut self.inode,
+                block,
+                max_blocks,
+                &mut dblock,
+                create,
+                &mut count,
+            )
+        })?;
+
+        Ok((dblock, count))
     }
 
     pub fn num(&self) -> u32 {

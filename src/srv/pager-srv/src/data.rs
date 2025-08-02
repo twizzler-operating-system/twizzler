@@ -454,7 +454,7 @@ impl PagerData {
         _partial: bool,
     ) -> Result<Vec<PagedPhysMem>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
-        let max_pages = (current_mem_pages / 2).min(4096);
+        let max_pages = 4096 * 128; //(current_mem_pages / 2).min(4096 * 128);
         tracing::trace!(
             "req: {}, cur: {} ({})",
             obj_range.pages().count(),

@@ -47,7 +47,7 @@ impl QemuCommand {
 
     pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("8000,slots=4,maxmem=512G");
+        self.cmd.arg("-m").arg("80000,slots=4,maxmem=512G");
 
         // configure architechture specific parameters
         self.arch_config(options);
@@ -85,7 +85,9 @@ impl QemuCommand {
                 .arg("4096")
                 .arg("-qF")
                 .arg("-E")
-                .arg("test_fs")
+                .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
+                .arg("-t")
+                .arg("ext4")
                 .arg("target/nvme.img")
                 .arg("10000000")
                 .status()

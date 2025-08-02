@@ -1,7 +1,10 @@
-use std::time::Instant;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 
 use blocking::unblock;
-use object_store::PagedObjectStore;
+use object_store::{objid_to_ino, PagedObjectStore};
 use twizzler::{
     error::RawTwzError,
     object::{MetaFlags, MetaInfo, ObjID},
@@ -22,14 +25,16 @@ async fn handle_page_data_request_task(
     mut req_range: ObjectRange,
     flags: PagerFlags,
 ) {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static PCOUNT: AtomicU64 = AtomicU64::new(0);
     let prefetch = flags.contains(PagerFlags::PREFETCH);
 
     if req_range.start == 0 {
         req_range.start = PAGE;
     }
     let start_time = Instant::now();
-    tracing::debug!("STARTING {}: {:?} {:?}", id, req_range, flags);
     if prefetch {
+        tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
         if let Ok(len) = blocking::unblock(move || ctx.paged_ostore(None)?.len(id.raw())).await {
             tracing::debug!(
                 "==> prefetch request reduce len: {} -> {}",
@@ -38,6 +43,9 @@ async fn handle_page_data_request_task(
             );
             req_range.end = len.next_multiple_of(PAGE) + PAGE;
         }
+        PCOUNT.fetch_add(1, Ordering::SeqCst);
+    } else {
+        COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     let total = req_range.pages().count() as u64;
@@ -67,6 +75,7 @@ async fn handle_page_data_request_task(
                 return;
             }
         };
+
         let thiscount = pages
             .iter()
             .fold(0u64, |acc, x| acc + (x.range.end - x.range.start) / PAGE);
@@ -99,7 +108,7 @@ async fn handle_page_data_request_task(
             })
             .collect::<Vec<_>>();
 
-        tracing::info!(
+        tracing::trace!(
             "sending {} kernel notifs for {} ({} pages)",
             comps.len(),
             id,
@@ -110,11 +119,22 @@ async fn handle_page_data_request_task(
         }
         count += thiscount;
     }
-    tracing::info!(
-        "COMPLETED: {:?} in {} ms",
-        req_range,
-        start_time.elapsed().as_millis()
-    );
+    if prefetch {
+        PCOUNT.fetch_sub(1, Ordering::SeqCst);
+    } else {
+        COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+    if objid_to_ino(id.raw()).is_some() || prefetch {
+        tracing::info!(
+            "COMPLETED: {} {:?} in {} ms, {}:{} remaining",
+            id,
+            req_range,
+            start_time.elapsed().as_millis(),
+            COUNT.load(Ordering::SeqCst),
+            PCOUNT.load(Ordering::SeqCst),
+        );
+    }
+
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
     ctx.notify_kernel(qid, done).await;
 }

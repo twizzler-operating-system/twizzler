@@ -331,6 +331,7 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
+    #[allow(unused_variables)]
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
 
     let sq = Arc::new(sq);
@@ -346,6 +347,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
     let ctx = PAGER_CTX.get().unwrap();
 
+    #[allow(unused_variables)]
     let virtio_store = block_on(ex.run(async move { init_virtio().await })).unwrap();
     let ext4_store = Ext4Store::new(virtio_store.clone(), "/").unwrap();
 

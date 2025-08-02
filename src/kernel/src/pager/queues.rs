@@ -16,6 +16,7 @@ use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES
 use crate::{
     arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
+    instant::Instant,
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
@@ -171,32 +172,62 @@ fn pager_compl_handle_page_data(
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
 
-        for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
+        let start = Instant::now();
+        let mut count = 0;
+        let max_obj = obj_range.pages().count();
+        let max_phys = phys_range.pages().count();
+        while count < max_obj {
+            let objpage_nr = obj_range.pages().nth(count).unwrap();
+            let physpage_nr = phys_range.pages().nth(count).unwrap();
+
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
 
-            // TODO: will need to supply allocator
-            let page = if flags.contains(PageFlags::WIRED) {
-                Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
+            let (page, thiscount) = if flags.contains(PageFlags::WIRED) {
+                let max_pages = (max_obj - count).min(max_phys - count);
+                log::info!("wiring {} pages: {}", max_pages, objpage_nr);
+                (
+                    Page::new_wired(pa, PageNumber::PAGE_SIZE * max_pages, CacheType::WriteBack),
+                    max_pages,
+                )
             } else {
-                if let Some(frame) = crate::memory::frame::get_frame(pa) {
-                    Page::new(frame)
-                } else {
-                    log::warn!(
-                        "non-wired physical address, but not known by frame allocator: {:?}",
-                        pa
-                    );
-                    Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
-                }
+                (
+                    if let Some(frame) = crate::memory::frame::get_frame(pa) {
+                        Page::new(frame)
+                    } else {
+                        log::warn!(
+                            "non-wired physical address, but not known by frame allocator: {:?}",
+                            pa
+                        );
+                        Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
+                    },
+                    1,
+                )
             };
-            let page = PageRef::new(Arc::new(page), 0, 1);
+            if thiscount > 1 {
+                log::info!("pre");
+                object_tree.print_tree();
+            }
+            let page = PageRef::new(Arc::new(page), 0, thiscount);
             object_tree.add_page(pn, page, None);
+
+            if thiscount > 1 {
+                log::info!("post");
+                object_tree.print_tree();
+            }
+            count += thiscount;
         }
         drop(object_tree);
 
         inflight_mgr()
             .lock()
             .pages_ready(objid, obj_range.pages().map(|x| x as usize));
+        let end = Instant::now();
+        log::info!(
+            "processed {} pages in {} us",
+            obj_range.pages().count(),
+            (end - start).as_micros()
+        );
     } else {
         // TODO
         logln!("kernel: pager: got unknown object ID");
