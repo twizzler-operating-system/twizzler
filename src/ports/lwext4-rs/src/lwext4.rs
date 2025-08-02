@@ -3025,6 +3025,27 @@ unsafe extern "C" {
     #[doc = "@brief Get extent header from the root of the extent tree.\n @param inode I-node to get extent header from\n @return Pointer to extent header of the root node"]
     pub fn ext4_inode_get_extent_header(inode: *mut ext4_inode) -> *mut ext4_extent_header;
 }
+unsafe extern "C" {
+    pub fn ext4_extent_tree_init(inode_ref: *mut ext4_inode_ref);
+}
+unsafe extern "C" {
+    pub fn ext4_extent_get_blocks(
+        inode_ref: *mut ext4_inode_ref,
+        iblock: ext4_lblk_t,
+        max_blocks: u32,
+        result: *mut ext4_fsblk_t,
+        create: bool,
+        blocks_count: *mut u32,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    #[doc = "@brief Release all data blocks starting from specified logical block.\n @param inode_ref   I-node to release blocks from\n @param iblock_from First logical block to release\n @return Error code"]
+    pub fn ext4_extent_remove_space(
+        inode_ref: *mut ext4_inode_ref,
+        from: ext4_lblk_t,
+        to: ext4_lblk_t,
+    ) -> ::std::os::raw::c_int;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct jbd_fs {
