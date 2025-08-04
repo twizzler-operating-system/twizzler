@@ -182,7 +182,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
         log::warn!("invalid page number: {:?}", pn);
     }
     let count_to_end = max - pn;
-    let count = count_to_end.min(16);
+    let count = count_to_end.min(1024);
 
     let tree = obj.lock_page_tree();
     let mut range = tree.range(pn..pn.offset(count));
@@ -200,7 +200,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
             first_present.0.num().saturating_sub(pn.num())
         }
     } else {
-        count_to_end.min(16)
+        count_to_end.min(1024)
     };
     log::trace!(
         "get page: {} {:?} {}",

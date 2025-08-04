@@ -186,7 +186,7 @@ impl QemuCommand {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
-                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+                        .arg("max,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp,+avx512f,enforce");
                 } else {
                     self.cmd.arg("-cpu").arg("max");
                 }

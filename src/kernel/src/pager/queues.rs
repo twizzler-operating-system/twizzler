@@ -16,7 +16,6 @@ use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES
 use crate::{
     arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
-    instant::Instant,
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
@@ -172,7 +171,6 @@ fn pager_compl_handle_page_data(
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
 
-        let start = Instant::now();
         let mut count = 0;
         let max_obj = obj_range.pages().count();
         let max_phys = phys_range.pages().count();
@@ -185,7 +183,7 @@ fn pager_compl_handle_page_data(
 
             let (page, thiscount) = if flags.contains(PageFlags::WIRED) {
                 let max_pages = (max_obj - count).min(max_phys - count);
-                log::info!("wiring {} pages: {}", max_pages, objpage_nr);
+                log::trace!("wiring {} pages: {}", max_pages, objpage_nr);
                 (
                     Page::new_wired(pa, PageNumber::PAGE_SIZE * max_pages, CacheType::WriteBack),
                     max_pages,
@@ -204,17 +202,9 @@ fn pager_compl_handle_page_data(
                     1,
                 )
             };
-            if thiscount > 1 {
-                log::info!("pre");
-                object_tree.print_tree();
-            }
+
             let page = PageRef::new(Arc::new(page), 0, thiscount);
             object_tree.add_page(pn, page, None);
-
-            if thiscount > 1 {
-                log::info!("post");
-                object_tree.print_tree();
-            }
             count += thiscount;
         }
         drop(object_tree);
@@ -222,12 +212,6 @@ fn pager_compl_handle_page_data(
         inflight_mgr()
             .lock()
             .pages_ready(objid, obj_range.pages().map(|x| x as usize));
-        let end = Instant::now();
-        log::info!(
-            "processed {} pages in {} us",
-            obj_range.pages().count(),
-            (end - start).as_micros()
-        );
     } else {
         // TODO
         logln!("kernel: pager: got unknown object ID");

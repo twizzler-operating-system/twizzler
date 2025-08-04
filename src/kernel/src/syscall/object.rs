@@ -26,7 +26,10 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
+    obj::{
+        id::calculate_new_id, lookup_object, range::GetPageFlags, LookupFlags, Object, ObjectRef,
+        PageNumber,
+    },
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -269,6 +272,17 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
         }
         ObjectControlCmd::Preload => {
             if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
+                obj.print_page_tree();
+                let p = obj
+                    .lock_page_tree()
+                    .try_get_page(PageNumber::from_offset(0x1203123), GetPageFlags::empty());
+                match p {
+                    crate::obj::range::PageStatus::Ready(page_ref, _) => {
+                        log::info!("page: {:?}", page_ref.physical_address())
+                    }
+                    _ => log::info!("no page"),
+                }
+
                 crate::pager::ensure_in_core(
                     &obj,
                     PageNumber::from_offset(0),
