@@ -13,6 +13,7 @@ use crate::{
     memory::{
         context::{kernel_context, ContextRef},
         pagetables::PhysAddrProvider,
+        FAULT_STATS,
     },
     obj::PageNumber,
     security::{AccessInfo, PermsInfo, KERNEL_SCTX},
@@ -21,7 +22,9 @@ use crate::{
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-
+    FAULT_STATS
+        .total
+        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
     // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
@@ -204,7 +207,7 @@ fn page_fault_to_region(
                 && info.flags.contains(MapFlags::NO_NULLPAGE)
             {
                 if val.len > 0x1000 {
-                    log::info!(
+                    log::trace!(
                         "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
                         info.object().id(),
                         addr,
@@ -221,7 +224,9 @@ fn page_fault_to_region(
         }
 
         ctx.with_arch(sctx_id, |arch| {
-            arch.unmap(cursor);
+            if arch.readmap(cursor, |x| x.count()) > 0 {
+                arch.unmap(cursor);
+            }
             arch.map(cursor, &mut provider);
         });
         Ok(())

@@ -108,7 +108,7 @@ async fn handle_page_data_request_task(
             })
             .collect::<Vec<_>>();
 
-        tracing::info!(
+        tracing::trace!(
             "sending {} kernel notifs for {} ({} pages)",
             comps.len(),
             id,
@@ -125,7 +125,7 @@ async fn handle_page_data_request_task(
         COUNT.fetch_sub(1, Ordering::SeqCst);
     }
     if objid_to_ino(id.raw()).is_some() || prefetch {
-        tracing::info!(
+        tracing::debug!(
             "COMPLETED: {} {:?} in {} ms, {}:{} remaining",
             id,
             req_range,

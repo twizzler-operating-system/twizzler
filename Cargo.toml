@@ -53,7 +53,6 @@ members = [
     #"src/bin/serialecho", "tools/serialtest",
     "src/bin/ptest",
     "src/bin/debug",
-    "src/ports/candle-test",
 ]
 
 exclude = [
@@ -82,7 +81,7 @@ initrd = [
     "crate:sec-test",
     "crate:ptest",
 
-    "crate:twzcandle",
+    #"crate:twzcandle",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",

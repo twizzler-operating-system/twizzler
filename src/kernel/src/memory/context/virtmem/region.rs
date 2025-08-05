@@ -217,7 +217,7 @@ impl MapRegion {
                 && aligned
                 && page.nr_pages() >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size()
             {
-                logln!(
+                log::trace!(
                     "ADJUST: {} {} {} {}: {:?}",
                     page.page_offset(),
                     PageNumber::from_address(addr),
