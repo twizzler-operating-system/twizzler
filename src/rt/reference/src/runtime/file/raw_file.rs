@@ -19,7 +19,9 @@ pub struct RawFile {
 
 impl RawFile {
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
-        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
+        let handle = OUR_RUNTIME
+            .map_object(obj_id, flags | MapFlags::NO_NULLPAGE)
+            .unwrap();
         let len = handle
             .find_meta_ext(MEXT_SIZED)
             .map(|me| me.value)
@@ -64,10 +66,7 @@ impl Read for RawFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let copy_len = buf.len().min((self.len - self.pos) as usize);
         let data = unsafe {
-            core::slice::from_raw_parts(
-                self.handle.start().add(NULLPAGE_SIZE + self.pos as usize),
-                copy_len,
-            )
+            core::slice::from_raw_parts(self.handle.start().add(self.pos as usize), copy_len)
         };
         buf[0..copy_len].copy_from_slice(&data);
         self.pos += copy_len as u64;

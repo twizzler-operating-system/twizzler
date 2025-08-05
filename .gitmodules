@@ -40,3 +40,7 @@
 [submodule "src/ports/rust-rocksdb"]
 	path = src/ports/rust-rocksdb
 	url = ../../twizzler-operating-system/rust-rocksdb.git
+[submodule "src/ports/memmap2-rs"]
+	path = src/ports/memmap2-rs
+	url = ../../twizzler-operating-system/memmap2-rs.git
+	branch = twizzler

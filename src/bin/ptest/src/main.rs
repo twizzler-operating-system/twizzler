@@ -14,6 +14,7 @@ use twizzler::{
     marker::Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder},
 };
+use twizzler_abi::syscall::sys_object_ctrl;
 use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
 
 #[allow(dead_code)]
@@ -87,6 +88,7 @@ enum SubCommand {
     Read,
     Hw,
     Rdb,
+    Preload,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
@@ -260,23 +262,29 @@ fn main() {
                 println!("done!: {:?}", end - start);
             }
         },
-        SubCommand::Rdb => {
-            println!("in progress");
-        }
-        /*
-        SubCommand::Rdb => {
-            println!("rocksdb test");
+        SubCommand::Preload => {
             let start = std::time::Instant::now();
-            let db = rocksdb::DB::open_default("db").unwrap();
-            println!("rocksdb test: put");
-            db.put("test", "value").unwrap();
-            let val = db.get("test").unwrap().unwrap();
-            let val = String::from_utf8(val).unwrap();
-            println!("rocksdb test: get: {}", val);
+            let id = nh.get("/ext/rst", GetFlags::empty()).unwrap().id;
+            sys_object_ctrl(id, twizzler_abi::syscall::ObjectControlCmd::Preload).unwrap();
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
         }
-        */
+        SubCommand::Rdb => {
+            println!("in progress");
+        } /*
+          SubCommand::Rdb => {
+              println!("rocksdb test");
+              let start = std::time::Instant::now();
+              let db = rocksdb::DB::open_default("db").unwrap();
+              println!("rocksdb test: put");
+              db.put("test", "value").unwrap();
+              let val = db.get("test").unwrap().unwrap();
+              let val = String::from_utf8(val).unwrap();
+              println!("rocksdb test: get: {}", val);
+              let end = std::time::Instant::now();
+              println!("done!: {:?}", end - start);
+          }
+          */
     }
 
     /*

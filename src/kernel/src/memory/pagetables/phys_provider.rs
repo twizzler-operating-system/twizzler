@@ -7,6 +7,7 @@ use crate::{
     },
 };
 
+#[derive(Debug)]
 pub struct PhysMapInfo {
     pub addr: PhysAddr,
     pub len: usize,

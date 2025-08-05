@@ -1,6 +1,8 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use twizzler_abi::arch::XSAVE_LEN;
+
 use super::{
     acpi::get_acpi_root,
     interrupt::InterProcessorInterrupt,
@@ -77,6 +79,15 @@ pub fn init(tls: VirtAddr) {
     unsafe { x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64) };
     unsafe { x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0) };
 
+    let _has_avx512 = x86::cpuid::CpuId::new()
+        .get_extended_feature_info()
+        .map(|f| f.has_avx512f())
+        .unwrap_or_default();
+    let _has_avx2 = x86::cpuid::CpuId::new()
+        .get_extended_feature_info()
+        .map(|f| f.has_avx2())
+        .unwrap_or_default();
+
     unsafe {
         let mut cr4 = x86::controlregs::cr4() | x86::controlregs::Cr4::CR4_ENABLE_SSE;
         if has_xsave {
@@ -85,12 +96,41 @@ pub fn init(tls: VirtAddr) {
         }
         x86::controlregs::cr4_write(cr4);
         if has_xsave {
-            let xcr0 = x86::controlregs::xcr0();
-            x86::controlregs::xcr0_write(
-                xcr0 | x86::controlregs::Xcr0::XCR0_SSE_STATE
+            let cpuid = x86::cpuid::CpuId::new();
+            let xsave_size = if let Some(ex) = cpuid.get_extended_state_info() {
+                let mut xcr0 = x86::controlregs::xcr0();
+                xcr0 |= x86::controlregs::Xcr0::XCR0_SSE_STATE
                     | x86::controlregs::Xcr0::XCR0_AVX_STATE
-                    | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE,
-            );
+                    | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE;
+                if ex.xcr0_supports_mpx_bndregs() {
+                    xcr0 |= x86::controlregs::Xcr0::XCR0_BNDREG_STATE;
+                }
+                if ex.xcr0_supports_mpx_bndcsr() {
+                    xcr0 |= x86::controlregs::Xcr0::XCR0_BNDCSR_STATE;
+                }
+                if ex.xcr0_supports_avx512_opmask() {
+                    xcr0 |= x86::controlregs::Xcr0::XCR0_OPMASK_STATE;
+                }
+                if ex.xcr0_supports_avx512_zmm_hi256() {
+                    xcr0 |= x86::controlregs::Xcr0::XCR0_ZMM_HI256_STATE;
+                }
+                if ex.xcr0_supports_avx512_zmm_hi16() {
+                    xcr0 |= x86::controlregs::Xcr0::XCR0_HI16_ZMM_STATE;
+                }
+                x86::controlregs::xcr0_write(xcr0);
+                ex.xsave_area_size_enabled_features() as usize
+            } else {
+                1024
+            };
+
+            logln!("xsave size: {}", xsave_size);
+
+            if xsave_size > XSAVE_LEN {
+                panic!(
+                    "increase xsave length (need {}, have {})",
+                    xsave_size, XSAVE_LEN
+                );
+            }
         }
     }
 }

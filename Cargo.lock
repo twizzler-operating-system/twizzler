@@ -4180,7 +4180,6 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 [[package]]
 name = "memmap2"
 version = "0.9.5"
-source = "git+https://github.com/twizzler-operating-system/memmap2-rs.git?branch=twizzler#1088d2b951929e8f280243a86bdc2041b3c15c43"
 dependencies = [
  "libc",
  "twizzler-rt-abi",
@@ -4614,6 +4613,8 @@ dependencies = [
  "rand 0.8.5",
  "tracing",
  "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
  "volatile",
 ]
 
@@ -5270,6 +5271,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twizzler",
+ "twizzler-abi",
  "twizzler-rt-abi",
  "twizzler-runtime",
 ]

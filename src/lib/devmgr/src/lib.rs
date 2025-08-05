@@ -18,6 +18,7 @@ pub struct DriverSpec {
 #[derive(Clone, Copy, Debug)]
 pub enum Supported {
     PcieClass(u8, u8, u8),
+    Vendor(u16, u16),
 }
 
 #[repr(C)]

@@ -1,7 +1,7 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
+use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull, sync::atomic::Ordering};
 
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
@@ -21,6 +21,7 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
@@ -115,36 +116,67 @@ impl TryFrom<VirtAddr> for Slot {
 
 struct ObjectPageProvider {
     pos: usize,
+    inner_pos: usize,
     pages: Vec<(PageRef, MappingSettings)>,
 }
 
 impl ObjectPageProvider {
     pub fn new(pages: Vec<(PageRef, MappingSettings)>) -> Self {
-        Self { pages, pos: 0 }
+        Self {
+            pages,
+            pos: 0,
+            inner_pos: 0,
+        }
     }
 
-    pub fn count(&self) -> usize {
-        self.pages.len()
+    pub fn page_count(&self) -> usize {
+        self.pages
+            .iter()
+            .skip(self.pos)
+            .fold(0, |acc, x| acc + x.0.nr_pages())
+            - self.inner_pos / PageNumber::PAGE_SIZE
     }
 }
 
 impl PhysAddrProvider for ObjectPageProvider {
     fn peek(&mut self) -> Option<PhysMapInfo> {
         let page = self.pages.get(self.pos)?;
+        if page.0.nr_pages() > 1 {
+            log::trace!(
+                "peek: {:?}",
+                page.0.physical_address().offset(self.inner_pos).unwrap()
+            );
+        }
         Some(PhysMapInfo {
-            addr: page.0.physical_address(),
-            len: PageNumber::PAGE_SIZE,
+            addr: page.0.physical_address().offset(self.inner_pos).unwrap(),
+            len: PageNumber::PAGE_SIZE * page.0.nr_pages() - self.inner_pos,
             settings: page.1,
         })
     }
 
     fn consume(&mut self, mut len: usize) {
-        assert_eq!(len, PageNumber::PAGE_SIZE);
-        while len > 0 {
-            len = len.saturating_sub(PageNumber::PAGE_SIZE);
-            self.pos += 1;
-            if self.pos == self.pages.len() {
-                return;
+        if len > PageNumber::PAGE_SIZE {
+            if self.pages[0].0.nr_pages() > 1 {
+                log::trace!("consume: {:?} ({} pages)", len, len / PageNumber::PAGE_SIZE);
+            }
+        }
+        if len == PHYS_LEVEL_LAYOUTS[0].size() {
+            super::super::FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
+        } else if len == PHYS_LEVEL_LAYOUTS[1].size() {
+            super::super::FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
+        } else if len == PHYS_LEVEL_LAYOUTS[2].size() {
+            super::super::FAULT_STATS.count[2].fetch_add(1, Ordering::SeqCst);
+        }
+        while len > 0 && self.pos < self.pages.len() {
+            let rem_len =
+                PageNumber::PAGE_SIZE * self.pages[self.pos].0.nr_pages() - self.inner_pos;
+            if len < rem_len {
+                self.inner_pos += len;
+                break;
+            } else {
+                len = len.saturating_sub(rem_len);
+                self.pos += 1;
+                self.inner_pos = 0;
             }
         }
     }

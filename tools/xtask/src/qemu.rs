@@ -47,7 +47,7 @@ impl QemuCommand {
 
     pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("8000,slots=4,maxmem=512G");
+        self.cmd.arg("-m").arg("80000,slots=4,maxmem=512G");
 
         // configure architechture specific parameters
         self.arch_config(options);
@@ -85,7 +85,9 @@ impl QemuCommand {
                 .arg("4096")
                 .arg("-qF")
                 .arg("-E")
-                .arg("test_fs")
+                .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
+                .arg("-t")
+                .arg("ext4")
                 .arg("target/nvme.img")
                 .arg("10000000")
                 .status()
@@ -101,6 +103,13 @@ impl QemuCommand {
             .arg("file=target/nvme.img,if=none,id=nvme")
             .arg("-device")
             .arg("nvme,serial=deadbeef,drive=nvme");
+
+        self.cmd
+            .arg("-device")
+            .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
+        self.cmd.arg("-object").arg(
+            "memory-backend-file,id=dataset,size=107374182400,mem-path=target/nvme.img,share=on",
+        );
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
@@ -177,7 +186,7 @@ impl QemuCommand {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
-                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp");
                 } else {
                     self.cmd.arg("-cpu").arg("max");
                 }
