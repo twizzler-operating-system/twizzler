@@ -520,7 +520,7 @@ pub type uint_fast32_t = __mlibc_uint_fast32;
 pub type uint_fast64_t = __mlibc_uint_fast64;
 pub type intmax_t = __mlibc_intmax;
 pub type uintmax_t = __mlibc_uintmax;
-pub type wchar_t = ::std::os::raw::c_int;
+pub type wchar_t = ::std::os::raw::c_uint;
 #[repr(C)]
 #[repr(align(16))]
 #[derive(Debug, Copy, Clone)]
