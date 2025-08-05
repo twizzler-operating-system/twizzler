@@ -151,7 +151,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.pages().count();
-    log::trace!("got : {} {:?} {:?}", objid, obj_range, phys_range);
+    log::info!("got : {} {:?} {:?}", objid, obj_range, phys_range);
 
     if !flags.contains(PageFlags::WIRED) {
         log::trace!(

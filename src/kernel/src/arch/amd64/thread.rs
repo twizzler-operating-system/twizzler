@@ -265,9 +265,12 @@ where
         .load(Ordering::SeqCst);
 
     unsafe {
+        let flags = x86::controlregs::xcr0();
+        let upper = flags.bits() as u64 >> 32;
+        let lower = flags.bits() as u64 & 0xFFFFFFFF;
         // We still need to save the fpu registers / sse state.
         if use_xsave() {
-            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
+            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
         } else {
             core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
         }
@@ -386,8 +389,12 @@ impl Thread {
     fn save_extended_state(&self) {
         let do_xsave = use_xsave();
         unsafe {
+            let flags = x86::controlregs::xcr0();
+            let upper = flags.bits() as u64 >> 32;
+            let lower = flags.bits() as u64 & 0xFFFFFFFF;
+
             if do_xsave {
-                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
+                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
             } else {
                 core::arch::asm!("fxsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
             }

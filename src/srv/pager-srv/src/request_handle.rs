@@ -108,7 +108,7 @@ async fn handle_page_data_request_task(
             })
             .collect::<Vec<_>>();
 
-        tracing::trace!(
+        tracing::info!(
             "sending {} kernel notifs for {} ({} pages)",
             comps.len(),
             id,

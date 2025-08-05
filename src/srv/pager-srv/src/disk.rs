@@ -7,7 +7,7 @@ use std::{
 use async_executor::Executor;
 use async_io::block_on;
 use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo};
-use twizzler::{error::ResourceError, Result};
+use twizzler::Result;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
 use crate::{
@@ -92,7 +92,7 @@ impl PagedDevice for Disk {
             Err(mw) => {
                 tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
                 if !phys_list.is_empty() {
-                    return Err(ResourceError::OutOfMemory.into());
+                    return Ok(0);
                 }
                 block_on(mw)
             }

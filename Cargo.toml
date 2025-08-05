@@ -133,7 +133,8 @@ filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", 
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
-memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+#memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }

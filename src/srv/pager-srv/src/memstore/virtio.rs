@@ -130,26 +130,31 @@ impl PagedDevice for VirtioMem {
     fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
         // TODO: bounds check
         let alloc_page = || {
+            tracing::info!("alloc for {:?}", start);
             let ctx = PAGER_CTX.get().unwrap();
             let page = match ctx.data.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
                     tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
                     if !phys_list.is_empty() {
-                        return Result::Err(ResourceError::OutOfMemory.into());
+                        return None;
                     }
                     block_on(mw)
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);
-            Ok(phys_range)
+            Some(phys_range)
         };
         let (start, len) = match start {
             DevicePage::Run(start, len) => (start, len as u64),
             DevicePage::Hole(_len) => {
-                let page = alloc_page()?;
-                phys_list.push(PagedPhysMem::new(page).completed());
-                return Ok(1);
+                let page = alloc_page();
+                if let Some(page) = page {
+                    phys_list.push(PagedPhysMem::new(page).completed());
+                    return Ok(1);
+                } else {
+                    return Ok(0);
+                }
             }
         };
         let phys_range = PhysRange::new(
