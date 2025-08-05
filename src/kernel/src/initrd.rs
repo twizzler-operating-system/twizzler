@@ -6,6 +6,9 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::Nonce;
 
+use log::info;
+use log::debug;
+
 use crate::{
     memory::{
         tracker::{alloc_frame, FrameAllocFlags},
@@ -51,7 +54,7 @@ pub fn init(modules: &[BootModule]) {
     for module in modules {
         let tar = tar_no_std::TarArchiveRef::new(module.as_slice())
             .expect("failed to open initrd as tar file");
-        logln!(
+        info!(
             "[kernel::initrd] loading module, {} MB...",
             module.as_slice().len() / (1024 * 1024)
         );
@@ -62,7 +65,7 @@ pub fn init(modules: &[BootModule]) {
                 continue;
             };
             let obj = obj::Object::new_kernel();
-            logln!("[kernel::initrd]  loading {:?} -> {:x}", name, obj.id());
+            debug!("[kernel::initrd]  loading {:?} -> {:x}", name, obj.id());
             let data = e.data();
             let mut total = 0;
             let mut pagenr = 1;
@@ -122,7 +125,7 @@ pub fn init(modules: &[BootModule]) {
             boot_objects.name_map.insert(name.to_owned(), obj);
             total_alloc += total;
         }
-        logln!(
+        info!(
             "[kernel::initrd]  done, loaded {} MB of object data",
             total_alloc / (1024 * 1024)
         );
