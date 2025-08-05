@@ -520,7 +520,8 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
 
     if PRINT_STATS && s % 200 == 0 {
-        logln!(
+        if false {
+            logln!(
             "STAT {}; {}({}): load {:2}, i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
             cp.id,
             cur.as_ref().unwrap().id(),
@@ -534,17 +535,23 @@ pub fn schedule_stattick(dt: Nanoseconds) {
             cp.stats.hardticks.load(Ordering::SeqCst),
             cp.stats.steals.load(Ordering::SeqCst),
         );
+        }
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!(
-                    "thread {}: {:?} {:?} {:x}",
-                    t.id(),
-                    t.stats,
-                    t.get_state(),
-                    t.flags.load(Ordering::SeqCst)
-                );
+                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
+                    logln!(
+                        "thread {:3}: u {:4} s {:4} i {:4}, {:?}, {:x}",
+                        t.id(),
+                        t.stats.user.load(Ordering::SeqCst),
+                        t.stats.sys.load(Ordering::SeqCst),
+                        t.stats.idle.load(Ordering::SeqCst),
+                        t.get_state(),
+                        t.flags.load(Ordering::SeqCst)
+                    );
+                }
             }
+            crate::memory::print_fault_stats();
         }
         //crate::clock::print_info();
     }

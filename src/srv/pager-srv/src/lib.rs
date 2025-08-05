@@ -10,14 +10,14 @@ use std::{
 
 use async_executor::Executor;
 use async_io::{block_on, Timer};
-use disk::{Disk, DiskPageRequest};
-use helpers::PAGE;
-use memstore::{MemDevice, MemPageRequest};
-use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
+use disk::Disk;
+use memstore::virtio::init_virtio;
+use object_store::{Ext4Store, ExternalFile, PagedDevice, PagedObjectStore};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjID, Object, ObjectBuilder},
+    Result,
 };
 use twizzler_abi::pager::{
     CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
@@ -73,7 +73,7 @@ fn data_structure_init() -> PagerData {
 fn attach_queue<T: std::marker::Copy, U: std::marker::Copy, Q>(
     obj_id: ObjID,
     queue_constructor: impl FnOnce(twizzler_queue::Queue<T, U>) -> Q,
-) -> Result<Q, String> {
+) -> Result<Q> {
     tracing::debug!("Pager Attaching Queue: {}", obj_id);
 
     let object = unsafe {
@@ -220,7 +220,7 @@ struct Stores {
 }
 
 impl Stores {
-    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>, TwzError> {
+    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>> {
         match id {
             Some(id) => Ok(self.map.get(&id).ok_or(TwzError::INVALID_ARGUMENT)?.clone()),
             None => Ok(self
@@ -231,76 +231,52 @@ impl Stores {
         }
     }
 
-    pub fn insert_disk(
+    pub fn insert_device(
         &mut self,
         store: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
-        disk: Disk,
+        dev: Arc<dyn PagedDevice + Send + Sync + 'static>,
     ) {
-        self.map.insert(
-            ObjID::new(0),
-            Arc::new(Store {
-                inner: store,
-                dev: StoreDevice::Nvme(disk),
-            }),
-        );
+        self.map
+            .insert(ObjID::new(0), Arc::new(Store { inner: store, dev }));
     }
 }
 
 #[allow(dead_code)]
-enum StoreDevice {
-    Nvme(Disk),
-    Mem(Arc<dyn MemDevice + Send + Sync + 'static>),
-}
-
 struct Store {
     inner: Arc<dyn PagedObjectStore + Send + Sync + 'static>,
-    dev: StoreDevice,
+    dev: Arc<dyn PagedDevice + Send + Sync + 'static>,
 }
 
 impl PagedObjectStore for Store {
-    fn create_object(&self, id: object_store::ObjID) -> std::io::Result<()> {
+    fn create_object(&self, id: object_store::ObjID) -> Result<()> {
         self.inner.create_object(id)
     }
 
-    fn delete_object(&self, id: object_store::ObjID) -> std::io::Result<()> {
+    fn delete_object(&self, id: object_store::ObjID) -> Result<()> {
         self.inner.delete_object(id)
     }
 
-    fn len(&self, id: object_store::ObjID) -> std::io::Result<u64> {
+    fn len(&self, id: object_store::ObjID) -> Result<u64> {
         self.inner.len(id)
     }
 
-    fn read_object(
-        &self,
-        id: object_store::ObjID,
-        offset: u64,
-        buf: &mut [u8],
-    ) -> std::io::Result<usize> {
+    fn read_object(&self, id: object_store::ObjID, offset: u64, buf: &mut [u8]) -> Result<usize> {
         self.inner.read_object(id, offset, buf)
     }
 
-    fn write_object(
-        &self,
-        id: object_store::ObjID,
-        offset: u64,
-        buf: &[u8],
-    ) -> std::io::Result<()> {
+    fn write_object(&self, id: object_store::ObjID, offset: u64, buf: &[u8]) -> Result<()> {
         self.inner.write_object(id, offset, buf)
     }
 
-    fn supplies_phys_addrs(&self) -> bool {
-        self.inner.supplies_phys_addrs()
-    }
-
-    fn get_config_id(&self) -> std::io::Result<object_store::ObjID> {
+    fn get_config_id(&self) -> Result<object_store::ObjID> {
         self.inner.get_config_id()
     }
 
-    fn set_config_id(&self, id: object_store::ObjID) -> std::io::Result<()> {
+    fn set_config_id(&self, id: object_store::ObjID) -> Result<()> {
         self.inner.set_config_id(id)
     }
 
-    fn flush(&self) -> std::io::Result<()> {
+    fn flush(&self) -> Result<()> {
         self.inner.flush()
     }
 
@@ -308,61 +284,33 @@ impl PagedObjectStore for Store {
         &self,
         id: object_store::ObjID,
         reqs: &'a mut [object_store::PageRequest],
-    ) -> std::io::Result<usize> {
+    ) -> Result<usize> {
         self.inner.page_in_object(id, reqs)
     }
 
     fn page_out_object<'a>(
         &self,
         id: object_store::ObjID,
-        reqs: &'a [object_store::PageRequest],
-    ) -> std::io::Result<usize> {
+        reqs: &'a mut [object_store::PageRequest],
+    ) -> Result<usize> {
         self.inner.page_out_object(id, reqs)
     }
 
-    fn enumerate_external(&self, _id: object_store::ObjID) -> std::io::Result<Vec<ExternalFile>> {
+    fn enumerate_external(&self, _id: object_store::ObjID) -> Result<Vec<ExternalFile>> {
         self.inner.enumerate_external(_id)
     }
 
-    fn find_external(&self, _id: object_store::ObjID) -> std::io::Result<usize> {
+    fn find_external(&self, _id: object_store::ObjID) -> Result<usize> {
         self.inner.find_external(_id)
     }
 }
 
-impl Store {
-    pub fn new_disk_paging_request(&self, pages: impl IntoIterator<Item = u64>) -> DiskPageRequest {
-        let ctrl = match &self.dev {
-            StoreDevice::Nvme(disk) => disk.ctrl.clone(),
-            StoreDevice::Mem(_) => {
-                panic!("cannot make a disk paging request to a memory device")
-            }
-        };
-        DiskPageRequest {
-            phys_addr_list: pages.into_iter().map(|addr| (addr, PAGE)).collect(),
-            ctrl,
-        }
-    }
-
-    pub fn new_mem_paging_request(&self) -> MemPageRequest {
-        let ctrl = match &self.dev {
-            StoreDevice::Mem(m) => m,
-            StoreDevice::Nvme(_) => {
-                panic!("cannot make a mem paging request to a disk device")
-            }
-        };
-        MemPageRequest::new(ctrl.clone())
-    }
-}
-
 impl PagerContext {
-    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>, TwzError> {
+    pub fn paged_ostore(&self, id: Option<ObjID>) -> Result<Arc<Store>> {
         self.stores.lock().unwrap().paged_ostore(id)
     }
 
-    pub async fn enumerate_external(
-        &'static self,
-        id: ObjID,
-    ) -> Result<Vec<ExternalFile>, TwzError> {
+    pub async fn enumerate_external(&'static self, id: ObjID) -> Result<Vec<ExternalFile>> {
         blocking::unblock(move || {
             Ok(self
                 .paged_ostore(None)?
@@ -383,10 +331,8 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
+    #[allow(unused_variables)]
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
-    let diskc = disk.clone();
-
-    let ext4_store = Ext4Store::<DiskPageRequest>::new(disk, "/").unwrap();
 
     let sq = Arc::new(sq);
     let rq = Arc::new(rq);
@@ -401,16 +347,21 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
     let ctx = PAGER_CTX.get().unwrap();
 
+    #[allow(unused_variables)]
+    let virtio_store = block_on(ex.run(async move { init_virtio().await })).unwrap();
+    let ext4_store = Ext4Store::new(disk.clone(), "/").unwrap();
+
     ctx.stores
         .lock()
         .unwrap()
-        .insert_disk(Arc::new(ext4_store), diskc);
+        .insert_device(Arc::new(ext4_store), Arc::new(disk));
 
     spawn_queues(ctx, rq, ex);
 
     block_on(ex.run(async move {
         let _ = report_ready(&ctx, ex).await.unwrap();
     }));
+
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
@@ -442,12 +393,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 }
 
 #[secgate::secure_gate]
-pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID, TwzError> {
+pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID> {
     Ok(do_pager_start(q1, q2))
 }
 
 #[secgate::secure_gate]
-pub fn adv_lethe() -> Result<(), TwzError> {
+pub fn adv_lethe() -> Result<()> {
     PAGER_CTX
         .get()
         .unwrap()
@@ -458,7 +409,7 @@ pub fn adv_lethe() -> Result<(), TwzError> {
 }
 
 #[secgate::secure_gate]
-pub fn disk_len(id: ObjID) -> Result<u64, TwzError> {
+pub fn disk_len(id: ObjID) -> Result<u64> {
     PAGER_CTX
         .get()
         .unwrap()

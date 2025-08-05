@@ -89,11 +89,18 @@ impl CompletionToKernel {
     }
 }
 
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+    pub struct PageFlags: u32 {
+        const WIRED = 0x1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     Okay,
     Error(RawTwzError),
-    PageDataCompletion(ObjID, ObjectRange, PhysRange),
+    PageDataCompletion(ObjID, ObjectRange, PhysRange, PageFlags),
     ObjectInfoCompletion(ObjID, ObjectInfo),
 }
 
@@ -122,6 +129,7 @@ pub enum PagerRequest {
         phys: PhysRange,
         write_phys: bool,
     },
+    RegisterPhys(u64, u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]

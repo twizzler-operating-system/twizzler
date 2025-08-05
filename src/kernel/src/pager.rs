@@ -182,26 +182,32 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
         log::warn!("invalid page number: {:?}", pn);
     }
     let count_to_end = max - pn;
-    let count = count_to_end.min(16);
+    let count = count_to_end.min(1024);
 
     let tree = obj.lock_page_tree();
     let mut range = tree.range(pn..pn.offset(count));
-    let first_present = range.next().map(|r| r.0);
+    let first_present = range.next();
 
     let count = if let Some(first_present) = first_present {
-        if first_present.num() <= pn.num() {
+        if first_present.0.num() <= pn.num() {
             1
         } else {
             log::debug!(
                 "found partial in check for range {:?}: {:?}",
                 pn..pn.offset(count),
-                first_present
+                first_present.0
             );
-            first_present.num().saturating_sub(pn.num())
+            first_present.0.num().saturating_sub(pn.num())
         }
     } else {
-        count_to_end.min(16)
+        count_to_end.min(1024)
     };
+    log::trace!(
+        "get page: {} {:?} {}",
+        pn,
+        first_present.map(|f| f.1.range()),
+        count
+    );
     drop(tree);
     if count == 0 {
         return;

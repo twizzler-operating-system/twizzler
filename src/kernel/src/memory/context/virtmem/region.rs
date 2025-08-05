@@ -117,9 +117,13 @@ impl MapRegion {
         cause: MemoryAccessKind,
         perms: PermsInfo,
         default_prot: Protections,
-        mapper: impl FnOnce(ObjectPageProvider) -> Result<(), UpcallInfo>,
+        mapper: impl FnOnce(PageNumber, ObjectPageProvider) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
-        let page_number = PageNumber::from_address(addr);
+        let mut page_number = PageNumber::from_address(addr);
+        if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+            page_number = page_number.offset(1);
+        }
+
         let is_kern_obj = addr.is_kernel_object_memory();
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
@@ -141,7 +145,10 @@ impl MapRegion {
                     settings.flags(),
                 );
                 check_settings(addr, &settings, cause)?;
-                return mapper(ObjectPageProvider::new(Vec::from([(page, settings)])));
+                return mapper(
+                    PageNumber::from_address(addr),
+                    ObjectPageProvider::new(Vec::from([(page, settings)])),
+                );
             }
         }
 
@@ -192,7 +199,42 @@ impl MapRegion {
                 }
                 self.object().dirty_set().add_dirty(page_number);
             }
-            mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
+
+            let addr_aligned = addr
+                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+                .unwrap();
+            let large_aligned_pn = PageNumber::from_address(addr_aligned);
+            let large_diff = PageNumber::from_address(addr) - large_aligned_pn;
+            let phys_aligned = page
+                .physical_address()
+                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+                .unwrap();
+            let aligned = (page.physical_address() - phys_aligned) == (addr - addr_aligned);
+            if page.page_offset() >= large_diff
+                && large_diff > 0
+                && !settings.perms().contains(Protections::WRITE)
+                && self.flags.contains(MapFlags::NO_NULLPAGE)
+                && aligned
+                && page.nr_pages() >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size()
+            {
+                log::trace!(
+                    "ADJUST: {} {} {} {}: {:?}",
+                    page.page_offset(),
+                    PageNumber::from_address(addr),
+                    large_aligned_pn,
+                    large_diff,
+                    page,
+                );
+                mapper(
+                    large_aligned_pn,
+                    ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
+                )
+            } else {
+                mapper(
+                    PageNumber::from_address(addr),
+                    ObjectPageProvider::new(Vec::from([(page, settings)])),
+                )
+            }
         } else {
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),
@@ -335,7 +377,7 @@ impl Debug for Shadow {
 
 impl Shadow {
     pub fn new(info: &ObjectContextInfo) -> Self {
-        let mut tree = PageRangeTree::new();
+        let mut tree = PageRangeTree::new(info.object().id());
         log::debug!("copy range to shadow {:?}", info.object().id());
         copy_range_to_shadow(&info.object, 0, &mut tree, 0, MAX_SIZE);
         Self {

@@ -2,3 +2,4 @@
 #include <ext4_fs.h>
 #include <ext4_dir.h>
 #include <ext4_inode.h>
+#include <ext4_extent.h>
