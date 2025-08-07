@@ -678,6 +678,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
+name = "cache"
+version = "0.1.0"
+dependencies = [
+ "cache-srv",
+ "clap",
+ "miette",
+ "naming",
+ "secgate",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
+name = "cache-srv"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "camino"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

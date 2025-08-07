@@ -39,6 +39,8 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
+    "src/srv/cache-srv",
+    "src/bin/cache",
 
     "src/ports/lwext4-rs",
 
@@ -75,9 +77,11 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
+    "lib:cache-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",
+    "crate:cache",
 
     "crate:sec-test",
     "crate:ptest",
