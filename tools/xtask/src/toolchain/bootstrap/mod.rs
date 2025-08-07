@@ -27,7 +27,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(download_files(&client))?;
+            .block_on(download_efi_files(&client))?;
     }
 
     install_build_tools(&cli)?;
@@ -425,36 +425,5 @@ fn generate_config_toml() -> anyhow::Result<()> {
 
     let mut out = File::create("toolchain/src/rust/bootstrap.toml")?;
     out.write_all(toml.to_string().as_bytes())?;
-    Ok(())
-}
-
-async fn download_files(client: &Client) -> anyhow::Result<()> {
-    // efi binaries for x86 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/OVMF.fd",
-        "toolchain/install/OVMF.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTX64.EFI",
-        "toolchain/install/BOOTX64.EFI",
-    )
-    .await?;
-    // efi binaries for aarch64 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/QEMU_EFI.fd",
-        "toolchain/install/OVMF-AA64.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTAA64.EFI",
-        "toolchain/install/BOOTAA64.EFI",
-    )
-    .await?;
-
     Ok(())
 }
