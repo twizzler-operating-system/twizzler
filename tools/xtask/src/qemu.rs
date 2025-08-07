@@ -328,5 +328,6 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
             }
         }
         anyhow::bail!("qemu return with error");
+        Ok(())
     }
 }
