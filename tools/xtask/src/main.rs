@@ -207,8 +207,8 @@ impl From<&QemuOptions> for ImageOptions {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[clap(about = "Bootstrap the Twizzler Rust toolchain.")]
-    Bootstrap(BootstrapOptions),
+    #[clap(subcommand, about = "Bootstrap the Twizzler Rust toolchain.")]
+    Toolchain(ToolchainCommands),
     #[clap(about = "Run cargo check on the codebase.")]
     Check(CheckOptions),
     #[clap(about = "Build the Twizzler system.")]
@@ -226,7 +226,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {
-            Commands::Bootstrap(x) => toolchain::handle_cli(x),
+            Commands::Toolchain(x) => toolchain::handle_cli(x),
             Commands::Check(x) => build::do_check(x),
             Commands::Build(x) => build::do_build(x).map(|_| ()),
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
@@ -237,6 +237,7 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("you must specify a subcommand.");
     }
 }
+
 
 fn print_status_line(name: &str, config: Option<&BuildConfig>) {
     if let Some(config) = config {
