@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use strum_macros::EnumIter;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, EnumIter, clap::ValueEnum)]
@@ -82,24 +84,41 @@ impl From<Machine> for String {
     }
 }
 
-impl ToString for Machine {
-    fn to_string(&self) -> String {
-        (*self).into()
+// impl ToString for Machine {
+//     fn to_string(&self) -> String {
+//         (*self).into()
+//     }
+// }
+
+// impl ToString for Arch {
+//     fn to_string(&self) -> String {
+//         (*self).into()
+//     }
+// }
+
+// impl ToString for Host {
+//     fn to_string(&self) -> String {
+//         (*self).into()
+//     }
+// }
+
+impl Display for Machine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", Into::<String>::into(*self))
     }
 }
 
-impl ToString for Arch {
-    fn to_string(&self) -> String {
-        (*self).into()
+impl Display for Arch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", Into::<String>::into(*self))
     }
 }
 
-impl ToString for Host {
-    fn to_string(&self) -> String {
-        (*self).into()
+impl Display for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", Into::<String>::into(*self))
     }
 }
-
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Triple {
     pub machine: Machine,
@@ -111,20 +130,9 @@ pub struct Triple {
 impl From<Triple> for String {
     fn from(t: Triple) -> Self {
         if let Some(e) = t.env.as_ref() {
-            format!(
-                "{}-{}-{}-{}",
-                t.arch.to_string(),
-                t.machine.to_string(),
-                t.host.to_string(),
-                e
-            )
+            format!("{}-{}-{}-{}", t.arch, t.machine, t.host, e)
         } else {
-            format!(
-                "{}-{}-{}",
-                t.arch.to_string(),
-                t.machine.to_string(),
-                t.host.to_string()
-            )
+            format!("{}-{}-{}", t.arch, t.machine, t.host)
         }
     }
 }
@@ -140,9 +148,9 @@ impl Triple {
     }
 }
 
-impl ToString for Triple {
-    fn to_string(&self) -> String {
-        self.clone().into()
+impl Display for Triple {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", Into::<String>::into(self.clone()))
     }
 }
 
