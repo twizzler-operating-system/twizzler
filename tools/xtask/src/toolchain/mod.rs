@@ -72,7 +72,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
         ToolchainCommands::Bootstrap(opts) => do_bootstrap(opts),
         // FIXME: commenting this out to fix build because its a mess rn
         // ToolchainCommands::Pull => tokio::runtime::Runtime::new()?.block_on(pull_toolchain()),
-        ToolchainCommands::Pull => {}
+        ToolchainCommands::Pull => Ok(()),
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Test => Ok(()),
         ToolchainCommands::Active => {

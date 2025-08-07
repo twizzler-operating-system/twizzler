@@ -427,3 +427,34 @@ fn generate_config_toml() -> anyhow::Result<()> {
     out.write_all(toml.to_string().as_bytes())?;
     Ok(())
 }
+
+async fn download_files(client: &Client) -> anyhow::Result<()> {
+    // efi binaries for x86 machines
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/OVMF.fd",
+        "toolchain/install/OVMF.fd",
+    )
+    .await?;
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/BOOTX64.EFI",
+        "toolchain/install/BOOTX64.EFI",
+    )
+    .await?;
+    // efi binaries for aarch64 machines
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/QEMU_EFI.fd",
+        "toolchain/install/OVMF-AA64.fd",
+    )
+    .await?;
+    download_file(
+        client,
+        "http://twizzler.io/dist/bootfiles/BOOTAA64.EFI",
+        "toolchain/install/BOOTAA64.EFI",
+    )
+    .await?;
+
+    Ok(())
+}
