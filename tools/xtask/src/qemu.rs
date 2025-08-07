@@ -79,7 +79,9 @@ impl QemuCommand {
             "PATH",
             format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
         );
+        let fs_type = "ext2";
         if !already_exists {
+            println!("creating {} FS for image", fs_type);
             if !Command::new("mke2fs")
                 .arg("-b")
                 .arg("4096")
@@ -87,7 +89,7 @@ impl QemuCommand {
                 .arg("-E")
                 .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
                 .arg("-t")
-                .arg("ext4")
+                .arg(fs_type)
                 .arg("target/nvme.img")
                 .arg("10000000")
                 .status()
