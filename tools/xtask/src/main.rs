@@ -7,6 +7,7 @@ mod triple;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use toolchain::BootstrapOptions;
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -202,24 +203,6 @@ impl From<&QemuOptions> for ImageOptions {
             bench: qo.bench.clone(),
         }
     }
-}
-
-#[derive(clap::Args, Debug)]
-struct BootstrapOptions {
-    #[clap(long, help = "Skip downloading boot files from file server.")]
-    skip_downloads: bool,
-    #[clap(long, help = "Skip compiling the rust toolchain (not recommended...).")]
-    skip_rust: bool,
-    #[clap(
-        long,
-        help = "Don't remove the target/ directory after rebuilding the toolchain."
-    )]
-    keep_old_artifacts: bool,
-    #[clap(
-        long,
-        help = "Keep early stages (0 and 1) of building rustc. Speeds up compilation, but can only be used if you (a) have already done a full bootstrap, and (b) since that bootstrap, all that is modified is twizzler-runtime-api or rust's standard library. Any changes to the compiler require one to not use this flag."
-    )]
-    keep_early_stages: bool,
 }
 
 #[derive(Subcommand, Debug)]

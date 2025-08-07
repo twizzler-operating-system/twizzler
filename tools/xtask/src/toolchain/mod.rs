@@ -70,7 +70,9 @@ pub enum ToolchainCommands {
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
     match subcommand {
         ToolchainCommands::Bootstrap(opts) => do_bootstrap(opts),
-        ToolchainCommands::Pull => tokio::runtime::Runtime::new()?.block_on(pull_toolchain()),
+        // FIXME: commenting this out to fix build because its a mess rn
+        // ToolchainCommands::Pull => tokio::runtime::Runtime::new()?.block_on(pull_toolchain()),
+        ToolchainCommands::Pull => {}
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Test => Ok(()),
         ToolchainCommands::Active => {
