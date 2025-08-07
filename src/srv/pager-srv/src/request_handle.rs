@@ -124,8 +124,8 @@ async fn handle_page_data_request_task(
     } else {
         COUNT.fetch_sub(1, Ordering::SeqCst);
     }
-    if objid_to_ino(id.raw()).is_some() || prefetch {
-        tracing::debug!(
+    if prefetch {
+        tracing::info!(
             "COMPLETED: {} {:?} in {} ms, {}:{} remaining",
             id,
             req_range,
