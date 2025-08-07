@@ -71,10 +71,10 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
     match subcommand {
         ToolchainCommands::Bootstrap(opts) => do_bootstrap(opts),
         // FIXME: commenting this out to fix build because its a mess rn
-        ToolchainCommands::Pull => tokio::runtime::Builder::new_current_thread()
+        ToolchainCommands::Pull => Ok(tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(pull_toolchain())?,
+            .block_on(pull_toolchain())?),
 
         // ToolchainCommands::Pull => Ok(()),
         ToolchainCommands::Prune => prune_toolchain(),
