@@ -226,7 +226,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {
-            Commands::Bootstrap(x) => toolchain::do_bootstrap(x),
+            Commands::Bootstrap(x) => toolchain::handle_cli(x),
             Commands::Check(x) => build::do_check(x),
             Commands::Build(x) => build::do_build(x).map(|_| ()),
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
