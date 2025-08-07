@@ -7,7 +7,7 @@ mod triple;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use toolchain::BootstrapOptions;
+use toolchain::{BootstrapOptions, ToolchainCommands};
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -237,7 +237,6 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("you must specify a subcommand.");
     }
 }
-
 
 fn print_status_line(name: &str, config: Option<&BuildConfig>) {
     if let Some(config) = config {
