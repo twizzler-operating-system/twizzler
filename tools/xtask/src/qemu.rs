@@ -151,11 +151,29 @@ impl QemuCommand {
         // to the serial port and the QEMU monitor, and
         // -nographic also multiplexes the console and the monitor to stdio.
 
-        println!("GDB debugging port: {}", options.gdb);
         if options.gdb != 0 {
+            let gdb_port = {
+                let listener = match TcpListener::bind("0.0.0.0:2159") {
+                    Ok(l) => l,
+                    Err(_) => {
+                        println!(
+                            "Failed to allocate default gdb port 2159 on host, dynamically assigning."
+                        );
+                        match TcpListener::bind("0.0.0.0:0") {
+                            Ok(l) => l,
+                            Err(e) => {
+                                panic!("gdb port alloc failed! {}", e);
+                            }
+                        }
+                    }
+                };
+                listener.local_addr().expect("local gdb addr").port()
+            };
+
+            println!("gdb debugging port: {}", gdb_port);
             self.cmd
                 .arg("-serial")
-                .arg(&format!("tcp::{},server,nowait", options.gdb));
+                .arg(&format!("tcp::{},server,nowait", gdb_port));
         }
 
         // add additional options for qemu
