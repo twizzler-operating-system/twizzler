@@ -1,9 +1,10 @@
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
-use twizzler_abi::syscall::KernelConsoleReadFlags;
+use twizzler_abi::syscall::{KernelConsoleReadFlags, KernelConsoleSource, ThreadSyncSleep};
 use twizzler_rt_abi::{
     error::{IoError, TwzError},
     Result,
@@ -235,50 +236,96 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
         todo!()
     }
 
-    fn read_bytes(&self, slice: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
+    fn read_bytes(
+        &self,
+        slice: &mut [u8],
+        flags: KernelConsoleReadFlags,
+        timeout: Option<Duration>,
+        waiter: Option<ThreadSyncSleep>,
+    ) -> Result<usize> {
+        const MAX_SINGLE_READ: usize = 128;
         let mut i = 0;
-        loop {
-            if i == slice.len() {
-                break;
-            }
-            let b = &mut slice[i];
+        let mut tmp = [0u8; MAX_SINGLE_READ];
+        let mut timedout = false;
+        while i < slice.len() {
             let mut reader = self.read_lock.lock();
             match reader.read_byte() {
                 Some(x) => {
-                    *b = match x {
-                        4 => return Ok(i),
+                    tmp[i] = match x {
+                        4 => break,
                         _ => x,
                     };
                     i += 1;
                 }
                 None => {
-                    if flags.contains(KernelConsoleReadFlags::NONBLOCKING) || i > 0 {
-                        return Ok(i);
+                    if flags.contains(KernelConsoleReadFlags::NONBLOCKING)
+                        || i > 0
+                        || waiter.is_some_and(|w| w.ready())
+                    {
+                        break;
                     }
-                    self.read_cv.wait(reader);
+                    let (_, to) = self.read_cv.wait_waiters(reader, timeout, waiter);
+                    if to {
+                        timedout = to;
+                        break;
+                    }
                 }
             }
         }
-        Ok(slice.len())
+        if i > 0 {
+            (&mut slice[0..i]).copy_from_slice(&tmp[0..i]);
+            Ok(i)
+        } else if timedout {
+            Err(TwzError::TIMED_OUT)
+        } else {
+            Ok(0)
+        }
     }
 }
 
-pub fn write_bytes(slice: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
-    let writer = KernelConsoleRef {
-        console: &NORMAL_CONSOLE,
-    };
+pub fn write_bytes(
+    target: KernelConsoleSource,
+    slice: &[u8],
+    flags: KernelConsoleWriteFlags,
+) -> Result<()> {
+    let writer = match target {
+        KernelConsoleSource::Console => Ok(KernelConsoleRef {
+            console: &NORMAL_CONSOLE,
+        }),
+        KernelConsoleSource::Buffer => Err(TwzError::Io(IoError::DeviceError)),
+        KernelConsoleSource::DebugConsole => Ok(KernelConsoleRef {
+            console: &DEBUG_CONSOLE,
+        }),
+    }?;
     writer.write(slice, flags)
 }
 
-pub fn read_bytes(slice: &mut [u8], flags: KernelConsoleReadFlags) -> Result<usize> {
-    NORMAL_CONSOLE.read_bytes(slice, flags)
+pub fn read_bytes(
+    source: KernelConsoleSource,
+    slice: &mut [u8],
+    flags: KernelConsoleReadFlags,
+    timeout: Option<Duration>,
+    waiter: Option<ThreadSyncSleep>,
+) -> Result<usize> {
+    match source {
+        KernelConsoleSource::Console => NORMAL_CONSOLE.read_bytes(slice, flags, timeout, waiter),
+        KernelConsoleSource::DebugConsole => {
+            DEBUG_CONSOLE.read_bytes(slice, flags, timeout, waiter)
+        }
+        KernelConsoleSource::Buffer => return Err(IoError::DeviceError.into()),
+    }
 }
 
 pub fn read_buffer_bytes(slice: &mut [u8]) -> Result<usize> {
     NORMAL_CONSOLE.read_buffer_bytes(slice)
 }
 
-pub fn push_input_byte(byte: u8) {
+pub fn push_input_byte(byte: u8, debug: bool) {
+    if debug {
+        DEBUG_CONSOLE.read_lock.lock().push_input_byte(byte);
+        DEBUG_CONSOLE.read_cv.signal();
+        return;
+    }
     let byte = match byte {
         13 => 10,
         127 => 8,
@@ -291,7 +338,7 @@ pub fn push_input_byte(byte: u8) {
 static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, EmergencyMessage> =
     KernelConsole {
         inner: &KERNEL_CONSOLE_MAIN,
-        hardware: crate::machine::MachineConsoleHardware::new(),
+        hardware: crate::machine::MachineConsoleHardware::new(false),
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
@@ -301,12 +348,35 @@ static EMERGENCY_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, 
 static NORMAL_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
     KernelConsole {
         inner: &KERNEL_CONSOLE_MAIN,
-        hardware: crate::machine::MachineConsoleHardware::new(),
+        hardware: crate::machine::MachineConsoleHardware::new(false),
         _pd: core::marker::PhantomData,
         lock: Spinlock::new(()),
         read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
         read_cv: CondVar::new(),
     };
+
+static DEBUG_CONSOLE: KernelConsole<crate::machine::MachineConsoleHardware, NormalMessage> =
+    KernelConsole {
+        inner: &KERNEL_CONSOLE_MAIN,
+        hardware: crate::machine::MachineConsoleHardware::new(true),
+        _pd: core::marker::PhantomData,
+        lock: Spinlock::new(()),
+        read_lock: Spinlock::new(KernelConsoleReadBuffer::new()),
+        read_cv: CondVar::new(),
+    };
+
+#[doc(hidden)]
+pub fn _print_debug(args: ::core::fmt::Arguments) {
+    let istate = interrupt::disable();
+    {
+        let _guard = DEBUG_CONSOLE.lock.lock();
+        let mut writer = KernelConsoleRef {
+            console: &DEBUG_CONSOLE,
+        };
+        writer.write_fmt(args).expect("printing to serial failed");
+    }
+    interrupt::set(istate);
+}
 
 #[doc(hidden)]
 pub fn _print_normal(args: ::core::fmt::Arguments) {

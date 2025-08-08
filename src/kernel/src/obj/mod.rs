@@ -114,6 +114,10 @@ impl PageNumber {
         self.0 == 0
     }
 
+    pub fn is_meta(&self) -> bool {
+        self.as_byte_offset() == MAX_SIZE - Self::PAGE_SIZE
+    }
+
     pub fn base_page() -> Self {
         Self(1)
     }
@@ -144,6 +148,10 @@ impl PageNumber {
 
     pub fn offset(&self, off: usize) -> Self {
         Self(self.0 + off)
+    }
+
+    pub fn byte_offset(&self, off: usize) -> Self {
+        Self(self.0 + off / Self::PAGE_SIZE)
     }
 }
 
@@ -220,7 +228,7 @@ impl Object {
         Self {
             id,
             flags: AtomicU32::new(0),
-            range_tree: Mutex::new(range::PageRangeTree::new()),
+            range_tree: Mutex::new(range::PageRangeTree::new(id)),
             sleep_info: Mutex::new(SleepInfo::new()),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),

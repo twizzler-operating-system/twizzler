@@ -181,6 +181,15 @@ impl PageRef {
         Self { page, pn, count }
     }
 
+    pub fn adjust_down(&self, off: usize) -> Self {
+        assert!(off <= self.pn);
+        Self {
+            page: self.page.clone(),
+            pn: self.pn - off,
+            count: self.count + off,
+        }
+    }
+
     pub fn adjust(&self, off: usize) -> Self {
         assert!(off < self.count);
         Self {
@@ -292,6 +301,7 @@ impl Object {
         }
     }
 
+    #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a Arc<Object>,
         mut page_tree: LockGuard<'a, PageRangeTree>,

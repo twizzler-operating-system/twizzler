@@ -10,9 +10,12 @@ use dynlink::{compartment::CompartmentId, context::Context};
 use monitor_api::{CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
-use twizzler_abi::syscall::{
-    DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-    ThreadSyncSleep, ThreadSyncWake,
+use twizzler_abi::{
+    syscall::{
+        DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
+        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    },
+    upcall::{ResumeFlags, UpcallData, UpcallFrame},
 };
 use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
@@ -21,10 +24,13 @@ use twizzler_rt_abi::{
 };
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
-use crate::mon::{
-    get_monitor,
-    space::{MapHandle, MapInfo, Space},
-    thread::ThreadMgr,
+use crate::{
+    gates::ThreadInfo,
+    mon::{
+        get_monitor,
+        space::{MapHandle, MapInfo, Space},
+        thread::ThreadMgr,
+    },
 };
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
@@ -58,6 +64,7 @@ pub struct RunComp {
     flags: Box<AtomicU64>,
     per_thread: HashMap<ObjID, PerThread>,
     init_info: Option<(StackObject, usize, Vec<CtorSet>)>,
+    is_debugging: bool,
     pub(crate) use_count: u64,
 }
 
@@ -149,11 +156,13 @@ impl RunComp {
         main_stack: StackObject,
         entry: usize,
         ctors: &[CtorSet],
+        is_debugging: bool,
     ) -> Self {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
         Self {
             sctx,
+            is_debugging,
             instance,
             name,
             compartment_id,
@@ -282,6 +291,7 @@ impl RunComp {
         dynlink: &mut Context,
         args: &[&CStr],
         env: &[&CStr],
+        suspend_on_start: bool,
     ) -> Option<bool> {
         if self.has_flag(COMP_STARTED) {
             return Some(false);
@@ -371,6 +381,7 @@ impl RunComp {
             Some(self.instance),
             entry,
             arg,
+            suspend_on_start,
         ) {
             Ok(mt) => mt,
             Err(_) => {
@@ -408,6 +419,42 @@ impl RunComp {
             return 0;
         };
         main.thread.repr.get_repr().get_code()
+    }
+
+    pub fn get_nth_thread_info(&self, n: usize) -> Option<ThreadInfo> {
+        let Some(ref main) = self.main else {
+            return None;
+        };
+        if n == 0 {
+            return Some(ThreadInfo {
+                repr_id: main.thread.id,
+            });
+        }
+        self.per_thread
+            .keys()
+            .filter(|t| **t != main.thread.id)
+            .nth(n - 1)
+            .map(|id| ThreadInfo { repr_id: *id })
+    }
+
+    pub fn upcall_handle(
+        &self,
+        frame: &mut UpcallFrame,
+        info: &UpcallData,
+    ) -> Result<Option<ResumeFlags>, TwzError> {
+        let flags = if self.is_debugging {
+            tracing::info!("got monitor upcall {:?} {:?}", frame, info);
+            Some(ResumeFlags::SUSPEND)
+        } else {
+            tracing::warn!(
+                "supervisor exception in {}, thread {}: {:?}",
+                self.name,
+                info.thread_id,
+                info.info
+            );
+            None
+        };
+        Ok(flags)
     }
 
     pub(crate) fn inc_use_count(&mut self) {

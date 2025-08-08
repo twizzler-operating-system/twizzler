@@ -102,9 +102,9 @@ use twizzler_rt_abi::error::{RawTwzError, TwzError};
 #[inline]
 fn convert_codes_to_result<T, E, D, F, G>(code: u64, val: u64, d: D, f: F, g: G) -> Result<T, E>
 where
-    F: Fn(u64, u64) -> T,
-    G: Fn(u64, u64) -> E,
-    D: Fn(u64, u64) -> bool,
+    F: FnOnce(u64, u64) -> T,
+    G: FnOnce(u64, u64) -> E,
+    D: FnOnce(u64, u64) -> bool,
 {
     if d(code, val) {
         Err(g(code, val))

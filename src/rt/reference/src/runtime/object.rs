@@ -10,12 +10,13 @@ use twizzler_abi::{
     meta::{FotEntry, FotFlags},
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
-        sys_map_ctrl, sys_object_create, CreateTieFlags, CreateTieSpec, MapControlCmd, ObjectCreate,
+        sys_map_ctrl, sys_object_create, sys_object_read_map, CreateTieFlags, CreateTieSpec,
+        MapControlCmd, ObjectCreate,
     },
 };
 use twizzler_rt_abi::{
     bindings::object_handle,
-    error::{ArgumentError, ObjectError, ResourceError, TwzError},
+    error::{ObjectError, ResourceError, TwzError},
     object::{MapFlags, ObjID, ObjectHandle},
     Result,
 };
@@ -102,11 +103,16 @@ impl ReferenceRuntime {
             return Ok(handle);
         }
 
-        let id = self
-            .get_alloc()
-            .get_id_from_ptr(ptr)
-            .ok_or(ArgumentError::InvalidAddress)?;
         let slot = ptr as usize / MAX_SIZE;
+        let Some(id) = self.get_alloc().get_id_from_ptr(ptr) else {
+            let map = sys_object_read_map(None, slot)?;
+            return Ok(object_handle {
+                id: map.id.raw(),
+                start: (slot * MAX_SIZE) as *mut c_void,
+                map_flags: map.flags.bits(),
+                ..Default::default()
+            });
+        };
         Ok(object_handle {
             id: id.raw(),
             start: (slot * MAX_SIZE) as *mut c_void,

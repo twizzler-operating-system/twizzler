@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use fixedbitset::FixedBitSet;
-use twizzler_abi::thread::ExecutionState;
+use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use crate::{
     clock::Nanoseconds,
@@ -261,9 +261,18 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
 }
 
 static ALL_THREADS: Spinlock<BTreeMap<u64, ThreadRef>> = Spinlock::new(BTreeMap::new());
+static ALL_THREADS_REPR: Spinlock<BTreeMap<ObjID, ThreadRef>> = Spinlock::new(BTreeMap::new());
 
 pub fn remove_thread(id: u64) {
-    ALL_THREADS.lock().remove(&id);
+    if let Some(t) = ALL_THREADS.lock().remove(&id) {
+        ALL_THREADS_REPR
+            .lock()
+            .remove(&t.control_object.object().id());
+    }
+}
+
+pub fn lookup_thread_repr(id: ObjID) -> Option<ThreadRef> {
+    ALL_THREADS_REPR.lock().get(&id).cloned()
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
@@ -271,6 +280,9 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     let thread = Arc::new(thread);
     {
         ALL_THREADS.lock().insert(thread.id(), thread.clone());
+        ALL_THREADS_REPR
+            .lock()
+            .insert(thread.control_object.object().id(), thread.clone());
     }
     let cpuid = select_cpu(&thread);
     let processor = get_processor(cpuid);
@@ -508,7 +520,8 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
 
     if PRINT_STATS && s % 200 == 0 {
-        logln!(
+        if false {
+            logln!(
             "STAT {}; {}({}): load {:2}, i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
             cp.id,
             cur.as_ref().unwrap().id(),
@@ -522,17 +535,23 @@ pub fn schedule_stattick(dt: Nanoseconds) {
             cp.stats.hardticks.load(Ordering::SeqCst),
             cp.stats.steals.load(Ordering::SeqCst),
         );
+        }
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                logln!(
-                    "thread {}: {:?} {:?} {:x}",
-                    t.id(),
-                    t.stats,
-                    t.get_state(),
-                    t.flags.load(Ordering::SeqCst)
-                );
+                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
+                    logln!(
+                        "thread {:3}: u {:4} s {:4} i {:4}, {:?}, {:x}",
+                        t.id(),
+                        t.stats.user.load(Ordering::SeqCst),
+                        t.stats.sys.load(Ordering::SeqCst),
+                        t.stats.idle.load(Ordering::SeqCst),
+                        t.get_state(),
+                        t.flags.load(Ordering::SeqCst)
+                    );
+                }
             }
+            crate::memory::print_fault_stats();
         }
         //crate::clock::print_info();
     }

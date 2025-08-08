@@ -13,7 +13,6 @@ use twizzler_rt_abi::{error::TwzError, object::MapFlags, Result};
 
 struct PagerAPI {
     _handle: &'static CompartmentHandle,
-    full_sync_call: DynamicSecGate<'static, (ObjID,), ()>,
     open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
@@ -26,11 +25,6 @@ fn pager_api() -> &'static PagerAPI {
         let handle = Box::leak(Box::new(
             CompartmentHandle::lookup("pager-srv").expect("failed to open pager compartment"),
         ));
-        let full_sync_call = unsafe {
-            handle
-                .dynamic_gate::<(ObjID,), ()>("full_object_sync")
-                .expect("failed to find full object sync gate call")
-        };
         let open_handle = unsafe {
             handle
                 .dynamic_gate("pager_open_handle")
@@ -48,16 +42,11 @@ fn pager_api() -> &'static PagerAPI {
         };
         PagerAPI {
             _handle: handle,
-            full_sync_call,
             open_handle,
             close_handle,
             enumerate_external,
         }
     })
-}
-
-pub fn sync_object(id: ObjID) {
-    (pager_api().full_sync_call)(id).unwrap()
 }
 
 pub struct PagerHandle {

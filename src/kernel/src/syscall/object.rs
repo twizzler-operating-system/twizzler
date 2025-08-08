@@ -6,6 +6,7 @@ use alloc::{
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
+    pager::PagerFlags,
     syscall::{
         CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
         ObjectCreate, ObjectCreateFlags, ObjectSource,
@@ -25,7 +26,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -266,6 +267,19 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             }
             crate::obj::scan_deleted();
         }
+        ObjectControlCmd::Preload => {
+            if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
+                crate::pager::ensure_in_core(
+                    &obj,
+                    PageNumber::from_offset(0),
+                    MAX_SIZE / PageNumber::PAGE_SIZE,
+                    PagerFlags::PREFETCH,
+                );
+            } else {
+                return (1, TwzError::INVALID_ARGUMENT.raw());
+            }
+        }
+
         _ => {}
     }
     (0, 0)

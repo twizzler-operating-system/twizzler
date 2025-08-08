@@ -3,10 +3,12 @@ use alloc::vec::Vec;
 use inflight::InflightManager;
 use request::ReqKind;
 use twizzler_abi::{
-    object::ObjID,
-    pager::PhysRange,
+    object::{ObjID, MAX_SIZE},
+    pager::{PagerFlags, PhysRange},
     syscall::{ObjectCreate, SyncInfo},
 };
+
+use log::trace;
 
 use crate::{
     memory::{
@@ -29,7 +31,7 @@ pub use queues::init_pager_queue;
 pub use request::Request;
 
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
-pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024;
+pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 8;
 
 static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
 
@@ -64,23 +66,25 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_page_and_wait(id: ObjID, page: PageNumber) {
+pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), 1));
+    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len, flags));
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req);
     });
 
-    let mut mgr = inflight_mgr().lock();
-    let thread = current_thread_ref().unwrap();
-    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
-        drop(mgr);
-        finish_blocking(guard);
-    };
+    if !flags.contains(PagerFlags::PREFETCH) {
+        let mut mgr = inflight_mgr().lock();
+        let thread = current_thread_ref().unwrap();
+        if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+            drop(mgr);
+            finish_blocking(guard);
+        };
+    }
 }
 
 fn cmd_object(req: ReqKind) {
@@ -140,18 +144,77 @@ pub fn sync_region(
     };
 }
 
-pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize) {
+pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: PagerFlags) {
     if !obj.use_pager() {
         return;
     }
-    for i in 0..len {
-        let page = start.offset(i);
-        get_page_and_wait(obj.id(), page);
+
+    let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
+    let needed_additional =
+        DEFAULT_PAGER_OUTSTANDING_FRAMES.saturating_sub(avail_pager_mem.saturating_sub(len));
+    let wait_for_additional =
+        avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
+    let low_mem = crate::memory::tracker::is_low_mem();
+
+    log::trace!(
+        "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
+        obj.id(),
+        start.num(),
+        len,
+        avail_pager_mem,
+        needed_additional,
+        wait_for_additional,
+        low_mem,
+    );
+
+    if flags.contains(PagerFlags::PREFETCH) && low_mem {
+        return;
     }
+
+    if needed_additional > 0 && !low_mem {
+        provide_pager_memory(needed_additional, wait_for_additional);
+    }
+
+    get_pages_and_wait(obj.id(), start, len, flags);
 }
 
 pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
-    ensure_in_core(obj, pn, 1);
+    let max = PageNumber::from_offset(MAX_SIZE);
+    if pn >= max {
+        log::warn!("invalid page number: {:?}", pn);
+    }
+    let count_to_end = max - pn;
+    let count = count_to_end.min(1024);
+
+    let tree = obj.lock_page_tree();
+    let mut range = tree.range(pn..pn.offset(count));
+    let first_present = range.next();
+
+    let count = if let Some(first_present) = first_present {
+        if first_present.0.num() <= pn.num() {
+            1
+        } else {
+            log::debug!(
+                "found partial in check for range {:?}: {:?}",
+                pn..pn.offset(count),
+                first_present.0
+            );
+            first_present.0.num().saturating_sub(pn.num())
+        }
+    } else {
+        count_to_end.min(1024)
+    };
+    log::trace!(
+        "get page: {} {:?} {}",
+        pn,
+        first_present.map(|f| f.1.range()),
+        count
+    );
+    drop(tree);
+    if count == 0 {
+        return;
+    }
+    ensure_in_core(obj, pn, count, PagerFlags::empty());
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -174,8 +237,9 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
-            count += PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
-            crate::memory::tracker::track_page_pager(frame);
+            let thiscount = PHYS_LEVEL_LAYOUTS[level].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            count += thiscount;
+            crate::memory::tracker::track_page_pager(thiscount);
             ranges.push(PhysRange::new(
                 frame.start_address().raw(),
                 frame.start_address().offset(frame.size()).unwrap().raw(),
@@ -186,7 +250,7 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
                 PHYS_LEVEL_LAYOUTS[0],
             ) {
                 count += 1;
-                crate::memory::tracker::track_page_pager(frame);
+                crate::memory::tracker::track_page_pager(1);
                 ranges.push(PhysRange::new(
                     frame.start_address().raw(),
                     frame.start_address().offset(frame.size()).unwrap().raw(),
@@ -204,7 +268,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     }
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
-    logln!(
+    log::trace!(
         "allocated {} ranges for pager (min_frames = {}, total = {} KB)",
         ranges.len(),
         min_frames,

@@ -79,6 +79,7 @@ use core::{
     cell::UnsafeCell,
     fmt::Display,
     marker::PhantomData,
+    ptr::addr_of_mut,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
@@ -223,13 +224,22 @@ impl RawQueueHdr {
         flags: SubmissionFlags,
         wait: W,
     ) -> Result<u32, QueueError> {
-        let h = self.head.fetch_add(1, Ordering::SeqCst);
         let mut waiter = false;
         let mut attempts = 1000;
-        loop {
+        let h = loop {
+            let h = self.head.load(Ordering::SeqCst);
             let t = self.tail.load(Ordering::SeqCst);
             if !self.is_full(h, t) {
-                break;
+                if self
+                    .head
+                    .compare_exchange(h, h + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break h;
+                } else {
+                    core::hint::spin_loop();
+                    continue;
+                }
             }
 
             if flags.contains(SubmissionFlags::NON_BLOCK) {
@@ -251,7 +261,7 @@ impl RawQueueHdr {
             if self.is_full(h, t) {
                 wait(&self.tail, t);
             }
-        }
+        };
 
         if waiter {
             self.dec_submit_waiting();
@@ -281,13 +291,13 @@ impl RawQueueHdr {
         raw_buf: *const QueueEntry<T>,
     ) -> Result<u64, QueueError> {
         let mut attempts = 1000;
-        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
-        loop {
+        let t = loop {
+            let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
             let b = self.bell.load(Ordering::SeqCst);
             let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
 
             if !self.is_empty(b, t) && self.is_turn(t, item) {
-                break;
+                break t;
             }
 
             if flags.contains(ReceiveFlags::NON_BLOCK) {
@@ -305,7 +315,7 @@ impl RawQueueHdr {
             if self.is_empty(b, t) || !self.is_turn(t, item) {
                 wait(&self.bell, b);
             }
-        }
+        };
 
         if attempts == 0 {
             self.consumer_set_waiting(false);
@@ -443,16 +453,9 @@ impl<T: Copy> RawQueue<T> {
         unsafe { &*self.hdr }
     }
 
-    // This is a bit unsafe, but it's because we're managing concurrency ourselves.
-    #[allow(clippy::mut_from_ref)]
     #[inline]
-    fn get_buf(&self, off: usize) -> &mut QueueEntry<T> {
-        unsafe {
-            (*self.buf.get())
-                .add(off & (self.hdr().len() - 1))
-                .as_mut()
-                .unwrap()
-        }
+    fn get_buf(&self, off: usize) -> *mut QueueEntry<T> {
+        unsafe { (*self.buf.get()).add(off & (self.hdr().len() - 1)) }
     }
 
     /// Submit a data item of type T, wrapped in a QueueEntry, to the queue. The two callbacks,
@@ -469,9 +472,17 @@ impl<T: Copy> RawQueue<T> {
     ) -> Result<(), QueueError> {
         let h = self.hdr().reserve_slot(flags, wait)?;
         let buf_item = self.get_buf(h as usize);
-        *buf_item = item;
+
+        // Write these manually, to ensure we do not set cmd_slot until the end.
+        unsafe { *addr_of_mut!((*buf_item).data) = item.data };
+        unsafe { *addr_of_mut!((*buf_item).info) = item.info };
         let turn = self.hdr().get_turn(h);
-        buf_item.set_cmd_slot(h | if turn { 1u32 << 31 } else { 0 });
+        unsafe {
+            addr_of_mut!(*buf_item)
+                .as_ref()
+                .unwrap()
+                .set_cmd_slot(h | if turn { 1u32 << 31 } else { 0 })
+        };
 
         self.hdr().ring(ring);
         Ok(())
@@ -489,7 +500,7 @@ impl<T: Copy> RawQueue<T> {
             .hdr()
             .get_next_ready(wait, flags, unsafe { *self.buf.get() })?;
         let buf_item = self.get_buf(t as usize);
-        let item = *buf_item;
+        let item = unsafe { buf_item.read() };
         self.hdr().advance_tail(ring);
         Ok(item)
     }
@@ -505,7 +516,7 @@ impl<T: Copy> RawQueue<T> {
             .hdr()
             .setup_rec_sleep(sleep, unsafe { *self.buf.get() }, waiter)?;
         let buf_item = self.get_buf(t as usize);
-        let item = *buf_item;
+        let item = unsafe { buf_item.read() };
         *output = Some(item);
         self.hdr().advance_tail_setup(ringer);
         Ok(())

@@ -87,12 +87,14 @@ impl ContextEngine for Engine {
                         MAX_SIZE - NULLPAGE_SIZE * 2,
                         text_id,
                         text_handle,
+                        src.full_name().to_owned(),
                     ),
                     Backing::new_owned(
                         data_handle.monitor_data_start(),
                         MAX_SIZE - NULLPAGE_SIZE * 2,
                         data_id,
                         data_handle,
+                        src.full_name().to_owned(),
                     ),
                 ))
             }
@@ -101,7 +103,7 @@ impl ContextEngine for Engine {
     }
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
-        let id = name_resolver(&unlib.name)?;
+        let (id, full) = name_resolver(&unlib.name)?;
         let mapping = Space::map(
             &get_monitor().space,
             MapInfo {
@@ -116,6 +118,7 @@ impl ContextEngine for Engine {
                 MAX_SIZE - NULLPAGE_SIZE * 2,
                 id,
                 mapping,
+                full,
             )
         })
     }
@@ -140,7 +143,7 @@ pub fn naming() -> Option<&'static NameStore> {
     NAMING.get()
 }
 
-fn do_name_resolver(name: &str) -> Result<ObjID, DynlinkError> {
+fn do_name_resolver(name: &str) -> Result<(ObjID, String), DynlinkError> {
     if let Some(namer) = naming() {
         let session = namer.root_session();
         let node = session.get(name, GetFlags::FOLLOW_SYMLINK).map_err(|_| {
@@ -149,7 +152,7 @@ fn do_name_resolver(name: &str) -> Result<ObjID, DynlinkError> {
             }
         })?;
         return match node.kind {
-            NsNodeKind::Object => Ok(node.id),
+            NsNodeKind::Object => Ok((node.id, name.to_string())),
             _ => Err(DynlinkErrorKind::NameNotFound {
                 name: name.to_string(),
             }
@@ -165,7 +168,7 @@ fn do_name_resolver(name: &str) -> Result<ObjID, DynlinkError> {
     )
 }
 
-fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
+fn name_resolver(mut name: &str) -> Result<(ObjID, String), DynlinkError> {
     if name.starts_with("libstd") {
         name = "libstd.so";
     }
@@ -190,11 +193,11 @@ pub fn get_kernel_init_info() -> &'static KernelInitInfo {
     }
 }
 
-fn find_init_name(name: &str) -> Option<ObjID> {
+fn find_init_name(name: &str) -> Option<(ObjID, String)> {
     let init_info = get_kernel_init_info();
     for n in init_info.names() {
         if n.name() == name {
-            return Some(n.id());
+            return Some((n.id(), name.to_owned()));
         }
     }
     None

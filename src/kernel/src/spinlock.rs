@@ -67,6 +67,12 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             },
             || {
                 iters += 1;
+                if iters == 10000 {
+                    log::debug!("spinlock pause: {}", caller);
+                }
+                if iters == 100000 {
+                    log::warn!("spinlock long pause: {}", caller);
+                }
                 Relax::relax(iters);
             },
         );
