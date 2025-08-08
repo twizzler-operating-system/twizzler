@@ -40,6 +40,8 @@ members = [
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
     "src/ports/lwext4-rs",
+    "src/ports/rusqlite",
+    "src/ports/rusqlite/libsqlite3-sys",
 
 
     #"src/bin/etl_twizzler",
@@ -51,7 +53,7 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest",
+    "src/bin/ptest", "src/bin/sqlite_test",
 ]
 
 exclude = ["toolchain/src/rust"]
@@ -74,6 +76,7 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
+    "crate:sqlite_test",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -116,3 +119,6 @@ hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", 
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
+rusqlite = { path = "src/ports/rusqlite" }
+libsqlite3-sys = { path = "src/ports/rusqlite/libsqlite3-sys" }
+sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
