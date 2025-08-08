@@ -36,7 +36,7 @@ jobs:
     - name: Test x86_64 Debug
       run: cargo +nightly start-qemu --tests --qemu-options=--nographic
     - name: Test x86_64 Release
-      run: cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic
+      run: cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
     # aarch64 is compiled for QEMU virt, builds in debug mode
     - name: Build aarch64
       run: cargo +nightly build-all -a aarch64 -m virt
