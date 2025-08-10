@@ -69,10 +69,6 @@ pub enum ToolchainCommands {
 
     /// Compresses the active toolchain for distribution
     Compress,
-
-    /// NOTE: this is only for ci use
-    /// Prints the tag that would be associated with the state of the repo.
-    Tag,
 }
 
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
