@@ -61,6 +61,9 @@ pub enum ToolchainCommands {
     /// Prints the current active toolchain, if it exists.
     Active,
 
+    /// Prints the tag for the current submodule configuration.
+    Tag,
+
     /// Lists all the installed toolchains.
     List,
 

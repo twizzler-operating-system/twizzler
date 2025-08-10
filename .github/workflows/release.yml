@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    # branches:
+    #   - main
+
+permissions:
+  contents: write
+
+jobs:
+  Release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Init submodules (excluding toolchain sources)
+        run: |
+          git submodule update --init --recursive -- ':!toolchain/src/*'
+
+      - name: Generate tag from submodules
+        id: tag
+        run: |
+          tag=$(cargo xtask toolchain tag)
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Initialize all submodules for building tc
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          git submodule update --init --recursive
+
+      - name: Bootstrap toolchain and create compressed archive
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          cargo xtask toolchain bootstrap --skip-prune --compress
+
+      - name: Create release and upload
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release for ${{ steps.tag.outputs.tag }}
+          files: ${{ steps.tag.outputs.tag }}.tar.zst
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip message
+        if: steps.tag_check.outputs.exists == 'true'
+        run: echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
