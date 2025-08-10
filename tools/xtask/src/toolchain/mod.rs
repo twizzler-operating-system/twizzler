@@ -189,6 +189,7 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     //
 
     tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()?
         .block_on(check_toolchain())?;
 
