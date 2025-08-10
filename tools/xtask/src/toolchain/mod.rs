@@ -64,6 +64,9 @@ pub enum ToolchainCommands {
     /// Prints the current active toolchain, if it exists.
     Active,
 
+    /// Prints the tag for the current submodule configuration.
+    Tag,
+
     /// Lists all the installed toolchains.
     List,
 
@@ -92,6 +95,10 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
                     eprintln!("Active toolchain not found!")
                 }
             }
+            Ok(())
+        }
+        ToolchainCommands::Tag => {
+            println!("{}", generate_tag()?);
             Ok(())
         }
         ToolchainCommands::List => todo!("implement dis later"),
