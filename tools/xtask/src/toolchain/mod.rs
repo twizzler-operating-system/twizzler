@@ -58,9 +58,6 @@ pub enum ToolchainCommands {
     /// Will delete everything used to build a toolchain
     Prune,
 
-    // purely just for testing work
-    Test,
-
     /// Prints the current active toolchain, if it exists.
     Active,
 
@@ -69,19 +66,21 @@ pub enum ToolchainCommands {
 
     /// Compresses the active toolchain for distribution
     Compress,
+
+    /// NOTE: this is only for ci use
+    /// Prints the tag that would be associated with the state of the repo.
+    Tag,
 }
 
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
     match subcommand {
         ToolchainCommands::Bootstrap(opts) => do_bootstrap(opts),
-        // FIXME: commenting this out to fix build because its a mess rn
         ToolchainCommands::Pull => Ok(tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
             .block_on(pull_toolchain())?),
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Compress => compress_toolchain(),
-        ToolchainCommands::Test => Ok(()),
         ToolchainCommands::Active => {
             match get_toolchain_path()?.canonicalize() {
                 Ok(_) => {
@@ -94,7 +93,13 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        ToolchainCommands::List => todo!("implement dis later"),
+        ToolchainCommands::Tag => {
+            println!("{}", generate_tag()?);
+            Ok(())
+        }
+        ToolchainCommands::List => {
+            todo!();
+        }
     }
 }
 

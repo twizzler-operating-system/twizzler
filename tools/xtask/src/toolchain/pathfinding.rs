@@ -1,12 +1,11 @@
 use std::path::PathBuf;
 
-use super::generate_tag;
+use super::{generate_os_arch_tag, generate_tag};
 
 pub fn get_toolchain_path() -> anyhow::Result<PathBuf> {
     let mut tc_path = PathBuf::from("toolchain");
     let tag = generate_tag()?;
     tc_path.push(tag);
-    // tc_path.canonicalize()?;
 
     Ok(tc_path)
 }

@@ -11,6 +11,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 
 use super::{get_bin_path, get_toolchain_path, BootstrapOptions};
+use crate::toolchain::check_toolchain;
 
 // const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
 const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
@@ -108,7 +109,6 @@ pub fn prune_bins() -> anyhow::Result<()> {
             }
         }
     }
-
     Ok(())
 }
 
@@ -136,9 +136,21 @@ pub fn prune_toolchain() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// generates tag using currently checked out submodules
-/// format: toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.zst
+/// generates generic tag using currently checked out submodules
+/// only used to name a github release
+/// format: toolchain_<hash>.tar.zst
 pub fn generate_tag() -> anyhow::Result<String> {
+    let hash = generate_hash()?;
+
+    let tag = format!("toolchain_{hash}");
+
+    Ok(tag)
+}
+
+/// generates tag using currently checked out submodules, as well as
+/// host operating system/architecture
+/// format: toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.zst
+pub fn generate_os_arch_tag() -> anyhow::Result<String> {
     let hash = generate_hash()?;
 
     let arch = {
@@ -187,7 +199,7 @@ fn generate_hash() -> anyhow::Result<String> {
 
 /// Compresses the active toolchain
 pub fn compress_toolchain() -> anyhow::Result<()> {
-    let tag = generate_tag()?;
+    let tag = generate_os_arch_tag()?;
 
     let tc_path = get_toolchain_path()?;
 
@@ -207,8 +219,8 @@ pub fn compress_toolchain() -> anyhow::Result<()> {
 pub async fn get_checked_download_url() -> anyhow::Result<String> {
     let remote_tc_url = {
         let toolchain_tag = generate_tag()?;
-
-        let archive_filename = format!("{}.tar.zst", toolchain_tag);
+        let os_arch_tag = generate_os_arch_tag()?;
+        let archive_filename = format!("{}.tar.zst", os_arch_tag);
         format!(
             "{}/releases/download/{}/{}",
             BASE_REPO_URL, toolchain_tag, archive_filename
@@ -229,9 +241,10 @@ pub async fn get_checked_download_url() -> anyhow::Result<String> {
 pub async fn pull_toolchain() -> anyhow::Result<()> {
     let download_url = get_checked_download_url().await?;
 
-    let toolchain_tag = generate_tag()?;
-    let archive_filename = format!("{}.tar.zst", toolchain_tag);
-    println!("pulling toolchain for {}", toolchain_tag);
+    let tc_os_arch_tag = generate_os_arch_tag()?;
+    let tc_tag = generate_tag()?;
+    let archive_filename = format!("{}.tar.zst", tc_os_arch_tag);
+    println!("pulling toolchain for {}", tc_tag);
 
     let client = Client::new();
 
@@ -243,11 +256,19 @@ pub async fn pull_toolchain() -> anyhow::Result<()> {
             let error_msg = e.to_string();
             if error_msg.contains("404") {
                 return anyhow!(
-                    "Toolchain release not found, it might not exist for this tag:\n\
-                    {}\n\
-                    You can check at {}/releases",
-                    toolchain_tag,
-                    BASE_REPO_URL
+                    r#"
+Toolchain release not found, it might not exist for the tag {tc_tag}
+or it hasn't been built for your os-architecture combination!
+You can check at {BASE_REPO_URL}/releases
+
+If you would like a toolchain to be built for your
+platfrom please create a github issue with your os and architecture.
+
+If you are comfortable with compiling the toolchain locally please run
+
+git submodule update --init --recursive
+cargo toolchain bootstrap
+                    "#,
                 );
             }
             e
@@ -273,10 +294,28 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
     let _ = Command::new("tar")
         .arg("--zstd")
         .arg("-xf")
-        .arg(archive_path)
+        .arg(&archive_path)
         .arg("--strip-components=1")
         .arg("-C")
         .arg("toolchain/")
+        .status()?;
+
+    // move it so it looks like toolchain_<hash> instead of having the arch info
+    // just for aesthetics
+    let extracted_archive_path = {
+        let mut pb = PathBuf::from("toolchain/");
+        pb.push(archive_path);
+        pb
+    };
+    let cleaned_archive_path = {
+        let mut pb = PathBuf::from("toolchain/");
+        pb.push(generate_tag()?);
+        pb
+    };
+
+    let _ = Command::new("mv")
+        .arg(extracted_archive_path)
+        .arg(cleaned_archive_path)
         .status()?;
 
     Ok(())
