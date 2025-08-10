@@ -251,12 +251,17 @@ pub async fn pull_toolchain() -> anyhow::Result<()> {
         }
     }
 
-    // todo extract toolchain and cleanup
+    println!("extracting toolchain");
+    decompress_toolchain(PathBuf::from(&local_archive_path))?;
+
+    println!("cleaning up archive file");
+    fs::remove_file(&local_archive_path)?;
+
+    println!("extraction complete");
 
     Ok(())
 }
 
-#[expect(unused)]
 pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
     // `tar --zstd -xf toolchain_arm64_Darwin_46042ba-1a94b71-4543a3e.tar.zst --strip-components=1
     // -C toolchain/`
