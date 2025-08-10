@@ -188,7 +188,9 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     // its a non-interactive
     //
 
-    check_toolchain()?;
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(check_toolchain())?;
 
     let python_path = get_python_path()?.canonicalize()?;
     let builtin_headers = get_builtin_headers()?.canonicalize()?;
