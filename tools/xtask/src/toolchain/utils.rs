@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use git2::Repository;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
@@ -82,6 +82,7 @@ pub fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Removes binaries from the `/install` directory during bootstrap
 pub fn prune_bins() -> anyhow::Result<()> {
     let wanted_bins = [
         "bindgen",
@@ -95,7 +96,6 @@ pub fn prune_bins() -> anyhow::Result<()> {
         "set-xcode-analyzer",
     ];
 
-    // let mut file_names = Vec::new();
     let bin_path = get_bin_path()?;
     for entry in fs::read_dir(&bin_path)? {
         let entry = entry?;
@@ -112,11 +112,13 @@ pub fn prune_bins() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Removes everything needed to build a toolchain, i.e. rust repo, mlibc repo, etc.
 pub fn prune_toolchain() -> anyhow::Result<()> {
     let submodule_deinit = |path: &PathBuf| -> anyhow::Result<()> {
         Command::new("git")
             .arg("submodule")
             .arg("deinit")
+            .arg("-f")
             .arg(path)
             .status()?;
 
@@ -134,8 +136,8 @@ pub fn prune_toolchain() -> anyhow::Result<()> {
     Ok(())
 }
 
-// example tag for toolchain
-// toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.zst
+/// generates tag using currently checked out submodules
+/// format: toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.zst
 pub fn generate_tag() -> anyhow::Result<String> {
     let hash = generate_hash()?;
 
@@ -156,6 +158,7 @@ pub fn generate_tag() -> anyhow::Result<String> {
     Ok(tag)
 }
 
+/// Generates toolchain hash in the following format: <rust>_<mlibc>_<abi>.
 fn generate_hash() -> anyhow::Result<String> {
     let repo = Repository::open("./")?;
 
@@ -182,6 +185,7 @@ fn generate_hash() -> anyhow::Result<String> {
     Ok(format!("{rust_head}-{mlibc_head}-{abi_head}"))
 }
 
+/// Compresses the active toolchain
 pub fn compress_toolchain() -> anyhow::Result<()> {
     let tag = generate_tag()?;
 
@@ -216,10 +220,12 @@ pub async fn get_checked_download_url() -> anyhow::Result<String> {
     client
         .get(&remote_tc_url)
         .send()
-        .await
+        .await?
+        .error_for_status()
         .map(|_| Ok(remote_tc_url))?
 }
 
+/// Pulls down the toolchain, erroring if toolchain doesnt exist remotely
 pub async fn pull_toolchain() -> anyhow::Result<()> {
     let download_url = get_checked_download_url().await?;
 
@@ -231,25 +237,23 @@ pub async fn pull_toolchain() -> anyhow::Result<()> {
 
     let local_archive_path = archive_filename;
 
-    match download_file(&client, &download_url, &local_archive_path).await {
-        Ok(_) => {
-            println!("download suceeeded")
-            //TODO: decompress
-            //TODO: delete archive
-        }
-        Err(e) => {
+    download_file(&client, &download_url, &local_archive_path)
+        .await
+        .map_err(|e| {
             let error_msg = e.to_string();
             if error_msg.contains("404") {
-                anyhow::bail!(
+                return anyhow!(
                     "Toolchain release not found, it might not exist for this tag:\n\
                     {}\n\
                     You can check at {}/releases",
                     toolchain_tag,
                     BASE_REPO_URL
-                )
+                );
             }
-        }
-    }
+            e
+        })?;
+
+    println!("download suceeeded!");
 
     println!("extracting toolchain");
     decompress_toolchain(PathBuf::from(&local_archive_path))?;
@@ -262,10 +266,10 @@ pub async fn pull_toolchain() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Decompresses the toolchain archive and places it inside `/toolchain`
 pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
     // `tar --zstd -xf toolchain_arm64_Darwin_46042ba-1a94b71-4543a3e.tar.zst --strip-components=1
     // -C toolchain/`
-    //
     let _ = Command::new("tar")
         .arg("--zstd")
         .arg("-xf")

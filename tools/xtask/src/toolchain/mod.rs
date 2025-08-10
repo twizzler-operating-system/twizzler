@@ -250,8 +250,6 @@ cargo toolchain bootstrap
         }
     }
 
-    // let curr_tag = generate_tag(); c
-
     Ok(())
 }
 
