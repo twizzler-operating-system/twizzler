@@ -236,10 +236,16 @@ async fn check_toolchain() -> anyhow::Result<()> {
         } else {
             // here we just tell the user what to run
             eprintln!(
-                "Remote toolchain doesn't exist!!
-                Continuing well require a full compilation of the twizzler toolchain!
-                This operation will require ~40-50 Gb of disk space and will
-                take a substantial amount of time!"
+                r#"
+Remote toolchain doesn't exist!!
+Continuing well require a full compilation of the twizzler toolchain!
+This operation will require ~40-50 Gb of disk space and will take a substantial amount of time!
+
+Please run 
+
+git submodule update --init --recursive
+cargo toolchain bootstrap
+                "#
             );
         }
     }
