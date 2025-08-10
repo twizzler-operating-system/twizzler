@@ -12,6 +12,9 @@ use reqwest::Client;
 
 use super::{get_bin_path, get_toolchain_path, BootstrapOptions};
 
+// const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
+const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
+
 pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     let res = client
@@ -195,24 +198,44 @@ pub fn compress_toolchain() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn pull_toolchain() -> anyhow::Result<()> {
-    let base_repo_url = "https://github.com/Suri312006/twizzler";
-    let toolchain_tag = generate_tag()?;
+/// Returns the download url for the appropriate toolchain,
+/// as well as checking if the toolchain exists remotely
+pub async fn get_checked_download_url() -> anyhow::Result<String> {
+    let remote_tc_url = {
+        let toolchain_tag = generate_tag()?;
 
-    println!("pulling toolchain for {}", toolchain_tag);
-
-    let archive_filename = format!("{}.tar.zst", toolchain_tag);
-    let download_url = format!(
-        "{}/releases/download/{}/{}",
-        base_repo_url, toolchain_tag, archive_filename
-    );
+        let archive_filename = format!("{}.tar.zst", toolchain_tag);
+        format!(
+            "{}/releases/download/{}/{}",
+            BASE_REPO_URL, toolchain_tag, archive_filename
+        )
+    };
 
     let client = Client::new();
+
+    client
+        .get(&remote_tc_url)
+        .send()
+        .await
+        .map(|_| Ok(remote_tc_url))?
+}
+
+pub async fn pull_toolchain() -> anyhow::Result<()> {
+    let download_url = get_checked_download_url().await?;
+
+    let toolchain_tag = generate_tag()?;
+    let archive_filename = format!("{}.tar.zst", toolchain_tag);
+    println!("pulling toolchain for {}", toolchain_tag);
+
+    let client = Client::new();
+
     let local_archive_path = archive_filename;
 
     match download_file(&client, &download_url, &local_archive_path).await {
         Ok(_) => {
             println!("download suceeeded")
+            //TODO: decompress
+            //TODO: delete archive
         }
         Err(e) => {
             let error_msg = e.to_string();
@@ -222,7 +245,7 @@ pub async fn pull_toolchain() -> anyhow::Result<()> {
                     {}\n\
                     You can check at {}/releases",
                     toolchain_tag,
-                    base_repo_url
+                    BASE_REPO_URL
                 )
             }
         }

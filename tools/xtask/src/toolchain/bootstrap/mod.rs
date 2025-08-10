@@ -345,11 +345,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         std::os::unix::fs::symlink(".", usr_link)?;
     }
 
-    // let rust_commit = get_rust_commit()?;
-    // let abi_version = get_abi_version()?;
-    // write_stamp(NEXT_STAMP_PATH, &rust_commit, &abi_version.to_string())?;
-    // move_stamp()?;
-
     if !cli.keep_old_artifacts {
         let res = std::fs::remove_dir_all("target");
         if let Err(e) = res {

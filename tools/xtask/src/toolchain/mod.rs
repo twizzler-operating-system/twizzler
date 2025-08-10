@@ -5,7 +5,6 @@ use clap::Subcommand;
 use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
 use reqwest::Client;
-use utils::download_file;
 
 use crate::triple::Triple;
 
@@ -52,11 +51,13 @@ pub struct BootstrapOptions {
 #[derive(Subcommand, Debug)]
 pub enum ToolchainCommands {
     Bootstrap(BootstrapOptions),
+
     /// Explicitly pull down the toolchain that corresponds with the current submodules
     Pull,
-    //NOTE: Not sure if this should be an option or should be explicit or maybe even both
-    /// Will look at the bootstrapped toolchain and prune if necessary
+
+    /// Will delete everything used to build a toolchain
     Prune,
+
     // purely just for testing work
     Test,
 
@@ -65,6 +66,9 @@ pub enum ToolchainCommands {
 
     /// Lists all the installed toolchains.
     List,
+
+    /// Compresses the active toolchain for distribution
+    Compress,
 }
 
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
@@ -75,9 +79,8 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             .enable_all()
             .build()?
             .block_on(pull_toolchain())?),
-
-        // ToolchainCommands::Pull => Ok(()),
         ToolchainCommands::Prune => prune_toolchain(),
+        ToolchainCommands::Compress => compress_toolchain(),
         ToolchainCommands::Test => Ok(()),
         ToolchainCommands::Active => {
             match get_toolchain_path()?.canonicalize() {
@@ -183,6 +186,9 @@ pub fn set_static() {
 pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     //TODO: make sure we have the toolchain we need, if not then prompt to build it / error out if
     // its a non-interactive
+    //
+
+    check_toolchain()?;
 
     let python_path = get_python_path()?.canonicalize()?;
     let builtin_headers = get_builtin_headers()?.canonicalize()?;
@@ -209,6 +215,34 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
             path
         ),
     );
+    Ok(())
+}
+
+/// Checks if we have a valid toolchain locally, prompts to build it if necessary
+async fn check_toolchain() -> anyhow::Result<()> {
+    let tc_path = get_toolchain_path()?;
+    let exists_locally = tc_path.try_exists()?;
+
+    // check if exists remotely
+    let exists_remotely = get_checked_download_url().await.is_ok();
+    if !exists_locally {
+        eprintln!("There doesnt exist a local toolchain capable of building Twizzler!");
+        if exists_remotely {
+            eprintln!("Remote toolchain found! Pulling it down.");
+            pull_toolchain().await?;
+        } else {
+            // here we just tell the user what to run
+            eprintln!(
+                "Remote toolchain doesn't exist!!
+                Continuing well require a full compilation of the twizzler toolchain!
+                This operation will require ~40-50 Gb of disk space and will
+                take a substantial amount of time!"
+            );
+        }
+    }
+
+    // let curr_tag = generate_tag(); c
+
     Ok(())
 }
 
