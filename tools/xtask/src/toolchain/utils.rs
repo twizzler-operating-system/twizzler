@@ -304,7 +304,8 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
     // just for aesthetics
     let extracted_archive_path = {
         let mut pb = PathBuf::from("toolchain/");
-        pb.push(archive_path);
+
+        pb.push(generate_os_arch_tag()?);
         pb
     };
     let cleaned_archive_path = {
@@ -312,6 +313,8 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
         pb.push(generate_tag()?);
         pb
     };
+
+    println!("extraced_archive_path:{extracted_archive_path:?}, cleaned_archive_path:{cleaned_archive_path:?}");
 
     let _ = Command::new("mv")
         .arg(extracted_archive_path)
