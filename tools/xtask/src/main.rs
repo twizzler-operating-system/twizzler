@@ -207,7 +207,7 @@ impl From<&QemuOptions> for ImageOptions {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[clap(subcommand, about = "Bootstrap the Twizzler Rust toolchain.")]
+    #[clap(subcommand, about = "Manage the Twizzler toolchain(s)")]
     Toolchain(ToolchainCommands),
     #[clap(about = "Run cargo check on the codebase.")]
     Check(CheckOptions),
