@@ -16,6 +16,8 @@ use crate::{
     QemuOptions,
 };
 
+const DEFAULT_QEMU_PORT: u16 = 5555;
+
 #[derive(Debug)]
 struct QemuCommand {
     cmd: Command,
@@ -116,11 +118,12 @@ impl QemuCommand {
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
         let port = {
-            let listener = match TcpListener::bind("0.0.0.0:5555") {
+            let listener = match TcpListener::bind(format!("0.0.0.0:{}", DEFAULT_QEMU_PORT)) {
                 Ok(l) => l,
                 Err(_) => {
                     println!(
-                        "Failed to allocate default port 5555 on host, dynamically assigning."
+                        "Failed to allocate default port {} on host, dynamically assigning.",
+                        DEFAULT_QEMU_PORT
                     );
                     match TcpListener::bind("0.0.0.0:0") {
                         Ok(l) => l,
@@ -139,9 +142,10 @@ impl QemuCommand {
 
         println!("Allocated port {} for Qemu!", port);
 
-        self.cmd
-            .arg("-netdev")
-            .arg(format!("user,id=net0,hostfwd=tcp::{}-:5555", port));
+        self.cmd.arg("-netdev").arg(format!(
+            "user,id=net0,hostfwd=tcp::{}-:{}",
+            port, DEFAULT_QEMU_PORT
+        ));
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
@@ -151,11 +155,30 @@ impl QemuCommand {
         // to the serial port and the QEMU monitor, and
         // -nographic also multiplexes the console and the monitor to stdio.
 
-        println!("GDB debugging port: {}", options.gdb);
         if options.gdb != 0 {
+            let gdb_port = {
+                let listener = match TcpListener::bind(format!("0.0.0.0:{}", options.gdb)) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        println!(
+                            "Failed to allocate default gdb port {} on host, dynamically assigning.",
+                            options.gdb
+                        );
+                        match TcpListener::bind("0.0.0.0:0") {
+                            Ok(l) => l,
+                            Err(e) => {
+                                panic!("gdb port alloc failed! {}", e);
+                            }
+                        }
+                    }
+                };
+                listener.local_addr().expect("local gdb addr").port()
+            };
+
+            println!("gdb debugging port: {}", gdb_port);
             self.cmd
                 .arg("-serial")
-                .arg(&format!("tcp::{},server,nowait", options.gdb));
+                .arg(&format!("tcp::{},server,nowait", gdb_port));
         }
 
         // add additional options for qemu
