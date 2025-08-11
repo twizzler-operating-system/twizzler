@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, remove_dir_all, File},
+    fs::{self, read_dir, remove_dir_all, File},
     io::Write,
     path::PathBuf,
     process::Command,
@@ -11,7 +11,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 
 use super::{get_bin_path, get_toolchain_path, BootstrapOptions};
-use crate::toolchain::check_toolchain;
 
 // const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
 const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
@@ -304,7 +303,6 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
     // just for aesthetics
     let extracted_archive_path = {
         let mut pb = PathBuf::from("toolchain/");
-
         pb.push(generate_os_arch_tag()?);
         pb
     };
@@ -314,12 +312,27 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
         pb
     };
 
-    println!("extraced_archive_path:{extracted_archive_path:?}, cleaned_archive_path:{cleaned_archive_path:?}");
-
     let _ = Command::new("mv")
         .arg(extracted_archive_path)
         .arg(cleaned_archive_path)
         .status()?;
 
     Ok(())
+}
+
+pub fn get_installed_toolchains() -> anyhow::Result<Vec<String>> {
+    let mut toolchains = Vec::new();
+    for entry in read_dir("toolchain/")? {
+        // we dont want to terminate on error
+        if entry.is_err() {
+            continue;
+        }
+
+        let dir_name = entry.unwrap().file_name().into_string().unwrap();
+        if dir_name.starts_with("toolchain") {
+            toolchains.push(dir_name);
+        }
+    }
+
+    Ok(toolchains)
 }

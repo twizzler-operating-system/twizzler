@@ -1,7 +1,11 @@
-use std::{path::Path, process::Command};
+use std::{
+    fs::remove_dir_all,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use bootstrap::do_bootstrap;
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
 use reqwest::Client;
@@ -67,8 +71,25 @@ pub enum ToolchainCommands {
     /// Lists all the installed toolchains.
     List,
 
+    /// Removes the specified toolchain, if it exists
+
+    #[clap(subcommand)]
+    Remove(RemoveSubcommand),
+
     /// Compresses the active toolchain for distribution
     Compress,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoveSubcommand {
+    Tag(RemoveTagOpts),
+    All,
+    Inactive,
+}
+
+#[derive(Args, Debug)]
+pub struct RemoveTagOpts {
+    name: String,
 }
 
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
@@ -97,7 +118,56 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             Ok(())
         }
         ToolchainCommands::List => {
-            todo!();
+            let active = generate_tag()?;
+
+            for tc in get_installed_toolchains()? {
+                if tc == active {
+                    println!("Active: {tc}");
+                } else {
+                    println!("{tc}");
+                }
+            }
+
+            Ok(())
+        }
+
+        ToolchainCommands::Remove(subcommands) => {
+            let rm_tc = |tc_name: &String| -> anyhow::Result<()> {
+                let mut tc_path = PathBuf::from("toolchain/");
+                tc_path.push(tc_name);
+                remove_dir_all(tc_path)?;
+                println!("Succesfully removed {}", tc_name);
+                Ok(())
+            };
+
+            let toolchains = get_installed_toolchains()?;
+            match subcommands {
+                RemoveSubcommand::Tag(t) => {
+                    let Some(tc) = toolchains.iter().find(|entry| t.name == **entry) else {
+                        eprintln!("Toolchain with name {} doesnt exist!", t.name);
+                        return Ok(());
+                    };
+                    rm_tc(tc)?;
+                    println!("Succesfully removed {}", tc);
+                    Ok(())
+                }
+                RemoveSubcommand::All => {
+                    for tc in toolchains {
+                        rm_tc(&tc)?
+                    }
+                    Ok(())
+                }
+                RemoveSubcommand::Inactive => {
+                    let active_tc = generate_tag()?;
+
+                    for tc in toolchains {
+                        if tc != active_tc {
+                            rm_tc(&tc)?
+                        }
+                    }
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -164,13 +234,10 @@ async fn download_efi_files(client: &Client) -> anyhow::Result<()> {
 }
 
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
-    // This is a bit of a cursed linker line, but it's needed to work around some limitations in
-    // rust's linkage support.
-    //
-    //
     let sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
-    println!("SYSROOTS PATH:{}", sysroot_path.to_string_lossy());
+    // This is a bit of a cursed linker line, but it's needed to work around some limitations in
+    // rust's linkage support.
     let args = format!("-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
