@@ -204,7 +204,7 @@ fn page_fault_to_region(
         );
         if !ip.is_kernel() && !addr.is_kernel() {
             if let Some(val) = provider.peek()
-                && info.flags.contains(MapFlags::NO_NULLPAGE)
+            //&& info.flags.contains(MapFlags::NO_NULLPAGE)
             {
                 if val.len > 0x1000 {
                     log::trace!(
@@ -232,7 +232,7 @@ fn page_fault_to_region(
         Ok(())
     };
 
-    info.map(addr, cause, perms, default_prot, mapper)
+    info.map(addr, ip, cause, perms, default_prot, mapper)
 }
 
 fn get_map_region(

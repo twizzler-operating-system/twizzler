@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 
 use inflight::InflightManager;
-use log::trace;
 use request::ReqKind;
 use twizzler_abi::{
     object::{ObjID, MAX_SIZE},

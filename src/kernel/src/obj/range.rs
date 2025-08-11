@@ -53,6 +53,25 @@ enum BackingPages {
     Many(PageVecRef),
 }
 
+impl core::fmt::Display for BackingPages {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BackingPages::Nothing => write!(f, "BackingPages::Nothing"),
+            BackingPages::Single(page_ref) => write!(
+                f,
+                "BackingPages::Single({:?}, {}, {})",
+                page_ref.physical_address(),
+                page_ref.nr_pages(),
+                page_ref.page_offset()
+            ),
+            BackingPages::Many(mutex) => {
+                let v = mutex.lock();
+                write!(f, "BackingPages::Many({})", v.len())
+            }
+        }
+    }
+}
+
 pub struct PageRange {
     pub start: PageNumber,
     pub length: usize,
@@ -179,6 +198,10 @@ impl PageRange {
 
     pub fn range(&self) -> core::ops::Range<PageNumber> {
         self.start..self.start.offset(self.length)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self.backing, BackingPages::Nothing)
     }
 
     pub fn sleeper(&mut self) -> Arc<RangeSleep> {

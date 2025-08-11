@@ -114,6 +114,7 @@ impl MapRegion {
     pub(super) fn map(
         &self,
         addr: VirtAddr,
+        ip: VirtAddr,
         cause: MemoryAccessKind,
         perms: PermsInfo,
         default_prot: Protections,
@@ -157,6 +158,7 @@ impl MapRegion {
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
+            log::warn!("fallback allocate in fault to page {}", page_number);
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame);
                 obj_page_tree.add_page(
@@ -175,7 +177,7 @@ impl MapRegion {
         if let PageStatus::Locked(sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
-            return self.map(addr, cause, perms, default_prot, mapper);
+            return self.map(addr, ip, cause, perms, default_prot, mapper);
         }
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
@@ -200,33 +202,67 @@ impl MapRegion {
                 self.object().dirty_set().add_dirty(page_number);
             }
 
-            let addr_aligned = addr
-                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
-                .unwrap();
-            let large_aligned_pn = PageNumber::from_address(addr_aligned);
-            let large_diff = PageNumber::from_address(addr) - large_aligned_pn;
-            let phys_aligned = page
+            let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            let large_page_number = page_number.align_down(pages_per_large);
+            let large_diff = page_number - large_page_number;
+
+            let phys_large_aligned = page
                 .physical_address()
                 .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
                 .unwrap();
-            let aligned = (page.physical_address() - phys_aligned) == (addr - addr_aligned);
+            let addr_large_aligned = addr
+                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+                .unwrap();
+
+            let phys_page_aligned = page
+                .physical_address()
+                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
+                .unwrap();
+            let addr_page_aligned = addr
+                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
+                .unwrap();
+
+            let aligned = (phys_page_aligned - phys_large_aligned)
+                == (addr_page_aligned - addr_large_aligned);
+
+            if page.nr_pages() > 1 {
+                log::trace!(
+                    "possible bigmap {:?}: {} {}: {}, {}, {:?} {} {}",
+                    ip,
+                    page_number,
+                    large_page_number,
+                    page.page_offset(),
+                    page.nr_pages(),
+                    addr,
+                    aligned,
+                    large_diff
+                );
+            }
+
             if page.page_offset() >= large_diff
                 && large_diff > 0
-                && !settings.perms().contains(Protections::WRITE)
-                && self.flags.contains(MapFlags::NO_NULLPAGE)
                 && aligned
-                && page.nr_pages() >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size()
+                && !addr.is_kernel()
+                && !addr.is_kernel_object_memory()
+                && false
+                //&& !settings.perms().contains(Protections::WRITE)
+                //&& self.flags.contains(MapFlags::NO_NULLPAGE)
+                && page.nr_pages() + large_diff >= pages_per_large
             {
                 log::trace!(
-                    "ADJUST: {} {} {} {}: {:?}",
-                    page.page_offset(),
-                    PageNumber::from_address(addr),
-                    large_aligned_pn,
+                    "map large page {} for page {}. phys: {:?}, diff: {}. {:?} {:?} {:?} {:?}: {}",
+                    large_page_number,
+                    page_number,
+                    page.physical_address(),
                     large_diff,
-                    page,
+                    addr_page_aligned,
+                    phys_page_aligned,
+                    addr_page_aligned - addr_large_aligned,
+                    phys_page_aligned - phys_large_aligned,
+                    aligned
                 );
                 mapper(
-                    large_aligned_pn,
+                    large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
                 )
             } else {

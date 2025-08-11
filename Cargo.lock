@@ -4876,9 +4876,9 @@ dependencies = [
 
 [[package]]
 name = "nonoverlapping_interval_tree"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c57f881f89f2a30a1bd6c75bc4df573158ec8f49e1ae833411ab92e3ebdcf330"
+checksum = "59ed687c051551650b79d7ecbd8915fbbb4476e4a441e9543573040cb72c4e3b"
 
 [[package]]
 name = "normpath"
