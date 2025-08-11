@@ -84,24 +84,6 @@ impl From<Machine> for String {
     }
 }
 
-// impl ToString for Machine {
-//     fn to_string(&self) -> String {
-//         (*self).into()
-//     }
-// }
-
-// impl ToString for Arch {
-//     fn to_string(&self) -> String {
-//         (*self).into()
-//     }
-// }
-
-// impl ToString for Host {
-//     fn to_string(&self) -> String {
-//         (*self).into()
-//     }
-// }
-
 impl Display for Machine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", Into::<String>::into(*self))

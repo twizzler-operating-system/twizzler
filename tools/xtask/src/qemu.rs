@@ -207,7 +207,7 @@ impl QemuCommand {
             }
             Arch::Aarch64 => {
                 ovmf.push("OVMF-AA64.fd");
-                self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");
+                self.cmd.arg("-bios").arg(ovmf);
                 self.cmd.arg("-net").arg("none");
                 if self.machine == Machine::Morello {
                     self.cmd.arg("-machine").arg("virt,gic-version=3");

@@ -54,6 +54,8 @@ pub struct BootstrapOptions {
 
 #[derive(Subcommand, Debug)]
 pub enum ToolchainCommands {
+    /// Builds the Twizzler toolchain using the checked out submodules
+    /// NOTE: ensure that the submodules inside of `/toolchain` are cloned.
     Bootstrap(BootstrapOptions),
 
     /// Explicitly pull down the toolchain that corresponds with the current submodules
@@ -71,25 +73,26 @@ pub enum ToolchainCommands {
     /// Lists all the installed toolchains.
     List,
 
-    /// Removes the specified toolchain, if it exists
-
-    #[clap(subcommand)]
-    Remove(RemoveSubcommand),
+    /// Removes toolchains based on the specified options
+    Remove(RemoveOptions),
 
     /// Compresses the active toolchain for distribution
     Compress,
 }
 
-#[derive(Debug, Subcommand)]
-pub enum RemoveSubcommand {
-    Tag(RemoveTagOpts),
-    All,
-    Inactive,
-}
-
 #[derive(Args, Debug)]
-pub struct RemoveTagOpts {
-    name: String,
+pub struct RemoveOptions {
+    /// Remove a specific toolchain by tag
+    #[clap(long)]
+    pub tag: Option<String>,
+
+    /// Remove all toolchains
+    #[clap(long, conflicts_with = "tag", conflicts_with = "inactive")]
+    pub all: bool,
+
+    /// Remove all toolchains but the active one
+    #[clap(long, conflicts_with = "tag", conflicts_with = "all")]
+    pub inactive: bool,
 }
 
 pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
@@ -131,7 +134,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             Ok(())
         }
 
-        ToolchainCommands::Remove(subcommands) => {
+        ToolchainCommands::Remove(opts) => {
             let rm_tc = |tc_name: &String| -> anyhow::Result<()> {
                 let mut tc_path = PathBuf::from("toolchain/");
                 tc_path.push(tc_name);
@@ -141,33 +144,33 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             };
 
             let toolchains = get_installed_toolchains()?;
-            match subcommands {
-                RemoveSubcommand::Tag(t) => {
-                    let Some(tc) = toolchains.iter().find(|entry| t.name == **entry) else {
-                        eprintln!("Toolchain with name {} doesnt exist!", t.name);
-                        return Ok(());
-                    };
-                    rm_tc(tc)?;
-                    println!("Succesfully removed {}", tc);
-                    Ok(())
-                }
-                RemoveSubcommand::All => {
-                    for tc in toolchains {
-                        rm_tc(&tc)?
-                    }
-                    Ok(())
-                }
-                RemoveSubcommand::Inactive => {
-                    let active_tc = generate_tag()?;
 
-                    for tc in toolchains {
-                        if tc != active_tc {
-                            rm_tc(&tc)?
-                        }
-                    }
-                    Ok(())
+            if opts.all {
+                for tc in &toolchains {
+                    rm_tc(tc)?
                 }
             }
+
+            if opts.inactive {
+                let active_tc = generate_tag()?;
+
+                for tc in &toolchains {
+                    if *tc != active_tc {
+                        rm_tc(tc)?
+                    }
+                }
+            }
+
+            if let Some(tag) = opts.tag {
+                let Some(tc) = toolchains.iter().find(|entry| tag == **entry) else {
+                    eprintln!("Toolchain with name {} doesnt exist!", tag);
+                    return Ok(());
+                };
+                rm_tc(tc)?;
+                println!("Succesfully removed {}", tc);
+            }
+
+            Ok(())
         }
     }
 }

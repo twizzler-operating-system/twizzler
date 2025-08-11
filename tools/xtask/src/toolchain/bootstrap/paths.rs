@@ -3,7 +3,6 @@ use std::path::PathBuf;
 pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
     let dir = curdir
-        //TODO: move this into install
         .join("toolchain/src/rust/build")
         .join(host_triple)
         .join("stage2-std")
@@ -16,7 +15,6 @@ pub fn get_llvm_native_runtime(target_triple: &str) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
     let arch = target_triple.split("-").next().unwrap();
     let archive_name = format!("libclang_rt.builtins-{}.a", arch);
-    //TODO: move this into install
     let dir = curdir
         .join("toolchain/src/rust/build")
         .join(target_triple)
@@ -48,7 +46,6 @@ pub fn get_rust_lld(host_triple: &str) -> anyhow::Result<PathBuf> {
 pub fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
     let llvm_bin = curdir
-        //TODO: move this into install
         .join("toolchain/src/rust/build")
         .join(host_triple)
         .join("llvm/bin");
@@ -58,7 +55,6 @@ pub fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
 pub fn get_lld_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
     let llvm_bin = curdir
-        //TODO: move this into install
         .join("toolchain/src/rust/build")
         .join(host_triple)
         .join("lld/bin");
@@ -73,7 +69,6 @@ pub fn get_compiler_rt_path() -> anyhow::Result<PathBuf> {
 }
 
 pub fn get_builtin_headers() -> anyhow::Result<PathBuf> {
-    //TODO: maybe we should throw up a warning to ask the user to switch to the proper directory?
     let curdir = std::env::current_dir().unwrap();
     let headers = curdir.join("toolchain/src/rust/build/host/llvm/lib/clang/20/include/");
 
