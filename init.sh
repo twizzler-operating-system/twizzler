@@ -133,3 +133,6 @@ case "$OS_TYPE" in
         exit 1
         ;;
 esac
+
+# now we clone submodules
+git submodule update --init --recursive -- ':!toolchain/src/*'
