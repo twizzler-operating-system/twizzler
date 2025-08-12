@@ -9,9 +9,11 @@ permissions:
   contents: write
 
 jobs:
-  Release:
+  check-tag:
     runs-on: ubuntu-latest
-
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      should-release: ${{ steps.tag_check.outputs.should-release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,31 +38,78 @@ jobs:
         id: tag_check
         run: |
           if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "should-release=true" >> $GITHUB_OUTPUT
           fi
 
+  build:
+    needs: check-tag
+    if: needs.check-tag.outputs.should-release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86_64 Linux
+          - os: macos-14
+            name: arm64 macOS
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Setup other build tools
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install zstd || true
+
       - name: Initialize all submodules for building tc
-        if: steps.tag_check.outputs.exists == 'false'
         run: |
           git submodule update --init --recursive
 
       - name: Bootstrap toolchain and create compressed archive
-        if: steps.tag_check.outputs.exists == 'false'
+        id: bootstrap
+        shell: bash
         run: |
           cargo xtask toolchain bootstrap --skip-prune --compress
+          os=$(uname)
+          arch=$(uname -m)
+          base_tag="${{ needs.check-tag.outputs.tag }}"
+          filename="toolchain_${arch}_${os}_${base_tag#toolchain_}.tar.zst"
+          echo "filename=$filename" >> $GITHUB_OUTPUT
 
-      - name: Create release and upload
-        if: steps.tag_check.outputs.exists == 'false'
+      - name: Upload artifact for release
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-${{ matrix.name }}
+          path: ${{ steps.bootstrap.outputs.filename }}
+          retention-days: 1
+
+  release:
+    needs: [check-tag, build]
+    if: needs.check-tag.outputs.should-release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release and upload all artifacts
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release for ${{ steps.tag.outputs.tag }}
-          files: ${{ steps.tag.outputs.tag }}.tar.zst
+          tag_name: ${{ needs.check-tag.outputs.tag }}
+          name: Release for ${{ needs.check-tag.outputs.tag }}
+          files: toolchain_*.tar.zst
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Skip message
-        if: steps.tag_check.outputs.exists == 'true'
-        run: echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
