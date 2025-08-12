@@ -4,10 +4,10 @@ mod qemu;
 mod toolchain;
 mod triple;
 
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use toolchain::{BootstrapOptions, ToolchainCommands};
+use toolchain::ToolchainCommands;
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -23,13 +23,13 @@ enum Profile {
     Release,
 }
 
-impl ToString for Profile {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
             Profile::Debug => "debug",
             Profile::Release => "release",
-        }
-        .to_string()
+        };
+        write!(f, "{str}")
     }
 }
 
@@ -242,10 +242,7 @@ fn print_status_line(name: &str, config: Option<&BuildConfig>) {
     if let Some(config) = config {
         eprintln!(
             "=== BUILDING {} [{}-{}::{}]",
-            name,
-            config.arch.to_string(),
-            config.machine.to_string(),
-            config.profile.to_string()
+            name, config.arch, config.machine, config.profile
         );
     } else {
         eprintln!("=== BUILDING {} [build::release]", name);

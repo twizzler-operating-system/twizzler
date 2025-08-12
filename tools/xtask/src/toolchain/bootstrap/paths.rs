@@ -67,10 +67,3 @@ pub fn get_compiler_rt_path() -> anyhow::Result<PathBuf> {
 
     Ok(compiler_rt)
 }
-
-pub fn get_builtin_headers() -> anyhow::Result<PathBuf> {
-    let curdir = std::env::current_dir().unwrap();
-    let headers = curdir.join("toolchain/src/rust/build/host/llvm/lib/clang/20/include/");
-
-    Ok(headers)
-}

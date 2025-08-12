@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{generate_os_arch_tag, generate_tag};
+use super::generate_tag;
 
 pub fn get_toolchain_path() -> anyhow::Result<PathBuf> {
     let mut tc_path = PathBuf::from("toolchain");
