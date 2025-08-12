@@ -32,7 +32,7 @@ jobs:
         id: tag
         run: |
           tag=$(cargo toolchain tag)
-          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "tag=test_$tag" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
         id: tag_check
