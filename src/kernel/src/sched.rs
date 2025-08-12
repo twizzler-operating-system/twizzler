@@ -490,7 +490,7 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const PRINT_STATS: bool = false;
+const PRINT_STATS: bool = true;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
@@ -539,7 +539,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
+                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running && false {
                     logln!(
                         "thread {:3}: u {:4} s {:4} i {:4}, {:?}, {:x}",
                         t.id(),

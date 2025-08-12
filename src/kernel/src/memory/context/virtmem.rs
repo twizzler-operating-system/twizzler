@@ -1,7 +1,7 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull, sync::atomic::Ordering};
+use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
@@ -21,7 +21,6 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
-        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
@@ -156,16 +155,9 @@ impl PhysAddrProvider for ObjectPageProvider {
 
     fn consume(&mut self, mut len: usize) {
         if len > PageNumber::PAGE_SIZE {
-            if self.pages[0].0.nr_pages() > 1 {
+            if len / PageNumber::PAGE_SIZE >= 512 {
                 log::trace!("consume: {:?} ({} pages)", len, len / PageNumber::PAGE_SIZE);
             }
-        }
-        if len == PHYS_LEVEL_LAYOUTS[0].size() {
-            super::super::FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
-        } else if len == PHYS_LEVEL_LAYOUTS[1].size() {
-            super::super::FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
-        } else if len == PHYS_LEVEL_LAYOUTS[2].size() {
-            super::super::FAULT_STATS.count[2].fetch_add(1, Ordering::SeqCst);
         }
         while len > 0 && self.pos < self.pages.len() {
             let rem_len =

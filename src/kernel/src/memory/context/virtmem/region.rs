@@ -1,5 +1,5 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use core::{fmt::Debug, ops::Range, usize};
+use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
@@ -21,6 +21,7 @@ use crate::{
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
         tracker::{FrameAllocFlags, FrameAllocator},
+        FAULT_STATS,
     },
     mutex::Mutex,
     obj::{
@@ -204,7 +205,7 @@ impl MapRegion {
 
             let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
             let large_page_number = page_number.align_down(pages_per_large);
-            let large_diff = page_number - large_page_number;
+            let mut large_diff = page_number - large_page_number;
 
             let phys_large_aligned = page
                 .physical_address()
@@ -224,7 +225,9 @@ impl MapRegion {
 
             let aligned = (phys_page_aligned - phys_large_aligned)
                 == (addr_page_aligned - addr_large_aligned);
-
+            if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+                large_diff -= 1;
+            }
             if page.nr_pages() > 1 {
                 log::trace!(
                     "possible bigmap {:?}: {} {}: {}, {}, {:?} {} {}",
@@ -244,11 +247,9 @@ impl MapRegion {
                 && aligned
                 && !addr.is_kernel()
                 && !addr.is_kernel_object_memory()
-                && false
-                //&& !settings.perms().contains(Protections::WRITE)
-                //&& self.flags.contains(MapFlags::NO_NULLPAGE)
                 && page.nr_pages() + large_diff >= pages_per_large
             {
+                FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
                 log::trace!(
                     "map large page {} for page {}. phys: {:?}, diff: {}. {:?} {:?} {:?} {:?}: {}",
                     large_page_number,
@@ -266,6 +267,16 @@ impl MapRegion {
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
                 )
             } else {
+                FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
+                if self.flags.contains(MapFlags::NO_NULLPAGE) {
+                    log::trace!(
+                        "nnp {}: {:?} {:?} {}",
+                        self.object().id(),
+                        addr,
+                        page.physical_address(),
+                        page.nr_pages()
+                    );
+                }
                 mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),

@@ -120,6 +120,7 @@ fn main() -> miette::Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::DEBUG)
+            .without_time()
             .finish(),
     )
     .unwrap();

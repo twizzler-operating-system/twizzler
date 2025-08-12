@@ -4,7 +4,7 @@ use std::{
 };
 
 use blocking::unblock;
-use object_store::{objid_to_ino, PagedObjectStore};
+use object_store::PagedObjectStore;
 use twizzler::{
     error::RawTwzError,
     object::{MetaFlags, MetaInfo, ObjID},

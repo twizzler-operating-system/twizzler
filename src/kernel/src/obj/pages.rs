@@ -330,7 +330,6 @@ impl Object {
                     && page_number
                         < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
                     && all_empty
-                    && false
                 {
                     let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
                     if let Some(frame) = frame_allocator.try_allocate() {

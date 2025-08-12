@@ -128,6 +128,8 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #lock_api = { path = "src/ports/parking_lot/lock_api" }
 #blocking = { path = "src/ports/blocking" }
 
+num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
+
 
 candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
