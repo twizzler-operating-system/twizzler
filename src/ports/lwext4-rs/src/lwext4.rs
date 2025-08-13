@@ -576,12 +576,18 @@ const _: () = {
     ["Offset of field: ext4_block::buf"][::std::mem::offset_of!(ext4_block, buf) - 8usize];
     ["Offset of field: ext4_block::data"][::std::mem::offset_of!(ext4_block, data) - 16usize];
 };
+pub const bcache_state_bits_BC_UPTODATE: bcache_state_bits = 0;
+pub const bcache_state_bits_BC_DIRTY: bcache_state_bits = 1;
+pub const bcache_state_bits_BC_FLUSH: bcache_state_bits = 2;
+pub const bcache_state_bits_BC_TMP: bcache_state_bits = 3;
+#[doc = "@brief buffer state bits\n\n  - BC_UPTODATE: Buffer contains valid data.\n  - BC_DIRTY: Buffer is dirty.\n  - BC_FLUSH: Buffer will be immediately flushed,\n              when no one references it.\n  - BC_TMP: Buffer will be dropped once its refctr\n            reaches zero."]
+pub type bcache_state_bits = ::std::os::raw::c_uint;
 #[doc = "@brief   Single block descriptor"]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ext4_buf {
     #[doc = "@brief   Flags"]
-    pub flags: ::std::os::raw::c_int,
+    pub flags: [::std::os::raw::c_char; 4usize],
     #[doc = "@brief   Logical block address"]
     pub lba: u64,
     #[doc = "@brief   Data buffer."]
@@ -789,12 +795,6 @@ const _: () = {
     ["Offset of field: ext4_bcache::dirty_list"]
         [::std::mem::offset_of!(ext4_bcache, dirty_list) - 56usize];
 };
-pub const bcache_state_bits_BC_UPTODATE: bcache_state_bits = 0;
-pub const bcache_state_bits_BC_DIRTY: bcache_state_bits = 1;
-pub const bcache_state_bits_BC_FLUSH: bcache_state_bits = 2;
-pub const bcache_state_bits_BC_TMP: bcache_state_bits = 3;
-#[doc = "@brief buffer state bits\n\n  - BC♡UPTODATE: Buffer contains valid data.\n  - BC_DIRTY: Buffer is dirty.\n  - BC_FLUSH: Buffer will be immediately flushed,\n              when no one references it.\n  - BC_TMP: Buffer will be dropped once its refctr\n            reaches zero."]
-pub type bcache_state_bits = ::std::os::raw::c_uint;
 unsafe extern "C" {
     #[doc = "@brief   Dynamic initialization of block cache.\n @param   bc block cache descriptor\n @param   cnt items count in block cache\n @param   itemsize single item size (in bytes)\n @return  standard error code"]
     pub fn ext4_bcache_init_dynamic(
@@ -818,10 +818,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = "@brief   Drop unreferenced buffer from bcache.\n @param   bc block cache descriptor\n @param   buf buffer"]
     pub fn ext4_bcache_drop_buf(bc: *mut ext4_bcache, buf: *mut ext4_buf);
-}
-unsafe extern "C" {
-    #[doc = "@brief   Invalidate a buffer.\n @param   bc block cache descriptor\n @param   buf buffer"]
-    pub fn ext4_bcache_invalidate_buf(bc: *mut ext4_bcache, buf: *mut ext4_buf);
 }
 unsafe extern "C" {
     #[doc = "@brief   Invalidate a range of buffers.\n @param   bc block cache descriptor\n @param   from starting lba\n @param   cnt block counts"]
@@ -3016,10 +3012,16 @@ pub struct ext4_fs {
     pub jbd_fs: *mut jbd_fs,
     pub jbd_journal: *mut jbd_journal,
     pub curr_trans: *mut jbd_trans,
+    pub inode_alloc_lock: ::std::option::Option<unsafe extern "C" fn()>,
+    pub inode_alloc_unlock: ::std::option::Option<unsafe extern "C" fn()>,
+    pub block_alloc_lock: ::std::option::Option<unsafe extern "C" fn()>,
+    pub block_alloc_unlock: ::std::option::Option<unsafe extern "C" fn()>,
+    pub bcache_lock: ::std::option::Option<unsafe extern "C" fn()>,
+    pub bcache_unlock: ::std::option::Option<unsafe extern "C" fn()>,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of ext4_fs"][::std::mem::size_of::<ext4_fs>() - 1136usize];
+    ["Size of ext4_fs"][::std::mem::size_of::<ext4_fs>() - 1184usize];
     ["Alignment of ext4_fs"][::std::mem::align_of::<ext4_fs>() - 8usize];
     ["Offset of field: ext4_fs::read_only"][::std::mem::offset_of!(ext4_fs, read_only) - 0usize];
     ["Offset of field: ext4_fs::bdev"][::std::mem::offset_of!(ext4_fs, bdev) - 8usize];
@@ -3035,6 +3037,18 @@ const _: () = {
         [::std::mem::offset_of!(ext4_fs, jbd_journal) - 1120usize];
     ["Offset of field: ext4_fs::curr_trans"]
         [::std::mem::offset_of!(ext4_fs, curr_trans) - 1128usize];
+    ["Offset of field: ext4_fs::inode_alloc_lock"]
+        [::std::mem::offset_of!(ext4_fs, inode_alloc_lock) - 1136usize];
+    ["Offset of field: ext4_fs::inode_alloc_unlock"]
+        [::std::mem::offset_of!(ext4_fs, inode_alloc_unlock) - 1144usize];
+    ["Offset of field: ext4_fs::block_alloc_lock"]
+        [::std::mem::offset_of!(ext4_fs, block_alloc_lock) - 1152usize];
+    ["Offset of field: ext4_fs::block_alloc_unlock"]
+        [::std::mem::offset_of!(ext4_fs, block_alloc_unlock) - 1160usize];
+    ["Offset of field: ext4_fs::bcache_lock"]
+        [::std::mem::offset_of!(ext4_fs, bcache_lock) - 1168usize];
+    ["Offset of field: ext4_fs::bcache_unlock"]
+        [::std::mem::offset_of!(ext4_fs, bcache_unlock) - 1176usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -3404,6 +3418,14 @@ unsafe extern "C" {
     pub fn ext4_inode_set_access_time(inode: *mut ext4_inode, time: u32);
 }
 unsafe extern "C" {
+    #[doc = "@brief Get extra time, when i-node was last accessed.\n @param inode I-node\n @return Time of the last access (POSIX)"]
+    pub fn ext4_inode_get_extra_access_time(inode: *mut ext4_inode) -> u32;
+}
+unsafe extern "C" {
+    #[doc = "@brief Set extra time, when i-node was last accessed.\n @param inode I-node\n @param time  Time of the last access (POSIX)"]
+    pub fn ext4_inode_set_extra_access_time(inode: *mut ext4_inode, time: u32);
+}
+unsafe extern "C" {
     #[doc = "@brief Get time, when i-node was last changed.\n @param inode I-node\n @return Time of the last change (POSIX)"]
     pub fn ext4_inode_get_change_inode_time(inode: *mut ext4_inode) -> u32;
 }
@@ -3412,12 +3434,28 @@ unsafe extern "C" {
     pub fn ext4_inode_set_change_inode_time(inode: *mut ext4_inode, time: u32);
 }
 unsafe extern "C" {
+    #[doc = "@brief Get extra time, when i-node was last changed.\n @param inode I-node\n @return Time of the last change (POSIX)"]
+    pub fn ext4_inode_get_extra_change_inode_time(inode: *mut ext4_inode) -> u32;
+}
+unsafe extern "C" {
+    #[doc = "@brief Set extra time, when i-node was last changed.\n @param inode I-node\n @param time  Time of the last change (POSIX)"]
+    pub fn ext4_inode_set_extra_change_inode_time(inode: *mut ext4_inode, time: u32);
+}
+unsafe extern "C" {
     #[doc = "@brief Get time, when i-node content was last modified.\n @param inode I-node\n @return Time of the last content modification (POSIX)"]
     pub fn ext4_inode_get_modif_time(inode: *mut ext4_inode) -> u32;
 }
 unsafe extern "C" {
     #[doc = "@brief Set time, when i-node content was last modified.\n @param inode I-node\n @param time  Time of the last content modification (POSIX)"]
     pub fn ext4_inode_set_modif_time(inode: *mut ext4_inode, time: u32);
+}
+unsafe extern "C" {
+    #[doc = "@brief Get extra time, when i-node content was last modified.\n @param inode I-node\n @return Time of the last content modification (POSIX)"]
+    pub fn ext4_inode_get_extra_modif_time(inode: *mut ext4_inode) -> u32;
+}
+unsafe extern "C" {
+    #[doc = "@brief Set extra time, when i-node content was last modified.\n @param inode I-node\n @param time  Time of the last content modification (POSIX)"]
+    pub fn ext4_inode_set_extra_modif_time(inode: *mut ext4_inode, time: u32);
 }
 unsafe extern "C" {
     #[doc = "@brief Get time, when i-node was deleted.\n @param inode I-node\n @return Time of the delete action (POSIX)"]

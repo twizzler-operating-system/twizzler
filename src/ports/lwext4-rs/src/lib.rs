@@ -337,8 +337,48 @@ static MP_LOCK: MpLock = MpLock {
 unsafe extern "C" fn _mp_lock() {
     MP_LOCK.lock();
 }
+
 unsafe extern "C" fn _mp_unlock() {
     MP_LOCK.unlock();
+}
+
+static BC_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _bc_lock() {
+    BC_LOCK.lock();
+}
+
+unsafe extern "C" fn _bc_unlock() {
+    BC_LOCK.unlock();
+}
+
+static BA_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _ba_lock() {
+    BA_LOCK.lock();
+}
+
+unsafe extern "C" fn _ba_unlock() {
+    BA_LOCK.unlock();
+}
+
+static IA_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _ia_lock() {
+    IA_LOCK.lock();
+}
+
+unsafe extern "C" fn _ia_unlock() {
+    IA_LOCK.unlock();
 }
 
 static LOCKS: lwext4::ext4_lock = lwext4::ext4_lock {
@@ -357,6 +397,19 @@ impl Ext4Fs {
         unsafe { lwext4::ext4_recover(mnt_name.as_ptr()) };
         errno_to_result(unsafe { lwext4::ext4_journal_start(mnt_name.as_ptr()) })?;
         errno_to_result(unsafe { lwext4::ext4_mount_setup_locks(mnt_name.as_ptr(), &LOCKS) })?;
+
+        let fs = unsafe { lwext4::ext4_mountpoint_fs(mnt_name.as_ptr()) };
+        unsafe {
+            (*fs).bcache_lock = Some(_bc_lock);
+            (*fs).bcache_unlock = Some(_bc_unlock);
+
+            (*fs).inode_alloc_lock = Some(_ia_lock);
+            (*fs).inode_alloc_lock = Some(_ia_unlock);
+
+            (*fs).block_alloc_lock = Some(_ba_lock);
+            (*fs).block_alloc_lock = Some(_ba_unlock);
+        }
+
         Ok(Self { bd, mnt_name })
     }
 
