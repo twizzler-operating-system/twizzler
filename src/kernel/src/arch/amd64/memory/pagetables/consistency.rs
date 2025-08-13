@@ -381,6 +381,7 @@ pub struct TlbShootdownInfo {
     // invalidates all data from both commands. In the worst case, this merge is simply a full,
     // global invalidation.
     data: UnsafeCell<[Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES]>,
+    full_invl: AtomicBool,
 }
 
 impl TlbShootdownInfo {
@@ -388,12 +389,20 @@ impl TlbShootdownInfo {
         Self {
             data: UnsafeCell::new([None, None, None, None]),
             lock: AtomicBool::new(false),
+            full_invl: AtomicBool::new(false),
         }
     }
 
     pub fn insert(&self, new_data: TlbInvData) {
         interrupt::with_disabled(|| {
+            let mut iters = 0;
             while self.lock.swap(true, Ordering::Acquire) {
+                iters += 1;
+                if iters >= 100 {
+                    log::warn!("failed to insert tlb shootdown info -- setting full_invl");
+                    self.full_invl.store(true, Ordering::SeqCst);
+                    return;
+                }
                 core::hint::spin_loop()
             }
             let data = unsafe { self.data.get().as_mut().unwrap() };
@@ -424,6 +433,10 @@ impl TlbShootdownInfo {
 
     pub fn is_finished(&self) -> bool {
         interrupt::with_disabled(|| {
+            let full_invl = self.full_invl.load(Ordering::Acquire);
+            if full_invl {
+                return false;
+            }
             // In this case, we don't actually need to grab the lock
             if self.lock.swap(true, Ordering::Acquire) {
                 return false;
@@ -437,9 +450,27 @@ impl TlbShootdownInfo {
 
     pub fn complete(&self) {
         interrupt::with_disabled(|| {
+            let mut iters = 0;
             while self.lock.swap(true, Ordering::Acquire) {
+                iters += 1;
+                if iters > 1000 {
+                    log::warn!("TLB complete pause");
+                }
                 core::hint::spin_loop();
             }
+            let full_invl = self.full_invl.swap(false, Ordering::SeqCst);
+            if full_invl {
+                let mut data = TlbInvData::new(0);
+                data.set_global();
+                data.set_full();
+                data.do_invalidation();
+
+                // Any other invalidations don't matter.
+                self.reset();
+                self.lock.store(false, Ordering::Release);
+                return;
+            }
+
             let data = unsafe { self.data.get().as_mut().unwrap() };
             for entry in data {
                 if let Some(data) = entry.take() {

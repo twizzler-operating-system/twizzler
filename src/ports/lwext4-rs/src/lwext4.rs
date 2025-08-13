@@ -30,12 +30,6 @@ impl<T> ::std::fmt::Debug for __IncompleteArrayField<T> {
         fmt.write_str("__IncompleteArrayField")
     }
 }
-pub const CONFIG_USE_DEFAULT_CONFIG: u32 = 0;
-pub const CONFIG_DEBUG_PRINTF: u32 = 0;
-pub const CONFIG_DEBUG_ASSERT: u32 = 0;
-pub const CONFIG_HAVE_OWN_OFLAGS: u32 = 1;
-pub const CONFIG_HAVE_OWN_ERRNO: u32 = 0;
-pub const CONFIG_BLOCK_DEV_CACHE_SIZE: u32 = 16;
 pub const F_SET_EXT2: u32 = 2;
 pub const F_SET_EXT3: u32 = 3;
 pub const F_SET_EXT4: u32 = 4;
@@ -43,12 +37,17 @@ pub const CONFIG_EXT_FEATURE_SET_LVL: u32 = 4;
 pub const CONFIG_JOURNALING_ENABLE: u32 = 1;
 pub const CONFIG_XATTR_ENABLE: u32 = 1;
 pub const CONFIG_EXTENTS_ENABLE: u32 = 1;
+pub const CONFIG_HAVE_OWN_ERRNO: u32 = 0;
+pub const CONFIG_DEBUG_PRINTF: u32 = 1;
+pub const CONFIG_DEBUG_ASSERT: u32 = 1;
 pub const CONFIG_HAVE_OWN_ASSERT: u32 = 1;
 pub const CONFIG_BLOCK_DEV_ENABLE_STATS: u32 = 1;
+pub const CONFIG_BLOCK_DEV_CACHE_SIZE: u32 = 32;
 pub const CONFIG_EXT4_MAX_BLOCKDEV_NAME: u32 = 32;
 pub const CONFIG_EXT4_BLOCKDEVS_COUNT: u32 = 2;
 pub const CONFIG_EXT4_MAX_MP_NAME: u32 = 32;
 pub const CONFIG_EXT4_MOUNTPOINTS_COUNT: u32 = 2;
+pub const CONFIG_HAVE_OWN_OFLAGS: u32 = 1;
 pub const CONFIG_MAX_TRUNCATE_SIZE: u32 = 16777216;
 pub const CONFIG_UNALIGNED_ACCESS: u32 = 0;
 pub const CONFIG_USE_USER_MALLOC: u32 = 0;
@@ -480,6 +479,26 @@ pub const DBG_NONE: &[u8; 1] = b"\0";
 pub const DBG_INFO: &[u8; 9] = b"[info]  \0";
 pub const DBG_WARN: &[u8; 9] = b"[warn]  \0";
 pub const DBG_ERROR: &[u8; 9] = b"[error] \0";
+pub const SEEK_DATA: u32 = 3;
+pub const SEEK_HOLE: u32 = 4;
+pub const __MLIBC_BSD_OPTION: u32 = 1;
+pub const __MLIBC_POSIX_OPTION: u32 = 1;
+pub const __MLIBC_LINUX_OPTION: u32 = 0;
+pub const __MLIBC_GLIBC_OPTION: u32 = 1;
+pub const __MLIBC_SYSDEP_HAS_BITS_SYSCALL_H: u32 = 0;
+pub const __MLIBC_EOF_BIT: u32 = 1;
+pub const __MLIBC_ERROR_BIT: u32 = 2;
+pub const _IOFBF: u32 = 1;
+pub const _IOLBF: u32 = 2;
+pub const _IONBF: u32 = 3;
+pub const BUFSIZ: u32 = 512;
+pub const EOF: i32 = -1;
+pub const FOPEN_MAX: u32 = 1024;
+pub const FILENAME_MAX: u32 = 256;
+pub const L_tmpnam: u32 = 256;
+pub const TMP_MAX: u32 = 1024;
+pub const P_tmpdir: &[u8; 5] = b"/tmp\0";
+pub const RENAME_EXCHANGE: u32 = 2;
 pub type __mlibc_uint8 = ::std::os::raw::c_uchar;
 pub type __mlibc_uint16 = ::std::os::raw::c_ushort;
 pub type __mlibc_uint32 = ::std::os::raw::c_uint;
@@ -2030,6 +2049,514 @@ unsafe extern "C" {
     #[doc = "@brief   Global debug mask get.\n @return  debug mask"]
     pub fn ext4_dmask_get() -> u32;
 }
+pub type FILE = __mlibc_file_base;
+pub type off_t = ::std::os::raw::c_long;
+pub type off64_t = ::std::os::raw::c_long;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct __mlibc_file_base {
+    pub __buffer_ptr: *mut ::std::os::raw::c_char,
+    pub __buffer_size: usize,
+    pub __offset: usize,
+    pub __io_offset: usize,
+    pub __valid_limit: usize,
+    pub __dirty_begin: usize,
+    pub __dirty_end: usize,
+    pub __unget_ptr: *mut ::std::os::raw::c_char,
+    pub __io_mode: ::std::os::raw::c_int,
+    pub __status_bits: ::std::os::raw::c_int,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of __mlibc_file_base"][::std::mem::size_of::<__mlibc_file_base>() - 72usize];
+    ["Alignment of __mlibc_file_base"][::std::mem::align_of::<__mlibc_file_base>() - 8usize];
+    ["Offset of field: __mlibc_file_base::__buffer_ptr"]
+        [::std::mem::offset_of!(__mlibc_file_base, __buffer_ptr) - 0usize];
+    ["Offset of field: __mlibc_file_base::__buffer_size"]
+        [::std::mem::offset_of!(__mlibc_file_base, __buffer_size) - 8usize];
+    ["Offset of field: __mlibc_file_base::__offset"]
+        [::std::mem::offset_of!(__mlibc_file_base, __offset) - 16usize];
+    ["Offset of field: __mlibc_file_base::__io_offset"]
+        [::std::mem::offset_of!(__mlibc_file_base, __io_offset) - 24usize];
+    ["Offset of field: __mlibc_file_base::__valid_limit"]
+        [::std::mem::offset_of!(__mlibc_file_base, __valid_limit) - 32usize];
+    ["Offset of field: __mlibc_file_base::__dirty_begin"]
+        [::std::mem::offset_of!(__mlibc_file_base, __dirty_begin) - 40usize];
+    ["Offset of field: __mlibc_file_base::__dirty_end"]
+        [::std::mem::offset_of!(__mlibc_file_base, __dirty_end) - 48usize];
+    ["Offset of field: __mlibc_file_base::__unget_ptr"]
+        [::std::mem::offset_of!(__mlibc_file_base, __unget_ptr) - 56usize];
+    ["Offset of field: __mlibc_file_base::__io_mode"]
+        [::std::mem::offset_of!(__mlibc_file_base, __io_mode) - 64usize];
+    ["Offset of field: __mlibc_file_base::__status_bits"]
+        [::std::mem::offset_of!(__mlibc_file_base, __status_bits) - 68usize];
+};
+pub type fpos_t = off_t;
+unsafe extern "C" {
+    pub static mut stderr: *mut FILE;
+}
+unsafe extern "C" {
+    pub static mut stdin: *mut FILE;
+}
+unsafe extern "C" {
+    pub static mut stdout: *mut FILE;
+}
+unsafe extern "C" {
+    pub fn remove(__filename: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn rename(
+        __old_path: *const ::std::os::raw::c_char,
+        __new_path: *const ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn renameat(
+        __olddirfd: ::std::os::raw::c_int,
+        __old_path: *const ::std::os::raw::c_char,
+        __newdirfd: ::std::os::raw::c_int,
+        __new_path: *const ::std::os::raw::c_char,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn tmpfile() -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn tmpnam(__buffer: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char;
+}
+unsafe extern "C" {
+    pub fn fclose(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fflush(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fopen(
+        __filename: *const ::std::os::raw::c_char,
+        __mode: *const ::std::os::raw::c_char,
+    ) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn freopen(
+        __filename: *const ::std::os::raw::c_char,
+        __mode: *const ::std::os::raw::c_char,
+        __stream: *mut FILE,
+    ) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn setbuf(__stream: *mut FILE, __buffer: *mut ::std::os::raw::c_char);
+}
+unsafe extern "C" {
+    pub fn setvbuf(
+        __stream: *mut FILE,
+        __buffer: *mut ::std::os::raw::c_char,
+        __mode: ::std::os::raw::c_int,
+        __size: usize,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn setlinebuf(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn setbuffer(__stream: *mut FILE, __buffer: *mut ::std::os::raw::c_char, __size: usize);
+}
+unsafe extern "C" {
+    pub fn fprintf(
+        __stream: *mut FILE,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fscanf(
+        __stream: *mut FILE,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn printf(__format: *const ::std::os::raw::c_char, ...) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn scanf(__format: *const ::std::os::raw::c_char, ...) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn snprintf(
+        __buffer: *mut ::std::os::raw::c_char,
+        __max_size: ::std::os::raw::c_ulong,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn sprintf(
+        __buffer: *mut ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn sscanf(
+        __buffer: *const ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vfprintf(
+        __stream: *mut FILE,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vfscanf(
+        __stream: *mut FILE,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vprintf(
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vscanf(
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vsnprintf(
+        __buffer: *mut ::std::os::raw::c_char,
+        __max_size: ::std::os::raw::c_ulong,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vsprintf(
+        __buffer: *mut ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vsscanf(
+        __buffer: *const ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vasprintf(
+        __buffer: *mut *mut ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fgetc(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fgets(
+        __buffer: *mut ::std::os::raw::c_char,
+        __max_size: ::std::os::raw::c_int,
+        __stream: *mut FILE,
+    ) -> *mut ::std::os::raw::c_char;
+}
+unsafe extern "C" {
+    pub fn fputc(__c: ::std::os::raw::c_int, __stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fputs(
+        __string: *const ::std::os::raw::c_char,
+        __stream: *mut FILE,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn gets(__s: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char;
+}
+unsafe extern "C" {
+    pub fn getc(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn getchar() -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn putc(__c: ::std::os::raw::c_int, __stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn putchar(__c: ::std::os::raw::c_int) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn puts(__string: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn ungetc(__c: ::std::os::raw::c_int, __stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fread(
+        __buffer: *mut ::std::os::raw::c_void,
+        __size: ::std::os::raw::c_ulong,
+        __count: ::std::os::raw::c_ulong,
+        __stream: *mut FILE,
+    ) -> ::std::os::raw::c_ulong;
+}
+unsafe extern "C" {
+    pub fn fwrite(
+        __buffer: *const ::std::os::raw::c_void,
+        __size: ::std::os::raw::c_ulong,
+        __count: ::std::os::raw::c_ulong,
+        __stream: *mut FILE,
+    ) -> ::std::os::raw::c_ulong;
+}
+unsafe extern "C" {
+    pub fn fgetpos(__stream: *mut FILE, __position: *mut fpos_t) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fseek(
+        __stream: *mut FILE,
+        __offset: ::std::os::raw::c_long,
+        __whence: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fsetpos(__stream: *mut FILE, __position: *const fpos_t) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn ftell(__stream: *mut FILE) -> ::std::os::raw::c_long;
+}
+unsafe extern "C" {
+    pub fn rewind(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn clearerr(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn feof(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn ferror(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn perror(__string: *const ::std::os::raw::c_char);
+}
+unsafe extern "C" {
+    pub fn getc_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn getchar_unlocked() -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn putc_unlocked(__c: ::std::os::raw::c_int, __stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn putchar_unlocked(__c: ::std::os::raw::c_int) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn getline(
+        __linep: *mut *mut ::std::os::raw::c_char,
+        __sizep: *mut usize,
+        __stream: *mut FILE,
+    ) -> isize;
+}
+unsafe extern "C" {
+    pub fn getdelim(
+        __linep: *mut *mut ::std::os::raw::c_char,
+        __sizep: *mut usize,
+        __delim: ::std::os::raw::c_int,
+        __stream: *mut FILE,
+    ) -> isize;
+}
+unsafe extern "C" {
+    pub fn asprintf(
+        __buffer: *mut *mut ::std::os::raw::c_char,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn flockfile(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn funlockfile(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn ftrylockfile(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn clearerr_unlocked(__stream: *mut FILE);
+}
+unsafe extern "C" {
+    pub fn feof_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn ferror_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fileno_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fflush_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fgetc_unlocked(__stream: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fputc_unlocked(__c: ::std::os::raw::c_int, __stream: *mut FILE)
+        -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fread_unlocked(
+        __buffer: *mut ::std::os::raw::c_void,
+        __size: usize,
+        __count: usize,
+        __stream: *mut FILE,
+    ) -> usize;
+}
+unsafe extern "C" {
+    pub fn fwrite_unlocked(
+        __buffer: *const ::std::os::raw::c_void,
+        __size: usize,
+        __count: usize,
+        __stream: *mut FILE,
+    ) -> usize;
+}
+unsafe extern "C" {
+    pub fn fgets_unlocked(
+        __buffer: *mut ::std::os::raw::c_char,
+        __size: ::std::os::raw::c_int,
+        __stream: *mut FILE,
+    ) -> *mut ::std::os::raw::c_char;
+}
+unsafe extern "C" {
+    pub fn fputs_unlocked(
+        __buffer: *const ::std::os::raw::c_char,
+        __stream: *mut FILE,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fileno(__file: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fdopen(__fd: ::std::os::raw::c_int, __mode: *const ::std::os::raw::c_char) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn fmemopen(
+        __buf: *mut ::std::os::raw::c_void,
+        __size: usize,
+        __mode: *const ::std::os::raw::c_char,
+    ) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn pclose(__file: *mut FILE) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn popen(
+        __command: *const ::std::os::raw::c_char,
+        __type: *const ::std::os::raw::c_char,
+    ) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn open_memstream(
+        __buf: *mut *mut ::std::os::raw::c_char,
+        __sizeloc: *mut usize,
+    ) -> *mut FILE;
+}
+unsafe extern "C" {
+    pub fn fseeko(
+        __stream: *mut FILE,
+        __offset: off_t,
+        __whence: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fseeko64(
+        __stream: *mut FILE,
+        __offset: off64_t,
+        __whence: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn ftello(__stream: *mut FILE) -> off_t;
+}
+unsafe extern "C" {
+    pub fn ftello64(__stream: *mut FILE) -> off64_t;
+}
+unsafe extern "C" {
+    pub fn dprintf(
+        __fd: ::std::os::raw::c_int,
+        __format: *const ::std::os::raw::c_char,
+        ...
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn vdprintf(
+        __fd: ::std::os::raw::c_int,
+        __format: *const ::std::os::raw::c_char,
+        __args: *mut __va_list_tag,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
+    pub fn fgetln(__stream: *mut FILE, __size: *mut usize) -> *mut ::std::os::raw::c_char;
+}
+unsafe extern "C" {
+    pub fn tempnam(
+        __dir: *const ::std::os::raw::c_char,
+        __pfx: *const ::std::os::raw::c_char,
+    ) -> *mut ::std::os::raw::c_char;
+}
+pub type cookie_read_function_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        __cookie: *mut ::std::os::raw::c_void,
+        __buffer: *mut ::std::os::raw::c_char,
+        __size: usize,
+    ) -> isize,
+>;
+pub type cookie_write_function_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        __cookie: *mut ::std::os::raw::c_void,
+        __buffer: *const ::std::os::raw::c_char,
+        __size: usize,
+    ) -> isize,
+>;
+pub type cookie_seek_function_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        __cookie: *mut ::std::os::raw::c_void,
+        arg1: *mut off_t,
+        arg2: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int,
+>;
+pub type cookie_close_function_t = ::std::option::Option<
+    unsafe extern "C" fn(__cookie: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int,
+>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _IO_cookie_io_functions_t {
+    pub read: cookie_read_function_t,
+    pub write: cookie_write_function_t,
+    pub seek: cookie_seek_function_t,
+    pub close: cookie_close_function_t,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _IO_cookie_io_functions_t"]
+        [::std::mem::size_of::<_IO_cookie_io_functions_t>() - 32usize];
+    ["Alignment of _IO_cookie_io_functions_t"]
+        [::std::mem::align_of::<_IO_cookie_io_functions_t>() - 8usize];
+    ["Offset of field: _IO_cookie_io_functions_t::read"]
+        [::std::mem::offset_of!(_IO_cookie_io_functions_t, read) - 0usize];
+    ["Offset of field: _IO_cookie_io_functions_t::write"]
+        [::std::mem::offset_of!(_IO_cookie_io_functions_t, write) - 8usize];
+    ["Offset of field: _IO_cookie_io_functions_t::seek"]
+        [::std::mem::offset_of!(_IO_cookie_io_functions_t, seek) - 16usize];
+    ["Offset of field: _IO_cookie_io_functions_t::close"]
+        [::std::mem::offset_of!(_IO_cookie_io_functions_t, close) - 24usize];
+};
+pub type cookie_io_functions_t = _IO_cookie_io_functions_t;
 #[doc = "@brief   OS dependent lock interface."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -3046,6 +3573,16 @@ unsafe extern "C" {
         to: ext4_lblk_t,
     ) -> ::std::os::raw::c_int;
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct __va_list_tag {
+    pub gp_offset: ::std::os::raw::c_uint,
+    pub fp_offset: ::std::os::raw::c_uint,
+    pub overflow_arg_area: *mut ::std::os::raw::c_void,
+    pub reg_save_area: *mut ::std::os::raw::c_void,
+    _unused: [u8; 0],
+}
+pub type __builtin_va_list = [__va_list_tag; 1usize];
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct jbd_fs {
