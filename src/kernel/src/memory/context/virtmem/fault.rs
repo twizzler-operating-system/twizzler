@@ -1,7 +1,7 @@
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     syscall::MapFlags,
-    trace::{TraceEntryFlags, TraceEntryHead, TraceKind, CONTEXT_FAULT},
+    trace::{TraceEntryFlags, TraceKind, CONTEXT_FAULT},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         SecurityViolationInfo, UpcallInfo,

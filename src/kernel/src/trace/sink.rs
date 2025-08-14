@@ -18,13 +18,13 @@ pub struct TraceSink {
     prime_object: ObjectRef,
     current_object: ObjectRef,
     offset: u64,
-    spec: TraceSpec,
+    specs: Vec<TraceSpec>,
     buffer: Vec<(TraceEntryHead, BufferedTraceData)>,
 }
 
 const TRACE_DATA_START: u64 = NULLPAGE_SIZE as u64 * 2;
 impl TraceSink {
-    pub fn new(id: ObjID, spec: TraceSpec) -> Result<Self, TwzError> {
+    pub fn new(id: ObjID, specs: Vec<TraceSpec>) -> Result<Self, TwzError> {
         let obj = lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
         obj.write_base(&TraceBase {
             start: TRACE_DATA_START,
@@ -34,17 +34,17 @@ impl TraceSink {
             prime_object: obj.clone(),
             current_object: obj,
             offset: TRACE_DATA_START,
-            spec,
+            specs,
             buffer: Vec::new(),
         })
     }
 
     pub fn modify(&mut self, spec: TraceSpec) {
-        self.spec = spec;
+        self.specs.push(spec);
     }
 
     pub fn accepts(&self, event: &TraceEntryHead) -> bool {
-        self.spec.accepts(event)
+        self.specs.iter().any(|s| s.accepts(event))
     }
 
     pub fn enqueue(&mut self, entry: (TraceEntryHead, BufferedTraceData)) {
@@ -89,27 +89,44 @@ impl TraceSink {
                 BufferedTraceData::default(),
             ));
 
+            unsafe {
+                self.current_object
+                    .try_write_val_and_signal(NULLPAGE_SIZE, self.offset, usize::MAX)
+            }
+
             self.current_object = obj;
             self.offset = NULLPAGE_SIZE as u64 * 2;
         }
         true
     }
 
-    pub fn write_all(&mut self) {
+    pub fn write_all(&mut self) -> bool {
+        let old_offset = self.offset;
         for i in 0..self.buffer.len() {
             if !self.check_space() {
                 // TODO: this could lead to duplicates
-                return;
+                return false;
             }
             self.write(self.buffer[i]);
         }
-        unsafe {
-            self.current_object
-                .try_write_val_and_signal(NULLPAGE_SIZE, self.offset, usize::MAX)
-        };
+        if !self.buffer.is_empty() {
+            log::debug!(
+                "trace sink write_all: {} entries ({})",
+                self.buffer.len(),
+                self.offset - old_offset
+            );
+            unsafe {
+                self.current_object
+                    .try_write_val_and_signal(NULLPAGE_SIZE, self.offset, usize::MAX)
+            };
+            self.buffer.clear();
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn spec(&self) -> &TraceSpec {
-        &self.spec
+    pub fn specs(&self) -> &[TraceSpec] {
+        &self.specs
     }
 }

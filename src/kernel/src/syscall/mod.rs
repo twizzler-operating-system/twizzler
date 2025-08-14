@@ -433,6 +433,21 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
+        Syscall::Ktrace => {
+            let hi = context.arg0();
+            let lo = context.arg1();
+            let id = ObjID::from_parts([hi, lo]);
+            let spec = context.arg2();
+            let spec = unsafe { create_user_nullable_ptr(spec) };
+            let result: Result<_> = if let Some(spec) = spec {
+                crate::trace::sys::sys_ktrace(id, spec.map(|s| &*s))
+            } else {
+                Err(ArgumentError::InvalidArgument.into())
+            };
+
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         Syscall::SctxAttach => {
             let hi = context.arg0();
             let lo = context.arg1();

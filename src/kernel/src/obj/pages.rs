@@ -459,12 +459,13 @@ impl Object {
             let mut count = 0;
             while count < len {
                 let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
-                let thislen = core::cmp::min(0x1000, len - count);
+                let page_offset = offset % NULLPAGE_SIZE;
+                let thislen = core::cmp::min(NULLPAGE_SIZE - page_offset, len - count);
 
                 if let PageStatus::Ready(page, _) =
                     obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
                 {
-                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    let dest = &mut page.as_mut_slice()[page_offset..(page_offset + thislen)];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
                 } else {
                     let page = Page::new(alloc_frame(
@@ -473,7 +474,7 @@ impl Object {
                             | FrameAllocFlags::ZEROED,
                     ));
                     let page = PageRef::new(Arc::new(page), 0, 1);
-                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    let dest = &mut page.as_mut_slice()[page_offset..(page_offset + thislen)];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
                     obj_page_tree.add_page(page_number, page, None);
                 }

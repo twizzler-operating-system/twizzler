@@ -17,7 +17,13 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
 use super::{buffered_trace_data::BufferedTraceData, sink::TraceSink};
-use crate::mutex::Mutex;
+use crate::{
+    condvar::CondVar,
+    mutex::Mutex,
+    once::Once,
+    spinlock::Spinlock,
+    thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, ThreadRef},
+};
 
 #[derive(Debug)]
 pub struct TraceEvent<T: Copy + core::fmt::Debug = ()> {
@@ -73,6 +79,8 @@ pub struct TraceMgr {
     quick_enabled: [AtomicU64; MAX_QUICK_ENABLED],
     async_buffer: UnsafeCell<[Option<(TraceEntryHead, BufferedTraceData)>; MAX_PENDING_ASYNC]>,
     async_idx: AtomicUsize,
+    has_work: Spinlock<bool>,
+    cv: CondVar,
 }
 
 unsafe impl Sync for TraceMgr {}
@@ -85,9 +93,28 @@ pub static TRACE_MGR: TraceMgr = TraceMgr {
     quick_enabled: [_Z; MAX_QUICK_ENABLED],
     async_buffer: UnsafeCell::new([__Z; MAX_PENDING_ASYNC]),
     async_idx: AtomicUsize::new(0),
+    has_work: Spinlock::new(false),
+    cv: CondVar::new(),
 };
 
+static WRITE_THREAD: Once<ThreadRef> = Once::new();
+
 impl TraceMgr {
+    fn signal_work(&self) {
+        let mut sig = self.has_work.lock();
+        *sig = true;
+        self.cv.signal();
+    }
+
+    fn update_quick_enabled(&self, kind: TraceKind, events: u64) {
+        let idx = kind as usize;
+        if unlikely(idx >= MAX_QUICK_ENABLED) {
+            return;
+        }
+
+        self.quick_enabled[idx].store(events, Relaxed);
+    }
+
     #[inline]
     pub fn any_enabled(&self, kind: TraceKind, events: u64) -> bool {
         let idx = kind as usize;
@@ -112,6 +139,8 @@ impl TraceMgr {
                 sink.enqueue(event.split());
             }
         }
+        drop(map);
+        self.signal_work();
     }
 
     pub fn async_enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {
@@ -190,12 +219,14 @@ impl TraceMgr {
     }
 
     pub fn add_sink(&self, id: ObjID, spec: TraceSpec) -> Result<(), TwzError> {
+        start_write_thread();
         let mut map = self.map.lock();
         if let Some(sink) = map.get_mut(&id) {
             sink.modify(spec);
+            drop(map);
         } else {
             drop(map);
-            let sink = TraceSink::new(id, spec)?;
+            let sink = TraceSink::new(id, [spec].to_vec())?;
             let mut map = self.map.lock();
 
             if let Some(sink) = map.get_mut(&id) {
@@ -203,7 +234,10 @@ impl TraceMgr {
             } else {
                 map.insert(id, sink);
             }
+            drop(map);
         }
+        self.accum_all_events();
+        self.signal_work();
         Ok(())
     }
 
@@ -212,9 +246,59 @@ impl TraceMgr {
         if let Some(sink) = map.get_mut(&id) {
             sink.write_all();
             map.remove(&id);
+            drop(map);
+            self.accum_all_events();
             Ok(())
         } else {
             Err(ObjectError::NoSuchObject.into())
         }
+    }
+
+    pub fn accum_all_events(&self) {
+        let mut map = self.map.lock();
+        let mut quicks = BTreeMap::<TraceKind, u64>::new();
+        quicks.insert(TraceKind::Context, 0);
+        quicks.insert(TraceKind::Kernel, 0);
+        quicks.insert(TraceKind::Object, 0);
+        quicks.insert(TraceKind::Pager, 0);
+        quicks.insert(TraceKind::Security, 0);
+        quicks.insert(TraceKind::Thread, 0);
+        for sink in map.values_mut() {
+            for spec in sink.specs() {
+                let entry = quicks.entry(spec.kind).or_default();
+                let events = spec.enable_events & !spec.disable_events;
+                *entry |= events;
+            }
+        }
+        for (k, e) in quicks {
+            log::trace!("accum quick update: {:?}: {:x}", k, e);
+            self.update_quick_enabled(k, e);
+        }
+    }
+}
+
+extern "C" fn kthread_trace_writer() {
+    loop {
+        let mut did_work = false;
+        let mut map = TRACE_MGR.map.lock();
+        for sink in map.values_mut() {
+            if sink.write_all() {
+                did_work = true;
+            }
+        }
+        drop(map);
+        let mut sig = TRACE_MGR.has_work.lock();
+        log::trace!("ktrace thread: {} {}", did_work, *sig);
+        if !*sig && !did_work {
+            TRACE_MGR.cv.wait(sig);
+        } else {
+            *sig = false;
+        }
+    }
+}
+
+fn start_write_thread() {
+    if current_thread_ref().is_some() {
+        WRITE_THREAD.call_once(|| start_new_kernel(Priority::BACKGROUND, kthread_trace_writer, 0));
     }
 }

@@ -57,8 +57,8 @@ impl<T: Copy> TraceData<T> {
 
 #[repr(C)]
 pub struct TraceBase {
-    pub start: u64,
     pub end: AtomicU64,
+    pub start: u64,
 }
 
 impl TraceBase {
@@ -72,7 +72,7 @@ impl TraceBase {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, PartialOrd, Ord)]
 #[repr(u16)]
 pub enum TraceKind {
     Kernel,

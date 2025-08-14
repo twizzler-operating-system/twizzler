@@ -1,17 +1,11 @@
-use twizzler_abi::{
-    syscall::TimeSpan,
-    trace::{TraceEntryFlags, TraceEntryHead, TraceKind},
-};
+use twizzler_abi::trace::{TraceEntryFlags, TraceEntryHead, TraceKind};
 
-use crate::{
-    instant::Instant,
-    processor::current_processor,
-    thread::{current_memory_context, current_thread_ref},
-};
+use crate::{instant::Instant, processor::current_processor, thread::current_thread_ref};
 
 pub mod buffered_trace_data;
 pub mod mgr;
 pub mod sink;
+pub mod sys;
 
 pub fn new_trace_entry(kind: TraceKind, event: u64, flags: TraceEntryFlags) -> TraceEntryHead {
     let now = Instant::now();
