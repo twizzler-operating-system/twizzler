@@ -15,7 +15,7 @@ use super::{
     Object, ObjectRef, PageNumber,
 };
 use crate::{
-    arch::memory::{frame::FRAME_SIZE, phys_to_virt},
+    arch::memory::phys_to_virt,
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::{MappingFlags, MappingSettings},
@@ -443,11 +443,18 @@ impl Object {
     }
 
     pub fn write_base<T>(&self, info: &T) {
-        let mut offset = FRAME_SIZE;
+        self.write_at(info, NULLPAGE_SIZE);
+    }
+
+    pub fn write_at<T>(&self, info: &T, offset: usize) {
+        let bytes = info as *const T as *const u8;
+        let len = core::mem::size_of::<T>();
+        self.write_bytes(bytes, len, offset);
+    }
+
+    pub fn write_bytes(&self, bytes: *const u8, len: usize, mut offset: usize) {
         unsafe {
             let mut obj_page_tree = self.lock_page_tree();
-            let bytes = info as *const T as *const u8;
-            let len = core::mem::size_of::<T>();
             let bytes = core::slice::from_raw_parts(bytes, len);
             let mut count = 0;
             while count < len {

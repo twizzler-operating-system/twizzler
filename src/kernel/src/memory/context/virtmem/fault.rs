@@ -1,6 +1,7 @@
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     syscall::MapFlags,
+    trace::{TraceEntryFlags, TraceEntryHead, TraceKind, CONTEXT_FAULT},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         SecurityViolationInfo, UpcallInfo,
@@ -18,6 +19,10 @@ use crate::{
     obj::PageNumber,
     security::{AccessInfo, PermsInfo, KERNEL_SCTX},
     thread::{current_memory_context, current_thread_ref},
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 #[allow(unused_variables)]
@@ -25,6 +30,10 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
     FAULT_STATS
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
+        let entry = new_trace_entry(TraceKind::Context, CONTEXT_FAULT, TraceEntryFlags::empty());
+        TRACE_MGR.enqueue(TraceEvent::new(entry));
+    }
     // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
