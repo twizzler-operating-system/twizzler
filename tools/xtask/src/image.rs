@@ -8,7 +8,10 @@ use std::{
 use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
 
-use crate::{build::TwizzlerCompilation, triple::Arch, BuildConfig, ImageOptions};
+use crate::{
+    build::TwizzlerCompilation, toolchain::get_toolchain_path, triple::Arch, BuildConfig,
+    ImageOptions,
+};
 
 pub struct ImageInfo {
     pub disk_image: PathBuf,
@@ -311,10 +314,19 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     if let Some(autostart) = cli.autostart {
         cmdline.push_str(autostart.as_str());
     }
-    let efi_binary = match cli.config.arch {
-        Arch::X86_64 => "toolchain/install/BOOTX64.EFI",
-        Arch::Aarch64 => "toolchain/install/BOOTAA64.EFI",
+
+    let efi_binary = {
+        let mut tc_path = get_toolchain_path()?;
+
+        let name = match cli.config.arch {
+            Arch::X86_64 => "BOOTX64.EFI",
+            Arch::Aarch64 => "BOOTAA64.EFI",
+        };
+
+        tc_path.push(name);
+        tc_path
     };
+
     let image_path = get_genfile_path(&comp, "disk.img");
     println!(
         "kernel: {:?}, cmdline: {}",
