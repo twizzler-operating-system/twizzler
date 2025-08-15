@@ -21,12 +21,19 @@ jobs:
       contents: write
     secrets: inherit
 
-  build-and-test:
+  build-and-test-pr:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/build-and-test.yml
+    secrets: inherit
+
+  build-and-test-main:
+    if: github.event_name == 'push'
+    needs: release
     uses: ./.github/workflows/build-and-test.yml
     secrets: inherit
 
   docs:
     if: github.event_name == 'push'
-    needs: build-and-test
+    needs: build-and-test-main
     uses: ./.github/workflows/docs.yml
     secrets: inherit
