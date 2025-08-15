@@ -306,14 +306,16 @@ impl Object {
         self: &'a Arc<Object>,
         mut page_tree: LockGuard<'a, PageRangeTree>,
         page_number: PageNumber,
+        used_pager: &mut bool,
     ) -> LockGuard<'a, PageRangeTree> {
         if matches!(
             page_tree.try_get_page(page_number, GetPageFlags::empty()),
             PageStatus::NoPage
         ) {
+            *used_pager = false;
             if self.use_pager() {
                 drop(page_tree);
-                crate::pager::get_object_page(self, page_number);
+                *used_pager = crate::pager::get_object_page(self, page_number);
                 page_tree = self.lock_page_tree();
             } else {
                 let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
@@ -379,7 +381,8 @@ impl Object {
             if !can_wait {
                 return None;
             }
-            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number);
+            let mut _used_pager = false;
+            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number, &mut _used_pager);
             drop(obj_page_tree);
             self.read_meta(can_wait)
         }

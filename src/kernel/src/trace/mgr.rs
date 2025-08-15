@@ -12,7 +12,7 @@ use core::{
 use twizzler_abi::{
     object::ObjID,
     syscall::TraceSpec,
-    trace::{TraceData, TraceEntryHead, TraceKind},
+    trace::{TraceEntryHead, TraceKind},
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -28,7 +28,7 @@ use crate::{
 #[derive(Debug)]
 pub struct TraceEvent<T: Copy + core::fmt::Debug = ()> {
     header: TraceEntryHead,
-    data: Option<TraceData<T>>,
+    data: Option<T>,
 }
 
 impl TraceEvent<()> {
@@ -63,10 +63,7 @@ impl<T: Copy + core::fmt::Debug> TraceEvent<T> {
     pub fn new_with_data(head: TraceEntryHead, data: T) -> Self {
         Self {
             header: head,
-            data: Some(TraceData {
-                len: size_of::<TraceData<T>>() as u32,
-                data,
-            }),
+            data: Some(data),
         }
     }
 }

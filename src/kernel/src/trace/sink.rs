@@ -1,10 +1,10 @@
 use alloc::vec::Vec;
-use core::{sync::atomic::AtomicU64, usize};
+use core::{ptr::addr_of, sync::atomic::AtomicU64, usize};
 
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, TraceSpec},
-    trace::{TraceBase, TraceEntryFlags, TraceEntryHead},
+    trace::{TraceBase, TraceData, TraceEntryFlags, TraceEntryHead},
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -51,14 +51,29 @@ impl TraceSink {
         self.buffer.push(entry);
     }
 
-    fn write(&mut self, entry: (TraceEntryHead, BufferedTraceData)) {
+    fn write(&mut self, mut entry: (TraceEntryHead, BufferedTraceData)) {
         self.current_object.write_at(&entry.0, self.offset as usize);
         self.offset += size_of::<TraceEntryHead>() as u64;
         if entry.0.flags.contains(TraceEntryFlags::HAS_DATA) {
+            let header_len = size_of::<TraceData<()>>();
+            let len = entry.1.len() + header_len;
+            let trace_data_header = TraceData::<()> {
+                len: len.next_multiple_of(align_of::<TraceEntryHead>()) as u32,
+                flags: 0,
+                data: (),
+                resv: 0,
+            };
+            let header_ptr = addr_of!(trace_data_header);
             self.current_object
-                .write_bytes(entry.1.ptr(), entry.1.len(), self.offset as usize);
-            self.offset += entry.1.len() as u64;
+                .write_bytes(header_ptr.cast(), header_len, self.offset as usize);
+            self.current_object.write_bytes(
+                entry.1.ptr(),
+                entry.1.len(),
+                self.offset as usize + header_len,
+            );
+            self.offset += trace_data_header.len as u64;
         }
+        entry.1.free();
     }
 
     fn check_space(&mut self) -> bool {
@@ -77,6 +92,7 @@ impl TraceSink {
                 log::warn!("failed to allocate new tracing data object");
                 return false;
             };
+            log::debug!("allocating new object for tracing data: {}", id);
 
             let obj = lookup_object(id, LookupFlags::empty()).unwrap();
             obj.write_base(&TraceBase {

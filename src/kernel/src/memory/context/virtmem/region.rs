@@ -5,7 +5,8 @@ use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE},
-    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake},
+    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
+    trace::{ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind, CONTEXT_FAULT},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
@@ -13,9 +14,10 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
-use super::ObjectPageProvider;
+use super::{ObjectPageProvider, PageFaultFlags};
 use crate::{
     arch::VirtAddr,
+    instant::Instant,
     memory::{
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
@@ -33,6 +35,10 @@ use crate::{
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 #[derive(Clone)]
@@ -88,6 +94,49 @@ fn check_settings(
 }
 
 impl MapRegion {
+    fn trace_fault(
+        &self,
+        addr: VirtAddr,
+        cause: MemoryAccessKind,
+        pfflags: PageFaultFlags,
+        used_pager: bool,
+        large: bool,
+        start_time: Instant,
+    ) {
+        if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
+            let mut flags = FaultFlags::empty();
+            match cause {
+                MemoryAccessKind::Read => flags.insert(FaultFlags::READ),
+                MemoryAccessKind::Write => flags.insert(FaultFlags::WRITE),
+                MemoryAccessKind::InstructionFetch => flags.insert(FaultFlags::EXEC),
+            }
+            if pfflags.contains(PageFaultFlags::USER) {
+                flags.insert(FaultFlags::USER);
+            }
+            if large {
+                flags.insert(FaultFlags::LARGE);
+            }
+            if used_pager {
+                flags.insert(FaultFlags::PAGER);
+            }
+
+            let processing_time = Instant::now()
+                .checked_sub_instant(&start_time)
+                .map(|d| TimeSpan::from_nanos(d.as_nanos() as u64))
+                .unwrap_or(TimeSpan::ZERO);
+            let data = ContextFaultEvent {
+                addr: addr.raw(),
+                obj: self.object().id(),
+                flags,
+                processing_time,
+            };
+            let entry =
+                new_trace_entry(TraceKind::Context, CONTEXT_FAULT, TraceEntryFlags::HAS_DATA);
+
+            TRACE_MGR.enqueue(TraceEvent::new_with_data(entry, data));
+        }
+    }
+
     pub fn mapping_cursor(&self, start: usize, len: usize) -> MappingCursor {
         MappingCursor::new(self.range.start.offset(start).unwrap(), len)
     }
@@ -117,8 +166,10 @@ impl MapRegion {
         addr: VirtAddr,
         ip: VirtAddr,
         cause: MemoryAccessKind,
+        pfflags: PageFaultFlags,
         perms: PermsInfo,
         default_prot: Protections,
+        start_time: Instant,
         mapper: impl FnOnce(PageNumber, ObjectPageProvider) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
         let mut page_number = PageNumber::from_address(addr);
@@ -147,6 +198,7 @@ impl MapRegion {
                     settings.flags(),
                 );
                 check_settings(addr, &settings, cause)?;
+                self.trace_fault(addr, cause, pfflags, false, false, start_time);
                 return mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),
@@ -155,7 +207,10 @@ impl MapRegion {
         }
 
         let mut obj_page_tree = self.object.lock_page_tree();
-        obj_page_tree = self.object.ensure_in_core(obj_page_tree, page_number);
+        let mut used_pager = false;
+        obj_page_tree = self
+            .object
+            .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
@@ -178,7 +233,15 @@ impl MapRegion {
         if let PageStatus::Locked(sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
-            return self.map(addr, ip, cause, perms, default_prot, mapper);
+            return self.map(
+                addr,
+                cause,
+                pfflags,
+                perms,
+                default_prot,
+                start_time,
+                mapper,
+            );
         }
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
@@ -262,6 +325,7 @@ impl MapRegion {
                     phys_page_aligned - phys_large_aligned,
                     aligned
                 );
+                self.trace_fault(addr, cause, pfflags, used_pager, true, start_time);
                 mapper(
                     large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
@@ -277,6 +341,7 @@ impl MapRegion {
                         page.nr_pages()
                     );
                 }
+                self.trace_fault(addr, cause, pfflags, used_pager, false, start_time);
                 mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),

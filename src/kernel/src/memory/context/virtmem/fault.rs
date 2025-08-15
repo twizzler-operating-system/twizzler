@@ -1,7 +1,6 @@
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     syscall::MapFlags,
-    trace::{TraceEntryFlags, TraceKind, CONTEXT_FAULT},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         SecurityViolationInfo, UpcallInfo,
@@ -11,6 +10,7 @@ use twizzler_abi::{
 use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
 use crate::{
     arch::VirtAddr,
+    instant::Instant,
     memory::{
         context::{kernel_context, ContextRef},
         pagetables::PhysAddrProvider,
@@ -19,10 +19,6 @@ use crate::{
     obj::PageNumber,
     security::{AccessInfo, PermsInfo, KERNEL_SCTX},
     thread::{current_memory_context, current_thread_ref},
-    trace::{
-        mgr::{TraceEvent, TRACE_MGR},
-        new_trace_entry,
-    },
 };
 
 #[allow(unused_variables)]
@@ -30,10 +26,7 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
     FAULT_STATS
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
-        let entry = new_trace_entry(TraceKind::Context, CONTEXT_FAULT, TraceEntryFlags::empty());
-        TRACE_MGR.enqueue(TraceEvent::new(entry));
-    }
+
     // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
@@ -163,13 +156,15 @@ fn check_security(
 fn page_fault_to_region(
     addr: VirtAddr,
     cause: MemoryAccessKind,
-    _flags: PageFaultFlags,
+    flags: PageFaultFlags,
     ip: VirtAddr,
     ctx: ContextRef,
     mut sctx_id: ObjID,
     info: MapRegion,
 ) -> Result<(), UpcallInfo> {
     let id = info.object.id();
+
+    let start_time = Instant::now();
     let mut page_number = PageNumber::from_address(addr);
     if info.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
         log::trace!(
@@ -241,7 +236,7 @@ fn page_fault_to_region(
         Ok(())
     };
 
-    info.map(addr, ip, cause, perms, default_prot, mapper)
+    info.map(addr, cause, flags, perms, default_prot, start_time, mapper)
 }
 
 fn get_map_region(

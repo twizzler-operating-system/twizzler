@@ -1,11 +1,9 @@
 use alloc::boxed::Box;
 use core::alloc::{GlobalAlloc, Layout};
 
-use twizzler_abi::trace::TraceData;
-
 use crate::memory::allocator::SLAB_ALLOCATOR;
 
-const MAX_INLINE: usize = 32;
+const MAX_INLINE: usize = 16;
 #[derive(Clone, Copy, Debug)]
 pub enum BufferedTraceData {
     Box(*mut u8, Layout),
@@ -18,18 +16,30 @@ impl Default for BufferedTraceData {
     }
 }
 
+fn try_data_into_bytes<T: Copy, const MAX: usize>(data: &T) -> Option<[u8; MAX]> {
+    let data = data as *const T as *const u8;
+    let mut buf = [0; MAX];
+    let len = size_of::<T>();
+    if len > MAX {
+        return None;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data, len) };
+    (&mut buf[0..len]).copy_from_slice(data);
+    Some(buf)
+}
+
 impl BufferedTraceData {
-    pub fn new<T: Copy>(td: TraceData<T>) -> Self {
-        if let Some(bytes) = td.try_into_bytes() {
+    pub fn new<T: Copy>(data: T) -> Self {
+        if let Some(bytes) = try_data_into_bytes(&data) {
             Self::Inline(bytes)
         } else {
-            let b = Box::new(td);
+            let b = Box::new(data);
             Self::Box(Box::into_raw(b).cast(), Layout::new::<T>())
         }
     }
 
-    pub fn new_inline<T: Copy>(td: TraceData<T>) -> Option<Self> {
-        td.try_into_bytes().map(|b| Self::Inline(b))
+    pub fn new_inline<T: Copy>(data: T) -> Option<Self> {
+        try_data_into_bytes(&data).map(|b| Self::Inline(b))
     }
 
     pub fn free(&mut self) {

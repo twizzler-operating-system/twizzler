@@ -35,7 +35,7 @@ enum State {
 pub struct TracingState {
     objects: Vec<Object<BaseWrap>>,
     end_point: u64,
-    total: u64,
+    pub total: u64,
     state: State,
 }
 
@@ -81,28 +81,50 @@ impl TracingState {
         let mut current = self.objects.last().unwrap();
         let posted_end = current.base().0.end.load(Ordering::SeqCst);
         let start_point = self.end_point.max(current.base().0.start);
-        tracing::debug!("collect {}: {} {}", self.end_point, posted_end, start_point);
+        tracing::trace!(
+            "collect {}: {} {}: {}",
+            self.end_point,
+            posted_end,
+            start_point,
+            self.objects.len()
+        );
         if self.end_point != posted_end {
             let amount = posted_end.saturating_sub(start_point);
 
             if amount > 0 {
                 tracing::debug!("got {} bytes of tracing data", amount);
                 self.total += amount;
-                let header = current
-                    .lea(start_point as usize, size_of::<TraceEntryHead>())
-                    .unwrap()
-                    .cast::<TraceEntryHead>();
-                let header = unsafe { &*header };
-                if header.flags.contains(TraceEntryFlags::NEXT_OBJECT) {
-                    tracing::info!("got next tracing object: {}", header.extra_or_next);
-                    let next = unsafe {
-                        Object::<BaseWrap>::map_unchecked(header.extra_or_next, MapFlags::READ)
-                            .into_diagnostic()
-                    }?;
-                    self.objects.push(next);
-                    current = self.objects.last().unwrap();
-                    self.end_point = 0;
-                } else {
+
+                // scan for next object directives
+                let mut offset = 0usize;
+                while offset < amount as usize {
+                    let header = current
+                        .lea(start_point as usize + offset, size_of::<TraceEntryHead>())
+                        .unwrap()
+                        .cast::<TraceEntryHead>();
+                    let header = unsafe { &*header };
+                    if header.flags.contains(TraceEntryFlags::NEXT_OBJECT) {
+                        tracing::debug!("got next tracing object: {}", header.extra_or_next);
+                        let next = unsafe {
+                            Object::<BaseWrap>::map_unchecked(header.extra_or_next, MapFlags::READ)
+                                .into_diagnostic()
+                        }?;
+                        self.objects.push(next);
+                        current = self.objects.last().unwrap();
+                        self.end_point = current.base().0.start;
+                        return self.collect();
+                    } else {
+                        offset += size_of::<TraceEntryHead>();
+                        if header.flags.contains(TraceEntryFlags::HAS_DATA) {
+                            let data_header = current
+                                .lea(start_point as usize + offset, size_of::<TraceData<()>>())
+                                .unwrap()
+                                .cast::<TraceData<()>>();
+                            offset += (unsafe { *data_header }).len as usize;
+                        }
+                    }
+                }
+                if offset < amount as usize {
                     self.end_point += amount;
                 }
             }
@@ -189,14 +211,14 @@ impl<'a> Iterator for TraceDataIter<'a> {
 
 impl Tracer {
     fn set_state(&self, new_state: State) {
-        tracing::debug!("setting tracing state: {:?}", new_state);
+        tracing::trace!("setting tracing state: {:?}", new_state);
         let mut guard = self.state.lock().unwrap();
         guard.state = new_state;
         self.state_cv.notify_all();
     }
 
     fn wait_for(&self, target_state: State) {
-        tracing::debug!("wait for tracing state: {:?}", target_state);
+        tracing::trace!("wait for tracing state: {:?}", target_state);
         let mut guard = self.state.lock().unwrap();
         while guard.state != target_state {
             guard = self.state_cv.wait(guard).unwrap();
@@ -233,7 +255,7 @@ fn collector(tracer: &Tracer) {
                     ThreadSyncFlags::empty(),
                 )),
             ];
-            tracing::debug!(
+            tracing::trace!(
                 "collector is waiting for data: {} {}",
                 waiters[0].ready(),
                 waiters[1].ready()
@@ -244,7 +266,7 @@ fn collector(tracer: &Tracer) {
                 });
             }
         } else {
-            tracing::debug!("collector was notified of exit");
+            tracing::trace!("collector was notified of exit");
 
             let _ = sys_ktrace(guard.objects.first().unwrap().id(), None).inspect_err(|e| {
                 tracing::error!("failed to disable tracing: {}", e);

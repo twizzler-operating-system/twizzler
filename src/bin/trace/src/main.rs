@@ -3,12 +3,14 @@
 use clap::Parser;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentLoader, NewCompartmentFlags};
+use tracer::TracingState;
 use tracing::Level;
 use twizzler_abi::{
     syscall::TraceSpec,
     trace::{CONTEXT_FAULT, TraceFlags, TraceKind},
 };
 
+pub mod stat;
 pub mod tracer;
 
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -41,12 +43,18 @@ fn main() -> miette::Result<()> {
 
     let cli = Cli::try_parse().into_diagnostic()?;
 
-    run_trace_program(&cli.prog)?;
+    let state = run_trace_program(&cli.prog)?;
+
+    match cli.cmd {
+        None | Some(Subcommand::Stat) => {
+            stat::stat(state);
+        }
+    }
 
     Ok(())
 }
 
-fn run_trace_program(run_cli: &RunCli) -> miette::Result<()> {
+fn run_trace_program(run_cli: &RunCli) -> miette::Result<TracingState> {
     let name = &run_cli.cmdline[0];
     let compname = format!("trace-{}", name);
 
@@ -70,11 +78,15 @@ fn run_trace_program(run_cli: &RunCli) -> miette::Result<()> {
     };
     let state = tracer::start(comp, vec![spec])?;
 
-    tracing::info!("disconnected {}: {:?}", compname, state);
+    tracing::info!(
+        "disconnected {}: {} bytes of trace data",
+        compname,
+        state.total
+    );
 
     let mut count = 0;
     for entry in state.data() {
-        if entry.0.kind != TraceKind::Context {
+        if entry.0.kind != TraceKind::Context && entry.0.kind != TraceKind::Other {
             tracing::info!("==> {:?}", entry);
         }
         count += 1;
@@ -82,5 +94,5 @@ fn run_trace_program(run_cli: &RunCli) -> miette::Result<()> {
 
     tracing::info!("counted {} events", count);
 
-    Ok(())
+    Ok(state)
 }

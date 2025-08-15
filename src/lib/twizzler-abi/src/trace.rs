@@ -36,22 +36,26 @@ impl TraceEntryHead {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct TraceData<T: Copy> {
+    pub resv: u64,
     pub len: u32,
+    pub flags: u32,
     pub data: T,
 }
 
 impl<T: Copy> TraceData<T> {
-    #[inline]
-    pub fn try_into_bytes<const MAX: usize>(&self) -> Option<[u8; MAX]> {
-        let data = self as *const Self as *const u8;
-        let mut buf = [0; MAX];
-        let len = size_of::<Self>();
-        if len > MAX {
-            return None;
+    pub fn try_cast<U: TraceDataCast + Copy>(&self, events: u64) -> Option<&TraceData<U>> {
+        if events & U::EVENT != 0 {
+            unsafe {
+                Some(
+                    (self as *const Self)
+                        .cast::<TraceData<U>>()
+                        .as_ref()
+                        .unwrap(),
+                )
+            }
+        } else {
+            None
         }
-        let data = unsafe { core::slice::from_raw_parts(data, len) };
-        (&mut buf[0..len]).copy_from_slice(data);
-        Some(buf)
     }
 }
 
@@ -163,6 +167,7 @@ bitflags::bitflags! {
         const EXEC = 4;
         const USER = 8;
         const PAGER = 0x10;
+        const LARGE = 0x20;
     }
 }
 
@@ -171,6 +176,7 @@ pub struct ContextFaultEvent {
     pub addr: u64,
     pub obj: ObjID,
     pub flags: FaultFlags,
+    pub processing_time: TimeSpan,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -195,4 +201,44 @@ pub struct PagerRequestRecv {
 pub struct PagerRequestCompleted {
     pub qid: u32,
     pub resp: CompletionToPager,
+}
+
+pub trait TraceDataCast {
+    const EVENT: u64;
+}
+
+impl TraceDataCast for ContextMapEvent {
+    const EVENT: u64 = CONTEXT_MAP;
+}
+
+impl TraceDataCast for ContextFaultEvent {
+    const EVENT: u64 = CONTEXT_FAULT;
+}
+
+impl TraceDataCast for ThreadEvent {
+    const EVENT: u64 = THREAD_EXIT;
+}
+
+impl TraceDataCast for ThreadCtxSwitch {
+    const EVENT: u64 = THREAD_CONTEXT_SWITCH;
+}
+
+impl TraceDataCast for ThreadMigrate {
+    const EVENT: u64 = THREAD_MIGRATE;
+}
+
+impl TraceDataCast for PagerCommandSent {
+    const EVENT: u64 = PAGER_COMMAND_SEND;
+}
+
+impl TraceDataCast for PagerCommandResponded {
+    const EVENT: u64 = PAGER_COMMAND_RESPONDED;
+}
+
+impl TraceDataCast for PagerRequestRecv {
+    const EVENT: u64 = PAGER_REQUEST_RECV;
+}
+
+impl TraceDataCast for PagerRequestCompleted {
+    const EVENT: u64 = PAGER_REQUEST_COMPLETED;
 }
