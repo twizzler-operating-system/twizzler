@@ -500,6 +500,8 @@ impl DirtySet {
 
 #[cfg(test)]
 mod tests {
+    use twizzler_kernel_macros::kernel_test;
+
     #[kernel_test]
     fn test_page_number_align_down() {
         use super::PageNumber;
