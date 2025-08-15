@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_CONFIG_PATH: llvm-config-18
+  CC: clang-18
+  CXX: clang++-18
+  LD: clang++-18
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+
+  build-and-test:
+    needs: release
+    uses: ./.github/workflows/build-and-test.yml
+    secrets: inherit
+
+  docs:
+    needs: build-and-test
+    uses: ./.github/workflows/docs.yml
+    secrets: inherit

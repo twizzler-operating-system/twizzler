@@ -1,10 +1,7 @@
 name: Build and Test
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,34 +15,41 @@ jobs:
     runs-on: self-hosted
 
     steps:
-    - name: Cleanup
-      run: |
-        ls -la 
-        rm -rf ./* || true
-        rm -rf ./.??* || true
-        ls -la 
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - id: setup
-      uses: ./.github/actions/setup
-    - name: Bootstrap Toolchain
-      run: cargo +nightly bootstrap
-    - name: Build x86_64
-      run: cargo +nightly build-all
-    - name: Test x86_64 Debug
-      run: cargo +nightly start-qemu --tests --qemu-options=--nographic
-    - name: Test x86_64 Release
-      run: cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
-    # aarch64 is compiled for QEMU virt, builds in debug mode
-    - name: Build aarch64
-      run: cargo +nightly build-all -a aarch64 -m virt
-    - name: Install mdbook
-      run: |
-        mkdir mdbook
-        curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
-        echo `pwd`/mdbook >> $GITHUB_PATH
-    - name: Build Docs
-      run: cargo +nightly doc-all
-    - name: Build Book
-      run: cd doc && mdbook build
+      - name: Cleanup
+        run: |
+          ls -la 
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup
+
+      - name: Init submodules (excluding toolchain sources)
+        run: |
+          git submodule update --init --recursive -- ':!toolchain/src/*'
+      - name: Bootstrap Toolchain
+        run: cargo +nightly toolchain pull
+      - name: Build x86_64
+        run: cargo +nightly build-all
+      - name: Test x86_64 Debug
+        run: cargo +nightly start-qemu --tests --qemu-options=--nographic
+      - name: Test x86_64 Release
+        run: cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
+      # aarch64 is compiled for QEMU virt, builds in debug mode
+      - name: Build aarch64
+        run: cargo +nightly build-all -a aarch64 -m virt
+      # - name: Install mdbook
+      #   run: |
+      #     mkdir mdbook
+      #     curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
+      #     echo `pwd`/mdbook >> $GITHUB_PATH
+      # - name: Build Docs
+      #   run: cargo +nightly doc-all
+      # - name: Build Book
+      #   run: cd doc && mdbook build

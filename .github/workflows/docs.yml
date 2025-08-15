@@ -1,8 +1,7 @@
 name: Docs
 
 on:
-  push:
-    branches: [ main ]
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,55 +10,55 @@ env:
   CXX: clang++-18
   LD: clang++-18
 
-jobs: 
+jobs:
   build_docs:
     runs-on: self-hosted
     steps:
-    - name: Cleanup
-      run: |
-        ls -la 
-        rm -rf ./* || true
-        rm -rf ./.??* || true
-        ls -la 
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - id: setup
-      uses: ./.github/actions/setup
-    - name: Keygen
-      run: |
-        echo "$DEPLOY_KEY_DATA" > deploy_key
-      shell: bash
-      env:
-        DEPLOY_KEY_DATA : ${{secrets.DOCS_KEY}}
-    - name: Chmod
-      run: chmod 0600 deploy_key
-    - name: Clone
-      run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
-    - name: Install mdbook
-      run: |
-        mkdir mdbook
-        curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
-        echo `pwd`/mdbook >> $GITHUB_PATH
-    - name: Bootstrap Toolchain
-      run: cargo +nightly bootstrap
-    - name: Build
-      run: cargo +nightly doc-all
-    - name: Copy
-      run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/dynamic/x86_64-unknown-twizzler/doc twizzler-operating-system.github.io/nightly/
-    - name: Build Book
-      run: cd doc && mdbook build
-    - name: Copy Book
-      run: cp -r doc/book twizzler-operating-system.github.io/nightly/
-    - name: Config-1
-      run: git config --global user.name "Deploy Actions"
-    - name: Config-2
-      run: git config --global user.email "null@null.com"
-    - name: Stamp
-      run: |
-        echo "generated at '" $(date) "' from commit ID " $(git rev-parse HEAD) > twizzler-operating-system.github.io/stamp
-        cd twizzler-operating-system.github.io && git add stamp
-    - name: Commit
-      run: cd twizzler-operating-system.github.io && git add -A && git commit -am "Update"
-    - name: Push
-      run: cd twizzler-operating-system.github.io && GIT_SSH_COMMAND='ssh -i ../deploy_key' git push
+      - name: Cleanup
+        run: |
+          ls -la 
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Keygen
+        run: |
+          echo "$DEPLOY_KEY_DATA" > deploy_key
+        shell: bash
+        env:
+          DEPLOY_KEY_DATA: ${{secrets.DOCS_KEY}}
+      - name: Chmod
+        run: chmod 0600 deploy_key
+      - name: Clone
+        run: GIT_SSH_COMMAND='ssh -i deploy_key' git clone git@github.com:twizzler-operating-system/twizzler-operating-system.github.io.git
+      - name: Install mdbook
+        run: |
+          mkdir mdbook
+          curl -Lf https://github.com/rust-lang/mdBook/releases/download/v0.4.13/mdbook-v0.4.13-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=./mdbook
+          echo `pwd`/mdbook >> $GITHUB_PATH
+      - name: Bootstrap Toolchain
+        run: cargo +nightly toolchain pull
+      - name: Build
+        run: cargo +nightly doc-all
+      - name: Copy
+        run: mkdir -p twizzler-operating-system.github.io/nightly && cp -r target/dynamic/x86_64-unknown-twizzler/doc twizzler-operating-system.github.io/nightly/
+      - name: Build Book
+        run: cd doc && mdbook build
+      - name: Copy Book
+        run: cp -r doc/book twizzler-operating-system.github.io/nightly/
+      - name: Config-1
+        run: git config --global user.name "Deploy Actions"
+      - name: Config-2
+        run: git config --global user.email "null@null.com"
+      - name: Stamp
+        run: |
+          echo "generated at '" $(date) "' from commit ID " $(git rev-parse HEAD) > twizzler-operating-system.github.io/stamp
+          cd twizzler-operating-system.github.io && git add stamp
+      - name: Commit
+        run: cd twizzler-operating-system.github.io && git add -A && git commit -am "Update"
+      - name: Push
+        run: cd twizzler-operating-system.github.io && GIT_SSH_COMMAND='ssh -i ../deploy_key' git push
