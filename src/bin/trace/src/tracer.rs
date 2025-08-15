@@ -92,7 +92,6 @@ impl TracingState {
             let amount = posted_end.saturating_sub(start_point);
 
             if amount > 0 {
-                tracing::debug!("got {} bytes of tracing data", amount);
                 self.total += amount;
 
                 // scan for next object directives
@@ -124,7 +123,7 @@ impl TracingState {
                         }
                     }
                 }
-                if offset < amount as usize {
+                if offset == amount as usize {
                     self.end_point += amount;
                 }
             }
