@@ -15,17 +15,18 @@ env:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
     secrets: inherit
 
   build-and-test:
-    needs: release
     uses: ./.github/workflows/build-and-test.yml
     secrets: inherit
 
   docs:
+    if: github.event_name == 'push'
     needs: build-and-test
     uses: ./.github/workflows/docs.yml
     secrets: inherit

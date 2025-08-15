@@ -34,7 +34,11 @@ jobs:
         run: |
           git submodule update --init --recursive -- ':!toolchain/src/*'
       - name: Bootstrap Toolchain
-        run: cargo +nightly toolchain pull
+        run: |
+          if ! cargo +nightly toolchain pull; then
+            git submodule update --init --recursive
+            cargo +nightly toolchain bootstrap
+          fi
       - name: Build x86_64
         run: cargo +nightly build-all
       - name: Test x86_64 Debug
