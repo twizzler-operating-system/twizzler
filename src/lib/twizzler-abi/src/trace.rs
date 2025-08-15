@@ -8,6 +8,7 @@ use crate::{
         MapFlags, Syscall, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
         TimeSpan,
     },
+    thread::ExecutionState,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -145,7 +146,6 @@ pub struct ThreadEvent {
 #[derive(Clone, Copy, Debug)]
 pub struct SyscallEntryEvent {
     pub ip: u64,
-    pub x: [u64; 4],
     pub num: Syscall,
 }
 
@@ -159,6 +159,13 @@ pub struct ThreadCtxSwitch {
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadMigrate {
     pub to: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ThreadSamplingEvent {
+    pub ip: u64,
+    pub state: ExecutionState,
 }
 
 #[repr(C)]
@@ -256,4 +263,8 @@ impl TraceDataCast for PagerRequestCompleted {
 
 impl TraceDataCast for SyscallEntryEvent {
     const EVENT: u64 = THREAD_SYSCALL_ENTRY;
+}
+
+impl TraceDataCast for ThreadSamplingEvent {
+    const EVENT: u64 = THREAD_SAMPLE;
 }

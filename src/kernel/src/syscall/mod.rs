@@ -567,11 +567,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
 
 fn trace_syscall(ip: VirtAddr, num: Syscall) {
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY) {
-        let data = SyscallEntryEvent {
-            ip: ip.raw(),
-            num,
-            x: [0; 4],
-        };
+        let data = SyscallEntryEvent { ip: ip.raw(), num };
         let entry = new_trace_entry(
             TraceKind::Thread,
             THREAD_SYSCALL_ENTRY,

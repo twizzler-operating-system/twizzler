@@ -5,7 +5,7 @@ use fixedbitset::FixedBitSet;
 use twizzler_abi::{
     object::ObjID,
     thread::ExecutionState,
-    trace::{TraceEntryFlags, TraceKind},
+    trace::{ThreadCtxSwitch, TraceEntryFlags, TraceKind},
 };
 
 use crate::{
@@ -314,17 +314,20 @@ pub fn create_idle_thread() {
     set_current_thread(idle);
 }
 
-fn trace_switch(_from: &ThreadRef, _to: &ThreadRef) {
+fn trace_switch(_from: &ThreadRef, to: &ThreadRef) {
     if TRACE_MGR.any_enabled(
         TraceKind::Thread,
         twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
     ) {
+        let data = ThreadCtxSwitch {
+            to: Some(to.objid()),
+        };
         let entry = new_trace_entry(
             TraceKind::Thread,
             twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
             TraceEntryFlags::empty(),
         );
-        TRACE_MGR.async_enqueue(TraceEvent::new(entry));
+        TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
     }
 }
 
@@ -443,6 +446,9 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     };
     if cur.is_critical() {
         return false;
+    }
+    if cur.check_sampling() {
+        return true;
     }
     if cur.must_suspend() {
         return true;

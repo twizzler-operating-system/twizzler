@@ -16,13 +16,15 @@ use twizzler::{
 };
 use twizzler_abi::{
     syscall::{
-        ObjectCreate, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake, TraceSpec, sys_ktrace, sys_thread_change_state,
-        sys_thread_sync,
+        ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
+        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TraceSpec, sys_ktrace,
+        sys_thread_change_state, sys_thread_set_trace_events, sys_thread_sync,
     },
     thread::ExecutionState,
     trace::{TraceBase, TraceData, TraceEntryFlags, TraceEntryHead},
 };
+
+use crate::Cli;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -281,7 +283,11 @@ fn collector(tracer: &Tracer) {
     }
 }
 
-pub fn start(comp: CompartmentHandle, specs: Vec<TraceSpec>) -> miette::Result<TracingState> {
+pub fn start(
+    cli: &Cli,
+    comp: CompartmentHandle,
+    specs: Vec<TraceSpec>,
+) -> miette::Result<TracingState> {
     let tracer = Tracer {
         state: Mutex::new(TracingState::new(specs.as_slice())?),
         specs,
@@ -300,6 +306,10 @@ pub fn start(comp: CompartmentHandle, specs: Vec<TraceSpec>) -> miette::Result<T
             let id: ObjID = thread.repr_id;
             tracing::debug!("resuming compartment thread {}", id);
             sys_thread_change_state(id, ExecutionState::Running).into_diagnostic()?;
+            if cli.prog.sample {
+                tracing::debug!("setting per-thread sampling for {}", id);
+                sys_thread_set_trace_events(id, PERTHREAD_TRACE_GEN_SAMPLE).into_diagnostic()?;
+            }
         }
         tracer.set_state(State::Running);
 

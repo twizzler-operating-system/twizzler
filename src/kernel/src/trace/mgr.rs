@@ -31,7 +31,8 @@ pub struct TraceEvent<T: Copy + core::fmt::Debug = ()> {
 }
 
 impl TraceEvent<()> {
-    pub fn new(head: TraceEntryHead) -> Self {
+    pub fn new(mut head: TraceEntryHead) -> Self {
+        head.flags.remove(TraceEntryFlags::HAS_DATA);
         Self {
             header: head,
             data: None,
@@ -59,7 +60,8 @@ impl<T: Copy + core::fmt::Debug> TraceEvent<T> {
         )
     }
 
-    pub fn new_with_data(head: TraceEntryHead, data: T) -> Self {
+    pub fn new_with_data(mut head: TraceEntryHead, data: T) -> Self {
+        head.flags.insert(TraceEntryFlags::HAS_DATA);
         Self {
             header: head,
             data: Some(data),
@@ -124,7 +126,6 @@ impl TraceMgr {
     }
 
     pub fn enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {
-        //log::info!("enqueue: {:?} {:?}", event.header, event.data);
         let mut map = self.map.lock();
         self.drain_async(|head, data| {
             for sink in map.values_mut() {

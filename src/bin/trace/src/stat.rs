@@ -1,9 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ndarray_stats::QuantileExt;
-use twizzler_abi::trace::{
-    CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallEntryEvent,
-    THREAD_SYSCALL_ENTRY, TraceKind,
+use twizzler_abi::{
+    thread::ExecutionState,
+    trace::{
+        CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallEntryEvent,
+        THREAD_SAMPLE, THREAD_SYSCALL_ENTRY, ThreadSamplingEvent, TraceKind,
+    },
 };
 
 use crate::tracer::TracingState;
@@ -55,6 +58,23 @@ pub fn stat(state: TracingState) {
             .filter(|p| p.data.flags.contains(FaultFlags::LARGE))
             .count();
         println!("{} used large pages, {} used pager", num_large, num_pager);
+
+        let mut map = HashMap::<_, usize>::new();
+        for pf in pfs {
+            *map.entry(pf.data.obj).or_default() += 1;
+        }
+
+        let mut coll = map.into_iter().collect::<Vec<_>>();
+        coll.sort_by_key(|c| c.1);
+
+        let mut banner = false;
+        for (k, v) in coll.iter().rev() {
+            if !banner {
+                banner = true;
+                println!("                               OBJECT       COUNT")
+            }
+            println!("{:>37x}  {:10}", k.raw(), v);
+        }
     }
     let tlbs = state
         .data()
@@ -101,9 +121,57 @@ pub fn stat(state: TracingState) {
 
         println!("collected {} syscalls", syscalls.len(),);
 
-        for (k, v) in map.iter() {
+        let mut coll = map.into_iter().collect::<Vec<_>>();
+        coll.sort_by_key(|c| c.1);
+
+        let mut banner = false;
+        for (k, v) in coll {
+            if !banner {
+                banner = true;
+                println!("                 SYSCALL     COUNT")
+            }
             let sys = format!("{:?}", k);
-            println!("    {:>20}: {:5}", sys, v);
+            println!("    {:>20}   {:7}", sys, v);
+        }
+    }
+
+    let samples = state
+        .data()
+        .filter_map(|p| {
+            if p.0.kind == TraceKind::Thread && p.0.event & THREAD_SAMPLE != 0 {
+                Some((
+                    p.0,
+                    p.1.and_then(|d| d.try_cast::<ThreadSamplingEvent>(THREAD_SAMPLE))
+                        .map(|d| d.data)?,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if samples.len() > 0 {
+        println!("collected {} samples", samples.len());
+
+        let mut map = HashMap::<_, usize>::new();
+        for (_head, sample) in samples {
+            if sample.state == ExecutionState::Running {
+                *map.entry(sample.ip).or_default() += 1usize;
+            }
+        }
+
+        let mut coll = map.into_iter().collect::<Vec<_>>();
+        coll.sort_by_key(|x| x.1);
+
+        let mut banner = false;
+        for (ip, count) in coll {
+            if count > 1 {
+                if !banner {
+                    banner = true;
+                    println!("PROGRAM COUNTER ADDRESS      COUNT")
+                }
+                println!("     {:18x}    {:7}", ip, count);
+            }
         }
     }
 }
