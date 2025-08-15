@@ -44,6 +44,3 @@
 	path = src/ports/memmap2-rs
 	url = ../../twizzler-operating-system/memmap2-rs.git
 	branch = twizzler
-[submodule "src/ports/candle-test"]
-	path = src/ports/candle-test
-	url = git@github.com:elephance/candle-test.git

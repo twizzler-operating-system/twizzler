@@ -47,7 +47,7 @@ impl QemuCommand {
 
     pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("100000,slots=4,maxmem=4T");
+        self.cmd.arg("-m").arg("8000,slots=4,maxmem=256G");
 
         // configure architechture specific parameters
         self.arch_config(options);
@@ -79,7 +79,7 @@ impl QemuCommand {
             "PATH",
             format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
         );
-        let fs_type = "ext4";
+        let fs_type = "ext2";
         if !already_exists {
             println!("creating {} FS for image", fs_type);
             if !Command::new("mke2fs")

@@ -120,7 +120,10 @@ impl PerObject {
         let reqs = pages
             .into_iter()
             .map(|p| {
-                let start_page = p.0.pages().next().unwrap();
+                let mut start_page = p.0.pages().next().unwrap();
+                if p.0.start == (MAX_SIZE as u64) - PAGE {
+                    start_page = 0;
+                }
                 let nr_pages = p.1.len();
                 assert_eq!(nr_pages, p.0.pages().count());
                 PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
@@ -484,6 +487,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<Vec<PagedPhysMem>> {
+        // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)

@@ -404,10 +404,10 @@ impl Ext4Fs {
             (*fs).bcache_unlock = Some(_bc_unlock);
 
             (*fs).inode_alloc_lock = Some(_ia_lock);
-            (*fs).inode_alloc_lock = Some(_ia_unlock);
+            (*fs).inode_alloc_unlock = Some(_ia_unlock);
 
             (*fs).block_alloc_lock = Some(_ba_lock);
-            (*fs).block_alloc_lock = Some(_ba_unlock);
+            (*fs).block_alloc_unlock = Some(_ba_unlock);
         }
 
         Ok(Self { bd, mnt_name })

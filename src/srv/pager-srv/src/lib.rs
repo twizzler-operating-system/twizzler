@@ -349,12 +349,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 
     #[allow(unused_variables)]
     let virtio_store = block_on(ex.run(async move { init_virtio().await })).unwrap();
-    let ext4_store = Ext4Store::new(virtio_store.clone(), "/").unwrap();
+    let ext4_store = Ext4Store::new(disk.clone(), "/").unwrap();
 
     ctx.stores
         .lock()
         .unwrap()
-        .insert_device(Arc::new(ext4_store), Arc::new(virtio_store));
+        .insert_device(Arc::new(ext4_store), Arc::new(disk));
 
     spawn_queues(ctx, rq, ex);
 
