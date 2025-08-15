@@ -5,7 +5,8 @@ use twizzler_rt_abi::object::ObjID;
 use crate::{
     pager::{CompletionToKernel, CompletionToPager, KernelCommand, PagerRequest},
     syscall::{
-        MapFlags, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, TimeSpan,
+        MapFlags, Syscall, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        TimeSpan,
     },
 };
 
@@ -120,6 +121,8 @@ pub const OBJECT_CREATE: u64 = 2;
 pub const CONTEXT_MAP: u64 = 1;
 pub const CONTEXT_UNMAP: u64 = 2;
 pub const CONTEXT_FAULT: u64 = 4;
+pub const CONTEXT_SHOOTDOWN: u64 = 8;
+pub const CONTEXT_INVALIDATION: u64 = 16;
 
 pub const SECURITY_CTX_ENTRY: u64 = 1;
 pub const SECURITY_CTX_EXIT: u64 = 2;
@@ -136,6 +139,14 @@ pub const PAGER_REQUEST_COMPLETED: u64 = 8;
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadEvent {
     pub val: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SyscallEntryEvent {
+    pub ip: u64,
+    pub x: [u64; 4],
+    pub num: Syscall,
 }
 
 #[repr(C)]
@@ -241,4 +252,8 @@ impl TraceDataCast for PagerRequestRecv {
 
 impl TraceDataCast for PagerRequestCompleted {
     const EVENT: u64 = PAGER_REQUEST_COMPLETED;
+}
+
+impl TraceDataCast for SyscallEntryEvent {
+    const EVENT: u64 = THREAD_SYSCALL_ENTRY;
 }

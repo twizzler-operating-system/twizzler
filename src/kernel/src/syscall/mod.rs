@@ -8,6 +8,7 @@ use twizzler_abi::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
         KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall,
     },
+    trace::{SyscallEntryEvent, TraceEntryFlags, TraceKind, THREAD_SYSCALL_ENTRY},
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError, TwzError},
@@ -23,6 +24,10 @@ use crate::{
     memory::VirtAddr,
     random::getrandom,
     time::TICK_SOURCES,
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 // TODO: move the handle stuff into its own file and make this private.
@@ -279,6 +284,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             context.num()
         );
     }
+    trace_syscall(context.pc(), context.num().into());
     /*
     log!(
         ">{}:{}<",
@@ -556,5 +562,22 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         _ => {
             context.set_return_values(1u64, 0u64);
         }
+    }
+}
+
+fn trace_syscall(ip: VirtAddr, num: Syscall) {
+    if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY) {
+        let data = SyscallEntryEvent {
+            ip: ip.raw(),
+            num,
+            x: [0; 4],
+        };
+        let entry = new_trace_entry(
+            TraceKind::Thread,
+            THREAD_SYSCALL_ENTRY,
+            TraceEntryFlags::HAS_DATA,
+        );
+
+        TRACE_MGR.enqueue(TraceEvent::new_with_data(entry, data));
     }
 }

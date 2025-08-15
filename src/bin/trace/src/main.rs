@@ -7,7 +7,10 @@ use tracer::TracingState;
 use tracing::Level;
 use twizzler_abi::{
     syscall::TraceSpec,
-    trace::{CONTEXT_FAULT, TraceFlags, TraceKind},
+    trace::{
+        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, THREAD_SYSCALL_ENTRY, TraceFlags,
+        TraceKind,
+    },
 };
 
 pub mod stat;
@@ -28,6 +31,8 @@ struct RunCli {
 struct Cli {
     #[clap(subcommand)]
     cmd: Option<Subcommand>,
+    #[clap(long, short, help = "List of events to traces, one per flag.")]
+    events: Vec<String>,
     #[clap(flatten)]
     prog: RunCli,
 }
@@ -43,7 +48,7 @@ fn main() -> miette::Result<()> {
 
     let cli = Cli::try_parse().into_diagnostic()?;
 
-    let state = run_trace_program(&cli.prog)?;
+    let state = run_trace_program(&cli.prog, &cli.events)?;
 
     match cli.cmd {
         None | Some(Subcommand::Stat) => {
@@ -54,7 +59,7 @@ fn main() -> miette::Result<()> {
     Ok(())
 }
 
-fn run_trace_program(run_cli: &RunCli) -> miette::Result<TracingState> {
+fn run_trace_program(run_cli: &RunCli, events: &[String]) -> miette::Result<TracingState> {
     let name = &run_cli.cmdline[0];
     let compname = format!("trace-{}", name);
 
@@ -65,18 +70,48 @@ fn run_trace_program(run_cli: &RunCli) -> miette::Result<TracingState> {
     tracing::info!("compartment {} loaded, starting tracing monitor", compname);
 
     let info = comp.info();
-    let spec = TraceSpec {
-        kind: TraceKind::Context,
-        flags: TraceFlags::empty(),
-        enable_events: CONTEXT_FAULT,
-        disable_events: 0,
-        sctx: Some(info.id),
-        mctx: None,
-        thread: None,
-        cpuid: None,
-        extra: 0.into(),
-    };
-    let state = tracer::start(comp, vec![spec])?;
+
+    let specs = events
+        .iter()
+        .map(|event| match event.as_str() {
+            "page-faults" | "pf" | "faults" | "page-fault" => TraceSpec {
+                kind: TraceKind::Context,
+                flags: TraceFlags::empty(),
+                enable_events: CONTEXT_FAULT,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            "tlb" | "tlb-shootdowns" | "tlb-shootdown" | "shootdown" => TraceSpec {
+                kind: TraceKind::Context,
+                flags: TraceFlags::empty(),
+                enable_events: CONTEXT_SHOOTDOWN | CONTEXT_INVALIDATION,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            "sys" | "syscall" | "syscalls" => TraceSpec {
+                kind: TraceKind::Thread,
+                flags: TraceFlags::empty(),
+                enable_events: THREAD_SYSCALL_ENTRY,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            _ => panic!("unknown event type: {}", event),
+        })
+        .collect();
+
+    let state = tracer::start(comp, specs)?;
 
     tracing::info!(
         "disconnected {}: {} bytes of trace data",
@@ -84,15 +119,7 @@ fn run_trace_program(run_cli: &RunCli) -> miette::Result<TracingState> {
         state.total
     );
 
-    let mut count = 0;
-    for entry in state.data() {
-        if entry.0.kind != TraceKind::Context && entry.0.kind != TraceKind::Other {
-            tracing::info!("==> {:?}", entry);
-        }
-        count += 1;
-    }
-
-    tracing::info!("counted {} events", count);
+    tracing::info!("counted {} events", state.data().count());
 
     Ok(state)
 }

@@ -51,29 +51,41 @@ impl TraceSink {
         self.buffer.push(entry);
     }
 
-    fn write(&mut self, mut entry: (TraceEntryHead, BufferedTraceData)) {
+    fn write(&self, entry: &(TraceEntryHead, BufferedTraceData)) -> u64 {
         self.current_object.write_at(&entry.0, self.offset as usize);
-        self.offset += size_of::<TraceEntryHead>() as u64;
+        let entry_head_len = size_of::<TraceEntryHead>();
         if entry.0.flags.contains(TraceEntryFlags::HAS_DATA) {
             let header_len = size_of::<TraceData<()>>();
             let len = entry.1.len() + header_len;
             let trace_data_header = TraceData::<()> {
-                len: len.next_multiple_of(align_of::<TraceEntryHead>()) as u32,
+                len: len.next_multiple_of(align_of::<TraceEntryHead>().max(32)) as u32,
                 flags: 0,
                 data: (),
                 resv: 0,
             };
+            log::trace!(
+                "write: {:x} {} {} {} {}",
+                self.offset,
+                entry_head_len,
+                len,
+                entry.1.len(),
+                trace_data_header.len,
+            );
             let header_ptr = addr_of!(trace_data_header);
-            self.current_object
-                .write_bytes(header_ptr.cast(), header_len, self.offset as usize);
+            self.current_object.write_bytes(
+                header_ptr.cast(),
+                header_len,
+                self.offset as usize + entry_head_len,
+            );
             self.current_object.write_bytes(
                 entry.1.ptr(),
                 entry.1.len(),
-                self.offset as usize + header_len,
+                self.offset as usize + header_len + entry_head_len,
             );
-            self.offset += trace_data_header.len as u64;
+            entry_head_len as u64 + trace_data_header.len as u64
+        } else {
+            entry_head_len as u64
         }
-        entry.1.free();
     }
 
     fn check_space(&mut self) -> bool {
@@ -100,7 +112,7 @@ impl TraceSink {
                 end: AtomicU64::new(TRACE_DATA_START),
             });
 
-            self.write((
+            self.offset += self.write(&(
                 TraceEntryHead::new_next_object(id),
                 BufferedTraceData::default(),
             ));
@@ -111,7 +123,7 @@ impl TraceSink {
             }
 
             self.current_object = obj;
-            self.offset = NULLPAGE_SIZE as u64 * 2;
+            self.offset = TRACE_DATA_START;
         }
         true
     }
@@ -123,7 +135,7 @@ impl TraceSink {
                 // TODO: this could lead to duplicates
                 return false;
             }
-            self.write(self.buffer[i]);
+            self.offset += self.write(&self.buffer[i]);
         }
         if !self.buffer.is_empty() {
             log::debug!(

@@ -2,17 +2,16 @@ use alloc::collections::btree_map::BTreeMap;
 use core::{
     cell::UnsafeCell,
     hint::unlikely,
-    mem::MaybeUninit,
     sync::atomic::{
-        AtomicU64, AtomicUsize,
-        Ordering::{Relaxed, SeqCst},
+        AtomicBool, AtomicU64, AtomicUsize,
+        Ordering::{self, Relaxed, SeqCst},
     },
 };
 
 use twizzler_abi::{
     object::ObjID,
     syscall::TraceSpec,
-    trace::{TraceEntryHead, TraceKind},
+    trace::{TraceEntryFlags, TraceEntryHead, TraceKind},
 };
 use twizzler_rt_abi::error::{ObjectError, TwzError};
 
@@ -76,6 +75,7 @@ pub struct TraceMgr {
     quick_enabled: [AtomicU64; MAX_QUICK_ENABLED],
     async_buffer: UnsafeCell<[Option<(TraceEntryHead, BufferedTraceData)>; MAX_PENDING_ASYNC]>,
     async_idx: AtomicUsize,
+    async_overflow: AtomicBool,
     has_work: Spinlock<bool>,
     cv: CondVar,
 }
@@ -91,6 +91,7 @@ pub static TRACE_MGR: TraceMgr = TraceMgr {
     async_buffer: UnsafeCell::new([__Z; MAX_PENDING_ASYNC]),
     async_idx: AtomicUsize::new(0),
     has_work: Spinlock::new(false),
+    async_overflow: AtomicBool::new(false),
     cv: CondVar::new(),
 };
 
@@ -123,11 +124,12 @@ impl TraceMgr {
     }
 
     pub fn enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {
+        //log::info!("enqueue: {:?} {:?}", event.header, event.data);
         let mut map = self.map.lock();
         self.drain_async(|head, data| {
             for sink in map.values_mut() {
                 if sink.accepts(&head) {
-                    sink.enqueue((head, data));
+                    sink.enqueue((head, data.clone()));
                 }
             }
         });
@@ -141,12 +143,20 @@ impl TraceMgr {
     }
 
     pub fn async_enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {
+        const MAX_ASYNC_ITER: usize = 1000;
         let mut iter = 0;
         loop {
             iter += 1;
             let idx = self.async_idx.load(SeqCst);
-            if idx > MAX_PENDING_ASYNC || iter > 1000 {
-                log::warn!("dropped async trace event {:?}", event);
+            if idx > MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
+                self.async_overflow.store(true, Ordering::SeqCst);
+                log::warn!(
+                    "dropped async trace event {:?} (overflow={}, timeout={})",
+                    event,
+                    idx > MAX_PENDING_ASYNC,
+                    iter > MAX_ASYNC_ITER
+                );
+                return;
             }
 
             if idx & 1 == 1 {
@@ -171,12 +181,14 @@ impl TraceMgr {
                     .write(event.split_async());
             };
             self.async_idx.fetch_add(1, SeqCst);
+            self.signal_work();
             return;
         }
     }
 
     pub fn drain_async(&self, mut f: impl FnMut(TraceEntryHead, BufferedTraceData)) {
-        let mut buf = [MaybeUninit::uninit(); MAX_PENDING_ASYNC];
+        const MU: Option<(TraceEntryHead, BufferedTraceData)> = None;
+        let mut buf = [MU; MAX_PENDING_ASYNC];
         loop {
             let idx = self.async_idx.load(SeqCst);
             if idx == 0 {
@@ -188,13 +200,14 @@ impl TraceMgr {
             }
 
             for i in 0..(idx / 2) {
-                buf[i] = MaybeUninit::new(unsafe {
+                buf[i] = None;
+                unsafe {
                     self.async_buffer
                         .get()
-                        .cast::<(TraceEntryHead, BufferedTraceData)>()
+                        .cast::<Option<(TraceEntryHead, BufferedTraceData)>>()
                         .add(i)
-                        .read()
-                });
+                        .swap(&mut buf[i]);
+                }
             }
 
             if self
@@ -206,10 +219,15 @@ impl TraceMgr {
                 continue;
             }
 
-            log::info!("drained {} async events", idx / 2);
+            let overflow = self.async_overflow.swap(false, Ordering::SeqCst);
+            log::debug!("drained {} async events (overflow={})", idx / 2, overflow);
             for i in 0..(idx / 2) {
-                let (h, d) = unsafe { buf[i].assume_init() };
-                f(h, d);
+                if let Some((mut h, d)) = buf[i].take() {
+                    if i + 1 == idx / 2 && overflow {
+                        h.flags.insert(TraceEntryFlags::DROPPED);
+                    }
+                    f(h, d);
+                }
             }
             return;
         }
@@ -218,6 +236,13 @@ impl TraceMgr {
     pub fn add_sink(&self, id: ObjID, spec: TraceSpec) -> Result<(), TwzError> {
         start_write_thread();
         let mut map = self.map.lock();
+        TRACE_MGR.drain_async(|head, data| {
+            for sink in map.values_mut() {
+                if sink.accepts(&head) {
+                    sink.enqueue((head, data.clone()));
+                }
+            }
+        });
         if let Some(sink) = map.get_mut(&id) {
             sink.modify(spec);
             drop(map);
@@ -240,6 +265,13 @@ impl TraceMgr {
 
     pub fn remove_sink(&self, id: ObjID) -> Result<(), TwzError> {
         let mut map = self.map.lock();
+        TRACE_MGR.drain_async(|head, data| {
+            for sink in map.values_mut() {
+                if sink.accepts(&head) {
+                    sink.enqueue((head, data.clone()));
+                }
+            }
+        });
         if let Some(sink) = map.get_mut(&id) {
             sink.write_all();
             map.remove(&id);
@@ -278,6 +310,14 @@ extern "C" fn kthread_trace_writer() {
     loop {
         let mut did_work = false;
         let mut map = TRACE_MGR.map.lock();
+        TRACE_MGR.drain_async(|head, data| {
+            did_work = true;
+            for sink in map.values_mut() {
+                if sink.accepts(&head) {
+                    sink.enqueue((head, data.clone()));
+                }
+            }
+        });
         for sink in map.values_mut() {
             if sink.write_all() {
                 did_work = true;

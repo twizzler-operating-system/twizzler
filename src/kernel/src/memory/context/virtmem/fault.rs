@@ -236,7 +236,16 @@ fn page_fault_to_region(
         Ok(())
     };
 
-    info.map(addr, cause, flags, perms, default_prot, start_time, mapper)
+    info.map(
+        addr,
+        ip,
+        cause,
+        flags,
+        perms,
+        default_prot,
+        start_time,
+        mapper,
+    )
 }
 
 fn get_map_region(

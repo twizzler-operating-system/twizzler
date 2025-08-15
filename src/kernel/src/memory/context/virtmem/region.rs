@@ -97,12 +97,16 @@ impl MapRegion {
     fn trace_fault(
         &self,
         addr: VirtAddr,
+        ip: VirtAddr,
         cause: MemoryAccessKind,
         pfflags: PageFaultFlags,
         used_pager: bool,
         large: bool,
         start_time: Instant,
     ) {
+        if ip.is_kernel() || addr.is_kernel_object_memory() {
+            return;
+        }
         if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
             let mut flags = FaultFlags::empty();
             match cause {
@@ -198,7 +202,7 @@ impl MapRegion {
                     settings.flags(),
                 );
                 check_settings(addr, &settings, cause)?;
-                self.trace_fault(addr, cause, pfflags, false, false, start_time);
+                self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
                 return mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),
@@ -235,6 +239,7 @@ impl MapRegion {
             sleeper.wait();
             return self.map(
                 addr,
+                ip,
                 cause,
                 pfflags,
                 perms,
@@ -329,7 +334,12 @@ impl MapRegion {
                 mapper(
                     large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
-                )
+                );
+                if ret.is_ok() {
+                    drop(obj_page_tree);
+                    self.trace_fault(addr, ip, cause, pfflags, used_pager, true, start_time);
+                }
+                ret
             } else {
                 FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
                 if self.flags.contains(MapFlags::NO_NULLPAGE) {
@@ -345,7 +355,12 @@ impl MapRegion {
                 mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),
-                )
+                );
+                if ret.is_ok() {
+                    drop(obj_page_tree);
+                    self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
+                }
+                ret
             }
         } else {
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(

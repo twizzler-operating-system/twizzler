@@ -1,12 +1,10 @@
-use alloc::boxed::Box;
-use core::alloc::{GlobalAlloc, Layout};
+use alloc::sync::Arc;
 
-use crate::memory::allocator::SLAB_ALLOCATOR;
-
-const MAX_INLINE: usize = 16;
-#[derive(Clone, Copy, Debug)]
+const MAX_INLINE: usize = 64;
+const MAX_BOX: usize = 4096;
+#[derive(Clone, Debug)]
 pub enum BufferedTraceData {
-    Box(*mut u8, Layout),
+    Box(Arc<[u8; MAX_BOX]>, usize),
     Inline([u8; MAX_INLINE]),
 }
 
@@ -33,8 +31,13 @@ impl BufferedTraceData {
         if let Some(bytes) = try_data_into_bytes(&data) {
             Self::Inline(bytes)
         } else {
-            let b = Box::new(data);
-            Self::Box(Box::into_raw(b).cast(), Layout::new::<T>())
+            let b = Arc::new(
+                // If this fails, just increase the memory, or don't try to store so much data in a
+                // trace event.
+                try_data_into_bytes(&data)
+                    .expect("failed to allocate enough memory for trace event"),
+            );
+            Self::Box(b, size_of::<T>().next_multiple_of(MAX_INLINE))
         }
     }
 
@@ -42,27 +45,20 @@ impl BufferedTraceData {
         try_data_into_bytes(&data).map(|b| Self::Inline(b))
     }
 
-    pub fn free(&mut self) {
-        match self {
-            BufferedTraceData::Box(ptr, layout) => unsafe { SLAB_ALLOCATOR.dealloc(*ptr, *layout) },
-            _ => {}
-        }
-    }
-
     pub fn len(&self) -> usize {
         match self {
-            BufferedTraceData::Box(_, layout) => layout.size(),
+            BufferedTraceData::Box(_, size) => *size,
             BufferedTraceData::Inline(bytes) => bytes.len(),
         }
     }
 
     pub fn ptr(&self) -> *const u8 {
         match self {
-            BufferedTraceData::Box(ptr, _) => *ptr,
+            BufferedTraceData::Box(ptr, _) => {
+                let x = &*(*ptr);
+                x.as_ptr()
+            }
             BufferedTraceData::Inline(bytes) => bytes.as_ptr(),
         }
     }
 }
-
-unsafe impl Send for BufferedTraceData {}
-unsafe impl Sync for BufferedTraceData {}

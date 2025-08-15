@@ -82,7 +82,7 @@ impl TracingState {
         let posted_end = current.base().0.end.load(Ordering::SeqCst);
         let start_point = self.end_point.max(current.base().0.start);
         tracing::trace!(
-            "collect {}: {} {}: {}",
+            "collect {:x}: {:x} {:x}: {}",
             self.end_point,
             posted_end,
             start_point,

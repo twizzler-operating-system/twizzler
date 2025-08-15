@@ -19,7 +19,7 @@ mod time;
 mod trace;
 
 use crate::arch::syscall::raw_syscall;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 /// All possible Synchronous syscalls into the Twizzler kernel.
 pub enum Syscall {
