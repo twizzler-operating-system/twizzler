@@ -12,8 +12,8 @@ use reqwest::Client;
 
 use super::{get_bin_path, get_toolchain_path, BootstrapOptions};
 
-// const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
-const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
+const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
+// const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
 
 pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Result<()> {
     use futures_util::StreamExt;
