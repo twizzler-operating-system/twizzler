@@ -31,6 +31,7 @@ pub struct TraceSpec {
 }
 
 impl TraceSpec {
+    /// Check if the given trace entry header matches this spec.
     pub fn accepts(&self, header: &TraceEntryHead) -> bool {
         if header.kind != self.kind {
             return false;
