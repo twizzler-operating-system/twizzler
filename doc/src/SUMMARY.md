@@ -38,6 +38,8 @@
 
 # Advanced Features
 
+- [Tracing and Performance Debugging](./Trace.md)
+
 - [Twizzler Build System Crate Metadata](./CargoMetadata.md)
 
 # Other

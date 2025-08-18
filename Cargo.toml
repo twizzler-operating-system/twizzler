@@ -55,6 +55,7 @@ members = [
     #"src/bin/serialecho", "tools/serialtest",
     "src/bin/ptest",
     "src/bin/debug",
+    "src/bin/trace",
 ]
 
 exclude = [
@@ -81,6 +82,7 @@ initrd = [
     "crate:uuhelper",
     "crate:debug",
     "crate:cache",
+    "crate:trace",
 
     "crate:sec-test",
     "crate:ptest",

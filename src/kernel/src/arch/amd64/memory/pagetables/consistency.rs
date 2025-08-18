@@ -11,6 +11,7 @@ use crate::{
         interrupt::TLB_SHOOTDOWN_VECTOR,
     },
     interrupt::{self, Destination},
+    memory::pagetables::{trace_tlb_invalidation, trace_tlb_shootdown},
     processor::{current_processor, spin_wait_until, tls_ready, with_each_active_processor},
     thread::current_thread_ref,
 };
@@ -305,9 +306,11 @@ impl ArchTlbMgr {
             }
         });
         if count > 0 {
+            trace_tlb_shootdown();
             // Send the IPI, and then do local invalidations.
             super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
         }
+        trace_tlb_invalidation();
         self.data.do_invalidation();
 
         if count > 0 {

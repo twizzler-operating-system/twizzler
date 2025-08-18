@@ -2,7 +2,11 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use fixedbitset::FixedBitSet;
-use twizzler_abi::{object::ObjID, thread::ExecutionState};
+use twizzler_abi::{
+    object::ObjID,
+    thread::ExecutionState,
+    trace::{ThreadCtxSwitch, TraceEntryFlags, TraceKind},
+};
 
 use crate::{
     clock::Nanoseconds,
@@ -11,6 +15,10 @@ use crate::{
     processor::{current_processor, get_processor, Processor},
     spinlock::Spinlock,
     thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
     utils::quick_random,
 };
 
@@ -306,7 +314,25 @@ pub fn create_idle_thread() {
     set_current_thread(idle);
 }
 
+fn trace_switch(_from: &ThreadRef, to: &ThreadRef) {
+    if TRACE_MGR.any_enabled(
+        TraceKind::Thread,
+        twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
+    ) {
+        let data = ThreadCtxSwitch {
+            to: Some(to.objid()),
+        };
+        let entry = new_trace_entry(
+            TraceKind::Thread,
+            twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
+            TraceEntryFlags::empty(),
+        );
+        TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
+    }
+}
+
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
+    trace_switch(&old, &thread);
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     set_current_thread(thread.clone());
@@ -420,6 +446,9 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     };
     if cur.is_critical() {
         return false;
+    }
+    if cur.check_sampling() {
+        return true;
     }
     if cur.must_suspend() {
         return true;

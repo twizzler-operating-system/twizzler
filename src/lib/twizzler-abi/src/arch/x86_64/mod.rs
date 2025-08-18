@@ -9,6 +9,7 @@ pub const SLOTS: usize = (1 << 47) / MAX_SIZE;
 use upcall::UpcallFrame;
 pub use upcall::XSAVE_LEN;
 
+#[derive(Clone, Copy, Debug)]
 pub struct ArchRegisters {
     pub frame: UpcallFrame,
     pub fs: u32,

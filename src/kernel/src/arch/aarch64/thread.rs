@@ -236,6 +236,16 @@ impl Thread {
         self.arch.context.daif = (DAIFMaskBits::IRQ.complement().bits() as u64) << 6;
     }
 
+    pub fn read_ip(&self) -> u64 {
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        frame.unwrap().pc
+    }
+
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
         if self.get_state() != ExecutionState::Suspended {
             return Err(TwzError::Generic(

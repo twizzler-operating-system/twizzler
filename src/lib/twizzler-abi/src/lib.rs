@@ -40,6 +40,7 @@ pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;
 pub mod thread;
+pub mod trace;
 pub mod upcall;
 
 #[inline]

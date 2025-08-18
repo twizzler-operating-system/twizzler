@@ -15,7 +15,7 @@ use super::{
     Object, ObjectRef, PageNumber,
 };
 use crate::{
-    arch::memory::{frame::FRAME_SIZE, phys_to_virt},
+    arch::memory::phys_to_virt,
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::{MappingFlags, MappingSettings},
@@ -306,14 +306,16 @@ impl Object {
         self: &'a Arc<Object>,
         mut page_tree: LockGuard<'a, PageRangeTree>,
         page_number: PageNumber,
+        used_pager: &mut bool,
     ) -> LockGuard<'a, PageRangeTree> {
         if matches!(
             page_tree.try_get_page(page_number, GetPageFlags::empty()),
             PageStatus::NoPage
         ) {
+            *used_pager = false;
             if self.use_pager() {
                 drop(page_tree);
-                crate::pager::get_object_page(self, page_number);
+                *used_pager = crate::pager::get_object_page(self, page_number);
                 page_tree = self.lock_page_tree();
             } else {
                 let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
@@ -379,7 +381,8 @@ impl Object {
             if !can_wait {
                 return None;
             }
-            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number);
+            let mut _used_pager = false;
+            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number, &mut _used_pager);
             drop(obj_page_tree);
             self.read_meta(can_wait)
         }
@@ -443,21 +446,29 @@ impl Object {
     }
 
     pub fn write_base<T>(&self, info: &T) {
-        let mut offset = FRAME_SIZE;
+        self.write_at(info, NULLPAGE_SIZE);
+    }
+
+    pub fn write_at<T>(&self, info: &T, offset: usize) {
+        let bytes = info as *const T as *const u8;
+        let len = core::mem::size_of::<T>();
+        self.write_bytes(bytes, len, offset);
+    }
+
+    pub fn write_bytes(&self, bytes: *const u8, len: usize, mut offset: usize) {
         unsafe {
             let mut obj_page_tree = self.lock_page_tree();
-            let bytes = info as *const T as *const u8;
-            let len = core::mem::size_of::<T>();
             let bytes = core::slice::from_raw_parts(bytes, len);
             let mut count = 0;
             while count < len {
                 let page_number = PageNumber::from_address(VirtAddr::new(offset as u64).unwrap());
-                let thislen = core::cmp::min(0x1000, len - count);
+                let page_offset = offset % NULLPAGE_SIZE;
+                let thislen = core::cmp::min(NULLPAGE_SIZE - page_offset, len - count);
 
                 if let PageStatus::Ready(page, _) =
                     obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
                 {
-                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    let dest = &mut page.as_mut_slice()[page_offset..(page_offset + thislen)];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
                 } else {
                     let page = Page::new(alloc_frame(
@@ -466,7 +477,7 @@ impl Object {
                             | FrameAllocFlags::ZEROED,
                     ));
                     let page = PageRef::new(Arc::new(page), 0, 1);
-                    let dest = &mut page.as_mut_slice()[0..thislen];
+                    let dest = &mut page.as_mut_slice()[page_offset..(page_offset + thislen)];
                     dest.copy_from_slice(&bytes[count..(count + thislen)]);
                     obj_page_tree.add_page(page_number, page, None);
                 }

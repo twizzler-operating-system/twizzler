@@ -16,6 +16,7 @@
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
 #![feature(allocator_api)]
+#![feature(likely_unlikely)]
 
 #[macro_use]
 pub mod log;
@@ -46,6 +47,7 @@ mod spinlock;
 mod syscall;
 mod thread;
 mod time;
+mod trace;
 mod userinit;
 pub mod utils;
 extern crate alloc;

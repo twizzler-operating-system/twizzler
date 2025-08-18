@@ -2,7 +2,7 @@ use core::{ops::Sub, time::Duration};
 
 use super::{FemtoSeconds, NanoSeconds, Seconds, FEMTOS_PER_NANO, FEMTOS_PER_SEC, NANOS_PER_SEC};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct TimeSpan(pub Seconds, pub FemtoSeconds);
 
 impl TimeSpan {

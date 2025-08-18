@@ -37,6 +37,10 @@ impl Instant {
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
         Some(Duration::from(self.0.checked_sub(other.0)?))
     }
+
+    pub fn into_time_span(self) -> TimeSpan {
+        self.0
+    }
 }
 
 impl Sub<Instant> for Instant {
