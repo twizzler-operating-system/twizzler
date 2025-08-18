@@ -60,15 +60,16 @@ jobs:
         runner: [self-hosted]
 
     steps:
-      - name: Clean
-        uses: AutoModality/action-clean@v1
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           clean: true
-          submodules: recursive
-
+          submodules: false
+      - name: Init submodules (including toolchain sources)
+        run: |
+          git submodule update --init --recursive
+    
       - name: Setup dependencies
         uses: ./.github/actions/setup
 
