@@ -68,7 +68,7 @@ jobs:
           submodules: false
       - name: Init submodules (including toolchain sources)
         run: |
-          git submodule foreach git pull
+          rm -rf toolchain/src/rust
           git submodule update --init --recursive
     
       - name: Setup dependencies
