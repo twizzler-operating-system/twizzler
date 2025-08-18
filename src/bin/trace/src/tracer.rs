@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread::Builder,
+    time::Instant,
     usize,
 };
 
@@ -39,6 +40,9 @@ pub struct TracingState {
     end_point: u64,
     pub total: u64,
     state: State,
+    pub start_time: Instant,
+    pub end_time: Instant,
+    pub name: String,
 }
 
 impl Debug for TracingState {
@@ -59,7 +63,7 @@ impl Debug for TracingState {
 struct BaseWrap(TraceBase);
 
 impl TracingState {
-    fn new(specs: &[TraceSpec]) -> miette::Result<Self> {
+    fn new(name: String, specs: &[TraceSpec]) -> miette::Result<Self> {
         let prime = ObjectBuilder::new(ObjectCreate::default())
             .build(BaseWrap(TraceBase {
                 start: 0,
@@ -76,6 +80,9 @@ impl TracingState {
             end_point: 0,
             total: 0,
             state: State::Setup,
+            start_time: Instant::now(),
+            end_time: Instant::now(),
+            name,
         })
     }
 
@@ -289,7 +296,7 @@ pub fn start(
     specs: Vec<TraceSpec>,
 ) -> miette::Result<TracingState> {
     let tracer = Tracer {
-        state: Mutex::new(TracingState::new(specs.as_slice())?),
+        state: Mutex::new(TracingState::new(comp.info().name, specs.as_slice())?),
         specs,
         state_cv: Condvar::new(),
         notifier: AtomicU64::new(0),
@@ -302,6 +309,7 @@ pub fn start(
 
         tracer.wait_for(State::Ready);
 
+        let start = Instant::now();
         for thread in comp.threads() {
             let id: ObjID = thread.repr_id;
             tracing::debug!("resuming compartment thread {}", id);
@@ -317,7 +325,13 @@ pub fn start(
         while !flags.contains(CompartmentFlags::EXITED) {
             flags = comp.wait(flags);
         }
-        tracing::debug!("compartment exited");
+        let end = Instant::now();
+        tracing::debug!(
+            "compartment exited after {:2.2}s",
+            (end - start).as_secs_f32()
+        );
+        tracer.state.lock().unwrap().start_time = start;
+        tracer.state.lock().unwrap().end_time = end;
 
         tracer.set_state(State::Done);
         tracer.notify_exit();

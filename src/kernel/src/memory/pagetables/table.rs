@@ -118,9 +118,7 @@ impl Table {
     ) -> Option<()> {
         let index = Self::get_index(cursor.start(), level);
 
-        log::info!("level: {}, addr: {:?}", level, cursor.start());
         if level == spt.level() {
-            //let entry = &mut self[index];
             let pinfo = spt.provider().peek().unwrap();
             let mut flags = EntryFlags::intermediate();
             flags.insert(EntryFlags::SHARED_PAGE_TABLE);
@@ -227,7 +225,7 @@ impl Table {
                 );
             } else if entry.is_present() && level != Self::last_level() {
                 if entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE) {
-                    log::warn!("TODO");
+                    consist.free_shared_frame(self.next_table_frame(idx).unwrap());
                 } else {
                     let next_table = self.next_table_mut(idx).unwrap();
                     next_table.unmap(consist, cursor, Self::next_level(level));

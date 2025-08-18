@@ -334,7 +334,7 @@ impl UserContext for VirtContext {
         let shared_pt = if !object_info.flags.contains(MapFlags::STABLE)
             && !object_info.perms.contains(Protections::WRITE)
         {
-            log::info!(
+            log::debug!(
                 "shared PT: {}: {:?}, {:?}",
                 object_info.object.id(),
                 object_info.flags,
