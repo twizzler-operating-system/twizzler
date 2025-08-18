@@ -21,6 +21,8 @@ pub struct ObjectInfo {
     pub life: LifetimeType,
     /// The backing type of this object.
     pub backing: BackingType,
+    /// The number of pages allocated to this object.
+    pub pages: usize,
 }
 
 /// Read information about a given object.
