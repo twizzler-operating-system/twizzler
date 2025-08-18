@@ -284,7 +284,18 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             context.num()
         );
     }
-    trace_syscall(context.pc(), context.num().into());
+    trace_syscall(
+        context.pc(),
+        context.num().into(),
+        [
+            context.arg0(),
+            context.arg1(),
+            context.arg2(),
+            context.arg3(),
+            context.arg4(),
+            context.arg5(),
+        ],
+    );
     /*
     log!(
         ">{}:{}<",
@@ -546,7 +557,8 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             let lo = context.arg1();
             let id = ObjID::from_parts([hi, lo]);
             let out = context.arg2();
-            let out: Option<&mut twizzler_abi::syscall::ObjectInfo> = unsafe { create_user_ptr(out) };
+            let out: Option<&mut twizzler_abi::syscall::ObjectInfo> =
+                unsafe { create_user_ptr(out) };
             let result: Result<_> = if let Some(out) = out {
                 object::sys_object_info(id).map(|info| {
                     *out = info;
@@ -565,9 +577,13 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
     }
 }
 
-fn trace_syscall(ip: VirtAddr, num: Syscall) {
+fn trace_syscall(ip: VirtAddr, num: Syscall, args: [u64; 6]) {
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY) {
-        let data = SyscallEntryEvent { ip: ip.raw(), num };
+        let data = SyscallEntryEvent {
+            ip: ip.raw(),
+            num,
+            args,
+        };
         let entry = new_trace_entry(
             TraceKind::Thread,
             THREAD_SYSCALL_ENTRY,

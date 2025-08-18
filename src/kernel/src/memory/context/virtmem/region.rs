@@ -330,8 +330,7 @@ impl MapRegion {
                     phys_page_aligned - phys_large_aligned,
                     aligned
                 );
-                self.trace_fault(addr, cause, pfflags, used_pager, true, start_time);
-                mapper(
+                let ret = mapper(
                     large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
                 );
@@ -351,8 +350,7 @@ impl MapRegion {
                         page.nr_pages()
                     );
                 }
-                self.trace_fault(addr, cause, pfflags, used_pager, false, start_time);
-                mapper(
+                let ret = mapper(
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),
                 );

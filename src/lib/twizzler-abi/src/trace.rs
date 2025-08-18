@@ -244,6 +244,8 @@ pub struct SyscallEntryEvent {
     pub ip: u64,
     /// The system call number.
     pub num: Syscall,
+    /// Arguments.
+    pub args: [u64; 6],
 }
 
 /// Event data for thread context switches.

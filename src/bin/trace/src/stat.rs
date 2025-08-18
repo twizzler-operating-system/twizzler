@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use ndarray_stats::QuantileExt;
 use twizzler_abi::{
+    syscall::ThreadControl,
     thread::ExecutionState,
     trace::{
         CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallEntryEvent,
@@ -108,30 +109,93 @@ pub fn stat(state: TracingState) {
         .collect::<Vec<_>>();
 
     if syscalls.len() > 0 {
-        let mut map = BTreeMap::<_, usize>::new();
+        let mut map = BTreeMap::<_, BTreeMap<u64, (Option<String>, usize)>>::new();
 
         for syscall in &syscalls {
             if let Some(data) = syscall
                 .1
                 .and_then(|data| data.try_cast::<SyscallEntryEvent>(THREAD_SYSCALL_ENTRY))
             {
-                *map.entry(data.data.num).or_default() += 1usize;
+                let entry = match data.data.num {
+                    twizzler_abi::syscall::Syscall::ThreadCtrl => map
+                        .entry(data.data.num)
+                        .or_default()
+                        .entry(data.data.args[2])
+                        .or_insert_with(|| {
+                            (
+                                ThreadControl::try_from(data.data.args[2])
+                                    .ok()
+                                    .map(|x| format!("{:?}", x)),
+                                0,
+                            )
+                        }),
+                    twizzler_abi::syscall::Syscall::ObjectCtrl => map
+                        .entry(data.data.num)
+                        .or_default()
+                        .entry(data.data.args[2])
+                        .or_insert_with(|| {
+                            (
+                                match data.data.args[2] {
+                                    0 => Some("CreateCommit".to_string()),
+                                    1 => Some("Delete".to_string()),
+                                    2 => Some("Sync".to_string()),
+                                    3 => Some("Preload".to_string()),
+                                    _ => Some("???".to_string()),
+                                },
+                                0,
+                            )
+                        }),
+                    twizzler_abi::syscall::Syscall::MapCtrl => map
+                        .entry(data.data.num)
+                        .or_default()
+                        .entry(data.data.args[2])
+                        .or_insert_with(|| {
+                            (
+                                match data.data.args[2] {
+                                    0 => Some("Sync".to_string()),
+                                    1 => Some("Discard".to_string()),
+                                    2 => Some("Invalidate".to_string()),
+                                    3 => Some("Update".to_string()),
+                                    _ => Some("???".to_string()),
+                                },
+                                0,
+                            )
+                        }),
+                    _ => {
+                        let entry = map.entry(data.data.num).or_default().entry(0).or_default();
+                        entry
+                    }
+                };
+                *(&mut entry.1) += 1usize;
             }
         }
 
         println!("collected {} syscalls", syscalls.len(),);
 
         let mut coll = map.into_iter().collect::<Vec<_>>();
-        coll.sort_by_key(|c| c.1);
+        coll.sort_by_key(|c| c.1.values().fold(0, |a, v| a + v.1));
 
         let mut banner = false;
-        for (k, v) in coll {
+        for (k, v) in coll.iter().rev() {
             if !banner {
                 banner = true;
-                println!("                 SYSCALL     COUNT")
+                println!("                 SYSCALL                SUBTYPE     COUNT")
             }
             let sys = format!("{:?}", k);
-            println!("    {:>20}   {:7}", sys, v);
+
+            let mut coll = v.values().collect::<Vec<_>>();
+            coll.sort_by_key(|c| c.1);
+            for v in coll.iter().rev() {
+                println!(
+                    "    {:>20}   {:>20}   {:7}",
+                    sys,
+                    match v.0 {
+                        Some(ref st) => st.as_str(),
+                        None => "",
+                    },
+                    v.1
+                );
+            }
         }
     }
 
