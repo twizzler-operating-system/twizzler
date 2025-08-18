@@ -4,8 +4,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    fmt::Display,
-    sync::atomic::{AtomicU32, Ordering},
+    fmt::Display, sync::atomic::{AtomicU32, Ordering}
 };
 
 use pages::PageRef;
@@ -13,7 +12,7 @@ use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
-    syscall::{CreateTieSpec, LifetimeType},
+    syscall::{BackingType, CreateTieSpec, LifetimeType, ObjectInfo},
 };
 use twizzler_rt_abi::object::Nonce;
 
@@ -305,6 +304,30 @@ impl Object {
 
     pub fn dirty_set(&self) -> &DirtySet {
         &self.dirty_set
+    }
+
+    pub fn info(&self) -> ObjectInfo {
+        let num_pages = {
+            let page_tree = self.lock_page_tree();
+            let r = page_tree.range(0.into()..usize::MAX.into());
+            let mut page_count = 0;
+            for range in r {
+                page_count += range.1.length;
+            }
+            page_count
+        };
+        ObjectInfo {
+            id: self.id,
+            // TODO: see self.contexts?
+            maps: 0,
+            // TODO: see TIE_MGR
+            ties_to: 0,
+            ties_from: 0,
+            life: self.lifetime_type,
+            backing: BackingType::default(),
+            pages: num_pages,
+
+        }
     }
 }
 
