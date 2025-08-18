@@ -21,7 +21,7 @@ use crate::{
     memory::{
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::{MappingCursor, MappingFlags, MappingSettings},
+        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable},
         tracker::{FrameAllocFlags, FrameAllocator},
         FAULT_STATS,
     },
@@ -50,6 +50,7 @@ pub struct MapRegion {
     pub prot: Protections,
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
+    pub shared_pt: Option<SharedPageTable>,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -175,6 +176,7 @@ impl MapRegion {
         default_prot: Protections,
         start_time: Instant,
         mapper: impl FnOnce(PageNumber, ObjectPageProvider) -> Result<(), UpcallInfo>,
+        shared_mapper: impl Fn(VirtAddr, &SharedPageTable) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
         let mut page_number = PageNumber::from_address(addr);
         if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
@@ -191,6 +193,13 @@ impl MapRegion {
         } else {
             GetPageFlags::empty()
         };
+
+        if let Some(shared_pt) = &self.shared_pt
+            && !is_kern_obj
+        {
+            check_settings(addr, &shared_pt.settings, cause)?;
+            shared_mapper(addr, shared_pt)?;
+        }
 
         if let Some(shadow) = &self.shadow {
             if let Some(page) = shadow.get_page(page_number, get_page_flags) {
@@ -246,6 +255,7 @@ impl MapRegion {
                 default_prot,
                 start_time,
                 mapper,
+                shared_mapper,
             );
         }
 
