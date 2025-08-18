@@ -95,6 +95,4 @@ impl<'a> PhysAddrProvider for SharedRootPageProvider<'a> {
     }
 }
 
-pub fn free_shared_frame(frame: FrameRef) {
-    todo!()
-}
+pub fn free_shared_frame(frame: FrameRef) {}

@@ -17,6 +17,11 @@ struct PfEvent {
 }
 
 pub fn stat(state: TracingState) {
+    println!(
+        "statistics for {}, executed over {} seconds",
+        state.name,
+        (state.end_time - state.start_time).as_secs_f32()
+    );
     let data = state.data();
 
     let mut pfs = Vec::new();
