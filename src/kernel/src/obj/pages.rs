@@ -317,6 +317,42 @@ impl Object {
                 page_tree = self.lock_page_tree();
             } else {
                 let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
+                let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+                let large_page_number = page_number.align_down(pages_per_large);
+
+                let mut entries =
+                    page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
+                let all_empty = entries.all(|e| e.1.is_empty());
+
+                //log::info!("{} ==> {} {}", self.id(), all_empty, page_number);
+
+                if !large_page_number.is_zero()
+                    && page_number
+                        < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
+                    && all_empty
+                {
+                    let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
+                    if let Some(frame) = frame_allocator.try_allocate() {
+                        let page = Arc::new(Page::new(frame));
+                        assert_eq!(frame.size(), PHYS_LEVEL_LAYOUTS[1].size());
+                        let page = PageRef::new(page, 0, pages_per_large);
+                        let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
+                        log::trace!(
+                            "{}: mapping {} for {}",
+                            self.id(),
+                            large_page_number,
+                            page_number
+                        );
+                        if page_tree
+                            .add_page(large_page_number, page, Some(&mut frame_allocator))
+                            .is_none()
+                        {
+                            log::warn!("failed to map large page {}", large_page_number);
+                        }
+                    }
+                    return page_tree;
+                }
+
                 let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
                 if let Some(frame) = frame_allocator.try_allocate() {
                     let page = Arc::new(Page::new(frame));

@@ -111,22 +111,15 @@ pub fn print_fault_stats() {
         .get(1)
         .map(|x| x.swap(0, Ordering::SeqCst))
         .unwrap_or(0);
-    let big_count = FAULT_STATS
-        .count
-        .get(2)
-        .map(|x| x.swap(0, Ordering::SeqCst))
-        .unwrap_or(0);
     logln!(
-        "mem: {:5}:{:5}:{:5} ({:5}) faults over {:5} ms ({:5}:{:5}:{:5} ({:5}) / ms) total {}",
-        big_count,
+        "mem: {:5}:{:5} ({:5}) faults over {:5} ms ({:5}:{:5} ({:5}) / ms) total {}",
         med_count,
         small_count,
-        small_count + med_count + big_count,
+        small_count + med_count,
         dt,
-        big_count as u128 / dt,
         med_count as u128 / dt,
         small_count as u128 / dt,
-        (small_count + med_count + big_count) as u128 / dt,
+        (small_count + med_count) as u128 / dt,
         FAULT_STATS.total.load(Ordering::SeqCst)
     );
     *start = Instant::now();

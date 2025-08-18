@@ -39,6 +39,8 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
+    "src/srv/cache-srv",
+    "src/bin/cache",
 
     "src/ports/lwext4-rs",
 
@@ -74,14 +76,14 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
+    "lib:cache-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",
+    "crate:cache",
 
     "crate:sec-test",
     "crate:ptest",
-
-    #"crate:twzcandle",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -122,6 +124,8 @@ parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.
 lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 #lock_api = { path = "src/ports/parking_lot/lock_api" }
 #blocking = { path = "src/ports/blocking" }
+
+num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
 
 
 candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }

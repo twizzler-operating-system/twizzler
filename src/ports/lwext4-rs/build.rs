@@ -8,6 +8,8 @@ fn main() {
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
+    let cflags = format!("{} -DCONFIG_USE_DEFAULT_CFG", cflags);
+
     //let _ = std::fs::remove_dir_all(&cmake_build);
 
     let mut proc = std::process::Command::new("cmake");

@@ -31,6 +31,19 @@ impl From<twizzler_rt_abi::object::MapFlags> for MapFlags {
     }
 }
 
+impl From<MapFlags> for twizzler_rt_abi::object::MapFlags {
+    fn from(mf: MapFlags) -> Self {
+        let mut this = Self::empty();
+        if mf.contains(MapFlags::STABLE) {
+            this.insert(twizzler_rt_abi::object::MapFlags::INDIRECT);
+        }
+        if mf.contains(MapFlags::NO_NULLPAGE) {
+            this.insert(twizzler_rt_abi::object::MapFlags::NO_NULLPAGE);
+        }
+        this
+    }
+}
+
 /// Map an object into the address space with the specified protections.
 pub fn sys_object_map(
     handle: Option<ObjID>,

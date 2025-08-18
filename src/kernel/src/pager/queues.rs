@@ -204,6 +204,13 @@ fn pager_compl_handle_page_data(
             };
 
             let page = PageRef::new(Arc::new(page), 0, thiscount);
+            log::trace!(
+                "Adding page {}: {} {} {:?}",
+                objid,
+                pn,
+                thiscount,
+                page.physical_address()
+            );
             object_tree.add_page(pn, page, None);
             count += thiscount;
         }

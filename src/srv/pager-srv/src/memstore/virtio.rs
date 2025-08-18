@@ -130,7 +130,6 @@ impl PagedDevice for VirtioMem {
     fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
         // TODO: bounds check
         let alloc_page = || {
-            tracing::info!("alloc for {:?}", start);
             let ctx = PAGER_CTX.get().unwrap();
             let page = match ctx.data.try_alloc_page() {
                 Ok(page) => page,

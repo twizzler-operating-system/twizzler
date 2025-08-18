@@ -147,7 +147,7 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
         id: info.object().id(),
         prot: info.mapping_settings(false, false).perms(),
         slot,
-        flags: MapFlags::empty(),
+        flags: info.flags,
     })
 }
 
