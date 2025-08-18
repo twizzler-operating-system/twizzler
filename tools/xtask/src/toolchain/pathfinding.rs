@@ -21,7 +21,7 @@ pub fn get_rustc_path() -> anyhow::Result<PathBuf> {
 pub fn get_rustdoc_path() -> anyhow::Result<PathBuf> {
     let mut rustdoc_path = get_toolchain_path()?;
 
-    rustdoc_path.push("/bin/rustdoc");
+    rustdoc_path.push("bin/rustdoc");
     Ok(rustdoc_path)
 }
 
