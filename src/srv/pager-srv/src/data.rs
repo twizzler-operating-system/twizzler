@@ -120,7 +120,10 @@ impl PerObject {
         let reqs = pages
             .into_iter()
             .map(|p| {
-                let start_page = p.0.pages().next().unwrap();
+                let mut start_page = p.0.pages().next().unwrap();
+                if p.0.start == (MAX_SIZE as u64) - PAGE {
+                    start_page = 0;
+                }
                 let nr_pages = p.1.len();
                 assert_eq!(nr_pages, p.0.pages().count());
                 PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
@@ -332,10 +335,12 @@ impl Memory {
     }
 
     pub fn get_page(&mut self) -> Option<u64> {
-        for region in &mut self.regions {
-            if let Some(page) = region.get_page() {
+        let i = 0;
+        while i < self.regions.len() {
+            if let Some(page) = self.regions[i].get_page() {
                 return Some(page);
             }
+            self.regions.swap_remove(i);
         }
         None
     }
@@ -454,7 +459,7 @@ impl PagerData {
         _partial: bool,
     ) -> Result<Vec<PagedPhysMem>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
-        let max_pages = 4096 * 128; //(current_mem_pages / 2).min(4096 * 128);
+        let max_pages = (current_mem_pages / 2).min(4096 * 128);
         tracing::trace!(
             "req: {}, cur: {} ({})",
             obj_range.pages().count(),
@@ -482,6 +487,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
     ) -> Result<Vec<PagedPhysMem>> {
+        // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)

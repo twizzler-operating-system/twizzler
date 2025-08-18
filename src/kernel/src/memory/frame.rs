@@ -677,6 +677,14 @@ pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Opti
 }
 
 pub(super) fn raw_free_frame(frame: FrameRef) {
+    if !frame.get_flags().contains(PhysicalFrameFlags::ADMITTED) {
+        // TODO: this happens when a sub-frame of a larger frame is freed, even though
+        // the larger frame was allocated. It'd be nice to make this not happen. But
+        // if that's impossible, we can track these freed frames in a list and periodically
+        // try to recover the large page if all associated pages are freed, and then free that.
+        log::warn!("tried to free non-admitted frame {:?}", frame);
+        return;
+    }
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);

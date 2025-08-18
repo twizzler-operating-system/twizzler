@@ -153,6 +153,10 @@ impl PageNumber {
     pub fn byte_offset(&self, off: usize) -> Self {
         Self(self.0 + off / Self::PAGE_SIZE)
     }
+
+    pub fn align_down(&self, align: usize) -> Self {
+        Self(self.0 & !(align - 1))
+    }
 }
 
 impl From<usize> for PageNumber {
@@ -491,5 +495,37 @@ impl DirtySet {
 
     fn reset_dirty(&self, pn: PageNumber) {
         self.set.lock().remove(&pn);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use twizzler_kernel_macros::kernel_test;
+
+    #[kernel_test]
+    fn test_page_number_align_down() {
+        use super::PageNumber;
+
+        // Test aligning down with power-of-2 alignments
+        assert_eq!(PageNumber(15).align_down(1), PageNumber(15));
+        assert_eq!(PageNumber(15).align_down(2), PageNumber(14));
+        assert_eq!(PageNumber(15).align_down(4), PageNumber(12));
+        assert_eq!(PageNumber(15).align_down(8), PageNumber(8));
+        assert_eq!(PageNumber(15).align_down(16), PageNumber(0));
+
+        // Test with already aligned values
+        assert_eq!(PageNumber(16).align_down(16), PageNumber(16));
+        assert_eq!(PageNumber(32).align_down(8), PageNumber(32));
+        assert_eq!(PageNumber(64).align_down(32), PageNumber(64));
+
+        // Test with zero
+        assert_eq!(PageNumber(0).align_down(1), PageNumber(0));
+        assert_eq!(PageNumber(0).align_down(4), PageNumber(0));
+        assert_eq!(PageNumber(0).align_down(16), PageNumber(0));
+
+        // Test edge cases
+        assert_eq!(PageNumber(1).align_down(2), PageNumber(0));
+        assert_eq!(PageNumber(7).align_down(8), PageNumber(0));
+        assert_eq!(PageNumber(255).align_down(256), PageNumber(0));
     }
 }

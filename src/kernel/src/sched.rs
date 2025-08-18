@@ -539,7 +539,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
+                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running && false {
                     logln!(
                         "thread {:3}: u {:4} s {:4} i {:4}, {:?}, {:x}",
                         t.id(),

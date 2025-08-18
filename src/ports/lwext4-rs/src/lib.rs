@@ -3,6 +3,7 @@ use std::{
     io::{Read, Result, Seek, Write},
     mem::MaybeUninit,
     ptr::null_mut,
+    sync::{Condvar, Mutex},
     u64,
 };
 
@@ -89,12 +90,8 @@ pub trait Ext4BlockdevIface {
     fn close(&mut self) -> Result<()>;
     fn read(&mut self, buf: *mut u8, block: u64, bcount: u32) -> Result<u32>;
     fn write(&mut self, buf: *const u8, block: u64, bcount: u32) -> Result<u32>;
-    fn lock(&mut self) -> Result<()> {
-        Ok(())
-    }
-    fn unlock(&mut self) -> Result<()> {
-        Ok(())
-    }
+    fn lock(&self) -> Result<()>;
+    fn unlock(&self) -> Result<()>;
 }
 
 struct BdIface {
@@ -181,12 +178,13 @@ pub struct Ext4Fs {
 }
 
 #[allow(dead_code, unused_variables)]
-pub struct Ext4File {
+pub struct Ext4File<'a> {
     file: Box<ext4_file>,
     name: CString,
+    fs: &'a mut Ext4Fs,
 }
 
-impl Ext4File {
+impl Ext4File<'_> {
     pub fn len(&mut self) -> u64 {
         unsafe { lwext4::ext4_fsize(self.file.as_mut()) }
     }
@@ -194,9 +192,20 @@ impl Ext4File {
     pub fn truncate(&mut self, new_size: u64) -> Result<()> {
         errno_to_result(unsafe { lwext4::ext4_ftruncate(self.file.as_mut(), new_size) })
     }
+
+    pub fn ensure_backing(&mut self, offset: u64) -> Result<()> {
+        let mut inode = self.fs.get_inode(self.file.inode)?;
+        let block_size = self.fs.block_size()?;
+        inode.get_data_block((offset / block_size) as u32, true)?;
+        Ok(())
+    }
+
+    pub fn get_file_inode(&mut self) -> Result<Ext4InodeRef> {
+        self.fs.get_inode(self.file.inode)
+    }
 }
 
-impl Drop for Ext4File {
+impl Drop for Ext4File<'_> {
     fn drop(&mut self) {
         unsafe { lwext4::ext4_fclose(self.file.as_mut()) };
     }
@@ -298,6 +307,85 @@ impl Drop for Ext4InodeRef {
     }
 }
 
+struct MpLock {
+    inner: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl MpLock {
+    fn lock(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        while *inner {
+            inner = self.cv.wait(inner).unwrap();
+        }
+        *inner = true;
+    }
+
+    fn unlock(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        assert!(*inner);
+        *inner = false;
+        self.cv.notify_all();
+    }
+}
+
+static MP_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _mp_lock() {
+    MP_LOCK.lock();
+}
+
+unsafe extern "C" fn _mp_unlock() {
+    MP_LOCK.unlock();
+}
+
+static BC_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _bc_lock() {
+    BC_LOCK.lock();
+}
+
+unsafe extern "C" fn _bc_unlock() {
+    BC_LOCK.unlock();
+}
+
+static BA_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _ba_lock() {
+    BA_LOCK.lock();
+}
+
+unsafe extern "C" fn _ba_unlock() {
+    BA_LOCK.unlock();
+}
+
+static IA_LOCK: MpLock = MpLock {
+    inner: Mutex::new(false),
+    cv: Condvar::new(),
+};
+
+unsafe extern "C" fn _ia_lock() {
+    IA_LOCK.lock();
+}
+
+unsafe extern "C" fn _ia_unlock() {
+    IA_LOCK.unlock();
+}
+
+static LOCKS: lwext4::ext4_lock = lwext4::ext4_lock {
+    lock: Some(_mp_lock),
+    unlock: Some(_mp_unlock),
+};
+
 impl Ext4Fs {
     pub fn bd(&mut self) -> &mut Ext4Blockdev {
         &mut self.bd
@@ -308,6 +396,20 @@ impl Ext4Fs {
         errno_to_result(r)?;
         unsafe { lwext4::ext4_recover(mnt_name.as_ptr()) };
         errno_to_result(unsafe { lwext4::ext4_journal_start(mnt_name.as_ptr()) })?;
+        errno_to_result(unsafe { lwext4::ext4_mount_setup_locks(mnt_name.as_ptr(), &LOCKS) })?;
+
+        let fs = unsafe { lwext4::ext4_mountpoint_fs(mnt_name.as_ptr()) };
+        unsafe {
+            (*fs).bcache_lock = Some(_bc_lock);
+            (*fs).bcache_unlock = Some(_bc_unlock);
+
+            (*fs).inode_alloc_lock = Some(_ia_lock);
+            (*fs).inode_alloc_unlock = Some(_ia_unlock);
+
+            (*fs).block_alloc_lock = Some(_ba_lock);
+            (*fs).block_alloc_unlock = Some(_ba_unlock);
+        }
+
         Ok(Self { bd, mnt_name })
     }
 
@@ -321,7 +423,7 @@ impl Ext4Fs {
         Ok(this)
     }
 
-    pub fn open_file(&mut self, name: &str, flags: u32) -> Result<Ext4File> {
+    pub fn open_file(&mut self, name: &str, flags: u32) -> Result<Ext4File<'_>> {
         let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
         let name = CString::new(name).unwrap();
 
@@ -335,10 +437,14 @@ impl Ext4Fs {
         errno_to_result(unsafe {
             lwext4::ext4_fopen2(file.as_mut(), name.as_ptr(), flags as i32)
         })?;
-        Ok(Ext4File { file, name })
+        Ok(Ext4File {
+            file,
+            name,
+            fs: self,
+        })
     }
 
-    pub fn open_file_from_inode(&mut self, index: u32, flags: u32) -> Result<Ext4File> {
+    pub fn open_file_from_inode(&mut self, index: u32, flags: u32) -> Result<Ext4File<'_>> {
         let name = format!("{}#{}", self.mnt_name.to_string_lossy(), index);
         let name = CString::new(name).unwrap();
 
@@ -350,7 +456,11 @@ impl Ext4Fs {
             fsize: inode.size(),
             fpos: 0,
         });
-        Ok(Ext4File { file, name })
+        Ok(Ext4File {
+            file,
+            name,
+            fs: self,
+        })
     }
 
     pub fn get_inode(&mut self, index: u32) -> Result<Ext4InodeRef> {
@@ -371,24 +481,11 @@ impl Ext4Fs {
         Ok(Ext4InodeRef { inode })
     }
 
-    pub fn get_file_inode(&mut self, file: &Ext4File) -> Result<Ext4InodeRef> {
-        self.get_inode(file.file.inode)
-    }
-
     pub fn block_size(&mut self) -> Result<u64> {
         let mut sb = null_mut();
         errno_to_result(unsafe { lwext4::ext4_get_sblock(self.mnt_name.as_ptr(), &mut sb) })?;
         let block_size = 1024 << (unsafe { *sb }).log_block_size;
         Ok(block_size)
-    }
-
-    pub fn ensure_backing(&mut self, file: &Ext4File, offset: u64) -> Result<()> {
-        let mut inode = self.get_inode(file.file.inode)?;
-        let mut sb = null_mut();
-        errno_to_result(unsafe { lwext4::ext4_get_sblock(self.mnt_name.as_ptr(), &mut sb) })?;
-        let block_size = 1024 << (unsafe { *sb }).log_block_size;
-        inode.get_data_block((offset / block_size) as u32, true)?;
-        Ok(())
     }
 
     pub fn remove_file(&mut self, name: &str) -> Result<()> {
@@ -404,7 +501,7 @@ impl Ext4Fs {
     }
 }
 
-impl Read for Ext4File {
+impl Read for Ext4File<'_> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let mut completed = 0;
         let r = unsafe {
@@ -420,7 +517,7 @@ impl Read for Ext4File {
     }
 }
 
-impl Write for Ext4File {
+impl Write for Ext4File<'_> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let mut completed = 0;
         let r = unsafe {
@@ -440,7 +537,7 @@ impl Write for Ext4File {
     }
 }
 
-impl Seek for Ext4File {
+impl Seek for Ext4File<'_> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> Result<u64> {
         let (mode, off) = match pos {
             std::io::SeekFrom::Start(off) => (SEEK_SET, off as i64),

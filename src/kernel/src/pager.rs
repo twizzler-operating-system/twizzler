@@ -8,8 +8,6 @@ use twizzler_abi::{
     syscall::{ObjectCreate, SyncInfo},
 };
 
-use log::trace;
-
 use crate::{
     memory::{
         context::virtmem::region::{MapRegion, Shadow},
@@ -288,6 +286,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
 
     for inflight in &inflights {
         inflight.for_each_pager_req(|pager_req| {
+            log::trace!("providing: {:?}", pager_req);
             queues::submit_pager_request(pager_req);
         });
     }
