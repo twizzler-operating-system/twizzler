@@ -13,7 +13,8 @@ use crate::{
     instant::Instant,
     memory::{
         context::{kernel_context, ContextRef},
-        pagetables::PhysAddrProvider,
+        frame::PHYS_LEVEL_LAYOUTS,
+        pagetables::{MappingCursor, PhysAddrProvider, SharedPageTable},
         FAULT_STATS,
     },
     obj::PageNumber,
@@ -200,6 +201,23 @@ fn page_fault_to_region(
         sctx_id = perms.ctx;
     }
 
+    let shared_mapper = |addr: VirtAddr, spt: &SharedPageTable| {
+        let aligned_addr = spt.align_addr(addr);
+
+        let cursor = MappingCursor::new(aligned_addr, PHYS_LEVEL_LAYOUTS[spt.level()].size());
+        ctx.with_arch(sctx_id, |arch| {
+            if !arch.readmap(cursor, |mut x| {
+                x.next().map(|m| !m.is_shared()).unwrap_or_default()
+            }) {
+                if arch.readmap(cursor, |x| x.count()) > 0 {
+                    arch.unmap(cursor);
+                }
+                arch.shared_map(cursor, spt);
+            }
+        });
+        Ok(())
+    };
+
     let mapper = |offset: PageNumber, mut provider: ObjectPageProvider| {
         // TODO: limit page count by mapping or by max?
         let cursor = info.mapping_cursor(
@@ -245,6 +263,7 @@ fn page_fault_to_region(
         default_prot,
         start_time,
         mapper,
+        shared_mapper,
     )
 }
 

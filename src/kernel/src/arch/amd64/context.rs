@@ -4,7 +4,7 @@ use crate::{
         frame::get_frame,
         pagetables::{
             DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
-            PhysAddrProvider,
+            PhysAddrProvider, SharedPageTable,
         },
         tracker::{alloc_frame, free_frame, FrameAllocFlags},
         VirtAddr,
@@ -95,6 +95,15 @@ impl ArchContext {
         }
     }
 
+    pub fn shared_map(&self, cursor: MappingCursor, spt: &SharedPageTable) {
+        let ops = if cursor.start().is_kernel() {
+            panic!("cannot map kernel memory with shared page tables")
+        } else {
+            self.inner.lock().shared_map(cursor, spt)
+        };
+        ops.run_all();
+    }
+
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
         if cursor.start().is_kernel() {
             kernel_mapper().lock().change(cursor, settings);
@@ -151,6 +160,10 @@ impl ArchContextInner {
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         self.mapper.unmap(cursor)
+    }
+
+    fn shared_map(&mut self, cursor: MappingCursor, spt: &SharedPageTable) -> DeferredUnmappingOps {
+        self.mapper.shared_map(cursor, spt)
     }
 }
 

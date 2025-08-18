@@ -13,12 +13,13 @@ use crate::{
     },
 };
 
-/// Management for consistency, wrapping any cache-line flushing and TLB coherence into a single
-/// object.
+/// Management for consistency, wrapping any cache-line flushing, page-freeing, and TLB coherence
+/// into a single object.
 pub(super) struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
     pages: LinkedList<FrameAdapter>,
+    shared: LinkedList<FrameAdapter>,
 }
 
 impl Consistency {
@@ -27,6 +28,7 @@ impl Consistency {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
             pages: LinkedList::new(FrameAdapter::NEW),
+            shared: LinkedList::new(FrameAdapter::NEW),
         }
     }
 
@@ -51,18 +53,27 @@ impl Consistency {
         self.pages.push_back(frame);
     }
 
+    /// Enqueue a page for freeing.
+    pub fn free_shared_frame(&mut self, frame: FrameRef) {
+        self.shared.push_back(frame);
+    }
+
     /// Flush the TLB invalidations.
     fn flush_invalidations(&mut self) {
         self.tlb.finish();
     }
 
     pub(super) fn into_deferred(self) -> DeferredUnmappingOps {
-        DeferredUnmappingOps { pages: self.pages }
+        DeferredUnmappingOps {
+            pages: self.pages,
+            shared: self.shared,
+        }
     }
 }
 
 pub struct DeferredUnmappingOps {
     pages: LinkedList<FrameAdapter>,
+    shared: LinkedList<FrameAdapter>,
 }
 
 impl Drop for DeferredUnmappingOps {
@@ -75,6 +86,10 @@ impl DeferredUnmappingOps {
     pub fn run_all(mut self) {
         while let Some(page) = self.pages.pop_back() {
             crate::memory::tracker::free_frame(page)
+        }
+
+        while let Some(page) = self.shared.pop_back() {
+            crate::memory::pagetables::free_shared_frame(page)
         }
     }
 }

@@ -39,6 +39,7 @@ struct Args {
 fn do_hold(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do hold: {}", id);
     cache_srv::hold(id, MapFlags::READ)?;
+    cache_srv::hold(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
     cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE)?;
     cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())

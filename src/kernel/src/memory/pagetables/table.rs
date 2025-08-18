@@ -1,4 +1,7 @@
-use super::{consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider};
+use super::{
+    consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
+    SharedPageTable,
+};
 use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
@@ -106,6 +109,41 @@ impl Table {
         }
     }
 
+    pub(super) fn shared_map(
+        &mut self,
+        consist: &mut Consistency,
+        cursor: MappingCursor,
+        level: usize,
+        spt: &SharedPageTable,
+    ) -> Option<()> {
+        let index = Self::get_index(cursor.start(), level);
+
+        log::info!("level: {}, addr: {:?}", level, cursor.start());
+        if level == spt.level() {
+            //let entry = &mut self[index];
+            let pinfo = spt.provider().peek().unwrap();
+            let mut flags = EntryFlags::intermediate();
+            flags.insert(EntryFlags::SHARED_PAGE_TABLE);
+            self.update_entry(
+                consist,
+                index,
+                Entry::new(pinfo.addr, flags),
+                cursor.start(),
+                false,
+                level,
+            );
+            Some(())
+        } else if level > spt.level() {
+            assert_ne!(level, Self::last_level());
+            self.populate(index, EntryFlags::intermediate())?;
+            let next_table = self.next_table_mut(index).unwrap();
+            next_table.shared_map(consist, cursor, Self::next_level(level), spt);
+            Some(())
+        } else {
+            panic!("tried to map within arch-tables for shared tables");
+        }
+    }
+
     pub(super) fn map(
         &mut self,
         consist: &mut Consistency,
@@ -188,19 +226,23 @@ impl Table {
                     level,
                 );
             } else if entry.is_present() && level != Self::last_level() {
-                let next_table = self.next_table_mut(idx).unwrap();
-                next_table.unmap(consist, cursor, Self::next_level(level));
-                if next_table.read_count() == 0 && level != Table::top_level() {
-                    // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
-                    consist.free_frame(self.next_table_frame(idx).unwrap());
-                    self.update_entry(
-                        consist,
-                        idx,
-                        Entry::new_unused(),
-                        cursor.start(),
-                        false,
-                        level,
-                    );
+                if entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE) {
+                    log::warn!("TODO");
+                } else {
+                    let next_table = self.next_table_mut(idx).unwrap();
+                    next_table.unmap(consist, cursor, Self::next_level(level));
+                    if next_table.read_count() == 0 && level != Table::top_level() {
+                        // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
+                        consist.free_frame(self.next_table_frame(idx).unwrap());
+                        self.update_entry(
+                            consist,
+                            idx,
+                            Entry::new_unused(),
+                            cursor.start(),
+                            false,
+                            level,
+                        );
+                    }
                 }
             }
 
@@ -266,6 +308,7 @@ impl Table {
                 entry.addr(level),
                 entry.flags().settings(),
                 Self::level_to_page_size(level),
+                entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE),
             ))
         } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();
