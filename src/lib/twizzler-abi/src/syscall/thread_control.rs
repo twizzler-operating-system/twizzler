@@ -65,6 +65,10 @@ pub enum ThreadControl {
     GetActiveSctxId = 18,
     /// Set the ID of the active security context.
     SetActiveSctxId = 19,
+    /// Set trace events.
+    SetTraceEvents = 20,
+    /// Get trace events.
+    GetTraceEvents = 21,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
@@ -293,6 +297,39 @@ pub fn sys_thread_get_trap_state(target: ObjID) -> Result<u64, TwzError> {
     };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
 }
+
+/// Set the Trap State for the thread.
+pub fn sys_thread_set_trace_events(target: ObjID, events: u64) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::SetTraceEvents as u64,
+                events,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// Get the Trap State for the thread.
+pub fn sys_thread_get_trace_events(target: ObjID) -> Result<u64, TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetTraceEvents as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
+}
+
+pub const PERTHREAD_TRACE_GEN_SAMPLE: u64 = 1;
 
 pub fn sys_thread_ctrl(
     target: Option<ObjID>,

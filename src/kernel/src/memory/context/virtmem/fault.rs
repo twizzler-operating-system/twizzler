@@ -10,6 +10,7 @@ use twizzler_abi::{
 use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
 use crate::{
     arch::VirtAddr,
+    instant::Instant,
     memory::{
         context::{kernel_context, ContextRef},
         pagetables::PhysAddrProvider,
@@ -25,6 +26,7 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
     FAULT_STATS
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+
     // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
@@ -154,13 +156,15 @@ fn check_security(
 fn page_fault_to_region(
     addr: VirtAddr,
     cause: MemoryAccessKind,
-    _flags: PageFaultFlags,
+    flags: PageFaultFlags,
     ip: VirtAddr,
     ctx: ContextRef,
     mut sctx_id: ObjID,
     info: MapRegion,
 ) -> Result<(), UpcallInfo> {
     let id = info.object.id();
+
+    let start_time = Instant::now();
     let mut page_number = PageNumber::from_address(addr);
     if info.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
         log::trace!(
@@ -232,7 +236,16 @@ fn page_fault_to_region(
         Ok(())
     };
 
-    info.map(addr, ip, cause, perms, default_prot, mapper)
+    info.map(
+        addr,
+        ip,
+        cause,
+        flags,
+        perms,
+        default_prot,
+        start_time,
+        mapper,
+    )
 }
 
 fn get_map_region(

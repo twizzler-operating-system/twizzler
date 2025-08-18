@@ -113,6 +113,36 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
 
             return [0, cur_state.to_status()];
         }
+        ThreadControl::GetTraceEvents => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let events = thread.get_trace_state();
+            return match events {
+                Ok(events) => [0, events],
+                Err(e) => [1, e.raw()],
+            };
+        }
+        ThreadControl::SetTraceEvents => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let events = thread.set_trace_state(arg);
+            return match events {
+                Ok(_) => [0, 0],
+                Err(e) => [1, e.raw()],
+            };
+        }
         _ => {
             return [1, 1];
         }
