@@ -299,24 +299,6 @@ pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
         .arg("toolchain/")
         .status()?;
 
-    // move it so it looks like toolchain_<hash> instead of having the arch info
-    // just for aesthetics
-    let extracted_archive_path = {
-        let mut pb = PathBuf::from("toolchain/");
-        pb.push(generate_os_arch_tag()?);
-        pb
-    };
-    let cleaned_archive_path = {
-        let mut pb = PathBuf::from("toolchain/");
-        pb.push(generate_tag()?);
-        pb
-    };
-
-    let _ = Command::new("mv")
-        .arg(extracted_archive_path)
-        .arg(cleaned_archive_path)
-        .status()?;
-
     Ok(())
 }
 
