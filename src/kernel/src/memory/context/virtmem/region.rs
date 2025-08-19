@@ -1,11 +1,12 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use core::{fmt::Debug, ops::Range, usize};
+use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections, MAX_SIZE},
-    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake},
+    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
+    trace::{ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind, CONTEXT_FAULT},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
@@ -13,14 +14,16 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
-use super::ObjectPageProvider;
+use super::{ObjectPageProvider, PageFaultFlags};
 use crate::{
     arch::VirtAddr,
+    instant::Instant,
     memory::{
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
         tracker::{FrameAllocFlags, FrameAllocator},
+        FAULT_STATS,
     },
     mutex::Mutex,
     obj::{
@@ -32,6 +35,10 @@ use crate::{
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 #[derive(Clone)]
@@ -87,6 +94,53 @@ fn check_settings(
 }
 
 impl MapRegion {
+    fn trace_fault(
+        &self,
+        addr: VirtAddr,
+        ip: VirtAddr,
+        cause: MemoryAccessKind,
+        pfflags: PageFaultFlags,
+        used_pager: bool,
+        large: bool,
+        start_time: Instant,
+    ) {
+        if ip.is_kernel() || addr.is_kernel_object_memory() {
+            return;
+        }
+        if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
+            let mut flags = FaultFlags::empty();
+            match cause {
+                MemoryAccessKind::Read => flags.insert(FaultFlags::READ),
+                MemoryAccessKind::Write => flags.insert(FaultFlags::WRITE),
+                MemoryAccessKind::InstructionFetch => flags.insert(FaultFlags::EXEC),
+            }
+            if pfflags.contains(PageFaultFlags::USER) {
+                flags.insert(FaultFlags::USER);
+            }
+            if large {
+                flags.insert(FaultFlags::LARGE);
+            }
+            if used_pager {
+                flags.insert(FaultFlags::PAGER);
+            }
+
+            let processing_time = Instant::now()
+                .checked_sub_instant(&start_time)
+                .map(|d| TimeSpan::from_nanos(d.as_nanos() as u64))
+                .unwrap_or(TimeSpan::ZERO);
+            let data = ContextFaultEvent {
+                addr: addr.raw(),
+                obj: self.object().id(),
+                flags,
+                processing_time,
+            };
+            let entry =
+                new_trace_entry(TraceKind::Context, CONTEXT_FAULT, TraceEntryFlags::HAS_DATA);
+
+            TRACE_MGR.enqueue(TraceEvent::new_with_data(entry, data));
+        }
+    }
+
     pub fn mapping_cursor(&self, start: usize, len: usize) -> MappingCursor {
         MappingCursor::new(self.range.start.offset(start).unwrap(), len)
     }
@@ -114,12 +168,19 @@ impl MapRegion {
     pub(super) fn map(
         &self,
         addr: VirtAddr,
+        ip: VirtAddr,
         cause: MemoryAccessKind,
+        pfflags: PageFaultFlags,
         perms: PermsInfo,
         default_prot: Protections,
-        mapper: impl FnOnce(ObjectPageProvider) -> Result<(), UpcallInfo>,
+        start_time: Instant,
+        mapper: impl FnOnce(PageNumber, ObjectPageProvider) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
-        let page_number = PageNumber::from_address(addr);
+        let mut page_number = PageNumber::from_address(addr);
+        if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+            page_number = page_number.offset(1);
+        }
+
         let is_kern_obj = addr.is_kernel_object_memory();
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
@@ -141,15 +202,23 @@ impl MapRegion {
                     settings.flags(),
                 );
                 check_settings(addr, &settings, cause)?;
-                return mapper(ObjectPageProvider::new(Vec::from([(page, settings)])));
+                self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
+                return mapper(
+                    PageNumber::from_address(addr),
+                    ObjectPageProvider::new(Vec::from([(page, settings)])),
+                );
             }
         }
 
         let mut obj_page_tree = self.object.lock_page_tree();
-        obj_page_tree = self.object.ensure_in_core(obj_page_tree, page_number);
+        let mut used_pager = false;
+        obj_page_tree = self
+            .object
+            .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
+            log::warn!("fallback allocate in fault to page {}", page_number);
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame);
                 obj_page_tree.add_page(
@@ -168,7 +237,16 @@ impl MapRegion {
         if let PageStatus::Locked(sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
-            return self.map(addr, cause, perms, default_prot, mapper);
+            return self.map(
+                addr,
+                ip,
+                cause,
+                pfflags,
+                perms,
+                default_prot,
+                start_time,
+                mapper,
+            );
         }
 
         // Step 4: do the mapping. If the page isn't present by now, report data loss.
@@ -192,7 +270,96 @@ impl MapRegion {
                 }
                 self.object().dirty_set().add_dirty(page_number);
             }
-            mapper(ObjectPageProvider::new(Vec::from([(page, settings)])))
+
+            let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            let large_page_number = page_number.align_down(pages_per_large);
+            let mut large_diff = page_number - large_page_number;
+
+            let phys_large_aligned = page
+                .physical_address()
+                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+                .unwrap();
+            let addr_large_aligned = addr
+                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+                .unwrap();
+
+            let phys_page_aligned = page
+                .physical_address()
+                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
+                .unwrap();
+            let addr_page_aligned = addr
+                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
+                .unwrap();
+
+            let aligned = (phys_page_aligned - phys_large_aligned)
+                == (addr_page_aligned - addr_large_aligned);
+            if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+                large_diff -= 1;
+            }
+            if page.nr_pages() > 1 {
+                log::trace!(
+                    "possible bigmap {:?}: {} {}: {}, {}, {:?} {} {}",
+                    ip,
+                    page_number,
+                    large_page_number,
+                    page.page_offset(),
+                    page.nr_pages(),
+                    addr,
+                    aligned,
+                    large_diff
+                );
+            }
+
+            if page.page_offset() >= large_diff
+                && large_diff > 0
+                && aligned
+                && !addr.is_kernel()
+                && !addr.is_kernel_object_memory()
+                && page.nr_pages() + large_diff >= pages_per_large
+            {
+                FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
+                log::trace!(
+                    "map large page {} for page {}. phys: {:?}, diff: {}. {:?} {:?} {:?} {:?}: {}",
+                    large_page_number,
+                    page_number,
+                    page.physical_address(),
+                    large_diff,
+                    addr_page_aligned,
+                    phys_page_aligned,
+                    addr_page_aligned - addr_large_aligned,
+                    phys_page_aligned - phys_large_aligned,
+                    aligned
+                );
+                let ret = mapper(
+                    large_page_number,
+                    ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
+                );
+                if ret.is_ok() {
+                    drop(obj_page_tree);
+                    self.trace_fault(addr, ip, cause, pfflags, used_pager, true, start_time);
+                }
+                ret
+            } else {
+                FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
+                if self.flags.contains(MapFlags::NO_NULLPAGE) {
+                    log::trace!(
+                        "nnp {}: {:?} {:?} {}",
+                        self.object().id(),
+                        addr,
+                        page.physical_address(),
+                        page.nr_pages()
+                    );
+                }
+                let ret = mapper(
+                    PageNumber::from_address(addr),
+                    ObjectPageProvider::new(Vec::from([(page, settings)])),
+                );
+                if ret.is_ok() {
+                    drop(obj_page_tree);
+                    self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
+                }
+                ret
+            }
         } else {
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),
@@ -335,7 +502,7 @@ impl Debug for Shadow {
 
 impl Shadow {
     pub fn new(info: &ObjectContextInfo) -> Self {
-        let mut tree = PageRangeTree::new();
+        let mut tree = PageRangeTree::new(info.object().id());
         log::debug!("copy range to shadow {:?}", info.object().id());
         copy_range_to_shadow(&info.object, 0, &mut tree, 0, MAX_SIZE);
         Self {

@@ -39,6 +39,8 @@ members = [
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
     "src/bin/uuhelper",
+    "src/srv/cache-srv",
+    "src/bin/cache",
 
     "src/ports/lwext4-rs",
 
@@ -53,9 +55,15 @@ members = [
     #"src/bin/serialecho", "tools/serialtest",
     "src/bin/ptest",
     "src/bin/persistent-hashmap-test"
+    "src/bin/debug",
+    "src/bin/trace",
 ]
 
-exclude = ["toolchain/src/rust", "src/ports/candle-test/candle", "src/ports/candle-test/gemm"]
+exclude = [
+    "toolchain/src/rust",
+    "src/ports/candle-test/candle",
+    "src/ports/candle-test/gemm",
+]
 resolver = "2"
 
 [workspace.metadata]
@@ -70,8 +78,12 @@ initrd = [
     "lib:montest-lib",
     "lib:logboi-srv",
     "lib:pager-srv",
+    "lib:cache-srv",
     "crate:unittest",
     "crate:uuhelper",
+    "crate:debug",
+    "crate:cache",
+    "crate:trace",
 
     "crate:sec-test",
     "crate:ptest",
@@ -117,6 +129,10 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #lock_api = { path = "src/ports/parking_lot/lock_api" }
 #blocking = { path = "src/ports/blocking" }
 
+num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
+
+
+candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }
@@ -124,15 +140,15 @@ filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", 
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
-memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+#memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
-
-
-candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
+#rocksdb = { path = "src/ports/rust-rocksdb" }
+#librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }

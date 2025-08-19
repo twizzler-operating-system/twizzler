@@ -10,17 +10,20 @@ use lru::LruCache;
 use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     simple_mutex::Mutex,
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        BackingType, KernelConsoleSource, LifetimeType, ObjectCreate, ObjectCreateFlags,
+        sys_object_create,
+    },
 };
 use twizzler_rt_abi::{
+    Result,
     bindings::{io_ctx, io_vec},
     error::{ArgumentError, GenericError, IoError},
     fd::RawFd,
     io::SeekFrom,
     object::{MapFlags, ObjectHandle},
-    Result,
 };
 
 use super::MinimalRuntime;
@@ -119,6 +122,7 @@ impl MinimalRuntime {
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
             let len = twizzler_abi::syscall::sys_kernel_console_read(
+                KernelConsoleSource::Console,
                 buf,
                 twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
             )
@@ -248,6 +252,7 @@ impl MinimalRuntime {
         let FdKind::File(file_desc) = &file_desc else {
             // Just do basic stdio via kernel console
             twizzler_abi::syscall::sys_kernel_console_write(
+                KernelConsoleSource::Console,
                 buf,
                 twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
             );

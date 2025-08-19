@@ -5,20 +5,21 @@ use twizzler_abi::{
     object::{ObjID, Protections, NULLPAGE_SIZE},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
-        ObjectRange, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
+        ObjectRange, PageFlags, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
         RequestFromPager,
     },
     syscall::{MapFlags, NANOS_PER_SEC},
 };
-use twizzler_rt_abi::error::{ObjectError, TwzError};
+use twizzler_rt_abi::error::{ObjectError, RawTwzError, TwzError};
 
 use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES};
 use crate::{
-    arch::PhysAddr,
+    arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::start_reclaim_thread,
     },
@@ -30,6 +31,7 @@ use crate::{
     },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
+    security::KERNEL_SCTX,
     thread::{
         entry::{run_closure_in_new_thread, start_new_kernel},
         priority::Priority,
@@ -90,6 +92,21 @@ fn pager_request_copy_user_phys(
     CompletionToPager::new(PagerCompletionData::Okay)
 }
 
+fn pager_register_phys(phys: u64, len: u64) -> Result<(), TwzError> {
+    log::info!("register phys: {:x} - {:x}", phys, phys + len);
+    let paddr = PhysAddr::new(phys).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+    let vaddr = phys_to_virt(paddr);
+    let cursor = MappingCursor::new(vaddr, len as usize);
+    let settings = MappingSettings::new(
+        Protections::READ | Protections::WRITE,
+        CacheType::WriteBack,
+        MappingFlags::GLOBAL,
+    );
+    let mut phys = ContiguousProvider::new(paddr, len as usize, settings);
+    kernel_context().with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+    Ok(())
+}
+
 pub(super) fn pager_request_handler_main() {
     let receiver = RECEIVER.wait();
     loop {
@@ -117,36 +134,85 @@ pub(super) fn pager_request_handler_main() {
                 phys,
                 write_phys,
             } => pager_request_copy_user_phys(target_object, offset, len, phys, write_phys),
+            PagerRequest::RegisterPhys(phys, len) => match pager_register_phys(phys, len) {
+                Ok(_) => CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Okay),
+                Err(e) => CompletionToPager::new(twizzler_abi::pager::PagerCompletionData::Error(
+                    RawTwzError::new(e.raw()),
+                )),
+            },
         });
     }
 }
 
-fn pager_compl_handle_page_data(objid: ObjID, obj_range: ObjectRange, phys_range: PhysRange) {
+fn pager_compl_handle_page_data(
+    objid: ObjID,
+    obj_range: ObjectRange,
+    phys_range: PhysRange,
+    flags: PageFlags,
+) {
     let pcount = phys_range.pages().count();
     log::trace!("got : {} {:?} {:?}", objid, obj_range, phys_range);
-    log::trace!(
-        "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
-        phys_range,
-        pcount,
-        crate::memory::tracker::get_outstanding_pager_pages()
-    );
-    crate::memory::tracker::untrack_page_pager(pcount);
-    if crate::memory::tracker::get_outstanding_pager_pages() < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
-    {
-        super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+
+    if !flags.contains(PageFlags::WIRED) {
+        log::trace!(
+            "untrack {:?} from pager memory ({} pages, pager has {} pages left)",
+            phys_range,
+            pcount,
+            crate::memory::tracker::get_outstanding_pager_pages()
+        );
+        crate::memory::tracker::untrack_page_pager(pcount);
+        if crate::memory::tracker::get_outstanding_pager_pages()
+            < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
+        {
+            super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+        }
     }
 
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
 
-        for (objpage_nr, physpage_nr) in obj_range.pages().zip(phys_range.pages()) {
+        let mut count = 0;
+        let max_obj = obj_range.pages().count();
+        let max_phys = phys_range.pages().count();
+        while count < max_obj {
+            let objpage_nr = obj_range.pages().nth(count).unwrap();
+            let physpage_nr = phys_range.pages().nth(count).unwrap();
+
             let pn = PageNumber::from(objpage_nr as usize);
             let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
 
-            // TODO: will need to supply allocator
-            let page = Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack);
-            let page = PageRef::new(Arc::new(page), 0, 1);
+            let (page, thiscount) = if flags.contains(PageFlags::WIRED) {
+                let max_pages = (max_obj - count).min(max_phys - count);
+                log::trace!("wiring {} pages: {}", max_pages, objpage_nr);
+                (
+                    Page::new_wired(pa, PageNumber::PAGE_SIZE * max_pages, CacheType::WriteBack),
+                    max_pages,
+                )
+            } else {
+                (
+                    if let Some(frame) = crate::memory::frame::get_frame(pa) {
+                        Page::new(frame)
+                    } else {
+                        log::warn!(
+                            "non-wired physical address, but not known by frame allocator: {:?}",
+                            pa
+                        );
+                        Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
+                    },
+                    1,
+                )
+            };
+
+            let page = PageRef::new(Arc::new(page), 0, thiscount);
+            log::trace!(
+                "Adding page {}: {} {} {:?}",
+                objid,
+                pn,
+                thiscount,
+                page.physical_address()
+            );
             object_tree.add_page(pn, page, None);
+            count += thiscount;
         }
         drop(object_tree);
 
@@ -219,7 +285,8 @@ pub(super) fn pager_compl_handler_main() {
                 objid,
                 obj_range,
                 phys_range,
-            ) => pager_compl_handle_page_data(objid, obj_range, phys_range),
+                flags,
+            ) => pager_compl_handle_page_data(objid, obj_range, phys_range, flags),
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
                 pager_compl_handle_object_info(id, info)
             }

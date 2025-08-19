@@ -16,16 +16,18 @@ pub use time::*;
 
 use crate::log::KernelConsoleHardware;
 
-pub struct MachineConsoleHardware;
+pub struct MachineConsoleHardware {
+    debug: bool,
+}
 
 impl KernelConsoleHardware for MachineConsoleHardware {
     fn write(&self, data: &[u8], flags: crate::log::KernelConsoleWriteFlags) {
-        serial::write(data, flags);
+        serial::write(data, flags, self.debug);
     }
 }
 
 impl MachineConsoleHardware {
-    pub const fn new() -> Self {
-        Self
+    pub const fn new(debug: bool) -> Self {
+        Self { debug }
     }
 }

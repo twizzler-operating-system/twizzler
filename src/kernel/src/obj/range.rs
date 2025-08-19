@@ -2,6 +2,7 @@ use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::fmt::Display;
 
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
+use twizzler_abi::object::ObjID;
 
 use super::{pages::PageRef, pagevec::PageVecRef, PageNumber};
 use crate::{
@@ -52,6 +53,25 @@ enum BackingPages {
     Many(PageVecRef),
 }
 
+impl core::fmt::Display for BackingPages {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BackingPages::Nothing => write!(f, "BackingPages::Nothing"),
+            BackingPages::Single(page_ref) => write!(
+                f,
+                "BackingPages::Single({:?}, {}, {})",
+                page_ref.physical_address(),
+                page_ref.nr_pages(),
+                page_ref.page_offset()
+            ),
+            BackingPages::Many(mutex) => {
+                let v = mutex.lock();
+                write!(f, "BackingPages::Many({})", v.len())
+            }
+        }
+    }
+}
+
 pub struct PageRange {
     pub start: PageNumber,
     pub length: usize,
@@ -90,7 +110,7 @@ impl PageRange {
                 BackingPages::Nothing => None,
                 BackingPages::Single(page_ref) => {
                     assert!(off < page_ref.nr_pages());
-                    Some(page_ref.clone())
+                    Some(page_ref.adjust(self.offset + off))
                 }
                 BackingPages::Many(pv_ref) => pv_ref.lock().try_get_page(self.offset + off),
             }?,
@@ -180,6 +200,10 @@ impl PageRange {
         self.start..self.start.offset(self.length)
     }
 
+    pub fn is_empty(&self) -> bool {
+        matches!(self.backing, BackingPages::Nothing)
+    }
+
     pub fn sleeper(&mut self) -> Arc<RangeSleep> {
         if self.sleep.is_none() {
             self.sleep = Some(Arc::new(RangeSleep::new()));
@@ -219,6 +243,7 @@ impl Display for PageRange {
 #[derive(Default)]
 pub struct PageRangeTree {
     tree: NonOverlappingIntervalTree<PageNumber, PageRange>,
+    id: ObjID,
 }
 
 pub enum PageStatus {
@@ -238,9 +263,10 @@ bitflags::bitflags! {
 }
 
 impl PageRangeTree {
-    pub fn new() -> Self {
+    pub fn new(id: ObjID) -> Self {
         Self {
             tree: NonOverlappingIntervalTree::new(),
+            id,
         }
     }
 
@@ -405,37 +431,44 @@ impl PageRangeTree {
         allocator: Option<&mut FrameAllocator>,
     ) -> Option<PageRef> {
         const MAX_EXTENSION_ALLOWED: usize = 16;
-        let range = self.tree.get_mut(&pn);
-        if let Some(mut range) = range {
+        let range = self.tree.get(&pn);
+        if let Some(range) = range {
             if range.is_shared() {
                 if let Some(allocator) = allocator {
                     if !self.split_into_three(pn, true, allocator) {
                         return None;
                     }
                 }
-                range = self.tree.get_mut(&pn).unwrap();
             }
-            Some(range.add_page(pn, page))
+            let mut range = self.tree.remove(&pn).unwrap();
+            let off = pn - range.start;
+            let extra_len = (page.nr_pages() + off).saturating_sub(range.length);
+            range.length += extra_len;
+            let p = range.add_page(pn, page);
+            let _kicked = self.tree.insert_replace(range.range(), range);
+            Some(p)
         } else {
             // Try to extend a previous range.
             if let Some((_, prev_range)) =
                 self.tree.range_mut(PageNumber::from_offset(0)..pn).last()
             {
                 let end = prev_range.start.offset(prev_range.length - 1);
+                let nr_extra_pages = page.nr_pages() - 1;
                 let diff = pn - end;
                 if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {
                     let mut prev_range = self.tree.remove(&end).unwrap();
-                    prev_range.length += diff;
+                    prev_range.length += diff + nr_extra_pages;
                     let p = prev_range.add_page(pn, page);
+
                     let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
                     assert_eq!(kicked.len(), 0);
                     return Some(p);
                 }
             }
             let mut range = PageRange::new(pn);
-            range.length = 1;
+            range.length = page.nr_pages();
             let p = range.add_page(pn, page);
-            let kicked = self.tree.insert_replace(pn..pn.next(), range);
+            let kicked = self.tree.insert_replace(range.range(), range);
             assert_eq!(kicked.len(), 0);
             Some(p)
         }

@@ -1,5 +1,7 @@
 //! Marker types for invariance, store side-effects, and base types.
 
+use twizzler_abi::thread::ThreadRepr;
+
 /// Indicates that a type is _invariant_ and thus can be stored in an object.
 ///
 /// # Safety
@@ -71,3 +73,5 @@ impl BaseType for u8 {}
 impl BaseType for u16 {}
 impl BaseType for u32 {}
 impl BaseType for u64 {}
+
+impl BaseType for ThreadRepr {}

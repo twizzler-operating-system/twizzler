@@ -30,7 +30,7 @@ struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
     zone: ZoneAllocator<'static>,
 }
 
-struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
+pub struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
     inner: Spinlock<Option<KernelAllocatorInner<Ctx>>>,
 }
 
@@ -142,7 +142,7 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
 }
 
 #[global_allocator]
-static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
+pub static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
     inner: Spinlock::new(None),
 };
 

@@ -11,7 +11,7 @@ pub enum TimeUnitError {
     ConversionOverflow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[repr(transparent)]
 pub struct Seconds(pub u64);
 

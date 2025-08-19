@@ -14,6 +14,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MapFlags: u32 {
         const STABLE = 1;
+        const NO_NULLPAGE = 2;
     }
 }
 
@@ -22,6 +23,22 @@ impl From<twizzler_rt_abi::object::MapFlags> for MapFlags {
         let mut this = Self::empty();
         if of.contains(twizzler_rt_abi::object::MapFlags::INDIRECT) {
             this.insert(MapFlags::STABLE);
+        }
+        if of.contains(twizzler_rt_abi::object::MapFlags::NO_NULLPAGE) {
+            this.insert(MapFlags::NO_NULLPAGE);
+        }
+        this
+    }
+}
+
+impl From<MapFlags> for twizzler_rt_abi::object::MapFlags {
+    fn from(mf: MapFlags) -> Self {
+        let mut this = Self::empty();
+        if mf.contains(MapFlags::STABLE) {
+            this.insert(twizzler_rt_abi::object::MapFlags::INDIRECT);
+        }
+        if mf.contains(MapFlags::NO_NULLPAGE) {
+            this.insert(twizzler_rt_abi::object::MapFlags::NO_NULLPAGE);
         }
         this
     }

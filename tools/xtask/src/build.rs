@@ -24,11 +24,11 @@ struct OtherOptions {
 }
 
 use crate::{
-    triple::{valid_targets, Triple},
+    triple::{valid_targets, Arch, Triple},
     BuildOptions, CheckOptions, DocOptions, Profile,
 };
 
-fn locate_packages<'a>(workspace: &'a Workspace, kind: Option<&str>) -> Vec<Package> {
+fn locate_packages(workspace: &Workspace, kind: Option<&str>) -> Vec<Package> {
     workspace
         .members()
         .filter(|p| {
@@ -74,7 +74,7 @@ fn get_cli_configs(
     let target_machine = build_config.machine.to_string();
 
     // start building the config
-    let mut configs = format!(r#"target.{}.rustflags=["#, triple.to_string());
+    let mut configs = format!(r#"target.{}.rustflags=["#, triple);
 
     // add in definition for machine target
     write!(configs, r#""--cfg=machine=\"{}\"""#, target_machine)?;
@@ -95,7 +95,7 @@ fn build_third_party<'a>(
         return Ok(vec![]);
     }
     crate::toolchain::set_static();
-    crate::toolchain::set_cc(&build_config.twz_triple());
+    crate::toolchain::set_cc(&build_config.twz_triple())?;
     let config = user_workspace.gctx();
     let smap = SourceConfigMap::new(config)?;
     let mut registry = PackageRegistry::new_with_source_config(config, smap)?;
@@ -190,7 +190,7 @@ fn build_static<'a>(
         return Ok(None);
     }
     crate::toolchain::set_static();
-    crate::toolchain::set_cc(&build_config.twz_triple());
+    crate::toolchain::set_cc(&build_config.twz_triple())?;
     crate::print_status_line("collection: userspace-static", Some(build_config));
     // the currently supported build target triples
     // have a value of "unknown" for the machine, but
@@ -224,8 +224,8 @@ fn build_twizzler<'a>(
     if !other_options.build_twizzler {
         return Ok(None);
     }
-    crate::toolchain::set_dynamic(&build_config.twz_triple());
-    crate::toolchain::set_cc(&build_config.twz_triple());
+    crate::toolchain::set_dynamic(&build_config.twz_triple())?;
+    crate::toolchain::set_cc(&build_config.twz_triple())?;
     crate::print_status_line("collection: userspace", Some(build_config));
     // let triple =  build_config.twz_triple();
     // the currently supported build target triples
@@ -246,7 +246,17 @@ fn build_twizzler<'a>(
     if build_config.profile == Profile::Release {
         options.build_config.requested_profile = InternedString::new("release");
     }
-    options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
+    // TODO: the debug hook is currently only supported on x86_64.
+    options.spec = Packages::Packages(
+        packages
+            .iter()
+            .map(|p| p.name().to_string())
+            .filter(|p| match p.as_str() {
+                "debug" => build_config.arch == Arch::X86_64,
+                _ => true,
+            })
+            .collect(),
+    );
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
@@ -261,8 +271,8 @@ fn maybe_build_tests_dynamic<'a>(
     if !other_options.build_tests || !other_options.build_twizzler {
         return Ok(None);
     }
-    crate::toolchain::set_dynamic(&build_config.twz_triple());
-    crate::toolchain::set_cc(&build_config.twz_triple());
+    crate::toolchain::set_dynamic(&build_config.twz_triple())?;
+    crate::toolchain::set_cc(&build_config.twz_triple())?;
     crate::print_status_line("collection: userspace::tests", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
@@ -460,14 +470,14 @@ impl TwizzlerCompilation {
                 .as_ref()
                 .expect("failed to get kernel test compilation when tests requested")
                 .tests
-                .get(0)
+                .first()
                 .unwrap()
                 .path
         } else {
             &self
                 .borrow_kernel_compilation()
                 .binaries
-                .get(0)
+                .first()
                 .unwrap()
                 .path
         }
@@ -496,8 +506,8 @@ fn compile(
     let mut tools_config = GlobalContext::default()?;
     tools_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
-    crate::toolchain::set_cc(&bc.twz_triple());
-    crate::toolchain::set_dynamic(&bc.twz_triple());
+    crate::toolchain::set_cc(&bc.twz_triple())?;
+    crate::toolchain::set_dynamic(&bc.twz_triple())?;
 
     let mut config = GlobalContext::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;

@@ -12,9 +12,12 @@ use unittest_report::ReportStatus;
 
 use crate::{
     image::ImageInfo,
+    toolchain::get_toolchain_path,
     triple::{Arch, Machine},
     QemuOptions,
 };
+
+const DEFAULT_QEMU_PORT: u16 = 5555;
 
 #[derive(Debug)]
 struct QemuCommand {
@@ -47,7 +50,7 @@ impl QemuCommand {
 
     pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("8000,slots=4,maxmem=8T");
+        self.cmd.arg("-m").arg("8000,slots=4,maxmem=256G");
 
         // configure architechture specific parameters
         self.arch_config(options);
@@ -79,13 +82,17 @@ impl QemuCommand {
             "PATH",
             format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
         );
+        let fs_type = "ext2";
         if !already_exists {
+            println!("creating {} FS for image", fs_type);
             if !Command::new("mke2fs")
                 .arg("-b")
                 .arg("4096")
                 .arg("-qF")
                 .arg("-E")
-                .arg("test_fs")
+                .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
+                .arg("-t")
+                .arg(fs_type)
                 .arg("target/nvme.img")
                 .arg("10000000")
                 .status()
@@ -102,14 +109,22 @@ impl QemuCommand {
             .arg("-device")
             .arg("nvme,serial=deadbeef,drive=nvme");
 
+        self.cmd
+            .arg("-device")
+            .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
+        self.cmd.arg("-object").arg(
+            "memory-backend-file,id=dataset,size=107374182400,mem-path=target/nvme.img,share=on",
+        );
+
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
         let port = {
-            let listener = match TcpListener::bind("0.0.0.0:5555") {
+            let listener = match TcpListener::bind(format!("0.0.0.0:{}", DEFAULT_QEMU_PORT)) {
                 Ok(l) => l,
                 Err(_) => {
                     println!(
-                        "Failed to allocate default port 5555 on host, dynamically assigning."
+                        "Failed to allocate default port {} on host, dynamically assigning.",
+                        DEFAULT_QEMU_PORT
                     );
                     match TcpListener::bind("0.0.0.0:0") {
                         Ok(l) => l,
@@ -128,30 +143,60 @@ impl QemuCommand {
 
         println!("Allocated port {} for Qemu!", port);
 
-        self.cmd
-            .arg("-netdev")
-            .arg(format!("user,id=net0,hostfwd=tcp::{}-:5555", port));
+        self.cmd.arg("-netdev").arg(format!(
+            "user,id=net0,hostfwd=tcp::{}-:{}",
+            port, DEFAULT_QEMU_PORT
+        ));
 
         self.cmd
             .arg("--no-reboot") // exit instead of rebooting
-            //.arg("-s") // shorthand for -gdb tcp::1234
             .arg("-serial")
             .arg("mon:stdio");
         //-serial mon:stdio creates a multiplexed stdio backend connected
         // to the serial port and the QEMU monitor, and
         // -nographic also multiplexes the console and the monitor to stdio.
 
+        if options.gdb != 0 {
+            let gdb_port = {
+                let listener = match TcpListener::bind(format!("0.0.0.0:{}", options.gdb)) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        println!(
+                            "Failed to allocate default gdb port {} on host, dynamically assigning.",
+                            options.gdb
+                        );
+                        match TcpListener::bind("0.0.0.0:0") {
+                            Ok(l) => l,
+                            Err(e) => {
+                                panic!("gdb port alloc failed! {}", e);
+                            }
+                        }
+                    }
+                };
+                listener.local_addr().expect("local gdb addr").port()
+            };
+
+            println!("gdb debugging port: {}", gdb_port);
+            self.cmd
+                .arg("-serial")
+                .arg(&format!("tcp::{},server,nowait", gdb_port));
+        }
+
         // add additional options for qemu
         self.cmd.args(&options.qemu_options);
+
+        println!("qemu: {:?}", self.cmd);
 
         //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
     }
 
     fn arch_config(&mut self, options: &QemuOptions) {
+        let mut ovmf = get_toolchain_path().unwrap();
         match self.arch {
             Arch::X86_64 => {
                 // bios, platform
-                self.cmd.arg("-bios").arg("toolchain/install/OVMF.fd");
+                ovmf.push("OVMF.fd");
+                self.cmd.arg("-bios").arg(ovmf);
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
 
                 // add qemu exit device for testing
@@ -169,7 +214,7 @@ impl QemuCommand {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
-                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+tsc_scale,+rdtscp");
+                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp");
                 } else {
                     self.cmd.arg("-cpu").arg("max");
                 }
@@ -184,7 +229,8 @@ impl QemuCommand {
                 */
             }
             Arch::Aarch64 => {
-                self.cmd.arg("-bios").arg("toolchain/install/OVMF-AA64.fd");
+                ovmf.push("OVMF-AA64.fd");
+                self.cmd.arg("-bios").arg(ovmf);
                 self.cmd.arg("-net").arg("none");
                 if self.machine == Machine::Morello {
                     self.cmd.arg("-machine").arg("virt,gic-version=3");

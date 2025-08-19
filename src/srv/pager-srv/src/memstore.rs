@@ -1,12 +1,12 @@
+use std::sync::Arc;
+
+use object_store::PagedObjectStore;
 use twizzler::{object::ObjID, Result};
-use twizzler_abi::pager::{ObjectRange, PhysRange};
-pub trait MemStore {
-    fn set_config_id(&self, id: ObjID) -> Result<()>;
-    fn get_config_id(&self) -> Result<ObjID>;
+use twizzler_abi::{
+    pager::{ObjectRange, PhysRange},
+    syscall::{BackingType, LifetimeType},
+};
 
-    fn get_map(&self, id: ObjID, range: ObjectRange) -> Result<impl Iterator<Item = PhysRange>>;
+use crate::helpers::PAGE;
 
-    fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-}
+pub mod virtio;

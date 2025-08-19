@@ -9,8 +9,8 @@ use secgate::{
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        sys_kernel_console_write, sys_object_create, BackingType, KernelConsoleWriteFlags,
-        LifetimeType, ObjectCreate, ObjectCreateFlags,
+        sys_kernel_console_write, sys_object_create, BackingType, KernelConsoleSource,
+        KernelConsoleWriteFlags, LifetimeType, ObjectCreate, ObjectCreateFlags,
     },
 };
 use twizzler_rt_abi::{
@@ -118,6 +118,10 @@ pub fn logboi_post(
         String::from_utf8_lossy(&buf[0..len])
     );
     logger.count += 1;
-    let _ = sys_kernel_console_write(msg.as_bytes(), KernelConsoleWriteFlags::DISCARD_ON_FULL);
+    let _ = sys_kernel_console_write(
+        KernelConsoleSource::Console,
+        msg.as_bytes(),
+        KernelConsoleWriteFlags::DISCARD_ON_FULL,
+    );
     Ok(())
 }

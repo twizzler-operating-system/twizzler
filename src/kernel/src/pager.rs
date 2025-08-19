@@ -64,14 +64,16 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) {
+pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) -> bool {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
-        return;
+        return false;
     }
     let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len, flags));
     drop(mgr);
+    let mut submitted = false;
     inflight.for_each_pager_req(|pager_req| {
+        submitted = true;
         queues::submit_pager_request(pager_req);
     });
 
@@ -83,6 +85,7 @@ pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerF
             finish_blocking(guard);
         };
     }
+    submitted
 }
 
 fn cmd_object(req: ReqKind) {
@@ -142,9 +145,9 @@ pub fn sync_region(
     };
 }
 
-pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: PagerFlags) {
+pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: PagerFlags) -> bool {
     if !obj.use_pager() {
-        return;
+        return false;
     }
 
     let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
@@ -166,47 +169,54 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
     );
 
     if flags.contains(PagerFlags::PREFETCH) && low_mem {
-        return;
+        return false;
     }
 
     if needed_additional > 0 && !low_mem {
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
-    get_pages_and_wait(obj.id(), start, len, flags);
+    get_pages_and_wait(obj.id(), start, len, flags)
 }
 
-pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) {
+// Returns true if the pager was engaged.
+pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
     let max = PageNumber::from_offset(MAX_SIZE);
     if pn >= max {
         log::warn!("invalid page number: {:?}", pn);
     }
     let count_to_end = max - pn;
-    let count = count_to_end.min(16);
+    let count = count_to_end.min(1024);
 
     let tree = obj.lock_page_tree();
     let mut range = tree.range(pn..pn.offset(count));
-    let first_present = range.next().map(|r| r.0);
+    let first_present = range.next();
 
     let count = if let Some(first_present) = first_present {
-        if first_present.num() <= pn.num() {
+        if first_present.0.num() <= pn.num() {
             1
         } else {
             log::debug!(
                 "found partial in check for range {:?}: {:?}",
                 pn..pn.offset(count),
-                first_present
+                first_present.0
             );
-            first_present.num().saturating_sub(pn.num())
+            first_present.0.num().saturating_sub(pn.num())
         }
     } else {
-        count_to_end.min(16)
+        count_to_end.min(1024)
     };
+    log::trace!(
+        "get page: {} {:?} {}",
+        pn,
+        first_present.map(|f| f.1.range()),
+        count
+    );
     drop(tree);
     if count == 0 {
-        return;
+        return false;
     }
-    ensure_in_core(obj, pn, count, PagerFlags::empty());
+    ensure_in_core(obj, pn, count, PagerFlags::empty())
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -280,6 +290,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
 
     for inflight in &inflights {
         inflight.for_each_pager_req(|pager_req| {
+            log::trace!("providing: {:?}", pager_req);
             queues::submit_pager_request(pager_req);
         });
     }

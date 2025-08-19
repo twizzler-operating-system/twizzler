@@ -11,7 +11,12 @@ use core::cell::RefCell;
 
 use arm64::registers::TPIDR_EL0;
 use registers::interfaces::Writeable;
-use twizzler_abi::upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE};
+use twizzler_abi::{
+    arch::ArchRegisters,
+    thread::ExecutionState,
+    upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
+};
+use twizzler_rt_abi::error::TwzError;
 
 use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
 use crate::{memory::VirtAddr, processor::KERNEL_STACK_SIZE, thread::Thread};
@@ -229,5 +234,32 @@ impl Thread {
         // by default interrupts are enabled (unmask the I bit)
         // in other words set bits D,A, and F in DAIF[9:6]
         self.arch.context.daif = (DAIFMaskBits::IRQ.complement().bits() as u64) << 6;
+    }
+
+    pub fn read_ip(&self) -> u64 {
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        frame.unwrap().pc
+    }
+
+    pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
+        if self.get_state() != ExecutionState::Suspended {
+            return Err(TwzError::Generic(
+                twizzler_rt_abi::error::GenericError::AccessDenied,
+            ));
+        }
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        Ok(ArchRegisters {
+            frame: frame.unwrap(),
+        })
     }
 }

@@ -8,7 +8,10 @@ use std::{
 use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
 
-use crate::{build::TwizzlerCompilation, triple::Arch, BuildConfig, ImageOptions};
+use crate::{
+    build::TwizzlerCompilation, toolchain::get_toolchain_path, triple::Arch, BuildConfig,
+    ImageOptions,
+};
 
 pub struct ImageInfo {
     pub disk_image: PathBuf,
@@ -276,6 +279,30 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let data_files = generate_data_folder(&comp);
     let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
 
+    let debug_sysroot = PathBuf::from("target/dynamic/")
+        .join(cli.config.twz_triple().to_string())
+        .join(cli.config.profile.to_string())
+        .join("debug_sysroot");
+
+    tracing::info!("debug sysroot at {}", debug_sysroot.display());
+    std::fs::create_dir_all(debug_sysroot.join("initrd"))?;
+    let mut tar = Command::new("tar");
+    tar.args([
+        "xf",
+        &initrd_path.to_string_lossy(),
+        "-C",
+        &debug_sysroot.join("initrd").to_string_lossy(),
+    ]);
+    if !tar.status()?.success() {
+        anyhow::bail!("failed to extract initrd image for debug sysroot");
+    }
+
+    let _ = std::fs::remove_file("target/debug_sysroot");
+    std::os::unix::fs::symlink(
+        debug_sysroot.strip_prefix("target").unwrap(),
+        "target/debug_sysroot",
+    )?;
+
     crate::print_status_line("disk image", Some(&cli.config));
     let mut cmdline = String::new();
     if cli.tests {
@@ -287,10 +314,19 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     if let Some(autostart) = cli.autostart {
         cmdline.push_str(autostart.as_str());
     }
-    let efi_binary = match cli.config.arch {
-        Arch::X86_64 => "toolchain/install/BOOTX64.EFI",
-        Arch::Aarch64 => "toolchain/install/BOOTAA64.EFI",
+
+    let efi_binary = {
+        let mut tc_path = get_toolchain_path()?;
+
+        let name = match cli.config.arch {
+            Arch::X86_64 => "BOOTX64.EFI",
+            Arch::Aarch64 => "BOOTAA64.EFI",
+        };
+
+        tc_path.push(name);
+        tc_path
     };
+
     let image_path = get_genfile_path(&comp, "disk.img");
     println!(
         "kernel: {:?}, cmdline: {}",

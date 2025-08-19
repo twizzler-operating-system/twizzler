@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use crate::upcall::{UpcallData, UpcallInfo};
 
-pub const XSAVE_LEN: usize = 1024;
+pub const XSAVE_LEN: usize = 2048 + 1024;
 
 /// Arch-specific frame info for upcall.
 #[derive(Clone, Copy)]

@@ -1,9 +1,11 @@
 use twizzler_abi::{
+    arch::ArchRegisters,
     object::ObjID,
     syscall::{ThreadControl, ThreadSpawnArgs},
-    upcall::{UpcallFrame, UpcallTarget},
+    thread::ExecutionState,
+    upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
-use twizzler_rt_abi::Result;
+use twizzler_rt_abi::{error::TwzError, Result};
 
 use crate::{security::SwitchResult, thread::current_thread_ref};
 
@@ -11,7 +13,7 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
 }
 
-pub fn thread_ctrl(cmd: ThreadControl, arg: u64, arg2: u64) -> [u64; 2] {
+pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u64) -> [u64; 2] {
     match cmd {
         ThreadControl::SetUpcall => {
             let Some(data) = (unsafe { (arg as usize as *const UpcallTarget).as_ref() }) else {
@@ -24,9 +26,19 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64, arg2: u64) -> [u64; 2] {
             let Some(data) = (unsafe { (arg as usize as *const UpcallFrame).as_ref() }) else {
                 return [1, 1];
             };
+            let flags = ResumeFlags::from_bits_truncate(arg2);
             // TODO: verify args, check perms.
 
             current_thread_ref().unwrap().restore_upcall_frame(data);
+
+            if flags.contains(ResumeFlags::SUSPEND) {
+                log::debug!(
+                    "resume-suspend: {:?} => {}",
+                    current_thread_ref().unwrap().objid(),
+                    data.prior_ctx,
+                );
+                current_thread_ref().unwrap().suspend();
+            }
         }
         ThreadControl::SetTls => {
             current_thread_ref().unwrap().set_tls(arg);
@@ -49,7 +61,91 @@ pub fn thread_ctrl(cmd: ThreadControl, arg: u64, arg2: u64) -> [u64; 2] {
                 _ => [0, 0],
             };
         }
-        _ => todo!(),
+        ThreadControl::ReadRegisters => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let ptr = arg as usize as *mut ArchRegisters;
+            let regs = match thread.read_registers() {
+                Ok(regs) => regs,
+                Err(e) => return [1, e.raw()],
+            };
+            unsafe { ptr.write(regs) };
+        }
+        ThreadControl::ChangeState => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let target_state = ExecutionState::from_status(arg);
+            let cur_state = thread.get_state();
+            log::debug!(
+                "change state {:?}: {:?} => {:?}",
+                target,
+                cur_state,
+                target_state
+            );
+            if cur_state == ExecutionState::Exited {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            }
+            if cur_state != target_state {
+                match target_state {
+                    ExecutionState::Running => {
+                        thread.unsuspend_thread();
+                    }
+                    ExecutionState::Suspended => {
+                        thread.suspend();
+                    }
+                    _ => {
+                        return [1, TwzError::INVALID_ARGUMENT.raw()];
+                    }
+                }
+            }
+
+            return [0, cur_state.to_status()];
+        }
+        ThreadControl::GetTraceEvents => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let events = thread.get_trace_state();
+            return match events {
+                Ok(events) => [0, events],
+                Err(e) => [1, e.raw()],
+            };
+        }
+        ThreadControl::SetTraceEvents => {
+            let thread = if let Some(target) = target {
+                crate::sched::lookup_thread_repr(target)
+            } else {
+                current_thread_ref()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let events = thread.set_trace_state(arg);
+            return match events {
+                Ok(_) => [0, 0],
+                Err(e) => [1, e.raw()],
+            };
+        }
+        _ => {
+            return [1, 1];
+        }
     }
     [0, 0]
 }

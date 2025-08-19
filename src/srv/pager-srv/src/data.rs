@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
@@ -24,7 +24,6 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
-    disk::DiskPageRequest,
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, PAGE},
     stats::RecentStats,
@@ -101,7 +100,7 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![p.1]))
+                .map(|p| (p.0, vec![PagedPhysMem::new(p.1)]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -121,15 +120,13 @@ impl PerObject {
         let reqs = pages
             .into_iter()
             .map(|p| {
-                let start_page = p.0.pages().next().unwrap();
+                let mut start_page = p.0.pages().next().unwrap();
+                if p.0.start == (MAX_SIZE as u64) - PAGE {
+                    start_page = 0;
+                }
                 let nr_pages = p.1.len();
                 assert_eq!(nr_pages, p.0.pages().count());
-                PageRequest::new(
-                    ctx.disk
-                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.start)),
-                    start_page as i64,
-                    nr_pages as u32,
-                )
+                PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
             .collect_vec();
         let count = match page_out_many(ctx, self.id, reqs).await {
@@ -338,10 +335,12 @@ impl Memory {
     }
 
     pub fn get_page(&mut self) -> Option<u64> {
-        for region in &mut self.regions {
-            if let Some(page) = region.get_page() {
+        let i = 0;
+        while i < self.regions.len() {
+            if let Some(page) = self.regions[i].get_page() {
                 return Some(page);
             }
+            self.regions.swap_remove(i);
         }
         None
     }
@@ -457,48 +456,27 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-        partial: bool,
-    ) -> Result<Vec<PhysRange>> {
-        let mut pages = vec![];
+        _partial: bool,
+    ) -> Result<Vec<PagedPhysMem>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
-        let max_pages = (current_mem_pages / 2).min(128);
+        let max_pages = (current_mem_pages / 2).min(4096 * 128);
         tracing::trace!(
             "req: {}, cur: {} ({})",
             obj_range.pages().count(),
             current_mem_pages,
             current_mem_pages / 2
         );
-        for _ in 0..obj_range.pages().count().min(max_pages.max(1)) {
-            let page = match self.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    if partial && !pages.is_empty() {
-                        tracing::debug!(
-                            "oom on partial -- reading {} / {} pages",
-                            pages.len(),
-                            obj_range.pages().count()
-                        );
-                        break;
-                    }
-                    tracing::debug!("out of memory -- task waiting");
-                    mw.await
-                }
-            };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            pages.push(phys_range);
-        }
 
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = pages.len();
-        let reqs = vec![PageRequest::new(
-            ctx.disk
-                .new_paging_request::<DiskPageRequest>(pages.iter().map(|pd| pd.start)),
-            start_page as i64,
-            nr_pages as u32,
-        )];
-        let _count = page_in_many(ctx, id, reqs).await?;
-        // TODO: free pages in incomplete requests.
-        Ok(pages)
+        let nr_pages = obj_range.pages().count().min(max_pages).max(1);
+        let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
+        let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
+        if count == 0 {
+            // TODO: free pages in incomplete requests.
+            todo!();
+        }
+
+        Ok(reqs.pop().unwrap().into_list())
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
@@ -508,13 +486,14 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<Vec<PhysRange>> {
+    ) -> Result<Vec<PagedPhysMem>> {
+        // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)
                 .await?
                 .into_iter()
-                .map(|p| p.1)
+                .map(|p| PagedPhysMem::new(p.1).completed())
                 .collect());
         }
 
@@ -590,7 +569,7 @@ impl PagerData {
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            blocking::unblock(move || ctx.paged_ostore.find_external(id.raw())).await?;
+            blocking::unblock(move || ctx.paged_ostore(None)?.find_external(id.raw())).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -599,7 +578,7 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        blocking::unblock(move || ctx.paged_ostore.read_object(id.raw(), 0, &mut b)).await?;
+        blocking::unblock(move || ctx.paged_ostore(None)?.read_object(id.raw(), 0, &mut b)).await?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

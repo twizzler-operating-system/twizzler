@@ -1,6 +1,6 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::{arch, security::KERNEL_SCTX, BootInfo};
+use crate::{arch, instant::Instant, security::KERNEL_SCTX, spinlock::Spinlock, BootInfo};
 
 pub mod allocator;
 pub mod context;
@@ -11,6 +11,7 @@ pub mod tracker;
 use alloc::vec::Vec;
 
 pub use arch::{PhysAddr, VirtAddr};
+use frame::NR_LEVELS;
 use tracker::{alloc_frame, print_tracker_stats, reclaim, FrameAllocFlags};
 use twizzler_abi::object::NULLPAGE_SIZE;
 
@@ -83,4 +84,43 @@ pub fn sim_memory_pressure() {
         //alloced.push(frames);
         reclaim(frames);
     }
+}
+
+struct FaultStats {
+    count: [AtomicU32; NR_LEVELS],
+    total: AtomicU64,
+    time: Spinlock<Instant>,
+}
+
+static FAULT_STATS: FaultStats = FaultStats {
+    count: [const { AtomicU32::new(0) }; NR_LEVELS],
+    total: AtomicU64::new(0),
+    time: Spinlock::new(Instant::zero()),
+};
+
+pub fn print_fault_stats() {
+    let mut start = FAULT_STATS.time.lock();
+    let dt = (Instant::now() - *start).as_millis();
+    let small_count = FAULT_STATS
+        .count
+        .get(0)
+        .map(|x| x.swap(0, Ordering::SeqCst))
+        .unwrap_or(0);
+    let med_count = FAULT_STATS
+        .count
+        .get(1)
+        .map(|x| x.swap(0, Ordering::SeqCst))
+        .unwrap_or(0);
+    logln!(
+        "mem: {:5}:{:5} ({:5}) faults over {:5} ms ({:5}:{:5} ({:5}) / ms) total {}",
+        med_count,
+        small_count,
+        small_count + med_count,
+        dt,
+        med_count as u128 / dt,
+        small_count as u128 / dt,
+        (small_count + med_count) as u128 / dt,
+        FAULT_STATS.total.load(Ordering::SeqCst)
+    );
+    *start = Instant::now();
 }

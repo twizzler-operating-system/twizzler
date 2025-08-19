@@ -18,6 +18,15 @@ extern crate twizzler_runtime;
 fn main() {
     setup_logging();
     montest_lib::test_global_call_count().unwrap();
+    if std::env::args().find(|p| p == "-e").is_some() {
+        unsafe {
+            let nul = core::ptr::null_mut::<u32>();
+            let v = nul.read_volatile();
+            std::hint::black_box(v);
+        }
+    } else if std::env::args().find(|p| p == "-p").is_some() {
+        panic!("montest test panic");
+    }
 }
 use tracing::Level;
 fn setup_logging() {

@@ -278,6 +278,16 @@ impl AllocationRegion {
             // Unwrap-Ok: we know this address is in this region already
             // Safety: we are allocating a new, untouched frame here
             let frame = unsafe { indexer.get_frame_mut(cursor) }.unwrap();
+            for i in 0..PHYS_LEVEL_LAYOUTS[level].size() / PHYS_LEVEL_LAYOUTS[0].size() {
+                let sub_addr = cursor.offset(i * PHYS_LEVEL_LAYOUTS[0].size()).unwrap();
+                unsafe {
+                    indexer.get_frame_mut(sub_addr).unwrap().reset(
+                        sub_addr,
+                        0,
+                        PhysicalFrameFlags::empty(),
+                    )
+                };
+            }
             levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty());
             cursor = cursor.offset(levels[level].alloc_size).unwrap();
         }
@@ -667,6 +677,14 @@ pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Opti
 }
 
 pub(super) fn raw_free_frame(frame: FrameRef) {
+    if !frame.get_flags().contains(PhysicalFrameFlags::ADMITTED) {
+        // TODO: this happens when a sub-frame of a larger frame is freed, even though
+        // the larger frame was allocated. It'd be nice to make this not happen. But
+        // if that's impossible, we can track these freed frames in a list and periodically
+        // try to recover the large page if all associated pages are freed, and then free that.
+        log::warn!("tried to free non-admitted frame {:?}", frame);
+        return;
+    }
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     PFA.wait().lock().free(frame);

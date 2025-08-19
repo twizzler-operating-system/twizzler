@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 twizzler = { path = "../../lib/twizzler" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-runtime = { path = "../../rt" }
 naming = { path = "../../lib/naming" }
@@ -14,3 +15,4 @@ tracing = "*"
 tracing-subscriber = "*"
 hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
 libc = "*"
+#rocksdb = "*"

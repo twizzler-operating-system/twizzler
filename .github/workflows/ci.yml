@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_CONFIG_PATH: llvm-config-18
+  CC: clang-18
+  CXX: clang++-18
+  LD: clang++-18
+
+jobs:
+  release:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+
+  build-and-test-pr:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/build-and-test.yml
+    secrets: inherit
+
+  build-and-test-main:
+    if: github.event_name == 'push'
+    needs: release
+    uses: ./.github/workflows/build-and-test.yml
+    secrets: inherit
+
+  docs:
+    if: github.event_name == 'push'
+    needs: build-and-test-main
+    uses: ./.github/workflows/docs.yml
+    secrets: inherit
