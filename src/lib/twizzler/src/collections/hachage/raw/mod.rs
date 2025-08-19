@@ -468,7 +468,7 @@ impl RawTableInner {
         workable_buckets: usize,
         _drop: Option<unsafe fn(*mut u8)>,
     ) {        
-        let instant = std::time::Instant::now();
+        //let instant = std::time::Instant::now();
         
         // since this is also called by resize inner, in that case we don't need to work on all the buckets just the area 
         // that may contain deleted entries.

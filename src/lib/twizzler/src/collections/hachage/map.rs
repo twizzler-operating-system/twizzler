@@ -189,16 +189,5 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
 
         Ok(())
     }
-
-    /*pub(crate) fn find_or_find_insert_slot<Q: Equivalent<K> + ?Sized>(
-        &mut self,
-        hash: u64,
-        key: &Q,
-        tx: impl AsRef<TxObject>
-    ) -> std::result::Result<Ref<(K, V)>, usize> {
-       todo!()
-    }*/
-
-
 }
 

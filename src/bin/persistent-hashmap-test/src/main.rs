@@ -36,9 +36,8 @@ struct Cli {
 
 fn performance_test() {
     let mut phm = PersistentHashMap::with_builder(
-        ObjectBuilder::default()
+        ObjectBuilder::default().persist()
     ).unwrap();
-    unsafe { phm.resize(16777216).unwrap() }
 
     println!("persistent hashmap");
     println!("inserting");
@@ -46,6 +45,8 @@ fn performance_test() {
     for i in 0..14260633 {
         //println!("inserting {}", i);
         phm.insert(i, i).unwrap();
+        println!("{i}");
+        
     }
     println!("inserting took {} milli seconds", now.elapsed().as_millis());
     
@@ -60,7 +61,7 @@ fn performance_test() {
 
 
     println!("regular hashmap");
-    let mut hm = HashMap::<u64, u64>::with_capacity(16777216);
+    let mut hm = HashMap::<u64, u64>::new();
 
     println!("inserting");
     let now = Instant::now();
@@ -146,5 +147,5 @@ fn main() {
         }
         None => println!("{} has been invoked {} times!", cli.arg, 0)
     }*/
-    correctness_test();
+    performance_test();
 }
