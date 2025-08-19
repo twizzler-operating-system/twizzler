@@ -109,6 +109,10 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         return Some((slot, id));
     }
 
+    if true || std::env::var("MONDEBUG").is_ok() {
+        twizzler_abi::klog_println!("created object {} for allocation", id,)
+    }
+
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE).ok();
 
     if let Some(slot) = slot {
@@ -124,7 +128,7 @@ impl OomHandler for RuntimeOom {
         let (slot, id) = create_and_map().ok_or(())?;
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
-        const HEAP_OFFSET: usize = NULLPAGE_SIZE * 2;
+        const HEAP_OFFSET: usize = NULLPAGE_SIZE * 512;
         // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a
         // page for the metadata + a few pages for any future FOT entries.
         const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;

@@ -68,6 +68,10 @@ impl StackObject {
         Ok(Self { handle, stack_size })
     }
 
+    pub fn id(&self) -> ObjID {
+        self.handle.id()
+    }
+
     /// Get the start start address for the compartment.
     pub fn stack_comp_start(&self) -> usize {
         self.handle.addrs().start

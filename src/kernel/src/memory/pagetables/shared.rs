@@ -1,8 +1,9 @@
-use alloc::sync::Arc;
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{MapReader, Mapper, MappingCursor, MappingSettings, PhysAddrProvider};
 use crate::{
-    arch::{memory::frame::FRAME_SIZE, VirtAddr},
+    arch::{memory::frame::FRAME_SIZE, PhysAddr, VirtAddr},
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
         tracker::{alloc_frame, FrameAllocFlags},
@@ -10,9 +11,40 @@ use crate::{
     mutex::Mutex,
 };
 
+struct SharedPageTableMgr {
+    shared: Mutex<BTreeMap<PhysAddr, SharedPageTable>>,
+}
+
+impl SharedPageTableMgr {
+    pub const fn new() -> Self {
+        SharedPageTableMgr {
+            shared: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn insert(&self, addr: PhysAddr, table: SharedPageTable) {
+        self.shared.lock().insert(addr, table);
+    }
+
+    pub fn lookup(&self, addr: PhysAddr) -> Option<SharedPageTable> {
+        self.shared.lock().get(&addr).cloned()
+    }
+
+    pub fn remove(&self, addr: PhysAddr) {
+        self.shared.lock().remove(&addr);
+    }
+}
+
+static SPT_MGR: SharedPageTableMgr = SharedPageTableMgr::new();
+
+struct Inner {
+    mapper: Mutex<Mapper>,
+    refs: AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct SharedPageTable {
-    mapper: Arc<Mutex<Mapper>>,
+    inner: Arc<Inner>,
     pub settings: MappingSettings,
 }
 
@@ -24,19 +56,37 @@ impl SharedPageTable {
         .start_address();
         let mut mapper = Mapper::new(root_page);
         mapper.set_start_level(level);
-        SharedPageTable {
-            mapper: Arc::new(Mutex::new(mapper)),
+        let spt = SharedPageTable {
+            inner: Arc::new(Inner {
+                mapper: Mutex::new(mapper),
+                refs: AtomicU64::new(1),
+            }),
             settings,
+        };
+        SPT_MGR.insert(root_page, spt.clone());
+        spt
+    }
+
+    pub fn inc_refs(&self) {
+        self.inner.refs.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn dec_refs(&self) {
+        let old = self.inner.refs.fetch_sub(1, Ordering::SeqCst);
+        assert!(old > 0);
+        if old == 1 {
+            log::info!("no refs remaining for");
         }
     }
 
     pub fn level(&self) -> usize {
-        self.mapper.lock().start_level()
+        self.inner.mapper.lock().start_level()
     }
 
     pub fn align_addr(&self, addr: VirtAddr) -> VirtAddr {
         VirtAddr::new(
-            addr.raw() & !(PHYS_LEVEL_LAYOUTS[self.mapper.lock().start_level()].size() - 1) as u64,
+            addr.raw()
+                & !(PHYS_LEVEL_LAYOUTS[self.inner.mapper.lock().start_level()].size() - 1) as u64,
         )
         .unwrap()
     }
@@ -49,23 +99,23 @@ impl SharedPageTable {
     }
 
     pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
-        let ops = self.mapper.lock().map(cursor, phys);
+        let ops = self.inner.mapper.lock().map(cursor, phys);
         if let Err(ops) = ops {
             ops.run_all();
         }
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.mapper.lock().change(cursor, settings);
+        self.inner.mapper.lock().change(cursor, settings);
     }
 
     pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = self.mapper.lock().unmap(cursor);
+        let ops = self.inner.mapper.lock().unmap(cursor);
         ops.run_all();
     }
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
-        let r = f(self.mapper.lock().readmap(cursor));
+        let r = f(self.inner.mapper.lock().readmap(cursor));
         r
     }
 }
@@ -78,7 +128,7 @@ pub struct SharedRootPageProvider<'a> {
 impl<'a> PhysAddrProvider for SharedRootPageProvider<'a> {
     fn peek(&mut self) -> Option<super::PhysMapInfo> {
         if !self.done {
-            let addr = self.shared.mapper.lock().root_address();
+            let addr = self.shared.inner.mapper.lock().root_address();
             Some(super::PhysMapInfo {
                 addr,
                 len: FRAME_SIZE,
@@ -95,4 +145,9 @@ impl<'a> PhysAddrProvider for SharedRootPageProvider<'a> {
     }
 }
 
-pub fn free_shared_frame(frame: FrameRef) {}
+pub fn free_shared_frame(frame: FrameRef) {
+    let spt = SPT_MGR
+        .lookup(frame.start_address())
+        .expect("failed to find SharedPageTable from physical address");
+    spt.dec_refs();
+}

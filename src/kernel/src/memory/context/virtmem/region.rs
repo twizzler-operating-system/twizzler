@@ -199,6 +199,7 @@ impl MapRegion {
         {
             check_settings(addr, &shared_pt.settings, cause)?;
             shared_mapper(addr, shared_pt)?;
+            shared_pt.inc_refs();
         }
 
         if let Some(shadow) = &self.shadow {

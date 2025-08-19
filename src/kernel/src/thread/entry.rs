@@ -53,6 +53,9 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
     }
     if let Some(cur) = current_thread_ref() {
         thread.secctx = cur.secctx.clone();
+        let _ = thread
+            .set_trace_state(cur.get_trace_state().unwrap_or_default())
+            .inspect_err(|e| log::warn!("failed to inherit tracing state: {}", e));
     }
     unsafe {
         thread.init(user_new_start);
