@@ -241,7 +241,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
 
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
     // rust's linkage support.
-    let args = format!("-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
+    let args = format!("-C target-feature=+sse3,+avx,+avx2,+fma -C target-cpu=x86-64-v3 -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path);
@@ -315,7 +315,7 @@ Remote toolchain doesn't exist!!
 Continuing well require a full compilation of the twizzler toolchain!
 This operation will require ~40-50 Gb of disk space and will take a substantial amount of time!
 
-Please run 
+Please run
 
 git submodule update --init --recursive
 cargo toolchain bootstrap

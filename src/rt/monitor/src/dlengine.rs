@@ -80,6 +80,12 @@ impl ContextEngine for Engine {
                             );
                 return Err(DynlinkErrorKind::NewBackingFail.into());
             }
+            tracing::info!(
+                "map {}: {} {}",
+                src.full_name(),
+                text_handle.id(),
+                data_handle.id()
+            );
             unsafe {
                 Ok((
                     Backing::new_owned(

@@ -308,20 +308,32 @@ impl RunCompLoader {
         self,
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
-        _mondebug: bool,
+        mondebug: bool,
         is_debugging: bool,
     ) -> miette::Result<ObjID> {
-        let make_new_handle = |id| {
+        let make_new_handle = |ty, id| {
+            if mondebug {
+                tracing::info!(
+                    "creating runtime {} object {} for compartment {}",
+                    ty,
+                    id,
+                    self.root_comp.name
+                );
+            }
             Space::safe_create_and_map_runtime_object(
                 &get_monitor().space,
                 id,
                 MapFlags::READ | MapFlags::WRITE,
             )
         };
+        let stack = StackObject::new(
+            make_new_handle("stack", self.root_comp.sctx_id)?,
+            DEFAULT_STACK_SIZE,
+        )?;
 
         let root_rc = self.root_comp.build_runcomp(
-            make_new_handle(self.root_comp.sctx_id)?,
-            StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
+            make_new_handle("comp-config", self.root_comp.sctx_id)?,
+            stack,
             is_debugging,
         )?;
 
@@ -331,10 +343,9 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .map(|extra| {
-                Ok::<_, miette::Report>((
-                    make_new_handle(extra.sctx_id)?,
-                    StackObject::new(make_new_handle(extra.sctx_id)?, DEFAULT_STACK_SIZE)?,
-                ))
+                let stack =
+                    StackObject::new(make_new_handle("stack", extra.sctx_id)?, DEFAULT_STACK_SIZE)?;
+                Ok::<_, miette::Report>((make_new_handle("comp-config", extra.sctx_id)?, stack))
             })
             .try_collect::<Vec<_>>()?;
         // Construct the RunComps for all the extra compartments.

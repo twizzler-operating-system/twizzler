@@ -79,7 +79,7 @@ pub fn stat(state: TracingState) {
                 banner = true;
                 println!("                               OBJECT       COUNT")
             }
-            println!("{:>37x}  {:10}", k.raw(), v);
+            println!("     {:0>32x}  {:10}", k.raw(), v);
         }
     }
     let tlbs = state
@@ -223,9 +223,24 @@ pub fn stat(state: TracingState) {
         println!("collected {} samples", samples.len());
 
         let mut map = HashMap::<_, usize>::new();
-        for (_head, sample) in samples {
+        let mut thread_map = HashMap::<_, usize>::new();
+        for (head, sample) in samples {
             if sample.state == ExecutionState::Running {
                 *map.entry(sample.ip).or_default() += 1usize;
+                *thread_map.entry(head.thread).or_default() += 1usize;
+            }
+        }
+        let mut coll = thread_map.into_iter().collect::<Vec<_>>();
+        coll.sort_by_key(|x| x.1);
+
+        let mut banner = false;
+        for (thread, count) in coll.iter().rev() {
+            if *count > 1 {
+                if !banner {
+                    banner = true;
+                    println!("                           THREAD ID     COUNT");
+                }
+                println!("     {:0>32x}    {:7}", thread.raw(), count);
             }
         }
 
@@ -233,13 +248,13 @@ pub fn stat(state: TracingState) {
         coll.sort_by_key(|x| x.1);
 
         let mut banner = false;
-        for (ip, count) in coll {
-            if count > 1 {
+        for (ip, count) in coll.iter().rev() {
+            if *count > 1 {
                 if !banner {
                     banner = true;
                     println!("PROGRAM COUNTER ADDRESS      COUNT")
                 }
-                println!("     {:18x}    {:7}", ip, count);
+                println!("     {:0>18x}    {:7}", ip, count);
             }
         }
     }
