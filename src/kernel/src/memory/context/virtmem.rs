@@ -341,7 +341,7 @@ impl UserContext for VirtContext {
                 object_info.perms
             );
             Some(SharedPageTable::new(
-                2,
+                1,
                 new_slot_info.mapping_settings(false, false),
             ))
         } else {

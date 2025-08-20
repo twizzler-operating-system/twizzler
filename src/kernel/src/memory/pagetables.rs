@@ -10,7 +10,9 @@ mod settings;
 mod shared;
 mod table;
 
-pub use consistency::{trace_tlb_invalidation, trace_tlb_shootdown, DeferredUnmappingOps};
+pub use consistency::{
+    trace_tlb_invalidation, trace_tlb_shootdown, Consistency, DeferredUnmappingOps,
+};
 pub use cursor::MappingCursor;
 pub use mapper::Mapper;
 pub use phys_provider::{ContiguousProvider, PhysAddrProvider, PhysMapInfo, ZeroPageProvider};

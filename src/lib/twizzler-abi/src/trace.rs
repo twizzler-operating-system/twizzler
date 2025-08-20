@@ -137,6 +137,7 @@ pub enum TraceKind {
     Context,
     Security,
     Pager,
+    Runtime,
     #[default]
     Other = 0xffff,
 }
@@ -223,6 +224,11 @@ pub const PAGER_COMMAND_RESPONDED: u64 = 2;
 pub const PAGER_REQUEST_RECV: u64 = 4;
 /// Pager request was completed.
 pub const PAGER_REQUEST_COMPLETED: u64 = 8;
+
+/// Runtime memory allocation occurred.
+pub const RUNTIME_ALLOC: u64 = 1;
+/// Runtime mutex lock occurred.
+pub const RUNTIME_LOCK: u64 = 2;
 
 /// Trait for types that can be cast from trace data based on event types.
 pub trait TraceDataCast {

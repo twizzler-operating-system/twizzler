@@ -8,9 +8,9 @@ use tracing::Level;
 use twizzler_abi::{
     syscall::TraceSpec,
     trace::{
-        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, THREAD_BLOCK,
-        THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE, THREAD_SYSCALL_EXIT,
-        TraceEntryFlags, TraceFlags, TraceKind,
+        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, RUNTIME_ALLOC, RUNTIME_LOCK,
+        THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE,
+        THREAD_SYSCALL_EXIT, TraceEntryFlags, TraceFlags, TraceKind,
     },
 };
 
@@ -118,6 +118,17 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
                     | THREAD_RESUME
                     | THREAD_MIGRATE
                     | THREAD_CONTEXT_SWITCH,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            "rt" | "runtime" => TraceSpec {
+                kind: TraceKind::Runtime,
+                flags: TraceFlags::empty(),
+                enable_events: RUNTIME_ALLOC | RUNTIME_LOCK,
                 disable_events: 0,
                 sctx: Some(info.id),
                 mctx: None,

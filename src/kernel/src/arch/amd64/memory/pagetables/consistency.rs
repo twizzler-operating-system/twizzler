@@ -275,6 +275,11 @@ impl ArchTlbMgr {
         this
     }
 
+    pub fn set_full_global(&mut self) {
+        self.data.set_full();
+        self.data.set_global();
+    }
+
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
     /// is_terminal should be set iff the invalidation is for a leaf.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {

@@ -6,6 +6,7 @@
 #![feature(negative_impls)]
 #![feature(linkage)]
 #![feature(maybe_uninit_as_bytes)]
+#![feature(thread_local)]
 
 use core::ffi::{c_char, CStr};
 use std::{
@@ -13,6 +14,7 @@ use std::{
     fmt::Debug,
     marker::{PhantomData, Tuple},
     mem::MaybeUninit,
+    sync::OnceLock,
 };
 
 pub use secgate_macros::*;
@@ -228,11 +230,17 @@ impl GateCallInfo {
 }
 
 pub fn get_thread_id() -> ObjID {
-    twizzler_abi::syscall::sys_thread_self_id()
+    return twizzler_abi::syscall::sys_thread_self_id();
+    //#[thread_local]
+    //static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
+    //*ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_self_id())
 }
 
 pub fn get_sctx_id() -> ObjID {
-    twizzler_abi::syscall::sys_thread_active_sctx_id()
+    return twizzler_abi::syscall::sys_thread_active_sctx_id();
+    //#[thread_local]
+    //static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
+    //*ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_active_sctx_id())
 }
 
 pub fn runtime_preentry() -> Result<(), TwzError> {

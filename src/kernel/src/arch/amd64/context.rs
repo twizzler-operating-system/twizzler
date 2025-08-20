@@ -3,7 +3,7 @@ use crate::{
     memory::{
         frame::get_frame,
         pagetables::{
-            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
+            Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider, SharedPageTable,
         },
         tracker::{alloc_frame, free_frame, FrameAllocFlags},
@@ -86,7 +86,8 @@ impl ArchContext {
 
     pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
         let ops = if cursor.start().is_kernel() {
-            kernel_mapper().lock().map(cursor, phys)
+            let consist = Consistency::new_full_global();
+            kernel_mapper().lock().map(cursor, phys, consist)
         } else {
             self.inner.lock().map(cursor, phys)
         };
@@ -151,7 +152,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
     ) -> Result<(), DeferredUnmappingOps> {
-        self.mapper.map(cursor, phys)
+        let consist = Consistency::new(self.mapper.root_address());
+        self.mapper.map(cursor, phys, consist)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
