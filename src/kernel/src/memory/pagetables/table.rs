@@ -118,7 +118,7 @@ impl Table {
     ) -> Option<()> {
         let index = Self::get_index(cursor.start(), level);
 
-        if level == spt.level() {
+        if level == spt.level() + 1 {
             let pinfo = spt.provider().peek().unwrap();
             let mut flags = EntryFlags::intermediate();
             flags.insert(EntryFlags::SHARED_PAGE_TABLE);
@@ -131,7 +131,7 @@ impl Table {
                 level,
             );
             Some(())
-        } else if level > spt.level() {
+        } else if level > spt.level() + 1 {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
             let next_table = self.next_table_mut(index).unwrap();
@@ -150,9 +150,11 @@ impl Table {
         phys: &mut impl PhysAddrProvider,
     ) -> Option<()> {
         let start_index = Self::get_index(cursor.start(), level);
+
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            let paddr = phys.peek()?;
             if entry.is_present() && (is_huge || level == Self::last_level()) {
                 phys.consume(Self::level_to_page_size(level));
                 if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -163,7 +165,6 @@ impl Table {
                 continue;
             }
 
-            let paddr = phys.peek()?;
             if Self::can_map_at(
                 cursor.start(),
                 paddr.addr,

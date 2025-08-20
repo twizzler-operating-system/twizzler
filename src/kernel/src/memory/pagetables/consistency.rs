@@ -15,7 +15,7 @@ use crate::{
 
 /// Management for consistency, wrapping any cache-line flushing, page-freeing, and TLB coherence
 /// into a single object.
-pub(super) struct Consistency {
+pub struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
     pages: LinkedList<FrameAdapter>,
@@ -23,7 +23,7 @@ pub(super) struct Consistency {
 }
 
 impl Consistency {
-    pub(super) fn new(target: PhysAddr) -> Self {
+    pub fn new(target: PhysAddr) -> Self {
         Self {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
@@ -32,19 +32,19 @@ impl Consistency {
         }
     }
 
+    pub fn new_full_global() -> Self {
+        let mut this = Self::new(unsafe { PhysAddr::new_unchecked(0) });
+        this.set_full_global();
+        this
+    }
+
     /// Enqueue a TLB invalidation.
-    pub(super) fn enqueue(
-        &mut self,
-        addr: VirtAddr,
-        is_global: bool,
-        is_terminal: bool,
-        level: usize,
-    ) {
+    pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
         self.tlb.enqueue(addr, is_global, is_terminal, level)
     }
 
     /// Flush a cache-line.
-    pub(super) fn flush(&mut self, addr: VirtAddr) {
+    pub fn flush(&mut self, addr: VirtAddr) {
         self.cl.flush(addr);
     }
 
@@ -63,11 +63,15 @@ impl Consistency {
         self.tlb.finish();
     }
 
-    pub(super) fn into_deferred(self) -> DeferredUnmappingOps {
+    pub fn into_deferred(self) -> DeferredUnmappingOps {
         DeferredUnmappingOps {
             pages: self.pages,
             shared: self.shared,
         }
+    }
+
+    pub fn set_full_global(&mut self) {
+        self.tlb.set_full_global();
     }
 }
 

@@ -1,7 +1,9 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{MapReader, Mapper, MappingCursor, MappingSettings, PhysAddrProvider};
+use super::{
+    consistency::Consistency, MapReader, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
+};
 use crate::{
     arch::{memory::frame::FRAME_SIZE, PhysAddr, VirtAddr},
     memory::{
@@ -99,8 +101,10 @@ impl SharedPageTable {
     }
 
     pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
-        let ops = self.inner.mapper.lock().map(cursor, phys);
+        let consist = Consistency::new_full_global();
+        let ops = self.inner.mapper.lock().map(cursor, phys, consist);
         if let Err(ops) = ops {
+            log::warn!("failed to map in shared mapping: {:?}", cursor);
             ops.run_all();
         }
     }

@@ -11,6 +11,7 @@ mod process;
 mod slot;
 mod thread;
 mod time;
+mod trace;
 pub(crate) mod upcall;
 
 use twizzler_abi::simple_mutex::Mutex;

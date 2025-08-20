@@ -177,7 +177,11 @@ impl MapRegion {
         perms: PermsInfo,
         default_prot: Protections,
         start_time: Instant,
-        mapper: impl FnOnce(PageNumber, ObjectPageProvider) -> Result<(), UpcallInfo>,
+        mapper: impl FnOnce(
+            Option<&SharedPageTable>,
+            PageNumber,
+            ObjectPageProvider,
+        ) -> Result<(), UpcallInfo>,
         shared_mapper: impl Fn(VirtAddr, &SharedPageTable) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
         let mut page_number = PageNumber::from_address(addr);
@@ -223,6 +227,7 @@ impl MapRegion {
                 check_settings(addr, &settings, cause)?;
                 self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
                 return mapper(
+                    self.shared_pt.as_ref(),
                     PageNumber::from_address(addr),
                     ObjectPageProvider::new(Vec::from([(page, settings)])),
                 );
@@ -351,6 +356,7 @@ impl MapRegion {
                     aligned
                 );
                 let ret = mapper(
+                    self.shared_pt.as_ref(),
                     large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
                 );
@@ -384,7 +390,11 @@ impl MapRegion {
                     ObjectPageProvider::new(Vec::from([(page, settings)]))
                 };
 
-                let ret = mapper(PageNumber::from_address(addr), pages);
+                let ret = mapper(
+                    self.shared_pt.as_ref(),
+                    PageNumber::from_address(addr),
+                    pages,
+                );
                 drop(obj_page_tree);
                 if ret.is_ok() {
                     self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);

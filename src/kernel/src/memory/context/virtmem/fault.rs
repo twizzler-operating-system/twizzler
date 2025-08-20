@@ -218,41 +218,46 @@ fn page_fault_to_region(
         Ok(())
     };
 
-    let mapper = |offset: PageNumber, mut provider: ObjectPageProvider| {
-        // TODO: limit page count by mapping or by max?
-        let cursor = info.mapping_cursor(
-            offset.as_byte_offset(),
-            PageNumber::PAGE_SIZE * provider.page_count(),
-        );
-        if !ip.is_kernel() && !addr.is_kernel() {
-            if let Some(val) = provider.peek()
-            //&& info.flags.contains(MapFlags::NO_NULLPAGE)
-            {
-                if val.len > 0x1000 {
-                    log::trace!(
-                        "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
-                        info.object().id(),
-                        addr,
-                        offset,
-                        provider.page_count(),
-                        provider.pos,
-                        val.addr,
-                        val.len / 0x1000,
-                        cursor.start(),
-                        cursor.remaining(),
-                    );
+    let mapper =
+        |spt: Option<&SharedPageTable>, offset: PageNumber, mut provider: ObjectPageProvider| {
+            // TODO: limit page count by mapping or by max?
+            let cursor = info.mapping_cursor(
+                offset.as_byte_offset(),
+                PageNumber::PAGE_SIZE * provider.page_count(),
+            );
+            if !ip.is_kernel() && !addr.is_kernel() {
+                if let Some(val) = provider.peek()
+                //&& info.flags.contains(MapFlags::NO_NULLPAGE)
+                {
+                    if val.len > 0x1000 {
+                        log::trace!(
+                            "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
+                            info.object().id(),
+                            addr,
+                            offset,
+                            provider.page_count(),
+                            provider.pos,
+                            val.addr,
+                            val.len / 0x1000,
+                            cursor.start(),
+                            cursor.remaining(),
+                        );
+                    }
                 }
             }
-        }
 
-        ctx.with_arch(sctx_id, |arch| {
-            if arch.readmap(cursor, |x| x.count()) > 0 {
-                arch.unmap(cursor);
+            if let Some(shared_pt) = spt {
+                shared_pt.map(cursor, &mut provider);
+            } else {
+                ctx.with_arch(sctx_id, |arch| {
+                    if arch.readmap(cursor, |x| x.count()) > 0 {
+                        arch.unmap(cursor);
+                    }
+                    arch.map(cursor, &mut provider);
+                });
             }
-            arch.map(cursor, &mut provider);
-        });
-        Ok(())
-    };
+            Ok(())
+        };
 
     info.map(
         addr,
