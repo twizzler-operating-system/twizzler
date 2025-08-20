@@ -7,7 +7,6 @@ use core::{
 };
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
-
 use log::warn;
 
 use crate::{
@@ -60,7 +59,7 @@ pub struct Processor {
     exited: Spinlock<Vec<ThreadRef>>,
 }
 
-const NR_QUEUES: usize = 32;
+pub const NR_QUEUES: usize = 32;
 #[derive(Default)]
 pub struct SchedulingQueues {
     pub queues: [LinkedList<SchedLinkAdapter>; NR_QUEUES],

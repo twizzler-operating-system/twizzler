@@ -124,6 +124,14 @@ impl SyscallContext for X86SyscallContext {
         self.rax = u64::from(ret0);
         self.rdx = u64::from(ret1);
     }
+
+    fn get_return_values<R1, R2>(&mut self) -> (R1, R2)
+    where
+        R1: From<u64>,
+        R2: From<u64>,
+    {
+        (self.rax.into(), self.rdx.into())
+    }
 }
 
 #[allow(named_asm_labels)]

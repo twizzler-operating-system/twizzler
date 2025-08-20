@@ -8,8 +8,9 @@ use tracing::Level;
 use twizzler_abi::{
     syscall::TraceSpec,
     trace::{
-        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, THREAD_SAMPLE,
-        THREAD_SYSCALL_ENTRY, TraceFlags, TraceKind,
+        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, THREAD_BLOCK,
+        THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE, THREAD_SYSCALL_EXIT,
+        TraceEntryFlags, TraceFlags, TraceKind,
     },
 };
 
@@ -102,7 +103,21 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
             "sys" | "syscall" | "syscalls" => TraceSpec {
                 kind: TraceKind::Thread,
                 flags: TraceFlags::empty(),
-                enable_events: THREAD_SYSCALL_ENTRY,
+                enable_events: THREAD_SYSCALL_EXIT,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            "th" | "thread" | "thread-stats" => TraceSpec {
+                kind: TraceKind::Thread,
+                flags: TraceFlags::empty(),
+                enable_events: THREAD_BLOCK
+                    | THREAD_RESUME
+                    | THREAD_MIGRATE
+                    | THREAD_CONTEXT_SWITCH,
                 disable_events: 0,
                 sctx: Some(info.id),
                 mctx: None,
@@ -136,7 +151,15 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
         state.total
     );
 
-    tracing::info!("counted {} events", state.data().count());
+    let dropped = state
+        .data()
+        .filter(|d| d.0.flags.contains(TraceEntryFlags::DROPPED))
+        .count();
+    tracing::info!(
+        "counted {} events, {} dropped flags",
+        state.data().count(),
+        dropped
+    );
 
     Ok(state)
 }

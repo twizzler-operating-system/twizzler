@@ -1,12 +1,18 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
+use ndarray::Array1;
 use ndarray_stats::QuantileExt;
+use twizzler::object::ObjID;
 use twizzler_abi::{
     syscall::ThreadControl,
     thread::ExecutionState,
     trace::{
-        CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallEntryEvent,
-        THREAD_SAMPLE, THREAD_SYSCALL_ENTRY, ThreadSamplingEvent, TraceKind,
+        CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallExitEvent,
+        THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE,
+        THREAD_SYSCALL_EXIT, ThreadSamplingEvent, TraceKind,
     },
 };
 
@@ -110,97 +116,181 @@ pub fn stat(state: TracingState) {
 
     let syscalls = state
         .data()
-        .filter(|p| p.0.kind == TraceKind::Thread && p.0.event & THREAD_SYSCALL_ENTRY != 0)
+        .filter(|p| p.0.kind == TraceKind::Thread && p.0.event & THREAD_SYSCALL_EXIT != 0)
         .collect::<Vec<_>>();
 
     if syscalls.len() > 0 {
-        let mut map = BTreeMap::<_, BTreeMap<u64, (Option<String>, usize)>>::new();
+        let mut map = BTreeMap::<_, BTreeMap<u64, (Option<String>, Vec<Duration>)>>::new();
 
         for syscall in &syscalls {
             if let Some(data) = syscall
                 .1
-                .and_then(|data| data.try_cast::<SyscallEntryEvent>(THREAD_SYSCALL_ENTRY))
+                .and_then(|data| data.try_cast::<SyscallExitEvent>(THREAD_SYSCALL_EXIT))
             {
-                let entry = match data.data.num {
+                let entry = match data.data.entry.num {
                     twizzler_abi::syscall::Syscall::ThreadCtrl => map
-                        .entry(data.data.num)
+                        .entry(data.data.entry.num)
                         .or_default()
-                        .entry(data.data.args[2])
+                        .entry(data.data.entry.args[2])
                         .or_insert_with(|| {
                             (
-                                ThreadControl::try_from(data.data.args[2])
+                                ThreadControl::try_from(data.data.entry.args[2])
                                     .ok()
                                     .map(|x| format!("{:?}", x)),
-                                0,
+                                Vec::new(),
                             )
                         }),
-                    twizzler_abi::syscall::Syscall::ObjectCtrl => map
-                        .entry(data.data.num)
+                    twizzler_abi::syscall::Syscall::ThreadSync => map
+                        .entry(data.data.entry.num)
                         .or_default()
-                        .entry(data.data.args[2])
+                        .entry(data.data.entry.args[1])
+                        .or_insert_with(|| {
+                            (Some(format!("len={}", data.data.entry.args[1])), Vec::new())
+                        }),
+                    twizzler_abi::syscall::Syscall::ObjectCtrl => map
+                        .entry(data.data.entry.num)
+                        .or_default()
+                        .entry(data.data.entry.args[2])
                         .or_insert_with(|| {
                             (
-                                match data.data.args[2] {
+                                match data.data.entry.args[2] {
                                     0 => Some("CreateCommit".to_string()),
                                     1 => Some("Delete".to_string()),
                                     2 => Some("Sync".to_string()),
                                     3 => Some("Preload".to_string()),
                                     _ => Some("???".to_string()),
                                 },
-                                0,
+                                Vec::new(),
                             )
                         }),
                     twizzler_abi::syscall::Syscall::MapCtrl => map
-                        .entry(data.data.num)
+                        .entry(data.data.entry.num)
                         .or_default()
-                        .entry(data.data.args[2])
+                        .entry(data.data.entry.args[2])
                         .or_insert_with(|| {
                             (
-                                match data.data.args[2] {
+                                match data.data.entry.args[2] {
                                     0 => Some("Sync".to_string()),
                                     1 => Some("Discard".to_string()),
                                     2 => Some("Invalidate".to_string()),
                                     3 => Some("Update".to_string()),
                                     _ => Some("???".to_string()),
                                 },
-                                0,
+                                Vec::new(),
                             )
                         }),
                     _ => {
-                        let entry = map.entry(data.data.num).or_default().entry(0).or_default();
+                        let entry = map
+                            .entry(data.data.entry.num)
+                            .or_default()
+                            .entry(0)
+                            .or_default();
                         entry
                     }
                 };
-                *(&mut entry.1) += 1usize;
+                entry.1.push(data.data.duration.into());
             }
         }
 
         println!("collected {} syscalls", syscalls.len(),);
 
         let mut coll = map.into_iter().collect::<Vec<_>>();
-        coll.sort_by_key(|c| c.1.values().fold(0, |a, v| a + v.1));
+        coll.sort_by_cached_key(|c| c.1.values().fold(0, |a, v| a + v.1.len()));
 
         let mut banner = false;
         for (k, v) in coll.iter().rev() {
             if !banner {
                 banner = true;
-                println!("                 SYSCALL                SUBTYPE     COUNT")
+                println!(
+                    "                 SYSCALL                SUBTYPE     COUNT         MEAN       STDDEV          TOTAL"
+                )
             }
             let sys = format!("{:?}", k);
 
             let mut coll = v.values().collect::<Vec<_>>();
-            coll.sort_by_key(|c| c.1);
+            coll.sort_by_key(|c| c.1.len());
             for v in coll.iter().rev() {
-                println!(
-                    "    {:>20}   {:>20}   {:7}",
-                    sys,
-                    match v.0 {
-                        Some(ref st) => st.as_str(),
-                        None => "",
-                    },
-                    v.1
-                );
+                let durations = Array1::from_iter(v.1.iter().map(|d| d.as_nanos() as f64));
+                let mut unit = "us";
+                let mut mean = durations.mean().unwrap();
+                let mut stddev = durations.std(1.);
+                let total = durations.sum() / 1_000_000_000.;
+
+                if mean <= 1000. {
+                    unit = "ns";
+                    mean *= 1000.;
+                    stddev *= 1000.;
+                } else if mean >= 1_000_000. {
+                    unit = "ms";
+                    mean /= 1000.;
+                    stddev /= 1000.;
+                }
+
+                if durations.len() > 1 {
+                    println!(
+                        "    {:>20}   {:>20}   {:7}   {:8.2}{}   {:8.2}{}   {:10.2}ms",
+                        sys,
+                        match v.0 {
+                            Some(ref st) => st.as_str(),
+                            None => "",
+                        },
+                        durations.len(),
+                        mean / 1000.,
+                        unit,
+                        stddev / 1000.,
+                        unit,
+                        total * 1000.
+                    );
+                } else {
+                    println!(
+                        "    {:>20}   {:>20}   {:7}   {:8.2}{}            -   {:10.2}ms",
+                        sys,
+                        match v.0 {
+                            Some(ref st) => st.as_str(),
+                            None => "",
+                        },
+                        durations.len(),
+                        mean / 1000.,
+                        unit,
+                        total * 1000.
+                    );
+                }
             }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct PerThreadData {
+        migrations: usize,
+        switches: usize,
+    }
+    let mut threads = HashMap::<ObjID, PerThreadData>::new();
+
+    let thread_events = state.data().filter(|p| {
+        p.0.kind == TraceKind::Thread
+            && (p.0.event & (THREAD_CONTEXT_SWITCH | THREAD_BLOCK | THREAD_RESUME | THREAD_MIGRATE))
+                != 0
+    });
+
+    for event in thread_events {
+        let entry = threads.entry(event.0.thread).or_default();
+        if event.0.event & THREAD_MIGRATE != 0 {
+            entry.migrations += 1;
+        }
+        if event.0.event & THREAD_CONTEXT_SWITCH != 0 {
+            entry.switches += 1;
+        }
+    }
+
+    if !threads.is_empty() {
+        println!("                            THREAD ID     MIGRATIONS     CONTEXT SWITCHES");
+        for thread in &threads {
+            println!(
+                "     {:0>32x}        {:7}              {:7}",
+                thread.0.raw(),
+                thread.1.migrations,
+                thread.1.switches
+            );
         }
     }
 
@@ -238,7 +328,7 @@ pub fn stat(state: TracingState) {
             if *count > 1 {
                 if !banner {
                     banner = true;
-                    println!("                           THREAD ID     COUNT");
+                    println!("                            THREAD ID      COUNT");
                 }
                 println!("     {:0>32x}    {:7}", thread.raw(), count);
             }

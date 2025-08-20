@@ -7,7 +7,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, Result};
 
-use crate::{security::SwitchResult, thread::current_thread_ref};
+use crate::{
+    processor::NR_QUEUES,
+    security::SwitchResult,
+    thread::{current_thread_ref, priority::PriorityClass},
+};
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
@@ -48,7 +52,23 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::Yield => {
             // TODO: maybe give a priority drop?
+            if current_thread_ref().unwrap().effective_priority().class() == PriorityClass::RealTime
+            {
+                log::warn!(
+                    "yield {}: {:?}: {:?} {} {}",
+                    current_thread_ref().unwrap().objid(),
+                    current_thread_ref().unwrap().effective_priority(),
+                    current_thread_ref().unwrap().effective_priority().class(),
+                    current_thread_ref().unwrap().effective_priority().adjust(),
+                    current_thread_ref()
+                        .unwrap()
+                        .effective_priority()
+                        .queue_number::<NR_QUEUES>(),
+                );
+            }
+            current_thread_ref().unwrap().adjust_priority(100);
             crate::sched::schedule(true);
+            current_thread_ref().unwrap().adjust_priority(-100);
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {

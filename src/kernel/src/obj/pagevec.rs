@@ -1,4 +1,4 @@
-use alloc::{format, string::String, sync::Arc};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::{ops::Range, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
@@ -113,6 +113,22 @@ impl PageVec {
         let mut entry = self.tree.range(pn..(pn + 1));
         let entry = entry.next()?;
         Some(entry.1.adjust(pn - *entry.0))
+    }
+
+    pub fn pages(&self, pn: usize, len: usize) -> Vec<PageRef> {
+        let entry = self.tree.range(pn..(pn + len));
+
+        let mut start = pn;
+        let mut pages = Vec::new();
+        for entry in entry {
+            if *entry.0 == start {
+                pages.push(entry.1.value().clone());
+                start += entry.1.value().nr_pages();
+            } else {
+                break;
+            }
+        }
+        pages
     }
 
     pub fn add_page(&mut self, off: usize, page: PageRef) -> PageRef {

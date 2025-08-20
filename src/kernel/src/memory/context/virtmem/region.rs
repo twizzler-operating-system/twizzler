@@ -21,7 +21,9 @@ use crate::{
     memory::{
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable},
+        pagetables::{
+            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
+        },
         tracker::{FrameAllocFlags, FrameAllocator},
         FAULT_STATS,
     },
@@ -197,6 +199,13 @@ impl MapRegion {
         if let Some(shared_pt) = &self.shared_pt
             && !is_kern_obj
         {
+            log::trace!(
+                "shared map for: {}: {:?} {:?}: {:?}",
+                self.object().id(),
+                addr,
+                cause,
+                shared_pt.provider().peek().unwrap().addr
+            );
             check_settings(addr, &shared_pt.settings, cause)?;
             shared_mapper(addr, shared_pt)?;
             shared_pt.inc_refs();
@@ -345,28 +354,39 @@ impl MapRegion {
                     large_page_number,
                     ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
                 );
+                drop(obj_page_tree);
                 if ret.is_ok() {
-                    drop(obj_page_tree);
                     self.trace_fault(addr, ip, cause, pfflags, used_pager, true, start_time);
                 }
                 ret
             } else {
                 FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
-                if self.flags.contains(MapFlags::NO_NULLPAGE) {
-                    log::trace!(
-                        "nnp {}: {:?} {:?} {}",
-                        self.object().id(),
-                        addr,
-                        page.physical_address(),
-                        page.nr_pages()
-                    );
-                }
-                let ret = mapper(
-                    PageNumber::from_address(addr),
-                    ObjectPageProvider::new(Vec::from([(page, settings)])),
-                );
+
+                let pages = if cause != MemoryAccessKind::Write
+                    && !settings.perms().contains(Protections::WRITE)
+                {
+                    obj_page_tree
+                        .try_get_pages(page_number, 128)
+                        .filter(|pages| !pages.is_empty())
+                        .map(|pages| {
+                            log::trace!(
+                                "mapping multiple pages for {}: {}, {}",
+                                self.object().id(),
+                                pages.len(),
+                                pages.iter().fold(0, |acc, p| acc + p.nr_pages())
+                            );
+                            ObjectPageProvider::new(
+                                pages.into_iter().map(|p| (p, settings)).collect(),
+                            )
+                        })
+                        .unwrap_or_else(|| ObjectPageProvider::new(Vec::from([(page, settings)])))
+                } else {
+                    ObjectPageProvider::new(Vec::from([(page, settings)]))
+                };
+
+                let ret = mapper(PageNumber::from_address(addr), pages);
+                drop(obj_page_tree);
                 if ret.is_ok() {
-                    drop(obj_page_tree);
                     self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
                 }
                 ret

@@ -151,7 +151,7 @@ impl TraceMgr {
             let idx = self.async_idx.load(SeqCst);
             if idx > MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
                 self.async_overflow.store(true, Ordering::SeqCst);
-                log::warn!(
+                log::debug!(
                     "dropped async trace event {:?} (overflow={}, timeout={})",
                     event,
                     idx > MAX_PENDING_ASYNC,

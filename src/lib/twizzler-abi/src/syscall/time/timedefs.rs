@@ -16,17 +16,17 @@ impl TimeSpan {
         TimeSpan(Seconds(secs), FemtoSeconds(0))
     }
 
-    pub const fn from_femtos(femtos: u64) -> TimeSpan {
+    pub fn from_femtos<P: Into<u128> + Copy>(femtos: P) -> TimeSpan {
         TimeSpan(
-            Seconds(femtos / FEMTOS_PER_SEC),
-            FemtoSeconds(femtos % FEMTOS_PER_SEC),
+            Seconds((femtos.into() / FEMTOS_PER_SEC as u128) as u64),
+            FemtoSeconds((femtos.into() % FEMTOS_PER_SEC as u128) as u64),
         )
     }
 
-    pub const fn from_nanos(nanos: u64) -> TimeSpan {
+    pub fn from_nanos<P: Into<u128> + Copy>(nanos: P) -> TimeSpan {
         TimeSpan(
-            Seconds(nanos / NANOS_PER_SEC),
-            FemtoSeconds((nanos % NANOS_PER_SEC) * FEMTOS_PER_NANO),
+            Seconds((nanos.into() / NANOS_PER_SEC as u128) as u64),
+            FemtoSeconds(((nanos.into() % NANOS_PER_SEC as u128) * FEMTOS_PER_NANO as u128) as u64),
         )
     }
 
@@ -59,6 +59,13 @@ impl From<TimeSpan> for Duration {
     fn from(t: TimeSpan) -> Self {
         let nanos: NanoSeconds = t.1.into();
         Duration::new(t.0 .0, nanos.0 as u32)
+    }
+}
+
+impl From<Duration> for TimeSpan {
+    fn from(t: Duration) -> Self {
+        let nanos = t.as_nanos();
+        Self::from_nanos(nanos)
     }
 }
 

@@ -101,6 +101,19 @@ impl PageRange {
         }
     }
 
+    pub fn pages(&self, pn: PageNumber, len: usize) -> Vec<PageRef> {
+        assert!(pn >= self.start);
+        let off = pn - self.start;
+        match &self.backing {
+            BackingPages::Nothing => Vec::new(),
+            BackingPages::Single(page_ref) => {
+                assert!(off < page_ref.nr_pages());
+                [page_ref.adjust(self.offset + off)].to_vec()
+            }
+            BackingPages::Many(pv_ref) => pv_ref.lock().pages(self.offset + off, len),
+        }
+    }
+
     fn try_get_page(&self, pn: PageNumber) -> Option<(PageRef, bool)> {
         assert!(pn >= self.start);
         let off = pn - self.start;
@@ -346,6 +359,11 @@ impl PageRangeTree {
         let range = self.get(pn)?;
         let (page, shared) = range.try_get_page(pn)?;
         Some((page, shared, range.is_locked()))
+    }
+
+    pub fn try_get_pages(&self, pn: PageNumber, len: usize) -> Option<Vec<PageRef>> {
+        let range = self.get(pn)?;
+        Some(range.pages(pn, len))
     }
 
     pub fn get_page(

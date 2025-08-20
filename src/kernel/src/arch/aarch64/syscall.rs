@@ -77,6 +77,14 @@ impl SyscallContext for Armv8SyscallContext {
         self.x6 = u64::from(ret0);
         self.x7 = u64::from(ret1);
     }
+
+    fn get_return_values<R1, R2>(&mut self) -> (R1, R2)
+    where
+        u64: Into<R1>,
+        u64: Into<R2>,
+    {
+        (self.x6.into(), self.x7.into())
+    }
 }
 
 #[allow(named_asm_labels)]
