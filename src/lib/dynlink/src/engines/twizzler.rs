@@ -119,15 +119,13 @@ pub fn load_segments(
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
-    /*
     let text_id = sys_object_create(
         create_spec,
         &text_cmds,
         &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-    */
-    let text_id = src.id;
+    //let text_id = src.id;
 
     tracing::trace!(
         "mapped segments in instance {} to {}, {}",

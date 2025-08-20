@@ -224,9 +224,7 @@ impl Table {
                     level,
                 );
             } else if entry.is_present() && level != Self::last_level() {
-                if entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE) {
-                    consist.free_shared_frame(self.next_table_frame(idx).unwrap());
-                } else {
+                if !entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE) {
                     let next_table = self.next_table_mut(idx).unwrap();
                     next_table.unmap(consist, cursor, Self::next_level(level));
                     if next_table.read_count() == 0 && level != Table::top_level() {

@@ -2,8 +2,9 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
 use twizzler_abi::{
-    syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake},
+    syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TimeSpan},
     thread::ExecutionState,
+    trace::{ThreadBlocked, ThreadResumed, TraceEntryFlags, TraceKind, MAX_BLOCK_NAME},
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError},
@@ -11,6 +12,7 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
+    instant::Instant,
     memory::{
         context::{kernel_context, UserContext},
         VirtAddr,
@@ -19,6 +21,10 @@ use crate::{
     once::Once,
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref, CriticalGuard, ThreadRef},
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 struct Requeue {
@@ -52,17 +58,51 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
     requeue.list.lock().remove(&thread.id());
 }
 
+pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
+    if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_BLOCK) {
+        let name = name.as_ref();
+        let mut block_name = [0; MAX_BLOCK_NAME];
+        let len = name.as_bytes().len().min(MAX_BLOCK_NAME);
+        (&mut block_name[0..len]).copy_from_slice(&name.as_bytes()[0..len]);
+        let block = ThreadBlocked {
+            block_name,
+            block_name_len: len as u32,
+        };
+        let entry = new_trace_entry(
+            TraceKind::Thread,
+            twizzler_abi::trace::THREAD_BLOCK,
+            TraceEntryFlags::HAS_DATA,
+        );
+        TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, block));
+    }
+}
+
+pub fn trace_resume(_th: &ThreadRef, duration: TimeSpan) {
+    if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_RESUME) {
+        let data = ThreadResumed { duration };
+        let entry = new_trace_entry(
+            TraceKind::Thread,
+            twizzler_abi::trace::THREAD_RESUME,
+            TraceEntryFlags::HAS_DATA,
+        );
+        TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
+    }
+}
 // TODO: this is gross, we're manually trading out a critical guard with an interrupt guard because
 // we don't want to get interrupted... we need a better way to do this kind of consumable "don't
 // schedule until I say so".
 pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
+    let start = Instant::now();
+    trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
         drop(guard);
         thread.set_state(ExecutionState::Sleeping);
         crate::sched::schedule(false);
         thread.set_state(ExecutionState::Running);
     });
+    let end = Instant::now();
+    trace_resume(&thread, (end - start).into());
 }
 
 // TODO: uses-virtaddr

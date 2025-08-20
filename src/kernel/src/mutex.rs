@@ -181,6 +181,7 @@ impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
         if let Some(ref prev) = self.prev_donated_priority {
             if let Some(thread) = current_thread_ref() {
+                thread.remove_donated_priority();
                 thread.donate_priority(prev.clone());
             }
         } else if let Some(thread) = current_thread_ref() {

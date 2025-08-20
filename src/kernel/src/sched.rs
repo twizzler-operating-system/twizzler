@@ -5,7 +5,7 @@ use fixedbitset::FixedBitSet;
 use twizzler_abi::{
     object::ObjID,
     thread::ExecutionState,
-    trace::{ThreadCtxSwitch, TraceEntryFlags, TraceKind},
+    trace::{ThreadCtxSwitch, ThreadMigrate, TraceEntryFlags, TraceKind},
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
     trace::{
         mgr::{TraceEvent, TRACE_MGR},
-        new_trace_entry,
+        new_trace_entry_thread,
     },
     utils::quick_random,
 };
@@ -314,7 +314,21 @@ pub fn create_idle_thread() {
     set_current_thread(idle);
 }
 
-fn trace_switch(_from: &ThreadRef, to: &ThreadRef) {
+fn trace_migrate(th: &ThreadRef, from: u64, to: u64) {
+    if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_MIGRATE) {
+        let data = ThreadMigrate { from, to };
+        let entry = new_trace_entry_thread(
+            th,
+            current_processor().id as u64,
+            TraceKind::Thread,
+            twizzler_abi::trace::THREAD_MIGRATE,
+            TraceEntryFlags::HAS_DATA,
+        );
+        TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
+    }
+}
+
+fn trace_switch(from: &ThreadRef, to: &ThreadRef) {
     if TRACE_MGR.any_enabled(
         TraceKind::Thread,
         twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
@@ -322,23 +336,30 @@ fn trace_switch(_from: &ThreadRef, to: &ThreadRef) {
         let data = ThreadCtxSwitch {
             to: Some(to.objid()),
         };
-        let entry = new_trace_entry(
+        let entry = new_trace_entry_thread(
+            from,
+            current_processor().id as u64,
             TraceKind::Thread,
             twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
-            TraceEntryFlags::empty(),
+            TraceEntryFlags::HAS_DATA,
         );
         TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
     }
 }
 
 fn switch_to(thread: ThreadRef, old: ThreadRef) {
-    trace_switch(&old, &thread);
+    if old != thread {
+        trace_switch(&old, &thread);
+    }
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     set_current_thread(thread.clone());
-    thread
+    let oldcpu = thread
         .last_cpu
-        .store(current_processor().id as i32, Ordering::SeqCst);
+        .swap(current_processor().id as i32, Ordering::SeqCst);
+    if oldcpu >= 0 && oldcpu != current_processor().id as i32 {
+        trace_migrate(&thread, oldcpu as u64, current_processor().id as u64);
+    }
     if !thread.is_idle_thread() {
         crate::clock::schedule_oneshot_tick(1);
     }

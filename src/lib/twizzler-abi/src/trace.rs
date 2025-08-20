@@ -181,6 +181,8 @@ pub const THREAD_BLOCK: u64 = 0x10;
 pub const THREAD_RESUME: u64 = 0x20;
 /// Thread migrated to a different CPU.
 pub const THREAD_MIGRATE: u64 = 0x40;
+/// Thread returned from a system call.
+pub const THREAD_SYSCALL_EXIT: u64 = 0x80;
 
 // Object events
 /// Object control operation occurred.
@@ -236,6 +238,26 @@ pub struct ThreadEvent {
     pub val: u64,
 }
 
+pub const MAX_BLOCK_NAME: usize = 28;
+
+/// Event data for thread operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ThreadBlocked {
+    /// UTF-8 bytes of name of this block point.
+    pub block_name: [u8; MAX_BLOCK_NAME],
+    /// Length of the block_name.
+    pub block_name_len: u32,
+}
+
+/// Event data for thread operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ThreadResumed {
+    /// Time spent blocked.
+    pub duration: TimeSpan,
+}
+
 /// Event data for system call entry.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -246,6 +268,17 @@ pub struct SyscallEntryEvent {
     pub num: Syscall,
     /// Arguments.
     pub args: [u64; 6],
+}
+
+/// Event data for system call entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SyscallExitEvent {
+    pub entry: SyscallEntryEvent,
+    /// The return value.
+    pub ret: [u64; 2],
+    /// Time spent processing system call.
+    pub duration: TimeSpan,
 }
 
 /// Event data for thread context switches.
@@ -260,6 +293,8 @@ pub struct ThreadCtxSwitch {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadMigrate {
+    /// ID of the CPU being migrated from.
+    pub from: u64,
     /// ID of the CPU being migrated to.
     pub to: u64,
 }
@@ -396,6 +431,18 @@ impl TraceDataCast for SyscallEntryEvent {
     const EVENT: u64 = THREAD_SYSCALL_ENTRY;
 }
 
+impl TraceDataCast for SyscallExitEvent {
+    const EVENT: u64 = THREAD_SYSCALL_EXIT;
+}
+
 impl TraceDataCast for ThreadSamplingEvent {
     const EVENT: u64 = THREAD_SAMPLE;
+}
+
+impl TraceDataCast for ThreadBlocked {
+    const EVENT: u64 = THREAD_BLOCK;
+}
+
+impl TraceDataCast for ThreadResumed {
+    const EVENT: u64 = THREAD_RESUME;
 }

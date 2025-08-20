@@ -1,4 +1,4 @@
-use core::{sync::atomic::Ordering, u32};
+use core::{sync::atomic::Ordering, u16, u32};
 
 use super::{current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY, Thread};
 /// [`Thread`]s are triggered based on their priority, which is their [`PriorityClass`] coupled
@@ -132,6 +132,9 @@ impl PriorityClass {
 
 impl Thread {
     pub fn remove_donated_priority(&self) {
+        if self.get_donated_priority().is_some() {
+            log::trace!("remove donated pri: {:?}", self.get_donated_priority());
+        }
         self.donated_priority.store(u32::MAX, Ordering::SeqCst);
         self.flags
             .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst);
@@ -184,6 +187,15 @@ impl Thread {
     #[inline]
     pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
         self.effective_priority().queue_number::<NR_QUEUES>()
+    }
+
+    pub fn adjust_priority(&self, amount: i32) {
+        let priority = Priority::from_raw(self.priority.load(Ordering::SeqCst));
+        let new_priority = Priority::new(
+            priority.class(),
+            (priority.adjust() as i32 + amount).clamp(0, u16::MAX as i32) as u16,
+        );
+        self.priority.store(new_priority.raw(), Ordering::SeqCst);
     }
 }
 
