@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use core::time::Duration;
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
@@ -110,23 +109,28 @@ impl CondVar {
 
     pub fn signal(&self) {
         const MAX_PER_ITER: usize = 8;
-        let mut threads_to_wake = Vec::with_capacity(MAX_PER_ITER);
+        let mut threads_to_wake = [const { None }; MAX_PER_ITER];
         loop {
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
             }
             let mut node = inner.queue.front_mut();
-            while threads_to_wake.len() < MAX_PER_ITER && !node.is_null() {
+            let mut idx = 0;
+            while idx < MAX_PER_ITER && !node.is_null() {
                 if node.get().unwrap().reset_sync_sleep() {
-                    threads_to_wake.push(node.remove().unwrap());
+                    threads_to_wake[idx] = node.remove();
+                    idx += 1;
+                } else {
+                    node.move_next();
                 }
-                node.move_next();
             }
 
             drop(inner);
-            for t in threads_to_wake.drain(..) {
-                add_to_requeue(t);
+            for t in &mut threads_to_wake {
+                if let Some(t) = t.take() {
+                    add_to_requeue(t);
+                }
             }
         }
         requeue_all();
