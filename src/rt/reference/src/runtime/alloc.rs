@@ -8,7 +8,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::Ordering,
 };
-use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize};
+use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize, time::Instant};
 
 use twizzler_abi::simple_mutex::Mutex;
 
@@ -25,7 +25,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::{ReferenceRuntime, OUR_RUNTIME};
+use super::{trace::trace_runtime_alloc, ReferenceRuntime, OUR_RUNTIME};
 use crate::runtime::RuntimeState;
 
 static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {
@@ -109,7 +109,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         return Some((slot, id));
     }
 
-    if true || std::env::var("MONDEBUG").is_ok() {
+    if std::env::var("MONDEBUG").is_ok() {
         twizzler_abi::klog_println!("created object {} for allocation", id,)
     }
 
@@ -180,8 +180,12 @@ unsafe impl GlobalAlloc for LocalAllocator {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
+        let start_time = Instant::now();
         let mut inner = self.inner.lock();
         let ptr = inner.do_alloc(layout);
+        drop(inner);
+        let end_time = Instant::now();
+        trace_runtime_alloc(ptr.addr(), layout, end_time - start_time, false);
         ptr
     }
 
@@ -204,8 +208,11 @@ unsafe impl GlobalAlloc for LocalAllocator {
         {
             return;
         }
+        let start_time = Instant::now();
         let mut inner = self.inner.lock();
-        inner.do_dealloc(ptr, layout)
+        inner.do_dealloc(ptr, layout);
+        drop(inner);
+        trace_runtime_alloc(ptr.addr(), layout, Instant::now() - start_time, true);
     }
 }
 

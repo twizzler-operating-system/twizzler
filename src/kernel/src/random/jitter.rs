@@ -5,7 +5,7 @@ use rand_jitter::JitterRng;
 use super::{register_entropy_source, EntropySource};
 use crate::time::TICK_SOURCES;
 pub fn get_nstime() -> u64 {
-    let ticks = { TICK_SOURCES.lock()[0].read() };
+    let ticks = { TICK_SOURCES.lock()[0].as_ref().unwrap().read() };
     let span = ticks.value * ticks.rate;
     span.as_nanos() as u64
 }

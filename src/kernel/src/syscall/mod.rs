@@ -27,7 +27,7 @@ use crate::{
     instant::Instant,
     memory::VirtAddr,
     random::getrandom,
-    time::TICK_SOURCES,
+    time::{Ticks, TICK_SOURCES},
     trace::{
         mgr::{TraceEvent, TRACE_MGR},
         new_trace_entry,
@@ -145,7 +145,11 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
 
     match source {
         ClockSource::BestMonotonic => {
-            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
+            let ticks = {
+                TICK_SOURCES.lock()[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
+            };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
@@ -155,7 +159,11 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
             Ok(0)
         }
         ClockSource::BestRealTime => {
-            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
+            let ticks = {
+                TICK_SOURCES.lock()[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
+            };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
@@ -170,7 +178,9 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
                 if src as usize > clock_list.len() {
                     return Err(ArgumentError::InvalidArgument.into());
                 }
-                clock_list[src as usize].read()
+                clock_list[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
             };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO

@@ -70,7 +70,7 @@ impl<T: Copy + core::fmt::Debug> TraceEvent<T> {
 }
 
 const MAX_QUICK_ENABLED: usize = 10;
-const MAX_PENDING_ASYNC: usize = 64;
+const MAX_PENDING_ASYNC: usize = 1024;
 
 pub struct TraceMgr {
     map: Mutex<BTreeMap<ObjID, TraceSink>>,
@@ -103,6 +103,7 @@ impl TraceMgr {
     fn signal_work(&self) {
         let mut sig = self.has_work.lock();
         *sig = true;
+        drop(sig);
         self.cv.signal();
     }
 
@@ -149,12 +150,12 @@ impl TraceMgr {
         loop {
             iter += 1;
             let idx = self.async_idx.load(SeqCst);
-            if idx > MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
+            if idx / 2 >= MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
                 self.async_overflow.store(true, Ordering::SeqCst);
                 log::debug!(
                     "dropped async trace event {:?} (overflow={}, timeout={})",
                     event,
-                    idx > MAX_PENDING_ASYNC,
+                    idx / 2 >= MAX_PENDING_ASYNC,
                     iter > MAX_ASYNC_ITER
                 );
                 return;
@@ -337,6 +338,6 @@ extern "C" fn kthread_trace_writer() {
 
 fn start_write_thread() {
     if current_thread_ref().is_some() {
-        WRITE_THREAD.call_once(|| start_new_kernel(Priority::BACKGROUND, kthread_trace_writer, 0));
+        WRITE_THREAD.call_once(|| start_new_kernel(Priority::REALTIME, kthread_trace_writer, 0));
     }
 }

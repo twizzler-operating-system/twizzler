@@ -22,7 +22,7 @@
 //! the kernel when in critical states. These events are not guaranteed to be reported in a timely
 //! manner, and may be dropped if the system is under heavy load.
 
-use core::sync::atomic::AtomicU64;
+use core::{alloc::Layout, sync::atomic::AtomicU64};
 
 use twizzler_rt_abi::object::ObjID;
 
@@ -227,13 +227,30 @@ pub const PAGER_REQUEST_COMPLETED: u64 = 8;
 
 /// Runtime memory allocation occurred.
 pub const RUNTIME_ALLOC: u64 = 1;
-/// Runtime mutex lock occurred.
-pub const RUNTIME_LOCK: u64 = 2;
 
 /// Trait for types that can be cast from trace data based on event types.
 pub trait TraceDataCast {
     /// The event constant associated with this trace data type.
     const EVENT: u64;
+}
+
+/// Event data for thread operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KernelAllocationEvent {
+    pub duration: TimeSpan,
+    pub layout: Layout,
+    pub is_free: bool,
+}
+
+/// Event data for thread operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeAllocationEvent {
+    pub duration: TimeSpan,
+    pub layout: Layout,
+    pub addr: u64,
+    pub is_free: bool,
 }
 
 /// Event data for thread operations.
@@ -451,4 +468,12 @@ impl TraceDataCast for ThreadBlocked {
 
 impl TraceDataCast for ThreadResumed {
     const EVENT: u64 = THREAD_RESUME;
+}
+
+impl TraceDataCast for RuntimeAllocationEvent {
+    const EVENT: u64 = RUNTIME_ALLOC;
+}
+
+impl TraceDataCast for KernelAllocationEvent {
+    const EVENT: u64 = KERNEL_ALLOC;
 }

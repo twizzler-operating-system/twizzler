@@ -1,16 +1,19 @@
 #![feature(error_reporter)]
 
+use std::sync::atomic::AtomicU64;
+
 use clap::Parser;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentLoader, NewCompartmentFlags};
-use tracer::TracingState;
+use tracer::{BaseWrap, TracingState};
 use tracing::Level;
+use twizzler::object::ObjectBuilder;
 use twizzler_abi::{
     syscall::TraceSpec,
     trace::{
-        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, RUNTIME_ALLOC, RUNTIME_LOCK,
+        CONTEXT_FAULT, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, KERNEL_ALLOC, RUNTIME_ALLOC,
         THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE,
-        THREAD_SYSCALL_EXIT, TraceEntryFlags, TraceFlags, TraceKind,
+        THREAD_SYSCALL_EXIT, TraceBase, TraceEntryFlags, TraceFlags, TraceKind,
     },
 };
 
@@ -66,8 +69,33 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
     let name = &cli.prog.cmdline[0];
     let compname = format!("trace-{}", name);
 
+    let mut rt_trace = None;
+    if cli
+        .events
+        .iter()
+        .find(|s| s.as_str() == "rt" || s.as_str() == "runtime")
+        .is_some()
+    {
+        let obj = ObjectBuilder::default()
+            .build(BaseWrap(TraceBase {
+                end: AtomicU64::new(0),
+                start: 0,
+            }))
+            .into_diagnostic()?;
+        rt_trace = Some(obj);
+    }
     let mut comp = CompartmentLoader::new(&compname, name, NewCompartmentFlags::DEBUG);
     comp.args(&cli.prog.cmdline);
+
+    if let Some(ref rt_trace) = rt_trace {
+        let mut env = std::env::vars().collect::<Vec<_>>();
+
+        env.push((
+            "TWZRT_TRACE_OBJECT".to_string(),
+            format!("{:x}", rt_trace.id()),
+        ));
+        comp.env(env.into_iter().map(|(k, v)| format!("{}={}", k, v)));
+    }
     let comp = comp.load().into_diagnostic()?;
 
     tracing::info!("compartment {} loaded, starting tracing monitor", compname);
@@ -128,7 +156,18 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
             "rt" | "runtime" => TraceSpec {
                 kind: TraceKind::Runtime,
                 flags: TraceFlags::empty(),
-                enable_events: RUNTIME_ALLOC | RUNTIME_LOCK,
+                enable_events: RUNTIME_ALLOC,
+                disable_events: 0,
+                sctx: Some(info.id),
+                mctx: None,
+                thread: None,
+                cpuid: None,
+                extra: 0.into(),
+            },
+            "kalloc" => TraceSpec {
+                kind: TraceKind::Kernel,
+                flags: TraceFlags::empty(),
+                enable_events: KERNEL_ALLOC,
                 disable_events: 0,
                 sctx: Some(info.id),
                 mctx: None,
@@ -154,12 +193,12 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
         })
     }
 
-    let state = tracer::start(cli, comp, specs)?;
+    let state = tracer::start(cli, comp, specs, rt_trace)?;
 
     tracing::info!(
         "disconnected {}: {} bytes of trace data",
         compname,
-        state.total
+        state.kernel_source.total + state.user_source.as_ref().map_or(0, |us| us.total)
     );
 
     let dropped = state

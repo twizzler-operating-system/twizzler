@@ -1,4 +1,5 @@
 use std::{
+    alloc::Layout,
     collections::{BTreeMap, HashMap},
     time::Duration,
 };
@@ -10,7 +11,8 @@ use twizzler_abi::{
     syscall::ThreadControl,
     thread::ExecutionState,
     trace::{
-        CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, SyscallExitEvent,
+        CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, KERNEL_ALLOC,
+        KernelAllocationEvent, RUNTIME_ALLOC, RuntimeAllocationEvent, SyscallExitEvent,
         THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE,
         THREAD_SYSCALL_EXIT, ThreadSamplingEvent, TraceKind,
     },
@@ -347,5 +349,89 @@ pub fn stat(state: TracingState) {
                 println!("     {:0>18x}    {:7}", ip, count);
             }
         }
+    }
+
+    let rt_events = state.data().filter(|e| e.0.kind == TraceKind::Runtime);
+
+    let mut rtalloc_map = HashMap::<Layout, Vec<Duration>>::new();
+    let mut rtfree_map = HashMap::<Layout, Vec<Duration>>::new();
+    for rte in rt_events {
+        if rte.0.event & RUNTIME_ALLOC != 0 {
+            if let Some(data) = rte
+                .1
+                .and_then(|d| d.try_cast::<RuntimeAllocationEvent>(RUNTIME_ALLOC))
+                .map(|d| d.data)
+            {
+                let entry = if data.is_free {
+                    rtfree_map.entry(data.layout).or_default()
+                } else {
+                    rtalloc_map.entry(data.layout).or_default()
+                };
+                entry.push(data.duration.into());
+            }
+        }
+    }
+
+    let mut coll = rtalloc_map.into_iter().collect::<Vec<_>>();
+    coll.sort_by_key(|x| x.1.len());
+
+    let mut banner = false;
+    for rtalloc in coll.iter().rev() {
+        if !banner {
+            banner = true;
+            println!("Runtime Allocation Statistics");
+            println!("ALLOCATION SIZE       COUNT          MEAN        STDDEV             TOTAL")
+        }
+        let arr = Array1::from_iter(rtalloc.1.iter().map(|d| d.as_nanos() as f64));
+        println!(
+            "       {:8}    {:8}    {:8.1}ns    {:8.1}ns    {:12.4}ms",
+            rtalloc.0.size(),
+            arr.len(),
+            arr.mean().unwrap_or(0.),
+            if arr.len() == 1 { 0. } else { arr.std(1.) },
+            arr.sum() / 1_000_000.
+        );
+    }
+
+    let kalloc_events = state
+        .data()
+        .filter(|e| e.0.kind == TraceKind::Kernel && e.0.event & KERNEL_ALLOC != 0);
+
+    let mut kalloc_map = HashMap::<Layout, Vec<Duration>>::new();
+    let mut kfree_map = HashMap::<Layout, Vec<Duration>>::new();
+    for kae in kalloc_events {
+        if let Some(data) = kae
+            .1
+            .and_then(|d| d.try_cast::<KernelAllocationEvent>(KERNEL_ALLOC))
+            .map(|d| d.data)
+        {
+            let entry = if data.is_free {
+                kfree_map.entry(data.layout).or_default()
+            } else {
+                kalloc_map.entry(data.layout).or_default()
+            };
+            entry.push(data.duration.into());
+        }
+    }
+
+    let mut coll = kalloc_map.into_iter().collect::<Vec<_>>();
+    coll.sort_by_key(|x| x.1.len());
+
+    let mut banner = false;
+    for kalloc in coll.iter().rev() {
+        if !banner {
+            banner = true;
+            println!("Kernel Allocation Statistics");
+            println!("ALLOCATION SIZE       COUNT          MEAN        STDDEV             TOTAL")
+        }
+        let arr = Array1::from_iter(kalloc.1.iter().map(|d| d.as_nanos() as f64));
+        println!(
+            "       {:8}    {:8}    {:8.1}ns    {:8.1}ns    {:12.4}ms",
+            kalloc.0.size(),
+            arr.len(),
+            arr.mean().unwrap_or(0.),
+            if arr.len() == 1 { 0. } else { arr.std(1.) },
+            arr.sum() / 1_000_000.
+        );
     }
 }
