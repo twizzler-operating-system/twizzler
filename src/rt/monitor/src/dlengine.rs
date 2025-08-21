@@ -80,7 +80,7 @@ impl ContextEngine for Engine {
                             );
                 return Err(DynlinkErrorKind::NewBackingFail.into());
             }
-            tracing::info!(
+            tracing::trace!(
                 "map {}: {} {}",
                 src.full_name(),
                 text_handle.id(),

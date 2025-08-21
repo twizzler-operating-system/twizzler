@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         OnceLock,
     },
-    time::Instant,
+    time::{Duration, Instant},
     usize,
 };
 
@@ -16,14 +16,18 @@ use twizzler_abi::{
         sys_object_create, sys_thread_sync, ObjectCreate, ThreadSync, ThreadSyncReference,
         ThreadSyncWake,
     },
-    trace::{TraceBase, TraceEntryFlags, TraceEntryHead, TraceKind, RUNTIME_ALLOC},
+    trace::{
+        RuntimeAllocationEvent, TraceBase, TraceData, TraceEntryFlags, TraceEntryHead, TraceKind,
+        RUNTIME_ALLOC,
+    },
 };
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
+use super::RuntimeState;
 use crate::OUR_RUNTIME;
 
 struct TraceSink {
-    prime: ObjectHandle,
+    _prime: ObjectHandle,
     current: ObjectHandle,
     pos: u64,
     start: Instant,
@@ -53,7 +57,7 @@ impl TraceSink {
         write_base(&prime, start);
         let this = Self {
             current: prime.clone(),
-            prime,
+            _prime: prime,
             pos: start,
             start: Instant::now(),
         };
@@ -74,7 +78,14 @@ impl TraceSink {
         .inspect_err(|e| tracing::warn!("failed to wake tracing end point: {}", e));
     }
 
-    pub fn push_record(&mut self, record: TraceEntryHead) {
+    pub fn push_record<T: Copy + core::fmt::Debug>(
+        &mut self,
+        mut record: TraceEntryHead,
+        trace_data: Option<T>,
+    ) {
+        if trace_data.is_some() {
+            record.flags.insert(TraceEntryFlags::HAS_DATA);
+        }
         let data = (&record) as *const TraceEntryHead as *const u8;
         let len = size_of::<TraceEntryHead>();
         unsafe {
@@ -84,6 +95,37 @@ impl TraceSink {
             slice.copy_from_slice(data);
         }
         self.pos += len as u64;
+
+        if let Some(trace_data) = trace_data {
+            let data_len = (size_of::<TraceData<()>>() + size_of::<T>())
+                .next_multiple_of(align_of::<TraceEntryHead>());
+            let data_header = TraceData {
+                resv: 0,
+                len: data_len as u32,
+                flags: 0,
+                data: (),
+            };
+            let data = (&data_header) as *const TraceData<()> as *const u8;
+            unsafe {
+                let start = self.current.start().add(self.pos as usize);
+                let slice = core::slice::from_raw_parts_mut(start, size_of::<TraceData<()>>());
+                let data = core::slice::from_raw_parts(data, size_of::<TraceData<()>>());
+                slice.copy_from_slice(data);
+            }
+            self.pos += size_of::<TraceData<()>>() as u64;
+
+            let data = (&trace_data) as *const T as *const u8;
+            unsafe {
+                let start = self.current.start().add(self.pos as usize);
+                let slice = core::slice::from_raw_parts_mut(start, size_of::<T>());
+                let data = core::slice::from_raw_parts(data, size_of::<T>());
+                slice.copy_from_slice(data);
+            }
+            self.pos += size_of::<T>() as u64;
+        }
+        self.pos = self
+            .pos
+            .next_multiple_of(align_of::<TraceEntryHead>() as u64);
         self.write_endpoint(self.pos);
     }
 
@@ -111,7 +153,7 @@ impl TraceSink {
             let new_start = TRACE_START;
             write_base(&new_handle, new_start);
 
-            self.push_record(TraceEntryHead::new_next_object(new_id));
+            self.push_record::<()>(TraceEntryHead::new_next_object(new_id), None);
 
             self.current = new_handle;
             self.pos = new_start;
@@ -146,17 +188,18 @@ impl OnceTraceSink {
     }
 }
 
-static ENV_TRACE_ALLOC: OnceTraceSink = OnceTraceSink::new("TWZRT_TRACE_ALLOC");
-static ENV_TRACE_LOCK: OnceTraceSink = OnceTraceSink::new("TWZRT_TRACE_ALLOC");
+static ENV_TRACE_OBJECT: OnceTraceSink = OnceTraceSink::new("TWZRT_TRACE_OBJECT");
 
 static DISABLE_ALLOC: AtomicBool = AtomicBool::new(false);
-static DISABLE_LOCK: AtomicBool = AtomicBool::new(false);
 
-pub fn trace_runtime_alloc(layout: Layout) {
+pub fn trace_runtime_alloc(addr: usize, layout: Layout, duration: Duration, is_free: bool) {
+    if !OUR_RUNTIME.state().contains(RuntimeState::READY) {
+        return;
+    }
     if DISABLE_ALLOC.swap(true, Ordering::SeqCst) {
         return;
     }
-    if let Some(ts) = ENV_TRACE_ALLOC.get() {
+    if let Some(ts) = ENV_TRACE_OBJECT.get() {
         let mut ts = ts.lock();
         if ts.check_space() {
             let record = TraceEntryHead {
@@ -170,7 +213,13 @@ pub fn trace_runtime_alloc(layout: Layout) {
                 extra_or_next: 0.into(),
                 flags: TraceEntryFlags::empty(),
             };
-            ts.push_record(record);
+            let data = RuntimeAllocationEvent {
+                duration: duration.into(),
+                layout,
+                addr: addr as u64,
+                is_free,
+            };
+            ts.push_record(record, Some(data));
         }
     }
     DISABLE_ALLOC.store(false, Ordering::SeqCst);

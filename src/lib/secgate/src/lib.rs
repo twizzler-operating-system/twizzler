@@ -229,18 +229,35 @@ impl GateCallInfo {
     }
 }
 
+fn get_tp() -> usize {
+    let mut val: usize;
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!("rdfsbase {}", out(reg) val);
+        #[cfg(not(target_arch = "x86_64"))]
+        core::arch::asm!("mrs {}, tpidr_el0", out(reg) val);
+    }
+    val
+}
+
 pub fn get_thread_id() -> ObjID {
-    return twizzler_abi::syscall::sys_thread_self_id();
-    //#[thread_local]
-    //static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
-    //*ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_self_id())
+    #[thread_local]
+    static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
+    if get_tp() != 0 {
+        *ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_self_id())
+    } else {
+        twizzler_abi::syscall::sys_thread_self_id()
+    }
 }
 
 pub fn get_sctx_id() -> ObjID {
-    return twizzler_abi::syscall::sys_thread_active_sctx_id();
-    //#[thread_local]
-    //static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
-    //*ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_active_sctx_id())
+    #[thread_local]
+    static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
+    if get_tp() != 0 {
+        *ONCE_ID.get_or_init(|| twizzler_abi::syscall::sys_thread_active_sctx_id())
+    } else {
+        twizzler_abi::syscall::sys_thread_active_sctx_id()
+    }
 }
 
 pub fn runtime_preentry() -> Result<(), TwzError> {
@@ -253,16 +270,10 @@ pub struct SecFrame {
 }
 
 pub fn frame() -> SecFrame {
-    let mut val: usize;
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("rdfsbase {}", out(reg) val);
-        #[cfg(not(target_arch = "x86_64"))]
-        core::arch::asm!("mrs {}, tpidr_el0", out(reg) val);
-    }
+    let tp = get_tp();
     // TODO: do this without calling the kernel.
     let sctx = twizzler_abi::syscall::sys_thread_active_sctx_id();
-    SecFrame { tp: val, sctx }
+    SecFrame { tp, sctx }
 }
 
 pub fn restore_frame(frame: SecFrame) {

@@ -1,7 +1,9 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 use core::time::Duration;
 
+use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
 use twizzler_abi::{
+    object::ObjID,
     syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TimeSpan},
     thread::ExecutionState,
     trace::{ThreadBlocked, ThreadResumed, TraceEntryFlags, TraceKind, MAX_BLOCK_NAME},
@@ -20,7 +22,7 @@ use crate::{
     obj::{LookupFlags, ObjectRef},
     once::Once,
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref, CriticalGuard, ThreadRef},
+    thread::{current_memory_context, current_thread_ref, CriticalGuard, Thread, ThreadRef},
     trace::{
         mgr::{TraceEvent, TRACE_MGR},
         new_trace_entry,
@@ -28,7 +30,17 @@ use crate::{
 };
 
 struct Requeue {
-    list: Spinlock<BTreeMap<u64, ThreadRef>>,
+    //list: Spinlock<BTreeMap<u64, ThreadRef>>,
+    list: Spinlock<RBTree<RequeueLinkAdapter>>,
+}
+
+intrusive_adapter!(pub RequeueLinkAdapter = ThreadRef: Thread { requeue_link: intrusive_collections::rbtree::AtomicLink });
+
+impl<'a> KeyAdapter<'a> for RequeueLinkAdapter {
+    type Key = ObjID;
+    fn get_key(&self, s: &'a Thread) -> ObjID {
+        s.objid()
+    }
 }
 
 /* TODO: make this thread-local */
@@ -36,26 +48,38 @@ static REQUEUE: Once<Requeue> = Once::new();
 
 fn get_requeue_list() -> &'static Requeue {
     REQUEUE.call_once(|| Requeue {
-        list: Spinlock::new(BTreeMap::new()),
+        list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
     })
 }
 
 pub fn requeue_all() {
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    for (_, thread) in list.extract_if(|_, v| !v.is_critical() && v.reset_sync_sleep_done()) {
-        crate::sched::schedule_thread(thread);
+    let mut cursor = list.cursor_mut();
+    cursor.move_next();
+    while !cursor.is_null() {
+        if cursor
+            .get()
+            .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
+        {
+            if let Some(t) = cursor.remove() {
+                crate::sched::schedule_thread(t);
+            }
+        } else {
+            cursor.move_next();
+        }
     }
 }
 
 pub fn add_to_requeue(thread: ThreadRef) {
     let requeue = get_requeue_list();
-    requeue.list.lock().insert(thread.id(), thread);
+    requeue.list.lock().insert(thread);
 }
 
 pub fn remove_from_requeue(thread: &ThreadRef) {
     let requeue = get_requeue_list();
-    requeue.list.lock().remove(&thread.id());
+    let mut list = requeue.list.lock();
+    let _ = list.find_mut(&thread.objid()).remove();
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {

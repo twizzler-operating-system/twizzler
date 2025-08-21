@@ -91,11 +91,40 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
+    use crate::simple_mutex::Mutex;
+
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {
         bench.iter(|| {
             for i in 0..10000 {
                 core::hint::black_box(i);
+            }
+        });
+    }
+
+    #[bench]
+    fn bench_yield(bench: &mut test::Bencher) {
+        bench.iter(|| {
+            crate::syscall::sys_thread_yield();
+        });
+    }
+
+    #[bench]
+    fn bench_simple_syscall(bench: &mut test::Bencher) {
+        bench.iter(|| {
+            crate::syscall::sys_thread_self_id();
+        });
+    }
+
+    #[bench]
+    fn bench1000_smutex_lock_unlock(bench: &mut test::Bencher) {
+        let lock = Mutex::new(3);
+        bench.iter(|| {
+            for _ in 0..1000 {
+                let mut g = lock.lock();
+                *g += 1;
+                let g = core::hint::black_box(g);
+                drop(g);
             }
         });
     }

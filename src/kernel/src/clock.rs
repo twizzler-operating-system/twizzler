@@ -1,11 +1,9 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use log::{debug, warn};
 use twizzler_abi::syscall::{Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds};
 use twizzler_rt_abi::{error::ArgumentError, Result};
-
-use log::debug; 
-use log::warn;
 
 use crate::{
     condvar::CondVar,
@@ -409,7 +407,12 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize> {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
             // does this allocate new kernel memory?
-            let info = { TICK_SOURCES.lock()[clock_list.first().unwrap().0 as usize].info() };
+            let info = {
+                TICK_SOURCES.lock()[clock_list.first().as_ref().unwrap().0 as usize]
+                    .as_ref()
+                    .unwrap()
+                    .info()
+            };
             slice[clocks_added].set(
                 // each semantic clock will have at least one element
                 info,
@@ -439,7 +442,7 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockKind, start: u64) -> Resu
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            let info = { TICK_SOURCES.lock()[id.0 as usize].info() };
+            let info = { TICK_SOURCES.lock()[id.0 as usize].as_ref().unwrap().info() };
             slice[clocks_added].set(info, *id, clock);
             clocks_added += 1;
         } else {
@@ -458,7 +461,7 @@ pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usi
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
         let id = clock_list.first().unwrap();
-        let info = { TICK_SOURCES.lock()[id.0 as usize].info() };
+        let info = { TICK_SOURCES.lock()[id.0 as usize].as_ref().unwrap().info() };
         slice[0].set(info, *id, clock);
         return Ok(clocks_added);
     } else {

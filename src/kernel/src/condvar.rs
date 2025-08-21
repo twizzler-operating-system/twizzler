@@ -109,14 +109,15 @@ impl CondVar {
     }
 
     pub fn signal(&self) {
-        let mut threads_to_wake = Vec::with_capacity(8);
+        const MAX_PER_ITER: usize = 8;
+        let mut threads_to_wake = Vec::with_capacity(MAX_PER_ITER);
         loop {
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
             }
             let mut node = inner.queue.front_mut();
-            while threads_to_wake.len() < 8 && !node.is_null() {
+            while threads_to_wake.len() < MAX_PER_ITER && !node.is_null() {
                 if node.get().unwrap().reset_sync_sleep() {
                     threads_to_wake.push(node.remove().unwrap());
                 }

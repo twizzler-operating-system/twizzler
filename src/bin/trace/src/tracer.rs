@@ -35,35 +35,58 @@ enum State {
     Done,
 }
 
-pub struct TracingState {
+pub struct TraceSource {
     objects: Vec<Object<BaseWrap>>,
     end_point: u64,
     pub total: u64,
+}
+
+pub struct TracingState {
+    pub kernel_source: TraceSource,
+    pub user_source: Option<TraceSource>,
     state: State,
     pub start_time: Instant,
     pub end_time: Instant,
     pub name: String,
 }
 
+impl Debug for TraceSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TraceSource {{ {} objects, end_point: {}, total: {} }}",
+            self.objects.len(),
+            self.end_point,
+            self.total,
+        )
+    }
+}
+
 impl Debug for TracingState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TracingState {{ {} objects, end_point: {}, total: {}, state: {:?} }}",
-            self.objects.len(),
-            self.end_point,
-            self.total,
-            self.state
+            "TracingState {{ kernel_source: {:?}, user_source: {:?}, state: {:?}, start_time: {:?}, end_time: {:?}, name: {:?} }}",
+            self.kernel_source,
+            self.user_source,
+            self.state,
+            self.start_time,
+            self.end_time,
+            self.name,
         )
     }
 }
 
 #[derive(BaseType, Invariant)]
 #[repr(transparent)]
-struct BaseWrap(TraceBase);
+pub struct BaseWrap(pub TraceBase);
 
 impl TracingState {
-    fn new(name: String, specs: &[TraceSpec]) -> miette::Result<Self> {
+    fn new(
+        name: String,
+        specs: &[TraceSpec],
+        user_prime: Option<Object<BaseWrap>>,
+    ) -> miette::Result<Self> {
         let prime = ObjectBuilder::new(ObjectCreate::default())
             .build(BaseWrap(TraceBase {
                 start: 0,
@@ -75,10 +98,21 @@ impl TracingState {
             sys_ktrace(prime.id(), Some(spec)).into_diagnostic()?;
         }
 
-        Ok(Self {
+        let user_source = user_prime.map(|up| TraceSource {
+            objects: vec![up],
+            end_point: 0,
+            total: 0,
+        });
+
+        let kernel_source = TraceSource {
             objects: vec![prime],
             end_point: 0,
             total: 0,
+        };
+
+        Ok(Self {
+            kernel_source,
+            user_source,
             state: State::Setup,
             start_time: Instant::now(),
             end_time: Instant::now(),
@@ -86,6 +120,23 @@ impl TracingState {
         })
     }
 
+    fn collect(&mut self) -> miette::Result<[Option<ThreadSyncSleep>; 2]> {
+        let s1 = self.kernel_source.collect()?;
+        let s2 = self.user_source.as_mut().and_then(|us| us.collect().ok());
+        Ok([Some(s1), s2])
+    }
+
+    pub fn data(&self) -> impl Iterator<Item = (&'_ TraceEntryHead, Option<&'_ TraceData<()>>)> {
+        self.kernel_source.data().chain(
+            self.user_source
+                .as_ref()
+                .map(|us| us.data())
+                .unwrap_or(TraceDataIter::empty()),
+        )
+    }
+}
+
+impl TraceSource {
     fn collect(&mut self) -> miette::Result<ThreadSyncSleep> {
         let mut current = self.objects.last().unwrap();
         let posted_end = current.base().0.end.load(Ordering::SeqCst);
@@ -148,7 +199,7 @@ impl TracingState {
 
     pub fn data(&self) -> TraceDataIter<'_> {
         TraceDataIter {
-            state: self,
+            state: Some(self),
             pos: 0,
             inner_pos: 0,
         }
@@ -156,9 +207,19 @@ impl TracingState {
 }
 
 pub struct TraceDataIter<'a> {
-    state: &'a TracingState,
+    state: Option<&'a TraceSource>,
     pos: usize,
     inner_pos: u64,
+}
+
+impl TraceDataIter<'_> {
+    pub fn empty() -> Self {
+        Self {
+            state: None,
+            pos: 0,
+            inner_pos: 0,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -173,7 +234,10 @@ impl<'a> Iterator for TraceDataIter<'a> {
     type Item = (&'a TraceEntryHead, Option<&'a TraceData<()>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let obj = self.state.objects.get(self.pos)?;
+        if self.state.is_none() {
+            return None;
+        }
+        let obj = self.state.as_ref().unwrap().objects.get(self.pos)?;
         let start_pos = self.inner_pos.max(obj.base().0.start);
         self.inner_pos = start_pos;
         let end = obj.base().0.end.load(Ordering::SeqCst);
@@ -255,30 +319,46 @@ fn collector(tracer: &Tracer) {
         if tracer.notifier.load(Ordering::SeqCst) == 0 {
             drop(guard);
             let mut waiters = [
-                ThreadSync::new_sleep(waiter),
+                ThreadSync::new_sleep(waiter[0].unwrap()),
                 ThreadSync::new_sleep(ThreadSyncSleep::new(
                     ThreadSyncReference::Virtual(&tracer.notifier),
                     0,
                     ThreadSyncOp::Equal,
                     ThreadSyncFlags::empty(),
                 )),
+                ThreadSync::new_sleep(waiter[1].unwrap_or(ThreadSyncSleep::new(
+                    ThreadSyncReference::Virtual(core::ptr::null()),
+                    0,
+                    ThreadSyncOp::Equal,
+                    ThreadSyncFlags::empty(),
+                ))),
             ];
+            let mut waiters = waiters.as_mut_slice();
             tracing::trace!(
-                "collector is waiting for data: {} {}",
+                "collector is waiting for data: {} {} {}",
                 waiters[0].ready(),
-                waiters[1].ready()
+                waiters[1].ready(),
+                if waiter[1].is_some() {
+                    if waiters[2].ready() { "true" } else { "false" }
+                } else {
+                    "-"
+                }
             );
+            if waiter[1].is_none() {
+                waiters = &mut waiters[0..2];
+            }
             if waiters.iter().all(|w| !w.ready()) {
-                let _ = sys_thread_sync(&mut waiters, None).inspect_err(|e| {
+                let _ = sys_thread_sync(waiters, None).inspect_err(|e| {
                     tracing::warn!("failed to thread sync: {}", e);
                 });
             }
         } else {
             tracing::trace!("collector was notified of exit");
 
-            let _ = sys_ktrace(guard.objects.first().unwrap().id(), None).inspect_err(|e| {
-                tracing::error!("failed to disable tracing: {}", e);
-            });
+            let _ = sys_ktrace(guard.kernel_source.objects.first().unwrap().id(), None)
+                .inspect_err(|e| {
+                    tracing::error!("failed to disable tracing: {}", e);
+                });
             let _ = guard.collect().inspect_err(|e| {
                 tracing::error!("failed to collect trace data: {}", e);
             });
@@ -294,9 +374,12 @@ pub fn start(
     cli: &Cli,
     comp: CompartmentHandle,
     specs: Vec<TraceSpec>,
+    rt_trace: Option<Object<BaseWrap>>,
 ) -> miette::Result<TracingState> {
+    let state = TracingState::new(comp.info().name, specs.as_slice(), rt_trace)?;
+
     let tracer = Tracer {
-        state: Mutex::new(TracingState::new(comp.info().name, specs.as_slice())?),
+        state: Mutex::new(state),
         specs,
         state_cv: Condvar::new(),
         notifier: AtomicU64::new(0),
