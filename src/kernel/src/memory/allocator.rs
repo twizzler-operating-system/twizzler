@@ -111,6 +111,10 @@ fn trace_kalloc(layout: Layout, time: Duration, is_free: bool) {
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
     #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if layout.size() == 64 && false {
+            crate::panic::backtrace(false, None);
+            log::info!("alloc: {:?}", core::panic::Location::caller());
+        }
         let start = Instant::now();
         let ret = {
             let mut inner = self.inner.lock();
