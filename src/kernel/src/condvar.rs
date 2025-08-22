@@ -51,7 +51,7 @@ impl CondVar {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
-        inner.queue.insert(current_thread);
+        inner.queue.insert(current_thread.clone());
         drop(inner);
 
         unsafe { guard.force_unlock() };
@@ -87,9 +87,8 @@ impl CondVar {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
-        inner.queue.insert(current_thread);
+        inner.queue.insert(current_thread.clone());
         drop(inner);
-        let current_thread = current_thread_ref().unwrap();
         let critical_guard = current_thread.enter_critical();
         current_thread.set_sync_sleep();
         current_thread.set_sync_sleep_done();
@@ -109,28 +108,25 @@ impl CondVar {
 
     pub fn signal(&self) {
         const MAX_PER_ITER: usize = 8;
-        let mut threads_to_wake = [const { None }; MAX_PER_ITER];
+        let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
         loop {
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
             }
             let mut node = inner.queue.front_mut();
-            let mut idx = 0;
-            while idx < MAX_PER_ITER && !node.is_null() {
+            while !threads_to_wake.is_full() && !node.is_null() {
                 if node.get().unwrap().reset_sync_sleep() {
-                    threads_to_wake[idx] = node.remove();
-                    idx += 1;
+                    // Safety: vec isn't full, checked above.
+                    unsafe { threads_to_wake.push_unchecked(node.remove().unwrap()) };
                 } else {
                     node.move_next();
                 }
             }
 
             drop(inner);
-            for t in &mut threads_to_wake {
-                if let Some(t) = t.take() {
-                    add_to_requeue(t);
-                }
+            for t in threads_to_wake.drain(..) {
+                add_to_requeue(t);
             }
         }
         requeue_all();

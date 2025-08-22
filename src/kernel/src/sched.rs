@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use fixedbitset::FixedBitSet;
@@ -292,6 +292,8 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
             .lock()
             .insert(thread.control_object.object().id(), thread.clone());
     }
+    *unsafe { thread.self_reference.get().as_mut().unwrap() } =
+        Box::into_raw(Box::new(thread.clone()));
     let cpuid = select_cpu(&thread);
     let processor = get_processor(cpuid);
     schedule_thread_on_cpu(thread.clone(), processor);
@@ -310,8 +312,9 @@ pub fn schedule_thread(thread: ThreadRef) {
 
 pub fn create_idle_thread() {
     let idle = Arc::new(Thread::new_idle());
+    *unsafe { idle.self_reference.get().as_mut().unwrap() } = Box::into_raw(Box::new(idle.clone()));
     current_processor().set_idle_thread(idle.clone());
-    set_current_thread(idle);
+    unsafe { set_current_thread(&idle) };
 }
 
 fn trace_migrate(th: &ThreadRef, from: u64, to: u64) {
@@ -347,13 +350,12 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef) {
     }
 }
 
-fn switch_to(thread: ThreadRef, old: ThreadRef) {
-    if old != thread {
+fn switch_to(thread: ThreadRef, old: &ThreadRef) {
+    if *old != thread {
         trace_switch(&old, &thread);
     }
     let cp = current_processor();
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
-    set_current_thread(thread.clone());
     let oldcpu = thread
         .last_cpu
         .swap(current_processor().id as i32, Ordering::SeqCst);
@@ -363,33 +365,12 @@ fn switch_to(thread: ThreadRef, old: ThreadRef) {
     if !thread.is_idle_thread() {
         crate::clock::schedule_oneshot_tick(1);
     }
-    /* Okay, so this is a little gross. Basically, we need to drop these references to make
-    sure the refcounts don't climb every time we switch_to() with an exiting thread. But we still need a reference
-    to the underlying thread so we can do the switch_thread call.
+    unsafe { set_current_thread(&thread) };
 
-    So we manually decrement the refcounts while maintaining a raw pointer to the underlying.
-    Why is this safe?
-      1. For the old pointer, it's safe because this thread is either exiting, in which case it
-         is placed in the exit queue for THIS CPU, thus we can ensure that the reference will not
-         dangle, since that only gets cleaned up by THIS CPU on the next scheduling softtick. If
-         the thread is not exiting, then it must be either sleeping, and on a queue somewhere else,
-         or its on a different CPU queue. In both cases, the thread is on a different queue. Since
-         the switch_thread function internally must lock to handle SMP cross-cpu scheduling, and
-         after that lock is released, the old pointer is never used (this is part of the contract
-         of the swtich_thread function), we know the old pointer will live at least as long as that
-         lock is held through the switch_thread call, after which switch_to isn't allowed to look at
-         it anyway. Thus, the pointer will not dangle.
-      2. For the new (thread) pointer, we know this reference is safe because we just wrote it as
-         the current thread pointer for this CPU, so we know it won't dangle. */
     let threadt = Arc::into_raw(thread);
-    let oldt = Arc::into_raw(old);
     unsafe {
-        Arc::decrement_strong_count(oldt);
         Arc::decrement_strong_count(threadt);
-        threadt
-            .as_ref()
-            .unwrap()
-            .switch_thread(oldt.as_ref().unwrap());
+        threadt.as_ref().unwrap().switch_thread(old);
     }
 }
 
@@ -414,7 +395,7 @@ fn do_schedule(reinsert: bool) {
     };
 
     if let Some(next) = next {
-        if next == cur {
+        if &next == cur {
             return;
         }
         next.current_processor_queue.store(-1, Ordering::SeqCst);
@@ -443,11 +424,6 @@ pub fn schedule(reinsert: bool) {
         interrupt::set(istate);
         return;
     }
-    // We have to drop cur here and get it again later, after the call to do_schedule, even though
-    // it will be the same thread later. This is because the final call to this function after a
-    // thread exits will never return here after going into do_schedule, so we have to ensure
-    // that cur is dropped before then.
-    drop(cur);
 
     do_schedule(reinsert);
     interrupt::set(istate);
@@ -547,7 +523,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();
     let cur = current_thread_ref();
-    if let Some(ref cur) = cur {
+    if let Some(cur) = cur {
         if !cur.is_critical() && cur.is_in_user() {
             cp.cleanup_exited();
         }

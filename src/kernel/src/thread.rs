@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     alloc::Layout,
-    cell::RefCell,
+    cell::UnsafeCell,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
     u32,
 };
@@ -77,29 +77,33 @@ pub struct Thread {
     pub suspend_link: RBTreeAtomicLink,
     pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
+    pub self_reference: UnsafeCell<*mut ThreadRef>,
 }
 unsafe impl Send for Thread {}
+unsafe impl Sync for Thread {}
 
 pub type ThreadRef = Arc<Thread>;
 
 #[thread_local]
-static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
+static CURRENT_THREAD: UnsafeCell<*const ThreadRef> = UnsafeCell::new(core::ptr::null());
 
-pub fn current_thread_ref() -> Option<ThreadRef> {
+#[inline]
+pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
     unsafe {
         if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
             return None;
         }
     }
-    interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
+    core::sync::atomic::fence(Ordering::Acquire);
+    unsafe { (*CURRENT_THREAD.get().as_mut().unwrap_unchecked()).as_ref() }
 }
 
-pub fn set_current_thread(thread: ThreadRef) {
-    interrupt::with_disabled(move || {
-        let old = CURRENT_THREAD.replace(Some(thread));
-        drop(old);
-    });
+pub unsafe fn set_current_thread(thread: &ThreadRef) {
+    let ptr = CURRENT_THREAD.get();
+    let r = thread.self_reference.get().as_ref().unwrap_unchecked();
+    ptr.write(*r);
+    core::sync::atomic::fence(Ordering::Release);
 }
 
 static ID_COUNTER: IdCounter = IdCounter::new();
@@ -145,6 +149,7 @@ impl Thread {
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
             sample_expire: Spinlock::new(None),
+            self_reference: UnsafeCell::new(core::ptr::null_mut()),
         }
     }
 
@@ -407,6 +412,14 @@ impl<'a> Drop for CriticalGuard<'a> {
     }
 }
 
+/*
+impl Drop for Thread {
+    fn drop(&mut self) {
+        log::info!("drop thread {}", self.objid());
+    }
+}
+*/
+
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
@@ -416,7 +429,6 @@ pub fn exit(code: u64) -> ! {
         th.set_is_exiting();
         crate::syscall::sync::remove_from_requeue(&th);
         crate::sched::remove_thread(th.id());
-        drop(th);
     }
     crate::sched::schedule(false);
     unreachable!()

@@ -104,7 +104,7 @@ impl<T> Mutex<T> {
                         }
                     }
 
-                    queue.owner = current_thread.clone();
+                    queue.owner = current_thread.cloned();
                     break;
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
@@ -115,7 +115,7 @@ impl<T> Mutex<T> {
                 }
 
                 let mut reinsert = true;
-                if let Some(ref thread) = current_thread {
+                if let Some(thread) = current_thread {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());

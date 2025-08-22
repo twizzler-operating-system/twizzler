@@ -189,7 +189,6 @@ unsafe extern "C" fn common_handler_entry(
         let t = current_thread_ref().unwrap();
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         t.set_entry_registers(Registers::None);
-        drop(t);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
 }
@@ -1169,6 +1168,7 @@ pub fn init_idt() {
 }
 
 /// Set the current interrupt enable state to disabled and return the old state.
+#[inline]
 pub fn disable() -> bool {
     let mut flags = x86::bits64::rflags::read();
     let old_if = flags.contains(RFlags::FLAGS_IF);
@@ -1178,6 +1178,7 @@ pub fn disable() -> bool {
 }
 
 /// Set the current interrupt enable state.
+#[inline]
 pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
@@ -1185,6 +1186,7 @@ pub fn set(state: bool) {
 }
 
 /// Get the current interrupt enable state without modifying it.
+#[inline]
 pub fn get() -> bool {
     x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }

@@ -66,12 +66,20 @@ fn test_stable_read() {
 mod tester {
     use std::time::Instant;
 
-    use twizzler_rt_abi::bindings::twz_rt_malloc;
+    use twizzler_rt_abi::bindings::{twz_rt_get_monotonic_time, twz_rt_malloc};
 
     #[bench]
     fn bench_rt_alloc(bench: &mut test::Bencher) {
         bench.iter(|| {
             let _ret = unsafe { twz_rt_malloc(32, 16, 0) };
+            core::hint::black_box(_ret);
+        });
+    }
+
+    #[bench]
+    fn bench_rt_monotime(bench: &mut test::Bencher) {
+        bench.iter(|| {
+            let _ret = unsafe { twz_rt_get_monotonic_time() };
             core::hint::black_box(_ret);
         });
     }

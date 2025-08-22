@@ -39,7 +39,7 @@ impl Thread {
     /// of this call.
     pub fn suspend(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_SUSPEND, Ordering::SeqCst);
-        if self == &current_thread_ref().unwrap() {
+        if self == current_thread_ref().unwrap() {
             if !self.is_critical() {
                 crate::interrupt::with_disabled(|| {
                     self.maybe_suspend_self();

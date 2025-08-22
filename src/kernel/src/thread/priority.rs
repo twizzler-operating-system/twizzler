@@ -132,12 +132,14 @@ impl PriorityClass {
 
 impl Thread {
     pub fn remove_donated_priority(&self) {
-        if self.get_donated_priority().is_some() {
-            log::trace!("remove donated pri: {:?}", self.get_donated_priority());
+        if self
+            .flags
+            .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst)
+            & THREAD_HAS_DONATED_PRIORITY
+            != 0
+        {
+            self.donated_priority.store(u32::MAX, Ordering::SeqCst);
         }
-        self.donated_priority.store(u32::MAX, Ordering::SeqCst);
-        self.flags
-            .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst);
     }
 
     pub fn get_donated_priority(&self) -> Option<Priority> {

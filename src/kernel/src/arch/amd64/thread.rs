@@ -1,5 +1,5 @@
 use core::{
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
 };
 
@@ -57,11 +57,17 @@ pub struct ArchThread {
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
     /// frame and returns to user using this frame.
-    pub upcall_restore_frame: RefCell<Option<UpcallFrame>>,
+    upcall_restore_frame: UnsafeCell<Option<UpcallFrame>>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
 unsafe impl Send for ArchThread {}
+
+impl ArchThread {
+    pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
+        unsafe { self.upcall_restore_frame.get().as_mut().unwrap_unchecked() }.take()
+    }
+}
 
 #[allow(named_asm_labels)]
 #[no_mangle]
@@ -128,7 +134,7 @@ impl ArchThread {
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
             entry_registers: RefCell::new(Registers::None),
-            upcall_restore_frame: RefCell::new(None),
+            upcall_restore_frame: UnsafeCell::new(None),
         }
     }
 }
@@ -333,14 +339,27 @@ impl Thread {
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
         // to use the ISR return mechanism (see the syscall code).
-        *self.arch.upcall_restore_frame.borrow_mut() = Some(*frame);
+        *unsafe {
+            self.arch
+                .upcall_restore_frame
+                .get()
+                .as_mut()
+                .unwrap_unchecked()
+        } = Some(*frame);
     }
 
     /// Queue up an upcall on this thread. The sup argument denotes if this upcall
     /// is requesting a supervisor context switch. Once this is done, the thread's kernel
     /// entry frame will be setup to enter the upcall handler on return-to-userspace.
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
-        if self.arch.upcall_restore_frame.borrow().is_some() {
+        if unsafe {
+            self.arch
+                .upcall_restore_frame
+                .get()
+                .as_ref()
+                .unwrap_unchecked()
+                .is_some()
+        } {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
@@ -471,7 +490,13 @@ impl Thread {
     }
 
     pub fn read_ip(&self) -> u64 {
-        let mut frame = *self.arch.upcall_restore_frame.borrow();
+        let mut frame = *unsafe {
+            self.arch
+                .upcall_restore_frame
+                .get()
+                .as_ref()
+                .unwrap_unchecked()
+        };
         if frame.is_none() {
             frame = Some(match *self.arch.entry_registers.borrow() {
                 Registers::None => {
@@ -496,7 +521,13 @@ impl Thread {
                 twizzler_rt_abi::error::GenericError::AccessDenied,
             ));
         }
-        let mut frame = *self.arch.upcall_restore_frame.borrow();
+        let mut frame = *unsafe {
+            self.arch
+                .upcall_restore_frame
+                .get()
+                .as_ref()
+                .unwrap_unchecked()
+        };
         if frame.is_none() {
             frame = Some(match *self.arch.entry_registers.borrow() {
                 Registers::None => {

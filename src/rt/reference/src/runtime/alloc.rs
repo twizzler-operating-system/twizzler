@@ -8,7 +8,12 @@ use core::{
     ptr::NonNull,
     sync::atomic::Ordering,
 };
-use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize, time::Instant};
+use std::{
+    alloc::Allocator,
+    mem::size_of,
+    sync::atomic::{AtomicBool, AtomicUsize},
+    time::Instant,
+};
 
 use twizzler_abi::simple_mutex::Mutex;
 
@@ -177,6 +182,16 @@ unsafe impl Allocator for FailAlloc {
 unsafe impl GlobalAlloc for LocalAllocator {
     #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        /*
+        static TRACE: AtomicBool = AtomicBool::new(false);
+        if layout.size() == 12345678 {
+            TRACE.store(true, Ordering::SeqCst);
+        }
+        if false && TRACE.load(Ordering::SeqCst) {
+            twizzler_abi::klog_println!("== alloc: {:?}", layout);
+            super::debug::backtrace(false, None);
+        }
+        */
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
