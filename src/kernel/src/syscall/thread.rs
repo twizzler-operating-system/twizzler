@@ -52,7 +52,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             if crate::sched::needs_reschedule(true) {
                 crate::sched::schedule(true);
             }
-            cur.adjust_priority(-100);
+            //cur.adjust_priority(-100);
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
