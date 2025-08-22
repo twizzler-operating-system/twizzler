@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    u64,
+};
 
 use fixedbitset::FixedBitSet;
 use twizzler_abi::{
@@ -198,6 +201,14 @@ fn try_steal() -> Option<ThreadRef> {
             /* try to steal something */
             let thread = take_a_thread_from_cpu(processor);
             if thread.is_some() {
+                log::info!(
+                    "stole {} ({} -> {}): {} {}",
+                    thread.as_ref().unwrap().objid(),
+                    processor.id,
+                    us.id,
+                    otherload,
+                    us.current_load()
+                );
                 us.load.fetch_add(1, Ordering::SeqCst);
             }
             return thread;
@@ -228,6 +239,12 @@ fn balance(topo: &CPUTopoNode) {
 
         let thread = take_a_thread_from_cpu(donor);
         if let Some(thread) = thread {
+            log::info!(
+                "rebalanced {} ({} -> {})",
+                thread.objid(),
+                donor.id,
+                recipient.id
+            );
             schedule_thread_on_cpu(thread, recipient);
         } else {
             cpuset.set(donor.id as usize, false);
@@ -239,15 +256,26 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
     /* TODO: restrict via cpu sets as step 0, and in global searches */
     /* TODO: take SMT into acount */
     let last_cpuid = thread.last_cpu.load(Ordering::Acquire);
+    let mut last_load = None;
     /* 1: if the thread can run on the last CPU it ran on, and that CPU is idle, then do that. */
     if last_cpuid >= 0 {
         let processor = get_processor(last_cpuid as u32);
+        last_load = Some(processor.current_load());
         if processor.current_load() == 1 {
             return last_cpuid as u32;
         }
         if thread.effective_priority() >= processor.current_priority() {
             return last_cpuid as u32;
         }
+        log::trace!(
+            "{}: last: {}: {} {:?} {:?}: {}",
+            thread.objid(),
+            last_cpuid,
+            processor.current_load(),
+            thread.effective_priority(),
+            processor.current_priority(),
+            thread.effective_priority() >= processor.current_priority()
+        );
     }
 
     /* 2: search for the least loaded that will run this thread immediately */
@@ -258,12 +286,32 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
         None,
     );
     if let Some(res) = res {
+        log::trace!(
+            "{}: found(pri) {} with load {} ({:?})",
+            thread.objid(),
+            res.cpuid,
+            res.load,
+            last_load,
+        );
+        if last_load.is_some_and(|ll| res.load >= (ll - 1) * 128) && last_cpuid >= 0 {
+            return last_cpuid as u32;
+        }
         return res.cpuid;
     }
 
     /* 3: search for the least loaded */
     let res = find_cpu_from_topo(get_cpu_topology(), false, None, None)
         .expect("global CPU search should always produce results");
+    log::trace!(
+        "{}: found {} with load {} ({:?})",
+        thread.objid(),
+        res.cpuid,
+        res.load,
+        last_load
+    );
+    if last_load.is_some_and(|ll| res.load >= (ll - 1) * 128) && last_cpuid >= 0 {
+        return last_cpuid as u32;
+    }
 
     res.cpuid
 }
@@ -306,6 +354,9 @@ pub fn schedule_thread(thread: ThreadRef) {
         return;
     }
     let cpuid = select_cpu(&thread);
+    if cpuid != thread.last_cpu.load(Ordering::SeqCst) as u32 {
+        log::trace!("schedule-migrated {}", thread.objid(),);
+    }
     let processor = get_processor(cpuid);
     schedule_thread_on_cpu(thread, processor);
 }
@@ -483,6 +534,9 @@ pub fn schedule_maybe_preempt() {
     if PREEMPT.swap(false, Ordering::SeqCst) {
         let cp = current_processor();
         cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
+        if quick_random() % 100 == 0 {
+            current_thread_ref().unwrap().adjust_priority(1);
+        }
         schedule(true)
     }
 }
@@ -516,7 +570,7 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
-const PRINT_STATS: bool = false;
+const PRINT_STATS: bool = true;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
@@ -546,7 +600,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
 
     if PRINT_STATS && s % 200 == 0 {
-        if false {
+        if true {
             logln!(
             "STAT {}; {}({}): load {:2}, i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
             cp.id,
@@ -565,10 +619,11 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
             for t in all_threads.values() {
-                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running && false {
+                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
                     logln!(
-                        "thread {:3}: u {:4} s {:4} i {:4}, {:?}, {:x}",
-                        t.id(),
+                        "thread {} on {}: u {:4} s {:4} i {:4}, {:?}, {:x}",
+                        t.objid(),
+                        t.last_cpu.load(Ordering::SeqCst),
                         t.stats.user.load(Ordering::SeqCst),
                         t.stats.sys.load(Ordering::SeqCst),
                         t.stats.idle.load(Ordering::SeqCst),
@@ -577,7 +632,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                     );
                 }
             }
-            crate::memory::print_fault_stats();
+            //crate::memory::print_fault_stats();
         }
         //crate::clock::print_info();
     }

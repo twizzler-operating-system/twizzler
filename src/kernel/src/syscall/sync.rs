@@ -119,6 +119,7 @@ pub fn trace_resume(_th: &ThreadRef, duration: TimeSpan) {
 // schedule until I say so".
 pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
+    current_thread_ref().unwrap().adjust_priority(-100);
     let start = Instant::now();
     trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
@@ -250,6 +251,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     let thread = current_thread_ref().unwrap();
     let guard = thread.enter_critical();
     thread.set_sync_sleep_done();
+    requeue_all();
     let prep_done = Instant::now();
     finish_blocking(guard);
     let woke_up = Instant::now();
