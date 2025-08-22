@@ -7,7 +7,7 @@ use twizzler_abi::object::ObjID;
 use super::{pages::PageRef, pagevec::PageVecRef, PageNumber};
 use crate::{
     condvar::CondVar,
-    memory::tracker::FrameAllocator,
+    memory::{pagetables::MappingSettings, tracker::FrameAllocator},
     mutex::Mutex,
     obj::{pages::Page, pagevec::PageVec},
     spinlock::Spinlock,
@@ -101,16 +101,23 @@ impl PageRange {
         }
     }
 
-    pub fn pages(&self, pn: PageNumber, len: usize) -> Vec<PageRef> {
+    pub fn pages<const MAX: usize>(
+        &self,
+        pn: PageNumber,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) {
         assert!(pn >= self.start);
         let off = pn - self.start;
         match &self.backing {
-            BackingPages::Nothing => Vec::new(),
+            BackingPages::Nothing => {}
             BackingPages::Single(page_ref) => {
                 assert!(off < page_ref.nr_pages());
-                [page_ref.adjust(self.offset + off)].to_vec()
+                pages
+                    .push((page_ref.adjust(self.offset + off), settings))
+                    .expect("failed to push single page to page vec")
             }
-            BackingPages::Many(pv_ref) => pv_ref.lock().pages(self.offset + off, len),
+            BackingPages::Many(pv_ref) => pv_ref.lock().pages(self.offset + off, pages, settings),
         }
     }
 
@@ -361,9 +368,15 @@ impl PageRangeTree {
         Some((page, shared, range.is_locked()))
     }
 
-    pub fn try_get_pages(&self, pn: PageNumber, len: usize) -> Option<Vec<PageRef>> {
+    pub fn try_get_pages<const MAX: usize>(
+        &self,
+        pn: PageNumber,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) -> Option<()> {
         let range = self.get(pn)?;
-        Some(range.pages(pn, len))
+        range.pages(pn, pages, settings);
+        Some(())
     }
 
     pub fn get_page(

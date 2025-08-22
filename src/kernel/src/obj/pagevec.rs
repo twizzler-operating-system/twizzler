@@ -1,4 +1,4 @@
-use alloc::{format, string::String, sync::Arc, vec::Vec};
+use alloc::{format, string::String, sync::Arc};
 use core::{ops::Range, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
@@ -7,7 +7,10 @@ use super::{
     pages::{Page, PageRef},
     range::PageRange,
 };
-use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
+use crate::{
+    memory::{pagetables::MappingSettings, tracker::FrameAllocator},
+    mutex::Mutex,
+};
 
 #[derive(Debug)]
 pub struct PageVec {
@@ -115,20 +118,25 @@ impl PageVec {
         Some(entry.1.adjust(pn - *entry.0))
     }
 
-    pub fn pages(&self, pn: usize, len: usize) -> Vec<PageRef> {
-        let entry = self.tree.range(pn..(pn + len));
+    pub fn pages<const MAX: usize>(
+        &self,
+        pn: usize,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) {
+        let entry = self.tree.range(pn..(pn + pages.capacity()));
 
         let mut start = pn;
-        let mut pages = Vec::new();
         for entry in entry {
-            if *entry.0 == start {
-                pages.push(entry.1.value().clone());
+            if *entry.0 == start && !pages.is_full() {
+                unsafe {
+                    pages.push_unchecked((entry.1.value().clone(), settings));
+                }
                 start += entry.1.value().nr_pages();
             } else {
                 break;
             }
         }
-        pages
     }
 
     pub fn add_page(&mut self, off: usize, page: PageRef) -> PageRef {

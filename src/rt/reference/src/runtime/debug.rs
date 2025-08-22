@@ -77,3 +77,75 @@ impl ReferenceRuntime {
         ret
     }
 }
+
+const MAX_FRAMES: usize = 100;
+pub fn backtrace(_symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
+    let mut frame_nr = 0;
+    let trace_callback = |frame: &backtracer_core::Frame| {
+        let ip = frame.ip();
+
+        //if !symbolize {
+        twizzler_abi::klog_println!("{:4} - {:18p}", frame_nr, ip);
+        //}
+        /*else {
+            // Resolve this instruction pointer to a symbol name
+            let _ = backtracer_core::resolve(
+                if let Some(ctx) = DEBUG_CTX.poll().map(|d| &d.ctx) {
+                    Some(ctx)
+                } else {
+                    None
+                },
+                0,
+                ip,
+                |symbol| {
+                    let name = symbol.name();
+                    if let Some(addr) = symbol.addr() {
+                        emerglogln!(
+                            "{:4}: {:18p} - {}",
+                            frame_nr,
+                            addr,
+                            if let Some(ref name) = name {
+                                name
+                            } else {
+                                "??"
+                            }
+                        )
+                    } else {
+                        emerglogln!(
+                            "{:4}:                 ?? - {}",
+                            frame_nr,
+                            if let Some(ref name) = name {
+                                name
+                            } else {
+                                "??"
+                            }
+                        )
+                    }
+                    if let Some(filename) = symbol.filename() {
+                        if let Some(linenr) = symbol.lineno() {
+                            emerglogln!(
+                                "                               at {}:{}",
+                                filename,
+                                linenr
+                            );
+                        }
+                    }
+                },
+            );
+        }
+        */
+        frame_nr += 1;
+
+        if frame_nr > MAX_FRAMES {
+            return false;
+        }
+
+        true // keep going to the next frame
+    };
+
+    if let Some(entry_point) = entry_point {
+        backtracer_core::trace_from(entry_point, trace_callback);
+    } else {
+        backtracer_core::trace(trace_callback);
+    }
+}

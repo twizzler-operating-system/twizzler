@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp};
 
@@ -105,17 +106,20 @@ impl Object {
         val: u64,
         first_sleep: bool,
         flags: ThreadSyncFlags,
+        vaddr: Option<&AtomicU64>,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
-        let cur = unsafe { self.read_atomic_u64(offset) };
+        let cur = vaddr
+            .map(|vaddr| vaddr.load(Ordering::SeqCst))
+            .unwrap_or_else(|| unsafe { self.read_atomic_u64(offset) });
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread);
+            sleep_info.insert(offset, thread.clone());
         }
         res
     }
@@ -127,17 +131,20 @@ impl Object {
         val: u32,
         first_sleep: bool,
         flags: ThreadSyncFlags,
+        vaddr: Option<&AtomicU32>,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
-        let cur = unsafe { self.read_atomic_u32(offset) };
+        let cur = vaddr
+            .map(|vaddr| vaddr.load(Ordering::SeqCst))
+            .unwrap_or_else(|| unsafe { self.read_atomic_u32(offset) });
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread);
+            sleep_info.insert(offset, thread.clone());
         }
         res
     }

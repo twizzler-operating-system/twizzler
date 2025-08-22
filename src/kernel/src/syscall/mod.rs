@@ -154,7 +154,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::MONOTONIC;
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }
@@ -168,7 +168,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }
@@ -186,7 +186,7 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }

@@ -113,14 +113,15 @@ impl TryFrom<VirtAddr> for Slot {
     }
 }
 
+const MAX_OPP_VEC: usize = 128;
 struct ObjectPageProvider {
     pos: usize,
     inner_pos: usize,
-    pages: Vec<(PageRef, MappingSettings)>,
+    pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>,
 }
 
 impl ObjectPageProvider {
-    pub fn new(pages: Vec<(PageRef, MappingSettings)>) -> Self {
+    pub fn new(pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>) -> Self {
         Self {
             pages,
             pos: 0,

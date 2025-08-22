@@ -14,7 +14,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
-use super::{ObjectPageProvider, PageFaultFlags};
+use super::{ObjectPageProvider, PageFaultFlags, MAX_OPP_VEC};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
@@ -229,7 +229,9 @@ impl MapRegion {
                 return mapper(
                     self.shared_pt.as_ref(),
                     PageNumber::from_address(addr),
-                    ObjectPageProvider::new(Vec::from([(page, settings)])),
+                    ObjectPageProvider::new(heapless::Vec::<_, MAX_OPP_VEC>::from([(
+                        page, settings,
+                    )])),
                 );
             }
         }
@@ -358,7 +360,10 @@ impl MapRegion {
                 let ret = mapper(
                     self.shared_pt.as_ref(),
                     large_page_number,
-                    ObjectPageProvider::new(Vec::from([(page.adjust_down(large_diff), settings)])),
+                    ObjectPageProvider::new(heapless::Vec::from([(
+                        page.adjust_down(large_diff),
+                        settings,
+                    )])),
                 );
                 drop(obj_page_tree);
                 if ret.is_ok() {
@@ -368,32 +373,30 @@ impl MapRegion {
             } else {
                 FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
 
-                let pages = if cause != MemoryAccessKind::Write
+                let mut provider = ObjectPageProvider::new(heapless::Vec::from([(page, settings)]));
+                if cause != MemoryAccessKind::Write
                     && !settings.perms().contains(Protections::WRITE)
                 {
-                    obj_page_tree
-                        .try_get_pages(page_number, 128)
-                        .filter(|pages| !pages.is_empty())
-                        .map(|pages| {
-                            log::trace!(
-                                "mapping multiple pages for {}: {}, {}",
-                                self.object().id(),
-                                pages.len(),
-                                pages.iter().fold(0, |acc, p| acc + p.nr_pages())
-                            );
-                            ObjectPageProvider::new(
-                                pages.into_iter().map(|p| (p, settings)).collect(),
-                            )
-                        })
-                        .unwrap_or_else(|| ObjectPageProvider::new(Vec::from([(page, settings)])))
-                } else {
-                    ObjectPageProvider::new(Vec::from([(page, settings)]))
+                    let mut pages = heapless::Vec::<_, MAX_OPP_VEC>::new();
+                    if obj_page_tree
+                        .try_get_pages(page_number, &mut pages, settings)
+                        .is_some()
+                        && !pages.is_empty()
+                    {
+                        log::trace!(
+                            "mapping multiple pages for {}: {}, {}",
+                            self.object().id(),
+                            pages.len(),
+                            pages.iter().fold(0, |acc, p| acc + p.0.nr_pages())
+                        );
+                        provider = ObjectPageProvider::new(pages);
+                    }
                 };
 
                 let ret = mapper(
                     self.shared_pt.as_ref(),
                     PageNumber::from_address(addr),
-                    pages,
+                    provider,
                 );
                 drop(obj_page_tree);
                 if ret.is_ok() {

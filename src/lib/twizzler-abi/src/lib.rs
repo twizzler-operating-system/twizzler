@@ -91,7 +91,15 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
-    use crate::simple_mutex::Mutex;
+    use core::sync::atomic::AtomicU64;
+
+    use crate::{
+        simple_mutex::Mutex,
+        syscall::{
+            sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+            ThreadSyncSleep, ThreadSyncWake,
+        },
+    };
 
     #[bench]
     fn test_bench(bench: &mut test::Bencher) {
@@ -113,6 +121,38 @@ mod tester {
     fn bench_simple_syscall(bench: &mut test::Bencher) {
         bench.iter(|| {
             crate::syscall::sys_thread_self_id();
+        });
+    }
+
+    #[bench]
+    fn bench_thread_sync_sleep_ready(bench: &mut test::Bencher) {
+        let word = AtomicU64::new(0);
+        bench.iter(|| {
+            let r = sys_thread_sync(
+                &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+                    ThreadSyncReference::Virtual(&word),
+                    1,
+                    ThreadSyncOp::Equal,
+                    ThreadSyncFlags::empty(),
+                ))],
+                None,
+            );
+            core::hint::black_box(r);
+        });
+    }
+
+    #[bench]
+    fn bench_thread_sync_wake(bench: &mut test::Bencher) {
+        let word = AtomicU64::new(0);
+        bench.iter(|| {
+            let r = sys_thread_sync(
+                &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&word),
+                    1,
+                ))],
+                None,
+            );
+            core::hint::black_box(r);
         });
     }
 

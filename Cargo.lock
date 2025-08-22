@@ -407,6 +407,20 @@ dependencies = [
 [[package]]
 name = "backtracer_core"
 version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dad6e6def79d45294d64988845a381bf8856407ff83a00be491300afae250e4"
+dependencies = [
+ "addr2line 0.16.0",
+ "cfg-if 0.1.10",
+ "gimli 0.25.0",
+ "log",
+ "stable_deref_trait",
+ "x86",
+]
+
+[[package]]
+name = "backtracer_core"
+version = "0.0.7"
 source = "git+https://github.com/twizzler-operating-system/backtracer?branch=twizzler#0b85917581f463464fb30980fad86f7856334e46"
 dependencies = [
  "addr2line 0.16.0",
@@ -3540,6 +3554,16 @@ name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "heapless"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1edcd5a338e64688fbdcb7531a846cfd3476a54784dcb918a0844682bc7ada5"
 dependencies = [
  "hash32",
  "stable_deref_trait",
@@ -7064,6 +7088,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tick_counter"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37f1310986d0aa940019cbb2b480161c60a614dba076cbb20e82bfbc236bbabd"
+
+[[package]]
 name = "time"
 version = "0.3.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7439,12 +7469,13 @@ dependencies = [
  "acpi",
  "addr2line 0.16.0",
  "arm-gic",
- "backtracer_core",
+ "backtracer_core 0.0.7 (git+https://github.com/twizzler-operating-system/backtracer?branch=twizzler)",
  "bitflags 2.9.0",
  "chacha20",
  "digest",
  "fdt",
  "fixedbitset",
+ "heapless 0.9.1",
  "hex-literal",
  "intrusive-collections",
  "limine",
@@ -7545,7 +7576,7 @@ dependencies = [
  "bitflags 2.9.0",
  "blake3",
  "getrandom 0.2.16",
- "heapless",
+ "heapless 0.8.0",
  "log",
  "p256",
  "sha2",
@@ -7567,6 +7598,7 @@ name = "twz-rt"
 version = "0.1.0"
 dependencies = [
  "atomic",
+ "backtracer_core 0.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitflags 2.9.0",
  "dynlink",
  "elf",
@@ -7582,6 +7614,7 @@ dependencies = [
  "static_assertions",
  "talc",
  "thiserror 2.0.12",
+ "tick_counter",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -7604,6 +7637,7 @@ dependencies = [
  "tracing-chrome",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]

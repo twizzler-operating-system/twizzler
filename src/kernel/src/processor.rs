@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
@@ -27,7 +27,7 @@ static BOOT_KERNEL_STACK: RefCell<*mut u8> = RefCell::new(core::ptr::null_mut())
 static CPU_ID: RefCell<u32> = RefCell::new(0);
 
 #[thread_local]
-static CURRENT_PROCESSOR: RefCell<*const Processor> = RefCell::new(null_mut());
+static CURRENT_PROCESSOR: UnsafeCell<*const Processor> = UnsafeCell::new(null_mut());
 
 #[derive(Debug, Default)]
 pub struct ProcessorStats {
@@ -266,7 +266,11 @@ impl Processor {
 
     pub fn cleanup_exited(&self) {
         let item = self.exited.lock().pop();
-        drop(item);
+        if let Some(item) = item {
+            let _ = unsafe {
+                Box::<ThreadRef, _>::from_raw(*item.self_reference.get().as_ref().unwrap())
+            };
+        }
     }
 }
 
@@ -276,7 +280,14 @@ pub fn current_processor() -> &'static Processor {
     if !tls_ready() {
         panic!("tried to read a thread-local value with no FS base set");
     }
-    unsafe { CURRENT_PROCESSOR.borrow().as_ref() }.unwrap()
+    unsafe {
+        CURRENT_PROCESSOR
+            .get()
+            .as_ref()
+            .unwrap_unchecked()
+            .as_ref()
+            .unwrap_unchecked()
+    }
 }
 
 const INIT: Option<Box<Processor>> = None;
@@ -322,8 +333,7 @@ pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     unsafe {
         *BOOT_KERNEL_STACK.borrow_mut() = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
         *CPU_ID.borrow_mut() = bsp_id;
-        *CURRENT_PROCESSOR.borrow_mut() =
-            &**ALL_PROCESSORS[*CPU_ID.borrow() as usize].as_ref().unwrap();
+        *CURRENT_PROCESSOR.get() = &**ALL_PROCESSORS[*CPU_ID.borrow() as usize].as_ref().unwrap();
     }
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
@@ -337,7 +347,7 @@ pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) 
     unsafe {
         *BOOT_KERNEL_STACK.borrow_mut() = kernel_stack_base;
         *CPU_ID.borrow_mut() = id;
-        *CURRENT_PROCESSOR.borrow_mut() = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
+        *CURRENT_PROCESSOR.get() = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
     arch::init_secondary();
     let topo_path = arch::processor::get_topology();
