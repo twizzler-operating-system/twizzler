@@ -180,7 +180,6 @@ unsafe impl Allocator for FailAlloc {
 }
 
 unsafe impl GlobalAlloc for LocalAllocator {
-    #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         /*
         static TRACE: AtomicBool = AtomicBool::new(false);

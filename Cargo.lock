@@ -7637,7 +7637,6 @@ dependencies = [
  "tracing-chrome",
  "tracing-subscriber",
  "twizzler-abi",
- "twizzler-rt-abi",
 ]
 
 [[package]]
