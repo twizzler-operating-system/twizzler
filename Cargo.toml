@@ -8,6 +8,8 @@ members = [
     "tools/initrd_gen",
     "src/bin/init",
     "src/bin/bootstrap",
+    "src/bin/pager_stress_test",
+    "src/bin/pager-iotop",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
     "src/lib/twizzler-queue",
@@ -86,6 +88,8 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
+    "crate:pager_stress_test",
+    "crate:pager-iotop"
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",

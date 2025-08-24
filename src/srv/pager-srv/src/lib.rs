@@ -31,6 +31,7 @@ mod data;
 mod disk;
 mod handle;
 mod helpers;
+mod iotop;
 // in-progress
 #[allow(unused)]
 mod memstore;
@@ -365,13 +366,14 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
-    if false {
+    // Remove this eventually
+    if false { 
         let _ = ex
             .spawn(async {
                 let pager = PAGER_CTX.get().unwrap();
                 loop {
-                    pager.data.print_stats();
-                    pager.data.reset_stats();
+                    let display = pager.data.display_iotop();
+                    print!("{}", display);
                     Timer::after(Duration::from_millis(1000)).await;
                 }
             })

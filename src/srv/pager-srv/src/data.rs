@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 use crate::{
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, PAGE},
-    stats::RecentStats,
+    iotop::PagerIOTop,
     PagerContext,
 };
 
@@ -217,16 +217,6 @@ impl PagerData {
         drop(inner);
         Err(MemoryWaiter::new(pos, self.inner.clone()))
     }
-
-    pub fn print_stats(&self) {
-        let inner = self.inner.lock().unwrap();
-        inner.print_stats();
-    }
-
-    pub fn reset_stats(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.reset_stats();
-    }
 }
 
 pub struct PagerDataInner {
@@ -234,7 +224,7 @@ pub struct PagerDataInner {
     waiters: StableVec<Option<Waker>>,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
-    pub recent_stats: RecentStats,
+    pub iotop: PagerIOTop
 }
 
 pub struct MemoryWaiter {
@@ -374,7 +364,7 @@ impl PagerDataInner {
             memory: Memory::default(),
             handles: HandleMgr::new(None),
             waiters: StableVec::new(),
-            recent_stats: RecentStats::new(),
+            iotop: PagerIOTop::new(),
         }
     }
 
@@ -392,40 +382,12 @@ impl PagerDataInner {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 
-    pub fn print_stats(&self) {
-        let dt = self.recent_stats.dt();
-        let mut total_read_kbps = 0.;
-        let mut total_write_kbps = 0.;
-        let mut count = 0;
-        for (id, stats) in self.recent_stats.recorded_stats() {
-            let read = crate::stats::pages_to_kbytes_per_sec(stats.pages_read, dt);
-            let write = crate::stats::pages_to_kbytes_per_sec(stats.pages_written, dt);
-            tracing::debug!(
-                "{}: read {:3.3} KB/s ({:8.8} pages), write {:3.3} KB/s ({:8.8} pages)",
-                id,
-                read,
-                stats.pages_read,
-                write,
-                stats.pages_written
-            );
-
-            count += 1;
-            total_read_kbps += read;
-            total_write_kbps += write;
-        }
-        if true || self.recent_stats.had_activity() {
-            tracing::info!(
-                "PAGER STATS: Available memory: {:10.10} KB, r {:3.3} KB/s w {:3.3} KB/s c {:2.2} (dt: {:2.2}s)",
-                self.memory.available_memory() / 1024,
-                total_read_kbps,total_write_kbps,
-                count,
-                dt.as_secs_f32(),
-            );
-        }
+    pub fn display_iotop(&mut self) -> String {
+        self.iotop.display()
     }
 
-    pub fn reset_stats(&mut self) {
-        self.recent_stats.reset();
+    pub fn record_io(&mut self, obj_id: ObjID, read_pages: usize, written_pages: usize) {
+        self.iotop.record_io(obj_id, read_pages, written_pages);
     }
 }
 
@@ -500,8 +462,7 @@ impl PagerData {
         let pages = self.do_fill_pages(ctx, id, obj_range, true).await?;
 
         {
-            let mut inner = self.inner.lock().unwrap();
-            inner.recent_stats.read_pages(id, pages.len());
+            ctx.data.record_io_read(id, obj_range.len() / PAGE as usize);
         }
 
         Ok(pages)
@@ -557,10 +518,7 @@ impl PagerData {
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
 
         {
-            let mut inner = self.inner.lock().unwrap();
-            inner
-                .recent_stats
-                .read_pages(id, obj_range.len() / PAGE as usize);
+            ctx.data.record_io_read(id, obj_range.len() / PAGE as usize);
         }
 
         return Ok(phys_range);
@@ -600,8 +558,7 @@ impl PagerData {
 
         let (count, compl) = po.sync_region(ctx, info).await;
         if count > 0 {
-            let mut inner = self.inner.lock().unwrap();
-            inner.recent_stats.write_pages(info.obj_id, count);
+            ctx.data.record_io_write(info.obj_id, count);
         }
         compl
     }
@@ -641,4 +598,20 @@ impl PagerData {
         let mut inner = self.inner.lock().unwrap();
         inner.handles.remove(comp, ds);
     }
+
+    pub fn display_iotop(&self) -> String {
+        let mut inner = self.inner.lock().unwrap();
+        inner.iotop.display()
+    }
+
+    pub fn record_io_read(&self, obj_id: ObjID, read_pages: usize) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.iotop.record_io(obj_id, read_pages, 0);
+    }
+
+    pub fn record_io_write(&self, obj_id: ObjID, written_pages: usize) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.iotop.record_io(obj_id, 0, written_pages);
+    }
+
 }

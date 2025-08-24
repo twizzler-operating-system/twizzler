@@ -216,7 +216,7 @@ fn main() {
         "ls", "cat", "base64", "base32", "basename", "basenc", "cksum", "comm", "csplit", "cut",
         "date", "echo", "expand", "factor", "false", "fmt", "fold", "ln", "nl", "numfmt", "od",
         "paste", "pr", "printenv", "printf", "ptx", "seq", "shuf", "sleep", "sort", "sum", "tr",
-        "true", "tsort", "unexpand", "uniq", "yes",
+        "true", "tsort", "unexpand", "uniq", "yes"
     ];
     for util in utils {
         let link = format!("/initrd/{}", util);

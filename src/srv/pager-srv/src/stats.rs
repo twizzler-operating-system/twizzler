@@ -11,7 +11,13 @@ use crate::helpers::PAGE;
 pub struct PerObjectStats {
     pub pages_read: usize,
     pub pages_written: usize,
+    pub pages_allocated: usize,
+    pub read_errors: usize,
+    pub write_errors: usize,
+    pub bytes_read: usize,
+    pub bytes_written: usize,
 }
+
 
 #[derive(Clone, Debug)]
 pub struct RecentStats {
@@ -66,6 +72,27 @@ impl RecentStats {
     pub fn had_activity(&self) -> bool {
         !self.map.is_empty()
     }
+
+    pub fn alloc_pages(&mut self, id: ObjID, count: usize) {
+        let entry = self.map.entry(id).or_default();
+        entry.pages_allocated += count;
+    }
+
+    pub fn record_error(&mut self, id: ObjID, is_read: bool) {
+        let entry = self.map.entry(id).or_default();
+        if is_read {
+            entry.read_errors += 1;
+        } else {
+            entry.write_errors += 1;
+        }
+    }
+
+    pub fn record_bytes(&mut self, id: ObjID, read_bytes: usize, write_bytes: usize) {
+        let entry = self.map.entry(id).or_default();
+        entry.bytes_read += read_bytes;
+        entry.bytes_written += write_bytes;
+    }
+
 }
 
 pub fn pages_to_kbytes_per_sec(count: usize, dt: Duration) -> f32 {

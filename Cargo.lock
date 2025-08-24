@@ -4962,6 +4962,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pager-iotop"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "pager-srv"
 version = "0.1.0"
 dependencies = [
@@ -4995,6 +5005,16 @@ dependencies = [
  "twizzler-rt-abi",
  "twizzler-runtime",
  "volatile",
+]
+
+[[package]]
+name = "pager_stress_test"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
