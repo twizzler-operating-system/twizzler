@@ -125,7 +125,7 @@ impl MemoryTracker {
     fn wake(&self) {
         let mut waiters = self.waiters.lock();
         while let Some(waiter) = waiters.pop_back() {
-            crate::sched::schedule_thread(waiter);
+            crate::processor::sched::schedule_thread(waiter);
         }
     }
 
@@ -411,7 +411,7 @@ fn reclaim_main() {
                 break;
             }
             drop(state);
-            crate::sched::schedule(true);
+            crate::processor::sched::schedule(true);
             state = rt.state.lock();
             rounds += 1;
         }

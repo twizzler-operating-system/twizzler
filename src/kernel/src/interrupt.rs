@@ -10,6 +10,7 @@ use crate::{
     condvar::CondVar,
     obj::ObjectRef,
     once::Once,
+    processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
     thread::{priority::Priority, ThreadRef},
 };
@@ -46,7 +47,7 @@ pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
 
 #[inline]
 pub fn post_interrupt() {
-    crate::sched::schedule_maybe_preempt();
+    schedule_maybe_preempt();
 }
 
 #[inline]

@@ -2,7 +2,7 @@ use twizzler_abi::trace::{TraceEntryFlags, TraceEntryHead, TraceKind};
 
 use crate::{
     instant::Instant,
-    processor::current_processor,
+    processor::mp::current_processor,
     thread::{current_thread_ref, ThreadRef},
 };
 

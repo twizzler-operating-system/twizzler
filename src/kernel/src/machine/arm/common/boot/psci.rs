@@ -64,7 +64,7 @@ unsafe fn psci_secondary_entry(context_id: &BootArgs) -> ! {
 /// should be set up so we can execute safe Rust code.
 fn rust_secondary_entry(args: &BootArgs) -> ! {
     // call the generic secondary cpu entry point
-    crate::processor::secondary_entry(
+    crate::processor::mp::secondary_entry(
         args.cpu,
         VirtAddr::new(args.tcb_base).unwrap(),
         args.kernel_stack as *mut u8,

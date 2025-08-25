@@ -12,7 +12,7 @@ pub fn raw_send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {
         Destination::Single(id) => (DEST_SHORT_NONE, id),
         Destination::Bsp | Destination::LowestPriority => {
-            (DEST_SHORT_NONE, processor::current_processor().bsp_id())
+            (DEST_SHORT_NONE, processor::mp::current_processor().bsp_id())
         }
         Destination::All => (DEST_SHORT_ALL, 0xffffffff),
         Destination::AllButSelf => (DEST_SHORT_OTHERS, 0xffffffff),

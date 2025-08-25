@@ -101,7 +101,10 @@ impl SharedPageTable {
     }
 
     pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
+        #[cfg(target_arch = "x86_64")]
         let consist = Consistency::new_full_global();
+        #[cfg(target_arch = "aarch64")]
+        let consist = Consistency::new(todo!());
         let ops = self.inner.mapper.lock().map(cursor, phys, consist);
         if let Err(ops) = ops {
             log::warn!("failed to map in shared mapping: {:?}", cursor);

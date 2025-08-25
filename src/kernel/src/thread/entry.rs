@@ -11,8 +11,7 @@ use super::{current_memory_context, current_thread_ref, priority::Priority, Thre
 use crate::{
     condvar::CondVar,
     memory::{context::Context, VirtAddr},
-    processor::current_processor,
-    sched::schedule_new_thread,
+    processor::{mp::current_processor, sched::schedule_new_thread},
     security::{SecCtxMgr, SecurityContext},
     spinlock::Spinlock,
     syscall::object::get_vmcontext_from_handle,

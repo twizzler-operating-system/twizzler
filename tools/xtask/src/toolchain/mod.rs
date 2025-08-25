@@ -244,7 +244,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     let args = format!("-C target-feature=+sse3,+avx,+avx2,+fma -C target-cpu=x86-64-v3 -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
-    std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path);
+    std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
 
     Ok(())
 }
@@ -286,9 +286,9 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
         "PATH",
         format!(
             "{}:{}:{}:{}",
-            rustlib_bin.to_string_lossy(),
-            lld_bin.to_string_lossy(),
-            toolchain_bin.to_string_lossy(),
+            rustlib_bin.canonicalize()?.to_string_lossy(),
+            lld_bin.canonicalize()?.to_string_lossy(),
+            toolchain_bin.canonicalize()?.to_string_lossy(),
             path
         ),
     );

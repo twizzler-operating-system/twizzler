@@ -23,7 +23,7 @@ use twizzler_abi::thread::ExecutionState;
 use crate::{
     arch,
     idcounter::StableId,
-    sched::{self, schedule_thread},
+    processor::sched::schedule_thread,
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
@@ -151,7 +151,7 @@ impl<T> Mutex<T> {
         queue.owned = false;
         if let Some(thread) = queue.queue.pop_front() {
             drop(queue);
-            sched::schedule_thread(thread);
+            schedule_thread(thread);
         } else {
             queue.pri = None;
         }
@@ -243,7 +243,7 @@ mod test {
 
     use super::Mutex;
     use crate::{
-        processor::NR_CPUS,
+        processor::mp::NR_CPUS,
         syscall::sync::sys_thread_sync,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
         utils::quick_random,

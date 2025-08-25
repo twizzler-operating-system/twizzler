@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::processor::spin_wait_until;
+use crate::processor::{sched::schedule, spin_wait_until};
 
 pub trait RelaxStrategy {
     fn relax(iters: usize);
@@ -16,7 +16,7 @@ impl RelaxStrategy for Reschedule {
     #[inline]
     fn relax(iters: usize) {
         if iters > 100 {
-            crate::sched::schedule(true);
+            schedule(true);
         }
     }
 }

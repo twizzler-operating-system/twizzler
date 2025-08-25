@@ -11,8 +11,10 @@ use super::{
 use crate::{
     interrupt::Destination,
     once::Once,
-    processor::ipi_exec,
-    sched::{schedule, schedule_resched, schedule_thread},
+    processor::{
+        ipi::ipi_exec,
+        sched::{schedule, schedule_resched, schedule_thread},
+    },
     spinlock::Spinlock,
     thread::current_thread_ref,
 };

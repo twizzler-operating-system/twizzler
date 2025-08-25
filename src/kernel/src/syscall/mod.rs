@@ -26,6 +26,7 @@ use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     instant::Instant,
     memory::VirtAddr,
+    processor::mp::all_processors,
     random::getrandom,
     time::{Ticks, TICK_SOURCES},
     trace::{
@@ -104,7 +105,7 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
 }
 
 fn write_sysinfo(info: &mut SysInfo) {
-    info.cpu_count = crate::processor::all_processors().iter().fold(0, |acc, p| {
+    info.cpu_count = all_processors().iter().fold(0, |acc, p| {
         acc + match &p {
             Some(p) => {
                 if p.is_running() {

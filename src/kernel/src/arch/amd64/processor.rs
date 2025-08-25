@@ -12,7 +12,7 @@ use crate::{
     interrupt::Destination,
     memory::VirtAddr,
     once::Once,
-    processor::{current_processor, Processor},
+    processor::{mp::current_processor, Processor},
 };
 
 #[repr(C)]
@@ -159,9 +159,9 @@ pub fn enumerate_cpus() -> u32 {
 
     let bsp_id = get_bsp_id(Some(&procinfo));
 
-    crate::processor::register(procinfo.boot_processor.local_apic_id, bsp_id);
+    crate::processor::mp::register(procinfo.boot_processor.local_apic_id, bsp_id);
     for p in procinfo.application_processors.iter() {
-        crate::processor::register(p.local_apic_id, bsp_id);
+        crate::processor::mp::register(p.local_apic_id, bsp_id);
     }
 
     bsp_id

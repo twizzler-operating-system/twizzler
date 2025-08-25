@@ -8,7 +8,10 @@ use twizzler_rt_abi::{error::ArgumentError, Result};
 use crate::{
     condvar::CondVar,
     once::Once,
-    processor::current_processor,
+    processor::{
+        mp::current_processor,
+        sched::{schedule_hardtick, schedule_stattick},
+    },
     spinlock::Spinlock,
     syscall::sync::requeue_all,
     thread::{priority::Priority, ThreadRef},
@@ -26,7 +29,7 @@ impl From<Ticks> for Nanoseconds {
 }
 
 pub fn statclock(dt: Nanoseconds) {
-    crate::sched::schedule_stattick(dt);
+    schedule_stattick(dt);
 }
 
 const NR_WINDOWS: usize = 1024;
@@ -307,7 +310,7 @@ pub fn oneshot_clock_hardtick() {
         None
     };
 
-    let sched_next_tick = crate::sched::schedule_hardtick();
+    let sched_next_tick = schedule_hardtick();
     /*
     logln!(
         "hardtick {} {} {:?} {:?}",

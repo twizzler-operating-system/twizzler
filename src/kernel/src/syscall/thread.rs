@@ -7,7 +7,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, Result};
 
-use crate::{security::SwitchResult, thread::current_thread_ref};
+use crate::{
+    processor::sched::{lookup_thread_repr, needs_reschedule, schedule},
+    security::SwitchResult,
+    thread::current_thread_ref,
+};
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
@@ -48,11 +52,9 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::Yield => {
             let cur = current_thread_ref().unwrap();
-            cur.adjust_priority(100);
-            if crate::sched::needs_reschedule(true) {
-                crate::sched::schedule(true);
+            if needs_reschedule(true) {
+                schedule(true);
             }
-            //cur.adjust_priority(-100);
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
@@ -67,7 +69,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::ReadRegisters => {
             let thread = if let Some(target) = target {
-                crate::sched::lookup_thread_repr(target)
+                lookup_thread_repr(target)
             } else {
                 current_thread_ref().cloned()
             };
@@ -83,7 +85,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::ChangeState => {
             let thread = if let Some(target) = target {
-                crate::sched::lookup_thread_repr(target)
+                lookup_thread_repr(target)
             } else {
                 current_thread_ref().cloned()
             };
@@ -119,7 +121,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::GetTraceEvents => {
             let thread = if let Some(target) = target {
-                crate::sched::lookup_thread_repr(target)
+                lookup_thread_repr(target)
             } else {
                 current_thread_ref().cloned()
             };
@@ -134,7 +136,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::SetTraceEvents => {
             let thread = if let Some(target) = target {
-                crate::sched::lookup_thread_repr(target)
+                lookup_thread_repr(target)
             } else {
                 current_thread_ref().cloned()
             };

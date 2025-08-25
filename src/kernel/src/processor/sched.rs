@@ -11,11 +11,12 @@ use twizzler_abi::{
     trace::{ThreadCtxSwitch, ThreadMigrate, TraceEntryFlags, TraceKind},
 };
 
+use super::mp::{current_processor, get_processor};
 use crate::{
     clock::Nanoseconds,
     interrupt,
     once::Once,
-    processor::{current_processor, get_processor, Processor},
+    processor::Processor,
     spinlock::Spinlock,
     thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
     trace::{
@@ -170,9 +171,6 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor) {
     let should_signal = processor.id != current_processor().id
         && sched.should_preempt(&thread.effective_priority(), false);
     processor.load.fetch_add(1, Ordering::SeqCst);
-    thread
-        .current_processor_queue
-        .store(processor.id as i32, Ordering::SeqCst);
     sched.reinsert_thread(thread);
     if should_signal {
         processor.wakeup(true);
@@ -183,7 +181,6 @@ fn take_a_thread_from_cpu(processor: &Processor) -> Option<ThreadRef> {
     let mut sched = processor.schedlock();
     let thread = sched.choose_next(false);
     if let Some(ref thread) = thread {
-        thread.current_processor_queue.store(-1, Ordering::SeqCst);
         processor.load.fetch_sub(1, Ordering::SeqCst);
     }
     thread
@@ -449,7 +446,6 @@ fn do_schedule(reinsert: bool) {
         if &next == cur {
             return;
         }
-        next.current_processor_queue.store(-1, Ordering::SeqCst);
         switch_to(next, cur);
         return;
     }
@@ -534,9 +530,6 @@ pub fn schedule_maybe_preempt() {
     if PREEMPT.swap(false, Ordering::SeqCst) {
         let cp = current_processor();
         cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
-        if quick_random() % 100 == 0 {
-            current_thread_ref().unwrap().adjust_priority(1);
-        }
         schedule(true)
     }
 }

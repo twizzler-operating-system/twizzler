@@ -17,7 +17,7 @@ use crate::{
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     once::Once,
-    processor::current_processor,
+    processor::mp::current_processor,
     thread::current_thread_ref,
 };
 
@@ -535,7 +535,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         }
         0x80 => {}
         GENERIC_IPI_VECTOR => {
-            crate::processor::generic_ipi_handler();
+            crate::processor::ipi::generic_ipi_handler();
         }
         TLB_SHOOTDOWN_VECTOR => {
             super::memory::pagetables::tlb_shootdown_handler();

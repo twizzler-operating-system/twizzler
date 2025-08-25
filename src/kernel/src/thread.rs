@@ -25,7 +25,11 @@ use crate::{
     interrupt,
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
-    processor::{get_processor, KERNEL_STACK_SIZE},
+    processor::{
+        mp::get_processor,
+        sched::{remove_thread, schedule},
+        KERNEL_STACK_SIZE,
+    },
     security::SecCtxMgr,
     spinlock::Spinlock,
     trace::{
@@ -62,7 +66,6 @@ pub struct Thread {
     id: Id<'static>,
     pub switch_lock: AtomicU64,
     pub donated_priority: AtomicU32,
-    pub current_processor_queue: AtomicI32,
     memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
@@ -136,7 +139,6 @@ impl Thread {
             affinity: AtomicI32::new(-1),
             last_cpu: AtomicI32::new(-1),
             donated_priority: AtomicU32::new(u32::MAX),
-            current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
             memory_context: ctx,
             spawn_args,
@@ -207,18 +209,19 @@ impl Thread {
     }
 
     pub fn maybe_reschedule_thread(&self) {
-        let ccpu = self.current_processor_queue.load(Ordering::SeqCst);
-        /* if we get -1 here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
-        since we check this variable and then lock a scheduler queue. It's possible that the thread was placed on a queue, then this variable was set,
-        and then we load it, and then the thread is run. This results in a spurious reschedule. It's probably rare, though, but we should profile this
-        to see if it's a problem.
+        todo!();
+        let ccpu = -1; //self.current_processor_queue.load(Ordering::SeqCst);
+                       /* if we get -1 here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
+                       since we check this variable and then lock a scheduler queue. It's possible that the thread was placed on a queue, then this variable was set,
+                       and then we load it, and then the thread is run. This results in a spurious reschedule. It's probably rare, though, but we should profile this
+                       to see if it's a problem.
 
-        Another possible race condition is the opposite: a thread is running, and we read -1, and then it gets put on the queue. This is also probably
-        okay, since that means that we might not have really needed to do a reschedule.
+                       Another possible race condition is the opposite: a thread is running, and we read -1, and then it gets put on the queue. This is also probably
+                       okay, since that means that we might not have really needed to do a reschedule.
 
-        Finally, note that this function should be called with the donated_priority lock held, since that will force serialization by any schedulers
-        calculating the thread's priority at the time of this call. Or, if the HAS_DONATED_PRIORITY flag is clear, it will not, but that is okay too.
-        But this does mean we need to submit any wakeups/reschedules with interrupts cleared. */
+                       Finally, note that this function should be called with the donated_priority lock held, since that will force serialization by any schedulers
+                       calculating the thread's priority at the time of this call. Or, if the HAS_DONATED_PRIORITY flag is clear, it will not, but that is okay too.
+                       But this does mean we need to submit any wakeups/reschedules with interrupts cleared. */
         //TODO: verify the above logic
         //TODO: optimize this by keeping an is_running flag?
         if ccpu == -1 {
@@ -428,8 +431,8 @@ pub fn exit(code: u64) -> ! {
         crate::interrupt::disable();
         th.set_is_exiting();
         crate::syscall::sync::remove_from_requeue(&th);
-        crate::sched::remove_thread(th.id());
+        remove_thread(th.id());
     }
-    crate::sched::schedule(false);
+    schedule(false);
     unreachable!()
 }

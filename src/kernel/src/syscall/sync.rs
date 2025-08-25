@@ -65,7 +65,7 @@ pub fn requeue_all() {
             .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
         {
             if let Some(t) = cursor.remove() {
-                crate::sched::schedule_thread(t);
+                crate::processor::sched::schedule_thread(t);
             }
         } else {
             cursor.move_next();
@@ -119,13 +119,12 @@ pub fn trace_resume(_th: &ThreadRef, duration: TimeSpan) {
 // schedule until I say so".
 pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
-    current_thread_ref().unwrap().adjust_priority(-100);
     let start = Instant::now();
     trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
         drop(guard);
         thread.set_state(ExecutionState::Sleeping);
-        crate::sched::schedule(false);
+        crate::processor::sched::schedule(false);
         thread.set_state(ExecutionState::Running);
     });
     let end = Instant::now();
