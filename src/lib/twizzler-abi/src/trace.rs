@@ -304,12 +304,28 @@ pub struct SyscallExitEvent {
     pub duration: TimeSpan,
 }
 
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    /// Flags describing memory fault characteristics.
+    pub struct SwitchFlags: u64 {
+        /// Switch to kernel thread
+        const TO_KTHREAD = 1;
+        /// Switching to tracing thread
+        const IS_TRACE = 2;
+        /// Switch to idle thread
+        const TO_IDLE = 4;
+        /// Switch to idle thread
+        const PREEMPTED = 8;
+    }
+}
+
 /// Event data for thread context switches.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadCtxSwitch {
     /// ID of the thread being switched to, if any.
     pub to: Option<ObjID>,
+    pub flags: SwitchFlags,
 }
 
 /// Event data for thread migration between CPUs.

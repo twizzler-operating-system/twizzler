@@ -1,3 +1,5 @@
+use core::fmt::Debug;
+
 use intrusive_collections::LinkedList;
 
 use super::rq::SchedLinkAdapter;
@@ -9,6 +11,39 @@ pub(super) struct TimeshareQueue<const N: usize> {
     insert_idx: usize,
     take_idx: usize,
     queues: [LinkedList<SchedLinkAdapter>; N],
+}
+
+impl<const N: usize> Debug for TimeshareQueue<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ts {:5} [", self.count)?;
+        for i in 0..N {
+            if i != 0 {
+                write!(f, " |")?;
+            }
+            if self.take_idx == self.insert_idx && self.take_idx == i {
+                write!(f, "#")?;
+            } else if self.take_idx == i {
+                write!(f, "~")?;
+            } else if self.insert_idx == i {
+                write!(f, ">")?;
+            } else {
+                write!(f, " ")?;
+            }
+            let mut iter = self.queues[i].iter();
+            if let Some(first) = iter.next() {
+                if iter.next().is_some() {
+                    write!(f, "{:5}...", first.id())?;
+                } else {
+                    write!(f, "{:5}   ", first.id())?;
+                }
+            } else {
+                write!(f, "        ",)?;
+            }
+        }
+        write!(f, "]")?;
+
+        Ok(())
+    }
 }
 
 impl<const N: usize> TimeshareQueue<N> {
@@ -86,19 +121,9 @@ impl<const N: usize> TimeshareQueue<N> {
                 );
                 return Some(th);
             }
-            if q == self.insert_idx {
-                log::trace!(
-                    "hit end: {} {} {} {}",
-                    q,
-                    self.take_idx,
-                    self.insert_idx,
-                    self.count
-                );
-                self.take_idx = q;
-                self.advance_insert_index(1, false);
-                break;
-            }
         }
+        // We found nothing. Reset the take pointer.
+        self.take_idx = self.insert_idx;
         None
     }
 

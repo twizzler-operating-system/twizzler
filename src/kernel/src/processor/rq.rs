@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-pub const NR_QUEUES: usize = 64;
+pub const NR_QUEUES: usize = 8;
 #[repr(transparent)]
 struct SchedSpinlock<T>(GenericSpinlock<T, SpinLoop>);
 
@@ -69,6 +69,30 @@ impl<T> Drop for SchedLockGuard<'_, T> {
 struct PriorityQueue<const N: usize> {
     count: usize,
     queues: [LinkedList<SchedLinkAdapter>; N],
+}
+
+impl<const N: usize> core::fmt::Debug for PriorityQueue<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "pq {:5} [ ", self.count)?;
+        for i in 0..N {
+            if i != 0 {
+                write!(f, " | ")?;
+            }
+            let mut iter = self.queues[i].iter();
+            if let Some(first) = iter.next() {
+                if iter.next().is_some() {
+                    write!(f, "{:5}...", first.id())?;
+                } else {
+                    write!(f, "{:5}   ", first.id())?;
+                }
+            } else {
+                write!(f, "        ",)?;
+            }
+        }
+        write!(f, "]")?;
+
+        Ok(())
+    }
 }
 
 impl<const N: usize> PriorityQueue<N> {
@@ -139,8 +163,21 @@ impl<const N: usize> RunQueue<N> {
         }
     }
 
+    pub fn print(&self) {
+        logln!(
+            "RUNQUEUE: {:x} {} {:?}",
+            self.flags.load(Ordering::SeqCst),
+            self.load.load(Ordering::SeqCst),
+            self.current_priority()
+        );
+        logln!(" realtime: {:?}", &*self.realtime.lock());
+        logln!("timeshare: {:?}", &*self.timeshare.lock());
+        logln!("     idle: {:?}", &*self.idle.lock());
+    }
+
     pub fn insert(&self, th: ThreadRef, current: bool) -> bool {
-        self.load.fetch_add(1, Ordering::Relaxed);
+        assert!(!th.is_idle_thread());
+        self.load.fetch_add(1, Ordering::SeqCst);
         let th_pri = th.effective_priority();
         let cur_pri = self.current_priority.load(Ordering::Acquire);
         if Priority::from_raw(cur_pri) < th_pri {
@@ -185,7 +222,7 @@ impl<const N: usize> RunQueue<N> {
             } else {
                 let priority = Priority {
                     value: queue.highest_priority().unwrap_or(0),
-                    class: PriorityClass::Idle,
+                    class: PriorityClass::User,
                 };
                 self.current_priority
                     .store(priority.raw(), Ordering::SeqCst);
@@ -202,7 +239,7 @@ impl<const N: usize> RunQueue<N> {
         if realtime.is_empty() {
             self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
         }
-        self.load.fetch_sub(1, Ordering::Relaxed);
+        self.load.fetch_sub(1, Ordering::Release);
         if self.current_priority().class == PriorityClass::Realtime {
             if realtime.is_empty() {
                 let priority = Priority {
@@ -232,7 +269,7 @@ impl<const N: usize> RunQueue<N> {
         if timeshare.is_empty() {
             self.flags.fetch_and(!RQ_HAS_TS, Ordering::Release);
         }
-        self.load.fetch_sub(1, Ordering::Relaxed);
+        self.load.fetch_sub(1, Ordering::Release);
         if self.current_priority().class == PriorityClass::User {
             self.recalc_priority_timeshare(timeshare);
         }
@@ -248,7 +285,7 @@ impl<const N: usize> RunQueue<N> {
         if idle.is_empty() {
             self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
         }
-        self.load.fetch_sub(1, Ordering::Relaxed);
+        self.load.fetch_sub(1, Ordering::Release);
         let priority = Priority {
             value: idle.highest_priority().unwrap_or(0),
             class: PriorityClass::Idle,
@@ -279,8 +316,8 @@ impl<const N: usize> RunQueue<N> {
     }
 
     pub fn timeslice(&self) -> u64 {
-        (MAX_TIMESLICE_TICKS / (self.load.fetch_add(1, Ordering::Relaxed).max(1)))
-            .min(MIN_TIMESLICE_TICKS) as u64
+        (MAX_TIMESLICE_TICKS / (self.load.load(Ordering::Acquire).max(1))).min(MIN_TIMESLICE_TICKS)
+            as u64
     }
 
     pub fn should_preempt(&self, cur: &Thread, ticking: bool) -> bool {
@@ -289,21 +326,28 @@ impl<const N: usize> RunQueue<N> {
         }
         let rq_pri = self.current_priority();
         let cur_pri = cur.effective_priority();
-        let ret = cur_pri < rq_pri || (cur_pri == rq_pri && ticking);
-        log::trace!(
-            "{:x} {:x}: {}: {}",
-            rq_pri.raw(),
-            cur_pri.raw(),
-            ticking,
-            ret
-        );
-        ret
+        if cur_pri < rq_pri {
+            true
+        } else if cur_pri == rq_pri && ticking {
+            if self.timeslice.load(Ordering::Acquire) as u64 >= self.timeslice() {
+                self.timeslice.store(0, Ordering::Release);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     pub fn clock(&self) {
         let current_ticks = get_current_ticks();
         let ticks = current_ticks - self.last_clock.load(Ordering::Acquire);
+        if ticks == 0 {
+            return;
+        }
         self.last_clock.fetch_add(ticks, Ordering::Release);
+        self.timeslice.fetch_add(ticks as u32, Ordering::Release);
         self.timeshare.lock().advance_insert_index(ticks, true);
     }
 

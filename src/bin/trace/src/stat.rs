@@ -12,9 +12,9 @@ use twizzler_abi::{
     thread::ExecutionState,
     trace::{
         CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, KERNEL_ALLOC,
-        KernelAllocationEvent, RUNTIME_ALLOC, RuntimeAllocationEvent, SyscallExitEvent,
-        THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE,
-        THREAD_SYSCALL_EXIT, ThreadSamplingEvent, TraceKind,
+        KernelAllocationEvent, RUNTIME_ALLOC, RuntimeAllocationEvent, SwitchFlags,
+        SyscallExitEvent, THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME,
+        THREAD_SAMPLE, THREAD_SYSCALL_EXIT, ThreadCtxSwitch, ThreadSamplingEvent, TraceKind,
     },
 };
 
@@ -265,6 +265,8 @@ pub fn stat(state: TracingState) {
     struct PerThreadData {
         migrations: usize,
         switches: usize,
+        switches_to_collector: usize,
+        switches_to_ktrace_kthread: usize,
     }
     let mut threads = HashMap::<ObjID, PerThreadData>::new();
 
@@ -281,6 +283,18 @@ pub fn stat(state: TracingState) {
         }
         if event.0.event & THREAD_CONTEXT_SWITCH != 0 {
             entry.switches += 1;
+            if let Some(data) = event
+                .1
+                .and_then(|d| d.try_cast::<ThreadCtxSwitch>(THREAD_CONTEXT_SWITCH))
+                .map(|d| d.data)
+            {
+                if data.to.is_some_and(|target| target == state.collector_id) {
+                    entry.switches_to_collector += 1;
+                }
+                if data.flags.contains(SwitchFlags::IS_TRACE) {
+                    entry.switches_to_ktrace_kthread += 1;
+                }
+            }
         }
     }
 
@@ -288,10 +302,11 @@ pub fn stat(state: TracingState) {
         println!("                            THREAD ID     MIGRATIONS     CONTEXT SWITCHES");
         for thread in &threads {
             println!(
-                "     {:0>32x}        {:7}              {:7}",
+                "     {:0>32x}        {:7}              {:7} ({:7} to tracing system)",
                 thread.0.raw(),
                 thread.1.migrations,
-                thread.1.switches
+                thread.1.switches,
+                thread.1.switches_to_collector + thread.1.switches_to_ktrace_kthread,
             );
         }
     }

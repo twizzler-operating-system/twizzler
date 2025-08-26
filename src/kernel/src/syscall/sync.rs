@@ -23,6 +23,7 @@ use crate::{
     },
     obj::{LookupFlags, ObjectRef},
     once::Once,
+    processor::sched::{schedule, SchedFlags},
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref, CriticalGuard, Thread, ThreadRef},
     trace::{
@@ -124,7 +125,7 @@ pub fn finish_blocking(guard: CriticalGuard) {
     crate::interrupt::with_disabled(|| {
         drop(guard);
         thread.set_state(ExecutionState::Sleeping);
-        crate::processor::sched::schedule(false);
+        schedule(SchedFlags::YIELD | SchedFlags::PREEMPT);
         thread.set_state(ExecutionState::Running);
     });
     let end = Instant::now();

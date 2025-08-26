@@ -196,9 +196,10 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
     let state = tracer::start(cli, comp, specs, rt_trace)?;
 
     tracing::info!(
-        "disconnected {}: {} bytes of trace data",
+        "disconnected {}: {} bytes of trace data, woke up {} times",
         compname,
-        state.kernel_source.total + state.user_source.as_ref().map_or(0, |us| us.total)
+        state.kernel_source.total + state.user_source.as_ref().map_or(0, |us| us.total),
+        state.nr_wakes
     );
 
     let dropped = state

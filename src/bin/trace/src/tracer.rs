@@ -19,7 +19,7 @@ use twizzler_abi::{
     syscall::{
         ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
         ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TraceSpec, sys_ktrace,
-        sys_thread_change_state, sys_thread_set_trace_events, sys_thread_sync,
+        sys_thread_change_state, sys_thread_self_id, sys_thread_set_trace_events, sys_thread_sync,
     },
     thread::ExecutionState,
     trace::{TraceBase, TraceData, TraceEntryFlags, TraceEntryHead},
@@ -48,6 +48,8 @@ pub struct TracingState {
     pub start_time: Instant,
     pub end_time: Instant,
     pub name: String,
+    pub nr_wakes: usize,
+    pub collector_id: ObjID,
 }
 
 impl Debug for TraceSource {
@@ -117,6 +119,8 @@ impl TracingState {
             start_time: Instant::now(),
             end_time: Instant::now(),
             name,
+            nr_wakes: 0,
+            collector_id: 0.into(),
         })
     }
 
@@ -307,7 +311,9 @@ impl Tracer {
 }
 
 fn collector(tracer: &Tracer) {
+    tracer.state.lock().unwrap().collector_id = sys_thread_self_id();
     tracer.set_state(State::Ready);
+    let mut nr_wakes = 0;
     loop {
         let mut guard = tracer.state.lock().unwrap();
         let Ok(waiter) = guard.collect().inspect_err(|e| {
@@ -351,6 +357,7 @@ fn collector(tracer: &Tracer) {
                 let _ = sys_thread_sync(waiters, None).inspect_err(|e| {
                     tracing::warn!("failed to thread sync: {}", e);
                 });
+                nr_wakes += 1;
             }
         } else {
             tracing::trace!("collector was notified of exit");
@@ -368,6 +375,7 @@ fn collector(tracer: &Tracer) {
             drop(tracer.state_cv.wait(guard).unwrap());
         }
     }
+    tracer.state.lock().unwrap().nr_wakes = nr_wakes;
 }
 
 pub fn start(

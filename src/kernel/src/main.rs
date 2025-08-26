@@ -63,7 +63,7 @@ use memory::{MemoryRegion, VirtAddr};
 use once::Once;
 use processor::{
     mp::{boot_all_secondaries, init_cpu},
-    sched::schedule,
+    sched::{schedule, SchedFlags},
 };
 use random::start_entropy_contribution_thread;
 
@@ -234,7 +234,7 @@ pub fn idle_main() -> ! {
         {
             current_processor().cleanup_exited();
         }
-        schedule(true);
+        schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
         arch::processor::halt_and_wait();
     }
 }

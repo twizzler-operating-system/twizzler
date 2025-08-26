@@ -91,7 +91,7 @@ initrd = [
     "crate:ptest",
 
     "crate:twzcandle",
-    "crate:schedtest",
+    "crate:st",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",

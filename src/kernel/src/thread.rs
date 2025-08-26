@@ -26,7 +26,7 @@ use crate::{
     obj::control::ControlObjectCacher,
     processor::{
         mp::get_processor,
-        sched::{remove_thread, schedule},
+        sched::{remove_thread, schedule, SchedFlags},
         KERNEL_STACK_SIZE,
     },
     security::SecCtxMgr,
@@ -438,6 +438,6 @@ pub fn exit(code: u64) -> ! {
         crate::syscall::sync::remove_from_requeue(&th);
         remove_thread(th.id());
     }
-    schedule(false);
+    schedule(SchedFlags::PREEMPT);
     unreachable!()
 }

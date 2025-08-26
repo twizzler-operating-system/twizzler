@@ -16,6 +16,7 @@ use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
     once::Once,
+    processor::sched::{schedule, SchedFlags},
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, Thread, ThreadRef},
@@ -366,7 +367,7 @@ impl ReclaimThread {
             reclaim_main();
         }
         Self {
-            th: start_new_kernel(Priority::REALTIME, reclaim_start, 0),
+            th: start_new_kernel(Priority::BACKGROUND, reclaim_start, 0),
             state: Spinlock::new(Vec::new()),
             cv: CondVar::new(),
         }
@@ -376,9 +377,12 @@ impl ReclaimThread {
 #[allow(unused_assignments)]
 #[allow(unused_variables)]
 fn reclaim_main() {
-    let tracker = TRACKER.wait();
-    let rt = tracker.reclaim.wait();
+    let tracker = TRACKER.poll().unwrap();
+    let rt = tracker.reclaim.poll().unwrap();
     let mut state = rt.state.lock();
+    current_thread_ref()
+        .unwrap()
+        .donate_priority(Priority::REALTIME);
     const MAX_RECLAIM_ROUNDS: usize = 1000;
     const MAX_PER_ROUND: usize = 100;
     loop {
@@ -411,11 +415,23 @@ fn reclaim_main() {
                 break;
             }
             drop(state);
-            crate::processor::sched::schedule(true);
+            log::trace!(
+                "memory tracker should reclaim: {}, count={},thisround={},rounds={}",
+                tracker.should_reclaim(),
+                count,
+                thisround,
+                rounds,
+            );
+            schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT);
             state = rt.state.lock();
             rounds += 1;
         }
         tracker.track_reclaimed(count);
+        log::trace!(
+            "memory tracker should reclaim: {}, count={}",
+            tracker.should_reclaim(),
+            count
+        );
         if !tracker.should_reclaim() || count == 0 {
             state = rt.cv.wait(state);
         }

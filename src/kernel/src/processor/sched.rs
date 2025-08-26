@@ -8,12 +8,12 @@ use fixedbitset::FixedBitSet;
 use twizzler_abi::{
     object::ObjID,
     thread::ExecutionState,
-    trace::{ThreadCtxSwitch, ThreadMigrate, TraceEntryFlags, TraceKind},
+    trace::{SwitchFlags, ThreadCtxSwitch, ThreadMigrate, TraceEntryFlags, TraceKind},
 };
 
 pub const MAX_TIMESLICE_TICKS: u32 = 16;
-pub const MIN_TIMESLICE_TICKS: u32 = 1;
-pub const DEFAULT_TIMESLICE_TICKS: u32 = 4;
+pub const MIN_TIMESLICE_TICKS: u32 = 4;
+pub const DEFAULT_TIMESLICE_TICKS: u32 = 8;
 
 use super::mp::{current_processor, get_processor};
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
     spinlock::Spinlock,
     thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{is_thread_ktrace_thread, TraceEvent, TRACE_MGR},
         new_trace_entry_thread,
     },
     utils::quick_random,
@@ -176,7 +176,13 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     thread
         .current_processor_queue
         .store(processor.id as i32, Ordering::SeqCst);
+    log::trace!(
+        "insert thread {} ({:?})",
+        thread.id(),
+        thread.effective_priority()
+    );
     processor.rq.insert(thread, is_current);
+    //processor.rq.print();
     if should_signal {
         processor.wakeup(true);
     }
@@ -193,6 +199,8 @@ fn take_a_thread_from_cpu(processor: &Processor) -> Option<ThreadRef> {
 
 const STEAL_LOAD_THRESH: u64 = 3;
 fn try_steal() -> Option<ThreadRef> {
+    // TODO
+    return None;
     /* TODO: we need a cooldown on migration */
     let us = current_processor();
     let res = find_cpu_from_topo(get_cpu_topology(), true, None, None);
@@ -219,6 +227,8 @@ fn try_steal() -> Option<ThreadRef> {
 }
 
 fn balance(topo: &CPUTopoNode) {
+    // TODO
+    return;
     static BAL_LOCK: Spinlock<()> = Spinlock::new(());
     let _guard = BAL_LOCK.lock();
     let mut cpuset = topo.cpuset.clone();
@@ -383,13 +393,27 @@ fn trace_migrate(th: &ThreadRef, from: u64, to: u64) {
     }
 }
 
-fn trace_switch(from: &ThreadRef, to: &ThreadRef) {
+fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
     if TRACE_MGR.any_enabled(
         TraceKind::Thread,
         twizzler_abi::trace::THREAD_CONTEXT_SWITCH,
     ) {
+        let mut flags = SwitchFlags::empty();
+        if is_thread_ktrace_thread(to) {
+            flags.insert(SwitchFlags::IS_TRACE);
+        }
+        if sflags.contains(SchedFlags::PREEMPT) {
+            flags.insert(SwitchFlags::PREEMPTED);
+        }
+        if to.is_idle_thread() {
+            flags.insert(SwitchFlags::TO_IDLE);
+        }
+        if !to.is_in_user() {
+            flags.insert(SwitchFlags::TO_KTHREAD);
+        }
         let data = ThreadCtxSwitch {
             to: Some(to.objid()),
+            flags,
         };
         let entry = new_trace_entry_thread(
             from,
@@ -402,11 +426,23 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef) {
     }
 }
 
-fn switch_to(thread: ThreadRef, old: &ThreadRef) {
-    if *old != thread {
-        trace_switch(&old, &thread);
-    }
+fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let cp = current_processor();
+    if old.id() != thread.id() {
+        if thread.is_idle_thread() {
+            //log::info!("switch to idle from {}", old.id());
+            //cp.rq.print();
+        }
+        log::trace!(
+            "switch {} <- {} ({} {})",
+            thread.id(),
+            old.id(),
+            thread.is_idle_thread(),
+            old.is_idle_thread(),
+        );
+        //cp.rq.print();
+        trace_switch(&old, &thread, flags);
+    }
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
     let oldcpu = thread
         .last_cpu
@@ -430,27 +466,38 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef) {
     }
 }
 
-fn do_schedule(reinsert: bool) {
+bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug)]
+    pub struct SchedFlags: u32 {
+        const REINSERT = 1;
+        const YIELD = 2;
+        const PREEMPT = 4;
+    }
+}
+
+fn do_schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
     cur.enter_critical();
-    if !cur.is_idle_thread() && reinsert {
-        if !processor.rq.should_preempt(cur, true) {
+    if !cur.is_idle_thread() && flags.contains(SchedFlags::REINSERT) {
+        if flags.contains(SchedFlags::PREEMPT)
+            || processor
+                .rq
+                .should_preempt(cur, flags.contains(SchedFlags::YIELD))
+        {
             log::trace!(
-                "reinsert: {}: {}, but not preempt",
+                "reinsert: {}: {}, preempt: {:?}: {}",
                 cur.id(),
-                processor.rq.is_empty()
-            );
-            schedule_thread_on_cpu(cur.clone(), processor, true);
-        } else {
-            log::trace!(
-                "reinsert: {}: {}, preempt",
-                cur.id(),
-                processor.rq.is_empty()
+                processor.rq.is_empty(),
+                flags,
+                processor.rq.should_preempt(cur, true),
             );
             let cpuid = select_cpu(&cur);
             let processor = get_processor(cpuid);
             schedule_thread_on_cpu(cur.clone(), processor, false);
+        } else {
+            log::trace!("reinsert: {}: {}", cur.id(), processor.rq.is_empty());
+            schedule_thread_on_cpu(cur.clone(), processor, !flags.contains(SchedFlags::YIELD));
         }
     }
     if cur.is_exiting() {
@@ -459,28 +506,34 @@ fn do_schedule(reinsert: bool) {
 
     let next = processor.rq.take();
     if let Some(next) = next {
+        log::trace!(
+            "took thread {} ({:?})",
+            next.id(),
+            next.effective_priority()
+        );
+        //processor.rq.print();
         if &next == cur {
             return;
         }
         next.current_processor_queue.store(-1, Ordering::SeqCst);
-        switch_to(next, cur);
+        switch_to(next, cur, flags);
         return;
     }
 
     if let Some(stolen) = try_steal() {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
-        switch_to(stolen, cur);
+        switch_to(stolen, cur, flags);
         return;
     }
 
     if cur.is_idle_thread() {
         return;
     }
-    switch_to(processor.idle_thread.wait().clone(), cur);
+    switch_to(processor.idle_thread.wait().clone(), cur, flags);
 }
 
-pub fn schedule(reinsert: bool) {
+pub fn schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
@@ -489,7 +542,7 @@ pub fn schedule(reinsert: bool) {
         return;
     }
 
-    do_schedule(reinsert);
+    do_schedule(flags);
     interrupt::set(istate);
     let cur = current_thread_ref().unwrap();
     // Always check if we need to suspend before returning control.
@@ -546,7 +599,7 @@ pub fn schedule_maybe_preempt() {
     if PREEMPT.swap(false, Ordering::SeqCst) {
         let cp = current_processor();
         cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
-        schedule(true)
+        schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT)
     }
 }
 

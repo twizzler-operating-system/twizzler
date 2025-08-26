@@ -308,7 +308,14 @@ impl TraceMgr {
     }
 }
 
+static KTRACE_THREAD: Once<u64> = Once::new();
+
+pub fn is_thread_ktrace_thread(th: &ThreadRef) -> bool {
+    KTRACE_THREAD.poll().is_some_and(|k| *k == th.id())
+}
+
 extern "C" fn kthread_trace_writer() {
+    KTRACE_THREAD.call_once(|| current_thread_ref().unwrap().id());
     loop {
         let mut did_work = false;
         let mut map = TRACE_MGR.map.lock();
@@ -338,6 +345,8 @@ extern "C" fn kthread_trace_writer() {
 
 fn start_write_thread() {
     if current_thread_ref().is_some() {
-        WRITE_THREAD.call_once(|| start_new_kernel(Priority::REALTIME, kthread_trace_writer, 0));
+        // TODO: dynamically adjust priority based on how many pending async events there are to
+        // process.
+        WRITE_THREAD.call_once(|| start_new_kernel(Priority::BACKGROUND, kthread_trace_writer, 0));
     }
 }

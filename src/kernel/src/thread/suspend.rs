@@ -13,7 +13,7 @@ use crate::{
     once::Once,
     processor::{
         ipi::ipi_exec,
-        sched::{schedule, schedule_resched, schedule_thread},
+        sched::{schedule, schedule_resched, schedule_thread, SchedFlags},
     },
     spinlock::Spinlock,
     thread::current_thread_ref,
@@ -78,7 +78,7 @@ impl Thread {
         }
 
         // goodnight!
-        schedule(false);
+        schedule(SchedFlags::PREEMPT);
         self.set_state(ExecutionState::Running);
 
         // goodmorning! Clear the flags. This is one operation, so we'll never observe

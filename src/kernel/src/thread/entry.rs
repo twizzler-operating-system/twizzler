@@ -42,6 +42,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
     } else {
         Thread::new(current_memory_context(), Some(args), Priority::USER)
     };
+    log::trace!("started user thread ID {}", thread.id());
     match args.upcall_target {
         UpcallTargetSpawnOption::DefaultAbort => {}
         UpcallTargetSpawnOption::Inherit => {
@@ -73,8 +74,15 @@ pub fn start_new_init() {
     schedule_new_thread(thread);
 }
 
+#[track_caller]
 pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> ThreadRef {
     let mut thread = Thread::new(None, None, pri);
+    log::trace!(
+        "started new kernel thread at {:?} with ID {}, from {}",
+        thread.effective_priority(),
+        thread.id(),
+        core::panic::Location::caller(),
+    );
     unsafe { thread.init(start) }
     thread.spawn_args = Some(ThreadSpawnArgs {
         entry: 0,
@@ -92,7 +100,6 @@ pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> Th
 /// Handle for running a closure in another thread.
 pub struct KthreadClosure<F, R> {
     closure: Spinlock<Box<Option<F>>>,
-    // TODO: make this a mutex
     result: Spinlock<(bool, MaybeUninit<R>)>,
     signal: CondVar,
 }

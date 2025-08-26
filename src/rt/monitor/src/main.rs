@@ -112,7 +112,7 @@ fn monitor_init() -> miette::Result<()> {
         }
     }
 
-    info!("monitor early init completed, starting init");
+    info!("monitor early init completed, starting init",);
     let mut args = vec!["init".to_string()];
     for arg in std::env::args() {
         args.push(arg);

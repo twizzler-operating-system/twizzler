@@ -8,7 +8,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::{error::TwzError, Result};
 
 use crate::{
-    processor::sched::{lookup_thread_repr, schedule},
+    processor::sched::{lookup_thread_repr, schedule, SchedFlags},
     security::SwitchResult,
     thread::current_thread_ref,
 };
@@ -51,7 +51,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             crate::thread::exit(arg);
         }
         ThreadControl::Yield => {
-            schedule(true);
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
