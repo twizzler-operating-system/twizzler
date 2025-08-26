@@ -367,7 +367,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
 
     //disk::benches::bench_disk(ctx);
     // Remove this eventually
-    if false { 
+    if true { 
         let _ = ex
             .spawn(async {
                 let pager = PAGER_CTX.get().unwrap();
@@ -408,6 +408,14 @@ pub fn adv_lethe() -> Result<()> {
         .flush()
         .unwrap();
     Ok(())
+}
+
+// #[secgate::secure_gate]
+pub fn get_pager_iotop_data_string() -> Result<String> {
+    let data = unsafe {
+        PAGER_CTX.get().unwrap().data.display_iotop()
+    };
+    Ok(data)
 }
 
 #[secgate::secure_gate]

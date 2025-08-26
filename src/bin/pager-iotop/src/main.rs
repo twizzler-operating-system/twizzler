@@ -83,7 +83,7 @@ fn print_help() {
 fn get_pager_iotop_data() -> Result<String, Box<dyn std::error::Error>> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
-    Ok(String::new())
+    Ok(pager_srv::get_pager_iotop_data_string()?)
 }
 
 fn run_interactive_mode(config: IOTopConfig) -> Result<(), Box<dyn std::error::Error>> {

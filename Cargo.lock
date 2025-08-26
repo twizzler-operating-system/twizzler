@@ -4965,7 +4965,7 @@ dependencies = [
 name = "pager-iotop"
 version = "0.1.0"
 dependencies = [
- "clap",
+ "pager-srv",
  "twizzler",
  "twizzler-abi",
  "twizzler-runtime",

@@ -7,4 +7,5 @@ edition = "2021"
 twizzler = { path = "../../lib/twizzler" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-runtime = { path = "../../rt" }
-clap = { version = "4.0", features = ["derive"] }
+pager-srv = { path = "../../srv/pager-srv" }
+
