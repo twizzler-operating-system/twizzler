@@ -22,7 +22,6 @@ use self::{
 };
 use crate::{
     idcounter::{Id, IdCounter},
-    interrupt,
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{
@@ -59,9 +58,14 @@ pub struct ThreadStats {
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
     pub priority: AtomicU32,
+    pub stable_priority: AtomicU32,
     pub flags: AtomicU32,
     pub last_cpu: AtomicI32,
     pub affinity: AtomicI32,
+    pub deadline: AtomicU64,
+    pub sleep_tick: AtomicU64,
+    pub run_ticks: AtomicU64,
+    pub current_processor_queue: AtomicI32,
     pub critical_counter: AtomicU64,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
@@ -131,6 +135,7 @@ impl Thread {
         Self {
             arch: crate::arch::thread::ArchThread::new(),
             priority: AtomicU32::new(priority.raw()),
+            stable_priority: AtomicU32::new(priority.raw()),
             id: ID_COUNTER.next(),
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
@@ -152,6 +157,10 @@ impl Thread {
             secctx: SecCtxMgr::new_kernel(),
             sample_expire: Spinlock::new(None),
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
+            deadline: AtomicU64::new(0),
+            sleep_tick: AtomicU64::new(0),
+            run_ticks: AtomicU64::new(0),
+            current_processor_queue: AtomicI32::new(-1),
         }
     }
 
@@ -209,19 +218,18 @@ impl Thread {
     }
 
     pub fn maybe_reschedule_thread(&self) {
-        todo!();
-        let ccpu = -1; //self.current_processor_queue.load(Ordering::SeqCst);
-                       /* if we get -1 here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
-                       since we check this variable and then lock a scheduler queue. It's possible that the thread was placed on a queue, then this variable was set,
-                       and then we load it, and then the thread is run. This results in a spurious reschedule. It's probably rare, though, but we should profile this
-                       to see if it's a problem.
+        let ccpu = self.current_processor_queue.load(Ordering::SeqCst);
+        /* if we get -1 here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
+        since we check this variable and then lock a scheduler queue. It's possible that the thread was placed on a queue, then this variable was set,
+        and then we load it, and then the thread is run. This results in a spurious reschedule. It's probably rare, though, but we should profile this
+        to see if it's a problem.
 
-                       Another possible race condition is the opposite: a thread is running, and we read -1, and then it gets put on the queue. This is also probably
-                       okay, since that means that we might not have really needed to do a reschedule.
+        Another possible race condition is the opposite: a thread is running, and we read -1, and then it gets put on the queue. This is also probably
+        okay, since that means that we might not have really needed to do a reschedule.
 
-                       Finally, note that this function should be called with the donated_priority lock held, since that will force serialization by any schedulers
-                       calculating the thread's priority at the time of this call. Or, if the HAS_DONATED_PRIORITY flag is clear, it will not, but that is okay too.
-                       But this does mean we need to submit any wakeups/reschedules with interrupts cleared. */
+        Finally, note that this function should be called with the donated_priority lock held, since that will force serialization by any schedulers
+        calculating the thread's priority at the time of this call. Or, if the HAS_DONATED_PRIORITY flag is clear, it will not, but that is okay too.
+        But this does mean we need to submit any wakeups/reschedules with interrupts cleared. */
         //TODO: verify the above logic
         //TODO: optimize this by keeping an is_running flag?
         if ccpu == -1 {
@@ -229,10 +237,7 @@ impl Thread {
         }
         let ccpu = ccpu as u32;
         let proc = get_processor(ccpu);
-        let resched = proc.schedlock().check_priority_change(self);
-        if resched {
-            interrupt::with_disabled(|| proc.wakeup(true));
-        }
+        proc.maybe_wakeup(self);
     }
 
     /// Set the state of the thread. This publishes thread info to userspace.

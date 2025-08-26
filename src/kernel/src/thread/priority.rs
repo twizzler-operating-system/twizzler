@@ -85,6 +85,18 @@ impl Thread {
         }
     }
 
+    pub fn get_stable_effective_priority(&self) -> Priority {
+        let raw = self.stable_priority.load(Ordering::Acquire);
+        Priority::from_raw(raw)
+    }
+
+    pub fn stable_effective_priority(&self) -> Priority {
+        let priority = self.effective_priority();
+        self.stable_priority
+            .store(priority.raw(), Ordering::Release);
+        priority
+    }
+
     pub fn effective_priority(&self) -> Priority {
         let priority = Priority::from_raw(self.priority.load(Ordering::SeqCst));
         if self.flags.load(Ordering::SeqCst) & THREAD_HAS_DONATED_PRIORITY != 0 {

@@ -1,20 +1,20 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use ipi::IpiTask;
-use runqueue::{SchedLockGuard, SchedulingQueues, NR_QUEUES};
+use rq::{RunQueue, NR_QUEUES};
 
 use crate::{
     arch::{self, processor::ArchProcessor},
+    interrupt,
     once::Once,
     spinlock::Spinlock,
-    thread::{current_thread_ref, priority::Priority, ThreadRef},
+    thread::{priority::Priority, Thread, ThreadRef},
 };
 
 pub mod ipi;
 pub mod mp;
 mod rq;
-pub mod runqueue;
 pub mod sched;
 mod timeshare;
 
@@ -31,13 +31,13 @@ pub struct ProcessorStats {
 
 pub struct Processor {
     pub arch: ArchProcessor,
-    sched: Spinlock<SchedulingQueues>,
+    rq: RunQueue<NR_QUEUES>,
+    current_priority: AtomicU32,
     running: AtomicBool,
     topology_path: Once<Vec<(usize, bool)>>,
     pub id: u32,
     bsp_id: u32,
     pub idle_thread: Once<ThreadRef>,
-    pub load: AtomicU64,
     pub stats: ProcessorStats,
     ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
     exited: Spinlock<Vec<ThreadRef>>,
@@ -47,16 +47,16 @@ impl Processor {
     pub fn new(id: u32, bsp_id: u32) -> Self {
         Self {
             arch: ArchProcessor::default(),
-            sched: Spinlock::new(Default::default()),
             running: AtomicBool::new(false),
+            rq: RunQueue::new(),
             topology_path: Once::new(),
             id,
             bsp_id,
             idle_thread: Once::new(),
-            load: AtomicU64::new(1),
             stats: ProcessorStats::default(),
             ipi_tasks: Spinlock::new(Vec::new()),
             exited: Spinlock::new(Vec::new()),
+            current_priority: AtomicU32::new(0),
         }
     }
 
@@ -68,26 +68,14 @@ impl Processor {
         self.bsp_id
     }
 
-    pub fn schedlock(&self) -> SchedLockGuard {
-        current_thread_ref().map(|c| c.enter_critical_unguarded());
-        let queues = self.sched.lock();
-        SchedLockGuard { queues }
-    }
-
     pub fn current_priority(&self) -> Priority {
-        /* TODO: optimize this by just keeping track of it outside the sched? */
-        let sched = self.schedlock();
-        //let queue_pri = Priority::from_queue_number::<NR_QUEUES>(sched.get_min_non_empty());
-        let queue_pri = todo!();
-        if let Some(ref pri) = sched.last_chosen_priority {
-            core::cmp::max(queue_pri, pri.clone())
-        } else {
-            queue_pri
-        }
+        let cur = self.current_priority.load(Ordering::SeqCst);
+        self.rq.current_priority().max(Priority::from_raw(cur))
     }
 
     pub fn current_load(&self) -> u64 {
-        self.load.load(Ordering::SeqCst)
+        // Our load includes any load in the run queue, + either the idle or current running thread.
+        self.rq.current_load() + 1
     }
 
     fn set_topology(&self, topo_path: Vec<(usize, bool)>) {
@@ -131,6 +119,16 @@ impl Processor {
                 Box::<ThreadRef, _>::from_raw(*item.self_reference.get().as_ref().unwrap())
             };
         }
+    }
+
+    pub fn maybe_wakeup(&self, th: &Thread) {
+        if self.rq.should_preempt(th, false) {
+            interrupt::with_disabled(|| self.wakeup(true));
+        }
+    }
+
+    pub fn has_work(&self) -> bool {
+        !self.rq.is_empty() || self.current_priority.load(Ordering::SeqCst) > 0
     }
 }
 

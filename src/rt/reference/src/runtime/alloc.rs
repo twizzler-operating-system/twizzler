@@ -8,12 +8,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::Ordering,
 };
-use std::{
-    alloc::Allocator,
-    mem::size_of,
-    sync::atomic::{AtomicBool, AtomicUsize},
-    time::Instant,
-};
+use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize, time::Instant};
 
 use twizzler_abi::simple_mutex::Mutex;
 

@@ -78,7 +78,9 @@ impl ReferenceRuntime {
     }
 }
 
+#[allow(dead_code)]
 const MAX_FRAMES: usize = 100;
+#[allow(dead_code)]
 pub fn backtrace(_symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {

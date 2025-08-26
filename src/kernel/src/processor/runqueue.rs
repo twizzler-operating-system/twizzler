@@ -5,7 +5,6 @@ use crate::{
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
-pub const NR_QUEUES: usize = 32;
 #[derive(Default)]
 pub struct SchedulingQueues {
     pub queues: [LinkedList<SchedLinkAdapter>; NR_QUEUES],

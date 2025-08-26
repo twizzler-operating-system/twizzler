@@ -58,6 +58,7 @@ members = [
     "src/bin/ptest",
     "src/bin/debug",
     "src/bin/trace",
+    "src/bin/schedtest",
 ]
 
 exclude = [
@@ -90,6 +91,7 @@ initrd = [
     "crate:ptest",
 
     "crate:twzcandle",
+    "crate:schedtest",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",

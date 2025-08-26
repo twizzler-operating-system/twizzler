@@ -310,7 +310,10 @@ pub fn oneshot_clock_hardtick() {
         None
     };
 
-    let sched_next_tick = schedule_hardtick();
+    let mut sched_next_tick = schedule_hardtick();
+    if current_processor().is_bsp() {
+        sched_next_tick = Some(1);
+    }
     /*
     logln!(
         "hardtick {} {} {:?} {:?}",

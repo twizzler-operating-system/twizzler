@@ -1,11 +1,22 @@
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use intrusive_collections::{intrusive_adapter, LinkedList};
 
-use super::timeshare::TimeshareQueue;
+use super::{
+    sched::{MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS},
+    timeshare::TimeshareQueue,
+};
 use crate::{
+    clock::get_current_ticks,
     spinlock::{GenericSpinlock, LockGuard, SpinLoop},
-    thread::{current_thread_ref, priority::PriorityClass, Thread, ThreadRef},
+    thread::{
+        current_thread_ref,
+        priority::{Priority, PriorityClass, MAX_PRIORITY},
+        Thread, ThreadRef,
+    },
 };
 
+pub const NR_QUEUES: usize = 64;
 #[repr(transparent)]
 struct SchedSpinlock<T>(GenericSpinlock<T, SpinLoop>);
 
@@ -17,10 +28,19 @@ impl<T> SchedSpinlock<T> {
     }
 }
 
+const RQ_HAS_RT: u32 = 1;
+const RQ_HAS_TS: u32 = 2;
+const RQ_HAS_IL: u32 = 4;
+
 pub struct RunQueue<const N: usize> {
     realtime: SchedSpinlock<PriorityQueue<N>>,
     timeshare: SchedSpinlock<TimeshareQueue<N>>,
     idle: SchedSpinlock<PriorityQueue<N>>,
+    current_priority: AtomicU32,
+    flags: AtomicU32,
+    timeslice: AtomicU32,
+    load: AtomicU32,
+    last_clock: AtomicU64,
 }
 
 pub struct SchedLockGuard<'a, T> {
@@ -60,13 +80,29 @@ impl<const N: usize> PriorityQueue<N> {
         }
     }
 
+    fn highest_priority(&self) -> Option<u16> {
+        if self.count == 0 {
+            return None;
+        }
+        for q in (0..N).rev() {
+            if !self.queues[q].is_empty() {
+                return Some((q * (MAX_PRIORITY as usize / N)) as u16);
+            }
+        }
+        None
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
     fn insert(&mut self, th: ThreadRef) {
         let priority = th.effective_priority();
         let q = if priority.class == PriorityClass::User {
             // This must be a user thread getting a deadline boost.
             N - 1
         } else {
-            priority.value as usize / N
+            priority.value as usize / (MAX_PRIORITY as usize / N)
         };
         self.queues[q].push_back(th);
         self.count += 1;
@@ -95,41 +131,187 @@ impl<const N: usize> RunQueue<N> {
             realtime: SchedSpinlock(GenericSpinlock::new(PriorityQueue::new())),
             timeshare: SchedSpinlock(GenericSpinlock::new(TimeshareQueue::new())),
             idle: SchedSpinlock(GenericSpinlock::new(PriorityQueue::new())),
+            current_priority: AtomicU32::new(0),
+            flags: AtomicU32::new(0),
+            timeslice: AtomicU32::new(0),
+            load: AtomicU32::new(0),
+            last_clock: AtomicU64::new(0),
         }
     }
 
-    pub fn insert(&self, th: ThreadRef) -> bool {
-        match th.effective_priority().class {
+    pub fn insert(&self, th: ThreadRef, current: bool) -> bool {
+        self.load.fetch_add(1, Ordering::Relaxed);
+        let th_pri = th.effective_priority();
+        let cur_pri = self.current_priority.load(Ordering::Acquire);
+        if Priority::from_raw(cur_pri) < th_pri {
+            self.current_priority.store(th_pri.raw(), Ordering::Release);
+        }
+
+        match th_pri.class {
             PriorityClass::Realtime => {
                 self.realtime.lock().insert(th);
+                self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 true
             }
             PriorityClass::User => {
-                let is_thread_deadline = todo!();
+                // TODO
+                let is_thread_deadline = false;
                 if is_thread_deadline {
                     self.realtime.lock().insert(th);
+                    self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 } else {
-                    self.timeshare.lock().insert(th);
+                    self.timeshare.lock().insert(th, current);
+                    self.flags.fetch_or(RQ_HAS_TS, Ordering::SeqCst);
                 }
                 true
             }
             _ => {
                 self.idle.lock().insert(th);
+                self.flags.fetch_or(RQ_HAS_IL, Ordering::SeqCst);
                 false
             }
         }
     }
 
+    fn recalc_priority_timeshare(&self, queue: SchedLockGuard<TimeshareQueue<N>>) {
+        if self.current_priority().class == PriorityClass::User {
+            if queue.is_empty() {
+                let priority = Priority {
+                    value: self.idle.lock().highest_priority().unwrap_or(0),
+                    class: PriorityClass::Idle,
+                };
+                self.current_priority
+                    .store(priority.raw(), Ordering::SeqCst);
+            } else {
+                let priority = Priority {
+                    value: queue.highest_priority().unwrap_or(0),
+                    class: PriorityClass::Idle,
+                };
+                self.current_priority
+                    .store(priority.raw(), Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn take_realtime(&self) -> Option<ThreadRef> {
+        if self.flags.load(Ordering::Acquire) & RQ_HAS_RT == 0 {
+            return None;
+        }
+        let mut realtime = self.realtime.lock();
+        let th = realtime.take()?;
+        if realtime.is_empty() {
+            self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
+        }
+        self.load.fetch_sub(1, Ordering::Relaxed);
+        if self.current_priority().class == PriorityClass::Realtime {
+            if realtime.is_empty() {
+                let priority = Priority {
+                    value: MAX_PRIORITY,
+                    class: PriorityClass::User,
+                };
+                self.current_priority
+                    .store(priority.raw(), Ordering::SeqCst);
+            } else {
+                let priority = Priority {
+                    value: realtime.highest_priority().unwrap_or(0),
+                    class: PriorityClass::Realtime,
+                };
+                self.current_priority
+                    .store(priority.raw(), Ordering::SeqCst);
+            }
+        }
+        Some(th)
+    }
+
+    fn take_timeshare(&self) -> Option<ThreadRef> {
+        if self.flags.load(Ordering::Acquire) & RQ_HAS_TS == 0 {
+            return None;
+        }
+        let mut timeshare = self.timeshare.lock();
+        let th = timeshare.take()?;
+        if timeshare.is_empty() {
+            self.flags.fetch_and(!RQ_HAS_TS, Ordering::Release);
+        }
+        self.load.fetch_sub(1, Ordering::Relaxed);
+        if self.current_priority().class == PriorityClass::User {
+            self.recalc_priority_timeshare(timeshare);
+        }
+        Some(th)
+    }
+
+    fn take_idle(&self) -> Option<ThreadRef> {
+        if self.flags.load(Ordering::Acquire) & RQ_HAS_IL == 0 {
+            return None;
+        }
+        let mut idle = self.idle.lock();
+        let th = idle.take()?;
+        if idle.is_empty() {
+            self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
+        }
+        self.load.fetch_sub(1, Ordering::Relaxed);
+        let priority = Priority {
+            value: idle.highest_priority().unwrap_or(0),
+            class: PriorityClass::Idle,
+        };
+        self.current_priority
+            .store(priority.raw(), Ordering::SeqCst);
+        Some(th)
+    }
+
     pub fn take(&self) -> Option<ThreadRef> {
-        if let Some(th) = self.realtime.lock().take() {
+        if let Some(th) = self.take_realtime() {
             return Some(th);
         }
-        if let Some(th) = self.timeshare.lock().take() {
+
+        if let Some(th) = self.take_timeshare() {
             return Some(th);
         }
-        if let Some(th) = self.idle.lock().take() {
+
+        if let Some(th) = self.take_idle() {
             return Some(th);
         }
+
         None
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & (RQ_HAS_IL | RQ_HAS_RT | RQ_HAS_TS) == 0
+    }
+
+    pub fn timeslice(&self) -> u64 {
+        (MAX_TIMESLICE_TICKS / (self.load.fetch_add(1, Ordering::Relaxed).max(1)))
+            .min(MIN_TIMESLICE_TICKS) as u64
+    }
+
+    pub fn should_preempt(&self, cur: &Thread, ticking: bool) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let rq_pri = self.current_priority();
+        let cur_pri = cur.effective_priority();
+        let ret = cur_pri < rq_pri || (cur_pri == rq_pri && ticking);
+        log::trace!(
+            "{:x} {:x}: {}: {}",
+            rq_pri.raw(),
+            cur_pri.raw(),
+            ticking,
+            ret
+        );
+        ret
+    }
+
+    pub fn clock(&self) {
+        let current_ticks = get_current_ticks();
+        let ticks = current_ticks - self.last_clock.load(Ordering::Acquire);
+        self.last_clock.fetch_add(ticks, Ordering::Release);
+        self.timeshare.lock().advance_insert_index(ticks, true);
+    }
+
+    pub fn current_priority(&self) -> Priority {
+        Priority::from_raw(self.current_priority.load(Ordering::SeqCst))
+    }
+
+    pub fn current_load(&self) -> u64 {
+        self.load.load(Ordering::Acquire) as u64
     }
 }
