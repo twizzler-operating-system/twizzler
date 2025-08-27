@@ -261,12 +261,13 @@ pub fn stat(state: TracingState) {
         }
     }
 
-    #[derive(Debug, Clone, Copy, Default)]
+    #[derive(Debug, Clone, Default)]
     struct PerThreadData {
         migrations: usize,
         switches: usize,
         switches_to_collector: usize,
         switches_to_ktrace_kthread: usize,
+        cpu_map: HashMap<u64, usize>,
     }
     let mut threads = HashMap::<ObjID, PerThreadData>::new();
 
@@ -283,6 +284,7 @@ pub fn stat(state: TracingState) {
         }
         if event.0.event & THREAD_CONTEXT_SWITCH != 0 {
             entry.switches += 1;
+            *entry.cpu_map.entry(event.0.cpuid).or_default() += 1;
             if let Some(data) = event
                 .1
                 .and_then(|d| d.try_cast::<ThreadCtxSwitch>(THREAD_CONTEXT_SWITCH))
@@ -300,6 +302,7 @@ pub fn stat(state: TracingState) {
 
     if !threads.is_empty() {
         println!("                            THREAD ID     MIGRATIONS     CONTEXT SWITCHES");
+        println!("                                                         ON CPUs");
         for thread in &threads {
             println!(
                 "     {:0>32x}        {:7}              {:7} ({:7} to tracing system)",
@@ -308,6 +311,17 @@ pub fn stat(state: TracingState) {
                 thread.1.switches,
                 thread.1.switches_to_collector + thread.1.switches_to_ktrace_kthread,
             );
+
+            let mut cpumap = thread.1.cpu_map.iter().collect::<Vec<_>>();
+            cpumap.sort_by_key(|x| *x.0);
+            print!("                                                         [",);
+            for (i, cpu) in cpumap.iter().enumerate() {
+                if i != 0 {
+                    print!(", ")
+                }
+                print!("{}:{}", cpu.0, cpu.1);
+            }
+            println!("]");
         }
     }
 

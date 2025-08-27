@@ -71,6 +71,7 @@ impl<T: Copy + core::fmt::Debug> TraceEvent<T> {
 
 const MAX_QUICK_ENABLED: usize = 10;
 const MAX_PENDING_ASYNC: usize = 1024;
+const MAX_SINK_PENDING: usize = 4096;
 
 pub struct TraceMgr {
     map: Mutex<BTreeMap<ObjID, TraceSink>>,
@@ -142,6 +143,22 @@ impl TraceMgr {
         }
         drop(map);
         self.signal_work();
+    }
+
+    pub fn process_async_and_maybe_flush(&self) {
+        let mut map = self.map.lock();
+        self.drain_async(|head, data| {
+            for sink in map.values_mut() {
+                if sink.accepts(&head) {
+                    sink.enqueue((head, data.clone()));
+                }
+            }
+        });
+        for sink in map.values_mut() {
+            if sink.pending() >= MAX_SINK_PENDING {
+                sink.write_all();
+            }
+        }
     }
 
     pub fn async_enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {

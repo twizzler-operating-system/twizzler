@@ -13,7 +13,7 @@ use twizzler_abi::{
 
 pub const MAX_TIMESLICE_TICKS: u32 = 100;
 pub const MIN_TIMESLICE_TICKS: u32 = 2;
-pub const DEFAULT_TIMESLICE_TICKS: u32 = 64;
+pub const DEFAULT_TIMESLICE_TICKS: u32 = 32;
 
 use super::{
     mp::{current_processor, get_processor},
@@ -98,16 +98,33 @@ impl CPUTopoNode {
         }
         self.count += 1;
     }
+
+    pub fn find_cpu(&self, id: u32) -> Option<&CPUTopoNode> {
+        if !self.cpuset.contains(id as usize) {
+            return None;
+        }
+
+        if self.children.is_empty() {
+            return Some(self);
+        }
+
+        for child in &self.children {
+            if let Some(node) = child.find_cpu(id) {
+                return Some(node);
+            }
+        }
+        None
+    }
 }
 
-static CPU_TOPOLOGY_ROOT: Once<CPUTopoNode> = Once::new();
+static CPU_TOPOLOGY_ROOT: Once<Box<CPUTopoNode>> = Once::new();
 
-pub fn set_cpu_topology(root: CPUTopoNode) {
+pub fn set_cpu_topology(root: Box<CPUTopoNode>) {
     CPU_TOPOLOGY_ROOT.call_once(|| root);
 }
 
 pub fn get_cpu_topology() -> &'static CPUTopoNode {
-    CPU_TOPOLOGY_ROOT.poll().unwrap()
+    &*CPU_TOPOLOGY_ROOT.poll().unwrap()
 }
 
 struct SearchCPUResult {
@@ -115,6 +132,7 @@ struct SearchCPUResult {
     cpuid: u32,
 }
 
+#[track_caller]
 fn find_cpu_from_topo(
     node: &CPUTopoNode,
     highest: bool,
@@ -147,14 +165,25 @@ fn find_cpu_from_topo(
         for c in node.first..=node.last {
             if node.cpuset.contains(c) {
                 let processor = get_processor(c as u32);
-                let skip = pri.map_or(false, |pri| &processor.current_priority() >= pri)
+                let skip = pri.map_or(false, |pri| &processor.current_priority() > pri)
                     || allowed_set.map_or(false, |set| !set.contains(c));
                 if skip {
                     continue;
                 }
                 let load = processor.current_load();
+                log::trace!(
+                    "{} {} {:?}: cpu {} considering {}: load {},{},{}",
+                    core::panic::Location::caller(),
+                    highest,
+                    pri,
+                    current_processor().id,
+                    processor.id,
+                    processor.current_load(),
+                    processor.rq.current_load(),
+                    processor.rq.current_timeshare_load(),
+                );
                 /* jitter. This is similar to how freebsd does things */
-                let jload = load * 256 - (quick_random() % 128) as u64;
+                let jload = load; // * 256 - (quick_random() % 128) as u64;
                 if highest {
                     if jload > best || best_cpu.is_none() {
                         best_cpu = Some(c as u32);
@@ -173,6 +202,26 @@ fn find_cpu_from_topo(
     }
 }
 
+fn choose_cpu_steal_via_topo(node: &CPUTopoNode, allowed_set: &mut FixedBitSet) -> Option<u32> {
+    if allowed_set.is_empty() {
+        return None;
+    }
+    for c in node.first..=node.last {
+        if node.cpuset.contains(c) {
+            if !allowed_set.contains(c) {
+                continue;
+            }
+            let processor = get_processor(c as u32);
+            let load = processor.current_load();
+            if load >= STEAL_LOAD_THRESH {
+                return Some(processor.id);
+            }
+            allowed_set.remove(c);
+        }
+    }
+    choose_cpu_steal_via_topo(node.parent()?, allowed_set)
+}
+
 fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: bool) {
     let should_signal = processor.id != current_processor().id
         && (processor.rq.is_empty()
@@ -186,6 +235,7 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     thread.sched.set_deadline(
         get_current_ticks() + processor.rq.deadline(thread.effective_priority().class),
     );
+    thread.sched.reset_timeslice();
     processor.rq.insert(thread, is_current);
     //processor.rq.print();
     if should_signal {
@@ -194,7 +244,7 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
 }
 
 fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<ThreadRef> {
-    if let Some(th) = processor.rq.take() {
+    if let Some(th) = processor.rq.take(new_cpu_rq != processor.id) {
         th.sched.moving_to_queue(new_cpu_rq);
         Some(th)
     } else {
@@ -202,19 +252,33 @@ fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<Thre
     }
 }
 
-const STEAL_LOAD_THRESH: u64 = 3;
+const STEAL_LOAD_THRESH: u64 = 2;
+#[track_caller]
 fn try_steal() -> Option<ThreadRef> {
     /* TODO: we need a cooldown on migration */
     let us = current_processor();
-    let res = find_cpu_from_topo(get_cpu_topology(), true, None, None);
-    if let Some(res) = res {
-        let processor = get_processor(res.cpuid);
+    //let res = find_cpu_from_topo(get_cpu_topology(), true, None, None);
+    let our_topo_node = get_cpu_topology().find_cpu(us.id).unwrap();
+    let mut allowed_set = get_cpu_topology().cpuset.clone();
+    allowed_set.remove(us.id as usize);
+    if let Some(cpuid) = choose_cpu_steal_via_topo(our_topo_node, &mut allowed_set) {
+        if !us.rq.is_empty() {
+            return us.rq.take(false);
+        }
+        let processor = get_processor(cpuid);
         let otherload = processor.current_load();
-        if otherload > STEAL_LOAD_THRESH && otherload > (us.current_load() + 1) {
+        if otherload >= STEAL_LOAD_THRESH {
+            log::trace!(
+                "{}: {} considering {} for steal (load = {})",
+                core::panic::Location::caller(),
+                us.id,
+                processor.id,
+                otherload
+            );
             /* try to steal something */
             let thread = take_a_thread_from_cpu(processor, us.id);
             if thread.is_some() {
-                log::info!(
+                log::trace!(
                     "stole {} ({} -> {}): {} {}",
                     thread.as_ref().unwrap().objid(),
                     processor.id,
@@ -277,10 +341,10 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
     if last_cpuid >= 0 {
         let processor = get_processor(last_cpuid as u32);
         last_load = Some(processor.current_load());
-        if processor.current_load() == 1 {
+        if processor.rq.current_load() == 0 {
             return last_cpuid as u32;
         }
-        if thread.effective_priority() >= processor.current_priority() {
+        if thread.effective_priority() > processor.current_priority() {
             return last_cpuid as u32;
         }
         log::trace!(
@@ -304,7 +368,7 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
     if let Some(res) = res {
         log::trace!(
             "{}: found(pri) {} with load {} ({:?})",
-            thread.objid(),
+            thread.id(),
             res.cpuid,
             res.load,
             last_load,
@@ -318,13 +382,7 @@ fn select_cpu(thread: &ThreadRef) -> u32 {
     /* 3: search for the least loaded */
     let res = find_cpu_from_topo(get_cpu_topology(), false, None, None)
         .expect("global CPU search should always produce results");
-    log::trace!(
-        "{}: found {} with load {} ({:?})",
-        thread.objid(),
-        res.cpuid,
-        res.load,
-        last_load
-    );
+
     if last_load.is_some_and(|ll| res.load >= (ll - 1) * 128) && last_cpuid >= 0 {
         return last_cpuid as u32;
     }
@@ -413,6 +471,9 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
         if !to.is_in_user() {
             flags.insert(SwitchFlags::TO_KTHREAD);
         }
+        if !sflags.contains(SchedFlags::REINSERT) {
+            flags.insert(SwitchFlags::SLEEPING);
+        }
         let data = ThreadCtxSwitch {
             to: Some(to.objid()),
             flags,
@@ -457,8 +518,10 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     if !thread.is_idle_thread() {
         cp.current_priority
             .store(thread.effective_priority().raw(), Ordering::SeqCst);
+        cp.exit_idle();
         crate::clock::schedule_oneshot_tick(cp.rq.timeslice(thread.effective_priority().class));
     } else {
+        cp.enter_idle();
         cp.current_priority.store(0, Ordering::SeqCst);
     }
     unsafe { set_current_thread(&thread) };
@@ -490,21 +553,42 @@ fn do_schedule(flags: SchedFlags) {
     let processor = current_processor();
     cur.enter_critical();
     if !cur.is_idle_thread() && flags.contains(SchedFlags::REINSERT) {
+        // If we are re-inserting the thread, we may want to send it to another CPUs queue.
+        // Check if either we were preempted (timeslice expired, or needed reschedule for another
+        // reason) or if we have higher priority tasks to run. If so, look for a cpu to
+        // insert the thread into. Otherwise just quickly reinsert it onto our queue so we
+        // may choose it again soon.
+        //
+        // n.b. if we are yielding, we allow for equal-priority threads to count as "higher
+        // priority" so that other threads can run if available. If all threads are truly
+        // lower priority, yielding has less of an effect on timeshare threads.
         if flags.contains(SchedFlags::PREEMPT)
             || rq_has_higher(cur, &processor.rq, flags.contains(SchedFlags::YIELD))
         {
             log::trace!(
-                "reinsert: {}: {}, preempt: {:?}: {}",
+                "{} reinsert: {}: {}, preempt: {:?}: {} {}",
+                processor.id,
                 cur.id(),
                 processor.rq.is_empty(),
                 flags,
                 rq_has_higher(cur, &processor.rq, true),
+                rq_has_higher(cur, &processor.rq, false),
             );
             let cpuid = select_cpu(&cur);
+            if cpuid != processor.id {
+                log::trace!(
+                    "{} reinsert moved thread {} to {}",
+                    processor.id,
+                    cur.id(),
+                    cpuid
+                );
+            }
             let processor = get_processor(cpuid);
             schedule_thread_on_cpu(cur.clone(), processor, false);
         } else {
             log::trace!("reinsert: {}: {}", cur.id(), processor.rq.is_empty());
+            // This is a current thread to reinsert, but only count it as such if it is not
+            // yielding so that other threads will run first.
             schedule_thread_on_cpu(cur.clone(), processor, !flags.contains(SchedFlags::YIELD));
         }
     }
@@ -512,7 +596,7 @@ fn do_schedule(flags: SchedFlags) {
         processor.push_exited(cur.clone());
     }
 
-    let next = processor.rq.take();
+    let next = processor.rq.take(false);
     if let Some(next) = next {
         log::trace!(
             "took thread {} ({:?})",
@@ -527,6 +611,7 @@ fn do_schedule(flags: SchedFlags) {
         return;
     }
 
+    // No thread was found in our queue. Try to steal from another queue.
     if let Some(stolen) = try_steal() {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
@@ -536,6 +621,14 @@ fn do_schedule(flags: SchedFlags) {
 
     if cur.is_idle_thread() {
         return;
+    } else {
+        log::trace!(
+            "{} idled from {} with load {}, flags {:?}",
+            processor.id,
+            cur.id(),
+            processor.current_load(),
+            flags
+        );
     }
     switch_to(processor.idle_thread.wait().clone(), cur, flags);
 }
@@ -663,6 +756,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     if let Some(cur) = cur {
         if !cur.is_critical() && cur.is_in_user() {
             cp.cleanup_exited();
+            TRACE_MGR.process_async_and_maybe_flush();
         }
         if cur.is_idle_thread() {
             cp.stats.idle.fetch_add(1, Ordering::SeqCst);

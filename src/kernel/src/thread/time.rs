@@ -60,13 +60,8 @@ impl ThreadSched {
         }
     }
 
-    pub fn reset_timeslice_if_overflowed(&self, allowed: u64) -> bool {
-        if self.timeslice.load(Ordering::Acquire) >= allowed as u32 {
-            self.timeslice.store(0, Ordering::Release);
-            true
-        } else {
-            false
-        }
+    pub fn reset_timeslice(&self) {
+        self.timeslice.store(0, Ordering::Release);
     }
 
     pub fn moving_to_queue(&self, cpu: u32) {

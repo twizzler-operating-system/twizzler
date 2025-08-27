@@ -86,11 +86,11 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         }
     }
 
-    let mut cpu_topo_root = CPUTopoNode::new(CPUTopoType::System);
+    let mut cpu_topo_root = Box::new(CPUTopoNode::new(CPUTopoType::System));
     for p in all_processors().iter().flatten() {
         let topo_path = p.topology_path.wait();
         cpu_topo_root.set_cpu(p.id);
-        let mut level = &mut cpu_topo_root;
+        let mut level = &mut *cpu_topo_root;
         for (path, is_thread) in topo_path {
             let mut child = level.child_mut(*path);
             if child.is_none() {

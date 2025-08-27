@@ -181,7 +181,7 @@ impl<const N: usize> RunQueue<N> {
 
     pub fn insert(&self, th: ThreadRef, current: bool) -> bool {
         assert!(!th.is_idle_thread());
-        if th.sched.pinned_to().is_some() {
+        if th.sched.pinned_to().is_none() {
             self.movable.fetch_add(1, Ordering::SeqCst);
         }
         self.load.fetch_add(1, Ordering::SeqCst);
@@ -252,7 +252,7 @@ impl<const N: usize> RunQueue<N> {
         if realtime.is_empty() {
             self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
         }
-        if th.sched.pinned_to().is_some() {
+        if th.sched.pinned_to().is_none() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -286,7 +286,7 @@ impl<const N: usize> RunQueue<N> {
         if timeshare.is_empty() {
             self.flags.fetch_and(!RQ_HAS_TS, Ordering::Release);
         }
-        if th.sched.pinned_to().is_some() {
+        if th.sched.pinned_to().is_none() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -307,7 +307,7 @@ impl<const N: usize> RunQueue<N> {
         if idle.is_empty() {
             self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
         }
-        if th.sched.pinned_to().is_some() {
+        if th.sched.pinned_to().is_none() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -321,7 +321,11 @@ impl<const N: usize> RunQueue<N> {
         Some(th)
     }
 
-    pub fn take(&self) -> Option<ThreadRef> {
+    pub fn take(&self, stealing: bool) -> Option<ThreadRef> {
+        if self.is_empty() || (stealing && self.movable.load(Ordering::Acquire) == 0) {
+            return None;
+        }
+
         if let Some(th) = self.take_realtime() {
             return Some(th);
         }
@@ -335,25 +339,6 @@ impl<const N: usize> RunQueue<N> {
         }
 
         self.current_priority.store(0, Ordering::Release);
-        None
-    }
-
-    pub fn steal(&self) -> Option<ThreadRef> {
-        if self.is_empty() || self.movable.load(Ordering::Acquire) == 0 {
-            return None;
-        }
-        if let Some(th) = self.take_realtime() {
-            return Some(th);
-        }
-
-        if let Some(th) = self.take_timeshare() {
-            return Some(th);
-        }
-
-        if let Some(th) = self.take_idle() {
-            return Some(th);
-        }
-
         None
     }
 

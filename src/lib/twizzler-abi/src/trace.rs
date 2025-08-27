@@ -237,7 +237,7 @@ pub trait TraceDataCast {
     const EVENT: u64;
 }
 
-/// Event data for thread operations.
+/// Kernel allocation information.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct KernelAllocationEvent {
@@ -246,7 +246,15 @@ pub struct KernelAllocationEvent {
     pub is_free: bool,
 }
 
-/// Event data for thread operations.
+/// Kernel allocation information.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KernelRebalance {
+    pub duration: TimeSpan,
+    pub moved: u32,
+}
+
+/// Runtime allocation information.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeAllocationEvent {
@@ -266,7 +274,6 @@ pub struct ThreadEvent {
 
 pub const MAX_BLOCK_NAME: usize = 28;
 
-/// Event data for thread operations.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadBlocked {
@@ -276,7 +283,6 @@ pub struct ThreadBlocked {
     pub block_name_len: u32,
 }
 
-/// Event data for thread operations.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadResumed {
@@ -317,8 +323,10 @@ bitflags::bitflags! {
         const IS_TRACE = 2;
         /// Switch to idle thread
         const TO_IDLE = 4;
-        /// Switch to idle thread
+        /// Thread was preempted
         const PREEMPTED = 8;
+        /// Thread is going to sleep
+        const SLEEPING = 0x10;
     }
 }
 

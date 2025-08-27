@@ -41,6 +41,7 @@ pub struct Processor {
     pub stats: ProcessorStats,
     ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
     exited: Spinlock<Vec<ThreadRef>>,
+    is_idle: AtomicBool,
 }
 
 impl Processor {
@@ -48,6 +49,7 @@ impl Processor {
         Self {
             arch: ArchProcessor::default(),
             running: AtomicBool::new(false),
+            is_idle: AtomicBool::new(false),
             rq: RunQueue::new(),
             topology_path: Once::new(),
             id,
@@ -74,8 +76,20 @@ impl Processor {
     }
 
     pub fn current_load(&self) -> u64 {
-        // Our load includes any load in the run queue, + either the idle or current running thread.
-        self.rq.current_load() + 1
+        self.rq.current_load()
+            + if self.is_idle.load(Ordering::SeqCst) {
+                0
+            } else {
+                1
+            }
+    }
+
+    pub fn enter_idle(&self) {
+        self.is_idle.store(true, Ordering::SeqCst);
+    }
+
+    pub fn exit_idle(&self) {
+        self.is_idle.store(false, Ordering::SeqCst);
     }
 
     fn set_topology(&self, topo_path: Vec<(usize, bool)>) {
