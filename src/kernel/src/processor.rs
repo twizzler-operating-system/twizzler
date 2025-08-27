@@ -122,7 +122,7 @@ impl Processor {
     }
 
     pub fn maybe_wakeup(&self, th: &Thread) {
-        if self.rq.should_preempt(th, false) {
+        if !self.rq.is_empty() && self.rq.current_priority() > th.effective_priority() {
             interrupt::with_disabled(|| self.wakeup(true));
         }
     }

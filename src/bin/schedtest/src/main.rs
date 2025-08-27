@@ -1,3 +1,5 @@
+use std::io::Write;
+
 fn main() {
     let threads = (0..4)
         .into_iter()
@@ -6,15 +8,17 @@ fn main() {
     for th in threads {
         th.join().unwrap();
     }
+    println!()
 }
 
 fn thread_main(num: u32) {
-    for _n in 0..100 {
+    for _n in 0..5 {
         let mut sum = 0;
         for i in 0..1_000_000_000 {
             sum += i;
-            if i % 100_000_000 == 0 {
+            if i % 10_000_000 == 0 {
                 print!("{}", num);
+                std::io::stdout().flush().unwrap();
             }
             sum = std::hint::black_box(sum);
         }

@@ -11,13 +11,16 @@ use twizzler_abi::{
     trace::{SwitchFlags, ThreadCtxSwitch, ThreadMigrate, TraceEntryFlags, TraceKind},
 };
 
-pub const MAX_TIMESLICE_TICKS: u32 = 16;
-pub const MIN_TIMESLICE_TICKS: u32 = 4;
-pub const DEFAULT_TIMESLICE_TICKS: u32 = 8;
+pub const MAX_TIMESLICE_TICKS: u32 = 100;
+pub const MIN_TIMESLICE_TICKS: u32 = 2;
+pub const DEFAULT_TIMESLICE_TICKS: u32 = 64;
 
-use super::mp::{current_processor, get_processor};
+use super::{
+    mp::{current_processor, get_processor},
+    rq::RunQueue,
+};
 use crate::{
-    clock::Nanoseconds,
+    clock::{get_current_ticks, Nanoseconds},
     interrupt,
     once::Once,
     processor::Processor,
@@ -171,15 +174,17 @@ fn find_cpu_from_topo(
 }
 
 fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: bool) {
-    let should_signal =
-        processor.id != current_processor().id && processor.rq.should_preempt(&thread, false);
-    thread
-        .current_processor_queue
-        .store(processor.id as i32, Ordering::SeqCst);
+    let should_signal = processor.id != current_processor().id
+        && (processor.rq.is_empty()
+            || processor.rq.current_priority() <= thread.effective_priority());
+    thread.sched.moving_to_queue(processor.id);
     log::trace!(
         "insert thread {} ({:?})",
         thread.id(),
         thread.effective_priority()
+    );
+    thread.sched.set_deadline(
+        get_current_ticks() + processor.rq.deadline(thread.effective_priority().class),
     );
     processor.rq.insert(thread, is_current);
     //processor.rq.print();
@@ -188,9 +193,9 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     }
 }
 
-fn take_a_thread_from_cpu(processor: &Processor) -> Option<ThreadRef> {
+fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<ThreadRef> {
     if let Some(th) = processor.rq.take() {
-        th.current_processor_queue.store(-1, Ordering::SeqCst);
+        th.sched.moving_to_queue(new_cpu_rq);
         Some(th)
     } else {
         None
@@ -199,8 +204,6 @@ fn take_a_thread_from_cpu(processor: &Processor) -> Option<ThreadRef> {
 
 const STEAL_LOAD_THRESH: u64 = 3;
 fn try_steal() -> Option<ThreadRef> {
-    // TODO
-    return None;
     /* TODO: we need a cooldown on migration */
     let us = current_processor();
     let res = find_cpu_from_topo(get_cpu_topology(), true, None, None);
@@ -209,7 +212,7 @@ fn try_steal() -> Option<ThreadRef> {
         let otherload = processor.current_load();
         if otherload > STEAL_LOAD_THRESH && otherload > (us.current_load() + 1) {
             /* try to steal something */
-            let thread = take_a_thread_from_cpu(processor);
+            let thread = take_a_thread_from_cpu(processor, us.id);
             if thread.is_some() {
                 log::info!(
                     "stole {} ({} -> {}): {} {}",
@@ -227,8 +230,6 @@ fn try_steal() -> Option<ThreadRef> {
 }
 
 fn balance(topo: &CPUTopoNode) {
-    // TODO
-    return;
     static BAL_LOCK: Spinlock<()> = Spinlock::new(());
     let _guard = BAL_LOCK.lock();
     let mut cpuset = topo.cpuset.clone();
@@ -248,7 +249,7 @@ fn balance(topo: &CPUTopoNode) {
             break;
         }
 
-        let thread = take_a_thread_from_cpu(donor);
+        let thread = take_a_thread_from_cpu(donor, recipient.id);
         if let Some(thread) = thread {
             log::info!(
                 "rebalanced {} ({} -> {})",
@@ -266,7 +267,11 @@ fn balance(topo: &CPUTopoNode) {
 fn select_cpu(thread: &ThreadRef) -> u32 {
     /* TODO: restrict via cpu sets as step 0, and in global searches */
     /* TODO: take SMT into acount */
-    let last_cpuid = thread.last_cpu.load(Ordering::Acquire);
+    let last_cpuid = thread
+        .sched
+        .preferred_cpu()
+        .map(|(x, _p)| x as i32)
+        .unwrap_or(-1);
     let mut last_load = None;
     /* 1: if the thread can run on the last CPU it ran on, and that CPU is idle, then do that. */
     if last_cpuid >= 0 {
@@ -365,9 +370,6 @@ pub fn schedule_thread(thread: ThreadRef) {
         return;
     }
     let cpuid = select_cpu(&thread);
-    if cpuid != thread.last_cpu.load(Ordering::SeqCst) as u32 {
-        log::trace!("schedule-migrated {}", thread.objid(),);
-    }
     let processor = get_processor(cpuid);
     schedule_thread_on_cpu(thread, processor, false);
 }
@@ -428,6 +430,7 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
 
 fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let cp = current_processor();
+    let oldcpu = thread.sched.moving_to_active(cp.id);
     if old.id() != thread.id() {
         if thread.is_idle_thread() {
             //log::info!("switch to idle from {}", old.id());
@@ -444,16 +447,17 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         trace_switch(&old, &thread, flags);
     }
     cp.stats.switches.fetch_add(1, Ordering::SeqCst);
-    let oldcpu = thread
-        .last_cpu
-        .swap(current_processor().id as i32, Ordering::SeqCst);
-    if oldcpu >= 0 && oldcpu != current_processor().id as i32 {
-        trace_migrate(&thread, oldcpu as u64, current_processor().id as u64);
+
+    if let Some(oldcpu) = oldcpu {
+        if oldcpu != cp.id {
+            trace_migrate(&thread, oldcpu as u64, cp.id as u64);
+        }
     }
+
     if !thread.is_idle_thread() {
         cp.current_priority
             .store(thread.effective_priority().raw(), Ordering::SeqCst);
-        crate::clock::schedule_oneshot_tick(cp.rq.timeslice());
+        crate::clock::schedule_oneshot_tick(cp.rq.timeslice(thread.effective_priority().class));
     } else {
         cp.current_priority.store(0, Ordering::SeqCst);
     }
@@ -475,22 +479,26 @@ bitflags::bitflags! {
     }
 }
 
+fn rq_has_higher<const N: usize>(thread: &ThreadRef, rq: &RunQueue<N>, eq: bool) -> bool {
+    let th_pri = thread.effective_priority();
+    let rq_pri = rq.current_priority();
+    rq_pri > th_pri || (eq && rq_pri >= th_pri)
+}
+
 fn do_schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
     cur.enter_critical();
     if !cur.is_idle_thread() && flags.contains(SchedFlags::REINSERT) {
         if flags.contains(SchedFlags::PREEMPT)
-            || processor
-                .rq
-                .should_preempt(cur, flags.contains(SchedFlags::YIELD))
+            || rq_has_higher(cur, &processor.rq, flags.contains(SchedFlags::YIELD))
         {
             log::trace!(
                 "reinsert: {}: {}, preempt: {:?}: {}",
                 cur.id(),
                 processor.rq.is_empty(),
                 flags,
-                processor.rq.should_preempt(cur, true),
+                rq_has_higher(cur, &processor.rq, true),
             );
             let cpuid = select_cpu(&cur);
             let processor = get_processor(cpuid);
@@ -515,7 +523,6 @@ fn do_schedule(flags: SchedFlags) {
         if &next == cur {
             return;
         }
-        next.current_processor_queue.store(-1, Ordering::SeqCst);
         switch_to(next, cur, flags);
         return;
     }
@@ -567,7 +574,12 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     if cur.must_suspend() {
         return true;
     }
-    processor.rq.should_preempt(&cur, ticking)
+    if processor.rq.is_empty() {
+        return false;
+    }
+    let rq_pri = processor.rq.current_priority();
+    let cur_pri = cur.effective_priority();
+    rq_pri > cur_pri || (ticking && rq_pri >= cur_pri)
 }
 
 #[thread_local]
@@ -607,16 +619,25 @@ pub fn schedule_hardtick() -> Option<u64> {
     let cp = current_processor();
     cp.stats.hardticks.fetch_add(1, Ordering::Relaxed);
     let resched = needs_reschedule(true);
-    if resched {
+    let cur = current_thread_ref()?;
+    let (current_tick, diff) = cp.rq.hardtick();
+    let cur_pri = cur.effective_priority();
+    let ts_expire = cur.sched.pay_ticks(diff, cp.rq.timeslice(cur_pri.class));
+    let rq_pri = cp.rq.current_priority();
+    if resched || ts_expire {
+        log::trace!(
+            "preempt {}: {} {} (supplying {} ms, {}), {} {}",
+            cur.id(),
+            resched,
+            ts_expire,
+            cp.rq.timeslice(rq_pri.max(cur_pri).class),
+            rq_pri >= cur_pri,
+            current_tick,
+            diff,
+        );
         schedule_mark_preempt();
     }
-    let cur = current_thread_ref()?;
-    let notick = cur.is_idle_thread() && resched;
-    if notick {
-        None
-    } else {
-        Some(cp.rq.timeslice())
-    }
+    Some(cp.rq.timeslice(rq_pri.max(cur_pri).class))
 }
 
 pub fn schedule_resched() {
@@ -666,11 +687,13 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     if PRINT_STATS && s % 200 == 0 {
         if true {
             logln!(
-            "STAT {}; {}({}): load {:2}, i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
+            "STAT {}; {}({}): load {:2},{:2} (ts = {:3}ms), i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
             cp.id,
             cur.as_ref().unwrap().id(),
             cur.unwrap().is_idle_thread(),
             cp.current_load(),
+            cp.rq.current_timeshare_load(),
+            cp.rq.timeslice(cp.current_priority().class),
             cp.stats.idle.load(Ordering::SeqCst),
             cp.stats.non_idle.load(Ordering::SeqCst),
             cp.stats.switches.load(Ordering::SeqCst),
@@ -687,7 +710,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                     logln!(
                         "thread {} on {}: u {:4} s {:4} i {:4}, {:?}, {:x}",
                         t.objid(),
-                        t.last_cpu.load(Ordering::SeqCst),
+                        t.sched.last_cpu.load(Ordering::SeqCst),
                         t.stats.user.load(Ordering::SeqCst),
                         t.stats.sys.load(Ordering::SeqCst),
                         t.stats.idle.load(Ordering::SeqCst),

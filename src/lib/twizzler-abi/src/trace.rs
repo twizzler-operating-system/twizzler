@@ -215,6 +215,9 @@ pub const SECURITY_VIOLATION: u64 = 4;
 /// Kernel memory allocation occurred.
 pub const KERNEL_ALLOC: u64 = 1;
 
+/// Kernel performed thread balancing.
+pub const KERNEL_BALANCE: u64 = 2;
+
 // Pager events
 /// Pager command was sent.
 pub const PAGER_COMMAND_SEND: u64 = 1;
