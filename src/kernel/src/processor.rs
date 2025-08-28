@@ -42,6 +42,7 @@ pub struct Processor {
     ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
     exited: Spinlock<Vec<ThreadRef>>,
     is_idle: AtomicBool,
+    must_rebalance: AtomicBool,
 }
 
 impl Processor {
@@ -50,6 +51,7 @@ impl Processor {
             arch: ArchProcessor::default(),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),
+            must_rebalance: AtomicBool::new(false),
             rq: RunQueue::new(),
             topology_path: Once::new(),
             id,
@@ -90,6 +92,18 @@ impl Processor {
 
     pub fn exit_idle(&self) {
         self.is_idle.store(false, Ordering::SeqCst);
+    }
+
+    pub fn set_rebalance(&self) {
+        self.must_rebalance.store(true, Ordering::SeqCst);
+    }
+
+    pub fn reset_rebalance(&self) {
+        self.must_rebalance.store(false, Ordering::SeqCst);
+    }
+
+    pub fn must_rebalance(&self) -> bool {
+        self.must_rebalance.load(Ordering::SeqCst)
     }
 
     fn set_topology(&self, topo_path: Vec<(usize, bool)>) {

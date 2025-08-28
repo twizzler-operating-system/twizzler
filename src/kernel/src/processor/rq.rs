@@ -392,4 +392,8 @@ impl<const N: usize> RunQueue<N> {
     pub fn current_timeshare_load(&self) -> u64 {
         self.timeshare_load.load(Ordering::Acquire) as u64
     }
+
+    pub fn movable(&self) -> u32 {
+        self.movable.load(Ordering::Acquire)
+    }
 }

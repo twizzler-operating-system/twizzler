@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, time::Instant};
 
 fn main() {
     let threads = (0..4)
@@ -12,11 +12,12 @@ fn main() {
 }
 
 fn thread_main(num: u32) {
+    let start = Instant::now();
     for _n in 0..5 {
         let mut sum = 0;
         for i in 0..1_000_000_000 {
             sum += i;
-            if i % 10_000_000 == 0 {
+            if i % 10_000_000 == 0 && false {
                 unsafe {
                     print!("{}", char::from_u32_unchecked(b'a' as u32 + num));
                 }
@@ -26,4 +27,9 @@ fn thread_main(num: u32) {
         }
         std::hint::black_box(sum);
     }
+    println!(
+        "thread {} in {}ms",
+        num,
+        (Instant::now() - start).as_millis()
+    );
 }

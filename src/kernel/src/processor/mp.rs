@@ -130,7 +130,7 @@ pub fn register(id: u32, bsp_id: u32) {
     }
 }
 
-const MAX_CPU_ID: usize = 1024;
+pub const MAX_CPU_ID: usize = 1024;
 
 pub fn current_processor() -> &'static Processor {
     if !tls_ready() {
