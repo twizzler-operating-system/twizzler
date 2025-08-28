@@ -347,9 +347,11 @@ impl Context {
         load_ctx: &mut LoadCtx,
     ) -> Result<Vec<LoadIds>, DynlinkError> {
         let root_comp_name = self.get_compartment(comp_id)?.name.clone();
-        debug!(
+        tracing::debug!(
             "loading library {} (idx = {:?}) in {}",
-            root_unlib, idx, root_comp_name
+            root_unlib,
+            idx,
+            root_comp_name
         );
         let mut ids = vec![];
         // First load the main library.

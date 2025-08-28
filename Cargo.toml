@@ -151,6 +151,7 @@ hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
+ferroc = { path = "src/ports/ferroc" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }

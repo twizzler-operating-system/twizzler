@@ -29,6 +29,9 @@ printf-compat = { version = "0.1", default-features = false }
 naming-core = { path = "../../lib/naming/naming-core" }
 pager-dynamic = { path = "../../lib/pager/pager-dynamic" }
 backtracer_core = "*"
+ferroc = { version = "=1.0.0-pre.4-twz", default-features = false, features = [
+    "global",
+] }
 
 [profile.release]
 debug = true

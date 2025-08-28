@@ -4,6 +4,8 @@
 #![feature(iterator_try_collect)]
 #![feature(linkage)]
 
+use std::alloc::GlobalAlloc;
+
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader};
@@ -131,3 +133,30 @@ fn monitor_init() -> miette::Result<()> {
 
     Ok(())
 }
+
+struct MonAlloc {}
+
+use twizzler_rt_abi::alloc::AllocFlags;
+unsafe impl GlobalAlloc for MonAlloc {
+    #[track_caller]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        twizzler_abi::klog_println!(
+            "monitor allocation: {:?} at {}",
+            layout,
+            core::panic::Location::caller()
+        );
+        backtracer_core::trace(|f| {
+            twizzler_abi::klog_println!("==> {:p}", f.ip());
+            true
+        });
+        twizzler_rt_abi::alloc::twz_rt_malloc(layout, AllocFlags::empty())
+            .unwrap_or(core::ptr::null_mut())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        twizzler_rt_abi::alloc::twz_rt_dealloc(ptr, layout, AllocFlags::empty());
+    }
+}
+
+//#[global_allocator]
+static MA: MonAlloc = MonAlloc {};

@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-pub const SAMPLE_PERIOD_TICKS: u64 = 3;
+pub const SAMPLE_PERIOD_TICKS: u64 = 1;
 
 #[derive(Debug, Default)]
 pub struct ThreadStats {

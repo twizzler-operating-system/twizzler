@@ -1,6 +1,7 @@
 use std::{
     ptr::NonNull,
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use compartment::{

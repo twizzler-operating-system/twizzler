@@ -41,6 +41,7 @@ impl std::fmt::Debug for ReferenceRuntime {
 
 bitflags::bitflags! {
     /// Various state flags for the runtime.
+    #[derive(Copy, Clone, Debug)]
     pub struct RuntimeState : u32 {
         const READY = 1;
         const IS_MONITOR = 2;

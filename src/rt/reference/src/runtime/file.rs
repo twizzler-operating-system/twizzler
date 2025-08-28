@@ -2,7 +2,7 @@ use std::{
     ffi::c_void,
     io::{ErrorKind, Read, SeekFrom, Write},
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bitflags::bitflags;
@@ -207,6 +207,7 @@ impl ReferenceRuntime {
         create_opt: CreateOptions,
         open_opt: OperationOptions,
     ) -> Result<RawFd> {
+        let start = Instant::now();
         let mut session = get_naming_handle().lock().unwrap();
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
@@ -230,6 +231,7 @@ impl ReferenceRuntime {
             (false, true) => MapFlags::WRITE,
             (false, false) => MapFlags::READ,
         };
+        let flags_done = Instant::now();
         let get_flags = if open_opt.contains(OperationOptions::OPEN_FLAG_SYMLINK) {
             GetFlags::empty()
         } else {
@@ -272,6 +274,7 @@ impl ReferenceRuntime {
             }
             NsNodeKind::SymLink => FdKind::SymLink,
         };
+        let got_id = Instant::now();
 
         let mut binding = get_fd_slots().lock().unwrap();
 
@@ -282,6 +285,7 @@ impl ReferenceRuntime {
             binding.insert(fd, elem);
             fd
         };
+        let done_binding = Instant::now();
 
         if did_create {
             session.put(path, obj_id)?;
@@ -291,6 +295,18 @@ impl ReferenceRuntime {
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
+
+        let end = Instant::now();
+        /*
+        twizzler_abi::klog_println!(
+            "open: {}ms {}ms {}ms {}ms",
+            (flags_done - start).as_millis(),
+            (got_id - flags_done).as_millis(),
+            (done_binding - got_id).as_millis(),
+            (end - done_binding).as_millis()
+        );
+        */
+
         Ok(fd.try_into().unwrap())
     }
 

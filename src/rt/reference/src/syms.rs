@@ -71,7 +71,10 @@ macro_rules! check_ffi_type {
     };
 }
 
-use std::ffi::{c_void, CStr};
+use std::{
+    alloc::GlobalAlloc,
+    ffi::{c_void, CStr},
+};
 
 use tracing::warn;
 use twizzler_abi::object::ObjID;
@@ -154,9 +157,9 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
         return core::ptr::null_mut();
     };
     if flags & ZERO_MEMORY != 0 {
-        OUR_RUNTIME.default_allocator().alloc_zeroed(layout).cast()
+        OUR_RUNTIME.alloc_zeroed(layout).cast()
     } else {
-        OUR_RUNTIME.default_allocator().alloc(layout).cast()
+        OUR_RUNTIME.alloc(layout).cast()
     }
 }
 check_ffi_type!(twz_rt_malloc, _, _, _);
@@ -176,7 +179,7 @@ pub unsafe extern "C-unwind" fn twz_rt_dealloc(
         slice.fill(0);
         core::hint::black_box(slice);
     }
-    OUR_RUNTIME.default_allocator().dealloc(ptr.cast(), layout);
+    OUR_RUNTIME.dealloc(ptr.cast(), layout);
 }
 check_ffi_type!(twz_rt_dealloc, _, _, _, _);
 
@@ -194,10 +197,7 @@ pub unsafe extern "C-unwind" fn twz_rt_realloc(
     if flags & ZERO_MEMORY != 0 {
         todo!()
     }
-    OUR_RUNTIME
-        .default_allocator()
-        .realloc(ptr.cast(), layout, new_size)
-        .cast()
+    OUR_RUNTIME.realloc(ptr.cast(), layout, new_size).cast()
 }
 check_ffi_type!(twz_rt_realloc, _, _, _, _, _);
 

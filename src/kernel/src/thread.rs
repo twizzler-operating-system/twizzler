@@ -287,6 +287,7 @@ impl Thread {
         }
 
         log::info!("upcall: {}: {:?}", self.id(), info);
+        crate::panic::backtrace(false, None);
 
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);

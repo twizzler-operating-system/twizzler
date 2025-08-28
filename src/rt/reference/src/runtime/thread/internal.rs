@@ -1,7 +1,7 @@
 //! Internal thread struct routines.
 
 use std::{
-    alloc::Layout,
+    alloc::{GlobalAlloc, Layout},
     ffi::{CStr, CString},
     sync::Mutex,
 };
@@ -70,9 +70,8 @@ impl Drop for InternalThread {
     fn drop(&mut self) {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
-            let alloc = OUR_RUNTIME.default_allocator();
             // Stack is manually allocated, just free it directly.
-            alloc.dealloc(
+            OUR_RUNTIME.dealloc(
                 self.stack_addr as *mut u8,
                 Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
             );
