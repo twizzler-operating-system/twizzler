@@ -8,7 +8,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::Ordering,
 };
-use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize, time::Instant};
+use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize};
 
 use twizzler_abi::simple_mutex::Mutex;
 
@@ -25,7 +25,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 
-use super::super::{trace::trace_runtime_alloc, ReferenceRuntime, OUR_RUNTIME};
+use super::super::OUR_RUNTIME;
 use crate::runtime::RuntimeState;
 
 pub static LOCAL_ALLOCATOR: LocalAllocator = LocalAllocator {

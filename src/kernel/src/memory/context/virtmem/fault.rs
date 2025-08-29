@@ -250,7 +250,11 @@ fn page_fault_to_region(
                 shared_pt.map(cursor, &mut provider);
             } else {
                 ctx.with_arch(sctx_id, |arch| {
-                    if arch.readmap(cursor, |x| x.count()) > 0 {
+                    if provider
+                        .peek()
+                        .is_some_and(|p| p.settings.perms().contains(Protections::WRITE))
+                        && arch.readmap(cursor, |x| x.count()) > 0
+                    {
                         arch.unmap(cursor);
                     }
                     arch.map(cursor, &mut provider);

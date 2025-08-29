@@ -66,14 +66,14 @@ unsafe impl Send for Backing {}
 unsafe impl Sync for Backing {}
 
 impl Backing {
-    pub fn new(inner: ObjectHandle, full_name: String) -> Self {
+    pub fn new(inner: ObjectHandle, full_name: &str) -> Self {
         unsafe {
             Self::new_owned(
                 inner.start(),
                 MAX_SIZE - NULLPAGE_SIZE * 2,
                 inner.id(),
                 Arc::new(inner),
-                full_name,
+                full_name.to_string(),
             )
         }
     }

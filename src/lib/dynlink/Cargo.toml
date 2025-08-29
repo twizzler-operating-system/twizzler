@@ -20,3 +20,5 @@ itertools = "0.14"
 elf = "0.7"
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 stable-vec = "0.4"
+smallstr = "*"
+tinyvec = { version = "*", features = ["alloc"] }

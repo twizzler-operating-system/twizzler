@@ -2,7 +2,6 @@ use core::str;
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 
 use bitflags::bitflags;

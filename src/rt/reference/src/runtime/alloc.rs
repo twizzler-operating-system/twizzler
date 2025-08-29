@@ -1,10 +1,8 @@
-use std::{alloc::GlobalAlloc, ptr::NonNull, sync::atomic::Ordering, time::Instant};
+use std::{alloc::GlobalAlloc, ptr::NonNull, sync::atomic::Ordering};
 
-use ::ferroc::heap::Heap;
-use ferroc::TwzFerrocBase;
-use twizzler_abi::{object::ObjID, syscall::sys_thread_self_id};
+use twizzler_abi::object::ObjID;
 
-use super::{trace::trace_runtime_alloc, ReferenceRuntime, RuntimeState};
+use super::{ReferenceRuntime, RuntimeState};
 
 mod ferroc;
 mod talc;

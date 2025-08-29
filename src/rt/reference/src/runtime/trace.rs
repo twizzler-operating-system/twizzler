@@ -192,6 +192,7 @@ static ENV_TRACE_OBJECT: OnceTraceSink = OnceTraceSink::new("TWZRT_TRACE_OBJECT"
 
 static DISABLE_ALLOC: AtomicBool = AtomicBool::new(false);
 
+#[allow(dead_code)]
 pub fn trace_runtime_alloc(addr: usize, layout: Layout, duration: Duration, is_free: bool) {
     if !OUR_RUNTIME.state().contains(RuntimeState::READY) {
         return;

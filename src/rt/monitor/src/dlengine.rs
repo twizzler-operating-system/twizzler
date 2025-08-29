@@ -93,14 +93,14 @@ impl ContextEngine for Engine {
                         MAX_SIZE - NULLPAGE_SIZE * 2,
                         text_id,
                         text_handle,
-                        src.full_name().to_owned(),
+                        src.full_name().into(),
                     ),
                     Backing::new_owned(
                         data_handle.monitor_data_start(),
                         MAX_SIZE - NULLPAGE_SIZE * 2,
                         data_id,
                         data_handle,
-                        src.full_name().to_owned(),
+                        src.full_name().into(),
                     ),
                 ))
             }
@@ -152,26 +152,16 @@ pub fn naming() -> Option<&'static NameStore> {
 fn do_name_resolver(name: &str) -> Result<(ObjID, String), DynlinkError> {
     if let Some(namer) = naming() {
         let session = namer.root_session();
-        let node = session.get(name, GetFlags::FOLLOW_SYMLINK).map_err(|_| {
-            DynlinkErrorKind::NameNotFound {
-                name: name.to_string(),
-            }
-        })?;
+        let node = session
+            .get(name, GetFlags::FOLLOW_SYMLINK)
+            .map_err(|_| DynlinkErrorKind::NameNotFound { name: name.into() })?;
         return match node.kind {
-            NsNodeKind::Object => Ok((node.id, name.to_string())),
-            _ => Err(DynlinkErrorKind::NameNotFound {
-                name: name.to_string(),
-            }
-            .into()),
+            NsNodeKind::Object => Ok((node.id, name.into())),
+            _ => Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into()),
         };
     }
 
-    find_init_name(name).ok_or(
-        DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into(),
-    )
+    find_init_name(name).ok_or(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
 }
 
 fn name_resolver(mut name: &str) -> Result<(ObjID, String), DynlinkError> {
@@ -203,7 +193,7 @@ fn find_init_name(name: &str) -> Option<(ObjID, String)> {
     let init_info = get_kernel_init_info();
     for n in init_info.names() {
         if n.name() == name {
-            return Some((n.id(), name.to_owned()));
+            return Some((n.id(), name.to_string()));
         }
     }
     None

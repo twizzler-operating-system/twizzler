@@ -62,8 +62,8 @@ impl ContextEngine for Engine {
                 return Err(DynlinkErrorKind::NewBackingFail.into());
             }
             Ok((
-                Backing::new(text_handle, src.full_name().to_owned()),
-                Backing::new(data_handle, src.full_name().to_owned()),
+                Backing::new(text_handle, src.full_name()),
+                Backing::new(data_handle, src.full_name()),
             ))
         };
         dynlink::engines::twizzler::load_segments(src, ld, 0.into(), map)
@@ -74,7 +74,7 @@ impl ContextEngine for Engine {
         Ok(Backing::new(
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ)
                 .map_err(|_err| DynlinkErrorKind::NewBackingFail)?,
-            unlib.name.clone(),
+            unlib.name.as_str(),
         ))
     }
 
@@ -90,12 +90,7 @@ fn name_resolver(mut name: &str) -> Result<ObjID, DynlinkError> {
     if name.starts_with("libstd") {
         name = "libstd.so";
     }
-    find_init_name(name).ok_or(
-        DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into(),
-    )
+    find_init_name(name).ok_or(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
 }
 
 fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
@@ -127,7 +122,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     debug!("context loaded, prepping jump to monitor");
     let entry = ctx
-        .lookup_symbol(monitor_id, "_start", LookupFlags::empty())
+        .lookup_symbol(monitor_id, "_start", LookupFlags::empty(), &[])
         .unwrap();
 
     let value = entry.reloc_value() as usize;

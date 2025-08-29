@@ -11,7 +11,7 @@ use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use twizzler_abi::simple_mutex::Mutex;
 
-use crate::runtime::{alloc::LOCAL_ALLOCATOR, OUR_RUNTIME};
+use crate::runtime::alloc::LOCAL_ALLOCATOR;
 
 /// Run a closure using the current thread's control struct as the argument.
 pub(super) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {

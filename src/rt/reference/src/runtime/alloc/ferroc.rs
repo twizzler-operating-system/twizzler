@@ -1,10 +1,7 @@
 use std::{
     alloc::{AllocError, GlobalAlloc},
     ptr::NonNull,
-    sync::Arc,
 };
-
-use twizzler_rt_abi::error::TwzError;
 
 use super::talc::{LocalAllocator, LOCAL_ALLOCATOR};
 
