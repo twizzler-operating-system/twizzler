@@ -4,8 +4,8 @@ MAC_PACKAGES=(
             "qemu"
             "e2fsprogs"
             "ninja"
+            "zstd"
 ) 
-
 DEBIAN_PKGS=(
     qemu-system
     qemu-utils
@@ -26,8 +26,8 @@ DEBIAN_PKGS=(
     sudo
     git
     clang
+    zstd
 )
-
 FEDORA_PKGS=(
     qemu-system-x86
     qemu-img
@@ -48,8 +48,8 @@ FEDORA_PKGS=(
     sudo
     git
     clang
+    zstd
 )
-
 ARCH_PKGS=(
     qemu
     qemu-arch-extra
@@ -67,8 +67,8 @@ ARCH_PKGS=(
     sudo
     git
     clang
+    zstd
 )
-
 
 install_linux() {
     echo "Detected Linux"
