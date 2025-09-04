@@ -349,7 +349,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let res = std::fs::remove_dir_all("target");
         if let Err(e) = res {
             if e.kind() != std::io::ErrorKind::NotFound {
-                anyhow::bail!("failed to remove old build artifacts");
+                anyhow::bail!("failed to remove old build artifacts: {}", e);
             }
         }
     }

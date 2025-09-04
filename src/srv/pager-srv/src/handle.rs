@@ -1,10 +1,12 @@
+use std::sync::Mutex;
+
 use async_io::block_on;
 use object_store::ExternalFile;
 use secgate::{
     secure_gate,
     util::{Descriptor, SimpleBuffer},
 };
-use twizzler::object::ObjID;
+use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
     object::Protections,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
@@ -22,10 +24,21 @@ impl PagerClient {
     fn sbid(&self) -> ObjID {
         self.buffer.handle().id()
     }
+
+    pub fn into_handle(self) -> ObjectHandle {
+        self.buffer.into_handle()
+    }
 }
 
-impl PagerClient {
-    pub fn new() -> Result<Self, TwzError> {
+struct SbObjects {
+    objs: Vec<ObjectHandle>,
+}
+
+static SB_OBJECTS: Mutex<SbObjects> = Mutex::new(SbObjects { objs: Vec::new() });
+
+pub fn get_sb_object() -> Result<ObjectHandle, TwzError> {
+    let mut sbo = SB_OBJECTS.lock().unwrap();
+    if sbo.objs.len() == 0 {
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
@@ -40,6 +53,22 @@ impl PagerClient {
         )?;
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)?;
+        return Ok(handle);
+    }
+
+    let next = sbo.objs.pop().unwrap();
+    // TODO: discard all object pages.
+    Ok(next)
+}
+
+pub fn release_sb_object(obj: ObjectHandle) {
+    let mut sbo = SB_OBJECTS.lock().unwrap();
+    sbo.objs.push(obj);
+}
+
+impl PagerClient {
+    pub fn new() -> Result<Self, TwzError> {
+        let handle = get_sb_object()?;
         let buffer = SimpleBuffer::new(handle);
         Ok(Self { buffer })
     }
@@ -59,7 +88,9 @@ pub fn pager_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, Ob
 pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<(), TwzError> {
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
-    pager.drop_handle(comp, desc);
+    if let Some(oh) = pager.drop_handle(comp, desc) {
+        release_sb_object(oh);
+    }
     Ok(())
 }
 

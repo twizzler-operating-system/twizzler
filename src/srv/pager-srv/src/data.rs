@@ -9,7 +9,7 @@ use itertools::Itertools;
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
-use twizzler::object::ObjID;
+use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
     pager::{
@@ -637,8 +637,9 @@ impl PagerData {
             .ok_or(ResourceError::OutOfResources.into())
     }
 
-    pub fn drop_handle(&self, comp: ObjID, ds: Descriptor) {
+    pub fn drop_handle(&self, comp: ObjID, ds: Descriptor) -> Option<ObjectHandle> {
         let mut inner = self.inner.lock().unwrap();
-        inner.handles.remove(comp, ds);
+        let pc = inner.handles.remove(comp, ds)?;
+        Some(pc.into_handle())
     }
 }

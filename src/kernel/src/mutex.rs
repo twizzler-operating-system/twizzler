@@ -91,7 +91,7 @@ impl<T> Mutex<T> {
         loop {
             i += 1;
             if i == 1000 {
-                log::info!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
+                log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {

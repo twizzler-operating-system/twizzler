@@ -190,9 +190,9 @@ pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
         crate::thread::current_thread_ref().unwrap().id()
     );
     for test in tests {
-        log!("test {} ... ", test.0);
+        logln!("starting test {}", test.0);
         (test.1)();
-        logln!("ok");
+        logln!("test {}: ok", test.0);
         if !interrupt::get() {
             panic!("test {} didn't cleanup interrupt state", test.0);
         }

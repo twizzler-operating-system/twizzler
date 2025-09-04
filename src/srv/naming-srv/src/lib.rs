@@ -13,6 +13,7 @@ use secgate::{
     util::{Descriptor, HandleMgr, SimpleBuffer},
 };
 use tracing::Level;
+use twizzler::object::ObjectHandle;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -23,13 +24,15 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjID},
 };
 
-struct NamespaceClient<'a> {
-    session: NameSession<'a>,
-    buffer: SimpleBuffer,
+struct SbObjects {
+    objs: Vec<ObjectHandle>,
 }
 
-impl<'a> NamespaceClient<'a> {
-    fn new(session: NameSession<'a>) -> Option<Self> {
+static SB_OBJECTS: Mutex<SbObjects> = Mutex::new(SbObjects { objs: Vec::new() });
+
+pub fn get_sb_object() -> Result<ObjectHandle> {
+    let mut sbo = SB_OBJECTS.lock().unwrap();
+    if sbo.objs.len() == 0 {
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
@@ -41,11 +44,31 @@ impl<'a> NamespaceClient<'a> {
             ),
             &[],
             &[],
-        )
-        .ok()?;
+        )?;
         let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)
-                .ok()?;
+            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)?;
+        return Ok(handle);
+    }
+
+    let next = sbo.objs.pop().unwrap();
+    // TODO: discard all object pages.
+    Ok(next)
+}
+
+pub fn release_sb_object(obj: ObjectHandle) {
+    let mut sbo = SB_OBJECTS.lock().unwrap();
+    sbo.objs.push(obj);
+}
+
+struct NamespaceClient<'a> {
+    session: NameSession<'a>,
+    buffer: SimpleBuffer,
+}
+
+impl<'a> NamespaceClient<'a> {
+    fn new(session: NameSession<'a>) -> Option<Self> {
+        // Create and map a handle for the simple buffer.
+        let handle = get_sb_object().ok()?;
         let buffer = SimpleBuffer::new(handle);
         Some(Self { session, buffer })
     }
@@ -168,7 +191,10 @@ pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()
 
     let mut binding = service.handles.lock().unwrap();
 
-    binding.remove(info.source_context().unwrap_or(0.into()), desc);
+    if let Some(client) = binding.remove(info.source_context().unwrap_or(0.into()), desc) {
+        release_sb_object(client.buffer.into_handle());
+    }
+
     Ok(())
 }
 

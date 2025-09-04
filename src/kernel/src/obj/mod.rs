@@ -4,7 +4,8 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    fmt::Display, sync::atomic::{AtomicU32, Ordering}
+    fmt::Display,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use pages::PageRef;
@@ -115,6 +116,10 @@ impl PageNumber {
 
     pub fn is_meta(&self) -> bool {
         self.as_byte_offset() == MAX_SIZE - Self::PAGE_SIZE
+    }
+
+    pub fn meta_page() -> Self {
+        Self((MAX_SIZE - Self::PAGE_SIZE) / Self::PAGE_SIZE)
     }
 
     pub fn base_page() -> Self {
@@ -326,7 +331,6 @@ impl Object {
             life: self.lifetime_type,
             backing: BackingType::default(),
             pages: num_pages,
-
         }
     }
 }

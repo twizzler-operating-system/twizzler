@@ -230,7 +230,6 @@ impl ReferenceRuntime {
             (false, true) => MapFlags::WRITE,
             (false, false) => MapFlags::READ,
         };
-        let flags_done = Instant::now();
         let get_flags = if open_opt.contains(OperationOptions::OPEN_FLAG_SYMLINK) {
             GetFlags::empty()
         } else {
@@ -265,11 +264,11 @@ impl ReferenceRuntime {
         let elem = match kind {
             NsNodeKind::Namespace => FdKind::Dir(obj_id),
             NsNodeKind::Object => {
-                if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-                    FdKind::File(Arc::new(Mutex::new(elem)))
-                } else {
-                    FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
-                }
+                //if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
+                //    FdKind::File(Arc::new(Mutex::new(elem)))
+                //} else {
+                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+                //}
             }
             NsNodeKind::SymLink => FdKind::SymLink,
         };
@@ -435,6 +434,7 @@ impl ReferenceRuntime {
         buf: &mut [twizzler_rt_abi::fd::NameEntry],
         off: usize,
     ) -> Result<usize> {
+        let start = Instant::now();
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
         let mut session = get_naming_handle().lock().unwrap();
         let names = session.enumerate_names_nsid(stat.id.into())?;
@@ -498,6 +498,13 @@ impl ReferenceRuntime {
             };
             buf[i] = ne;
         }
+        let end = Instant::now();
+        println!(
+            "fd_enumerate {} {}: {}ms",
+            fd,
+            off,
+            (end - start).as_millis()
+        );
         Ok(count)
     }
 }

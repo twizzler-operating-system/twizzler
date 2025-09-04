@@ -25,6 +25,10 @@ pub struct Priority {
 pub const MAX_PRIORITY: u16 = 128;
 
 impl Priority {
+    pub const INTERRUPT: Self = Self {
+        class: PriorityClass::Realtime,
+        value: MAX_PRIORITY - 1,
+    };
     pub const REALTIME: Self = Self {
         class: PriorityClass::Realtime,
         value: MAX_PRIORITY / 2,

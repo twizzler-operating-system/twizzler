@@ -8,7 +8,8 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     pager::PagerFlags,
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, ObjectSource
+        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
+        ObjectCreate, ObjectCreateFlags, ObjectInfo, ObjectSource,
     },
 };
 use twizzler_rt_abi::{
@@ -151,8 +152,8 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
 }
 
 pub fn sys_object_info(handle: ObjID) -> Result<ObjectInfo> {
-    let obj = crate::obj::lookup_object(handle, LookupFlags::empty())
-        .ok_or(ObjectError::NoSuchObject)?;
+    let obj =
+        crate::obj::lookup_object(handle, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
     Ok(obj.info())
 }
 
@@ -280,6 +281,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
                     MAX_SIZE / PageNumber::PAGE_SIZE,
                     PagerFlags::PREFETCH,
                 );
+                crate::pager::ensure_in_core(&obj, PageNumber::meta_page(), 1, PagerFlags::empty());
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());
             }

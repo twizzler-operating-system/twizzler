@@ -137,7 +137,7 @@ mod tester {
                 ))],
                 None,
             );
-            core::hint::black_box(r);
+            let _ = core::hint::black_box(r);
         });
     }
 
@@ -152,7 +152,7 @@ mod tester {
                 ))],
                 None,
             );
-            core::hint::black_box(r);
+            let _ = core::hint::black_box(r);
         });
     }
 

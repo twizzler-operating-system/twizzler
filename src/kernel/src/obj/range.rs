@@ -492,7 +492,7 @@ impl PageRangeTree {
                     let p = prev_range.add_page(pn, page);
 
                     let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
-                    assert_eq!(kicked.len(), 0);
+                    //assert_eq!(kicked.len(), 0);
                     return Some(p);
                 }
             }

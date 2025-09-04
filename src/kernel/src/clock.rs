@@ -314,15 +314,13 @@ pub fn oneshot_clock_hardtick() {
     if current_processor().is_bsp() {
         sched_next_tick = Some(1);
     }
-    /*
-    logln!(
+    log::trace!(
         "hardtick {} {} {:?} {:?}",
         current_processor().id,
         ticks,
         sched_next_tick,
         to_next_tick
     );
-    */
     let next = core::cmp::min(
         to_next_tick.unwrap_or(u64::MAX),
         sched_next_tick.unwrap_or(u64::MAX),
@@ -480,6 +478,6 @@ pub fn init() {
     materialize_sw_clocks();
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::REALTIME, soft_timeout_clock, 0)
+        crate::thread::entry::start_new_kernel(Priority::INTERRUPT, soft_timeout_clock, 0)
     });
 }

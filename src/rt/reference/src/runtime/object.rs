@@ -1,7 +1,6 @@
 use std::{
     ffi::c_void,
     sync::atomic::{AtomicU64, Ordering},
-    time::Instant,
 };
 
 use fotcache::FotCache;
