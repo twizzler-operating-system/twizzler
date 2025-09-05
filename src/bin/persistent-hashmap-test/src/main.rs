@@ -1,32 +1,38 @@
 use naming::GetFlags;
 use twizzler::{
-    Result, collections::hachage::PersistentHashMap, object::{Object, ObjectBuilder}
+    collections::hachage::PersistentHashMap, object::{Object, ObjectBuilder}
 };
 use std::collections::HashMap;
 use twizzler_rt_abi::object::MapFlags;
 use std::time::Instant;
+use twizzler::marker::Invariant;
+use std::fmt::Debug;
+use miette::{IntoDiagnostic, Result};
 
-fn open_or_create_hashtable_object(
+fn open_or_create_hashtable_object<T: Debug + Invariant>(
     name: &str,
-) -> Result<PersistentHashMap<u64, u64>> {
-    let mut nh = naming::static_naming_factory().unwrap();
-    let name = format!("/data/phmtest-obj-{}", name);
-
+) -> Result<PersistentHashMap<u64, T>> {
+    let mut nh = naming::dynamic_naming_factory().unwrap();
+    let name = format!("/data/ptest-obj-{}", name);
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
         println!("reopened: {:?}", node.id);
-        PersistentHashMap::from(Object::map(node.id, MapFlags::PERSIST | MapFlags::WRITE | MapFlags::READ)?)
+        let backing = Object::map(node.id, MapFlags::PERSIST | MapFlags::READ | MapFlags::WRITE).into_diagnostic()?;
+        let phm = PersistentHashMap::from(backing);
+
+        Ok(phm)
     } else {
-        let mut vo = PersistentHashMap::with_builder(
+        let vo = PersistentHashMap::with_builder(
             ObjectBuilder::default().persist()
-        )?;
-        unsafe { vo.resize(1024) }?;
+        ).unwrap();
         println!("new: {:?}", vo.object().id());
         let _ = nh.remove(&name);
-        nh.put(&name, vo.object().id()).unwrap();
-        vo
+        nh.put(&name, vo.object().id()).into_diagnostic()?;
+        Ok(vo)
     };
-    Ok(vo)
+
+    vo
 }
+
 
 #[derive(clap::Parser, Clone, Debug)]
 struct Cli {
@@ -34,22 +40,23 @@ struct Cli {
     arg: u64
 }
 
+
 fn performance_test() {
     let mut phm = PersistentHashMap::with_builder(
-        ObjectBuilder::default().persist()
+        ObjectBuilder::default()
     ).unwrap();
 
+    unsafe {phm.resize(16777216)};
     println!("persistent hashmap");
     println!("inserting");
     let now = Instant::now();
     for i in 0..14260633 {
         //println!("inserting {}", i);
         phm.insert(i, i).unwrap();
-        println!("{i}");
         
     }
     println!("inserting took {} milli seconds", now.elapsed().as_millis());
-    
+
     println!("fetching");
     let now = Instant::now();
     for i in 0..14260633 {
@@ -62,7 +69,7 @@ fn performance_test() {
 
     println!("regular hashmap");
     let mut hm = HashMap::<u64, u64>::new();
-
+    hm.reserve(16777216);
     println!("inserting");
     let now = Instant::now();
 
@@ -81,6 +88,58 @@ fn performance_test() {
     }
     println!("fetching took {} milli seconds", now.elapsed().as_millis());
 }
+
+fn performance_test_2() {
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default().persist()
+    ).unwrap();
+
+    unsafe {phm.resize(16777216)};
+
+    let mut write_session = phm.write_session().unwrap();
+
+    println!("persistent hashmap");
+    println!("inserting");
+    let now = Instant::now();
+    for i in 0..14260633 {
+        //println!("inserting {}", i);
+        write_session.insert(i, i);
+    }
+
+    drop(write_session);
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("fetching");
+    let now = Instant::now();
+    for i in 0..14260633 {
+        let foo = phm.get(&i).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
+    println!("regular hashmap");
+    let mut hm = HashMap::<u64, u64>::new();
+    hm.reserve(16777216);
+    println!("inserting");
+    let now = Instant::now();
+
+    for i in 0..14260633 {
+        //println!("inserting {}", i);
+        hm.insert(i, i);
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("inserted!");
+    let now = Instant::now();
+    for i in 0..14260633 {
+        let foo = hm.get(&i).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+}
+
 
 /*fn performance_test_2() {
     use rand::prelude::*;
@@ -130,6 +189,20 @@ fn correctness_test() {
     }
 }
 
+fn correctness_test_2() {
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default()
+    ).unwrap();
+
+    println!("hi");
+    phm.insert(0, 0).unwrap();
+    
+    println!("inserted!");
+    let val = phm.get(&0).unwrap();
+
+    assert_eq!(&0, val);
+    println!("done!");
+}
 
 fn main() {
     /*let cli = Cli::parse();
@@ -147,5 +220,6 @@ fn main() {
         }
         None => println!("{} has been invoked {} times!", cli.arg, 0)
     }*/
-    performance_test();
+
+    performance_test_2();
 }

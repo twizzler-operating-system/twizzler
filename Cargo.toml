@@ -54,7 +54,7 @@ members = [
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
     "src/bin/ptest",
-    "src/bin/persistent-hashmap-test",
+    #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
 ]
@@ -87,7 +87,7 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
-    "crate:persistent-hashmap-test",
+    #"crate:persistent-hashmap-test",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",

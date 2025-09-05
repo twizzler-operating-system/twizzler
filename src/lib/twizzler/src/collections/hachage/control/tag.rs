@@ -7,7 +7,7 @@ use crate::{
 /// Single tag in a control group.
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[repr(transparent)]
-pub(crate) struct Tag(pub(super) u8);
+pub struct Tag(pub(super) u8);
 impl Tag {
     /// Control tag value for an empty bucket.
     pub(crate) const EMPTY: Tag = Tag(0b1111_1111);

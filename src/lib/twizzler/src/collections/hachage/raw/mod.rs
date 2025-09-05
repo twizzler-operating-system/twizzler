@@ -1,6 +1,5 @@
 use std::{
-    alloc::{AllocError, Layout},
-    marker::PhantomData,
+    alloc::{AllocError, Layout}, marker::PhantomData
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
@@ -10,7 +9,7 @@ use crate::{
     alloc::Allocator,
     collections::hachage::control::*,
     marker::{BaseType, Invariant},
-    ptr::{GlobalPtr, InvPtr, Ref, RefSlice, RefSliceMut},
+    ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSliceMut},
     Result,
 };
 
@@ -150,6 +149,90 @@ fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
     }
 }
 
+// To reduce the number of Ref.resolves() to ideally one per call of RawTable
+// screw it I've been using raw pointers the entire time
+pub struct CarryCtx<'a> {
+    backing: Ref<'a, u8>
+}
+
+pub struct CarryCtxMut<'a> {
+    backing: RefMut<'a, u8>,
+}
+
+pub trait Ctx {
+    fn base(&self) -> *const u8;
+    
+    #[inline]
+    fn ctrl<'a>(&self, buckets: usize) -> &'a [Tag] {
+        unsafe {
+            std::slice::from_raw_parts(self.base().cast::<Tag>(), buckets)
+        }
+    }
+
+    #[inline]
+    fn bucket<'a, T>(&self, index: usize) -> &'a T {
+        unsafe { 
+            self.base().cast::<T>().sub(index + 1).as_ref_unchecked()
+        }
+    }
+}
+
+pub trait CtxMut: Ctx {
+    fn base_mut(&self) -> *mut u8;
+
+    #[inline]
+    fn ctrl_mut(&self, buckets: usize) -> &mut [Tag] {
+        unsafe { std::slice::from_raw_parts_mut(self.base_mut().cast(), buckets) }
+    }
+
+    #[inline]
+    fn bucket_ptr(&self, index: usize, size_of: usize) -> *mut u8 {
+        unsafe { 
+            self.base_mut().sub(size_of * (index + 1))
+        }
+    }
+}
+
+impl CarryCtx<'_> {
+    #[inline]
+    pub fn new(base: Ref<u8>) -> CarryCtx<'_> {
+        CarryCtx {
+            backing: base,
+        }
+    }
+}
+
+impl CarryCtxMut<'_> {
+    #[inline]
+    pub fn new(base: RefMut<u8>) -> CarryCtxMut<'_> {
+        CarryCtxMut {
+            backing: base,
+        }
+    }
+}
+
+impl Ctx for CarryCtx<'_> {
+    #[inline]
+    fn base(&self) -> *const u8 {
+        self.backing.raw()
+    }
+}
+
+impl Ctx for CarryCtxMut<'_> {
+    #[inline]
+    fn base(&self) -> *const u8 {
+        self.backing.raw().cast_const()
+    }
+}
+
+impl CtxMut for CarryCtxMut<'_> {
+    #[inline]
+    fn base_mut(&self) -> *mut u8 {
+        self.backing.raw()
+    }
+}
+
+
 pub struct RawTable<T: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
     table: RawTableInner,
     // I have to keep the hasher state otherwise the hashes won't be the same upon reload
@@ -174,10 +257,6 @@ impl<T: Invariant> RawTable<T, DefaultHashBuilder, HashTableAlloc> {
 impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
     const TABLE_LAYOUT: TableLayout = TableLayout::new::<T>();
 
-    pub fn print_slice(&self) {
-        println!("{:?}", unsafe { self.table.ctrl_slice().as_slice() });
-    }
-
     pub fn hasher(&self) -> &S {
         &self.hasher
     }
@@ -199,23 +278,8 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         }
     }
 
-    pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Ref<T>> {
-        unsafe {
-            let result = self
-                .table
-                .find_inner(hash, &mut |index| eq(&self.bucket(index)));
-
-            match result {
-                Some(index) => {
-                    Some(self.bucket(index))
-                },
-                None => None,
-            }
-        }
-    }
-
-    pub fn remove(&mut self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<T> {
-        match unsafe { self.table.find_inner(hash, &mut |index| eq(&self.bucket(index))) } {
+    pub fn remove(&mut self, hash: u64, mut eq: impl FnMut(&T) -> bool, ctx: &impl CtxMut) -> Option<T> {
+        match unsafe { self.table.find_inner(hash, &mut |index| eq(&self.bucket(index)), ctx) } {
             Some(bucket) => Some(
                 unsafe { 
                     let item = self.bucket(bucket).raw().read();
@@ -228,10 +292,18 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         }
     }
 
-    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
-        match self.find(hash, eq) {
-            Some(r) => unsafe { r.raw().as_ref() },
-            None => None,
+    pub fn get(&self, hash: u64, mut eq: impl FnMut(&T) -> bool, ctx: &impl Ctx) -> Option<&T> {
+            unsafe {
+            let result = self
+                .table
+                .find_inner(hash, &mut |index| eq(ctx.bucket::<T>(index)), ctx);
+
+            match result {
+                Some(index) => {
+                    Some(ctx.bucket(index))
+                },
+                None => None,
+            }
         }
     }
 
@@ -239,19 +311,41 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         unsafe { self.table.bucket::<T>(index) }
     }
 
-    pub unsafe fn replace_hasher(&mut self, _hasher: S) -> Result<()> {
-        todo!()
+    pub fn carry_ctx(&self) -> CarryCtx {
+        CarryCtx::new(unsafe {self.table.ctrl.resolve()})
+    }
+
+    pub fn carry_ctx_mut<'a>(&self, base: &RefMut<'a, RawTable<T, S, A>>) -> CarryCtxMut<'a> {
+        CarryCtxMut::new(unsafe { base.table.ctrl.resolve_mut().owned() })
     }
 }
 
 impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
-    pub fn reserve(&mut self, additional: usize, hasher: impl Fn(&T) -> u64) {
-        if additional > self.table.growth_left {
-            self.reserve_rehash(additional, hasher).unwrap()
+    pub fn bootstrap(&mut self, capacity: usize) -> Result<()> {
+        unsafe { 
+            self.table.bootstrap(&self.alloc, capacity, &Self::TABLE_LAYOUT)
         }
     }
 
-    pub fn reserve_rehash(&mut self, additional: usize, hasher: impl Fn(&T) -> u64) -> Result<()> {
+    pub fn reserve(
+        &mut self, 
+        additional: usize, 
+        hasher: impl Fn(&T) -> u64,
+        ctx: &impl CtxMut
+    ) {
+        if core::intrinsics::unlikely(additional > self.table.growth_left) {
+            //let instant: std::time::Instant = std::time::Instant::now();
+            self.reserve_rehash(additional, hasher, ctx).unwrap();
+            //println!("rehash in place took {}", instant.elapsed().as_millis());
+        }
+    }
+
+    pub fn reserve_rehash(
+        &mut self, 
+        additional: usize, 
+        hasher: impl Fn(&T) -> u64,
+        ctx: &impl CtxMut
+    ) -> Result<()> {
         unsafe {
             self.table.reserve_rehash_inner(
                 &self.alloc,
@@ -259,24 +353,32 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
                 &|table, index| hasher(&table.bucket(index)),
                 &Self::TABLE_LAYOUT,
                 None,
+                ctx
             )
         }
     }
 
-    pub unsafe fn resize(&mut self, capacity: usize, hasher: impl Fn(&T) -> u64) -> Result<()> {        
+    pub unsafe fn resize(&mut self, capacity: usize, hasher: impl Fn(&T) -> u64, ctx: &impl CtxMut) -> Result<()> {        
         self.table.resize_inner(
             &self.alloc,
             capacity,
             &|table, index| hasher(&table.bucket(index)),
             &Self::TABLE_LAYOUT,
+            ctx
         )
     }
 
     // replace the hasher, changing the hashing state and essentially shuffling the values
 
-    pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) {
+    /*pub fn insert(
+        &mut self, 
+        hash: u64, 
+        value: T, 
+        hasher: impl Fn(&T) -> u64,
+        ctx: &mut impl CtxMut
+    ) {
         unsafe {
-            let mut index = self.table.find_insert_slot(hash);
+            let mut index = self.table.find_insert_slot(hash, ctx);
 
             let old_ctrl = self.table.ctrl_slice()[index];
             if self.table.growth_left == 0 && old_ctrl.special_is_empty() {
@@ -285,7 +387,7 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
             }
             self.insert_in_slot(hash, index, value)
         }
-    }
+    }*/
 
     // Returns a reference to a slot or a candidate to insert
     pub fn find_or_find_insert_slot(
@@ -293,13 +395,15 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         hash: u64,
         mut eq: impl FnMut(&T) -> bool,
         hasher: impl Fn(&T) -> u64,
+        ctx: &impl CtxMut
     ) -> std::result::Result<Ref<T>, usize> {
-        self.reserve(1, hasher);
-
+        // self.reserve() can change the invariant pointer (only when the hashtable is empty)
+        self.reserve(1, hasher, ctx);
+        
         unsafe {
             match self
                 .table
-                .find_or_find_insert_slot_inner(hash, &mut |index| eq(&self.bucket(index)))
+                .find_or_find_insert_slot_inner(hash, &mut |index| eq(ctx.bucket(index)), ctx)
             {
                 Ok(index) => Ok(self.bucket(index)),
                 Err(slot) => Err(slot),
@@ -307,11 +411,18 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         }
     }
 
-    pub unsafe fn insert_in_slot(&mut self, hash: u64, slot: usize, value: T) {
-        let old_ctrl = self.table.ctrl_slice()[slot];
-        self.table.record_item_insert_at(slot, old_ctrl, hash);
+    #[inline]
+    pub unsafe fn insert_in_slot(&mut self, hash: u64, slot: usize, value: T, ctx: &impl CtxMut) {
+        {
+            let ctrl = ctx.ctrl_mut(self.table.buckets());
+            let old_ctrl = ctrl[slot];
+            self.table.growth_left -= usize::from(old_ctrl.special_is_empty());
+            ctrl[slot] = Tag::full(hash);
+            self.table.items += 1;
+        }
 
-        let mut bucket = self.table.bucket::<T>(slot).as_mut();
+        let bucket = ctx.bucket_ptr(slot, size_of::<T>()).cast::<T>();
+
         *bucket = value;
     }
 }
@@ -358,21 +469,17 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn record_item_insert_at(&mut self, index: usize, old_ctrl: Tag, hash: u64) {
-        self.growth_left -= usize::from(old_ctrl.special_is_empty());
-        self.set_ctrl_hash(index, hash);
-        self.items += 1;
-    }
-
     unsafe fn find_or_find_insert_slot_inner(
         &self,
         hash: u64,
         eq: &mut dyn FnMut(usize) -> bool,
+        ctx: &impl Ctx
     ) -> std::result::Result<usize, usize> {
         let tag_hash = Tag::full(hash);
         let mut probe_seq = self.probe_seq(hash);
 
-        let ctrl = self.ctrl_slice();
+        let ctrl = ctx.ctrl(self.buckets());
+        //let ctrl = ctx.ctrl(self.buckets());
         loop {
             let tag = ctrl[probe_seq.pos];
 
@@ -391,11 +498,11 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn find_insert_slot(&self, hash: u64) -> usize {
+    unsafe fn find_insert_slot(&self, hash: u64, ctx: &impl Ctx) -> usize {
         let mut probe_seq = self.probe_seq(hash);
-        let ctrl_slice = self.ctrl_slice();
+        let ctrl_slice = ctx.ctrl(self.buckets());
         loop {
-            let tag = ctrl_slice.get(probe_seq.pos).unwrap();
+            let tag = ctrl_slice[probe_seq.pos];
             if tag.is_special() {
                 return probe_seq.pos;
             }
@@ -403,15 +510,15 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn find_inner(&self, hash: u64, eq: &mut dyn FnMut(usize) -> bool) -> Option<usize> {
+    unsafe fn find_inner(&self, hash: u64, eq: &mut dyn FnMut(usize) -> bool, ctx: &impl Ctx) -> Option<usize> {
         debug_assert!(!self.is_empty());
 
         let tag_hash = Tag::full(hash);
         let mut probe_seq = self.probe_seq(hash);
-        let ctrl_slice = self.ctrl_slice();
+        let ctrl_slice = ctx.ctrl(self.buckets());
 
         loop {
-            let tag = ctrl_slice.get(probe_seq.pos)?;
+            let tag = ctrl_slice[probe_seq.pos];
 
             if tag.eq(&tag_hash) && eq(probe_seq.pos) {
                 return Some(probe_seq.pos);
@@ -432,17 +539,24 @@ impl RawTableInner {
         hasher: &dyn Fn(&mut Self, usize) -> u64,
         table_layout: &TableLayout,
         drop: Option<unsafe fn(*mut u8)>,
+        ctx: &impl CtxMut
     ) -> Result<()> {
         let new_items = self.items + additional;
         let full_capacity = bucket_mask_to_capacity(self.bucket_mask);
         if new_items <= full_capacity / 2 {
-            self.rehash_in_place(hasher, table_layout.size, drop);
+            self.rehash_in_place(
+                hasher, 
+                table_layout.size, 
+                drop,
+                ctx
+            );
         } else {
             self.resize_inner(
                 alloc,
                 usize::max(new_items, full_capacity + 1),
                 hasher,
                 table_layout,
+                ctx
             )?
         }
 
@@ -455,10 +569,11 @@ impl RawTableInner {
         hasher: &dyn Fn(&mut Self, usize) -> u64,
         size_of: usize,
         drop: Option<unsafe fn(*mut u8)>, 
+        ctx: &impl CtxMut
     ) {
-        self.prepare_rehash_in_place();
+        self.prepare_rehash_in_place(ctx);
 
-        self.rehash_in_place_inner(hasher, size_of, self.buckets(), drop);
+        self.rehash_in_place_inner(hasher, size_of, self.buckets(), drop, ctx);
     }
 
     unsafe fn rehash_in_place_inner(
@@ -467,32 +582,37 @@ impl RawTableInner {
         size_of: usize,
         workable_buckets: usize,
         _drop: Option<unsafe fn(*mut u8)>,
-    ) {        
-        //let instant = std::time::Instant::now();
+        ctx: &impl CtxMut
+    ) {                
         
         // since this is also called by resize inner, in that case we don't need to work on all the buckets just the area 
         // that may contain deleted entries.
+        let ctrl = ctx.ctrl_mut(self.buckets());
+
         'outer: for i in 0..workable_buckets {
-            if *self.ctrl(i) != Tag::DELETED {
+            if ctrl[i] != Tag::DELETED {
                 continue;
             }
 
-            let i_p = self.bucket_ptr(i, size_of);
+            let i_p = ctx.bucket_ptr(i, size_of);
+            //self.bucket_ptr(i, size_of);
             'inner: loop {
                 let hash = hasher(self, i);
     
-                let new_i = self.find_insert_slot(hash);
+                let new_i = self.find_insert_slot(hash, ctx);
 
                 if i == new_i {
-                    self.replace_ctrl_hash(new_i, hash);
+                    self.replace_ctrl_hash(new_i, hash, ctx);
                     continue 'outer;
                 }
 
-                let new_i_p = self.bucket_ptr(new_i, size_of);
+                let new_i_p = ctx.bucket_ptr(new_i, size_of);
+                //self.bucket_ptr(new_i, size_of);
                 
-                let prev_ctrl = self.replace_ctrl_hash(new_i, hash);
+                let prev_ctrl = self.replace_ctrl_hash(new_i, hash, ctx);
                 if prev_ctrl == Tag::EMPTY {
-                    self.set_ctrl(i, Tag::EMPTY);
+                    ctrl[i] = Tag::EMPTY;
+                    //self.set_ctrl(i, Tag::EMPTY);
                     std::ptr::copy_nonoverlapping(i_p, new_i_p, size_of);
                     continue 'outer;
                 }
@@ -503,14 +623,15 @@ impl RawTableInner {
                 }
             }
         }
-        //println!("rehash in place took {}", instant.elapsed().as_millis());
+
         self.growth_left = bucket_mask_to_capacity(self.bucket_mask) - self.items;
     }
 
-    unsafe fn prepare_rehash_in_place(&mut self) {
+    unsafe fn prepare_rehash_in_place(&mut self, ctx: &impl CtxMut) {
         if self.is_empty() {return;}
 
-        let mut slice = RefSliceMut::<Tag>::from_ref(self.ctrl.resolve().cast::<Tag>().into_mut(), self.buckets());
+        let slice = ctx.ctrl_mut(self.buckets());
+        //RefSliceMut::<Tag>::from_ref(self.ctrl.resolve().cast::<Tag>().into_mut(), self.buckets());
         for i in 0..self.buckets() {
             if slice[i].is_full() {
                 slice[i] = Tag::DELETED;
@@ -519,6 +640,26 @@ impl RawTableInner {
                 slice[i] = Tag::EMPTY;
             }
         }
+    }
+
+    unsafe fn bootstrap(
+        &mut self, 
+        alloc: &HashTableAlloc,
+        capacity: usize,
+        table_layout: &TableLayout,
+    ) -> Result<()> {
+        let buckets = std::cmp::max((capacity* 8 / 7).next_power_of_two() , 8);
+
+        let global = alloc.allocate(table_layout, buckets)?;
+
+        self.ctrl = InvPtr::new(Ref::from_ptr(self), global)?;
+        self.bucket_mask = buckets - 1;
+        self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
+        self.items = 0;
+
+        self.ctrl_slice_mut().fill_empty();
+
+        Ok(())
     }
 
     // I'm using alloc instead of realloc here, making an assumption about how the allocator works
@@ -532,6 +673,7 @@ impl RawTableInner {
         capacity: usize,
         hasher: &dyn Fn(&mut Self, usize) -> u64,
         table_layout: &TableLayout,
+        ctx: &impl CtxMut
     ) -> Result<()> {
         debug_assert!(self.items <= capacity);
 
@@ -543,7 +685,7 @@ impl RawTableInner {
         let buckets = std::cmp::max((capacity* 8 / 7).next_power_of_two() , 8);
         let global = alloc.allocate(table_layout, buckets)?;
         if !self.is_empty_singleton() {
-            self.prepare_rehash_in_place();
+            self.prepare_rehash_in_place(ctx);
             {
                 let r = self.ctrl.resolve();
                 let newly_allocated_range = r.add(self.buckets()).cast::<Tag>().into_mut();
@@ -553,7 +695,7 @@ impl RawTableInner {
 
             self.bucket_mask = buckets - 1;
             self.growth_left = bucket_mask_to_capacity(self.bucket_mask) - self.items;
-            self.rehash_in_place_inner(hasher, table_layout.size,  old_buckets, None);
+            self.rehash_in_place_inner(hasher, table_layout.size,  old_buckets, None, ctx);
         }
         else {
             self.ctrl = InvPtr::new(Ref::from_ptr(self), global)?;
@@ -572,11 +714,6 @@ impl RawTableInner {
         self.items -= 1;
     }
 
-    unsafe fn bucket_ptr(&self, index: usize, layout_size: usize) -> *mut u8 {
-        let base: *mut u8 = self.ctrl.resolve().sub((index + 1) * layout_size).as_mut().raw();
-        base
-    }
-
     unsafe fn bucket<T: Invariant>(&self, index: usize) -> Ref<T> {
         unsafe {
             self.ctrl
@@ -586,33 +723,23 @@ impl RawTableInner {
         }
     }
 
-    unsafe fn replace_ctrl_hash(&mut self, index: usize, hash: u64) -> Tag {
-        let prev_ctrl = *self.ctrl(index);
-        self.set_ctrl_hash(index, hash);
-        prev_ctrl
+    #[inline]
+    unsafe fn replace_ctrl_hash(&mut self, index: usize, hash: u64, ctx: &impl CtxMut) -> Tag {
+        let ctrl = ctx.ctrl_mut(self.buckets());
+        let prev_ctrl = ctrl[index];
+        ctrl[index] = Tag::full(hash);
+        prev_ctrl.to_owned()
     }
 
-    unsafe fn ctrl(&self, index: usize) -> *mut Tag {
-        self.ctrl.resolve().add(index).into_mut().raw().cast()
-    } 
-
-    unsafe fn set_ctrl_hash(&mut self, index: usize, hash: u64) {
-        self.set_ctrl(index, Tag::full(hash));
-    }
-
+    #[inline]
     unsafe fn set_ctrl(&mut self, index: usize, ctrl: Tag) {
         self.ctrl_slice_mut()[index] = ctrl;
     }
 
+    #[inline]
     unsafe fn ctrl_slice_mut(&mut self) -> RefSliceMut<'_, Tag> {
         let r = self.ctrl.resolve().cast::<Tag>().into_mut();
         let slice = RefSliceMut::from_ref(r, self.buckets());
-        slice
-    }
-
-    unsafe fn ctrl_slice(&self) -> RefSlice<'_, Tag> {
-        let r = self.ctrl.resolve().cast::<Tag>();
-        let slice = RefSlice::from_ref(r, self.buckets());
         slice
     }
 }

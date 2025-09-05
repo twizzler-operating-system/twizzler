@@ -1,6 +1,7 @@
 use crate::collections::hachage::raw::*;
 use crate::collections::hachage::{DefaultHashBuilder};
 use crate::{
+    ptr::{RefMut, Ref},
     alloc::Allocator,
     marker::Invariant,
     object::{Object, ObjectBuilder, TypedObject},
@@ -36,7 +37,7 @@ where
 }
 
 pub struct PersistentHashMap<K: Invariant, V: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
-    pub(crate) table: Object<RawTable<(K, V), S, A>>
+    pub(crate) table: Object<RawTable<(K, V), S, A>>,
 }
 
 impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, HashTableAlloc> {
@@ -46,7 +47,17 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
     }
 
     pub fn with_builder(builder: ObjectBuilder<RawTable<(K, V), DefaultHashBuilder, HashTableAlloc>>) -> Result<Self> {
-        Self::with_hasher_in(builder, Default::default(), Default::default())
+        let phm = Self::with_hasher_in(builder, Default::default(), Default::default())?;
+
+        // There's a circular dependency if an RawTable attempts to allocate
+        // before the object so we need to do part of the allocation afterwards 
+        // so that an empty table can be made.
+        let mut phm_tx = phm.table.as_tx()?;
+        let mut base = phm_tx.base_mut();
+        
+        base.bootstrap(1)?;
+
+        Ok(phm)
     }
 }
 
@@ -65,11 +76,13 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
     }
 
     pub fn with_hasher_in(builder: ObjectBuilder<RawTable<(K, V), S, A>>, hasher: S, alloc: A) -> Result<Self> {
-        Ok(Self {
+        let phm = Self {
             table: builder.build_inplace(|tx| {
                 tx.write(RawTable::with_hasher_in(hasher, alloc))
             })?,
-        })
+        };
+
+        Ok(phm)
     }
 
     pub fn from(value: Object<RawTable<(K, V), S, A>>) -> Self {
@@ -86,6 +99,9 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
         self.len() == 0
     }
     
+    pub fn ctx(&self) -> CarryCtx {
+        self.table.base().carry_ctx()
+    }
 }
 
 impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> PersistentHashMap<K, V, S, A> {
@@ -93,7 +109,9 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {
-        match self.get_inner(k) {
+        let ctx = self.ctx();
+
+        match self.get_inner(k, &ctx) {
             Some((_, v)) => {
                 Some(v)
             }
@@ -101,32 +119,34 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
         }
     }
 
-    pub fn get_pair<Q>(&self, k: &Q) -> Option<&(K, V)> 
+    pub fn get_pair<Q>(&self, k: &Q, ctx: &impl Ctx) -> Option<&(K, V)> 
     where
     Q: Hash + Equivalent<K> + ?Sized,
     {
-        self.get_inner(k)
+        self.get_inner(k, ctx)
     }
 
-    fn get_inner<Q>(&self, k: &Q) -> Option<&(K, V)>
+    fn get_inner<Q>(&self, k: &Q, ctx: &impl Ctx) -> Option<&(K, V)>
     where
         Q: Hash + Equivalent<K> + ?Sized,
     {  
         let hash = make_hash::<Q, S>(self.hasher(), k);
-        self.table.base().get(hash, equivalent_key(k))
+        self.table.base().get(hash, equivalent_key(k), ctx)
     }
 
     pub fn hasher(&self) -> &S {
         self.table.base().hasher()
     }
 
-    pub fn remove_entry(&mut self, k: &K) -> Option<(K, V)> 
+    fn remove_entry(&mut self, k: &K) -> Option<(K, V)> 
     {
         let hash = make_hash::<K, S>(self.hasher(), k);
         let mut tx = self.table.as_tx().ok()?;
         let mut base = tx.base_mut().owned();
 
-        base.remove(hash, equivalent_key(k))
+        let ctx = base.carry_ctx_mut(&base);
+
+        base.remove(hash, equivalent_key(k), &ctx)
     }
 
     pub fn remove(&mut self, k: &K) -> Option<V> {
@@ -137,21 +157,61 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
     }
 }
 
-impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K, V, S, HashTableAlloc> {
-    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>> {
-        let mut tx = self.table.as_tx()?;
-        let mut base = tx.base_mut().owned();
-        
-        let hash = make_hash::<K, S>(self.hasher(), &k);
+pub struct PHMsession<'a, K: Invariant, V: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
+    tx_base: RefMut<'a, RawTable<(K, V), S, A>>,
+    imm_base: Ref<'a, RawTable<(K, V), S, A>>,
+    ctx: CarryCtxMut<'a>
+}
 
-        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher())) {
+impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PHMsession<'_, K, V, S> {
+    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>> {
+        let hash = make_hash::<K, S>(self.imm_base.hasher(), &k);
+
+        match self.tx_base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.imm_base.hasher()), &self.ctx) {
             Ok(bucket) => {
                 let mut tx_ref = bucket.as_tx()?;
                 let mut mut_bucket = tx_ref.as_mut();
                 Ok(Some(std::mem::replace(&mut mut_bucket.1, v)))
             },
             Err(slot) => unsafe {
-                base.insert_in_slot(hash, slot, (k, v));
+                self.tx_base.insert_in_slot(hash, slot, (k, v), &self.ctx);
+                Ok(None)
+            },
+        }
+    }
+
+}
+
+impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K, V, S, HashTableAlloc> {
+    pub fn write_session(&mut self) -> Result<PHMsession<'_, K, V, S>> {
+        let mut tx = self.table.as_tx()?;
+        let base = tx.base_mut().owned();
+        let imm_base = base.as_ref().owned();
+        let ctx = base.carry_ctx_mut(&base);
+
+        Ok(PHMsession { 
+            tx_base: base, 
+            imm_base: imm_base, 
+            ctx: ctx
+        })
+
+    }
+    
+    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+        
+        let ctx = base.carry_ctx_mut(&base);
+        let hash = make_hash::<K, S>(self.hasher(), &k);
+
+        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher()), &ctx) {
+            Ok(bucket) => {
+                let mut tx_ref = bucket.as_tx()?;
+                let mut mut_bucket = tx_ref.as_mut();
+                Ok(Some(std::mem::replace(&mut mut_bucket.1, v)))
+            },
+            Err(slot) => unsafe {
+                base.insert_in_slot(hash, slot, (k, v), &ctx);
                 Ok(None)
             },
         }
@@ -163,9 +223,11 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
         let mut tx = self.table.as_tx()?;
         let mut base = tx.base_mut().owned();
         
+        let mut ctx = base.carry_ctx_mut(&base);
+
         let hash = make_hash::<K, S>(self.hasher(), &k);
 
-        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher())) {
+        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher()), &mut ctx) {
             Ok(bucket) => {
                 let mut tx_ref = bucket.as_tx()?;
                 let mut mut_bucket = tx_ref.as_mut();
@@ -174,7 +236,7 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
             },
             Err(slot) => unsafe {
                 let new_v = f(&k, None);
-                base.insert_in_slot(hash, slot, (k, new_v));
+                base.insert_in_slot(hash, slot, (k, new_v), &mut ctx);
                 Ok(None)
             },
         }
@@ -185,7 +247,9 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
         let mut tx = self.table.as_tx()?;
         let mut base = tx.base_mut().owned();
 
-        base.resize(capacity, make_hasher(self.hasher()))?;
+        let mut ctx = base.carry_ctx_mut(&base);
+
+        base.resize(capacity, make_hasher(self.hasher()), &mut ctx)?;
 
         Ok(())
     }
