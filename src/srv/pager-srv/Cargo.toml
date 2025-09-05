@@ -35,9 +35,9 @@ tracing-log = "*"
 
 async-io = "2.3.2"
 async-executor = { version = "1.9.1", features = [] }
-async-condvar-fair = "*"
-async-lock = "*"
 twizzler-futures = { path = "../../lib/twizzler-futures" }
 polling = "3.6.0"
 futures = "*"
 colored = "*"
+async-condvar-fair = "*"
+async-lock = "*"

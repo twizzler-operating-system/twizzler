@@ -78,6 +78,7 @@ impl ReferenceRuntime {
     }
 }
 
+/*
 #[allow(dead_code)]
 const MAX_FRAMES: usize = 100;
 #[allow(dead_code)]
@@ -151,3 +152,5 @@ pub fn backtrace(_symbolize: bool, entry_point: Option<backtracer_core::EntryPoi
         backtracer_core::trace(trace_callback);
     }
 }
+
+*/

@@ -9,7 +9,7 @@ use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};
 
 use super::{
-    frame::{get_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
+    frame::{get_frame, split_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
     PhysAddr,
 };
 use crate::{
@@ -93,6 +93,20 @@ impl MemoryTracker {
                 return None;
             }
         }
+    }
+
+    fn try_alloc_split_frames(
+        &self,
+        flags: FrameAllocFlags,
+        layout: Layout,
+    ) -> Option<(FrameRef, usize)> {
+        self.try_alloc_frame(flags, layout).map(|frame| {
+            if frame.size() == PHYS_LEVEL_LAYOUTS[0].size() {
+                (frame, frame.size())
+            } else {
+                split_frame(frame)
+            }
+        })
     }
 
     fn alloc_frame(&self, flags: FrameAllocFlags) -> FrameRef {
@@ -271,6 +285,15 @@ pub fn try_alloc_frame(flags: FrameAllocFlags, layout: Layout) -> Option<FrameRe
         .poll()
         .expect("page tracker not initialized")
         .try_alloc_frame(flags, layout)
+}
+
+/// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
+/// None if no physical frame is available. Splits the frame into children frames for the pager.
+pub fn try_alloc_split_frames(flags: FrameAllocFlags, layout: Layout) -> Option<(FrameRef, usize)> {
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .try_alloc_split_frames(flags, layout)
 }
 
 /// Free a physical frame.

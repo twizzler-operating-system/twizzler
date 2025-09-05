@@ -39,6 +39,7 @@ static SB_OBJECTS: Mutex<SbObjects> = Mutex::new(SbObjects { objs: Vec::new() })
 pub fn get_sb_object() -> Result<ObjectHandle, TwzError> {
     let mut sbo = SB_OBJECTS.lock().unwrap();
     if sbo.objs.len() == 0 {
+        drop(sbo);
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(

@@ -44,7 +44,7 @@ members = [
 
     "src/ports/lwext4-rs",
 
-    "src/ports/candle-test",
+    #"src/ports/candle-test",
 
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
@@ -90,7 +90,7 @@ initrd = [
     "crate:sec-test",
     "crate:ptest",
 
-    "crate:twzcandle",
+    #"crate:twzcandle",
     "crate:st",
 
     #"third-party:hello-world-rs"

@@ -21,7 +21,6 @@ talc = "4.4"
 happylock = "0.5.0"
 parking_lot = "*"
 naming-core = { path = "../../lib/naming/naming-core/" }
-backtracer_core = "*"
 tinyvec = { version = "*", features = ["alloc"] }
 smallstr = "*"
 

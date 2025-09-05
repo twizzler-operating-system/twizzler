@@ -89,15 +89,23 @@ impl<S: Copy + Sync + Send, C: Copy + Send + Sync> QueueSender<S, C> {
             .unwrap_or_else(|| self.counter.fetch_add(1, Ordering::SeqCst))
     }
 
-    fn release_id(&self, id: u32) {
+    pub unsafe fn release_id(&self, id: u32) {
         self.reuse.lock().unwrap().push(id)
     }
 
-    fn poll_completions(&self) -> Option<(u32, C)> {
+    pub fn poll_completions(&self) -> Option<(u32, C)> {
         self.inner
             .get_ref()
             .queue
             .get_completion(ReceiveFlags::NON_BLOCK)
+            .ok()
+    }
+
+    pub fn wait_for_completion(&self) -> Option<(u32, C)> {
+        self.inner
+            .get_ref()
+            .queue
+            .get_completion(ReceiveFlags::empty())
             .ok()
     }
 
@@ -174,7 +182,7 @@ impl<S: Copy + Sync + Send, C: Copy + Send + Sync> QueueSender<S, C> {
             item_res = item => item_res,
             recv_res = recv => recv_res,
         }?;
-        self.release_id(id);
+        unsafe { self.release_id(id) };
         Ok(result.1)
     }
 }

@@ -144,6 +144,7 @@ struct Track {
     idx: usize,
 }
 
+#[allow(dead_code)]
 impl Track {
     const fn new() -> Self {
         Self {
@@ -187,26 +188,6 @@ use twizzler_rt_abi::alloc::AllocFlags;
 unsafe impl GlobalAlloc for MonAlloc {
     #[track_caller]
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        /*
-        twizzler_abi::klog_println!(
-            "monitor allocation: {:?} at {}",
-            layout,
-            core::panic::Location::caller()
-        );
-        */
-        let mut track = self.track.lock();
-        let mut count = 0;
-        backtracer_core::trace(|f| {
-            if count > 1 {
-                track.insert(f.ip());
-            }
-            count += 1;
-            if count > 8 {
-                false
-            } else {
-                true
-            }
-        });
         twizzler_rt_abi::alloc::twz_rt_malloc(layout, AllocFlags::empty())
             .unwrap_or(core::ptr::null_mut())
     }
@@ -216,7 +197,7 @@ unsafe impl GlobalAlloc for MonAlloc {
     }
 }
 
-#[global_allocator]
+//#[global_allocator]
 static MA: MonAlloc = MonAlloc {
     track: Mutex::new(Track::new()),
 };

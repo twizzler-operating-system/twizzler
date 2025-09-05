@@ -281,7 +281,8 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
                     MAX_SIZE / PageNumber::PAGE_SIZE,
                     PagerFlags::PREFETCH,
                 );
-                crate::pager::ensure_in_core(&obj, PageNumber::meta_page(), 1, PagerFlags::empty());
+                let tree = obj.lock_page_tree();
+                obj.ensure_in_core(tree, PageNumber::meta_page(), &mut false);
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());
             }

@@ -1,15 +1,16 @@
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
     },
+    task::Waker,
     thread::JoinHandle,
 };
 
-use futures::executor::LocalPool;
+use futures::Future;
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
-use twizzler_queue::QueueSender;
+use twizzler_queue::{QueueSender, SubmissionFlags};
 use twizzler_rt_abi::{error::TwzError, Result};
 
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;
@@ -24,8 +25,24 @@ fn get_object(ptr: *const u8) -> (ObjID, usize) {
 
 #[derive(Default)]
 struct Waiter {
-    data: async_lock::Mutex<Option<CompletionToPager>>,
-    cv: async_condvar_fair::Condvar,
+    data: Mutex<(Option<CompletionToPager>, Option<Waker>)>,
+}
+
+impl Future for &Waiter {
+    type Output = CompletionToPager;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let mut data = self.data.lock().unwrap();
+        if data.0.is_some() {
+            std::task::Poll::Ready(data.0.unwrap())
+        } else {
+            data.1.replace(cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -43,18 +60,15 @@ impl Request {
     }
 
     async fn wait(&self) -> CompletionToPager {
-        loop {
-            let mut data = self.waiter.data.lock().await;
-            if data.is_some() {
-                return data.take().unwrap();
-            }
-            self.waiter.cv.wait_no_relock(data).await;
-        }
+        (&*self.waiter).await
     }
 
-    async fn finish(&self, comp: CompletionToPager) {
-        *self.waiter.data.lock().await = Some(comp);
-        self.waiter.cv.notify_all();
+    fn finish(&self, comp: CompletionToPager) {
+        let mut data = self.waiter.data.lock().unwrap();
+        data.0 = Some(comp);
+        if let Some(waker) = data.1.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -75,33 +89,43 @@ impl PageRequestMgr {
 
 static PR_MGR: OnceLock<PageRequestMgr> = OnceLock::new();
 
-async fn pr_mgr_thread_main(recv: Receiver<Request>) {
+fn pr_mgr_thread_main(recv: Receiver<Request>) {
     loop {
         match recv.recv().ok() {
             Some(req) => {
-                let comp = PR_MGR.wait().queue.submit_and_wait(req.req).await.unwrap();
-                req.finish(comp).await;
+                let pr_mgr = PR_MGR.wait();
+                pr_mgr
+                    .queue
+                    .submit_no_wait(req.req, SubmissionFlags::empty());
+                if let Some(comp) = pr_mgr.queue.wait_for_completion() {
+                    req.finish(comp.1);
+                    unsafe { pr_mgr.queue.release_id(comp.0) };
+                }
             }
             None => break,
         }
     }
 }
 
-fn pr_mgr(queue: &QueueRef) -> &'static PageRequestMgr {
+pub fn init_pr_mgr(queue: QueueRef) {
     let (sender, recv) = mpsc::channel();
-    PR_MGR.get_or_init(|| PageRequestMgr {
+    let _ = PR_MGR.set(PageRequestMgr {
         _thread: std::thread::Builder::new()
             .name("pager-requester-thread".to_owned())
-            .spawn(|| LocalPool::new().run_until(async { pr_mgr_thread_main(recv).await }))
+            .spawn(|| pr_mgr_thread_main(recv))
             .unwrap(),
         sender,
-        queue: queue.clone(),
-    })
+        queue,
+    });
 }
 
-pub async fn register_phys(queue: &QueueRef, start: u64, len: u64) -> Result<()> {
+fn pr_mgr() -> &'static PageRequestMgr {
+    PR_MGR.get().unwrap()
+}
+
+pub async fn register_phys(start: u64, len: u64) -> Result<()> {
     let request = RequestFromPager::new(PagerRequest::RegisterPhys(start, len));
-    let comp = pr_mgr(queue).submit_and_wait(request).await;
+    let comp = pr_mgr().submit_and_wait(request).await;
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
         twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
@@ -110,7 +134,6 @@ pub async fn register_phys(queue: &QueueRef, start: u64, len: u64) -> Result<()>
 }
 
 async fn do_physrw_request(
-    queue: &QueueRef,
     target_object: ObjID,
     offset: usize,
     len: usize,
@@ -124,7 +147,7 @@ async fn do_physrw_request(
         phys,
         write_phys,
     });
-    let comp = pr_mgr(queue).submit_and_wait(request).await;
+    let comp = pr_mgr().submit_and_wait(request).await;
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
         twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
@@ -135,15 +158,15 @@ async fn do_physrw_request(
 /// Writes phys.len() bytes from the buffer into physical addresses specified in phys. If the
 /// supplied buffer is shorter than the physical range, then the remaining bytes in the physical
 /// memory are filled with 0.
-pub async fn fill_physical_pages(queue: &QueueRef, buf: &[u8], phys: PhysRange) -> Result<()> {
+pub async fn fill_physical_pages(buf: &[u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
-    do_physrw_request(queue, obj.0, obj.1, buf.len(), phys, true).await
+    do_physrw_request(obj.0, obj.1, buf.len(), phys, true).await
 }
 
 /// Reads buf.len() bytes from physical addresses in phys into the buffer. If the supplied physical
 /// range is shorter than the buffer, then the remaining bytes in the buffer are filled with 0.
 #[allow(dead_code)]
-pub async fn read_physical_pages(queue: &QueueRef, buf: &mut [u8], phys: PhysRange) -> Result<()> {
+pub async fn read_physical_pages(buf: &mut [u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
-    do_physrw_request(queue, obj.0, obj.1, buf.len(), phys, false).await
+    do_physrw_request(obj.0, obj.1, buf.len(), phys, false).await
 }
