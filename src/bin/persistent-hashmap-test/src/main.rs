@@ -8,6 +8,9 @@ use std::time::Instant;
 use twizzler::marker::Invariant;
 use std::fmt::Debug;
 use miette::{IntoDiagnostic, Result};
+use clap::Parser;
+use rand::{rng, Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 
 fn open_or_create_hashtable_object<T: Debug + Invariant>(
     name: &str,
@@ -36,37 +39,11 @@ fn open_or_create_hashtable_object<T: Debug + Invariant>(
 
 #[derive(clap::Parser, Clone, Debug)]
 struct Cli {
-    name: String,
-    arg: u64
+    arg: u64,
 }
 
 
 fn performance_test() {
-    let mut phm = PersistentHashMap::with_builder(
-        ObjectBuilder::default()
-    ).unwrap();
-
-    unsafe {phm.resize(16777216)};
-    println!("persistent hashmap");
-    println!("inserting");
-    let now = Instant::now();
-    for i in 0..14260633 {
-        //println!("inserting {}", i);
-        phm.insert(i, i).unwrap();
-        
-    }
-    println!("inserting took {} milli seconds", now.elapsed().as_millis());
-
-    println!("fetching");
-    let now = Instant::now();
-    for i in 0..14260633 {
-        let foo = phm.get(&i).unwrap();
-        assert_eq!(&i, foo);
-        //println!("val: {} {}", foo.0, foo.1);
-    }
-    println!("fetching took {} milli seconds", now.elapsed().as_millis());
-
-
     println!("regular hashmap");
     let mut hm = HashMap::<u64, u64>::new();
     hm.reserve(16777216);
@@ -87,6 +64,31 @@ fn performance_test() {
         //println!("val: {} {}", foo.0, foo.1);
     }
     println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default()
+    ).unwrap();
+
+    unsafe {phm.resize(16777216)};
+    println!("persistent hashmap");
+    println!("inserting");
+    let now = Instant::now();
+    for i in 0..14260633 {
+        //println!("inserting {}", i);
+        phm.insert(i, i).unwrap();
+        
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("fetching");
+    let now = Instant::now();
+    for i in 0u64..14260633u64 {
+        let foo = phm.get(&i).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
 }
 
 fn performance_test_2() {
@@ -140,21 +142,96 @@ fn performance_test_2() {
     println!("fetching took {} milli seconds", now.elapsed().as_millis());
 }
 
+fn performance_test_3() {
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default().persist()
+    ).unwrap();
 
-/*fn performance_test_2() {
-    use rand::prelude::*;
+    unsafe {phm.resize(10000)};
 
-    let phm = PersistentHashMap::<[u64; 8], [u8; 128]>::new();
-    let mut rng = rand::rng();
 
-    for i in 0..262144 {
-        phm.i
+    println!("persistent hashmap");
+    println!("inserting");
+    let now = Instant::now();
+    for i in 0..10000 {
+        phm.insert(i, i);
+        //println!("inserting {}", i);
     }
 
-    for i in 0..262144 {
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
 
+    println!("fetching");
+    let now = Instant::now();
+    for i in 0..(100000 * 10000) {
+        let foo = phm.get(&(i % 1000)).unwrap();
+        assert_eq!(&(i % 1000), foo);
+        //println!("val: {} {}", foo.0, foo.1);
     }
-}*/
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+}
+
+fn performance_test_4() {
+    let random_seed: u64 = rng().random();
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+    let mut bytes = [0u8; 256];
+
+    println!("regular hashmap");
+    let mut hm = HashMap::<[u8; 256], u64>::new();
+    println!("inserting");
+    let now = Instant::now();
+
+    for i in 0..1426000 {
+        rng.fill(&mut bytes);
+
+        //println!("inserting {}", i);
+        hm.insert(bytes.clone(), i);
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("inserted!");
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    let now = Instant::now();
+    for i in 0..1426000 {
+        rng.fill(&mut bytes);
+
+        let foo = hm.get(&bytes).unwrap();
+        assert_eq!(foo, &i)
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default()
+    ).unwrap();
+
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    println!("persistent hashmap");
+    println!("inserting");
+    let now = Instant::now();
+    for i in 0..1426000 {
+        rng.fill(&mut bytes);
+
+        //println!("inserting {}", i);
+        phm.insert(bytes.clone(), i).unwrap();
+        
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    println!("fetching");
+    let now = Instant::now();
+    for i in 0..1426000u64 {
+        rng.fill(&mut bytes);
+
+        let foo = phm.get(&bytes).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+    
+}
 
 fn correctness_test() {
     let mut phm = PersistentHashMap::with_builder(
@@ -204,22 +281,45 @@ fn correctness_test_2() {
     println!("done!");
 }
 
+fn correctness_test_3() {
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default()
+    ).unwrap();
+
+    for i in 0..13 {
+        phm.insert(i, i).unwrap();
+    }
+
+    for mut val in phm.values_mut().unwrap() {
+        *val += 1;
+    }
+
+    let mut i = 0;
+    for (key, val) in phm.iter() {
+        println!("{} {}", key, val);
+        assert_eq!(&(key + 1), val);
+        i+=1;
+    }
+
+    assert_eq!(i, 13);
+}
+
 fn main() {
     /*let cli = Cli::parse();
 
-    let mut foo = open_or_create_hashtable_object(&cli.name).unwrap();
+    let mut foo = open_or_create_hashtable_object::<u64>("phm").unwrap();
 
-    match foo.alter_or_insert(cli.arg, |_, foo| {
-        match foo {
-            Some(x) => x + 1,
-            None => 1,
-        }
-    }).unwrap() {
-        Some(x) => {
-            println!("{} has been invoked {} times!", cli.arg, x);
-        }
-        None => println!("{} has been invoked {} times!", cli.arg, 0)
-    }*/
+    let mut write_sesh = foo.write_session().unwrap();
 
-    performance_test_2();
+    let bar = write_sesh.get_mut(&cli.arg);
+
+    match bar {
+        Some(x) => {*x = *x + 1; println!("x now {}", x);}
+        None => {println!("new val! x = 1"); write_sesh.insert(cli.arg, 1);}
+    }
+
+    drop(write_sesh);*/
+
+
+    correctness_test_3();
 }

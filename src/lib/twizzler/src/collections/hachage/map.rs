@@ -9,6 +9,7 @@ use crate::{
 use crate::Result;
 use std::hash::{BuildHasher, Hash};
 use equivalent::Equivalent;
+use std::marker::PhantomData;
 
 pub(crate) fn make_hasher<Q, V, S>(hash_builder: &S) -> impl Fn(&(Q, V)) -> u64 + '_
 where
@@ -68,7 +69,11 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
 
     pub fn into_object(self) -> Object<RawTable<(K, V), S, A>> {
         self.table
-    } 
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.table.base().capacity()
+    }
 
     #[inline]
     pub fn allocator(&self) -> &A {
@@ -101,6 +106,52 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
     
     pub fn ctx(&self) -> CarryCtx {
         self.table.base().carry_ctx()
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+        
+        base.clear();
+
+        Ok(())
+    }
+
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        unsafe {
+            Iter {
+                _backing: self.table.base().backing(),
+                inner: self.table.base().iter(),
+                marker: PhantomData,
+            }
+        }
+    }
+
+    pub fn keys(&self) -> Keys<'_, K, V> {
+        Keys { inner: self.iter() }
+    }
+
+    pub fn values(&self) -> Values<'_, K, V> {
+        Values { inner: self.iter() }
+    }
+
+    pub fn iter_mut(&mut self) -> Result<IterMut<'_, K, V>> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut();
+
+        unsafe {
+            Ok(IterMut {
+                _backing: base.backing_mut().owned(),
+                inner: self.table.base().iter(),
+                marker: PhantomData,
+            })
+        }
+    }
+
+    pub fn values_mut(&mut self) -> Result<ValuesMut<'_, K, V>> {
+        Ok(ValuesMut {
+            inner: self.iter_mut()?,
+        })
     }
 }
 
@@ -157,6 +208,18 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
     }
 }
 
+impl<K: Invariant + Eq + Hash, V: Invariant> PersistentHashMap<K, V> {
+    pub fn reserve(&mut self, additonal: usize) -> Result<()> {
+        let mut tx = self.table.as_tx()?;
+        let mut base = tx.base_mut().owned();
+
+        let ctx = base.carry_ctx_mut(&base);
+
+        base.reserve(additonal, make_hasher(self.hasher()), &ctx);
+        Ok(())
+    }
+}
+
 pub struct PHMsession<'a, K: Invariant, V: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
     tx_base: RefMut<'a, RawTable<(K, V), S, A>>,
     imm_base: Ref<'a, RawTable<(K, V), S, A>>,
@@ -180,6 +243,27 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PHMsession<'_, K, V
         }
     }
 
+    // The mutable reference can only last as long as the write session
+    pub fn get_inner_mut<Q>(&mut self, k: &Q) -> Option<&mut (K, V)>
+    where
+        Q: Hash + Equivalent<K> + ?Sized,
+    {
+        let hash = make_hash::<Q, S>(self.imm_base.hasher(), k);
+        
+        self.tx_base.get_mut(hash, equivalent_key(k), &self.ctx)
+    }
+
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        Q: Hash + Equivalent<K> + ?Sized,
+    {
+        match self.get_inner_mut(k) {
+            Some((_, v)) => {
+                Some(v)
+            }
+            None => None,
+        }
+    }
 }
 
 impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K, V, S, HashTableAlloc> {
@@ -217,32 +301,6 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
         }
     }
 
-    // An insert function that takes in the previous value as an argument, and returns the previous argument
-    pub fn alter_or_insert(&mut self, k: K, f: impl FnOnce(&K, Option<&V>) -> V) -> Result<Option<V>> 
-    {
-        let mut tx = self.table.as_tx()?;
-        let mut base = tx.base_mut().owned();
-        
-        let mut ctx = base.carry_ctx_mut(&base);
-
-        let hash = make_hash::<K, S>(self.hasher(), &k);
-
-        match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher()), &mut ctx) {
-            Ok(bucket) => {
-                let mut tx_ref = bucket.as_tx()?;
-                let mut mut_bucket = tx_ref.as_mut();
-                let new_v = f(&k, Some(&mut_bucket.1));
-                Ok(Some(std::mem::replace(&mut mut_bucket.1, new_v)))
-            },
-            Err(slot) => unsafe {
-                let new_v = f(&k, None);
-                base.insert_in_slot(hash, slot, (k, new_v), &mut ctx);
-                Ok(None)
-            },
-        }
-    }
-
-
     pub unsafe fn resize(&mut self, capacity: usize) -> Result<()> {
         let mut tx = self.table.as_tx()?;
         let mut base = tx.base_mut().owned();
@@ -255,3 +313,98 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
     }
 }
 
+pub struct Iter<'a, K: Invariant, V: Invariant> {
+    _backing: Ref<'a, u8>,
+    inner: RawIter<(K, V)>,
+    marker: PhantomData<(&'a K, &'a V)>,
+}
+
+impl<'a, K: Invariant, V: Invariant> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<(&'a K, &'a V)> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some(x) => unsafe {
+                let r = x.as_ref();
+                Some((&r.0, &r.1))
+            },
+            None => None,
+        }
+    }
+}
+
+pub struct IterMut<'a, K: Invariant, V: Invariant> {
+    _backing: RefMut<'a, u8>,
+    inner: RawIter<(K, V)>,
+    // To ensure invariance with respect to V
+    marker: PhantomData<(&'a K, &'a mut V)>,
+}
+
+impl<'a, K: Invariant, V: Invariant> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some(mut x) => unsafe {
+                let r = x.as_mut();
+                Some((&r.0, &mut r.1))
+            },
+            None => None,
+        }
+    }
+}
+
+pub struct Keys<'a, K: Invariant, V: Invariant> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: Invariant, V: Invariant> Iterator for Keys<'a, K, V> {
+    type Item = &'a K;
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<&'a K> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some((k, _)) => Some(k),
+            None => None,
+        }
+    }
+}
+
+pub struct Values<'a, K: Invariant, V: Invariant> {
+    inner: Iter<'a, K, V>,
+}
+
+impl<'a, K: Invariant, V: Invariant> Iterator for Values<'a, K, V> {
+    type Item = &'a V;
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<&'a V> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some((_, v)) => Some(v),
+            None => None,
+        }
+    }
+}
+
+pub struct ValuesMut<'a, K: Invariant, V: Invariant> {
+    inner: IterMut<'a, K, V>,
+}
+
+impl<'a, K: Invariant, V: Invariant> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn next(&mut self) -> Option<&'a mut V> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.inner.next() {
+            Some((_, v)) => Some(v),
+            None => None,
+        }
+    }
+}

@@ -10,3 +10,5 @@ twizzler-runtime = { path = "../../rt" }
 naming = { path = "../../lib/naming" }
 clap = { version = "*", features = ["derive"] }
 miette = "*"
+rand_chacha = "0.9.0"
+rand = "0.9.0"

@@ -1,8 +1,9 @@
 use std::{
-    alloc::{AllocError, Layout}, marker::PhantomData
+    alloc::{AllocError, Layout}, marker::PhantomData, ptr::NonNull
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::object::ObjectHandle;
 
 use super::DefaultHashBuilder;
 use crate::{
@@ -191,6 +192,10 @@ pub trait CtxMut: Ctx {
             self.base_mut().sub(size_of * (index + 1))
         }
     }
+
+    fn bucket_ref_mut<T>(&self, index: usize) -> &mut T {
+        unsafe { self.base_mut().cast::<T>().sub(index + 1).as_mut_unchecked() }
+    }
 }
 
 impl CarryCtx<'_> {
@@ -269,6 +274,10 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         self.table.items
     }
 
+    pub fn capacity(&self) -> usize {
+        self.table.growth_left
+    }
+
     pub fn with_hasher_in(hasher: S, alloc: A) -> Self {
         Self {
             table: RawTableInner::new(),
@@ -293,7 +302,7 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
     }
 
     pub fn get(&self, hash: u64, mut eq: impl FnMut(&T) -> bool, ctx: &impl Ctx) -> Option<&T> {
-            unsafe {
+        unsafe {
             let result = self
                 .table
                 .find_inner(hash, &mut |index| eq(ctx.bucket::<T>(index)), ctx);
@@ -307,8 +316,36 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         }
     }
 
+    pub fn get_mut<'a>(&mut self, hash: u64, mut eq: impl FnMut(&T) -> bool, ctx: &'a impl CtxMut) -> Option<&'a mut T> {
+        unsafe {
+            let result = self
+                .table
+                .find_inner(hash, &mut |index| eq(ctx.bucket::<T>(index)), ctx);
+
+            match result {
+                Some(index) => {
+                    Some(ctx.bucket_ref_mut(index))
+                },
+                None => None,
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if self.table.is_empty_singleton() {
+            return;
+        }
+        let mut ctrl = unsafe { self.table.ctrl_slice_mut() };
+        
+        ctrl.fill_tag(Tag::EMPTY);
+    }
+
     fn bucket(&self, index: usize) -> Ref<T> {
         unsafe { self.table.bucket::<T>(index) }
+    }
+
+    pub(crate) fn bucket_mut(&self, index: usize) -> RefMut<T> {
+        unsafe { self.table.bucket_mut::<T>(index) }
     }
 
     pub fn carry_ctx(&self) -> CarryCtx {
@@ -317,6 +354,18 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
 
     pub fn carry_ctx_mut<'a>(&self, base: &RefMut<'a, RawTable<T, S, A>>) -> CarryCtxMut<'a> {
         CarryCtxMut::new(unsafe { base.table.ctrl.resolve_mut().owned() })
+    }
+
+    pub unsafe fn iter(&self) -> RawIter<T> {
+        self.table.iter()
+    }
+
+    pub unsafe fn backing(&self) -> Ref<u8> {
+        self.table.ctrl.resolve()
+    }
+
+    pub unsafe fn backing_mut(&mut self) -> RefMut<u8> {
+        self.table.ctrl.resolve_mut()
     }
 }
 
@@ -723,6 +772,15 @@ impl RawTableInner {
         }
     }
 
+    unsafe fn bucket_mut<T: Invariant>(&self, index: usize) -> RefMut<T> {
+        unsafe {
+            self.ctrl
+                .resolve_mut()
+                .cast::<T>()
+                .sub(index + 1)
+        }
+    }
+
     #[inline]
     unsafe fn replace_ctrl_hash(&mut self, index: usize, hash: u64, ctx: &impl CtxMut) -> Tag {
         let ctrl = ctx.ctrl_mut(self.buckets());
@@ -741,5 +799,62 @@ impl RawTableInner {
         let r = self.ctrl.resolve().cast::<Tag>().into_mut();
         let slice = RefSliceMut::from_ref(r, self.buckets());
         slice
+    }
+
+    // This function isn't responsible for guaranteeing mutability
+    unsafe fn iter<T: Invariant>(&self) -> RawIter<T> {
+        let data = self.ctrl.resolve().raw().cast::<T>().sub(1).cast_mut();
+        RawIter::new(
+            self.ctrl.resolve().raw().cast(), 
+            NonNull::new(data
+            ).unwrap(), 
+            self.buckets()
+        )
+    }
+
+
+}
+
+// Assumes there exists a valid hashtable and object handle to it.
+// also that the underlying hashtable doesn't change size
+pub struct RawIter<T: Invariant> {
+    data: NonNull<T>,
+    ctrl: *const Tag,
+    top: *const Tag,
+}
+
+impl<T: Invariant> RawIter<T> {
+    pub(crate) unsafe fn new(ctrl: *const Tag, data: NonNull<T>, len: usize) -> RawIter<T> {
+        let end = ctrl.add(len);
+
+        Self {
+            data,
+            ctrl,
+            top: end,
+        }
+    }
+
+    pub(crate) unsafe fn next_impl(&mut self) -> Option<NonNull<T>> {
+        loop {
+            if self.ctrl >= self.top {
+                return None;
+            }
+
+            if (*self.ctrl).is_full() {
+                self.data = self.data.sub(1);
+                self.ctrl = self.ctrl.add(1);
+                return Some(self.data.add(1));
+            }
+            self.data = self.data.sub(1);
+            self.ctrl = self.ctrl.add(1);
+        }
+    }
+}
+
+impl<T: Invariant> Iterator for RawIter<T> {
+    type Item = NonNull<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe { self.next_impl() }
     }
 }
