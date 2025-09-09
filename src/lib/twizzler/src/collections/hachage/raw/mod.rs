@@ -7,7 +7,7 @@ use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use super::DefaultHashBuilder;
 use crate::{
     alloc::Allocator,
-    collections::hachage::control::*,
+    collections::hachage::control::{Tag, TagSliceExt},
     marker::{BaseType, Invariant},
     ptr::{GlobalPtr, InvPtr, Ref, RefMut, RefSliceMut},
     Result,
@@ -150,7 +150,6 @@ fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
 }
 
 // To reduce the number of Ref.resolves() to ideally one per call of RawTable
-// screw it I've been using raw pointers the entire time
 pub struct CarryCtx<'a> {
     backing: Ref<'a, u8>
 }
@@ -410,8 +409,6 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         )
     }
 
-    // replace the hasher, changing the hashing state and essentially shuffling the values
-
     // Returns a reference to a slot or a candidate to insert
     pub fn find_or_find_insert_slot(
         &mut self,
@@ -607,7 +604,6 @@ impl RawTableInner {
         _drop: Option<unsafe fn(*mut u8)>,
         ctx: &impl CtxMut
     ) {                
-        
         // since this is also called by resize inner, in that case we don't need to work on all the buckets just the area 
         // that may contain deleted entries.
         let ctrl = ctx.ctrl_mut(self.buckets());
@@ -618,7 +614,6 @@ impl RawTableInner {
             }
 
             let i_p = ctx.bucket_ptr(i, size_of);
-            //self.bucket_ptr(i, size_of);
             'inner: loop {
                 let hash = hasher(self, i);
     
@@ -630,12 +625,10 @@ impl RawTableInner {
                 }
 
                 let new_i_p = ctx.bucket_ptr(new_i, size_of);
-                //self.bucket_ptr(new_i, size_of);
                 
                 let prev_ctrl = self.replace_ctrl_hash(new_i, hash, ctx);
                 if prev_ctrl == Tag::EMPTY {
                     ctrl[i] = Tag::EMPTY;
-                    //self.set_ctrl(i, Tag::EMPTY);
                     std::ptr::copy_nonoverlapping(i_p, new_i_p, size_of);
                     continue 'outer;
                 }
@@ -701,7 +694,6 @@ impl RawTableInner {
         let old_buckets = self.buckets();
 
         // To not waste work, we are preparing resize before we empty the tags to not operate on tags we know are empty
-        
         // Allocate the tags in place, and empty them out
         let buckets = std::cmp::max((capacity* 8 / 7).next_power_of_two() , 8);
         let global = alloc.allocate(table_layout, buckets)?;
