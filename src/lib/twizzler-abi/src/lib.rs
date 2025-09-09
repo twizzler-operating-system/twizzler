@@ -20,6 +20,8 @@
 #![feature(linkage)]
 #![feature(test)]
 #![feature(c_variadic)]
+
+use syscall::KernelConsoleSource;
 pub mod arch;
 
 #[allow(unused_extern_crates)]
@@ -38,6 +40,7 @@ pub mod simple_mutex;
 pub mod slot;
 pub mod syscall;
 pub mod thread;
+pub mod trace;
 pub mod upcall;
 
 #[inline]
@@ -46,7 +49,11 @@ unsafe fn internal_abort() -> ! {
 }
 
 pub fn print_err(err: &str) {
-    syscall::sys_kernel_console_write(err.as_bytes(), syscall::KernelConsoleWriteFlags::empty());
+    syscall::sys_kernel_console_write(
+        KernelConsoleSource::Console,
+        err.as_bytes(),
+        syscall::KernelConsoleWriteFlags::empty(),
+    );
 }
 
 #[allow(dead_code)]

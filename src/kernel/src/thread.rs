@@ -9,10 +9,12 @@ use core::{
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
-    syscall::ThreadSpawnArgs,
+    syscall::{ThreadSpawnArgs, PERTHREAD_TRACE_GEN_SAMPLE},
     thread::{ExecutionState, ThreadRepr},
+    trace::{ThreadSamplingEvent, TraceEntryFlags, TraceKind},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
 };
+use twizzler_rt_abi::error::TwzError;
 
 use self::{
     flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
@@ -26,6 +28,10 @@ use crate::{
     processor::{get_processor, KERNEL_STACK_SIZE},
     security::SecCtxMgr,
     spinlock::Spinlock,
+    trace::{
+        mgr::{TraceEvent, TRACE_MGR},
+        new_trace_entry,
+    },
 };
 
 pub mod entry;
@@ -35,6 +41,8 @@ pub mod state;
 pub mod suspend;
 
 pub use flags::{enter_kernel, exit_kernel};
+
+pub const SAMPLE_PERIOD_TICKS: u64 = 3;
 
 #[derive(Debug, Default)]
 pub struct ThreadStats {
@@ -67,6 +75,7 @@ pub struct Thread {
     pub condvar_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
     pub secctx: SecCtxMgr,
+    pub sample_expire: Spinlock<Option<u64>>,
 }
 unsafe impl Send for Thread {}
 
@@ -133,6 +142,7 @@ impl Thread {
             condvar_link: RBTreeAtomicLink::default(),
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
+            sample_expire: Spinlock::new(None),
         }
     }
 
@@ -280,6 +290,8 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
+        log::info!("upcall: {}: {:?}", self.id(), info);
+
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
         };
@@ -306,6 +318,59 @@ impl Thread {
         // Suspend afterwards to ensure that the upcall frame is queued up.
         if options.flags.contains(UpcallFlags::SUSPEND) {
             self.suspend();
+        }
+    }
+
+    pub fn set_trace_state(&self, events: u64) -> Result<(), TwzError> {
+        if events & PERTHREAD_TRACE_GEN_SAMPLE == 0 {
+            if self.sample_expire.lock().take().is_some() {
+                log::debug!("clearing tracing sampling for thread {}", self.objid());
+            }
+        } else {
+            log::debug!("setting tracing sampling for thread {}", self.objid());
+            *self.sample_expire.lock() =
+                Some(crate::clock::get_current_ticks() + SAMPLE_PERIOD_TICKS);
+        }
+        Ok(())
+    }
+
+    pub fn get_trace_state(&self) -> Result<u64, TwzError> {
+        let events = if self.sample_expire.lock().is_some() {
+            PERTHREAD_TRACE_GEN_SAMPLE
+        } else {
+            0
+        };
+        Ok(events)
+    }
+
+    pub fn check_sampling(&self) -> bool {
+        let mut expire = self.sample_expire.lock();
+        let current_ticks = crate::clock::get_current_ticks();
+        if expire.is_some() {
+            log::trace!(
+                "checking sampling for thread {}: {} {}",
+                self.objid(),
+                expire.unwrap(),
+                current_ticks
+            );
+        }
+        if expire.is_some_and(|ex| current_ticks >= ex) {
+            *expire = Some(current_ticks + SAMPLE_PERIOD_TICKS);
+            if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_SAMPLE) {
+                let data = ThreadSamplingEvent {
+                    ip: self.read_ip(),
+                    state: self.get_state(),
+                };
+                let entry = new_trace_entry(
+                    TraceKind::Thread,
+                    twizzler_abi::trace::THREAD_SAMPLE,
+                    TraceEntryFlags::HAS_DATA,
+                );
+                TRACE_MGR.async_enqueue(TraceEvent::new_with_data(entry, data));
+            }
+            true
+        } else {
+            false
         }
     }
 }

@@ -273,7 +273,7 @@ impl Context {
 
         let comp = self.get_compartment(comp_id)?;
         Ok(Library::new(
-            unlib.name,
+            backing.full_name().to_owned(),
             idx,
             comp.id,
             comp.name.clone(),
@@ -431,6 +431,7 @@ impl Context {
                     let mut recs = self
                         .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates, load_ctx)
                         .map_err(|e| {
+                            tracing::error!("failed to load dependency for {}: {}", lib, e);
                             DynlinkError::new_collect(
                                 DynlinkErrorKind::LibraryLoadFail {
                                     library: dep_unlib.clone(),
@@ -453,7 +454,6 @@ impl Context {
             deps,
         )?;
 
-        tracing::debug!("HERE");
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
         Ok(ids)

@@ -1,17 +1,27 @@
+use core::fmt::Debug;
 use std::marker::PhantomData;
 
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::{Ref, RefMut};
 use crate::object::RawObject;
 
-#[derive(Debug, Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.
 pub struct GlobalPtr<T> {
     id: ObjID,
     offset: u64,
     _pd: PhantomData<*const T>,
+}
+
+impl<T> Debug for GlobalPtr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GlobalPtr")
+            .field("id", &self.id())
+            .field("offset", &self.offset())
+            .finish()
+    }
 }
 
 impl<T> GlobalPtr<T> {
@@ -27,6 +37,11 @@ impl<T> GlobalPtr<T> {
     /// Casts the global pointer to a different type.
     pub fn cast<U>(self) -> GlobalPtr<U> {
         GlobalPtr::new(self.id, self.offset)
+    }
+
+    /// Checks if the global pointer is local from the perspective of a given object.
+    pub fn is_local(&self, place: impl AsRef<ObjectHandle>) -> bool {
+        place.as_ref().id() == self.id()
     }
 
     /// Resolve a global pointer into a reference.

@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_CONFIG_PATH: llvm-config-18
+  CC: clang-18
+  CXX: clang++-18
+  LD: clang++-18
+
+permissions:
+  contents: write
+
+jobs:
+  check-tag:
+    runs-on: self-hosted
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      should-release: ${{ steps.tag_check.outputs.should-release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          submodules: false
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup
+
+      - name: Init submodules (excluding toolchain sources)
+        run: |
+          git submodule update --init --recursive -- ':!toolchain/src/*'
+
+      - name: Generate tag from submodules
+        id: tag
+        run: |
+          tag=$(cargo +nightly toolchain tag)
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
+            echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
+          else
+            echo "should-release=true" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check-tag
+    if: needs.check-tag.outputs.should-release == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        # runner: [self-hosted, macos-latest]
+        runner: [self-hosted]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          submodules: false
+      - name: Init submodules (including toolchain sources)
+        run: |
+          rm -rf toolchain/src/rust
+          git submodule update --init --recursive
+    
+      - name: Setup dependencies
+        uses: ./.github/actions/setup
+
+      - name: Bootstrap toolchain and create compressed archive
+        id: bootstrap
+        shell: bash
+        run: |
+          RUST_BACKTRACE=1 cargo +nightly xtask toolchain bootstrap --compress
+          os=$(uname)
+          arch=$(uname -m)
+          base_tag="${{ needs.check-tag.outputs.tag }}"
+          filename="toolchain_${arch}_${os}_${base_tag#toolchain_}.tar.zst"
+          echo "filename=$filename" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact for release
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-${{ matrix.runner }}
+          path: ${{ steps.bootstrap.outputs.filename }}
+          retention-days: 1
+
+  release:
+    needs: [check-tag, build]
+    if: needs.check-tag.outputs.should-release == 'true'
+    runs-on: self-hosted
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release and upload all artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.check-tag.outputs.tag }}
+          name: Release for ${{ needs.check-tag.outputs.tag }}
+          files: toolchain_*.tar.zst
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

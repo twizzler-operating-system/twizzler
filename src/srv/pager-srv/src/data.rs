@@ -6,12 +6,12 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::ObjID;
 use twizzler_abi::{
-    object::Protections,
+    object::{Protections, MAX_SIZE},
     pager::{
         CompletionToKernel, KernelCompletionData, KernelCompletionFlags, ObjectEvictFlags,
         ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
@@ -24,9 +24,9 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
-    disk::DiskPageRequest,
     handle::PagerClient,
-    helpers::{page_in, page_out_many, PAGE},
+    helpers::{page_in, page_in_many, page_out_many, PAGE},
+    stats::RecentStats,
     PagerContext,
 };
 
@@ -89,7 +89,7 @@ impl PerObject {
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
-    ) -> CompletionToKernel {
+    ) -> (usize, CompletionToKernel) {
         let pages = {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
@@ -100,7 +100,7 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![p.1]))
+                .map(|p| (p.0, vec![PagedPhysMem::new(p.1)]))
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -120,51 +120,59 @@ impl PerObject {
         let reqs = pages
             .into_iter()
             .map(|p| {
-                let start_page = p.0.pages().next().unwrap();
+                let mut start_page = p.0.pages().next().unwrap();
+                if p.0.start == (MAX_SIZE as u64) - PAGE {
+                    start_page = 0;
+                }
                 let nr_pages = p.1.len();
                 assert_eq!(nr_pages, p.0.pages().count());
-                PageRequest::new(
-                    ctx.disk
-                        .new_paging_request::<DiskPageRequest>(p.1.into_iter().map(|pd| pd.start)),
-                    start_page as i64,
-                    nr_pages as u32,
-                )
+                PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
             .collect_vec();
+        let count = match page_out_many(ctx, self.id, reqs).await {
+            Err(e) => {
+                let mut inner = self.inner.1.lock().await;
+                inner.syncing = false;
+                self.inner.0.notify_all();
+                return (
+                    0,
+                    CompletionToKernel::new(
+                        KernelCompletionData::Error(e.into()),
+                        KernelCompletionFlags::DONE,
+                    ),
+                );
+            }
+            Ok(count) => count,
+        };
 
-        if let Err(e) = page_out_many(ctx, self.id, reqs).await {
-            let mut inner = self.inner.1.lock().await;
-            inner.syncing = false;
-            self.inner.0.notify_all();
-            return CompletionToKernel::new(
-                KernelCompletionData::Error(e.into()),
-                KernelCompletionFlags::DONE,
-            );
-        }
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_all();
 
-        CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE)
+        (
+            count,
+            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
+        )
     }
 
     pub async fn sync_region(
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
-    ) -> CompletionToKernel {
+    ) -> (usize, CompletionToKernel) {
         tracing::debug!("push pending sync: {:?}", info);
         if info.flags.contains(ObjectEvictFlags::FENCE) {
             self.do_sync_region(ctx, info).await
         } else {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
-            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
+            (
+                0,
+                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty()),
+            )
         }
     }
-}
 
-impl PerObject {
     pub fn new(id: ObjID) -> Self {
         Self {
             id,
@@ -195,6 +203,10 @@ impl PagerData {
         self.inner.lock().unwrap().get_next_available_page()
     }
 
+    pub fn free_page(&self, page: u64) {
+        self.inner.lock().unwrap().free_page(page);
+    }
+
     pub fn try_alloc_page(&self) -> core::result::Result<u64, MemoryWaiter> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(page) = inner.get_next_available_page() {
@@ -205,6 +217,16 @@ impl PagerData {
         drop(inner);
         Err(MemoryWaiter::new(pos, self.inner.clone()))
     }
+
+    pub fn print_stats(&self) {
+        let inner = self.inner.lock().unwrap();
+        inner.print_stats();
+    }
+
+    pub fn reset_stats(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.reset_stats();
+    }
 }
 
 pub struct PagerDataInner {
@@ -212,6 +234,7 @@ pub struct PagerDataInner {
     waiters: StableVec<Option<Waker>>,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
+    pub recent_stats: RecentStats,
 }
 
 pub struct MemoryWaiter {
@@ -269,6 +292,7 @@ impl Region {
             stack: Vec::new(),
         }
     }
+
     pub fn get_page(&mut self) -> Option<u64> {
         self.stack.pop().or_else(|| {
             if self.unused_start == self.end {
@@ -281,11 +305,21 @@ impl Region {
         })
     }
 
-    pub fn release_page(&mut self, page: u64) {
+    pub fn release_page(&mut self, page: u64) -> bool {
         if self.unused_start - PAGE == page {
             self.unused_start -= PAGE;
         } else {
             self.stack.push(page);
+        }
+        true
+    }
+
+    pub fn try_release_page(&mut self, page: u64) -> bool {
+        if self.unused_start - PAGE == page {
+            self.unused_start -= PAGE;
+            true
+        } else {
+            false
         }
     }
 }
@@ -301,12 +335,32 @@ impl Memory {
     }
 
     pub fn get_page(&mut self) -> Option<u64> {
-        for region in &mut self.regions {
-            if let Some(page) = region.get_page() {
+        let i = 0;
+        while i < self.regions.len() {
+            if let Some(page) = self.regions[i].get_page() {
                 return Some(page);
             }
+            self.regions.swap_remove(i);
         }
         None
+    }
+
+    pub fn free_page(&mut self, page: u64) {
+        for region in &mut self.regions {
+            if region.try_release_page(page) {
+                return;
+            }
+        }
+
+        for region in &mut self.regions {
+            if region.release_page(page) {
+                return;
+            }
+        }
+    }
+
+    pub fn available_memory(&self) -> usize {
+        self.regions.iter().map(|r| r.avail()).sum()
     }
 }
 
@@ -320,6 +374,7 @@ impl PagerDataInner {
             memory: Memory::default(),
             handles: HandleMgr::new(None),
             waiters: StableVec::new(),
+            recent_stats: RecentStats::new(),
         }
     }
 
@@ -329,8 +384,48 @@ impl PagerDataInner {
         self.memory.get_page()
     }
 
+    fn free_page(&mut self, page: u64) {
+        self.memory.free_page(page);
+    }
+
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
+    }
+
+    pub fn print_stats(&self) {
+        let dt = self.recent_stats.dt();
+        let mut total_read_kbps = 0.;
+        let mut total_write_kbps = 0.;
+        let mut count = 0;
+        for (id, stats) in self.recent_stats.recorded_stats() {
+            let read = crate::stats::pages_to_kbytes_per_sec(stats.pages_read, dt);
+            let write = crate::stats::pages_to_kbytes_per_sec(stats.pages_written, dt);
+            tracing::debug!(
+                "{}: read {:3.3} KB/s ({:8.8} pages), write {:3.3} KB/s ({:8.8} pages)",
+                id,
+                read,
+                stats.pages_read,
+                write,
+                stats.pages_written
+            );
+
+            count += 1;
+            total_read_kbps += read;
+            total_write_kbps += write;
+        }
+        if true || self.recent_stats.had_activity() {
+            tracing::info!(
+                "PAGER STATS: Available memory: {:10.10} KB, r {:3.3} KB/s w {:3.3} KB/s c {:2.2} (dt: {:2.2}s)",
+                self.memory.available_memory() / 1024,
+                total_read_kbps,total_write_kbps,
+                count,
+                dt.as_secs_f32(),
+            );
+        }
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.recent_stats.reset();
     }
 }
 
@@ -347,6 +442,7 @@ impl PagerData {
     /// Initialize the starting memory range for the pager.
     pub fn add_memory_range(&self, range: PhysRange) {
         let mut inner = self.inner.lock().unwrap();
+        tracing::debug!("add memory range: {} pages", range.pages().count());
         inner.memory.push(Region::new(range));
         for item in inner.waiters.values() {
             if let Some(waker) = item {
@@ -355,6 +451,81 @@ impl PagerData {
         }
     }
 
+    async fn do_fill_pages(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+        _partial: bool,
+    ) -> Result<Vec<PagedPhysMem>> {
+        let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
+        let max_pages = (current_mem_pages / 2).min(4096 * 128);
+        tracing::trace!(
+            "req: {}, cur: {} ({})",
+            obj_range.pages().count(),
+            current_mem_pages,
+            current_mem_pages / 2
+        );
+
+        let start_page = obj_range.pages().next().unwrap();
+        let nr_pages = obj_range.pages().count().min(max_pages).max(1);
+        let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
+        let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
+        if count == 0 {
+            // TODO: free pages in incomplete requests.
+            todo!();
+        }
+
+        Ok(reqs.pop().unwrap().into_list())
+    }
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub async fn fill_mem_pages_partial(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<PagedPhysMem>> {
+        // TODO: will need to check if the range contains this, not just starts here.
+        if obj_range.start == (MAX_SIZE as u64) - PAGE {
+            return Ok(self
+                .fill_mem_pages_legacy(ctx, id, obj_range)
+                .await?
+                .into_iter()
+                .map(|p| PagedPhysMem::new(p.1).completed())
+                .collect());
+        }
+
+        let pages = self.do_fill_pages(ctx, id, obj_range, true).await?;
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recent_stats.read_pages(id, pages.len());
+        }
+
+        Ok(pages)
+    }
+
+    /// Allocate a memory page and associate it with an object and range.
+    /// Page in the data from disk
+    /// Returns the physical range corresponding to the allocated page.
+    pub async fn fill_mem_pages_legacy(
+        &self,
+        ctx: &'static PagerContext,
+        id: ObjID,
+        obj_range: ObjectRange,
+    ) -> Result<Vec<(ObjectRange, PhysRange)>> {
+        let mut r = Vec::new();
+        for i in 0..(obj_range.pages().count() as u64) {
+            let range = ObjectRange::new(
+                obj_range.start + i * PAGE,
+                obj_range.start + i * PAGE + PAGE,
+            );
+            r.push((range, self.fill_mem_page(ctx, id, range).await?));
+        }
+        Ok(r)
+    }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
@@ -375,7 +546,7 @@ impl PagerData {
             let page = match self.try_alloc_page() {
                 Ok(page) => page,
                 Err(mw) => {
-                    tracing::debug!("out of memory -- task waiting");
+                    tracing::warn!("out of memory -- task waiting");
                     mw.await
                 }
             };
@@ -384,13 +555,21 @@ impl PagerData {
         };
         page_in(ctx, id, obj_range, phys_range).await?;
         tracing::debug!("memory page allocated successfully: {:?}", phys_range);
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .recent_stats
+                .read_pages(id, obj_range.len() / PAGE as usize);
+        }
+
         return Ok(phys_range);
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            blocking::unblock(move || ctx.paged_ostore.find_external(id.raw())).await?;
+            blocking::unblock(move || ctx.paged_ostore(None)?.find_external(id.raw())).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -399,7 +578,7 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        blocking::unblock(move || ctx.paged_ostore.read_object(id.raw(), 0, &mut b)).await?;
+        blocking::unblock(move || ctx.paged_ostore(None)?.read_object(id.raw(), 0, &mut b)).await?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,
@@ -419,7 +598,12 @@ impl PagerData {
             inner.get_per_object(info.obj_id).clone()
         };
 
-        po.sync_region(ctx, info).await
+        let (count, compl) = po.sync_region(ctx, info).await;
+        if count > 0 {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recent_stats.write_pages(info.obj_id, count);
+        }
+        compl
     }
 
     pub fn with_handle<R>(

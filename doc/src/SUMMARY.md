@@ -4,6 +4,10 @@
 
 [Building Twizzler](./BUILD.md)
 
+[Developing on Twizzler](./develop.md)
+
+[Debugging Twizzler](./Debug.md)
+
 # Fundamentals
 
 - [Objects](./Object.md)
@@ -33,6 +37,8 @@
 <!-- - [Keyring](./Keyring.md) -->
 
 # Advanced Features
+
+- [Tracing and Performance Debugging](./Trace.md)
 
 - [Twizzler Build System Crate Metadata](./CargoMetadata.md)
 

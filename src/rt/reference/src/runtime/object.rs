@@ -3,32 +3,39 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use fotcache::FotCache;
 use handlecache::HandleCache;
 use tracing::warn;
 use twizzler_abi::{
     meta::{FotEntry, FotFlags},
     object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, CreateTieFlags, CreateTieSpec, ObjectCreate},
+    syscall::{
+        sys_map_ctrl, sys_object_create, sys_object_read_map, CreateTieFlags, CreateTieSpec,
+        MapControlCmd, ObjectCreate,
+    },
 };
 use twizzler_rt_abi::{
     bindings::object_handle,
-    error::{ArgumentError, ObjectError, ResourceError, TwzError},
+    error::{ObjectError, ResourceError, TwzError},
     object::{MapFlags, ObjID, ObjectHandle},
     Result,
 };
 
 use super::ReferenceRuntime;
 
+mod fotcache;
 mod handlecache;
 
 #[repr(C)]
 pub(crate) struct RuntimeHandleInfo {
     refs: AtomicU64,
+    fot_cache: FotCache,
 }
 
 pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
     let rhi = Box::new(RuntimeHandleInfo {
         refs: AtomicU64::new(1),
+        fot_cache: FotCache::new(),
     });
     Box::into_raw(rhi)
 }
@@ -70,6 +77,19 @@ impl ReferenceRuntime {
         )
     }
 
+    pub fn update_handle(&self, handle: *mut object_handle) -> Result<()> {
+        sys_map_ctrl(
+            unsafe { &*handle }.start.cast(),
+            MAX_SIZE,
+            MapControlCmd::Update,
+            0,
+        )?;
+        unsafe { &*(&*handle).runtime_info.cast::<RuntimeHandleInfo>() }
+            .fot_cache
+            .clear();
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle) {
         self.object_manager.lock().release(handle);
@@ -83,11 +103,16 @@ impl ReferenceRuntime {
             return Ok(handle);
         }
 
-        let id = self
-            .get_alloc()
-            .get_id_from_ptr(ptr)
-            .ok_or(ArgumentError::InvalidAddress)?;
         let slot = ptr as usize / MAX_SIZE;
+        let Some(id) = self.get_alloc().get_id_from_ptr(ptr) else {
+            let map = sys_object_read_map(None, slot)?;
+            return Ok(object_handle {
+                id: map.id.raw(),
+                start: (slot * MAX_SIZE) as *mut c_void,
+                map_flags: map.flags.bits(),
+                ..Default::default()
+            });
+        };
         Ok(object_handle {
             id: id.raw(),
             start: (slot * MAX_SIZE) as *mut c_void,
@@ -139,16 +164,7 @@ impl ReferenceRuntime {
         Err(ResourceError::OutOfResources.into())
     }
 
-    pub fn resolve_fot(
-        &self,
-        handle: *mut object_handle,
-        idx: u64,
-        _valid_len: usize,
-    ) -> Result<ObjectHandle> {
-        if idx == 0 || handle.is_null() {
-            return Err(TwzError::INVALID_ARGUMENT);
-        }
-        let handle = unsafe { &*handle };
+    fn read_fot_entry(&self, handle: &object_handle, idx: u64) -> Result<FotEntry> {
         let ptr = unsafe { &*handle.meta.cast::<FotEntry>().sub((idx + 1) as usize) };
         let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
         if flags.contains(FotFlags::DELETED)
@@ -160,21 +176,57 @@ impl ReferenceRuntime {
         if flags.contains(FotFlags::RESOLVER) {
             return Err(TwzError::NOT_SUPPORTED);
         }
-        let id = ObjID::from_parts(ptr.values);
+        let val = unsafe { (ptr as *const FotEntry).read_volatile() };
 
-        let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
+        let flags = FotFlags::from_bits_truncate(val.flags.load(Ordering::SeqCst));
         if flags.contains(FotFlags::DELETED)
             || !flags.contains(FotFlags::ACTIVE)
             || !flags.contains(FotFlags::ALLOCATED)
         {
             return Err(ObjectError::InvalidFote.into());
         }
-
-        self.map_object(id, MapFlags::READ | MapFlags::INDIRECT)
+        Ok(val)
     }
 
-    pub fn resolve_fot_local(&self, _ptr: *mut u8, _idx: u64, _valid_len: usize) -> *mut u8 {
-        //tracing::warn!("TODO: resolve local FOT entry");
+    pub fn resolve_fot(
+        &self,
+        handle: *mut object_handle,
+        idx: u64,
+        _valid_len: usize,
+        map_flags: MapFlags,
+    ) -> Result<ObjectHandle> {
+        if idx == 0 || handle.is_null() {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let handle = unsafe { &*handle };
+        tracing::trace!("Resolving FOT: {:x}", handle.id);
+        let entry = self.read_fot_entry(handle, idx)?;
+        let id = ObjID::from_parts(entry.values);
+
+        let res_handle = self.map_object(id, map_flags)?;
+        unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() }
+            .fot_cache
+            .insert(idx, map_flags, res_handle.clone());
+        Ok(res_handle)
+    }
+
+    pub fn resolve_fot_local(
+        &self,
+        ptr: *mut u8,
+        idx: u64,
+        _valid_len: usize,
+        flags: MapFlags,
+    ) -> *mut u8 {
+        if let Some(handle) = self.object_manager.lock().get_handle(ptr) {
+            tracing::trace!("Resolving FOT local: {:x}", handle.id);
+            let rtinfo: *const RuntimeHandleInfo = handle.runtime_info.cast();
+            unsafe {
+                return (&*rtinfo)
+                    .fot_cache
+                    .resolve_cached_ptr(idx, flags)
+                    .unwrap_or(core::ptr::null_mut());
+            }
+        }
         core::ptr::null_mut()
     }
 

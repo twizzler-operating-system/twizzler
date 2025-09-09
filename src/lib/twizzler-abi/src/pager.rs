@@ -11,6 +11,13 @@ use crate::{
     syscall::{BackingType, LifetimeType},
 };
 
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct PagerFlags : u32 {
+        const PREFETCH = 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct RequestFromKernel {
     cmd: KernelCommand,
@@ -27,7 +34,7 @@ impl RequestFromKernel {
 
     pub fn id(&self) -> Option<ObjID> {
         match self.cmd() {
-            KernelCommand::PageDataReq(objid, _) => Some(objid),
+            KernelCommand::PageDataReq(objid, _, _) => Some(objid),
             KernelCommand::ObjectInfoReq(objid) => Some(objid),
             KernelCommand::ObjectEvict(info) => Some(info.obj_id),
             KernelCommand::ObjectDel(objid) => Some(objid),
@@ -39,7 +46,7 @@ impl RequestFromKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
-    PageDataReq(ObjID, ObjectRange),
+    PageDataReq(ObjID, ObjectRange, PagerFlags),
     ObjectInfoReq(ObjID),
     ObjectEvict(ObjectEvictInfo),
     ObjectDel(ObjID),
@@ -72,13 +79,28 @@ impl CompletionToKernel {
     pub fn flags(&self) -> KernelCompletionFlags {
         self.flags
     }
+
+    pub fn set_flags(&mut self, flags: KernelCompletionFlags) {
+        self.flags |= flags;
+    }
+
+    pub fn clear_flags(&mut self, flags: KernelCompletionFlags) {
+        self.flags &= !flags;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+    pub struct PageFlags: u32 {
+        const WIRED = 0x1;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCompletionData {
     Okay,
     Error(RawTwzError),
-    PageDataCompletion(ObjID, ObjectRange, PhysRange),
+    PageDataCompletion(ObjID, ObjectRange, PhysRange, PageFlags),
     ObjectInfoCompletion(ObjID, ObjectInfo),
 }
 
@@ -107,6 +129,7 @@ pub enum PagerRequest {
         phys: PhysRange,
         write_phys: bool,
     },
+    RegisterPhys(u64, u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
@@ -198,6 +221,18 @@ impl PhysRange {
         let first_page = self.start / NULLPAGE_SIZE as u64;
         let last_page = self.end / NULLPAGE_SIZE as u64;
         first_page..last_page
+    }
+}
+
+impl core::ops::Add<u64> for PhysRange {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        if rhs == 0 {
+            Self::new(self.start, self.end)
+        } else {
+            Self::new(self.end, self.end + NULLPAGE_SIZE as u64)
+        }
     }
 }
 

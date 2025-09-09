@@ -5,7 +5,8 @@ doc-all = "run --release --target-dir=.target-xtask --package xtask -- doc"
 check-all = "run --release --target-dir=.target-xtask --package xtask -- check"
 make-image = "run --release --target-dir=.target-xtask --package xtask -- make-image"
 start-qemu = "run --release --target-dir=.target-xtask --package xtask -- start-qemu"
-bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstrap"
+toolchain = "run --release --target-dir=.target-xtask --package xtask -- toolchain"
+# bootstrap = "run --release --target-dir=.target-xtask --package xtask -- bootstrap"
 
 
 [build]

@@ -30,7 +30,7 @@ struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
     zone: ZoneAllocator<'static>,
 }
 
-struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
+pub struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
     inner: Spinlock<Option<KernelAllocatorInner<Ctx>>>,
 }
 
@@ -72,6 +72,7 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
 }
 
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
+    #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut inner = self.inner.lock();
 
@@ -141,7 +142,7 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
 }
 
 #[global_allocator]
-static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
+pub static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
     inner: Spinlock::new(None),
 };
 

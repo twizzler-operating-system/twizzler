@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
 
 use super::{
     CompConfigObject, CompartmentMgr, RunComp, StackObject, COMP_DESTRUCTED, COMP_EXITED,
-    COMP_IS_BINARY, COMP_READY,
+    COMP_IS_BINARY, COMP_READY, COMP_STARTED,
 };
 use crate::mon::{
     get_monitor,
@@ -60,15 +60,23 @@ impl LoadInfo {
         rt_id: LibraryId,
         sctx_id: ObjID,
         is_binary: bool,
+        extras: &[LibraryId],
     ) -> Result<Self, DynlinkError> {
         let lib = dynlink.get_library(rt_id)?;
+        let extra_ctors: Vec<_> = extras
+            .iter()
+            .map(|extra| dynlink.build_ctors_list(*extra, Some(lib.compartment())))
+            .try_collect()?;
+        let mut root_ctors = dynlink.build_ctors_list(root_id, Some(lib.compartment()))?;
+        let mut ctor_info: Vec<_> = extra_ctors.iter().flatten().copied().collect();
+        ctor_info.append(&mut root_ctors);
         Ok(Self {
             root_id,
             rt_id,
             comp_id: lib.compartment(),
             sctx_id,
             name: dynlink.get_compartment(lib.compartment())?.name.clone(),
-            ctor_info: dynlink.build_ctors_list(root_id, Some(lib.compartment()))?,
+            ctor_info,
             entry: lib.get_entry_address()?,
             is_binary,
         })
@@ -78,6 +86,7 @@ impl LoadInfo {
         &self,
         handle: MapHandle,
         stack_object: StackObject,
+        is_debugging: bool,
     ) -> Result<RunComp, DynlinkError> {
         let comp_config =
             CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
@@ -94,6 +103,7 @@ impl LoadInfo {
             stack_object,
             self.entry as usize,
             &self.ctor_info,
+            is_debugging,
         ))
     }
 }
@@ -136,6 +146,7 @@ impl RunCompLoader {
         dynlink: &mut Context,
         comp_name: &str,
         root_unlib: UnloadedLibrary,
+        extras: &[UnloadedLibrary],
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
     ) -> miette::Result<Self> {
@@ -152,12 +163,36 @@ impl RunCompLoader {
             AllowedGates::Private
         };
         let mut load_ctx = LoadCtx::default();
-        let loads = UnloadOnDrop(dynlink.load_library_in_compartment(
+
+        let extra_load_ids: Vec<_> = extras
+            .into_iter()
+            .map(|extra| {
+                if mondebug {
+                    tracing::info!("loading ld preload library: {}", extra.name);
+                } else {
+                    tracing::debug!("loading ld preload library: {}", extra.name);
+                }
+                dynlink.load_library_in_compartment(
+                    root_comp_id,
+                    extra.clone(),
+                    AllowedGates::Private,
+                    &mut load_ctx,
+                )
+            })
+            .try_collect()?;
+
+        let mut loads = UnloadOnDrop(dynlink.load_library_in_compartment(
             root_comp_id,
             root_unlib.clone(),
             allowed_gates,
             &mut load_ctx,
         )?);
+
+        for extra in &extra_load_ids {
+            for extra in extra {
+                loads.0.push(extra.clone());
+            }
+        }
 
         // The dynamic linker gives us a list of loaded libraries, and which compartments they ended
         // up in. For each of those, we may need to inject the runtime library. Collect all
@@ -184,6 +219,7 @@ impl RunCompLoader {
                     rt_id,
                     *load_ctx.set.get(&load.comp).unwrap(),
                     false,
+                    &[],
                 ))
             } else {
                 None
@@ -199,8 +235,16 @@ impl RunCompLoader {
 
         let root_id = loads.0[0].lib;
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id, &mut load_ctx)?;
-
+        let extra_lids = extra_load_ids
+            .iter()
+            .flatten()
+            .map(|x| x.lib)
+            .collect::<Vec<_>>();
+        for extra in &extra_lids {
+            dynlink.relocate_all(*extra)?;
+        }
         dynlink.relocate_all(root_id)?;
+
         let is_binary = dynlink.get_library(root_id)?.is_binary();
         let root_comp = LoadInfo::new(
             dynlink,
@@ -208,6 +252,7 @@ impl RunCompLoader {
             rt_id,
             *load_ctx.set.get(&root_comp_id).unwrap(),
             is_binary,
+            extra_lids.as_slice(),
         )?;
 
         if mondebug {
@@ -264,6 +309,7 @@ impl RunCompLoader {
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
         _mondebug: bool,
+        is_debugging: bool,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |id| {
             Space::safe_create_and_map_runtime_object(
@@ -276,6 +322,7 @@ impl RunCompLoader {
         let root_rc = self.root_comp.build_runcomp(
             make_new_handle(self.root_comp.sctx_id)?,
             StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
+            is_debugging,
         )?;
 
         let mut ids = vec![root_rc.instance];
@@ -295,7 +342,7 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .zip(handles)
-            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1))
+            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1, false))
             .try_collect::<Vec<_>>()?;
 
         for rc in extras.drain(..) {
@@ -350,6 +397,7 @@ impl Monitor {
         args: &[&CStr],
         env: &[&CStr],
         mondebug: bool,
+        suspend_on_start: bool,
     ) -> Result<(), TwzError> {
         if mondebug {
             tracing::info!("start compartment {}: {:?} {:?}", instance, args, env);
@@ -366,7 +414,7 @@ impl Monitor {
             rc.deps.clone()
         };
         for dep in deps {
-            self.start_compartment(dep, &[], env, false)?;
+            self.start_compartment(dep, &[], env, false, false)?;
         }
         // Check the state of this compartment.
         let state = self.load_compartment_flags(instance);
@@ -386,12 +434,25 @@ impl Monitor {
             if state & COMP_READY != 0 {
                 return Ok(());
             }
+            if suspend_on_start {
+                // We can't wait for ready, since that need the thread to run.
+                if state & COMP_STARTED != 0 {
+                    return Ok(());
+                }
+            }
             let info = {
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *self.locks.lock(ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance)?;
 
-                rc.start_main_thread(state, &mut *tmgr, &mut *dynlink, args, env)
+                rc.start_main_thread(
+                    state,
+                    &mut *tmgr,
+                    &mut *dynlink,
+                    args,
+                    env,
+                    suspend_on_start,
+                )
             };
             if info.is_none() {
                 return Err(GenericError::Internal.into());

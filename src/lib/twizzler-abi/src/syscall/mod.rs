@@ -16,9 +16,10 @@ mod spawn;
 mod thread_control;
 mod thread_sync;
 mod time;
+mod trace;
 
 use crate::arch::syscall::raw_syscall;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 /// All possible Synchronous syscalls into the Twizzler kernel.
 pub enum Syscall {
@@ -63,6 +64,8 @@ pub enum Syscall {
     GetRandom,
     /// Manipulate mappings
     MapCtrl,
+    /// Manage tracing
+    Ktrace,
     NumSyscalls,
 }
 
@@ -97,14 +100,15 @@ pub use spawn::*;
 pub use thread_control::*;
 pub use thread_sync::*;
 pub use time::*;
+pub use trace::*;
 use twizzler_rt_abi::error::{RawTwzError, TwzError};
 
 #[inline]
 fn convert_codes_to_result<T, E, D, F, G>(code: u64, val: u64, d: D, f: F, g: G) -> Result<T, E>
 where
-    F: Fn(u64, u64) -> T,
-    G: Fn(u64, u64) -> E,
-    D: Fn(u64, u64) -> bool,
+    F: FnOnce(u64, u64) -> T,
+    G: FnOnce(u64, u64) -> E,
+    D: FnOnce(u64, u64) -> bool,
 {
     if d(code, val) {
         Err(g(code, val))

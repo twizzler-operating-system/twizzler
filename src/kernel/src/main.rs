@@ -16,6 +16,7 @@
 #![feature(let_chains)]
 #![feature(btree_extract_if)]
 #![feature(allocator_api)]
+#![feature(likely_unlikely)]
 
 #[macro_use]
 pub mod log;
@@ -46,6 +47,7 @@ mod spinlock;
 mod syscall;
 mod thread;
 mod time;
+mod trace;
 mod userinit;
 pub mod utils;
 extern crate alloc;
@@ -126,7 +128,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init(boot_info);
     ::log::set_logger(&LOGGER).unwrap();
-    ::log::set_max_level(LevelFilter::Debug);
+    ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();

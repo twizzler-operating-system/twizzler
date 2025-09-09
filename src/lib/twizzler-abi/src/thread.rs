@@ -50,13 +50,22 @@ pub enum ExecutionState {
 }
 
 impl ExecutionState {
-    fn from_status(status: u64) -> Self {
+    pub fn from_status(status: u64) -> Self {
         // If we see a status we don't understand, just assume the thread is running.
         match status & 0xff {
             1 => ExecutionState::Sleeping,
             2 => ExecutionState::Suspended,
             255 => ExecutionState::Exited,
             _ => ExecutionState::Running,
+        }
+    }
+
+    pub fn to_status(&self) -> u64 {
+        match self {
+            ExecutionState::Running => 0,
+            ExecutionState::Sleeping => 1,
+            ExecutionState::Suspended => 2,
+            ExecutionState::Exited => 255,
         }
     }
 }

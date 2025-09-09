@@ -24,3 +24,26 @@
 [submodule "src/ports/rusqlite"]
 	path = src/ports/rusqlite
 	url = https://github.com/TheTadLands/rusqlite.git
+[submodule "src/ports/hwlocality"]
+	path = src/ports/hwlocality
+	url = ../../twizzler-operating-system/hwlocality.git
+	branch = twizzler
+[submodule "src/ports/rust-errno"]
+	path = src/ports/rust-errno
+	url = ../../twizzler-operating-system/rust-errno.git
+	branch = twizzler
+[submodule "src/ports/hwloc"]
+	path = src/ports/hwloc
+	url = ../../twizzler-operating-system/hwloc.git
+	branch = twizzler
+[submodule "src/ports/libc"]
+	path = src/ports/libc
+	url = ../../twizzler-operating-system/libc.git
+	branch = twizzler-2025-04
+[submodule "src/ports/rust-rocksdb"]
+	path = src/ports/rust-rocksdb
+	url = ../../twizzler-operating-system/rust-rocksdb.git
+[submodule "src/ports/memmap2-rs"]
+	path = src/ports/memmap2-rs
+	url = ../../twizzler-operating-system/memmap2-rs.git
+	branch = twizzler

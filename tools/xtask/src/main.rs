@@ -4,9 +4,10 @@ mod qemu;
 mod toolchain;
 mod triple;
 
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use toolchain::ToolchainCommands;
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -22,13 +23,13 @@ enum Profile {
     Release,
 }
 
-impl ToString for Profile {
-    fn to_string(&self) -> String {
-        match self {
+impl Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
             Profile::Debug => "debug",
             Profile::Release => "release",
-        }
-        .to_string()
+        };
+        write!(f, "{str}")
     }
 }
 
@@ -181,6 +182,13 @@ struct QemuOptions {
     repeat: bool,
     #[clap(long, help = "Auto-start a program in init.")]
     autostart: Option<String>,
+    #[clap(
+        long,
+        short,
+        help = "Enable GDB connection via serial, exposed via host TCP <port>. Defaults to :2159.",
+        default_value_t = 2159
+    )]
+    gdb: u16,
 }
 
 impl From<&QemuOptions> for ImageOptions {
@@ -197,28 +205,10 @@ impl From<&QemuOptions> for ImageOptions {
     }
 }
 
-#[derive(clap::Args, Debug)]
-struct BootstrapOptions {
-    #[clap(long, help = "Skip downloading boot files from file server.")]
-    skip_downloads: bool,
-    #[clap(long, help = "Skip compiling the rust toolchain (not recommended...).")]
-    skip_rust: bool,
-    #[clap(
-        long,
-        help = "Don't remove the target/ directory after rebuilding the toolchain."
-    )]
-    keep_old_artifacts: bool,
-    #[clap(
-        long,
-        help = "Keep early stages (0 and 1) of building rustc. Speeds up compilation, but can only be used if you (a) have already done a full bootstrap, and (b) since that bootstrap, all that is modified is twizzler-runtime-api or rust's standard library. Any changes to the compiler require one to not use this flag."
-    )]
-    keep_early_stages: bool,
-}
-
 #[derive(Subcommand, Debug)]
 enum Commands {
-    #[clap(about = "Bootstrap the Twizzler Rust toolchain.")]
-    Bootstrap(BootstrapOptions),
+    #[clap(subcommand, about = "Manage the Twizzler toolchain(s)")]
+    Toolchain(ToolchainCommands),
     #[clap(about = "Run cargo check on the codebase.")]
     Check(CheckOptions),
     #[clap(about = "Build the Twizzler system.")]
@@ -236,7 +226,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {
-            Commands::Bootstrap(x) => toolchain::do_bootstrap(x),
+            Commands::Toolchain(x) => toolchain::handle_cli(x),
             Commands::Check(x) => build::do_check(x),
             Commands::Build(x) => build::do_build(x).map(|_| ()),
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
@@ -252,10 +242,7 @@ fn print_status_line(name: &str, config: Option<&BuildConfig>) {
     if let Some(config) = config {
         eprintln!(
             "=== BUILDING {} [{}-{}::{}]",
-            name,
-            config.arch.to_string(),
-            config.machine.to_string(),
-            config.profile.to_string()
+            name, config.arch, config.machine, config.profile
         );
     } else {
         eprintln!("=== BUILDING {} [build::release]", name);

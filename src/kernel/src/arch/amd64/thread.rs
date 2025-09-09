@@ -4,12 +4,14 @@ use core::{
 };
 
 use twizzler_abi::{
-    arch::XSAVE_LEN,
+    arch::{ArchRegisters, XSAVE_LEN},
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    thread::ExecutionState,
     upcall::{
         UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
     },
 };
+use twizzler_rt_abi::error::TwzError;
 
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
@@ -251,6 +253,8 @@ where
     let data_ptr = data_start as usize as *mut UpcallData;
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
+    frame.prior_ctx = upcall_data.source_ctx;
+    log::info!("upcall frame: {:?}", frame);
 
     // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
     // and fpu state.
@@ -261,9 +265,12 @@ where
         .load(Ordering::SeqCst);
 
     unsafe {
+        let flags = x86::controlregs::xcr0();
+        let upper = flags.bits() as u64 >> 32;
+        let lower = flags.bits() as u64 & 0xFFFFFFFF;
         // We still need to save the fpu registers / sse state.
         if use_xsave() {
-            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
+            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
         } else {
             core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
         }
@@ -382,8 +389,12 @@ impl Thread {
     fn save_extended_state(&self) {
         let do_xsave = use_xsave();
         unsafe {
+            let flags = x86::controlregs::xcr0();
+            let upper = flags.bits() as u64 >> 32;
+            let lower = flags.bits() as u64 & 0xFFFFFFFF;
+
             if do_xsave {
-                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
+                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
             } else {
                 core::arch::asm!("fxsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
             }
@@ -457,6 +468,59 @@ impl Thread {
 
     pub unsafe fn init(&mut self, f: extern "C" fn()) {
         self.init_va(f as usize as u64);
+    }
+
+    pub fn read_ip(&self) -> u64 {
+        let mut frame = *self.arch.upcall_restore_frame.borrow();
+        if frame.is_none() {
+            frame = Some(match *self.arch.entry_registers.borrow() {
+                Registers::None => {
+                    unreachable!()
+                }
+                Registers::Interrupt(int, _) => {
+                    let int = unsafe { &mut *int };
+                    (*int).into()
+                }
+                Registers::Syscall(sys, _) => {
+                    let sys = unsafe { &mut *sys };
+                    (*sys).into()
+                }
+            });
+        }
+        frame.unwrap().rip
+    }
+
+    pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
+        if self.get_state() != ExecutionState::Suspended {
+            return Err(TwzError::Generic(
+                twizzler_rt_abi::error::GenericError::AccessDenied,
+            ));
+        }
+        let mut frame = *self.arch.upcall_restore_frame.borrow();
+        if frame.is_none() {
+            frame = Some(match *self.arch.entry_registers.borrow() {
+                Registers::None => {
+                    unreachable!()
+                }
+                Registers::Interrupt(int, _) => {
+                    let int = unsafe { &mut *int };
+                    (*int).into()
+                }
+                Registers::Syscall(sys, _) => {
+                    let sys = unsafe { &mut *sys };
+                    (*sys).into()
+                }
+            });
+        }
+        Ok(ArchRegisters {
+            frame: frame.unwrap(),
+            fs: 0,
+            gs: 0,
+            es: 0,
+            ds: 0,
+            ss: 0,
+            cs: 0,
+        })
     }
 }
 

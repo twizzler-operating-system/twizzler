@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use object_store::{objid_to_ino, PageRequest, PagingImp};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -8,7 +8,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{object::Nonce, Result};
 
-use crate::{disk::DiskPageRequest, PagerContext};
+use crate::PagerContext;
 
 /// A constant representing the page size (4096 bytes per page).
 pub const PAGE: u64 = 4096;
@@ -24,15 +24,13 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
 }
 
 //https://stackoverflow.com/questions/50380352/how-can-i-group-consecutive-integers-in-a-vector-in-rust
-pub fn consecutive_slices<T: PartialEq + Add + From<u32> + Copy>(
-    data: &[T],
-) -> impl Iterator<Item = &[T]>
+pub fn consecutive_slices<T: PartialEq + Add<u64> + Copy>(data: &[T]) -> impl Iterator<Item = &[T]>
 where
     T::Output: PartialEq<T>,
 {
     let mut slice_start = 0;
     (1..=data.len()).flat_map(move |i| {
-        if i == data.len() || data[i - 1] + 1u32.into() != data[i] {
+        if i == data.len() || data[i - 1] + 1u64 != data[i] {
             let begin = slice_start;
             slice_start = i;
             Some(&data[begin..i])
@@ -48,13 +46,10 @@ pub async fn page_in(
     obj_range: ObjectRange,
     phys_range: PhysRange,
 ) -> Result<()> {
-    assert_eq!(obj_range.len(), 0x1000);
-    assert_eq!(phys_range.len(), 0x1000);
+    assert_eq!(obj_range.len(), PAGE as usize);
+    assert_eq!(phys_range.len(), PAGE as usize);
 
-    let imp = ctx
-        .disk
-        .new_paging_request::<DiskPageRequest>([phys_range.start]);
-    let mut start_page = obj_range.start / DiskPageRequest::page_size() as u64;
+    let mut start_page = obj_range.start / PAGE;
 
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
         tracing::debug!("found meta page, using 0 page");
@@ -66,8 +61,11 @@ pub async fn page_in(
                     ::core::mem::size_of::<T>(),
                 )
             }
+
             let len =
-                blocking::unblock(move || ctx.paged_ostore.find_external(obj_id.raw())).await?;
+                blocking::unblock(move || ctx.paged_ostore(None)?.find_external(obj_id.raw()))
+                    .await
+                    .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -92,24 +90,24 @@ pub async fn page_in(
         }
     }
 
-    let nr_pages = obj_range.len() / DiskPageRequest::page_size();
-    let reqs = vec![PageRequest::new(imp, start_page as i64, nr_pages as u32)];
+    let nr_pages = obj_range.len() / PAGE as usize;
+    let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
     page_in_many(ctx, obj_id, reqs).await.map(|_| ())
 }
 
 pub async fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    reqs: Vec<PageRequest<DiskPageRequest>>,
+    mut reqs: Vec<PageRequest>,
 ) -> Result<usize> {
     blocking::unblock(move || {
-        let mut reqslice = &reqs[..];
+        let mut reqslice = &mut reqs[..];
         while reqslice.len() > 0 {
             let donecount = ctx
-                .paged_ostore
+                .paged_ostore(None)?
                 .page_out_object(obj_id.raw(), reqslice)
                 .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-            reqslice = &reqslice[donecount..];
+            reqslice = &mut reqslice[donecount..];
         }
         Ok(reqs.len())
     })
@@ -119,13 +117,14 @@ pub async fn page_out_many(
 pub async fn page_in_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    mut reqs: Vec<PageRequest<DiskPageRequest>>,
-) -> Result<usize> {
+    mut reqs: Vec<PageRequest>,
+) -> Result<(Vec<PageRequest>, usize)> {
     blocking::unblock(move || {
-        Ok(ctx
-            .paged_ostore
+        let ret = ctx
+            .paged_ostore(None)?
             .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?)
+            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
+        Ok((reqs, ret))
     })
     .await
 }

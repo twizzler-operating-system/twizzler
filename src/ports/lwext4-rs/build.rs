@@ -8,6 +8,8 @@ fn main() {
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
+    let cflags = format!("{} -DCONFIG_USE_DEFAULT_CFG", cflags);
+
     //let _ = std::fs::remove_dir_all(&cmake_build);
 
     let mut proc = std::process::Command::new("cmake");
@@ -45,6 +47,7 @@ fn main() {
     let status = proc.status().unwrap();
     assert!(status.success());
 
+    println!("cargo::rerun-if-changed=src/lwext4.h");
     println!("cargo::rustc-link-lib=c");
     println!("cargo::rustc-link-search={}/cmake-build/src/", outdir);
     println!("cargo::rustc-link-lib=lwext4");

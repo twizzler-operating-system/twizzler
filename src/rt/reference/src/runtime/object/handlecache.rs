@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
 use tracing::trace;
-use twizzler_abi::object::MAX_SIZE;
-use twizzler_rt_abi::bindings::object_handle;
+use twizzler_abi::{
+    object::MAX_SIZE,
+    syscall::{sys_map_ctrl, MapControlCmd},
+};
+use twizzler_rt_abi::{bindings::object_handle, object::MapFlags};
 
 use super::free_runtime_info;
-use crate::runtime::object::ObjectMapKey;
+use crate::runtime::object::{ObjectMapKey, RuntimeHandleInfo};
 
 type Mapping = super::ObjectMapKey;
 
@@ -47,6 +50,12 @@ impl HandleCache {
         if let Some(idx) = idx {
             trace!("activate {:?} from queue pos {}", map, idx);
             let (_, handle) = self.queued.remove(idx);
+            if MapFlags::from_bits_truncate(handle.map_flags).contains(MapFlags::INDIRECT) {
+                sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0).ok()?;
+            }
+            (unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() })
+                .fot_cache
+                .clear();
             self.insert(handle);
         } else {
             trace!("activate {:?}", map);

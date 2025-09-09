@@ -1,4 +1,5 @@
 use alloc::{format, string::String, sync::Arc};
+use core::{ops::Range, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 
@@ -8,6 +9,7 @@ use super::{
 };
 use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
 
+#[derive(Debug)]
 pub struct PageVec {
     tree: NonOverlappingIntervalTree<usize, PageRef>,
 }
@@ -19,6 +21,20 @@ impl PageVec {
         Self {
             tree: NonOverlappingIntervalTree::new(),
         }
+    }
+
+    pub fn first(&self) -> Option<&PageRef> {
+        self.tree
+            .range(Range {
+                start: 0,
+                end: usize::MAX,
+            })
+            .next()
+            .map(|x| x.1.value())
+    }
+
+    pub fn len(&self) -> usize {
+        self.tree.len()
     }
 
     /// Remove the first pages up to offset, and then truncate the vector to the given page count.
@@ -37,6 +53,28 @@ impl PageVec {
 
         let mut first = true;
         for (k, entry) in self.tree.range(range.offset..(range.offset + range.length)) {
+            if !first {
+                str += ", ";
+            }
+            str += &format!("{}:{:x}", k, entry.physical_address());
+            first = false;
+        }
+        str += ", ...]";
+
+        str
+    }
+
+    pub fn show_entry(&self, offset: usize, length: usize) -> String {
+        let mut str = String::new();
+        str += &format!("PV {:p} ", self);
+        if offset > 0 {
+            str += "[..., ";
+        } else {
+            str += "[";
+        }
+
+        let mut first = true;
+        for (k, entry) in self.tree.range(offset..(offset + length)) {
             if !first {
                 str += ", ";
             }
@@ -79,7 +117,7 @@ impl PageVec {
 
     pub fn add_page(&mut self, off: usize, page: PageRef) -> PageRef {
         let range = off..(off + page.nr_pages());
-        self.tree.insert_replace(range, page.clone());
+        let _k = self.tree.insert_replace(range.clone(), page.clone());
         page
     }
 }

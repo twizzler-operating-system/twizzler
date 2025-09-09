@@ -6,9 +6,9 @@ use alloc::{
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
+    pager::PagerFlags,
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
-        ObjectCreate, ObjectCreateFlags, ObjectSource,
+        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, ObjectSource
     },
 };
 use twizzler_rt_abi::{
@@ -25,7 +25,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -146,8 +146,14 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
         id: info.object().id(),
         prot: info.mapping_settings(false, false).perms(),
         slot,
-        flags: MapFlags::empty(),
+        flags: info.flags,
     })
+}
+
+pub fn sys_object_info(handle: ObjID) -> Result<ObjectInfo> {
+    let obj = crate::obj::lookup_object(handle, LookupFlags::empty())
+        .ok_or(ObjectError::NoSuchObject)?;
+    Ok(obj.info())
 }
 
 pub trait ObjectHandle {
@@ -266,6 +272,19 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
             }
             crate::obj::scan_deleted();
         }
+        ObjectControlCmd::Preload => {
+            if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
+                crate::pager::ensure_in_core(
+                    &obj,
+                    PageNumber::from_offset(0),
+                    MAX_SIZE / PageNumber::PAGE_SIZE,
+                    PagerFlags::PREFETCH,
+                );
+            } else {
+                return (1, TwzError::INVALID_ARGUMENT.raw());
+            }
+        }
+
         _ => {}
     }
     (0, 0)

@@ -1,5 +1,6 @@
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
+    syscall::MapFlags,
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         SecurityViolationInfo, UpcallInfo,
@@ -9,7 +10,12 @@ use twizzler_abi::{
 use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
 use crate::{
     arch::VirtAddr,
-    memory::context::{kernel_context, ContextRef},
+    instant::Instant,
+    memory::{
+        context::{kernel_context, ContextRef},
+        pagetables::PhysAddrProvider,
+        FAULT_STATS,
+    },
     obj::PageNumber,
     security::{AccessInfo, PermsInfo, KERNEL_SCTX},
     thread::{current_memory_context, current_thread_ref},
@@ -17,6 +23,10 @@ use crate::{
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
+    FAULT_STATS
+        .total
+        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+
     // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
@@ -146,20 +156,32 @@ fn check_security(
 fn page_fault_to_region(
     addr: VirtAddr,
     cause: MemoryAccessKind,
-    _flags: PageFaultFlags,
+    flags: PageFaultFlags,
     ip: VirtAddr,
     ctx: ContextRef,
     mut sctx_id: ObjID,
     info: MapRegion,
 ) -> Result<(), UpcallInfo> {
     let id = info.object.id();
-    let page_number = PageNumber::from_address(addr);
+
+    let start_time = Instant::now();
+    let mut page_number = PageNumber::from_address(addr);
+    if info.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+        log::trace!(
+            "nonull fault: {:?}: {} {}",
+            addr,
+            page_number,
+            page_number.offset(1),
+        );
+        page_number = page_number.offset(1);
+    }
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
 
     let (id_ok, default_prot) = info.object.check_id();
     if !id_ok && !info.object().is_kernel_id() {
+        /*
         logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
         logln!(
             "id verification failed ({} {}) {:?}",
@@ -167,6 +189,7 @@ fn page_fault_to_region(
             info.object.is_kernel_id(),
             info.object.id(),
         );
+        */
     }
 
     let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
@@ -177,19 +200,52 @@ fn page_fault_to_region(
         sctx_id = perms.ctx;
     }
 
-    let mapper = |mut provider: ObjectPageProvider| {
+    let mapper = |offset: PageNumber, mut provider: ObjectPageProvider| {
+        // TODO: limit page count by mapping or by max?
         let cursor = info.mapping_cursor(
-            page_number.as_byte_offset(),
-            PageNumber::PAGE_SIZE * provider.count(),
+            offset.as_byte_offset(),
+            PageNumber::PAGE_SIZE * provider.page_count(),
         );
+        if !ip.is_kernel() && !addr.is_kernel() {
+            if let Some(val) = provider.peek()
+            //&& info.flags.contains(MapFlags::NO_NULLPAGE)
+            {
+                if val.len > 0x1000 {
+                    log::trace!(
+                        "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
+                        info.object().id(),
+                        addr,
+                        offset,
+                        provider.page_count(),
+                        provider.pos,
+                        val.addr,
+                        val.len / 0x1000,
+                        cursor.start(),
+                        cursor.remaining(),
+                    );
+                }
+            }
+        }
+
         ctx.with_arch(sctx_id, |arch| {
-            arch.unmap(cursor);
+            if arch.readmap(cursor, |x| x.count()) > 0 {
+                arch.unmap(cursor);
+            }
             arch.map(cursor, &mut provider);
         });
         Ok(())
     };
 
-    info.map(addr, cause, perms, default_prot, mapper)
+    info.map(
+        addr,
+        ip,
+        cause,
+        flags,
+        perms,
+        default_prot,
+        start_time,
+        mapper,
+    )
 }
 
 fn get_map_region(
@@ -225,7 +281,6 @@ pub fn do_page_fault(
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     let res = do_page_fault(addr, cause, flags, ip);
     if let Err(upcall) = res {
-        logln!("UpCall:{:?}", upcall);
         current_thread_ref().unwrap().send_upcall(upcall);
     }
 }

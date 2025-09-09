@@ -8,6 +8,8 @@ use core::{
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
 
+use log::warn;
+
 use crate::{
     arch::{self, interrupt::GENERIC_IPI_VECTOR, processor::ArchProcessor},
     image::TlsInfo,
@@ -98,6 +100,12 @@ impl SchedulingQueues {
         } else {
             false
         };
+        if thread.sched_link.is_linked() {
+            panic!(
+                "tried to reinsert thread that is already linked: {}",
+                thread.id()
+            );
+        }
         self.queues[queue_number].push_back(thread);
         needs_preempt
     }
@@ -232,7 +240,7 @@ impl Processor {
             .store(true, core::sync::atomic::Ordering::SeqCst);
     }
 
-    fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
@@ -403,7 +411,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
 
 pub fn register(id: u32, bsp_id: u32) {
     if id as usize >= all_processors().len() {
-        logln!("processor ID {} not supported (too large)", id);
+        warn!("processor ID {} not supported (too large)", id);
         return;
     }
 
