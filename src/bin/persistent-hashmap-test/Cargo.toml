@@ -1,0 +1,14 @@
+[package]
+name = "persistent-hashmap-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { path = "../../rt" }
+naming = { path = "../../lib/naming" }
+clap = { version = "*", features = ["derive"] }
+miette = "*"
+rand_chacha = "0.9.0"
+rand = "0.9.0"
