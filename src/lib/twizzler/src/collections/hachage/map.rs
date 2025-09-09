@@ -322,7 +322,6 @@ pub struct Iter<'a, K: Invariant, V: Invariant> {
 impl<'a, K: Invariant, V: Invariant> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
         // Avoid `Option::map` because it bloats LLVM IR.
         match self.inner.next() {
@@ -345,9 +344,7 @@ pub struct IterMut<'a, K: Invariant, V: Invariant> {
 impl<'a, K: Invariant, V: Invariant> Iterator for IterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
-        // Avoid `Option::map` because it bloats LLVM IR.
         match self.inner.next() {
             Some(mut x) => unsafe {
                 let r = x.as_mut();
@@ -365,9 +362,7 @@ pub struct Keys<'a, K: Invariant, V: Invariant> {
 impl<'a, K: Invariant, V: Invariant> Iterator for Keys<'a, K, V> {
     type Item = &'a K;
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<&'a K> {
-        // Avoid `Option::map` because it bloats LLVM IR.
         match self.inner.next() {
             Some((k, _)) => Some(k),
             None => None,
@@ -382,9 +377,7 @@ pub struct Values<'a, K: Invariant, V: Invariant> {
 impl<'a, K: Invariant, V: Invariant> Iterator for Values<'a, K, V> {
     type Item = &'a V;
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<&'a V> {
-        // Avoid `Option::map` because it bloats LLVM IR.
         match self.inner.next() {
             Some((_, v)) => Some(v),
             None => None,
@@ -399,9 +392,7 @@ pub struct ValuesMut<'a, K: Invariant, V: Invariant> {
 impl<'a, K: Invariant, V: Invariant> Iterator for ValuesMut<'a, K, V> {
     type Item = &'a mut V;
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<&'a mut V> {
-        // Avoid `Option::map` because it bloats LLVM IR.
         match self.inner.next() {
             Some((_, v)) => Some(v),
             None => None,

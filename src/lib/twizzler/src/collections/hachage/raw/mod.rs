@@ -3,7 +3,6 @@ use std::{
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::object::ObjectHandle;
 
 use super::DefaultHashBuilder;
 use crate::{
@@ -342,10 +341,6 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
 
     fn bucket(&self, index: usize) -> Ref<T> {
         unsafe { self.table.bucket::<T>(index) }
-    }
-
-    pub(crate) fn bucket_mut(&self, index: usize) -> RefMut<T> {
-        unsafe { self.table.bucket_mut::<T>(index) }
     }
 
     pub fn carry_ctx(&self) -> CarryCtx {
@@ -767,15 +762,6 @@ impl RawTableInner {
         unsafe {
             self.ctrl
                 .resolve()
-                .cast::<T>()
-                .sub(index + 1)
-        }
-    }
-
-    unsafe fn bucket_mut<T: Invariant>(&self, index: usize) -> RefMut<T> {
-        unsafe {
-            self.ctrl
-                .resolve_mut()
                 .cast::<T>()
                 .sub(index + 1)
         }
