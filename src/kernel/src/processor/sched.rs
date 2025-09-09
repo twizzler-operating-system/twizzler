@@ -251,7 +251,7 @@ fn find_cpu_from_topo(
                     processor.rq.current_timeshare_load(),
                 );
                 /* jitter. This is similar to how freebsd does things */
-                let jload = load * 256 - (quick_random() % 128) as u64;
+                let jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
                 if highest {
                     if jload > best || best_cpu.is_none() {
                         best_cpu = Some(c as u32);
