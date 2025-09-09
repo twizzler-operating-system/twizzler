@@ -73,6 +73,22 @@ impl<'obj, T> RefMut<'obj, T> {
     pub fn into_ref(self) -> Ref<'obj, T> {
         Ref::new(self.ptr, self.lazy_handle)
     }
+
+    pub unsafe fn add(self, offset: usize) -> Self {
+        Self::new(self.ptr.add(offset), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_add(self, offset: usize) -> Self {
+        Self::new(self.ptr.byte_add(offset), self.lazy_handle)
+    }
+
+    pub unsafe fn sub(self, offset: usize) -> Self {
+        Self::new(self.ptr.sub(offset), self.lazy_handle)
+    }
+
+    pub unsafe fn byte_sub(self, offset: usize) -> Self {
+        Self::new(self.ptr.byte_sub(offset), self.lazy_handle)
+    }
 }
 
 impl<'a, T> RefMut<'a, MaybeUninit<T>> {
