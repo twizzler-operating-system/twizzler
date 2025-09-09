@@ -111,9 +111,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
                 lld_path.display(),
                 sysroot_dir.display(),
                 sysroot_dir.display(),
-                target_triple.to_string()
+                target_triple.to_string(),
             )?;
         }
+
+        writeln!(&mut cf, "[properties]")?;
+        writeln!(&mut cf, "sys_root = '{}'", sysroot_dir.display())?;
 
         writeln!(&mut cf, "[host_machine]")?;
         writeln!(&mut cf, "system = 'twizzler'")?;
@@ -127,6 +130,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
             .arg("-Dheaders_only=true")
+            .arg("-Duse_freestnd_hdrs=enabled")
             .arg("-Ddefault_library=static")
             .arg(format!("--cross-file={}", &cross_file))
             .arg("--buildtype=debugoptimized")
@@ -258,41 +262,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir = src_dir.join(&build_dir_name);
         let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
-        let _ = remove_dir_all(&build_dir);
-
-        let status = Command::new("meson")
-            .arg("setup")
-            .arg(format!("-Dprefix={}", sysroot_dir.display()))
-            .arg("-Ddefault_library=static")
-            .arg(format!("--cross-file={}", cross_file))
-            .arg("--buildtype=debugoptimized")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to setup mlibc");
-        }
-        let status = Command::new("meson")
-            .arg("compile")
-            .arg("-C")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to build mlibc");
-        }
-
-        let status = Command::new("meson")
-            .arg("install")
-            .arg("-q")
-            .arg("-C")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to install mlibc");
-        }
-
         let cxx_install_dir = current_dir.join(&format!(
             "toolchain/src/rust/build/{}/native/libcxx",
             target_triple.to_string()
@@ -304,6 +273,8 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         ));
         let sysroot_include = sysroot_dir.join("include");
         let sysroot_lib = sysroot_dir.join("lib");
+
+        std::fs::create_dir_all(&sysroot_lib)?;
 
         println!("copying c++ headers and stdlib");
         let status = Command::new("cp")
@@ -339,6 +310,42 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             cxxabi_install_dir.join("lib/libc++abi.so"),
             sysroot_lib.join("libc++abi.so"),
         )?;
+
+        let _ = remove_dir_all(&build_dir);
+
+        let status = Command::new("meson")
+            .arg("setup")
+            .arg(format!("-Dprefix={}", sysroot_dir.display()))
+            .arg("-Ddefault_library=static")
+            .arg("-Duse_freestnd_hdrs=enabled")
+            .arg(format!("--cross-file={}", cross_file))
+            .arg("--buildtype=debugoptimized")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to setup mlibc");
+        }
+        let status = Command::new("meson")
+            .arg("compile")
+            .arg("-C")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to build mlibc");
+        }
+
+        let status = Command::new("meson")
+            .arg("install")
+            .arg("-q")
+            .arg("-C")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to install mlibc");
+        }
 
         let usr_link = sysroot_dir.join("usr");
         let _ = std::fs::remove_file(&usr_link);

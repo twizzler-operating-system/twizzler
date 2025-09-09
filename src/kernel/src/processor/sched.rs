@@ -1,3 +1,38 @@
+//! The scheduler is currently based off of FreeBSD's ULE scheduler. It maintains a per-CPU runqueue
+//! where next tasks are selected from. If no tasks are available, the CPU tries to steal one from
+//! another CPU. Tasks are periodically balanced between cores by moving them between the most
+//! loaded and least loaded core.
+//!
+//! The runqueues are organized into three parts by priority class. Realtime and Interrupt priority
+//! tasks are placed in the realtime queue, User priority tasks are placed in the timeshare queue,
+//! and Idle and Background tasks are placed in the Background queue. Both the realtime and
+//! background queues are simple arrays (indexed by priority) of FIFO task lists. When selecting
+//! from the runqueue, a CPU first tries to take from the realtime queue, then from the timeshare
+//! queue, and then from the background queue. If all queue are empty (and the CPU failed to steal a
+//! thread) the CPU runs the per-cpu idle task. The idle task is never in the runqueue. When
+//! running, a thread is not in a runqueue, though the CPU tracks the current thread.
+//!
+//! The timeshare queue is a calendar queue. Incoming tasks are placed into the queue based on
+//! their priority and the current insert marker (with higher priority tasks being placed closer to
+//! the insert marker). The queue is circular, with threads being removed from the removal marker by
+//! CPUs trying to get a next task.
+//!
+//! Each entry in the queue is a linked list of tasks, and removal takes from the list at the
+//! current removal marker until it is empty. Once an entry is empty, the removal marker is advanced
+//! up to the insert marker or to a non-empty entry. The insert marker is advanced on the scheduler
+//! tick, and the removal marker is advanced on clock hardticks if possible.
+//!
+//! Threads get a timeslice based on the maximum timeslice, their priority, and the status of the
+//! runqueue (and priority class sub-queue) that they inhabit. Currently, time is divided evenly
+//! between timeshare tasks. Additionally, tasks are assigned a deadline, which, if expired, allows
+//! timeshare tasks to jump to the lowest priority realtime queue slot to ensure low-latency for
+//! tasks that have slept. Timeshare and deadline calculation and effects are currently a work in
+//! progress, and will need tuning.
+//!
+//! A thread's priority is affected by both its base priority and its donated priority. Tasks that
+//! need to wait for another thread (e.g. in a mutex) donate their priority to the thread they are
+//! waiting on to prevent priority inversion.
+
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
