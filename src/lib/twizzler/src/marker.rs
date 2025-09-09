@@ -33,6 +33,8 @@ unsafe impl Invariant for () {}
 unsafe impl<T: Invariant, const N: usize> Invariant for [T; N] {}
 
 unsafe impl<T: Invariant> Invariant for (T,) {}
+unsafe impl<A: Invariant, B: Invariant> Invariant for (A, B) {}
+
 
 unsafe impl<T: Invariant> Invariant for Option<T> {}
 unsafe impl<R: Invariant, E: Invariant> Invariant for Result<R, E> {}

@@ -6,6 +6,7 @@
 #![feature(core_intrinsics)]
 #![feature(arbitrary_self_types)]
 #![feature(backtrace_frames)]
+#![feature(ptr_as_ref_unchecked)]
 #![feature(test)]
 
 // This is required so we can use our derive macros in this crate.
