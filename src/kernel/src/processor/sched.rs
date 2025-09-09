@@ -312,8 +312,9 @@ fn choose_cpu_balance(node: &CPUTopoNode, allowed_set: &CpuSet) -> Option<Balanc
             }
             let processor = get_processor(c as u32);
             let load = processor.current_load();
+            if load == 0 {}
             // Use some jitter.
-            let jload = load * 256 - (quick_random() % 128) as u64;
+            let jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
 
             if jload > highest_load.1 {
                 highest_load = (processor.id, jload);
