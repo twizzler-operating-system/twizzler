@@ -378,9 +378,7 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         ctx: &impl CtxMut
     ) {
         if core::intrinsics::unlikely(additional > self.table.growth_left) {
-            //let instant: std::time::Instant = std::time::Instant::now();
             self.reserve_rehash(additional, hasher, ctx).unwrap();
-            //println!("rehash in place took {}", instant.elapsed().as_millis());
         }
     }
 
@@ -394,7 +392,7 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
             self.table.reserve_rehash_inner(
                 &self.alloc,
                 additional,
-                &|table, index| hasher(&table.bucket(index)),
+                &|_table, index| hasher(&ctx.bucket(index)),
                 &Self::TABLE_LAYOUT,
                 None,
                 ctx
@@ -406,32 +404,13 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         self.table.resize_inner(
             &self.alloc,
             capacity,
-            &|table, index| hasher(&table.bucket(index)),
+            &|_table, index| hasher(ctx.bucket(index)),
             &Self::TABLE_LAYOUT,
             ctx
         )
     }
 
     // replace the hasher, changing the hashing state and essentially shuffling the values
-
-    /*pub fn insert(
-        &mut self, 
-        hash: u64, 
-        value: T, 
-        hasher: impl Fn(&T) -> u64,
-        ctx: &mut impl CtxMut
-    ) {
-        unsafe {
-            let mut index = self.table.find_insert_slot(hash, ctx);
-
-            let old_ctrl = self.table.ctrl_slice()[index];
-            if self.table.growth_left == 0 && old_ctrl.special_is_empty() {
-                self.reserve(1, hasher);
-                index = self.table.find_insert_slot(hash);
-            }
-            self.insert_in_slot(hash, index, value)
-        }
-    }*/
 
     // Returns a reference to a slot or a candidate to insert
     pub fn find_or_find_insert_slot(
@@ -675,7 +654,6 @@ impl RawTableInner {
         if self.is_empty() {return;}
 
         let slice = ctx.ctrl_mut(self.buckets());
-        //RefSliceMut::<Tag>::from_ref(self.ctrl.resolve().cast::<Tag>().into_mut(), self.buckets());
         for i in 0..self.buckets() {
             if slice[i].is_full() {
                 slice[i] = Tag::DELETED;
@@ -695,7 +673,6 @@ impl RawTableInner {
         let buckets = std::cmp::max((capacity* 8 / 7).next_power_of_two() , 8);
 
         let global = alloc.allocate(table_layout, buckets)?;
-
         self.ctrl = InvPtr::new(Ref::from_ptr(self), global)?;
         self.bucket_mask = buckets - 1;
         self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
@@ -730,12 +707,9 @@ impl RawTableInner {
         let global = alloc.allocate(table_layout, buckets)?;
         if !self.is_empty_singleton() {
             self.prepare_rehash_in_place(ctx);
-            {
-                let r = self.ctrl.resolve();
-                let newly_allocated_range = r.add(self.buckets()).cast::<Tag>().into_mut();
-                let mut slice = RefSliceMut::from_ref(newly_allocated_range, buckets - self.buckets());
-                slice.fill_empty();
-            }
+            let p = ctx.base_mut().add(self.buckets()).cast::<Tag>();
+            let slice = std::slice::from_raw_parts_mut(p, buckets - self.buckets());
+            slice.fill_empty();
 
             self.bucket_mask = buckets - 1;
             self.growth_left = bucket_mask_to_capacity(self.bucket_mask) - self.items;

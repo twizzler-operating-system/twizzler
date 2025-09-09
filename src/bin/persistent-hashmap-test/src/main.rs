@@ -3,6 +3,7 @@ use twizzler::{
     collections::hachage::PersistentHashMap, object::{Object, ObjectBuilder}
 };
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 use twizzler_rt_abi::object::MapFlags;
 use std::time::Instant;
 use twizzler::marker::Invariant;
@@ -14,7 +15,7 @@ use rand_chacha::ChaCha8Rng;
 
 fn open_or_create_hashtable_object<T: Debug + Invariant>(
     name: &str,
-) -> Result<PersistentHashMap<u64, T>> {
+) -> Result<PersistentHashMap<T, T>> {
     let mut nh = naming::dynamic_naming_factory().unwrap();
     let name = format!("/data/ptest-obj-{}", name);
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
@@ -27,7 +28,6 @@ fn open_or_create_hashtable_object<T: Debug + Invariant>(
         let vo = PersistentHashMap::with_builder(
             ObjectBuilder::default().persist()
         ).unwrap();
-        println!("new: {:?}", vo.object().id());
         let _ = nh.remove(&name);
         nh.put(&name, vo.object().id()).into_diagnostic()?;
         Ok(vo)
@@ -36,12 +36,11 @@ fn open_or_create_hashtable_object<T: Debug + Invariant>(
     vo
 }
 
-
 #[derive(clap::Parser, Clone, Debug)]
 struct Cli {
-    arg: u64,
+    key: String,
+    val: String
 }
-
 
 fn performance_test() {
     println!("regular hashmap");
@@ -93,17 +92,15 @@ fn performance_test() {
 
 fn performance_test_2() {
     let mut phm = PersistentHashMap::with_builder(
-        ObjectBuilder::default().persist()
+        ObjectBuilder::default()
     ).unwrap();
-
-    unsafe {phm.resize(16777216)};
 
     let mut write_session = phm.write_session().unwrap();
 
     println!("persistent hashmap");
     println!("inserting");
     let now = Instant::now();
-    for i in 0..14260633 {
+    for i in 0..14260633u64 {
         //println!("inserting {}", i);
         write_session.insert(i, i);
     }
@@ -122,7 +119,26 @@ fn performance_test_2() {
 
     println!("regular hashmap");
     let mut hm = HashMap::<u64, u64>::new();
-    hm.reserve(16777216);
+    println!("inserting");
+    let now = Instant::now();
+
+    for i in 0..14260633 {
+        //println!("inserting {}", i);
+        hm.insert(i, i);
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("inserted!");
+    let now = Instant::now();
+    for i in 0..14260633 {
+        let foo = hm.get(&i).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
+    println!("regular btree");
+    let mut bt = BTreeMap::<u64, u64>::new();
     println!("inserting");
     let now = Instant::now();
 
@@ -180,9 +196,11 @@ fn performance_test_4() {
     println!("inserting");
     let now = Instant::now();
 
-    for i in 0..1426000 {
+    for i in 0..1048576 {
         rng.fill(&mut bytes);
-
+        if i > 1800000  {
+            println!("{}", i);
+        }
         //println!("inserting {}", i);
         hm.insert(bytes.clone(), i);
     }
@@ -192,7 +210,7 @@ fn performance_test_4() {
     let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
 
     let now = Instant::now();
-    for i in 0..1426000 {
+    for i in 0..1048576 {
         rng.fill(&mut bytes);
 
         let foo = hm.get(&bytes).unwrap();
@@ -210,7 +228,7 @@ fn performance_test_4() {
     println!("persistent hashmap");
     println!("inserting");
     let now = Instant::now();
-    for i in 0..1426000 {
+    for i in 0..1048576 {
         rng.fill(&mut bytes);
 
         //println!("inserting {}", i);
@@ -222,7 +240,72 @@ fn performance_test_4() {
 
     println!("fetching");
     let now = Instant::now();
-    for i in 0..1426000u64 {
+    for i in 0..1048576u64 {
+        rng.fill(&mut bytes);
+
+        let foo = phm.get(&bytes).unwrap();
+        assert_eq!(&i, foo);
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+    
+}
+
+fn performance_test_5() {
+    let random_seed: u64 = rng().random();
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+    let mut bytes = [0u8; 256];
+
+    println!("regular hashmap");
+    let mut hm = HashMap::<[u8; 256], u64>::new();
+    hm.reserve(524288 * 2);
+    println!("inserting");
+    let now = Instant::now();
+
+    for i in 0..524288 {
+        rng.fill(&mut bytes);
+        //println!("inserting {}", i);
+        hm.insert(bytes.clone(), i);
+    }
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+
+    println!("inserted!");
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    let now = Instant::now();
+    for i in 0..524288 {
+        rng.fill(&mut bytes);
+
+        let foo = hm.get(&bytes).unwrap();
+        assert_eq!(foo, &i)
+        //println!("val: {} {}", foo.0, foo.1);
+    }
+    println!("fetching took {} milli seconds", now.elapsed().as_millis());
+
+    let mut phm = PersistentHashMap::with_builder(
+        ObjectBuilder::default().persist()
+    ).unwrap();
+    phm.reserve(524288 * 2);
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    println!("persistent hashmap");
+    println!("inserting");
+    let now = Instant::now();
+    let mut write_sesh = phm.write_session().unwrap();
+    for i in 0..524288 {
+        rng.fill(&mut bytes);
+
+        //println!("inserting {}", i);
+        write_sesh.insert(bytes.clone(), i).unwrap();
+        
+    }
+    drop(write_sesh);
+    println!("inserting took {} milli seconds", now.elapsed().as_millis());
+    let mut rng = ChaCha8Rng::seed_from_u64(random_seed);
+
+    println!("fetching");
+    let now = Instant::now();
+    for i in 0..524288u64 {
         rng.fill(&mut bytes);
 
         let foo = phm.get(&bytes).unwrap();
@@ -291,35 +374,43 @@ fn correctness_test_3() {
     }
 
     for mut val in phm.values_mut().unwrap() {
-        *val += 1;
+        *val *= *val;
     }
 
     let mut i = 0;
     for (key, val) in phm.iter() {
         println!("{} {}", key, val);
-        assert_eq!(&(key + 1), val);
+        assert_eq!(&(key * key), val);
         i+=1;
     }
 
     assert_eq!(i, 13);
 }
 
+fn string_to_fixed_u8_array(s: &str) -> [u8; 256] {
+    let mut arr = [0u8; 256]; // fill with zeros
+    let bytes = s.as_bytes();
+
+    let len = bytes.len().min(256); // clamp length
+    arr[..len].copy_from_slice(&bytes[..len]);
+
+    arr
+}
+
 fn main() {
-    /*let cli = Cli::parse();
+    let cli = Cli::parse();
 
-    let mut foo = open_or_create_hashtable_object::<u64>("phm").unwrap();
+    let key = string_to_fixed_u8_array(&cli.key);
+    let val = string_to_fixed_u8_array(&cli.val);
 
-    let mut write_sesh = foo.write_session().unwrap();
+    let mut foo = open_or_create_hashtable_object::<[u8; 256]>("asdbd").unwrap();
 
-    let bar = write_sesh.get_mut(&cli.arg);
+    foo.insert(key, val).unwrap();
 
-    match bar {
-        Some(x) => {*x = *x + 1; println!("x now {}", x);}
-        None => {println!("new val! x = 1"); write_sesh.insert(cli.arg, 1);}
+    for (key, val) in foo.iter() {
+        println!("{}: {}", 
+            String::from_utf8_lossy(key).to_string(), 
+            String::from_utf8_lossy(val).to_string()
+        );
     }
-
-    drop(write_sesh);*/
-
-
-    correctness_test_3();
 }

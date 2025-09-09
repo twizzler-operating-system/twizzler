@@ -47,6 +47,11 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
         Self::with_builder(builder)
     }
 
+    pub fn new_persist() -> Result<Self> {
+        let builder = ObjectBuilder::default().persist();
+        Self::with_builder(builder)
+    }
+
     pub fn with_builder(builder: ObjectBuilder<RawTable<(K, V), DefaultHashBuilder, HashTableAlloc>>) -> Result<Self> {
         let phm = Self::with_hasher_in(builder, Default::default(), Default::default())?;
 
@@ -209,13 +214,13 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher, A: Allocator> Persi
 }
 
 impl<K: Invariant + Eq + Hash, V: Invariant> PersistentHashMap<K, V> {
-    pub fn reserve(&mut self, additonal: usize) -> Result<()> {
+    pub fn reserve(&mut self, additional: usize) -> Result<()> {
         let mut tx = self.table.as_tx()?;
         let mut base = tx.base_mut().owned();
 
         let ctx = base.carry_ctx_mut(&base);
 
-        base.reserve(additonal, make_hasher(self.hasher()), &ctx);
+        base.reserve(additional, make_hasher(self.hasher()), &ctx);
         Ok(())
     }
 }
@@ -286,7 +291,7 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PersistentHashMap<K
         let mut base = tx.base_mut().owned();
         
         let ctx = base.carry_ctx_mut(&base);
-        let hash = make_hash::<K, S>(self.hasher(), &k);
+        let hash = make_hash::<K, S>(base.hasher(), &k);
 
         match base.find_or_find_insert_slot(hash, equivalent_key(&k), make_hasher(self.hasher()), &ctx) {
             Ok(bucket) => {

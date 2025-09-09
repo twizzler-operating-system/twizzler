@@ -24,8 +24,7 @@ fn random_insert_500k_volatile(b: &mut Bencher) {
             phm.insert(rng.gen::<u32>(), i).unwrap();
         }
     });
-}
-*/
+}*/
 
 // bugged
 /*#[bench]

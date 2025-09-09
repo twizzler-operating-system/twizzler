@@ -1,4 +1,4 @@
-pub type DefaultHashBuilder = foldhash::fast::RandomState;
+pub type DefaultHashBuilder = ahash::RandomState;
 
 pub mod raw;
 mod scopeguard;
