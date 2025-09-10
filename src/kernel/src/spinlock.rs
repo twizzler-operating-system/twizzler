@@ -74,7 +74,9 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                     //emerglogln!("spinlock pause: {}", caller);
                 }
                 if iters == 100000 {
-                    emerglogln!("spinlock long pause: {}", caller);
+                    emerglogln!("spinlock long pause: {}, locked at {:?}", caller, unsafe {
+                        self.locked_from.get().as_ref().unwrap()
+                    });
                 }
                 Relax::relax(iters);
             },

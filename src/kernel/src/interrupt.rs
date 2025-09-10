@@ -150,15 +150,16 @@ unsafe impl Send for DeviceInterrupter {}
 unsafe impl Sync for DeviceInterrupter {}
 
 impl DeviceInterrupter {
-    fn new(wi: WakeInfo) -> Self {
+    fn new(wi: &WakeInfo) -> Self {
         let word_object = kernel_context().insert_kernel_object(ObjectContextInfo::new(
-            wi.obj,
+            wi.obj.clone(),
             Protections::WRITE | Protections::READ,
             CacheType::WriteBack,
             MapFlags::empty(),
         ));
         let raw_word =
             word_object.lea_raw(wi.offset as *const AtomicU64).unwrap() as *const AtomicU64;
+        (unsafe { &*raw_word }).store(0, Ordering::Release);
         Self {
             word_object,
             raw_word,
@@ -213,10 +214,10 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
 
 pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
     let gi = get_global_interrupts();
+    let di = DeviceInterrupter::new(&wi);
     let mut vectors = gi.device_vectors[number as usize].lock();
-
     if !vectors.is_full() {
-        let _ = vectors.push(DeviceInterrupter::new(wi));
+        let _ = vectors.push(di);
     } else {
         drop(vectors);
         log::warn!("trying to setup too many device interrupt wakers, overflowing...");
