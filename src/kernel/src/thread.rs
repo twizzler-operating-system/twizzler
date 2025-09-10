@@ -1,12 +1,13 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     alloc::Layout,
-    cell::RefCell,
-    sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     u32,
 };
 
 use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
+use time::{ThreadSched, ThreadStats, SAMPLE_PERIOD_TICKS};
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     syscall::{ThreadSpawnArgs, PERTHREAD_TRACE_GEN_SAMPLE},
@@ -22,10 +23,13 @@ use self::{
 };
 use crate::{
     idcounter::{Id, IdCounter},
-    interrupt,
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
-    processor::{get_processor, KERNEL_STACK_SIZE},
+    processor::{
+        mp::get_processor,
+        sched::{remove_thread, schedule, SchedFlags},
+        KERNEL_STACK_SIZE,
+    },
     security::SecCtxMgr,
     spinlock::Spinlock,
     trace::{
@@ -37,32 +41,22 @@ use crate::{
 pub mod entry;
 mod flags;
 pub mod priority;
-pub mod state;
 pub mod suspend;
+pub mod time;
 
 pub use flags::{enter_kernel, exit_kernel};
 
-pub const SAMPLE_PERIOD_TICKS: u64 = 3;
-
-#[derive(Debug, Default)]
-pub struct ThreadStats {
-    pub user: AtomicU64,
-    pub sys: AtomicU64,
-    pub idle: AtomicU64,
-    pub last: AtomicU64,
-}
-
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
+    // TODO: determine how to order and pad these to minimize false sharing.
     pub priority: AtomicU32,
+    pub stable_priority: AtomicU32,
     pub flags: AtomicU32,
-    pub last_cpu: AtomicI32,
-    pub affinity: AtomicI32,
+    pub sched: ThreadSched,
     pub critical_counter: AtomicU64,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
     pub donated_priority: AtomicU32,
-    pub current_processor_queue: AtomicI32,
     memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
@@ -73,32 +67,37 @@ pub struct Thread {
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
+    pub requeue_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
     pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
+    pub self_reference: UnsafeCell<*mut ThreadRef>,
 }
 unsafe impl Send for Thread {}
+unsafe impl Sync for Thread {}
 
 pub type ThreadRef = Arc<Thread>;
 
 #[thread_local]
-static CURRENT_THREAD: RefCell<Option<ThreadRef>> = RefCell::new(None);
+static CURRENT_THREAD: UnsafeCell<*const ThreadRef> = UnsafeCell::new(core::ptr::null());
 
-pub fn current_thread_ref() -> Option<ThreadRef> {
+#[inline]
+pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
     unsafe {
         if core::intrinsics::unlikely(!crate::processor::tls_ready()) {
             return None;
         }
     }
-    interrupt::with_disabled(|| CURRENT_THREAD.borrow().clone())
+    core::sync::atomic::fence(Ordering::Acquire);
+    unsafe { (*CURRENT_THREAD.get().as_mut().unwrap_unchecked()).as_ref() }
 }
 
-pub fn set_current_thread(thread: ThreadRef) {
-    interrupt::with_disabled(move || {
-        let old = CURRENT_THREAD.replace(Some(thread));
-        drop(old);
-    });
+pub unsafe fn set_current_thread(thread: &ThreadRef) {
+    let ptr = CURRENT_THREAD.get();
+    let r = thread.self_reference.get().as_ref().unwrap_unchecked();
+    ptr.write(*r);
+    core::sync::atomic::fence(Ordering::Release);
 }
 
 static ID_COUNTER: IdCounter = IdCounter::new();
@@ -123,15 +122,13 @@ impl Thread {
         Self {
             arch: crate::arch::thread::ArchThread::new(),
             priority: AtomicU32::new(priority.raw()),
+            stable_priority: AtomicU32::new(priority.raw()),
             id: ID_COUNTER.next(),
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
             critical_counter: AtomicU64::new(0),
             switch_lock: AtomicU64::new(0),
-            affinity: AtomicI32::new(-1),
-            last_cpu: AtomicI32::new(-1),
             donated_priority: AtomicU32::new(u32::MAX),
-            current_processor_queue: AtomicI32::new(-1),
             stats: ThreadStats::default(),
             memory_context: ctx,
             spawn_args,
@@ -139,10 +136,13 @@ impl Thread {
             sched_link: AtomicLink::default(),
             mutex_link: AtomicLink::default(),
             suspend_link: RBTreeAtomicLink::default(),
+            requeue_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
             sample_expire: Spinlock::new(None),
+            self_reference: UnsafeCell::new(core::ptr::null_mut()),
+            sched: ThreadSched::default(),
         }
     }
 
@@ -200,8 +200,7 @@ impl Thread {
     }
 
     pub fn maybe_reschedule_thread(&self) {
-        let ccpu = self.current_processor_queue.load(Ordering::SeqCst);
-        /* if we get -1 here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
+        /* if we get None here, the thread is either running or blocked, not waiting on a queue. There's a small race condition, here, though,
         since we check this variable and then lock a scheduler queue. It's possible that the thread was placed on a queue, then this variable was set,
         and then we load it, and then the thread is run. This results in a spurious reschedule. It's probably rare, though, but we should profile this
         to see if it's a problem.
@@ -214,15 +213,12 @@ impl Thread {
         But this does mean we need to submit any wakeups/reschedules with interrupts cleared. */
         //TODO: verify the above logic
         //TODO: optimize this by keeping an is_running flag?
-        if ccpu == -1 {
+        let Some(ccpu) = self.sched.current_cpu_rq() else {
             return;
-        }
-        let ccpu = ccpu as u32;
+        };
+
         let proc = get_processor(ccpu);
-        let resched = proc.schedlock().check_priority_change(self);
-        if resched {
-            interrupt::with_disabled(|| proc.wakeup(true));
-        }
+        proc.maybe_wakeup(self);
     }
 
     /// Set the state of the thread. This publishes thread info to userspace.
@@ -291,6 +287,7 @@ impl Thread {
         }
 
         log::info!("upcall: {}: {:?}", self.id(), info);
+        crate::panic::backtrace(false, None);
 
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
@@ -405,6 +402,14 @@ impl<'a> Drop for CriticalGuard<'a> {
     }
 }
 
+/*
+impl Drop for Thread {
+    fn drop(&mut self) {
+        log::info!("drop thread {}", self.objid());
+    }
+}
+*/
+
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
@@ -413,9 +418,8 @@ pub fn exit(code: u64) -> ! {
         crate::interrupt::disable();
         th.set_is_exiting();
         crate::syscall::sync::remove_from_requeue(&th);
-        crate::sched::remove_thread(th.id());
-        drop(th);
+        remove_thread(th.id());
     }
-    crate::sched::schedule(false);
+    schedule(SchedFlags::PREEMPT);
     unreachable!()
 }

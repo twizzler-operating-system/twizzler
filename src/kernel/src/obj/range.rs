@@ -1,5 +1,5 @@
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
-use core::fmt::Display;
+use core::fmt::{Debug, Display};
 
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 use twizzler_abi::object::ObjID;
@@ -7,7 +7,7 @@ use twizzler_abi::object::ObjID;
 use super::{pages::PageRef, pagevec::PageVecRef, PageNumber};
 use crate::{
     condvar::CondVar,
-    memory::tracker::FrameAllocator,
+    memory::{pagetables::MappingSettings, tracker::FrameAllocator},
     mutex::Mutex,
     obj::{pages::Page, pagevec::PageVec},
     spinlock::Spinlock,
@@ -16,6 +16,12 @@ use crate::{
 pub struct RangeSleep {
     wait: CondVar,
     locked: Spinlock<bool>,
+}
+
+impl Debug for RangeSleep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "RangeSleep")
+    }
 }
 
 impl RangeSleep {
@@ -72,6 +78,13 @@ impl core::fmt::Display for BackingPages {
     }
 }
 
+impl core::fmt::Debug for BackingPages {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        <Self as Display>::fmt(&self, f)
+    }
+}
+
+#[derive(Debug)]
 pub struct PageRange {
     pub start: PageNumber,
     pub length: usize,
@@ -98,6 +111,26 @@ impl PageRange {
             offset: new_offset,
             backing: self.backing.clone(),
             sleep: None,
+        }
+    }
+
+    pub fn pages<const MAX: usize>(
+        &self,
+        pn: PageNumber,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) {
+        assert!(pn >= self.start);
+        let off = pn - self.start;
+        match &self.backing {
+            BackingPages::Nothing => {}
+            BackingPages::Single(page_ref) => {
+                assert!(off < page_ref.nr_pages());
+                pages
+                    .push((page_ref.adjust(self.offset + off), settings))
+                    .expect("failed to push single page to page vec")
+            }
+            BackingPages::Many(pv_ref) => pv_ref.lock().pages(self.offset + off, pages, settings),
         }
     }
 
@@ -348,6 +381,17 @@ impl PageRangeTree {
         Some((page, shared, range.is_locked()))
     }
 
+    pub fn try_get_pages<const MAX: usize>(
+        &self,
+        pn: PageNumber,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) -> Option<()> {
+        let range = self.get(pn)?;
+        range.pages(pn, pages, settings);
+        Some(())
+    }
+
     pub fn get_page(
         &mut self,
         pn: PageNumber,
@@ -453,14 +497,29 @@ impl PageRangeTree {
                 self.tree.range_mut(PageNumber::from_offset(0)..pn).last()
             {
                 let end = prev_range.start.offset(prev_range.length - 1);
-                let nr_extra_pages = page.nr_pages() - 1;
+
+                let new_pages = page.nr_pages().min(PageNumber::meta_page().next() - pn);
+                let nr_extra_pages = new_pages - 1;
                 let diff = pn - end;
                 if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {
                     let mut prev_range = self.tree.remove(&end).unwrap();
                     prev_range.length += diff + nr_extra_pages;
                     let p = prev_range.add_page(pn, page);
 
+                    let r = prev_range.range();
+                    let x = prev_range.offset;
+                    let y = prev_range.length;
                     let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
+                    if kicked.len() != 0 {
+                        log::error!(
+                            "expected no kicked ranges when inserting: {:?} {} {}, got {:?}, with {} {} {} {}",
+                            r,
+                            x,
+                            y,
+                            kicked,
+                            end,nr_extra_pages,diff,pn,
+                        );
+                    }
                     assert_eq!(kicked.len(), 0);
                     return Some(p);
                 }

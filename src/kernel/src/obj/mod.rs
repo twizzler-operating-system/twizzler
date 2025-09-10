@@ -1,15 +1,18 @@
 use alloc::{
+    boxed::Box,
     collections::{btree_map::Entry, btree_set::BTreeSet, BTreeMap},
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::{
-    fmt::Display, sync::atomic::{AtomicU32, Ordering}
+    fmt::Display,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use pages::PageRef;
 use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
+    device::NUM_DEVICE_INTERRUPTS,
     meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections, MAX_SIZE},
     syscall::{BackingType, CreateTieSpec, LifetimeType, ObjectInfo},
@@ -40,11 +43,13 @@ pub mod thread_sync;
 pub mod ties;
 
 const OBJ_DELETED: u32 = 1;
+pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 pub struct Object {
     id: ObjID,
     flags: AtomicU32,
     range_tree: Mutex<range::PageRangeTree>,
     sleep_info: Mutex<SleepInfo>,
+    device_interrupt_info: Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>,
     pin_info: Mutex<PinInfo>,
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
@@ -115,6 +120,10 @@ impl PageNumber {
 
     pub fn is_meta(&self) -> bool {
         self.as_byte_offset() == MAX_SIZE - Self::PAGE_SIZE
+    }
+
+    pub fn meta_page() -> Self {
+        Self((MAX_SIZE - Self::PAGE_SIZE) / Self::PAGE_SIZE)
     }
 
     pub fn base_page() -> Self {
@@ -239,6 +248,9 @@ impl Object {
             verified_id: OnceWait::new(),
             lifetime_type,
             dirty_set: DirtySet::new(),
+            device_interrupt_info: Box::new(
+                [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
+            ),
         }
     }
 
@@ -326,7 +338,6 @@ impl Object {
             life: self.lifetime_type,
             backing: BackingType::default(),
             pages: num_pages,
-
         }
     }
 }

@@ -1,6 +1,9 @@
 //! Thread management routines, including spawn and join.
 
-use std::{alloc::Layout, collections::BTreeMap};
+use std::{
+    alloc::{GlobalAlloc, Layout},
+    collections::BTreeMap,
+};
 
 use monitor_api::RuntimeThreadControl;
 use tracing::trace;
@@ -168,7 +171,6 @@ impl ReferenceRuntime {
             .unwrap();
         let stack_raw = unsafe {
             OUR_RUNTIME
-                .default_allocator()
                 .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())
         } as usize;
 

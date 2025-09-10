@@ -17,7 +17,7 @@ use crate::{
         interrupt::interrupt_controller,
         serial::{serial_int_id, serial_interrupt_handler},
     },
-    processor::{current_processor, generic_ipi_handler},
+    processor::{ipi::generic_ipi_handler, mp::current_processor},
 };
 
 // Reserved SW-generated interrupt numbers.

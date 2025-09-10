@@ -13,6 +13,7 @@ use async_io::{block_on, Timer};
 use disk::Disk;
 use memstore::virtio::init_virtio;
 use object_store::{Ext4Store, ExternalFile, PagedDevice, PagedObjectStore};
+use physrw::init_pr_mgr;
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -331,10 +332,11 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data, ex) = pager_init(q1, q2);
+    let sq = Arc::new(sq);
+    init_pr_mgr(sq.clone());
     #[allow(unused_variables)]
     let disk = block_on(ex.run(Disk::new(ex))).unwrap();
 
-    let sq = Arc::new(sq);
     let rq = Arc::new(rq);
     let _ = PAGER_CTX.set(PagerContext {
         data,

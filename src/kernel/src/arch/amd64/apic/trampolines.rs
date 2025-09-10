@@ -121,7 +121,7 @@ extern "C" fn trampoline_main_entry(id: u32, tcb: u64, stack_base: u64) -> ! {
 
 #[inline(never)]
 fn rust_entry_secondary(id: u32, tcb: u64, stack_base: u64) -> ! {
-    crate::processor::secondary_entry(id, VirtAddr::new(tcb).unwrap(), stack_base as *mut u8);
+    crate::processor::mp::secondary_entry(id, VirtAddr::new(tcb).unwrap(), stack_base as *mut u8);
 }
 
 const TRAMPOLINE_ENTRY16: u32 = 0x7000;

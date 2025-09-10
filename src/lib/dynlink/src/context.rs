@@ -132,7 +132,7 @@ impl Context {
         }
         match &self.library_deps[id.0] {
             LoadedOrUnloaded::Unloaded(unlib) => Err(DynlinkErrorKind::UnloadedLibrary {
-                library: unlib.name.to_string(),
+                library: unlib.name.as_str().into(),
             }
             .into()),
             LoadedOrUnloaded::Loaded(lib) => Ok(lib),
@@ -146,7 +146,7 @@ impl Context {
         }
         match &mut self.library_deps[id.0] {
             LoadedOrUnloaded::Unloaded(unlib) => Err(DynlinkErrorKind::UnloadedLibrary {
-                library: unlib.name.to_string(),
+                library: unlib.name.as_str().into(),
             }
             .into()),
             LoadedOrUnloaded::Loaded(lib) => Ok(lib),

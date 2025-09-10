@@ -17,10 +17,10 @@ use crate::{
     engines::{LoadCtx, LoadDirective, LoadFlags},
     library::{AllowedGates, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
-    DynlinkError, DynlinkErrorKind, HeaderError,
+    DynlinkError, DynlinkErrorKind, HeaderError, Vec, SMALL_VEC_SIZE,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 pub struct LoadIds {
     pub comp: CompartmentId,
     pub lib: LibraryId,
@@ -67,7 +67,7 @@ impl Context {
         let dynamic = elf
             .dynamic()?
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynamic".to_string(),
+                name: "dynamic".into(),
             })?;
 
         // If this isn't present, just call it 0, since if there's an init_array, this entry must be
@@ -198,10 +198,10 @@ impl Context {
 
         // Step 1: map the PT_LOAD directives to copy-from commands Twizzler can use for creating
         // objects.
-        let directives: Vec<_> = elf
+        let directives: Vec<_, SMALL_VEC_SIZE> = elf
             .segments()
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "segment info".to_string(),
+                name: "segment info".into(),
             })?
             .iter()
             .filter(|p| p.p_type == elf::abi::PT_LOAD)
@@ -345,13 +345,15 @@ impl Context {
         idx: NodeIndex,
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
-    ) -> Result<Vec<LoadIds>, DynlinkError> {
+    ) -> Result<Vec<LoadIds, SMALL_VEC_SIZE>, DynlinkError> {
         let root_comp_name = self.get_compartment(comp_id)?.name.clone();
-        debug!(
+        tracing::debug!(
             "loading library {} (idx = {:?}) in {}",
-            root_unlib, idx, root_comp_name
+            root_unlib,
+            idx,
+            root_comp_name
         );
-        let mut ids = vec![];
+        let mut ids = Vec::new();
         // First load the main library.
         let lib = self
             .load(comp_id, root_unlib.clone(), idx, allowed_gates, load_ctx)
@@ -370,7 +372,7 @@ impl Context {
         let deps = self.enumerate_needed(&lib).map_err(|e| {
             DynlinkError::new_collect(
                 DynlinkErrorKind::DepEnumerationFail {
-                    library: root_unlib.name.to_string(),
+                    library: root_unlib.name.as_str().into(),
                 },
                 vec![e],
             )
@@ -379,7 +381,7 @@ impl Context {
             debug!("{}: loading {} dependencies", root_unlib, deps.len());
         }
         let deps = deps
-            .into_iter()
+            .iter()
             .map(|dep_unlib| {
                 // Dependency search + load alg:
                 // 1. Search library name in current compartment. If found, use that.
@@ -428,7 +430,7 @@ impl Context {
                     } else {
                         AllowedGates::Public
                     };
-                    let mut recs = self
+                    let recs = self
                         .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates, load_ctx)
                         .map_err(|e| {
                             tracing::error!("failed to load dependency for {}: {}", lib, e);
@@ -439,13 +441,13 @@ impl Context {
                                 vec![e],
                             )
                         })?;
-                    ids.append(&mut recs);
+                    ids.extend_from_slice(recs.as_slice());
                     idx
                 };
                 self.add_dep(lib.idx, idx);
                 Ok(idx)
             })
-            .collect::<Vec<Result<_, DynlinkError>>>();
+            .collect::<std::vec::Vec<Result<_, DynlinkError>>>();
 
         let _ = DynlinkError::collect(
             DynlinkErrorKind::LibraryLoadFail {
@@ -466,7 +468,7 @@ impl Context {
         unlib: UnloadedLibrary,
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
-    ) -> Result<Vec<LoadIds>, DynlinkError> {
+    ) -> Result<Vec<LoadIds, SMALL_VEC_SIZE>, DynlinkError> {
         let idx = self.add_library(unlib.clone());
         // Step 1: insert into the compartment's library names.
         let comp = self.get_compartment_mut(comp_id)?;
@@ -474,7 +476,7 @@ impl Context {
         // At this level, it's an error to insert an already loaded library.
         if comp.library_names.contains_key(&unlib.name) {
             return Err(DynlinkErrorKind::NameAlreadyExists {
-                name: unlib.name.clone(),
+                name: unlib.name.as_str().into(),
             }
             .into());
         }

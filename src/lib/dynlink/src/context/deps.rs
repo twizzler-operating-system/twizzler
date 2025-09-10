@@ -4,7 +4,7 @@ use tracing::trace;
 use super::Context;
 use crate::{
     library::{Library, UnloadedLibrary},
-    DynlinkError, DynlinkErrorKind,
+    DynlinkError, DynlinkErrorKind, Vec, SMALL_VEC_SIZE,
 };
 
 impl Context {
@@ -12,7 +12,7 @@ impl Context {
     pub(crate) fn enumerate_needed(
         &self,
         lib: &Library,
-    ) -> Result<Vec<UnloadedLibrary>, DynlinkError> {
+    ) -> Result<Vec<UnloadedLibrary, SMALL_VEC_SIZE>, DynlinkError> {
         trace!("{}: enumerating dependencies", lib);
         let elf = lib.get_elf()?;
         let common = elf.find_common_data()?;
@@ -21,7 +21,7 @@ impl Context {
         let res = common
             .dynamic
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynamic".to_string(),
+                name: "dynamic".into(),
             })?
             .iter()
             .filter_map(|d| match d.d_tag {
@@ -30,26 +30,24 @@ impl Context {
                     common
                         .dynsyms_strs
                         .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                            name: "dynsyms_strs".to_string(),
+                            name: "dynsyms_strs".into(),
                         })
                         .and_then(|strs| {
                             strs.get(d.d_ptr() as usize).map_err(|_| {
                                 DynlinkErrorKind::MissingSection {
-                                    name: "dynsyms_strs".to_string(),
+                                    name: "dynsyms_strs".into(),
                                 }
                             })
                         })
-                        .map(|name| UnloadedLibrary {
-                            name: name.to_string(),
-                        })
+                        .map(|name| UnloadedLibrary { name: name.into() })
                 }),
                 _ => None,
             })
-            .collect::<Vec<_>>();
+            .collect::<std::vec::Vec<_>>();
 
         DynlinkError::collect(
             DynlinkErrorKind::DepEnumerationFail {
-                library: lib.name.clone(),
+                library: lib.name.as_str().into(),
             },
             res.into_iter().map(|x| x.map_err(|e| e.into())),
         )

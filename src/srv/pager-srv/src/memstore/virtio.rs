@@ -8,7 +8,7 @@ use twizzler::{
 };
 use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device, dma::PhysInfo};
 
-use crate::{disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, PAGER_CTX};
+use crate::{disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, EXECUTOR, PAGER_CTX};
 
 #[derive(Clone)]
 pub struct VirtioMem {
@@ -48,11 +48,12 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + read_buffer.len() as u64,
             };
-            block_on(crate::physrw::read_physical_pages(
-                queue,
-                &mut read_buffer,
-                phys,
-            ))?;
+            block_on(
+                EXECUTOR
+                    .get()
+                    .unwrap()
+                    .run(crate::physrw::read_physical_pages(&mut read_buffer, phys)),
+            )?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -100,11 +101,12 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + write_buffer.len() as u64,
             };
-            block_on(crate::physrw::fill_physical_pages(
-                queue,
-                &write_buffer,
-                phys,
-            ))?;
+            block_on(
+                EXECUTOR
+                    .get()
+                    .unwrap()
+                    .run(crate::physrw::fill_physical_pages(&write_buffer, phys)),
+            )?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -138,7 +140,7 @@ impl PagedDevice for VirtioMem {
                     if !phys_list.is_empty() {
                         return None;
                     }
-                    block_on(mw)
+                    block_on(EXECUTOR.get().unwrap().run(mw))
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);
@@ -190,10 +192,7 @@ pub async fn init_virtio() -> Result<VirtioMem> {
                 .read();
 
             tracing::info!("virtio-mem start at {:x} len: {:x}", start, len);
-            if register_phys(&PAGER_CTX.get().unwrap().sender, start, len)
-                .await
-                .is_ok()
-            {
+            if register_phys(start, len).await.is_ok() {
                 tracing::info!("virtio-mem registered physical region with kernel",);
                 let ctrl = VirtioMem {
                     device: Arc::new(device),

@@ -39,6 +39,10 @@ impl TraceSink {
         })
     }
 
+    pub fn pending(&self) -> usize {
+        self.buffer.len()
+    }
+
     pub fn modify(&mut self, spec: TraceSpec) {
         self.specs.push(spec);
     }

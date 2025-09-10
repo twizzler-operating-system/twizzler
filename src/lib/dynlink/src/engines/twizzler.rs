@@ -125,6 +125,7 @@ pub fn load_segments(
         &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+    //let text_id = src.id;
 
     tracing::trace!(
         "mapped segments in instance {} to {}, {}",

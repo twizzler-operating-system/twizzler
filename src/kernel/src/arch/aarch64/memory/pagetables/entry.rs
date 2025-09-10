@@ -232,6 +232,7 @@ bitflags::bitflags! {
         const USER_NO_EXECUTE = 1 << 54;
 
         // [58:55] => Ignored/Reserved for software use
+        const SHARED_PAGE_TABLE = 1 << 58;
         // [62:59] => PBHA
         //   - IGNORED if FEAT_HPDS2 is not implemented
         //   - Page based hardware attributes

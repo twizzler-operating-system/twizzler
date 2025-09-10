@@ -330,8 +330,9 @@ impl GICD {
             Destination::AllButSelf => {
                 let current = current_processor();
                 // NOTE: NR_CPUS is read only after bootstrap, so relaxed ordering is safe.
-                let nr_cpus =
-                    crate::processor::NR_CPUS.load(core::sync::atomic::Ordering::Relaxed) as u32;
+                let nr_cpus = crate::processor::mp::NR_CPUS
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    as u32;
                 for core in 0..nr_cpus {
                     if core == current.id {
                         continue;

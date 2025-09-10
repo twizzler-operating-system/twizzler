@@ -260,6 +260,8 @@ fn main() {
             continue;
         }
 
+        let background = cmd.iter().any(|s| *s == "&");
+
         // Find env vars
         let cmd = cmd.into_iter().map(|s| as_env(s)).collect::<Vec<_>>();
         let vars = cmd
@@ -284,9 +286,13 @@ fn main() {
             .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
             .load();
         if let Ok(comp) = comp {
-            let mut flags = comp.info().flags;
-            while !flags.contains(CompartmentFlags::EXITED) {
-                flags = comp.wait(flags);
+            if background {
+                tracing::info!("continuing compartment {} in background", cmd[0]);
+            } else {
+                let mut flags = comp.info().flags;
+                while !flags.contains(CompartmentFlags::EXITED) {
+                    flags = comp.wait(flags);
+                }
             }
         } else {
             warn!("failed to start {}", cmd[0]);

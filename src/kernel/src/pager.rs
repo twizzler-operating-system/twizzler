@@ -235,16 +235,16 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             0
         };
 
-        if let Some(frame) = crate::memory::tracker::try_alloc_frame(
+        if let Some((frame, len)) = crate::memory::tracker::try_alloc_split_frames(
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
-            let thiscount = PHYS_LEVEL_LAYOUTS[level].size() / PHYS_LEVEL_LAYOUTS[0].size();
+            let thiscount = len / PHYS_LEVEL_LAYOUTS[0].size();
             count += thiscount;
             crate::memory::tracker::track_page_pager(thiscount);
             ranges.push(PhysRange::new(
                 frame.start_address().raw(),
-                frame.start_address().offset(frame.size()).unwrap().raw(),
+                frame.start_address().offset(len).unwrap().raw(),
             ));
         } else {
             if let Some(frame) = crate::memory::tracker::try_alloc_frame(

@@ -5,7 +5,9 @@ use crate::{
     arch::memory::mmio::mmio_allocator,
     interrupt::{Destination, TriggerMode},
     memory::{
-        pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
+        pagetables::{
+            Consistency, ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
+        },
         PhysAddr,
     },
     once::Once,
@@ -38,7 +40,8 @@ pub fn serial() -> &'static PL011 {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            mapper.map(cursor, &mut phys);
+            let consist = Consistency::new(mapper.root_address());
+            mapper.map(cursor, &mut phys, consist);
         }
 
         // create instance of the PL011 UART driver

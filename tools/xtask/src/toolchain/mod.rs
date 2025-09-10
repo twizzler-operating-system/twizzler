@@ -10,7 +10,7 @@ use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
 use reqwest::Client;
 
-use crate::triple::Triple;
+use crate::triple::{Arch, Triple};
 
 mod bootstrap;
 mod pathfinding;
@@ -241,10 +241,15 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
 
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
     // rust's linkage support.
-    let args = format!("-C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", sysroot_path.display(), sysroot_path.display());
+    let extra_rustflags = if target.arch == Arch::X86_64 {
+        "-C target-feature=+sse3,+avx,+avx2,+fma -C target-cpu=x86-64-v3"
+    } else {
+        ""
+    };
+    let args = format!("{} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", extra_rustflags, sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
-    std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path);
+    std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
 
     Ok(())
 }
@@ -286,9 +291,9 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
         "PATH",
         format!(
             "{}:{}:{}:{}",
-            rustlib_bin.to_string_lossy(),
-            lld_bin.to_string_lossy(),
-            toolchain_bin.to_string_lossy(),
+            rustlib_bin.canonicalize()?.to_string_lossy(),
+            lld_bin.canonicalize()?.to_string_lossy(),
+            toolchain_bin.canonicalize()?.to_string_lossy(),
             path
         ),
     );
@@ -315,7 +320,7 @@ Remote toolchain doesn't exist!!
 Continuing well require a full compilation of the twizzler toolchain!
 This operation will require ~40-50 Gb of disk space and will take a substantial amount of time!
 
-Please run 
+Please run
 
 git submodule update --init --recursive
 cargo toolchain bootstrap

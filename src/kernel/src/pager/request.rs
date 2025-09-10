@@ -12,8 +12,8 @@ use twizzler_abi::{
 use crate::{
     memory::context::virtmem::region::Shadow,
     obj::{pages::PageRef, range::GetPageFlags, PageNumber},
+    processor::sched::schedule_thread,
     random::getrandom,
-    sched::schedule_thread,
     thread::{CriticalGuard, ThreadRef},
 };
 

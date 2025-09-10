@@ -291,6 +291,7 @@ impl ReferenceRuntime {
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
+
         Ok(fd.try_into().unwrap())
     }
 

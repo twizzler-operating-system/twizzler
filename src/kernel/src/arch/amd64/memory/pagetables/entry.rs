@@ -100,6 +100,7 @@ bitflags::bitflags! {
         const HUGE_PAGE = 1 << 7;
         const GLOBAL = 1 << 8;
         const AVAIL_1 = 1 << 9;
+        const SHARED_PAGE_TABLE = 1 << 10;
         const NO_EXECUTE = 1 << 63;
     }
 }

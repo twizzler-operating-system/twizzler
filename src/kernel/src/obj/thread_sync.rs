@@ -1,9 +1,14 @@
 use alloc::collections::BTreeMap;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp};
+use twizzler_abi::{
+    device::NUM_DEVICE_INTERRUPTS,
+    syscall::{ThreadSyncFlags, ThreadSyncOp},
+};
 
-use super::Object;
+use super::{Object, OBJ_HAS_INTERRUPTS};
 use crate::{
+    interrupt::wait_for_device_interrupt,
     syscall::sync::add_to_requeue,
     thread::{current_thread_ref, ThreadRef},
 };
@@ -98,6 +103,16 @@ impl Object {
         sleep_info.wake_n(offset, count)
     }
 
+    pub fn add_device_interrupt(&self, vector: u32, num: usize, offset: usize) {
+        self.device_interrupt_info[num]
+            .0
+            .store(vector as u64, Ordering::Release);
+        self.device_interrupt_info[num]
+            .1
+            .store(offset as u64, Ordering::Release);
+        self.flags.fetch_or(OBJ_HAS_INTERRUPTS, Ordering::Release);
+    }
+
     pub fn setup_sleep_word(
         &self,
         offset: usize,
@@ -105,17 +120,38 @@ impl Object {
         val: u64,
         first_sleep: bool,
         flags: ThreadSyncFlags,
+        vaddr: Option<&AtomicU64>,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
+
+        if let Some(vaddr) = vaddr {
+            if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {
+                for i in 0..NUM_DEVICE_INTERRUPTS {
+                    let di_offset = self.device_interrupt_info[i].1.load(Ordering::Acquire);
+                    let di_vector = self.device_interrupt_info[i].0.load(Ordering::Acquire);
+                    if di_offset as usize == offset {
+                        return wait_for_device_interrupt(
+                            thread,
+                            di_vector as u32,
+                            first_sleep,
+                            vaddr,
+                        );
+                    }
+                }
+            }
+        }
+
         let mut sleep_info = self.sleep_info.lock();
 
-        let cur = unsafe { self.read_atomic_u64(offset) };
+        let cur = vaddr
+            .map(|vaddr| vaddr.load(Ordering::SeqCst))
+            .unwrap_or_else(|| unsafe { self.read_atomic_u64(offset) });
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread);
+            sleep_info.insert(offset, thread.clone());
         }
         res
     }
@@ -127,17 +163,20 @@ impl Object {
         val: u32,
         first_sleep: bool,
         flags: ThreadSyncFlags,
+        vaddr: Option<&AtomicU32>,
     ) -> bool {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
-        let cur = unsafe { self.read_atomic_u32(offset) };
+        let cur = vaddr
+            .map(|vaddr| vaddr.load(Ordering::SeqCst))
+            .unwrap_or_else(|| unsafe { self.read_atomic_u32(offset) });
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread);
+            sleep_info.insert(offset, thread.clone());
         }
         res
     }

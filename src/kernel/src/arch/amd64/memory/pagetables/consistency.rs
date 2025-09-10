@@ -12,7 +12,10 @@ use crate::{
     },
     interrupt::{self, Destination},
     memory::pagetables::{trace_tlb_invalidation, trace_tlb_shootdown},
-    processor::{current_processor, spin_wait_until, tls_ready, with_each_active_processor},
+    processor::{
+        mp::{current_processor, with_each_active_processor},
+        spin_wait_until, tls_ready,
+    },
     thread::current_thread_ref,
 };
 
@@ -273,6 +276,11 @@ impl ArchTlbMgr {
         };
         assert!(!this.data.has_invalidations());
         this
+    }
+
+    pub fn set_full_global(&mut self) {
+        self.data.set_full();
+        self.data.set_global();
     }
 
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and

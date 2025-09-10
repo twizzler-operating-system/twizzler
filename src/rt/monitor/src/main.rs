@@ -4,12 +4,14 @@
 #![feature(iterator_try_collect)]
 #![feature(linkage)]
 
+use std::alloc::GlobalAlloc;
+
 use dynlink::context::NewCompartmentFlags;
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader};
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use twizzler_abi::object::NULLPAGE_SIZE;
+use twizzler_abi::{object::NULLPAGE_SIZE, simple_mutex::Mutex};
 use twizzler_rt_abi::object::MapFlags;
 
 mod dlengine;
@@ -112,7 +114,7 @@ fn monitor_init() -> miette::Result<()> {
         }
     }
 
-    info!("monitor early init completed, starting init");
+    info!("monitor early init completed, starting init",);
     let mut args = vec!["init".to_string()];
     for arg in std::env::args() {
         args.push(arg);
@@ -130,4 +132,80 @@ fn monitor_init() -> miette::Result<()> {
     tracing::warn!("init exited");
 
     Ok(())
+}
+
+struct MonAlloc {
+    track: Mutex<Track>,
+}
+
+struct Track {
+    ips: [usize; 4096],
+    count: [usize; 4096],
+    idx: usize,
+}
+
+#[allow(dead_code)]
+impl Track {
+    const fn new() -> Self {
+        Self {
+            ips: [0; 4096],
+            count: [0; 4096],
+            idx: 0,
+        }
+    }
+
+    fn insert(&mut self, ip: *mut u8) {
+        let addr = ip.addr() + 1;
+        let existing = self.ips.iter().position(|i| *i == addr);
+        if let Some(existing) = existing {
+            self.count[existing] += 1;
+        } else if self.idx < 4096 {
+            self.ips[self.idx] = addr;
+            self.count[self.idx] = 1;
+            self.idx += 1;
+        } else {
+            twizzler_abi::klog_println!("dropping ip {:x}", addr);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.idx = 0;
+        self.ips.fill(0);
+        self.count.fill(0);
+    }
+
+    fn print(&self) {
+        for pair in self.ips[0..self.idx]
+            .iter()
+            .zip(self.count[0..self.idx].iter())
+        {
+            twizzler_abi::klog_println!("==> {:x} {}", pair.0, pair.1);
+        }
+    }
+}
+
+use twizzler_rt_abi::alloc::AllocFlags;
+unsafe impl GlobalAlloc for MonAlloc {
+    #[track_caller]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        twizzler_rt_abi::alloc::twz_rt_malloc(layout, AllocFlags::empty())
+            .unwrap_or(core::ptr::null_mut())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        twizzler_rt_abi::alloc::twz_rt_dealloc(ptr, layout, AllocFlags::empty());
+    }
+}
+
+//#[global_allocator]
+static MA: MonAlloc = MonAlloc {
+    track: Mutex::new(Track::new()),
+};
+
+pub fn print_alloc_stats() {
+    MA.track.lock().print();
+}
+
+pub fn reset_alloc_stats() {
+    MA.track.lock().reset();
 }

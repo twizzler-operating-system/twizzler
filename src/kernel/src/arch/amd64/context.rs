@@ -3,8 +3,8 @@ use crate::{
     memory::{
         frame::get_frame,
         pagetables::{
-            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
-            PhysAddrProvider,
+            Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
+            PhysAddrProvider, SharedPageTable,
         },
         tracker::{alloc_frame, free_frame, FrameAllocFlags},
         VirtAddr,
@@ -86,13 +86,23 @@ impl ArchContext {
 
     pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
         let ops = if cursor.start().is_kernel() {
-            kernel_mapper().lock().map(cursor, phys)
+            let consist = Consistency::new_full_global();
+            kernel_mapper().lock().map(cursor, phys, consist)
         } else {
             self.inner.lock().map(cursor, phys)
         };
         if let Err(ops) = ops {
             ops.run_all();
         }
+    }
+
+    pub fn shared_map(&self, cursor: MappingCursor, spt: &SharedPageTable) {
+        let ops = if cursor.start().is_kernel() {
+            panic!("cannot map kernel memory with shared page tables")
+        } else {
+            self.inner.lock().shared_map(cursor, spt)
+        };
+        ops.run_all();
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
@@ -142,7 +152,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
     ) -> Result<(), DeferredUnmappingOps> {
-        self.mapper.map(cursor, phys)
+        let consist = Consistency::new(self.mapper.root_address());
+        self.mapper.map(cursor, phys, consist)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
@@ -151,6 +162,10 @@ impl ArchContextInner {
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         self.mapper.unmap(cursor)
+    }
+
+    fn shared_map(&mut self, cursor: MappingCursor, spt: &SharedPageTable) -> DeferredUnmappingOps {
+        self.mapper.shared_map(cursor, spt)
     }
 }
 

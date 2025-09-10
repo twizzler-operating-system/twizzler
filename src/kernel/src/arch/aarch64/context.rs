@@ -5,8 +5,8 @@ use crate::{
     memory::{
         frame::get_frame,
         pagetables::{
-            DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
-            PhysAddrProvider,
+            Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
+            PhysAddrProvider, SharedPageTable,
         },
         tracker::{alloc_frame, free_frame, FrameAllocFlags},
         PhysAddr,
@@ -117,7 +117,9 @@ impl ArchContext {
         // the local per-context mappings
         let ops = if cursor.start().is_kernel() {
             // upper half addresses go to TTBR1_EL1
-            kernel_mapper().0.lock().map(cursor, phys)
+            let mut mapper = kernel_mapper().0.lock();
+            let consist = Consistency::new(mapper.root_address());
+            mapper.map(cursor, phys, consist)
         } else {
             // lower half addresses go to TTBR0_EL1
             self.inner.lock().map(cursor, phys)
@@ -147,6 +149,10 @@ impl ArchContext {
     pub fn readmap<R>(&self, _cursor: MappingCursor, _f: impl Fn(MapReader) -> R) -> R {
         todo!("readmap")
     }
+
+    pub fn shared_map(&self, cursor: MappingCursor, spt: &SharedPageTable) {
+        todo!()
+    }
 }
 
 impl ArchContextInner {
@@ -162,7 +168,8 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
     ) -> Result<(), DeferredUnmappingOps> {
-        self.mapper.map(cursor, phys)
+        let consist = Consistency::new(self.mapper.root_address());
+        self.mapper.map(cursor, phys, consist)
     }
 
     fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {

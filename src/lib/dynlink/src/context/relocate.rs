@@ -11,12 +11,13 @@ use elf::{
     string_table::StringTable,
     symbol::SymbolTable,
 };
+use petgraph::graph::NodeIndex;
 use tracing::{debug, error, trace};
 
 use super::{Context, Library};
 use crate::{
     library::{LibraryId, RelocState},
-    DynlinkError, DynlinkErrorKind,
+    DynlinkError, DynlinkErrorKind, Vec, SMALL_VEC_SIZE,
 };
 
 // A relocation is either a REL type or a RELA type. The only difference is that
@@ -81,6 +82,7 @@ impl Context {
         name: &str,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
+        deps_list: &[NodeIndex],
     ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
@@ -93,26 +95,28 @@ impl Context {
         if let Some(rels) = self.get_parsing_iter(start, ent, sz) {
             DynlinkError::collect(
                 DynlinkErrorKind::RelocationSectionFail {
-                    secname: "REL".to_string(),
-                    library: lib.name.clone(),
+                    secname: "REL".into(),
+                    library: lib.name.as_str().into(),
                 },
-                rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms)),
+                rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms, deps_list)),
             )?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
             DynlinkError::collect(
                 DynlinkErrorKind::RelocationSectionFail {
-                    secname: "RELA".to_string(),
-                    library: lib.name.clone(),
+                    secname: "RELA".into(),
+                    library: lib.name.as_str().into(),
                 },
-                relas.map(|rela| self.do_reloc(lib, EitherRel::Rela(rela), strings, syms)),
+                relas.map(|rela| {
+                    self.do_reloc(lib, EitherRel::Rela(rela), strings, syms, deps_list)
+                }),
             )?;
             Ok(())
         } else {
             let info = format!("reloc '{}' with entsz {}, size {}", name, ent, sz);
             Err(DynlinkErrorKind::UnsupportedReloc {
-                library: lib.name.clone(),
-                reloc: info,
+                library: lib.name.as_str().into(),
+                reloc: info.into(),
             }
             .into())
         }
@@ -126,7 +130,7 @@ impl Context {
         let dynamic = common
             .dynamic
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynamic".to_string(),
+                name: "dynamic".into(),
             })?;
 
         // Helper to lookup a single entry for a relocated pointer in the dynamic table.
@@ -159,9 +163,9 @@ impl Context {
             if flags as i64 & DF_TEXTREL != 0 {
                 error!("{}: relocations within text not supported", lib);
                 return Err(DynlinkErrorKind::UnsupportedReloc {
-                    library: lib.name.to_string(),
+                    library: lib.name.as_str().into(),
                     // TODO
-                    reloc: "DF_TEXTREL".to_string(),
+                    reloc: "DF_TEXTREL".into(),
                 }
                 .into());
             }
@@ -177,14 +181,15 @@ impl Context {
         let dynsyms = common
             .dynsyms
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynsyms".to_string(),
+                name: "dynsyms".into(),
             })?;
         let dynsyms_str = common
             .dynsyms_strs
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynsyms_strs".to_string(),
+                name: "dynsyms_strs".into(),
             })?;
 
+        let deps_list = self.build_deps_search_list(lib.id());
         // Process relocations
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
@@ -195,6 +200,7 @@ impl Context {
                 "RELA",
                 &dynsyms_str,
                 &dynsyms,
+                deps_list.as_slice(),
             )?;
         }
 
@@ -207,6 +213,7 @@ impl Context {
                 "REL",
                 &dynsyms_str,
                 &dynsyms,
+                deps_list.as_slice(),
             )?;
         }
 
@@ -219,13 +226,22 @@ impl Context {
                 _ => {
                     error!("failed to relocate {}: unknown PLTREL type", lib);
                     return Err(DynlinkErrorKind::UnsupportedReloc {
-                        library: lib.name.clone(),
-                        reloc: "unknown PTREL type".to_string(),
+                        library: lib.name.as_str().into(),
+                        reloc: "unknown PTREL type".into(),
                     }
                     .into());
                 }
             } * size_of::<usize>();
-            self.process_rels(lib, rel, ent, sz as usize, "JMPREL", &dynsyms_str, &dynsyms)?;
+            self.process_rels(
+                lib,
+                rel,
+                ent,
+                sz as usize,
+                "JMPREL",
+                &dynsyms_str,
+                &dynsyms,
+                deps_list.as_slice(),
+            )?;
         }
 
         Ok(())
@@ -239,7 +255,7 @@ impl Context {
             crate::library::RelocState::PartialRelocation => {
                 error!("{}: tried to relocate a failed library", lib);
                 return Err(DynlinkErrorKind::RelocationFail {
-                    library: lib.name.to_string(),
+                    library: lib.name.as_str().into(),
                 }
                 .into());
             }
@@ -256,7 +272,7 @@ impl Context {
         let deps = self
             .library_deps
             .neighbors_directed(root_id.0, petgraph::Direction::Outgoing)
-            .collect::<Vec<_>>();
+            .collect::<Vec<_, SMALL_VEC_SIZE>>();
 
         let mut visit_state = HashSet::new();
         visit_state.insert(root_id.0);
@@ -269,7 +285,12 @@ impl Context {
             }
         });
 
-        DynlinkError::collect(DynlinkErrorKind::DepsRelocFail { library: libname }, rets)?;
+        DynlinkError::collect(
+            DynlinkErrorKind::DepsRelocFail {
+                library: libname.into(),
+            },
+            rets,
+        )?;
 
         // Okay, deps are ready, let's reloc the root.
         let lib = self.get_library_mut(root_id)?;
@@ -289,7 +310,7 @@ impl Context {
     /// Iterate through all libraries and process relocations for any libraries that haven't yet
     /// been relocated.
     pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
-        let name = self.get_library(root_id)?.name.to_string();
+        let name = self.get_library(root_id)?.name.as_str().into();
         self.relocate_recursive(root_id).map_err(|e| {
             DynlinkError::new_collect(DynlinkErrorKind::RelocationFail { library: name }, vec![e])
         })

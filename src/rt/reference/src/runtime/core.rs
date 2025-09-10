@@ -37,10 +37,6 @@ unsafe impl Sync for PtrToInfo {}
 static MON_RTINFO: OnceLock<Option<PtrToInfo>> = OnceLock::new();
 
 impl ReferenceRuntime {
-    pub fn default_allocator(&self) -> &'static dyn std::alloc::GlobalAlloc {
-        self.get_alloc()
-    }
-
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {

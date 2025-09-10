@@ -11,8 +11,10 @@ use super::{
 use crate::{
     interrupt::Destination,
     once::Once,
-    processor::ipi_exec,
-    sched::{schedule, schedule_resched, schedule_thread},
+    processor::{
+        ipi::ipi_exec,
+        sched::{schedule, schedule_resched, schedule_thread, SchedFlags},
+    },
     spinlock::Spinlock,
     thread::current_thread_ref,
 };
@@ -39,7 +41,7 @@ impl Thread {
     /// of this call.
     pub fn suspend(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_SUSPEND, Ordering::SeqCst);
-        if self == &current_thread_ref().unwrap() {
+        if self == current_thread_ref().unwrap() {
             if !self.is_critical() {
                 crate::interrupt::with_disabled(|| {
                     self.maybe_suspend_self();
@@ -76,7 +78,7 @@ impl Thread {
         }
 
         // goodnight!
-        schedule(false);
+        schedule(SchedFlags::PREEMPT);
         self.set_state(ExecutionState::Running);
 
         // goodmorning! Clear the flags. This is one operation, so we'll never observe

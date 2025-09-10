@@ -238,7 +238,9 @@ fn allocate_interrupt(
     let num = vector.num();
     let offset =
         pcie_calculate_int_sync_offset(arg2 as usize).ok_or(ArgumentError::InvalidArgument)?;
-    let wi = WakeInfo::new(device.object(), offset);
+    let object = device.object();
+    object.add_device_interrupt(num as u32, arg2 as usize, offset);
+    let wi = WakeInfo::new(object, offset);
     crate::interrupt::set_userspace_interrupt_wakeup(num as u32, wi);
     state.ints.push(vector);
 

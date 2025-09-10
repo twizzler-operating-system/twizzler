@@ -1,5 +1,5 @@
 use super::super::common::gicv2::GICv2;
-use crate::once::Once;
+use crate::{memory::pagetables::Consistency, once::Once};
 
 // used by generic kernel interrupt code
 pub const MIN_VECTOR: usize = GICv2::MIN_VECTOR;
@@ -59,8 +59,10 @@ pub fn interrupt_controller() -> &'static GICv2 {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            mapper.map(gicc_region, &mut gicc_phys);
-            mapper.map(gicd_region, &mut gicd_phys);
+            let consist = Consistency::new(mapper.root_address());
+            mapper.map(gicc_region, &mut gicc_phys, consist);
+            let consist = Consistency::new(mapper.root_address());
+            mapper.map(gicd_region, &mut gicd_phys, consist);
         }
         GICv2::new(
             // TODO: might need to lock global distributor state,

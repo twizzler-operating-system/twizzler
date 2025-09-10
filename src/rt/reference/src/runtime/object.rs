@@ -104,7 +104,7 @@ impl ReferenceRuntime {
         }
 
         let slot = ptr as usize / MAX_SIZE;
-        let Some(id) = self.get_alloc().get_id_from_ptr(ptr) else {
+        let Some(id) = self.get_id_from_heap_ptr(ptr) else {
             let map = sys_object_read_map(None, slot)?;
             return Ok(object_handle {
                 id: map.id.raw(),

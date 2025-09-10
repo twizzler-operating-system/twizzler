@@ -66,7 +66,7 @@ pub struct BootArgs {
 /// # Safety
 /// The tcb_base and kernel stack must both be valid memory regions for each thing.
 pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
-    let core = unsafe { crate::processor::get_processor_mut(cpu) };
+    let core = unsafe { crate::processor::mp::get_processor_mut(cpu) };
 
     match core.arch.boot {
         BootMethod::Psci => psci::boot_core(core, tcb_base, kernel_stack),

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
-const MAX_INLINE: usize = 64;
-const MAX_BOX: usize = 4096;
+const MAX_INLINE: usize = 128;
+const MAX_BOX: usize = 1024;
 #[derive(Clone, Debug)]
 pub enum BufferedTraceData {
     Box(Arc<[u8; MAX_BOX]>, usize),

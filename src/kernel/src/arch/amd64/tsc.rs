@@ -27,6 +27,7 @@ impl Tsc {
                 TimeSpan::ZERO,
                 FemtoSeconds(0), // TODO
                 FemtoSeconds(1_000_000_000_000_000 / tsc_freq),
+                FemtoSeconds(1_000_000_000_000_000 / tsc_freq),
                 ClockFlags::MONOTONIC,
             ),
         }

@@ -6,9 +6,12 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall,
+        KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall, TimeSpan,
     },
-    trace::{SyscallEntryEvent, TraceEntryFlags, TraceKind, THREAD_SYSCALL_ENTRY},
+    trace::{
+        SyscallEntryEvent, SyscallExitEvent, TraceEntryFlags, TraceKind, THREAD_SYSCALL_ENTRY,
+        THREAD_SYSCALL_EXIT,
+    },
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError, TwzError},
@@ -21,9 +24,11 @@ use self::{
 };
 use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
+    instant::Instant,
     memory::VirtAddr,
+    processor::mp::all_processors,
     random::getrandom,
-    time::TICK_SOURCES,
+    time::{Ticks, TICK_SOURCES},
     trace::{
         mgr::{TraceEvent, TRACE_MGR},
         new_trace_entry,
@@ -50,6 +55,10 @@ pub trait SyscallContext {
     where
         u64: From<R1>,
         u64: From<R2>;
+    fn get_return_values<R1, R2>(&mut self) -> (R1, R2)
+    where
+        R1: From<u64>,
+        R2: From<u64>;
 }
 
 pub unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> Option<&'a mut [T]> {
@@ -96,7 +105,7 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
 }
 
 fn write_sysinfo(info: &mut SysInfo) {
-    info.cpu_count = crate::processor::all_processors().iter().fold(0, |acc, p| {
+    info.cpu_count = all_processors().iter().fold(0, |acc, p| {
         acc + match &p {
             Some(p) => {
                 if p.is_running() {
@@ -137,22 +146,30 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
 
     match source {
         ClockSource::BestMonotonic => {
-            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
+            let ticks = {
+                TICK_SOURCES.lock()[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
+            };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::MONOTONIC;
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }
         ClockSource::BestRealTime => {
-            let ticks = { TICK_SOURCES.lock()[src as usize].read() };
+            let ticks = {
+                TICK_SOURCES.lock()[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
+            };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }
@@ -162,13 +179,15 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
                 if src as usize > clock_list.len() {
                     return Err(ArgumentError::InvalidArgument.into());
                 }
-                clock_list[src as usize].read()
+                clock_list[src as usize]
+                    .as_ref()
+                    .map_or(Ticks::default(), |c| c.read())
             };
             let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
             let precision = FemtoSeconds(1000); // TODO
             let resolution = ticks.rate;
             let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, flags);
+            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
             info_ptr.write(info);
             Ok(0)
         }
@@ -276,7 +295,7 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
     (0, t.into())
 }
 
-pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
+fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
     if context.num() as u64 != Syscall::KernelConsoleWrite.num() {
         log::trace!(
             "sys {}: {}",
@@ -284,18 +303,7 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
             context.num()
         );
     }
-    trace_syscall(
-        context.pc(),
-        context.num().into(),
-        [
-            context.arg0(),
-            context.arg1(),
-            context.arg2(),
-            context.arg3(),
-            context.arg4(),
-            context.arg5(),
-        ],
-    );
+
     /*
     log!(
         ">{}:{}<",
@@ -576,17 +584,49 @@ pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
         }
     }
 }
+pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
+    let data = SyscallEntryEvent {
+        ip: context.pc().raw(),
+        num: context.num().into(),
+        args: [
+            context.arg0(),
+            context.arg1(),
+            context.arg2(),
+            context.arg3(),
+            context.arg4(),
+            context.arg5(),
+        ],
+    };
+    trace_syscall_entry(data);
+    let start = Instant::now();
+    do_syscall_entry(context);
+    let (r1, r2) = context.get_return_values();
+    let end = Instant::now();
+    trace_syscall_exit(data, [r1, r2], (end - start).into());
+}
 
-fn trace_syscall(ip: VirtAddr, num: Syscall, args: [u64; 6]) {
+fn trace_syscall_entry(data: SyscallEntryEvent) {
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY) {
-        let data = SyscallEntryEvent {
-            ip: ip.raw(),
-            num,
-            args,
-        };
         let entry = new_trace_entry(
             TraceKind::Thread,
             THREAD_SYSCALL_ENTRY,
+            TraceEntryFlags::HAS_DATA,
+        );
+
+        TRACE_MGR.enqueue(TraceEvent::new_with_data(entry, data));
+    }
+}
+
+fn trace_syscall_exit(entry: SyscallEntryEvent, ret: [u64; 2], duration: TimeSpan) {
+    if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT) {
+        let data = SyscallExitEvent {
+            entry,
+            ret,
+            duration,
+        };
+        let entry = new_trace_entry(
+            TraceKind::Thread,
+            THREAD_SYSCALL_EXIT,
             TraceEntryFlags::HAS_DATA,
         );
 

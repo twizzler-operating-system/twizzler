@@ -52,13 +52,10 @@ impl FileDesc {
         flags: MapFlags,
         create_opts: &CreateOptions,
     ) -> std::io::Result<Self> {
-        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
-        let metadata_handle = unsafe {
-            handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-        };
+        let handle = OUR_RUNTIME
+            .map_object(obj_id, flags | MapFlags::NO_NULLPAGE)
+            .unwrap();
+        let metadata_handle = handle.start().cast::<FileMetadata>();
         if (unsafe { *metadata_handle }).magic != MAGIC_NUMBER {
             match create_opts {
                 CreateOptions::CreateKindNew => unsafe {
@@ -89,13 +86,7 @@ impl FileDesc {
     }
 
     pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
-        let metadata_handle = unsafe {
-            &mut *self
-                .handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-        };
+        let metadata_handle = unsafe { &mut *self.handle.start().cast::<FileMetadata>() };
 
         let new_pos: i64 = match pos {
             SeekFrom::Start(x) => x as i64,
@@ -112,13 +103,7 @@ impl FileDesc {
     }
 
     pub fn stat(&self) -> Result<FdInfo> {
-        let metadata_handle = unsafe {
-            &mut *self
-                .handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-        };
+        let metadata_handle = unsafe { &mut *self.handle.start().cast::<FileMetadata>() };
 
         Ok(FdInfo {
             kind: twizzler_rt_abi::fd::FdKind::Regular,
@@ -133,14 +118,8 @@ impl FileDesc {
     }
 
     pub fn fd_cmd(&mut self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        let metadata_handle: &FileMetadata = unsafe {
-            self.handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-                .as_ref()
-                .unwrap()
-        };
+        let metadata_handle: &FileMetadata =
+            unsafe { self.handle.start().cast::<FileMetadata>().as_ref().unwrap() };
         match cmd {
             twizzler_rt_abi::bindings::FD_CMD_SYNC => {
                 for id in &metadata_handle.direct {
@@ -188,12 +167,7 @@ impl FileDesc {
 
 impl Read for FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let metadata_handle = unsafe {
-            self.handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-        };
+        let metadata_handle = self.handle.start().cast::<FileMetadata>();
 
         let mut bytes_read = 0;
         while bytes_read < buf.len() {
@@ -229,7 +203,7 @@ impl Read for FileDesc {
                 } else {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    let flags = MapFlags::READ | MapFlags::WRITE;
+                    let flags = MapFlags::READ | MapFlags::WRITE | MapFlags::NO_NULLPAGE;
                     let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
                     self.map.put(object_window, handle.clone());
                     handle.start()
@@ -238,11 +212,7 @@ impl Read for FileDesc {
 
             unsafe {
                 buf.as_mut_ptr().offset(bytes_read as isize).copy_from(
-                    object_ptr.offset(
-                        NULLPAGE_SIZE as isize
-                            + size_of::<FileMetadata>() as isize
-                            + offset as isize,
-                    ),
+                    object_ptr.offset(size_of::<FileMetadata>() as isize + offset as isize),
                     bytes_to_read as usize,
                 )
             }
@@ -258,12 +228,7 @@ impl Read for FileDesc {
 
 impl Write for FileDesc {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let metadata_handle = unsafe {
-            self.handle
-                .start()
-                .offset(NULLPAGE_SIZE as isize)
-                .cast::<FileMetadata>()
-        };
+        let metadata_handle = self.handle.start().cast::<FileMetadata>();
 
         let mut bytes_written = 0;
         while bytes_written < buf.len() {
@@ -301,7 +266,7 @@ impl Write for FileDesc {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
 
-                    let flags = MapFlags::READ | MapFlags::WRITE;
+                    let flags = MapFlags::READ | MapFlags::WRITE | MapFlags::NO_NULLPAGE;
 
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
@@ -329,11 +294,7 @@ impl Write for FileDesc {
 
             unsafe {
                 object_ptr
-                    .offset(
-                        NULLPAGE_SIZE as isize
-                            + size_of::<FileMetadata>() as isize
-                            + offset as isize,
-                    )
+                    .offset(size_of::<FileMetadata>() as isize + offset as isize)
                     .copy_from(
                         buf.as_ptr().offset(bytes_written as isize),
                         (bytes_to_write) as usize,

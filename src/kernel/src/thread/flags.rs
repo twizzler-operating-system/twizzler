@@ -20,6 +20,7 @@ pub fn enter_kernel() {
 pub fn exit_kernel() {
     if let Some(thread) = current_thread_ref() {
         thread.flags.fetch_and(!THREAD_IN_KERNEL, Ordering::SeqCst);
+        thread.remove_donated_priority();
     }
 }
 
