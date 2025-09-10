@@ -7,7 +7,10 @@ use super::{
     pages::{Page, PageRef},
     range::PageRange,
 };
-use crate::{memory::tracker::FrameAllocator, mutex::Mutex};
+use crate::{
+    memory::{pagetables::MappingSettings, tracker::FrameAllocator},
+    mutex::Mutex,
+};
 
 #[derive(Debug)]
 pub struct PageVec {
@@ -113,6 +116,27 @@ impl PageVec {
         let mut entry = self.tree.range(pn..(pn + 1));
         let entry = entry.next()?;
         Some(entry.1.adjust(pn - *entry.0))
+    }
+
+    pub fn pages<const MAX: usize>(
+        &self,
+        pn: usize,
+        pages: &mut heapless::Vec<(PageRef, MappingSettings), MAX>,
+        settings: MappingSettings,
+    ) {
+        let entry = self.tree.range(pn..(pn + pages.capacity()));
+
+        let mut start = pn;
+        for entry in entry {
+            if *entry.0 == start && !pages.is_full() {
+                unsafe {
+                    pages.push_unchecked((entry.1.value().clone(), settings));
+                }
+                start += entry.1.value().nr_pages();
+            } else {
+                break;
+            }
+        }
     }
 
     pub fn add_page(&mut self, off: usize, page: PageRef) -> PageRef {

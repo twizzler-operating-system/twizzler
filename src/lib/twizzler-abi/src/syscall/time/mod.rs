@@ -15,12 +15,13 @@ use crate::arch::syscall::raw_syscall;
 
 bitflags! {
     /// Flags to pass to [`sys_read_clock_info`].
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
     pub struct ReadClockFlags: u32 {
 
     }
 
     /// Flags to pass to [`sys_read_clock_list`].
-    #[derive(PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
     pub struct ReadClockListFlags: u32 {
         /// Fill the buffer with all clocks from the clock list, for every `ClockKind`.
         const ALL_CLOCKS = 1 << 0;

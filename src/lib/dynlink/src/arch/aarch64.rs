@@ -1,4 +1,5 @@
 use elf::{endian::NativeEndian, string_table::StringTable, symbol::SymbolTable};
+use petgraph::graph::NodeIndex;
 use tracing::error;
 use twizzler_rt_abi::thread::TlsDesc;
 
@@ -69,6 +70,7 @@ impl Context {
         rel: EitherRel,
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
+        deps: &[NodeIndex],
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
         let base = lib.base_addr() as u64;
@@ -79,7 +81,7 @@ impl Context {
             let flags = LookupFlags::empty();
             strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags)))
+                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags, deps)))
                 .ok()
         } else {
             None
@@ -93,15 +95,15 @@ impl Context {
                 } else {
                     error!("{}: needed symbol {} not found", lib, name);
                     Err(DynlinkErrorKind::SymbolLookupFail {
-                        symname: name.to_string(),
-                        sourcelib: lib.name.to_string(),
+                        symname: name.into(),
+                        sourcelib: lib.name.as_str().into(),
                     }
                     .into())
                 }
             } else {
                 error!("{}: invalid relocation, no symbol data", lib);
                 Err(DynlinkErrorKind::MissingSection {
-                    name: "symbol data".to_string(),
+                    name: "symbol data".into(),
                 }
                 .into())
             }
@@ -127,7 +129,7 @@ impl Context {
                 // set the TLS descriptor resolver function
                 let flags = LookupFlags::empty();
                 let tls_resolver = self
-                    .lookup_symbol(lib.id(), "_tlsdesc_static", flags)
+                    .lookup_symbol(lib.id(), "_tlsdesc_static", flags, deps)
                     .expect("failed to find tls descriptor symbol");
                 desc.resolver = tls_resolver.reloc_value() as *const u8 as *mut core::ffi::c_void;
 
@@ -139,7 +141,7 @@ impl Context {
                         .tls_id
                         .as_ref()
                         .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: lib.name.clone(),
+                            library: lib.name.as_str().into(),
                         })?
                         .offset();
                     desc.value = tls_val + module_offset as u64 + addend as u64;
@@ -151,7 +153,7 @@ impl Context {
                         .tls_id
                         .as_ref()
                         .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: other_lib.name.clone(),
+                            library: other_lib.name.as_str().into(),
                         })?
                         .offset();
                     desc.value = tls_val + module_offset as u64 + addend as u64;
@@ -171,7 +173,7 @@ impl Context {
                 let load_hdrs = elf
                     .segments()
                     .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                        name: "segment info".to_string(),
+                        name: "segment info".into(),
                     })?
                     .iter()
                     .filter(|p| p.p_type == elf::abi::PT_LOAD);
@@ -210,7 +212,7 @@ impl Context {
                     .tls_id
                     .as_ref()
                     .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                        library: other_lib.name.clone(),
+                        library: other_lib.name.as_str().into(),
                     })?
                     .offset();
                 *target = tls_val.wrapping_add_signed(addend) + module_offset as u64;
@@ -219,8 +221,8 @@ impl Context {
                 error!("{}: unsupported relocation: {}", lib, rel.r_type());
                 Result::<_, DynlinkError>::Err(
                     DynlinkErrorKind::UnsupportedReloc {
-                        library: lib.name.clone(),
-                        reloc: rel.r_type().to_string(),
+                        library: lib.name.as_str().into(),
+                        reloc: rel.r_type().to_string().into(),
                     }
                     .into(),
                 )?

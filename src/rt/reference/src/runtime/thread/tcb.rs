@@ -11,7 +11,7 @@ use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use twizzler_abi::simple_mutex::Mutex;
 
-use crate::runtime::OUR_RUNTIME;
+use crate::runtime::alloc::LOCAL_ALLOCATOR;
 
 /// Run a closure using the current thread's control struct as the argument.
 pub(super) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
@@ -83,7 +83,7 @@ impl TlsGenMgr {
             return None;
         }
 
-        let new = unsafe { OUR_RUNTIME.get_alloc().alloc(template.layout) };
+        let new = unsafe { LOCAL_ALLOCATOR.alloc(template.layout) };
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,

@@ -30,4 +30,7 @@ pub use twizzler_rt_abi::Result;
 //mod pager;
 
 #[cfg(test)]
+extern crate test;
+
+#[cfg(test)]
 mod tests;

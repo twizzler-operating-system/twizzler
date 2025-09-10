@@ -30,7 +30,7 @@ pub struct Compartment {
 }
 
 /// ID type for a compartment.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct CompartmentId(pub(crate) usize);
 

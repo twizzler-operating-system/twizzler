@@ -17,6 +17,7 @@ pub struct CachedStats {
     pub id: ObjID,
     pub start: Instant,
     pub flags: MapFlags,
+    pub addr: u64,
 }
 
 type Key = (ObjID, MapFlags);
@@ -83,6 +84,7 @@ pub fn list_nth(nth: u64) -> Result<Option<CachedStats>> {
             id: v.handle.id(),
             flags: v.handle.map_flags(),
             start: v.start,
+            addr: v.handle.start().addr() as u64,
         }))
     } else {
         Ok(None)

@@ -5,10 +5,12 @@ use dynlink::{
     context::{Context, LoadIds, NewCompartmentFlags},
     engines::LoadCtx,
     library::{AllowedGates, LibraryId, UnloadedLibrary},
-    DynlinkError,
+    DynlinkError, SMALL_STRING_SIZE, SMALL_VEC_SIZE,
 };
 use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
+use smallstr::SmallString;
+use tinyvec::TinyVec;
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
     error::{GenericError, TwzError},
@@ -29,7 +31,7 @@ use crate::mon::{
 /// Tracks info for loaded, but not yet running, compartments.
 #[derive(Debug)]
 pub struct RunCompLoader {
-    loaded_extras: Vec<LoadInfo>,
+    loaded_extras: dynlink::Vec<LoadInfo, SMALL_VEC_SIZE>,
     root_comp: LoadInfo,
 }
 
@@ -44,13 +46,28 @@ struct LoadInfo {
     rt_id: LibraryId,
     // security context ID
     sctx_id: ObjID,
-    name: String,
+    name: SmallString<[u8; SMALL_STRING_SIZE]>,
     comp_id: CompartmentId,
     // all constructors for all libraries
-    ctor_info: Vec<CtorSet>,
+    ctor_info: dynlink::Vec<CtorSet, SMALL_VEC_SIZE>,
     // entry point to call for the runtime to init this compartment
-    entry: extern "C" fn(*const RuntimeInfo) -> !,
+    entry: Option<extern "C" fn(*const RuntimeInfo) -> !>,
     is_binary: bool,
+}
+
+impl Default for LoadInfo {
+    fn default() -> Self {
+        Self {
+            root_id: LibraryId::default(),
+            rt_id: LibraryId::default(),
+            sctx_id: 0.into(),
+            name: "".into(),
+            comp_id: CompartmentId::default(),
+            ctor_info: dynlink::Vec::new(),
+            entry: None,
+            is_binary: false,
+        }
+    }
 }
 
 impl LoadInfo {
@@ -67,17 +84,22 @@ impl LoadInfo {
             .iter()
             .map(|extra| dynlink.build_ctors_list(*extra, Some(lib.compartment())))
             .try_collect()?;
-        let mut root_ctors = dynlink.build_ctors_list(root_id, Some(lib.compartment()))?;
-        let mut ctor_info: Vec<_> = extra_ctors.iter().flatten().copied().collect();
-        ctor_info.append(&mut root_ctors);
+        let root_ctors = dynlink.build_ctors_list(root_id, Some(lib.compartment()))?;
+        let mut ctor_info: dynlink::Vec<_, SMALL_VEC_SIZE> =
+            extra_ctors.iter().flatten().copied().collect();
+        ctor_info.extend_from_slice(root_ctors.as_slice());
         Ok(Self {
             root_id,
             rt_id,
             comp_id: lib.compartment(),
             sctx_id,
-            name: dynlink.get_compartment(lib.compartment())?.name.clone(),
+            name: dynlink
+                .get_compartment(lib.compartment())?
+                .name
+                .as_str()
+                .into(),
             ctor_info,
-            entry: lib.get_entry_address()?,
+            entry: Some(lib.get_entry_address()?),
             is_binary,
         })
     }
@@ -95,13 +117,13 @@ impl LoadInfo {
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
-            self.name.clone(),
+            self.name.to_string(),
             self.comp_id,
             vec![],
             comp_config,
             flags,
             stack_object,
-            self.entry as usize,
+            self.entry.map(|x| x as usize).unwrap_or_default(),
             &self.ctor_info,
             is_debugging,
         ))
@@ -150,7 +172,7 @@ impl RunCompLoader {
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
     ) -> miette::Result<Self> {
-        struct UnloadOnDrop(Vec<LoadIds>);
+        struct UnloadOnDrop(TinyVec<[LoadIds; SMALL_VEC_SIZE]>);
         impl Drop for UnloadOnDrop {
             fn drop(&mut self) {
                 tracing::warn!("todo: drop");
@@ -228,7 +250,7 @@ impl RunCompLoader {
 
         let extra_compartments = DynlinkError::collect(
             dynlink::DynlinkErrorKind::CompartmentLoadFail {
-                compartment: comp_name.to_string(),
+                compartment: comp_name.into(),
             },
             extra_compartments,
         )?;
@@ -308,20 +330,32 @@ impl RunCompLoader {
         self,
         cmp: &mut CompartmentMgr,
         dynlink: &mut Context,
-        _mondebug: bool,
+        mondebug: bool,
         is_debugging: bool,
     ) -> miette::Result<ObjID> {
-        let make_new_handle = |id| {
+        let make_new_handle = |ty, id| {
+            if mondebug {
+                tracing::info!(
+                    "creating runtime {} object {} for compartment {}",
+                    ty,
+                    id,
+                    self.root_comp.name
+                );
+            }
             Space::safe_create_and_map_runtime_object(
                 &get_monitor().space,
                 id,
                 MapFlags::READ | MapFlags::WRITE,
             )
         };
+        let stack = StackObject::new(
+            make_new_handle("stack", self.root_comp.sctx_id)?,
+            DEFAULT_STACK_SIZE,
+        )?;
 
         let root_rc = self.root_comp.build_runcomp(
-            make_new_handle(self.root_comp.sctx_id)?,
-            StackObject::new(make_new_handle(self.root_comp.sctx_id)?, DEFAULT_STACK_SIZE)?,
+            make_new_handle("comp-config", self.root_comp.sctx_id)?,
+            stack,
             is_debugging,
         )?;
 
@@ -331,10 +365,9 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .map(|extra| {
-                Ok::<_, miette::Report>((
-                    make_new_handle(extra.sctx_id)?,
-                    StackObject::new(make_new_handle(extra.sctx_id)?, DEFAULT_STACK_SIZE)?,
-                ))
+                let stack =
+                    StackObject::new(make_new_handle("stack", extra.sctx_id)?, DEFAULT_STACK_SIZE)?;
+                Ok::<_, miette::Report>((make_new_handle("comp-config", extra.sctx_id)?, stack))
             })
             .try_collect::<Vec<_>>()?;
         // Construct the RunComps for all the extra compartments.

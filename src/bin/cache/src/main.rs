@@ -39,6 +39,8 @@ struct Args {
 fn do_hold(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do hold: {}", id);
     cache_srv::hold(id, MapFlags::READ)?;
+    cache_srv::hold(id, MapFlags::READ | MapFlags::EXEC)?;
+    cache_srv::hold(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
     cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE)?;
     cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())
@@ -47,6 +49,8 @@ fn do_hold(id: ObjID) -> twizzler::Result<()> {
 fn do_drop(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do drop: {}", id);
     cache_srv::drop(id, MapFlags::READ)?;
+    cache_srv::drop(id, MapFlags::READ | MapFlags::EXEC)?;
+    cache_srv::drop(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
     cache_srv::drop(id, MapFlags::READ | MapFlags::WRITE)?;
     cache_srv::drop(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())
@@ -161,9 +165,10 @@ fn main() -> miette::Result<()> {
             let mut i = 0;
             while let Some(info) = cache_srv::list_nth(i).into_diagnostic()? {
                 println!(
-                    "{} {:?} {} seconds old",
+                    "{} {:?} {:x} {} seconds old",
                     info.id,
                     info.flags,
+                    info.addr,
                     (Instant::now() - info.start).as_secs_f32()
                 );
                 i += 1;

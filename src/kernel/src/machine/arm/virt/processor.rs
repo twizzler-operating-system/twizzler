@@ -19,10 +19,10 @@ pub fn enumerate_cpus() -> u32 {
     // enumerate the cpus using a device tree
     for cpu in devicetree().cpus() {
         let cpu_id = cpu.ids().first() as u32;
-        crate::processor::register(cpu_id, core_id);
+        crate::processor::mp::register(cpu_id, core_id);
         // set the enable method to turn on the CPU core
         if let Some(enable) = cpu.property("enable-method") {
-            let core = unsafe { crate::processor::get_processor_mut(cpu_id) };
+            let core = unsafe { crate::processor::mp::get_processor_mut(cpu_id) };
             // set the arch-sepecific boot protocol
             core.arch.boot = BootMethod::from_str(enable.as_str().unwrap()).unwrap();
             // save the MPIDR_EL1 value found used for boot

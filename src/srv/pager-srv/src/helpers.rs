@@ -85,7 +85,7 @@ pub async fn page_in(
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
-            crate::physrw::fill_physical_pages(&ctx.sender, &buffer, phys_range).await?;
+            crate::physrw::fill_physical_pages(&buffer, phys_range).await?;
             return Ok(());
         }
     }

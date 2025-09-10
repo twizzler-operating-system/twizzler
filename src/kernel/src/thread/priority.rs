@@ -1,140 +1,79 @@
-use core::{sync::atomic::Ordering, u32};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY, Thread};
-/// [`Thread`]s are triggered based on their priority, which is their [`PriorityClass`] coupled
-/// with their adjustment number. Their
-/// [`  PriorityClass`]
-#[derive(Default, Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct Priority {
-    raw: u32,
+
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PriorityClass {
+    Idle,
+    Background,
+    User,
+    Realtime,
 }
 
+pub struct ThreadPriority {
+    current: AtomicU32,
+    donated: AtomicU32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Priority {
+    pub class: PriorityClass,
+    pub value: u16,
+}
+
+pub const MAX_PRIORITY: u16 = 128;
+
 impl Priority {
-    pub const REALTIME: Self = Self::new(PriorityClass::RealTime, 0);
-    pub const USER: Self = Self::new(PriorityClass::User, 0);
-    pub const BACKGROUND: Self = Self::new(PriorityClass::Background, 0);
-    pub const IDLE: Self = Self::new(PriorityClass::Idle, 0);
+    pub const INTERRUPT: Self = Self {
+        class: PriorityClass::Realtime,
+        value: MAX_PRIORITY - 1,
+    };
+    pub const REALTIME: Self = Self {
+        class: PriorityClass::Realtime,
+        value: MAX_PRIORITY / 2,
+    };
+    pub const USER: Self = Self {
+        class: PriorityClass::User,
+        value: MAX_PRIORITY / 2,
+    };
+    pub const BACKGROUND: Self = Self {
+        class: PriorityClass::Background,
+        value: MAX_PRIORITY / 2,
+    };
+    pub const IDLE: Self = Self {
+        class: PriorityClass::Idle,
+        value: MAX_PRIORITY / 2,
+    };
 
-    pub const fn new(class: PriorityClass, adjust: u16) -> Self {
+    pub fn from_raw(d: u32) -> Self {
+        let class = match d >> 16 {
+            0 => PriorityClass::Idle,
+            1 => PriorityClass::Background,
+            2 => PriorityClass::User,
+            _ => PriorityClass::Realtime,
+        };
         Self {
-            raw: ((class.as_u16() as u32) << 16) | adjust as u32,
-        }
-    }
-
-    pub fn from_raw(raw: u32) -> Self {
-        if raw == u32::MAX {
-            Self::IDLE
-        } else {
-            Self { raw }
+            class,
+            value: (d & 0xffff) as u16,
         }
     }
 
     pub fn raw(&self) -> u32 {
-        self.raw
-    }
-
-    pub fn class(&self) -> PriorityClass {
-        let upper = (self.raw >> 16) as u16;
-        PriorityClass::from(upper)
-    }
-
-    pub fn adjust(&self) -> u16 {
-        self.raw as u16
-    }
-
-    pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
-        assert_eq!(NR_QUEUES % PriorityClass::ClassCount as usize, 0);
-        let queues_per_class = NR_QUEUES / PriorityClass::ClassCount as usize;
-        assert!(queues_per_class > 0);
-        let base_queue = self.class() as usize * queues_per_class;
-        let adj = self.adjust().clamp(0, (queues_per_class - 1) as u16);
-        let q = base_queue + adj as usize;
-        assert!(q < NR_QUEUES);
-        q
-    }
-
-    pub fn from_queue_number<const NR_QUEUES: usize>(queue: usize) -> Self {
-        if queue == NR_QUEUES {
-            return Self::new(PriorityClass::Idle, u16::MAX);
-        }
-        let queues_per_class = NR_QUEUES / PriorityClass::ClassCount as usize;
-        let class = queue / queues_per_class;
-        assert!(class < PriorityClass::ClassCount as usize);
-        let base_queue = class * queues_per_class;
-        let adj = queue.saturating_sub(base_queue);
-        Self::new(PriorityClass::from(class as u16), adj as u16)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Default, Debug, Eq)]
-#[repr(u16)]
-pub enum PriorityClass {
-    /// Highest Priority
-    RealTime = 0,
-    /// Second highest priority
-    User = 1,
-    /// Third highest priority
-    Background = 2,
-    #[default]
-    /// Lowest priority
-    Idle = 3,
-    ClassCount = 4,
-}
-
-impl From<PriorityClass> for u16 {
-    fn from(value: PriorityClass) -> Self {
-        value.as_u16()
-    }
-}
-
-impl From<u16> for PriorityClass {
-    fn from(value: u16) -> Self {
-        match value {
-            0 => Self::RealTime,
-            1 => Self::User,
-            2 => Self::Background,
-            _ => Self::Idle,
-        }
-    }
-}
-
-impl PartialOrd for PriorityClass {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        /* backwards because of how priority works */
-        (*other as u32).partial_cmp(&(*self as u32))
-    }
-}
-
-impl PartialOrd for Priority {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        /* backwards because of how priority works */
-        other.raw.partial_cmp(&self.raw)
-    }
-}
-
-impl Ord for Priority {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
-    }
-}
-
-impl PriorityClass {
-    pub const fn as_u16(&self) -> u16 {
-        match self {
-            PriorityClass::RealTime => 0,
-            PriorityClass::User => 1,
-            PriorityClass::Background => 2,
-            PriorityClass::Idle => 3,
-            PriorityClass::ClassCount => 4,
-        }
+        ((self.class as u32) << 16) | (self.value as u32)
     }
 }
 
 impl Thread {
     pub fn remove_donated_priority(&self) {
-        self.donated_priority.store(u32::MAX, Ordering::SeqCst);
-        self.flags
-            .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst);
+        if self
+            .flags
+            .fetch_and(!THREAD_HAS_DONATED_PRIORITY, Ordering::SeqCst)
+            & THREAD_HAS_DONATED_PRIORITY
+            != 0
+        {
+            self.donated_priority.store(u32::MAX, Ordering::SeqCst);
+        }
     }
 
     pub fn get_donated_priority(&self) -> Option<Priority> {
@@ -148,6 +87,18 @@ impl Thread {
         } else {
             None
         }
+    }
+
+    pub fn get_stable_effective_priority(&self) -> Priority {
+        let raw = self.stable_priority.load(Ordering::Acquire);
+        Priority::from_raw(raw)
+    }
+
+    pub fn stable_effective_priority(&self) -> Priority {
+        let priority = self.effective_priority();
+        self.stable_priority
+            .store(priority.raw(), Ordering::Release);
+        priority
     }
 
     pub fn effective_priority(&self) -> Priority {
@@ -180,16 +131,9 @@ impl Thread {
         }
         true
     }
-
-    #[inline]
-    pub fn queue_number<const NR_QUEUES: usize>(&self) -> usize {
-        self.effective_priority().queue_number::<NR_QUEUES>()
-    }
 }
 
 mod test {
-    use core::u16;
-
     use twizzler_kernel_macros::kernel_test;
 
     use super::*;
@@ -210,34 +154,53 @@ mod test {
     }
 
     #[kernel_test]
-    fn test_queue_number() {
-        for i in 0..u16::MAX {
-            let pri = Priority::new(PriorityClass::User, i);
-            let q = pri.queue_number::<64>();
+    fn test_priority_round_trip() {
+        let test_cases = [
+            Priority::REALTIME,
+            Priority::USER,
+            Priority::BACKGROUND,
+            Priority {
+                class: PriorityClass::Idle,
+                value: 0,
+            },
+            Priority {
+                class: PriorityClass::Idle,
+                value: MAX_PRIORITY,
+            },
+            Priority {
+                class: PriorityClass::Background,
+                value: 0,
+            },
+            Priority {
+                class: PriorityClass::Background,
+                value: MAX_PRIORITY,
+            },
+            Priority {
+                class: PriorityClass::User,
+                value: 0,
+            },
+            Priority {
+                class: PriorityClass::User,
+                value: MAX_PRIORITY,
+            },
+            Priority {
+                class: PriorityClass::Realtime,
+                value: 0,
+            },
+            Priority {
+                class: PriorityClass::Realtime,
+                value: MAX_PRIORITY,
+            },
+        ];
 
-            let pri2 = Priority::new(PriorityClass::Background, i);
-            let q2 = pri2.queue_number::<64>();
-            assert!(q < q2);
-        }
-    }
-
-    #[kernel_test]
-    fn test_queue_number_roundtrip() {
-        for i in 0..u16::MAX {
-            for class in [
-                PriorityClass::Idle,
-                PriorityClass::Background,
-                PriorityClass::RealTime,
-                PriorityClass::User,
-            ] {
-                let pri = Priority::new(class, i);
-                let q = pri.queue_number::<64>();
-                let new_pri = Priority::from_queue_number::<64>(q);
-
-                let q = new_pri.queue_number::<64>();
-                let new_pri2 = Priority::from_queue_number::<64>(q);
-                assert_eq!(new_pri, new_pri2);
-            }
+        for original in test_cases {
+            let raw = original.raw();
+            let reconstructed = Priority::from_raw(raw);
+            assert_eq!(
+                original, reconstructed,
+                "Round trip failed for {:?}",
+                original
+            );
         }
     }
 }

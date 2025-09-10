@@ -1,16 +1,30 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use twizzler_abi::kso::{InterruptAllocateOptions, InterruptPriority};
+use intrusive_collections::LinkedList;
+use twizzler_abi::{
+    device::{CacheType, DeviceRepr},
+    kso::{InterruptAllocateOptions, InterruptPriority},
+    object::Protections,
+    syscall::MapFlags,
+};
 
 use crate::{
     arch::{
         self,
-        interrupt::{InterProcessorInterrupt, NUM_VECTORS},
+        interrupt::{InterProcessorInterrupt, MAX_VECTOR, NUM_VECTORS},
     },
     condvar::CondVar,
+    memory::context::{
+        kernel_context, virtmem::KernelObjectVirtHandle, KernelMemoryContext, KernelObjectHandle,
+        ObjectContextInfo,
+    },
+    mutex::MutexLinkAdapter,
     obj::ObjectRef,
     once::Once,
+    processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
+    syscall::sync::{add_all_to_requeue, requeue_all},
     thread::{priority::Priority, ThreadRef},
 };
 
@@ -18,21 +32,21 @@ use crate::{
 #[inline]
 pub fn disable() -> bool {
     let state = crate::arch::interrupt::disable();
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
     state
 }
 
 /// Set the current interrupt enable state.
 #[inline]
 pub fn set(state: bool) {
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
     crate::arch::interrupt::set(state);
 }
 
 /// Get the current interrupt enable state without modifying it.
 #[inline]
 pub fn get() -> bool {
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
     crate::arch::interrupt::get()
 }
 
@@ -46,7 +60,7 @@ pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
 
 #[inline]
 pub fn post_interrupt() {
-    crate::sched::schedule_maybe_preempt();
+    schedule_maybe_preempt();
 }
 
 #[inline]
@@ -127,8 +141,60 @@ impl Interrupt {
     }
 }
 
+struct DeviceInterrupter {
+    word_object: KernelObjectVirtHandle<DeviceRepr>,
+    raw_word: *const AtomicU64,
+}
+
+unsafe impl Send for DeviceInterrupter {}
+unsafe impl Sync for DeviceInterrupter {}
+
+impl DeviceInterrupter {
+    fn new(wi: WakeInfo) -> Self {
+        let word_object = kernel_context().insert_kernel_object(ObjectContextInfo::new(
+            wi.obj,
+            Protections::WRITE | Protections::READ,
+            CacheType::WriteBack,
+            MapFlags::empty(),
+        ));
+        let raw_word =
+            word_object.lea_raw(wi.offset as *const AtomicU64).unwrap() as *const AtomicU64;
+        Self {
+            word_object,
+            raw_word,
+        }
+    }
+}
+
+const MAX_DEVICE_VECTORS: usize = 16;
+
 struct GlobalInterruptState {
     ints: Vec<Interrupt>,
+    device_vectors:
+        [Spinlock<heapless::Vec<DeviceInterrupter, MAX_DEVICE_VECTORS>>; MAX_VECTOR + 1],
+    device_waiters: [Spinlock<LinkedList<MutexLinkAdapter>>; MAX_VECTOR + 1],
+}
+
+impl GlobalInterruptState {
+    fn setup_device_wait(&self, thread: ThreadRef, vector: u32, ptr: *const AtomicU64) -> bool {
+        let word = unsafe { ptr.as_ref_unchecked() };
+        log::trace!(
+            "thread {} in device wait vector {} (ptr = {:p}, val = {})",
+            thread.id(),
+            vector,
+            ptr,
+            word.load(Ordering::Relaxed)
+        );
+        if word.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        let mut waiters = self.device_waiters[vector as usize].lock();
+        if word.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        waiters.push_back(thread);
+        true
+    }
 }
 
 static GLOBAL_INT: Once<GlobalInterruptState> = Once::new();
@@ -137,18 +203,44 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
     for i in 0..NUM_VECTORS {
         v.push(Interrupt::new(i));
     }
-    GLOBAL_INT.call_once(|| GlobalInterruptState { ints: v })
+    GLOBAL_INT.call_once(|| GlobalInterruptState {
+        ints: v,
+        device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
+        device_waiters: [const { Spinlock::new(LinkedList::new(MutexLinkAdapter::NEW)) };
+            MAX_VECTOR + 1],
+    })
 }
 
 pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
     let gi = get_global_interrupts();
-    gi.ints[number as usize].add(wi);
+    let mut vectors = gi.device_vectors[number as usize].lock();
+
+    if !vectors.is_full() {
+        let _ = vectors.push(DeviceInterrupter::new(wi));
+    } else {
+        drop(vectors);
+        log::warn!("trying to setup too many device interrupt wakers, overflowing...");
+        gi.ints[number as usize].add(wi);
+    }
 }
 
 pub fn handle_interrupt(number: u32) {
     let gi = get_global_interrupts();
     gi.ints[number as usize].raise();
-    if number != 43 {}
+}
+
+pub fn wait_for_device_interrupt(
+    thread: &ThreadRef,
+    number: u32,
+    first_wait: bool,
+    ptr: *const AtomicU64,
+) -> bool {
+    let gi = get_global_interrupts();
+    let res = gi.setup_device_wait(thread.clone(), number, ptr);
+    if first_wait && res {
+        thread.set_sync_sleep();
+    }
+    return res;
 }
 
 const INTQUEUE_LEN: usize = 128;
@@ -220,11 +312,34 @@ extern "C" fn soft_interrupt_waker() {
 pub fn init() {
     INT_THREAD.call_once(|| {
         // TODO: priority?
-        crate::thread::entry::start_new_kernel(Priority::USER, soft_interrupt_waker, 0)
+        crate::thread::entry::start_new_kernel(Priority::INTERRUPT, soft_interrupt_waker, 0)
     });
 }
 
 pub fn external_interrupt_entry(number: u32) {
+    let gi = get_global_interrupts();
+    let vectors = gi.device_vectors[number as usize].lock();
+    if !vectors.is_empty() && !vectors.is_full() {
+        for di in vectors.iter() {
+            log::trace!(
+                "got external interrupt {}, storing to word {:p}",
+                number,
+                di.raw_word
+            );
+            unsafe {
+                di.raw_word
+                    .as_ref_unchecked()
+                    .store(number as u64, Ordering::Release)
+            };
+        }
+        drop(vectors);
+        let mut waiters = gi.device_waiters[number as usize].lock();
+        let list = waiters.take();
+        drop(waiters);
+        add_all_to_requeue(list);
+        requeue_all();
+        return;
+    }
     let mut iq = INT_QUEUE.lock();
     iq.enqueue(number);
     INT_THREAD_CONDVAR.signal();

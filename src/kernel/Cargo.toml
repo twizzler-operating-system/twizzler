@@ -20,8 +20,8 @@ twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, feature
 twizzler-rt-abi = { version = "0.99", features = [
     "kernel",
 ], default-features = false }
-fixedbitset = { version = "0.5.7", default-features = false }
 linked_list_allocator = "0.10"
+bitset-core = { version = "0.1.1", default-features = false }
 tar-no-std = "0.3"
 object = { version = "0.36.7", default-features = false, features = ["read"] }
 addr2line = { version = "0.16", default-features = false, features = [
@@ -42,6 +42,7 @@ sha2 = { version = "0.10.8", default-features = false, features = [
 chacha20 = { version = "0.9.1", features = ["zeroize"] }
 digest = "0.10.7"
 rand_jitter = "0.5.0"
+heapless = "0.9"
 # [dev-dependencies] # kernel doesn't include dev dependencies when testing
 # for testing crypto
 hex-literal = { version = "0.4", default-features = false }

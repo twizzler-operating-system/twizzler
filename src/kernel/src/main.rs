@@ -17,6 +17,7 @@
 #![feature(btree_extract_if)]
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
+#![feature(ptr_as_ref_unchecked)]
 
 #[macro_use]
 pub mod log;
@@ -41,7 +42,6 @@ mod panic;
 mod processor;
 mod queue;
 mod random;
-mod sched;
 pub mod security;
 mod spinlock;
 mod syscall;
@@ -62,9 +62,13 @@ use arch::BootInfoSystemTable;
 use initrd::BootModule;
 use memory::{MemoryRegion, VirtAddr};
 use once::Once;
+use processor::{
+    mp::{boot_all_secondaries, init_cpu},
+    sched::{schedule, SchedFlags},
+};
 use random::start_entropy_contribution_thread;
 
-use crate::{processor::current_processor, thread::entry::start_new_init};
+use crate::{processor::mp::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -161,13 +165,13 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
 
     logln!("[kernel::cpu] enumerating secondary CPUs");
     let bsp_id = arch::processor::enumerate_cpus();
-    processor::init_cpu(image::get_tls(), bsp_id);
+    init_cpu(image::get_tls(), bsp_id);
     arch::init_interrupts();
     #[cfg(target_arch = "x86_64")]
     arch::init_secondary();
     initrd::init(boot_info.get_modules());
     logln!("[kernel::cpu] booting secondary CPUs");
-    processor::boot_all_secondaries(image::get_tls());
+    boot_all_secondaries(image::get_tls());
 
     clock::init();
     interrupt::init();
@@ -187,9 +191,9 @@ pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
         crate::thread::current_thread_ref().unwrap().id()
     );
     for test in tests {
-        log!("test {} ... ", test.0);
+        logln!("starting test {}", test.0);
         (test.1)();
-        logln!("ok");
+        logln!("test {}: ok", test.0);
         if !interrupt::get() {
             panic!("test {} didn't cleanup interrupt state", test.0);
         }
@@ -199,7 +203,7 @@ pub fn test_runner(tests: &[&(&str, &dyn Fn())]) {
 }
 
 pub fn init_threading() -> ! {
-    sched::create_idle_thread();
+    processor::sched::create_idle_thread();
     clock::schedule_oneshot_tick(1);
     idle_main();
 }
@@ -231,7 +235,7 @@ pub fn idle_main() -> ! {
         {
             current_processor().cleanup_exited();
         }
-        sched::schedule(true);
+        schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
         arch::processor::halt_and_wait();
     }
 }

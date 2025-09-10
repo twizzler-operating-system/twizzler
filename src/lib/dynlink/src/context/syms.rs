@@ -1,11 +1,21 @@
+use petgraph::graph::NodeIndex;
+
 use super::{Context, LoadedOrUnloaded};
 use crate::{
     library::{Library, LibraryId},
     symbol::{LookupFlags, RelocatedSymbol},
-    DynlinkError, DynlinkErrorKind,
+    DynlinkError, DynlinkErrorKind, Vec,
 };
 
 impl Context {
+    pub fn build_deps_search_list(&self, start_id: LibraryId) -> Vec<NodeIndex, 32> {
+        let mut ret = Vec::<_, 32>::new();
+        let mut visit = petgraph::visit::Bfs::new(&self.library_deps, start_id.0);
+        while let Some(node) = visit.next(&self.library_deps) {
+            ret.push(node);
+        }
+        ret
+    }
     /// Search for a symbol, starting from library denoted by start_id. For normal symbol lookup,
     /// this should be the ID of the library that needs a symbol looked up. Flags can be
     /// specified which allow control over where to look for the symbol.
@@ -14,6 +24,7 @@ impl Context {
         start_id: LibraryId,
         name: &str,
         lookup_flags: LookupFlags,
+        deps_list: &[NodeIndex],
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK);
         let start_lib = self.get_library(start_id)?;
@@ -26,10 +37,9 @@ impl Context {
 
         // Next, try all of our transitive dependencies.
         if !lookup_flags.contains(LookupFlags::SKIP_DEPS) {
-            let mut visit = petgraph::visit::Bfs::new(&self.library_deps, start_id.0);
-            while let Some(node) = visit.next(&self.library_deps) {
-                let dep = &self.library_deps[node];
-                if node != start_id.0 {
+            for node in deps_list {
+                let dep = &self.library_deps[*node];
+                if *node != start_id.0 {
                     match dep {
                         LoadedOrUnloaded::Unloaded(_) => {}
                         LoadedOrUnloaded::Loaded(dep) => {
@@ -60,17 +70,18 @@ impl Context {
             }
 
             if !allow_weak {
-                let res =
-                    self.lookup_symbol(start_id, name, lookup_flags.union(LookupFlags::ALLOW_WEAK));
+                let res = self.lookup_symbol(
+                    start_id,
+                    name,
+                    lookup_flags.union(LookupFlags::ALLOW_WEAK),
+                    deps_list,
+                );
                 if res.is_ok() {
                     return res;
                 }
             }
         }
-        Err(DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into())
+        Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
     }
 
     pub(crate) fn lookup_symbol_global<'a>(
@@ -98,9 +109,6 @@ impl Context {
                 }
             }
         }
-        Err(DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into())
+        Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
     }
 }

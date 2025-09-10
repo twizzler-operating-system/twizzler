@@ -70,7 +70,8 @@ impl<T: Copy + core::fmt::Debug> TraceEvent<T> {
 }
 
 const MAX_QUICK_ENABLED: usize = 10;
-const MAX_PENDING_ASYNC: usize = 64;
+const MAX_PENDING_ASYNC: usize = 1024;
+const MAX_SINK_PENDING: usize = 4096;
 
 pub struct TraceMgr {
     map: Mutex<BTreeMap<ObjID, TraceSink>>,
@@ -103,6 +104,7 @@ impl TraceMgr {
     fn signal_work(&self) {
         let mut sig = self.has_work.lock();
         *sig = true;
+        drop(sig);
         self.cv.signal();
     }
 
@@ -143,18 +145,34 @@ impl TraceMgr {
         self.signal_work();
     }
 
+    pub fn process_async_and_maybe_flush(&self) {
+        let mut map = self.map.lock();
+        self.drain_async(|head, data| {
+            for sink in map.values_mut() {
+                if sink.accepts(&head) {
+                    sink.enqueue((head, data.clone()));
+                }
+            }
+        });
+        for sink in map.values_mut() {
+            if sink.pending() >= MAX_SINK_PENDING {
+                sink.write_all();
+            }
+        }
+    }
+
     pub fn async_enqueue<T: Copy + core::fmt::Debug>(&self, event: TraceEvent<T>) {
         const MAX_ASYNC_ITER: usize = 1000;
         let mut iter = 0;
         loop {
             iter += 1;
             let idx = self.async_idx.load(SeqCst);
-            if idx > MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
+            if idx / 2 >= MAX_PENDING_ASYNC || iter > MAX_ASYNC_ITER {
                 self.async_overflow.store(true, Ordering::SeqCst);
-                log::warn!(
+                log::debug!(
                     "dropped async trace event {:?} (overflow={}, timeout={})",
                     event,
-                    idx > MAX_PENDING_ASYNC,
+                    idx / 2 >= MAX_PENDING_ASYNC,
                     iter > MAX_ASYNC_ITER
                 );
                 return;
@@ -307,7 +325,14 @@ impl TraceMgr {
     }
 }
 
+static KTRACE_THREAD: Once<u64> = Once::new();
+
+pub fn is_thread_ktrace_thread(th: &ThreadRef) -> bool {
+    KTRACE_THREAD.poll().is_some_and(|k| *k == th.id())
+}
+
 extern "C" fn kthread_trace_writer() {
+    KTRACE_THREAD.call_once(|| current_thread_ref().unwrap().id());
     loop {
         let mut did_work = false;
         let mut map = TRACE_MGR.map.lock();
@@ -337,6 +362,8 @@ extern "C" fn kthread_trace_writer() {
 
 fn start_write_thread() {
     if current_thread_ref().is_some() {
+        // TODO: dynamically adjust priority based on how many pending async events there are to
+        // process.
         WRITE_THREAD.call_once(|| start_new_kernel(Priority::BACKGROUND, kthread_trace_writer, 0));
     }
 }

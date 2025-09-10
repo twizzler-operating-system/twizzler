@@ -4,7 +4,7 @@ use core::fmt::Display;
 use crate::{
     is_bench_mode,
     mutex::{LockGuard, Mutex},
-    processor::current_processor,
+    processor::mp::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},
     time::bench_clock,
 };

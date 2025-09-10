@@ -9,13 +9,14 @@ use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};
 
 use super::{
-    frame::{get_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
+    frame::{get_frame, split_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
     PhysAddr,
 };
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
     once::Once,
+    processor::sched::{schedule, SchedFlags},
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, Thread, ThreadRef},
@@ -94,6 +95,20 @@ impl MemoryTracker {
         }
     }
 
+    fn try_alloc_split_frames(
+        &self,
+        flags: FrameAllocFlags,
+        layout: Layout,
+    ) -> Option<(FrameRef, usize)> {
+        self.try_alloc_frame(flags, layout).map(|frame| {
+            if frame.size() == PHYS_LEVEL_LAYOUTS[0].size() {
+                (frame, frame.size())
+            } else {
+                split_frame(frame)
+            }
+        })
+    }
+
     fn alloc_frame(&self, flags: FrameAllocFlags) -> FrameRef {
         self.try_alloc_frame(flags, PHYS_LEVEL_LAYOUTS[0])
             .expect("cannot wait for page")
@@ -125,7 +140,7 @@ impl MemoryTracker {
     fn wake(&self) {
         let mut waiters = self.waiters.lock();
         while let Some(waiter) = waiters.pop_back() {
-            crate::sched::schedule_thread(waiter);
+            crate::processor::sched::schedule_thread(waiter);
         }
     }
 
@@ -272,6 +287,15 @@ pub fn try_alloc_frame(flags: FrameAllocFlags, layout: Layout) -> Option<FrameRe
         .try_alloc_frame(flags, layout)
 }
 
+/// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
+/// None if no physical frame is available. Splits the frame into children frames for the pager.
+pub fn try_alloc_split_frames(flags: FrameAllocFlags, layout: Layout) -> Option<(FrameRef, usize)> {
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .try_alloc_split_frames(flags, layout)
+}
+
 /// Free a physical frame.
 ///
 /// If the frame's flags indicates that it is zeroed, it will be placed on
@@ -366,7 +390,7 @@ impl ReclaimThread {
             reclaim_main();
         }
         Self {
-            th: start_new_kernel(Priority::REALTIME, reclaim_start, 0),
+            th: start_new_kernel(Priority::BACKGROUND, reclaim_start, 0),
             state: Spinlock::new(Vec::new()),
             cv: CondVar::new(),
         }
@@ -376,9 +400,12 @@ impl ReclaimThread {
 #[allow(unused_assignments)]
 #[allow(unused_variables)]
 fn reclaim_main() {
-    let tracker = TRACKER.wait();
-    let rt = tracker.reclaim.wait();
+    let tracker = TRACKER.poll().unwrap();
+    let rt = tracker.reclaim.poll().unwrap();
     let mut state = rt.state.lock();
+    current_thread_ref()
+        .unwrap()
+        .donate_priority(Priority::REALTIME);
     const MAX_RECLAIM_ROUNDS: usize = 1000;
     const MAX_PER_ROUND: usize = 100;
     loop {
@@ -411,11 +438,23 @@ fn reclaim_main() {
                 break;
             }
             drop(state);
-            crate::sched::schedule(true);
+            log::trace!(
+                "memory tracker should reclaim: {}, count={},thisround={},rounds={}",
+                tracker.should_reclaim(),
+                count,
+                thisround,
+                rounds,
+            );
+            schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT);
             state = rt.state.lock();
             rounds += 1;
         }
         tracker.track_reclaimed(count);
+        log::trace!(
+            "memory tracker should reclaim: {}, count={}",
+            tracker.should_reclaim(),
+            count
+        );
         if !tracker.should_reclaim() || count == 0 {
             state = rt.cv.wait(state);
         }
