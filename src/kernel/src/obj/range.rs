@@ -498,7 +498,7 @@ impl PageRangeTree {
             {
                 let end = prev_range.start.offset(prev_range.length - 1);
 
-                let new_pages = page.nr_pages().min(PageNumber::meta_page() - pn);
+                let new_pages = page.nr_pages().min(PageNumber::meta_page().next() - pn);
                 let nr_extra_pages = new_pages - 1;
                 let diff = pn - end;
                 if !prev_range.is_shared() && diff <= MAX_EXTENSION_ALLOWED {

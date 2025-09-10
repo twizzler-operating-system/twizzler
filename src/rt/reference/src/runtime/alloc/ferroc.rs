@@ -18,7 +18,7 @@ impl TwzFerrocBase {
 }
 
 unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
-    const IS_ZEROED: bool = true;
+    const IS_ZEROED: bool = false;
 
     type Handle = &'static LocalAllocator;
 

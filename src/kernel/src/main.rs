@@ -17,6 +17,7 @@
 #![feature(btree_extract_if)]
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
+#![feature(ptr_as_ref_unchecked)]
 
 #[macro_use]
 pub mod log;

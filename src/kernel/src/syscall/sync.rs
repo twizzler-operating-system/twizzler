@@ -75,8 +75,30 @@ pub fn requeue_all() {
 }
 
 pub fn add_to_requeue(thread: ThreadRef) {
+    if !thread.is_critical() && thread.reset_sync_sleep_done() {
+        crate::processor::sched::schedule_thread(thread);
+        return;
+    }
     let requeue = get_requeue_list();
     requeue.list.lock().insert(thread);
+}
+
+pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
+    let requeue = get_requeue_list();
+    // We are going to try to enqueue all threads. Best case, we can just immediately
+    // schedule the thread, but if not, enqueue it onto the requeue list for later.
+    //
+    // In the best-best case scenario, we don't even need to take the requeue lock.
+    let mut list = None;
+    for thread in iter.into_iter() {
+        if !thread.is_critical() && thread.reset_sync_sleep_done() {
+            crate::processor::sched::schedule_thread(thread);
+        } else {
+            // Need to take the lock if we haven't yet.
+            let list = list.get_or_insert_with(|| requeue.list.lock());
+            list.insert(thread);
+        }
+    }
 }
 
 pub fn remove_from_requeue(thread: &ThreadRef) {
