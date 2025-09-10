@@ -213,11 +213,12 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
 
 pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
     let gi = get_global_interrupts();
-    if !gi.device_vectors[number as usize].lock().is_full() {
-        let _ = gi.device_vectors[number as usize]
-            .lock()
-            .push(DeviceInterrupter::new(wi));
+    let mut vectors = gi.device_vectors[number as usize].lock();
+
+    if !vectors.is_full() {
+        let _ = vectors.push(DeviceInterrupter::new(wi));
     } else {
+        drop(vectors);
         log::warn!("trying to setup too many device interrupt wakers, overflowing...");
         gi.ints[number as usize].add(wi);
     }
@@ -334,6 +335,7 @@ pub fn external_interrupt_entry(number: u32) {
         drop(vectors);
         let mut waiters = gi.device_waiters[number as usize].lock();
         let list = waiters.take();
+        drop(waiters);
         add_all_to_requeue(list);
         requeue_all();
         return;
