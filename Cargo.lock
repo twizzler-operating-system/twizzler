@@ -4184,6 +4184,9 @@ dependencies = [
 [[package]]
 name = "lwext4-rs"
 version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
 
 [[package]]
 name = "managed"

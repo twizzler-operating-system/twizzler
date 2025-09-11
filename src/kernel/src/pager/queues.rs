@@ -1,8 +1,9 @@
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::sync::Arc;
 
+use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, NULLPAGE_SIZE},
+    object::{ObjID, Protections},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
         ObjectRange, PageFlags, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
@@ -24,26 +25,36 @@ use crate::{
         sim_memory_pressure,
         tracker::start_reclaim_thread,
     },
-    mutex::Mutex,
     obj::{
         lookup_object,
         pages::{Page, PageRef},
-        LookupFlags, Object, PageNumber,
+        LookupFlags, Object, ObjectRef, PageNumber,
     },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
+    spinlock::Spinlock,
     thread::{
+        current_thread_ref,
         entry::{run_closure_in_new_thread, start_new_kernel},
         priority::Priority,
     },
 };
 
-static SENDER: Once<(
-    IdCounter,
-    QueueObject<RequestFromKernel, CompletionToKernel>,
-    Mutex<BTreeMap<u32, RequestFromKernel>>,
-)> = Once::new();
+#[derive(Clone, Debug)]
+struct SentRequestInfo {
+    req: RequestFromKernel,
+    obj: Option<ObjectRef>,
+}
+
+struct RequestSender {
+    ids: IdCounter,
+    queue: QueueObject<RequestFromKernel, CompletionToKernel>,
+    idmap: Spinlock<heapless::index_map::FnvIndexMap<u32, SentRequestInfo, 1024>>,
+}
+
+static SENDER: Once<RequestSender> = Once::new();
+
 static RECEIVER: Once<ManagedQueueReceiver<RequestFromPager, CompletionToPager>> = Once::new();
 
 fn pager_request_copy_user_phys(
@@ -146,16 +157,16 @@ pub(super) fn pager_request_handler_main() {
 }
 
 fn pager_compl_handle_page_data(
-    objid: ObjID,
+    obj: &ObjectRef,
     obj_range: ObjectRange,
     phys_range: PhysRange,
     flags: PageFlags,
 ) {
     let start = Instant::now();
-    let pcount = phys_range.pages().count();
+    let pcount = phys_range.page_count();
     log::trace!(
         "got : {} {:?} {:?} ({} pages)",
-        objid,
+        obj.id(),
         obj_range,
         phys_range,
         pcount
@@ -176,73 +187,75 @@ fn pager_compl_handle_page_data(
         }
     }
     let done_mem = Instant::now();
+    let mut done_lock = Instant::zero();
+    let mut done_calc = Instant::zero();
+    let mut done_new = Instant::zero();
+    let mut done_add = Instant::zero();
+    let mut done_drop = Instant::zero();
 
-    if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
-        let mut object_tree = object.lock_page_tree();
+    let mut count = 0;
+    let max_obj = obj_range.page_count();
+    let max_phys = phys_range.page_count();
+    while count < max_obj {
+        let objpage_nr = obj_range.pages().nth(count).unwrap();
+        let physpage_nr = phys_range.pages().nth(count).unwrap();
 
-        let mut count = 0;
-        let max_obj = obj_range.pages().count();
-        let max_phys = phys_range.pages().count();
-        while count < max_obj {
-            let objpage_nr = obj_range.pages().nth(count).unwrap();
-            let physpage_nr = phys_range.pages().nth(count).unwrap();
+        let pn = PageNumber::from(objpage_nr as usize);
+        let pa = PhysAddr::new(physpage_nr * PageNumber::PAGE_SIZE as u64).unwrap();
 
-            let pn = PageNumber::from(objpage_nr as usize);
-            let pa = PhysAddr::new(physpage_nr * NULLPAGE_SIZE as u64).unwrap();
-
-            let (page, thiscount) = if flags.contains(PageFlags::WIRED) {
-                let max_pages = (max_obj - count).min(max_phys - count);
-                log::trace!("wiring {} pages: {}", max_pages, objpage_nr);
-                (
-                    Page::new_wired(pa, PageNumber::PAGE_SIZE * max_pages, CacheType::WriteBack),
-                    max_pages,
-                )
+        let thiscount = (max_obj - count).min(max_phys - count);
+        done_calc = Instant::now();
+        let page = if flags.contains(PageFlags::WIRED) {
+            log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
+            Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
+        } else {
+            if let Some(frame) = crate::memory::frame::get_frame(pa) {
+                Page::new(frame, thiscount)
             } else {
-                todo: this is slow, here. Would be nice to get this to use large pages.
-                (
-                    if let Some(frame) = crate::memory::frame::get_frame(pa) {
-                        Page::new(frame)
-                    } else {
-                        log::warn!(
-                            "non-wired physical address, but not known by frame allocator: {:?}",
-                            pa
-                        );
-                        Page::new_wired(pa, PageNumber::PAGE_SIZE, CacheType::WriteBack)
-                    },
-                    1,
-                )
-            };
+                log::warn!(
+                    "non-wired physical address, but not known by frame allocator: {:?}",
+                    pa
+                );
+                Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
+            }
+        };
 
-            let page = PageRef::new(Arc::new(page), 0, thiscount);
-            log::trace!(
-                "Adding page {}: {} {} {:?} {:?}",
-                objid,
-                pn,
-                thiscount,
-                page.physical_address(),
-                flags
-            );
-            object_tree.add_page(pn, page, None);
-            count += thiscount;
-        }
-        drop(object_tree);
-        let done_add = Instant::now();
-
-        inflight_mgr()
-            .lock()
-                todo: this is slow, here. can't track individual pages, too expensive.
-            .pages_ready(objid, obj_range.pages().map(|x| x as usize));
-        let done_signal = Instant::now();
-        log::info!(
-            "::: {}ns {}us {}us",
-            (done_mem - start).as_nanos(),
-            (done_add - done_mem).as_micros(),
-            (done_signal - done_add).as_micros()
+        let page = PageRef::new(Arc::new(page), 0, thiscount);
+        done_new = Instant::now();
+        log::trace!(
+            "Adding page {}: {} {} {:?} {:?}",
+            obj.id(),
+            pn,
+            thiscount,
+            page.physical_address(),
+            flags
         );
-    } else {
-        // TODO
-        logln!("kernel: pager: got unknown object ID");
+        let mut object_tree = obj.lock_page_tree();
+        done_lock = Instant::now();
+        object_tree.add_page(pn, page, None);
+        let done_add = Instant::now();
+        drop(object_tree);
+        let done_drop = Instant::now();
+        count += thiscount;
     }
+
+    //inflight_mgr()
+    //.lock()
+    //.pages_ready(objid, obj_range.pages().map(|x| x as usize));
+    inflight_mgr()
+        .lock()
+        .pages_ready(obj.id(), obj_range.pages().next().map(|x| x as usize));
+    let done_signal = Instant::now();
+    log::info!(
+        "::: {}ns {}ns {}ns {}ns {}ns {}ns {}ns",
+        (done_mem - start).as_nanos(),
+        (done_calc - done_mem).as_nanos(),
+        (done_new - done_calc).as_nanos(),
+        (done_lock - done_new).as_nanos(),
+        (done_add - done_lock).as_nanos(),
+        (done_drop - done_add).as_nanos(),
+        (done_signal - done_drop).as_nanos(),
+    );
 }
 
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
@@ -274,7 +287,12 @@ pub(super) fn pager_compl_handler_main() {
     loop {
         last_ticks = current_ticks;
         current_ticks = crate::time::bench_clock().map(|bc| bc.read());
-        let completion = sender.1.recv_completion();
+        let completion = sender.queue.recv_completion();
+        log::info!(
+            "{}: got completion {:?}",
+            current_thread_ref().unwrap().id(),
+            completion
+        );
 
         count += 1;
 
@@ -294,7 +312,7 @@ pub(super) fn pager_compl_handler_main() {
             elapsed = 0;
         }
 
-        let Some(request) = sender.2.lock().get(&completion.0).copied() else {
+        let Some(request) = sender.idmap.lock().get(&completion.0).cloned() else {
             logln!("warn -- received completion for unknown request");
             continue;
         };
@@ -305,17 +323,23 @@ pub(super) fn pager_compl_handler_main() {
                 obj_range,
                 phys_range,
                 flags,
-            ) => pager_compl_handle_page_data(objid, obj_range, phys_range, flags),
+            ) => pager_compl_handle_page_data(
+                request.obj.as_ref().unwrap(),
+                obj_range,
+                phys_range,
+                flags,
+            ),
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
                 pager_compl_handle_object_info(id, info)
             }
             twizzler_abi::pager::KernelCompletionData::Error(err) => {
-                pager_compl_handle_error(request, err.error())
+                pager_compl_handle_error(request.req, err.error())
             }
             _ => {}
         };
+        log::info!("done handling completion");
 
-        match request.cmd() {
+        match request.req.cmd() {
             KernelCommand::ObjectEvict(info) => {
                 if matches!(
                     completion.1.data(),
@@ -328,26 +352,38 @@ pub(super) fn pager_compl_handler_main() {
         }
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
-            sender.2.lock().remove(&completion.0);
-            sender.0.release_simple(SimpleId::from(completion.0));
+            log::info!("removing completion");
+            sender.idmap.lock().remove(&completion.0);
+            sender.ids.release_simple(SimpleId::from(completion.0));
+            log::info!("done removing completion");
         }
     }
 }
 
-pub fn submit_pager_request(item: RequestFromKernel) {
-    log::trace!("submitting pager request: {:?}", item);
+pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>) {
+    log::info!("submitting pager request: {:?}", req);
     let sender = SENDER.wait();
-    let id = sender.0.next_simple().value() as u32;
-    let old = sender.2.lock().insert(id, item);
+    let id = sender.ids.next_simple().value() as u32;
+    let old = sender
+        .idmap
+        .lock()
+        .insert(
+            id,
+            SentRequestInfo {
+                req,
+                obj: obj.cloned(),
+            },
+        )
+        .unwrap();
     if let Some(old) = old {
         logln!(
             "warn -- replaced old item on request index ({}: {:?} -> {:?})",
             id,
             old,
-            item
+            req
         );
     }
-    SENDER.wait().1.submit(item, id);
+    SENDER.wait().queue.submit(req, id);
 }
 
 extern "C" fn pager_compl_handler_entry() {
@@ -370,7 +406,11 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     );
     if outgoing {
         let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
-        SENDER.call_once(|| (IdCounter::new(), queue, Mutex::new(BTreeMap::new())));
+        SENDER.call_once(|| RequestSender {
+            ids: IdCounter::new(),
+            queue,
+            idmap: Spinlock::new(FnvIndexMap::new()),
+        });
     } else {
         let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
         let receiver = ManagedQueueReceiver::new(queue);

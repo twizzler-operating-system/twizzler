@@ -246,7 +246,7 @@ impl MapRegion {
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             log::warn!("fallback allocate in fault to page {}", page_number);
             if let Some(frame) = fa.try_allocate() {
-                let page = Page::new(frame);
+                let page = Page::new(frame, 1);
                 obj_page_tree.add_page(
                     page_number,
                     PageRef::new(Arc::new(page), 0, 1),

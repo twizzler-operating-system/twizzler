@@ -193,6 +193,16 @@ impl ReqKind {
         }
     }
 
+    pub fn required_pages(&self) -> impl Iterator<Item = usize> {
+        match self {
+            ReqKind::PageData(_, start, _len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
+                //(*start..(*start + *len)).into_iter()
+                (*start..(*start + 1)).into_iter()
+            }
+            _ => (0..0).into_iter(),
+        }
+    }
+
     pub fn needs_info(&self) -> bool {
         matches!(self, ReqKind::Info(_)) || matches!(self, ReqKind::Create(_, _, _))
     }
@@ -233,7 +243,7 @@ impl Request {
     pub fn new(id: usize, reqkind: ReqKind) -> Self {
         let start_time = Instant::now();
         let mut remaining_pages = BTreeSet::new();
-        for page in reqkind.pages() {
+        for page in reqkind.required_pages() {
             remaining_pages.insert(page);
         }
         Self {

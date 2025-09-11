@@ -142,7 +142,6 @@ impl Object {
         }
 
         let mut sleep_info = self.sleep_info.lock();
-
         let cur = vaddr
             .map(|vaddr| vaddr.load(Ordering::SeqCst))
             .unwrap_or_else(|| unsafe { self.read_atomic_u64(offset) });

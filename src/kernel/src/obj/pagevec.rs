@@ -102,7 +102,7 @@ impl PageVec {
             let thisrange = (*k)..(*entry.end());
             // TODO: use larger pages
             for i in 0..entry.nr_pages() {
-                let new_page = Arc::new(Page::new(allocator.try_allocate()?));
+                let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                 let mut new_page = PageRef::new(new_page, 0, 1);
                 new_page.copy_from(&entry.adjust(i));
                 pv.tree.insert(thisrange.clone(), new_page);
@@ -159,7 +159,7 @@ mod tests {
 
     fn new_page() -> PageRef {
         PageRef::new(
-            Arc::new(Page::new(alloc_frame(FrameAllocFlags::empty()))),
+            Arc::new(Page::new(alloc_frame(FrameAllocFlags::empty()), 1)),
             0,
             1,
         )

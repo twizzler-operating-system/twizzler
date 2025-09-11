@@ -78,7 +78,7 @@ struct PerObjectData {
 
 impl PerObjectData {
     fn insert(&mut self, rk: ReqKind, id: usize) {
-        for page in rk.pages() {
+        for page in rk.required_pages() {
             self.page_map.entry(page).or_default().insert(id);
         }
         if rk.needs_info() {
@@ -90,7 +90,7 @@ impl PerObjectData {
     }
 
     fn remove_all(&mut self, rk: &ReqKind, id: usize) {
-        for page in rk.pages() {
+        for page in rk.required_pages() {
             self.page_map.entry(page).or_default().remove(&id);
         }
         if rk.needs_info() {

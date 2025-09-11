@@ -338,7 +338,7 @@ impl PageRangeTree {
                 Some(match backing {
                     BackingPages::Nothing => BackingPages::Nothing,
                     BackingPages::Single(page_ref) => {
-                        let new_page = Arc::new(Page::new(allocator.try_allocate()?));
+                        let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                         let mut new_page = PageRef::new(new_page, 0, page_ref.nr_pages());
                         new_page.copy_from(&page_ref);
                         BackingPages::Single(new_page)

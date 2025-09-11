@@ -222,7 +222,7 @@ impl Object {
                 v.push(p.physical_address());
             } else {
                 let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
-                let page = Page::new(frame);
+                let page = Page::new(frame, 1);
                 v.push(page.physical_address());
                 let page = PageRef::new(Arc::new(page), 0, 1);
                 tree.add_page(start.offset(i), page, None);

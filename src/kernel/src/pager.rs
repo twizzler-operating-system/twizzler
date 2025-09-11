@@ -52,7 +52,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         let inflight = mgr.add_request(ReqKind::new_info(id));
         drop(mgr);
         inflight.for_each_pager_req(|pager_req| {
-            queues::submit_pager_request(pager_req);
+            queues::submit_pager_request(pager_req, None);
         });
 
         let mut mgr = inflight_mgr().lock();
@@ -64,31 +64,45 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) -> bool {
+pub fn get_pages_and_wait(
+    obj: &ObjectRef,
+    page: PageNumber,
+    len: usize,
+    flags: PagerFlags,
+) -> bool {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return false;
     }
-    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len, flags));
+    log::info!(
+        "{}: getting page {} from {}",
+        current_thread_ref().unwrap().id(),
+        page,
+        obj.id()
+    );
+    let inflight = mgr.add_request(ReqKind::new_page_data(obj.id(), page.num(), len, flags));
     drop(mgr);
     let mut submitted = false;
     inflight.for_each_pager_req(|pager_req| {
         submitted = true;
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, Some(obj));
     });
 
     if !flags.contains(PagerFlags::PREFETCH) {
         let mut mgr = inflight_mgr().lock();
         let thread = current_thread_ref().unwrap();
+        log::info!("setup wait");
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
+            log::info!("finish blocking");
             finish_blocking(guard);
         };
     }
+    log::info!("done");
     submitted
 }
 
-fn cmd_object(req: ReqKind) {
+fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
@@ -96,7 +110,7 @@ fn cmd_object(req: ReqKind) {
     let inflight = mgr.add_request(req);
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, obj);
     });
 
     let mut mgr = inflight_mgr().lock();
@@ -107,16 +121,16 @@ fn cmd_object(req: ReqKind) {
     };
 }
 
-pub fn sync_object(id: ObjID) {
-    cmd_object(ReqKind::new_sync(id));
+pub fn sync_object(obj: &ObjectRef) {
+    cmd_object(ReqKind::new_sync(obj.id()), Some(obj));
 }
 
 pub fn del_object(id: ObjID) {
-    cmd_object(ReqKind::new_del(id));
+    cmd_object(ReqKind::new_del(id), None);
 }
 
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
-    cmd_object(ReqKind::new_create(id, create, nonce));
+    cmd_object(ReqKind::new_create(id, create, nonce), None);
 }
 
 pub fn sync_region(
@@ -134,7 +148,7 @@ pub fn sync_region(
     let inflight = mgr.add_request(req);
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, Some(&region.object()));
     });
 
     let mut mgr = inflight_mgr().lock();
@@ -157,7 +171,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::trace!(
+    log::info!(
         "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
         start.num(),
@@ -176,7 +190,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
-    get_pages_and_wait(obj.id(), start, len, flags)
+    get_pages_and_wait(obj, start, len, flags)
 }
 
 // Returns true if the pager was engaged.
@@ -291,7 +305,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     for inflight in &inflights {
         inflight.for_each_pager_req(|pager_req| {
             log::trace!("providing: {:?}", pager_req);
-            queues::submit_pager_request(pager_req);
+            queues::submit_pager_request(pager_req, None);
         });
     }
 

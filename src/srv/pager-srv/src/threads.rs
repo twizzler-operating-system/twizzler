@@ -127,7 +127,7 @@ fn kq_handler_main(
                     if !tmp.is_empty() {
                         break;
                     }
-                    if let Ok((id, req)) = queue.receive(ReceiveFlags::NON_BLOCK) {
+                    if let Ok((id, req)) = queue.receive(ReceiveFlags::empty()) {
                         unsafe { tmp.push_unchecked((id, req)) };
                     }
                 }
