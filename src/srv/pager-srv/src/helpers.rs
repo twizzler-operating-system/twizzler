@@ -62,10 +62,11 @@ pub async fn page_in(
                 )
             }
 
-            let len =
-                blocking::unblock(move || ctx.paged_ostore(None)?.find_external(obj_id.raw()))
-                    .await
-                    .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
+            let len = ctx
+                .paged_ostore(None)?
+                .find_external(obj_id.raw())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -100,18 +101,16 @@ pub async fn page_out_many(
     obj_id: ObjID,
     mut reqs: Vec<PageRequest>,
 ) -> Result<usize> {
-    blocking::unblock(move || {
-        let mut reqslice = &mut reqs[..];
-        while reqslice.len() > 0 {
-            let donecount = ctx
-                .paged_ostore(None)?
-                .page_out_object(obj_id.raw(), reqslice)
-                .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-            reqslice = &mut reqslice[donecount..];
-        }
-        Ok(reqs.len())
-    })
-    .await
+    let mut reqslice = &mut reqs[..];
+    while reqslice.len() > 0 {
+        let donecount = ctx
+            .paged_ostore(None)?
+            .page_out_object(obj_id.raw(), reqslice)
+            .await
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
+        reqslice = &mut reqslice[donecount..];
+    }
+    Ok(reqs.len())
 }
 
 pub async fn page_in_many(
@@ -119,14 +118,12 @@ pub async fn page_in_many(
     obj_id: ObjID,
     mut reqs: Vec<PageRequest>,
 ) -> Result<(Vec<PageRequest>, usize)> {
-    blocking::unblock(move || {
-        let ret = ctx
-            .paged_ostore(None)?
-            .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
-        Ok((reqs, ret))
-    })
-    .await
+    let ret = ctx
+        .paged_ostore(None)?
+        .page_in_object(obj_id.raw(), &mut reqs)
+        .await
+        .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
+    Ok((reqs, ret))
 }
 
 #[cfg(test)]

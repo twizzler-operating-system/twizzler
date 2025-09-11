@@ -567,9 +567,10 @@ impl PagerData {
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
+        //let start = Instant::now();
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            blocking::unblock(move || ctx.paged_ostore(None)?.find_external(id.raw())).await?;
+            ctx.paged_ostore(None)?.find_external(id.raw()).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -578,7 +579,12 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        blocking::unblock(move || ctx.paged_ostore(None)?.read_object(id.raw(), 0, &mut b)).await?;
+
+        ctx.paged_ostore(None)?
+            .read_object(id.raw(), 0, &mut b)
+            .await?;
+        //let end = Instant::now();
+        //tracing::info!("request took {}us", (end - start).as_micros());
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

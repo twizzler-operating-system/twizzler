@@ -10,6 +10,7 @@ use twizzler_abi::{
 };
 
 use crate::{
+    instant::Instant,
     memory::context::virtmem::region::Shadow,
     obj::{pages::PageRef, range::GetPageFlags, PageNumber},
     processor::sched::schedule_thread,
@@ -225,10 +226,12 @@ pub struct Request {
     remaining_pages: BTreeSet<usize>,
     cmd_ready: bool,
     waiting_threads: Vec<ThreadRef>,
+    start_time: Instant,
 }
 
 impl Request {
     pub fn new(id: usize, reqkind: ReqKind) -> Self {
+        let start_time = Instant::now();
         let mut remaining_pages = BTreeSet::new();
         for page in reqkind.pages() {
             remaining_pages.insert(page);
@@ -239,6 +242,7 @@ impl Request {
             reqkind,
             waiting_threads: Vec::new(),
             remaining_pages,
+            start_time,
         }
     }
 
@@ -251,6 +255,12 @@ impl Request {
     }
 
     pub fn signal(&mut self) {
+        log::info!(
+            "request {} ({:?}) took {}us",
+            self.id,
+            self.reqkind,
+            (Instant::now() - self.start_time).as_micros()
+        );
         for thread in self.waiting_threads.drain(..) {
             schedule_thread(thread);
         }

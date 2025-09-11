@@ -13,7 +13,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
-use crate::{EXECUTOR, PAGER_CTX};
+use crate::{threads::run_async, PAGER_CTX};
 
 // Per-client metadata.
 pub(crate) struct PagerClient {
@@ -104,7 +104,7 @@ pub fn pager_enumerate_external(
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 
-    let items = block_on(EXECUTOR.get().unwrap().run(pager.enumerate_external(id)))?;
+    let items = run_async(pager.enumerate_external(id))?;
 
     pager
         .data

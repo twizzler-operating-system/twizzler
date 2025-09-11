@@ -8,7 +8,9 @@ use twizzler::{
 };
 use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device, dma::PhysInfo};
 
-use crate::{disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, EXECUTOR, PAGER_CTX};
+use crate::{
+    disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, threads::run_async, PAGER_CTX,
+};
 
 #[derive(Clone)]
 pub struct VirtioMem {
@@ -24,7 +26,7 @@ impl VirtioMem {
 }
 
 impl PosIo for VirtioMem {
-    fn read(&self, start: u64, mut buf: &mut [u8]) -> Result<usize> {
+    async fn read(&self, start: u64, mut buf: &mut [u8]) -> Result<usize> {
         let queue = &PAGER_CTX.get().unwrap().sender;
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
@@ -48,12 +50,7 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + read_buffer.len() as u64,
             };
-            block_on(
-                EXECUTOR
-                    .get()
-                    .unwrap()
-                    .run(crate::physrw::read_physical_pages(&mut read_buffer, phys)),
-            )?;
+            crate::physrw::read_physical_pages(&mut read_buffer, phys).await?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -67,7 +64,7 @@ impl PosIo for VirtioMem {
         Ok(bytes_written)
     }
 
-    fn write(&self, start: u64, mut buf: &[u8]) -> Result<usize> {
+    async fn write(&self, start: u64, mut buf: &[u8]) -> Result<usize> {
         let queue = &PAGER_CTX.get().unwrap().sender;
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
@@ -88,7 +85,8 @@ impl PosIo for VirtioMem {
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = pos.try_into().unwrap();
                 // TODO: check if full read
-                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)?;
+                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)
+                    .await?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -101,12 +99,7 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + write_buffer.len() as u64,
             };
-            block_on(
-                EXECUTOR
-                    .get()
-                    .unwrap()
-                    .run(crate::physrw::fill_physical_pages(&write_buffer, phys)),
-            )?;
+            crate::physrw::fill_physical_pages(&write_buffer, phys).await?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -115,21 +108,29 @@ impl PosIo for VirtioMem {
 }
 
 impl PagedDevice for VirtioMem {
-    fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
+    async fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
         tracing::warn!("seq-read on virtio-mem");
         Ok(0)
     }
 
-    fn sequential_write(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
+    async fn sequential_write(
+        &self,
+        start: u64,
+        list: &[object_store::PhysRange],
+    ) -> Result<usize> {
         tracing::warn!("seq-write on virtio-mem");
         Ok(list.len())
     }
 
-    fn len(&self) -> Result<usize> {
+    async fn len(&self) -> Result<usize> {
         Ok(self.len as usize)
     }
 
-    fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
+    async fn phys_addrs(
+        &self,
+        start: DevicePage,
+        phys_list: &mut Vec<PagedPhysMem>,
+    ) -> Result<usize> {
         // TODO: bounds check
         let alloc_page = || {
             let ctx = PAGER_CTX.get().unwrap();
@@ -140,7 +141,7 @@ impl PagedDevice for VirtioMem {
                     if !phys_list.is_empty() {
                         return None;
                     }
-                    block_on(EXECUTOR.get().unwrap().run(mw))
+                    run_async(mw)
                 }
             };
             let phys_range = PhysRange::new(page, page + PAGE);

@@ -4,7 +4,6 @@ use std::{
     u32, u64,
 };
 
-use async_executor::Executor;
 use async_io::block_on;
 use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo};
 use twizzler::Result;
@@ -25,11 +24,10 @@ pub struct Disk {
     pub ctrl: Arc<NvmeController>,
     cache: Arc<Mutex<HashMap<u64, Box<[u8; 4096]>>>>,
     pub len: usize,
-    ex: &'static Executor<'static>,
 }
 
 impl Disk {
-    pub async fn new(ex: &'static Executor<'static>) -> Result<Disk> {
+    pub async fn new() -> Result<Disk> {
         let ctrl = init_nvme().await.expect("failed to open nvme controller");
         let len = ctrl.flash_len().await;
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
@@ -37,7 +35,6 @@ impl Disk {
             ctrl,
             cache: Arc::new(Mutex::new(HashMap::new())),
             len,
-            ex,
         })
     }
 
@@ -47,7 +44,7 @@ impl Disk {
 }
 
 impl PagedDevice for Disk {
-    fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
+    async fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
         let phys = list
             .iter()
             .map(|r| {
@@ -64,7 +61,11 @@ impl PagedDevice for Disk {
         Ok(count)
     }
 
-    fn sequential_write(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
+    async fn sequential_write(
+        &self,
+        start: u64,
+        list: &[object_store::PhysRange],
+    ) -> Result<usize> {
         let phys = list
             .iter()
             .map(|r| {
@@ -81,11 +82,15 @@ impl PagedDevice for Disk {
         Ok(count)
     }
 
-    fn len(&self) -> Result<usize> {
+    async fn len(&self) -> Result<usize> {
         Ok(self.len)
     }
 
-    fn phys_addrs(&self, start: DevicePage, phys_list: &mut Vec<PagedPhysMem>) -> Result<usize> {
+    async fn phys_addrs(
+        &self,
+        start: DevicePage,
+        phys_list: &mut Vec<PagedPhysMem>,
+    ) -> Result<usize> {
         let ctx = PAGER_CTX.get().unwrap();
         let page = match ctx.data.try_alloc_page() {
             Ok(page) => page,
@@ -108,7 +113,7 @@ impl PagedDevice for Disk {
 }
 
 impl PosIo for Disk {
-    fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
+    async fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
@@ -141,7 +146,7 @@ impl PosIo for Disk {
         Ok(bytes_written)
     }
 
-    fn write(&self, start: u64, buf: &[u8]) -> Result<usize> {
+    async fn write(&self, start: u64, buf: &[u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
@@ -161,7 +166,8 @@ impl PosIo for Disk {
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = pos.try_into().unwrap();
                 // TODO: check if full read
-                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)?;
+                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)
+                    .await?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);

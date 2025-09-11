@@ -3,7 +3,6 @@ use std::{
     time::Instant,
 };
 
-use blocking::unblock;
 use object_store::PagedObjectStore;
 use twizzler::{
     error::RawTwzError,
@@ -16,7 +15,7 @@ use twizzler_abi::pager::{
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
-use crate::{helpers::PAGE, PagerContext, EXECUTOR};
+use crate::{helpers::PAGE, threads::spawn_async, PagerContext};
 
 async fn handle_page_data_request_task(
     ctx: &'static PagerContext,
@@ -35,7 +34,7 @@ async fn handle_page_data_request_task(
     let start_time = Instant::now();
     if prefetch {
         tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
-        if let Ok(len) = blocking::unblock(move || ctx.paged_ostore(None)?.len(id.raw())).await {
+        if let Ok(len) = ctx.paged_ostore(None).unwrap().len(id.raw()).await {
             tracing::debug!(
                 "==> prefetch request reduce len: {} -> {}",
                 req_range.end,
@@ -71,7 +70,7 @@ async fn handle_page_data_request_task(
                     KernelCompletionData::Error(RawTwzError::new(e.raw())),
                     KernelCompletionFlags::DONE,
                 );
-                ctx.notify_kernel(qid, comp).await;
+                ctx.notify_kernel(qid, comp);
                 return;
             }
         };
@@ -115,7 +114,7 @@ async fn handle_page_data_request_task(
             thiscount
         );
         for comp in comps.iter() {
-            ctx.notify_kernel(qid, *comp).await;
+            ctx.notify_kernel(qid, *comp);
         }
         count += thiscount;
     }
@@ -136,7 +135,7 @@ async fn handle_page_data_request_task(
     }
 
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
-    ctx.notify_kernel(qid, done).await;
+    ctx.notify_kernel(qid, done);
 }
 
 async fn handle_page_data_request(
@@ -152,13 +151,9 @@ async fn handle_page_data_request(
         req_range,
         req_range.pages().count()
     );
-    let _task = EXECUTOR
-        .get()
-        .unwrap()
-        .spawn(async move {
-            handle_page_data_request_task(ctx, qid, id, req_range, flags).await;
-        })
-        .detach();
+    spawn_async(async move {
+        handle_page_data_request_task(ctx, qid, id, req_range, flags).await;
+    });
     vec![]
 }
 
@@ -194,29 +189,20 @@ pub async fn handle_kernel_request(
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
             Err(e) => KernelCompletionData::Error(e.into()),
         },
-
-        KernelCommand::ObjectDel(obj_id) => {
-            unblock(move || {
-                let res = ctx
-                    .paged_ostore(None)
-                    .map(|po| po.delete_object(obj_id.raw()));
-                match res {
-                    Ok(_) => {
-                        let _ = ctx.paged_ostore(None).map(|po| {
-                            po.flush()
-                                .inspect_err(|e| tracing::warn!("failed to advance epoch: {}", e))
-                        });
-                        KernelCompletionData::Okay
-                    }
-                    Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
+        KernelCommand::ObjectDel(obj_id) => match ctx.paged_ostore(None) {
+            Ok(po) => match po.delete_object(obj_id.raw()).await {
+                Ok(_) => {
+                    let _ = po.flush().await;
+                    KernelCompletionData::Okay
                 }
-            })
-            .await
-        }
-        KernelCommand::ObjectCreate(id, object_info) => {
-            blocking::unblock(move || {
-                let _ = ctx.paged_ostore(None).map(|po| po.delete_object(id.raw()));
-                match ctx.paged_ostore(None).map(|po| po.create_object(id.raw())) {
+                Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
+            },
+            Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
+        },
+        KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
+            Ok(po) => {
+                let _ = po.delete_object(id.raw()).await;
+                match po.create_object(id.raw()).await {
                     Ok(_) => {
                         let mut buffer = [0; 0x1000];
                         let meta = MetaInfo {
@@ -240,6 +226,7 @@ pub async fn handle_kernel_request(
                         ctx.paged_ostore(None)
                             .unwrap()
                             .write_object(id.raw(), 0, &buffer)
+                            .await
                             .unwrap();
 
                         KernelCompletionData::ObjectInfoCompletion(id, object_info)
@@ -249,9 +236,12 @@ pub async fn handle_kernel_request(
                         KernelCompletionData::Error(TwzError::from(e).into())
                     }
                 }
-            })
-            .await
-        }
+            }
+            Err(e) => {
+                tracing::warn!("failed to create object {}: {}", id, e);
+                KernelCompletionData::Error(TwzError::from(e).into())
+            }
+        },
         KernelCommand::DramPages(phys_range) => {
             tracing::debug!("tracking {} KB memory", phys_range.len() / 1024);
             ctx.data.add_memory_range(phys_range);
