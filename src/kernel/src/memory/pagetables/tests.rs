@@ -8,7 +8,8 @@ mod test {
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
             pagetables::{
-                phys_provider, Mapper, MappingCursor, MappingFlags, MappingSettings, PhysMapInfo,
+                consistency::Consistency, phys_provider, Mapper, MappingCursor, MappingFlags,
+                MappingSettings, PhysMapInfo,
             },
             tracker::{alloc_frame, FrameAllocFlags},
         },
@@ -70,7 +71,9 @@ mod test {
             MappingFlags::empty(),
         );
         let mut phys = StaticProvider { settings };
-        let _ = m.map(cur, &mut phys);
+        let mut consist = Consistency::new_full_global();
+        consist.set_full_global();
+        let _ = m.map(cur, &mut phys, consist);
 
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();

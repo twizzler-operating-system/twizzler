@@ -23,7 +23,7 @@ use crate::{
     memory::{
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
-            PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
+            PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
         },
         tracker::FrameAllocFlags,
         PhysAddr,
@@ -113,14 +113,15 @@ impl TryFrom<VirtAddr> for Slot {
     }
 }
 
+const MAX_OPP_VEC: usize = 128;
 struct ObjectPageProvider {
     pos: usize,
     inner_pos: usize,
-    pages: Vec<(PageRef, MappingSettings)>,
+    pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>,
 }
 
 impl ObjectPageProvider {
-    pub fn new(pages: Vec<(PageRef, MappingSettings)>) -> Self {
+    pub fn new(pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>) -> Self {
         Self {
             pages,
             pos: 0,
@@ -320,7 +321,8 @@ impl UserContext for VirtContext {
         } else {
             None
         };
-        let new_slot_info = MapRegion {
+
+        let mut new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
             object: object_info.object().clone(),
@@ -328,7 +330,26 @@ impl UserContext for VirtContext {
             range: slot.range(),
             shadow,
             flags: object_info.flags,
+            shared_pt: None,
         };
+        let shared_pt = if !object_info.flags.contains(MapFlags::STABLE)
+            && !object_info.perms.contains(Protections::WRITE)
+        {
+            log::debug!(
+                "shared PT: {}: {:?}, {:?}",
+                object_info.object.id(),
+                object_info.flags,
+                object_info.perms
+            );
+            Some(SharedPageTable::new(
+                1,
+                new_slot_info.mapping_settings(false, false),
+            ))
+        } else {
+            None
+        };
+        new_slot_info.shared_pt = shared_pt;
+
         object_info.object().add_context(self);
         let mut slots = self.regions.lock();
         if slots.lookup_region(slot.start_vaddr()).is_some() {
@@ -540,6 +561,7 @@ impl KernelMemoryContext for VirtContext {
             cache_type: info.cache(),
             shadow: None,
             flags: info.flags,
+            shared_pt: None,
         };
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {

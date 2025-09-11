@@ -86,6 +86,7 @@ pub struct MapInfo {
     paddr: PhysAddr,
     settings: MappingSettings,
     psize: usize,
+    is_shared_pt: bool,
 }
 
 impl Mapper {
@@ -106,12 +107,14 @@ impl MapInfo {
         paddr: PhysAddr,
         settings: MappingSettings,
         psize: usize,
+        is_shared_pt: bool,
     ) -> Self {
         Self {
             vaddr,
             paddr,
             settings,
             psize,
+            is_shared_pt,
         }
     }
 
@@ -139,5 +142,10 @@ impl MapInfo {
     /// Physical address of the mapping.
     pub fn paddr(&self) -> PhysAddr {
         self.paddr
+    }
+
+    /// Is the mapping shared?
+    pub fn is_shared(&self) -> bool {
+        self.is_shared_pt
     }
 }

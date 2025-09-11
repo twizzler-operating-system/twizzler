@@ -119,3 +119,8 @@ pub mod engines;
 pub mod library;
 pub mod symbol;
 pub mod tls;
+
+pub const SMALL_VEC_SIZE: usize = 32;
+pub const SMALL_STRING_SIZE: usize = 256;
+
+pub type Vec<T, const N: usize> = tinyvec::TinyVec<[T; N]>;

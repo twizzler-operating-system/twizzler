@@ -28,6 +28,7 @@ impl PhysicalTimer {
                 TimeSpan::ZERO,
                 FemtoSeconds(0), // TODO: precision
                 FemtoSeconds(FEMTOS_PER_SEC / freq),
+                FemtoSeconds(FEMTOS_PER_SEC / freq),
                 ClockFlags::MONOTONIC,
             ),
         }

@@ -205,11 +205,12 @@ fn pager_compl_handle_page_data(
 
             let page = PageRef::new(Arc::new(page), 0, thiscount);
             log::trace!(
-                "Adding page {}: {} {} {:?}",
+                "Adding page {}: {} {} {:?} {:?}",
                 objid,
                 pn,
                 thiscount,
-                page.physical_address()
+                page.physical_address(),
+                flags
             );
             object_tree.add_page(pn, page, None);
             count += thiscount;
@@ -274,7 +275,6 @@ pub(super) fn pager_compl_handler_main() {
             elapsed = 0;
         }
 
-        //log::info!("got: {:?}", completion);
         let Some(request) = sender.2.lock().get(&completion.0).copied() else {
             logln!("warn -- received completion for unknown request");
             continue;

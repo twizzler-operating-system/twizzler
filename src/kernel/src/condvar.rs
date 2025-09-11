@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use core::time::Duration;
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
@@ -9,7 +8,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
-    spinlock::{SpinLockGuard, Spinlock},
+    spinlock::{LockGuard, RelaxStrategy, Spinlock},
     syscall::sync::{add_to_requeue, requeue_all, sys_thread_sync},
     thread::{current_thread_ref, Thread, ThreadRef},
 };
@@ -40,19 +39,19 @@ impl CondVar {
     }
 
     #[track_caller]
-    pub fn wait_waiters<'a, T>(
+    pub fn wait_waiters<'a, T, R: RelaxStrategy>(
         &self,
-        mut guard: SpinLockGuard<'a, T>,
+        mut guard: LockGuard<'a, T, R>,
         mut timeout: Option<Duration>,
         waiter: Option<ThreadSyncSleep>,
-    ) -> (SpinLockGuard<'a, T>, bool) {
+    ) -> (LockGuard<'a, T, R>, bool) {
         if waiter.is_none() && timeout.is_none() {
             return (self.wait(guard), false);
         }
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
-        inner.queue.insert(current_thread);
+        inner.queue.insert(current_thread.clone());
         drop(inner);
 
         unsafe { guard.force_unlock() };
@@ -84,13 +83,15 @@ impl CondVar {
     }
 
     #[track_caller]
-    pub fn wait<'a, T>(&self, mut guard: SpinLockGuard<'a, T>) -> SpinLockGuard<'a, T> {
+    pub fn wait<'a, T, R: RelaxStrategy>(
+        &self,
+        mut guard: LockGuard<'a, T, R>,
+    ) -> LockGuard<'a, T, R> {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
-        inner.queue.insert(current_thread);
+        inner.queue.insert(current_thread.clone());
         drop(inner);
-        let current_thread = current_thread_ref().unwrap();
         let critical_guard = current_thread.enter_critical();
         current_thread.set_sync_sleep();
         current_thread.set_sync_sleep_done();
@@ -109,18 +110,21 @@ impl CondVar {
     }
 
     pub fn signal(&self) {
-        let mut threads_to_wake = Vec::with_capacity(8);
+        const MAX_PER_ITER: usize = 8;
+        let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
         loop {
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
             }
             let mut node = inner.queue.front_mut();
-            while threads_to_wake.len() < 8 && !node.is_null() {
+            while !threads_to_wake.is_full() && !node.is_null() {
                 if node.get().unwrap().reset_sync_sleep() {
-                    threads_to_wake.push(node.remove().unwrap());
+                    // Safety: vec isn't full, checked above.
+                    unsafe { threads_to_wake.push_unchecked(node.remove().unwrap()) };
+                } else {
+                    node.move_next();
                 }
-                node.move_next();
             }
 
             drop(inner);
@@ -151,31 +155,42 @@ mod tests {
 
     use super::CondVar;
     use crate::{
-        spinlock::Spinlock,
+        spinlock::ReschedulingSpinlock,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
     };
 
     #[kernel_test]
     fn test_condvar() {
-        let lock = Arc::new(Spinlock::new(0));
+        let lock = Arc::new(ReschedulingSpinlock::new(0));
         let cv = Arc::new(CondVar::new());
         let cv2 = cv.clone();
         let lock2 = lock.clone();
 
         const ITERS: usize = 500;
-        for _ in 0..ITERS {
-            let handle = run_closure_in_new_thread(Priority::USER, || {
+        for i in 0..ITERS {
+            log!(".");
+            {
+                *lock.lock() = 0;
+            }
+            let handle = run_closure_in_new_thread(Priority::REALTIME, || {
+                if i % 3 == 0 {
+                    let _ = crate::syscall::sync::sys_thread_sync(
+                        &mut [],
+                        Some(&mut Duration::from_millis(1)),
+                    );
+                }
+                let mut inner = lock.lock();
+                *inner += 1;
+                drop(inner);
+                cv.signal();
+            });
+
+            if i % 5 == 0 {
                 let _ = crate::syscall::sync::sys_thread_sync(
                     &mut [],
                     Some(&mut Duration::from_millis(1)),
                 );
-                let mut inner = lock.lock();
-                *inner += 1;
-                cv.signal();
-            });
-
-            let _ =
-                crate::syscall::sync::sys_thread_sync(&mut [], Some(&mut Duration::from_millis(1)));
+            }
             'inner: loop {
                 let inner = lock2.lock();
                 if *inner != 0 {

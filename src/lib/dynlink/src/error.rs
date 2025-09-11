@@ -4,24 +4,30 @@ use std::alloc::Layout;
 use elf::file::Class;
 use itertools::{Either, Itertools};
 use miette::Diagnostic;
+use smallstr::SmallString;
 use thiserror::Error;
+
+use crate::Vec;
+
+type String = SmallString<[u8; SMALL_STRING_SIZE]>;
 
 use crate::{
     compartment::CompartmentId,
     engines::LoadDirective,
     library::{LibraryId, UnloadedLibrary},
+    SMALL_STRING_SIZE, SMALL_VEC_SIZE,
 };
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error, Diagnostic, Default)]
 #[error("{kind}")]
 pub struct DynlinkError {
     pub kind: DynlinkErrorKind,
     #[related]
-    pub related: Vec<DynlinkError>,
+    pub related: std::vec::Vec<DynlinkError>,
 }
 
 impl DynlinkError {
-    pub fn new_collect(kind: DynlinkErrorKind, related: Vec<DynlinkError>) -> Self {
+    pub fn new_collect(kind: DynlinkErrorKind, related: std::vec::Vec<DynlinkError>) -> Self {
         Self { kind, related }
     }
 
@@ -32,12 +38,15 @@ impl DynlinkError {
         }
     }
 
-    pub fn collect<I, T>(parent_kind: DynlinkErrorKind, it: I) -> Result<Vec<T>, DynlinkError>
+    pub fn collect<I, T: Default>(
+        parent_kind: DynlinkErrorKind,
+        it: I,
+    ) -> Result<Vec<T, SMALL_VEC_SIZE>, DynlinkError>
     where
         I: IntoIterator<Item = Result<T, DynlinkError>>,
     {
         // Collect errors and values, and then if there any errors, build a new error from them.
-        let (vals, errs): (Vec<T>, Vec<DynlinkError>) =
+        let (vals, errs): (Vec<T, SMALL_VEC_SIZE>, Vec<DynlinkError, SMALL_VEC_SIZE>) =
             it.into_iter().partition_map(|item| match item {
                 Ok(o) => Either::Left(o),
                 Err(e) => Either::Right(e),
@@ -46,9 +55,13 @@ impl DynlinkError {
         if errs.is_empty() {
             Ok(vals)
         } else {
+            let mut serrs = std::vec::Vec::new();
+            for e in errs {
+                serrs.push(e);
+            }
             Err(DynlinkError {
                 kind: parent_kind,
-                related: errs,
+                related: serrs,
             })
         }
     }
@@ -63,8 +76,11 @@ impl From<DynlinkErrorKind> for DynlinkError {
     }
 }
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error, Diagnostic, Default)]
 pub enum DynlinkErrorKind {
+    #[default]
+    #[error("unknown")]
+    Unknown,
     #[error("failed to load compartment {compartment}")]
     CompartmentLoadFail { compartment: String },
     #[error("failed to load library {library}")]

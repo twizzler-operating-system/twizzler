@@ -46,6 +46,8 @@ members = [
     "src/ports/rusqlite",
     "src/ports/rusqlite/libsqlite3-sys",
 
+    #"src/ports/candle-test",
+
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
     #"src/bin/random_validation",
@@ -60,6 +62,7 @@ members = [
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
+    "src/bin/schedtest",
 ]
 
 exclude = [
@@ -92,6 +95,9 @@ initrd = [
     "crate:ptest",
     "crate:sqlite_test",
     #"crate:persistent-hashmap-test",
+
+    #"crate:twzcandle",
+    "crate:st",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -154,6 +160,7 @@ hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
+ferroc = { path = "src/ports/ferroc" }
 candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }

@@ -240,6 +240,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-macro"
+version = "2.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "220a2c618ab466efe41d0eace94dfeff1c35e3aa47891bdb95e1c0fefffd3c99"
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1756,9 +1762,11 @@ dependencies = [
  "miette",
  "petgraph",
  "secgate",
+ "smallstr",
  "stable-vec",
  "talc",
  "thiserror 2.0.12",
+ "tinyvec",
  "tracing",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -2026,6 +2034,13 @@ name = "fdt"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
+
+[[package]]
+name = "ferroc"
+version = "1.0.0-pre.4-twz"
+dependencies = [
+ "array-macro",
+]
 
 [[package]]
 name = "ff"
@@ -3271,6 +3286,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1edcd5a338e64688fbdcb7531a846cfd3476a54784dcb918a0844682bc7ada5"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "heapsize-derive"
 version = "0.1.0"
 source = "git+https://github.com/twizzler-operating-system/obliviate.git?branch=nonstatic_lifetime_support#b02c4e35ff9c3ac6f2bebfbb30a4994248a8d173"
@@ -4427,8 +4452,10 @@ dependencies = [
  "naming-core",
  "parking_lot",
  "secgate",
+ "smallstr",
  "static_assertions",
  "talc",
+ "tinyvec",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -5775,7 +5802,6 @@ dependencies = [
  "hashlink 0.10.0",
  "jiff 0.1.29",
  "libsqlite3-sys",
- "naming",
  "ouroboros",
  "regex",
  "rusqlite-macros",
@@ -6291,6 +6317,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallstr"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "862077b1e764f04c251fe82a2ef562fd78d7cadaeb072ca7c2bcaf7217b1ff3b"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6381,6 +6416,10 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
 ]
+
+[[package]]
+name = "st"
+version = "0.1.0"
 
 [[package]]
 name = "stable-vec"
@@ -6658,6 +6697,12 @@ dependencies = [
  "cfg-if 1.0.0",
  "once_cell",
 ]
+
+[[package]]
+name = "tick_counter"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37f1310986d0aa940019cbb2b480161c60a614dba076cbb20e82bfbc236bbabd"
 
 [[package]]
 name = "time"
@@ -7008,10 +7053,11 @@ dependencies = [
  "arm-gic",
  "backtracer_core",
  "bitflags 2.9.0",
+ "bitset-core",
  "chacha20",
  "digest",
  "fdt",
- "fixedbitset",
+ "heapless 0.9.1",
  "hex-literal",
  "intrusive-collections",
  "limine",
@@ -7112,7 +7158,7 @@ dependencies = [
  "bitflags 2.9.0",
  "blake3",
  "getrandom 0.2.16",
- "heapless",
+ "heapless 0.8.0",
  "log",
  "p256",
  "sha2",
@@ -7137,6 +7183,7 @@ dependencies = [
  "bitflags 2.9.0",
  "dynlink",
  "elf",
+ "ferroc",
  "lazy_static",
  "lru 0.13.0",
  "monitor-api",
@@ -7149,6 +7196,7 @@ dependencies = [
  "static_assertions",
  "talc",
  "thiserror 2.0.12",
+ "tick_counter",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
@@ -8552,17 +8600,17 @@ dependencies = [
 [[patch.unused]]
 name = "candle-core"
 version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#605110740a3477a9e5f016821c512887f753c950"
 
 [[patch.unused]]
 name = "candle-nn"
 version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#605110740a3477a9e5f016821c512887f753c950"
 
 [[patch.unused]]
 name = "candle-transformers"
 version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#7cb2af4976752958169e64ed1a0bad1bb9ab2c62"
+source = "git+https://github.com/dbittman/candle.git?branch=dbittman#605110740a3477a9e5f016821c512887f753c950"
 
 [[patch.unused]]
 name = "gemm-common"

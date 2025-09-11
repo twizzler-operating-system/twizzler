@@ -13,7 +13,8 @@ use crate::{
     instant::Instant,
     memory::{
         context::{kernel_context, ContextRef},
-        pagetables::PhysAddrProvider,
+        frame::PHYS_LEVEL_LAYOUTS,
+        pagetables::{MappingCursor, PhysAddrProvider, SharedPageTable},
         FAULT_STATS,
     },
     obj::PageNumber,
@@ -200,41 +201,67 @@ fn page_fault_to_region(
         sctx_id = perms.ctx;
     }
 
-    let mapper = |offset: PageNumber, mut provider: ObjectPageProvider| {
-        // TODO: limit page count by mapping or by max?
-        let cursor = info.mapping_cursor(
-            offset.as_byte_offset(),
-            PageNumber::PAGE_SIZE * provider.page_count(),
-        );
-        if !ip.is_kernel() && !addr.is_kernel() {
-            if let Some(val) = provider.peek()
-            //&& info.flags.contains(MapFlags::NO_NULLPAGE)
-            {
-                if val.len > 0x1000 {
-                    log::trace!(
-                        "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
-                        info.object().id(),
-                        addr,
-                        offset,
-                        provider.page_count(),
-                        provider.pos,
-                        val.addr,
-                        val.len / 0x1000,
-                        cursor.start(),
-                        cursor.remaining(),
-                    );
-                }
-            }
-        }
+    let shared_mapper = |addr: VirtAddr, spt: &SharedPageTable| {
+        let aligned_addr = spt.align_addr(addr);
 
+        let cursor = MappingCursor::new(aligned_addr, PHYS_LEVEL_LAYOUTS[spt.level()].size());
         ctx.with_arch(sctx_id, |arch| {
-            if arch.readmap(cursor, |x| x.count()) > 0 {
-                arch.unmap(cursor);
+            if !arch.readmap(cursor, |mut x| {
+                x.next().map(|m| !m.is_shared()).unwrap_or_default()
+            }) {
+                if arch.readmap(cursor, |x| x.count()) > 0 {
+                    arch.unmap(cursor);
+                }
+                arch.shared_map(cursor, spt);
             }
-            arch.map(cursor, &mut provider);
         });
         Ok(())
     };
+
+    let mapper =
+        |spt: Option<&SharedPageTable>, offset: PageNumber, mut provider: ObjectPageProvider| {
+            // TODO: limit page count by mapping or by max?
+            let cursor = info.mapping_cursor(
+                offset.as_byte_offset(),
+                PageNumber::PAGE_SIZE * provider.page_count(),
+            );
+            if !ip.is_kernel() && !addr.is_kernel() {
+                if let Some(val) = provider.peek()
+                //&& info.flags.contains(MapFlags::NO_NULLPAGE)
+                {
+                    if val.len > 0x1000 {
+                        log::trace!(
+                            "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
+                            info.object().id(),
+                            addr,
+                            offset,
+                            provider.page_count(),
+                            provider.pos,
+                            val.addr,
+                            val.len / 0x1000,
+                            cursor.start(),
+                            cursor.remaining(),
+                        );
+                    }
+                }
+            }
+
+            if let Some(shared_pt) = spt {
+                shared_pt.map(cursor, &mut provider);
+            } else {
+                ctx.with_arch(sctx_id, |arch| {
+                    if provider
+                        .peek()
+                        .is_some_and(|p| p.settings.perms().contains(Protections::WRITE))
+                        && arch.readmap(cursor, |x| x.count()) > 0
+                    {
+                        arch.unmap(cursor);
+                    }
+                    arch.map(cursor, &mut provider);
+                });
+            }
+            Ok(())
+        };
 
     info.map(
         addr,
@@ -245,6 +272,7 @@ fn page_fault_to_region(
         default_prot,
         start_time,
         mapper,
+        shared_mapper,
     )
 }
 

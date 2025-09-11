@@ -1,6 +1,6 @@
 use super::{
     consistency::{Consistency, DeferredUnmappingOps},
-    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
+    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, SharedPageTable,
 };
 use crate::arch::{
     address::PhysAddr,
@@ -73,15 +73,11 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
+        mut consist: Consistency,
     ) -> Result<(), DeferredUnmappingOps> {
-        let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
         if root.map(&mut consist, cursor, level, phys).is_none() {
-            drop(consist);
-            let mut consist = Consistency::new(self.root);
-            let root = self.root_mut();
-            root.unmap(&mut consist, cursor, level);
             Err(consist.into_deferred())
         } else {
             Ok(())
@@ -115,5 +111,25 @@ impl Mapper {
         let level = self.start_level;
         let root = self.root();
         root.readmap(cursor, level)
+    }
+
+    pub fn set_start_level(&mut self, start_level: usize) {
+        self.start_level = start_level;
+    }
+
+    pub fn start_level(&self) -> usize {
+        self.start_level
+    }
+
+    pub fn shared_map(
+        &mut self,
+        cursor: MappingCursor,
+        spt: &SharedPageTable,
+    ) -> DeferredUnmappingOps {
+        let mut consist = Consistency::new(self.root);
+        let level = self.start_level;
+        let root = self.root_mut();
+        root.shared_map(&mut consist, cursor, level, spt);
+        consist.into_deferred()
     }
 }

@@ -11,6 +11,7 @@ use elf::{
 };
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
+use smallstr::SmallString;
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
     debug::LoadedImageId,
@@ -43,22 +44,22 @@ pub enum AllowedGates {
 
 #[repr(C)]
 /// An unloaded library. It's just a name, really.
-#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 pub struct UnloadedLibrary {
     pub name: String,
 }
 
 impl UnloadedLibrary {
     /// Construct a new unloaded library.
-    pub fn new(name: impl ToString) -> Self {
+    pub fn new(name: impl AsRef<str>) -> Self {
         Self {
-            name: name.to_string(),
+            name: name.as_ref().to_string(),
         }
     }
 }
 
 /// The ID struct for a library.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct LibraryId(pub(crate) NodeIndex);
 
@@ -226,7 +227,7 @@ impl Library {
         let entry = self.get_elf()?.ehdr.e_entry;
         if entry == 0 {
             return Err(DynlinkErrorKind::NoEntryAddress {
-                name: self.name.clone(),
+                name: self.name.as_str().into(),
             }
             .into());
         }
@@ -261,7 +262,6 @@ impl Library {
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let elf = self.get_elf()?;
         let common = elf.find_common_data()?;
-        tracing::debug!("lookup {} in {}", name, self.name);
 
         /*
         if self.is_relocated() {
@@ -287,11 +287,11 @@ impl Library {
                         .dynsyms
                         .as_ref()
                         .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                            name: "dynsyms".to_string(),
+                            name: "dynsyms".into(),
                         })?,
                     common.dynsyms_strs.as_ref().ok_or_else(|| {
                         DynlinkErrorKind::MissingSection {
-                            name: "dynsyms_strs".to_string(),
+                            name: "dynsyms_strs".into(),
                         }
                     })?,
                 )
@@ -323,11 +323,11 @@ impl Library {
                         .dynsyms
                         .as_ref()
                         .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                            name: "dynsyms".to_string(),
+                            name: "dynsyms".into(),
                         })?,
                     common.dynsyms_strs.as_ref().ok_or_else(|| {
                         DynlinkErrorKind::MissingSection {
-                            name: "dynsyms_strs".to_string(),
+                            name: "dynsyms_strs".into(),
                         }
                     })?,
                 )
@@ -376,10 +376,7 @@ impl Library {
             }
         }
         //tracing::warn!("undefined symbol: {}", name);
-        Err(DynlinkErrorKind::NameNotFound {
-            name: name.to_string(),
-        }
-        .into())
+        Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
     }
 
     pub(crate) fn lookup_symbol(
@@ -390,8 +387,10 @@ impl Library {
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
         let ret = self.do_lookup_symbol(&name, allow_weak);
         if allow_prefix && ret.is_err() && !name.starts_with("__TWIZZLER_SECURE_GATE_") {
-            let name = format!("__TWIZZLER_SECURE_GATE_{}", name);
-            if let Ok(o) = self.do_lookup_symbol(&name, allow_weak) {
+            let mut prefixedname = SmallString::<[u8; 256]>::from_str("__TWIZZLER_SECURE_GATE_");
+            prefixedname.push_str(name);
+
+            if let Ok(o) = self.do_lookup_symbol(&prefixedname, allow_weak) {
                 return Ok(o);
             }
         }

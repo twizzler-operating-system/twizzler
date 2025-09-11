@@ -47,3 +47,6 @@
 	path = src/ports/memmap2-rs
 	url = ../../twizzler-operating-system/memmap2-rs.git
 	branch = twizzler
+[submodule "src/ports/ferroc"]
+	path = src/ports/ferroc
+	url = git@github.com:dbittman/ferroc

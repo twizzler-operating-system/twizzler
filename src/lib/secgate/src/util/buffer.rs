@@ -39,6 +39,10 @@ impl SimpleBuffer {
         &self.handle
     }
 
+    pub fn into_handle(self) -> ObjectHandle {
+        self.handle
+    }
+
     /// Read bytes from the SimpleBuffer into `buffer`, up to the size of the supplied buffer. The
     /// actual number of bytes copied is returned.
     pub fn read(&self, buffer: &mut [u8]) -> usize {

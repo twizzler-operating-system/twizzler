@@ -17,12 +17,14 @@ pub struct ClockInfo {
     current: TimeSpan,
     precision: FemtoSeconds,
     resolution: FemtoSeconds,
+    tickrate: FemtoSeconds,
     flags: ClockFlags,
 }
 
 impl ClockInfo {
     pub const ZERO: ClockInfo = ClockInfo::new(
         TimeSpan::ZERO,
+        FemtoSeconds(0),
         FemtoSeconds(0),
         FemtoSeconds(0),
         ClockFlags::MONOTONIC,
@@ -34,6 +36,7 @@ impl ClockInfo {
         current: TimeSpan,
         precision: FemtoSeconds,
         resolution: FemtoSeconds,
+        tickrate: FemtoSeconds,
         flags: ClockFlags,
     ) -> Self {
         Self {
@@ -41,6 +44,7 @@ impl ClockInfo {
             precision,
             resolution,
             flags,
+            tickrate,
         }
     }
 
@@ -52,6 +56,11 @@ impl ClockInfo {
     /// Get the resolution of a clock source.
     pub fn resolution(&self) -> FemtoSeconds {
         self.resolution
+    }
+
+    /// Get the tick rate of a clock source.
+    pub fn tickrate(&self) -> FemtoSeconds {
+        self.tickrate
     }
 
     /// Get the current value of a clock source.

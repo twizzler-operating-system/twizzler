@@ -124,6 +124,14 @@ impl SyscallContext for X86SyscallContext {
         self.rax = u64::from(ret0);
         self.rdx = u64::from(ret1);
     }
+
+    fn get_return_values<R1, R2>(&mut self) -> (R1, R2)
+    where
+        R1: From<u64>,
+        R2: From<u64>,
+    {
+        (self.rax.into(), self.rdx.into())
+    }
 }
 
 #[allow(named_asm_labels)]
@@ -164,30 +172,27 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     }
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
+    //let start = Instant::now();
     let t = current_thread_ref().unwrap();
     t.set_entry_registers(Registers::Syscall(context, *context));
 
     crate::thread::enter_kernel();
+    //let init_done = Instant::now();
     crate::interrupt::set(true);
-    drop(t);
 
     crate::syscall::syscall_entry(context.as_mut().unwrap());
     crate::interrupt::set(false);
+    //let syscall_done = Instant::now();
     crate::thread::exit_kernel();
 
-    /* We need this scope to drop the current thread reference before we return to user */
     let user_fs = {
         let cur_th = current_thread_ref().unwrap();
         let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
         // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
         // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
         // we'll use the ISR return path, which doesn't.
-        let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
-        if let Some(up_frame) = rf.take() {
-            // we MUST manually drop this, _and_ the current thread ref (a bit later), because
-            // otherwise we leave them hanging when we trampoline back into userspace.
-            drop(rf);
-
+        let rf = cur_th.arch.take_upcall_restore_frame();
+        if let Some(up_frame) = rf {
             // Restore the sse registers. These don't get restored by the isr return path, so we
             // have to do it ourselves.
             if use_xsave() {
@@ -204,7 +209,6 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
             cur_th.set_entry_registers(Registers::None);
-            drop(cur_th);
 
             let int_frame = IsrContext::from(up_frame);
 
@@ -214,6 +218,15 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         cur_th.set_entry_registers(Registers::None);
         user_fs
     };
+    /*
+    let finished = Instant::now();
+    log::trace!(
+        "==> {:?} {:?} {:?}",
+        init_done - start,
+        syscall_done - init_done,
+        finished - syscall_done
+    );
+    */
 
     x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     /* TODO: check that rcx is canonical */

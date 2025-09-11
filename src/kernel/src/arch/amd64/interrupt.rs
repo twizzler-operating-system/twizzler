@@ -17,7 +17,7 @@ use crate::{
     interrupt::{Destination, DynamicInterrupt},
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     once::Once,
-    processor::current_processor,
+    processor::mp::current_processor,
     thread::current_thread_ref,
 };
 
@@ -189,7 +189,6 @@ unsafe extern "C" fn common_handler_entry(
         let t = current_thread_ref().unwrap();
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
         t.set_entry_registers(Registers::None);
-        drop(t);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     }
 }
@@ -536,7 +535,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         }
         0x80 => {}
         GENERIC_IPI_VECTOR => {
-            crate::processor::generic_ipi_handler();
+            crate::processor::ipi::generic_ipi_handler();
         }
         TLB_SHOOTDOWN_VECTOR => {
             super::memory::pagetables::tlb_shootdown_handler();
@@ -1169,6 +1168,7 @@ pub fn init_idt() {
 }
 
 /// Set the current interrupt enable state to disabled and return the old state.
+#[inline]
 pub fn disable() -> bool {
     let mut flags = x86::bits64::rflags::read();
     let old_if = flags.contains(RFlags::FLAGS_IF);
@@ -1178,6 +1178,7 @@ pub fn disable() -> bool {
 }
 
 /// Set the current interrupt enable state.
+#[inline]
 pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
@@ -1185,6 +1186,7 @@ pub fn set(state: bool) {
 }
 
 /// Get the current interrupt enable state without modifying it.
+#[inline]
 pub fn get() -> bool {
     x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }

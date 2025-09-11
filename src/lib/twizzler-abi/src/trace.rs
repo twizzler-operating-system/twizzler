@@ -22,7 +22,7 @@
 //! the kernel when in critical states. These events are not guaranteed to be reported in a timely
 //! manner, and may be dropped if the system is under heavy load.
 
-use core::sync::atomic::AtomicU64;
+use core::{alloc::Layout, sync::atomic::AtomicU64};
 
 use twizzler_rt_abi::object::ObjID;
 
@@ -137,6 +137,7 @@ pub enum TraceKind {
     Context,
     Security,
     Pager,
+    Runtime,
     #[default]
     Other = 0xffff,
 }
@@ -181,6 +182,8 @@ pub const THREAD_BLOCK: u64 = 0x10;
 pub const THREAD_RESUME: u64 = 0x20;
 /// Thread migrated to a different CPU.
 pub const THREAD_MIGRATE: u64 = 0x40;
+/// Thread returned from a system call.
+pub const THREAD_SYSCALL_EXIT: u64 = 0x80;
 
 // Object events
 /// Object control operation occurred.
@@ -212,6 +215,9 @@ pub const SECURITY_VIOLATION: u64 = 4;
 /// Kernel memory allocation occurred.
 pub const KERNEL_ALLOC: u64 = 1;
 
+/// Kernel performed thread balancing.
+pub const KERNEL_BALANCE: u64 = 2;
+
 // Pager events
 /// Pager command was sent.
 pub const PAGER_COMMAND_SEND: u64 = 1;
@@ -222,10 +228,40 @@ pub const PAGER_REQUEST_RECV: u64 = 4;
 /// Pager request was completed.
 pub const PAGER_REQUEST_COMPLETED: u64 = 8;
 
+/// Runtime memory allocation occurred.
+pub const RUNTIME_ALLOC: u64 = 1;
+
 /// Trait for types that can be cast from trace data based on event types.
 pub trait TraceDataCast {
     /// The event constant associated with this trace data type.
     const EVENT: u64;
+}
+
+/// Kernel allocation information.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KernelAllocationEvent {
+    pub duration: TimeSpan,
+    pub layout: Layout,
+    pub is_free: bool,
+}
+
+/// Kernel allocation information.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KernelRebalance {
+    pub duration: TimeSpan,
+    pub moved: u32,
+}
+
+/// Runtime allocation information.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeAllocationEvent {
+    pub duration: TimeSpan,
+    pub layout: Layout,
+    pub addr: u64,
+    pub is_free: bool,
 }
 
 /// Event data for thread operations.
@@ -234,6 +270,24 @@ pub trait TraceDataCast {
 pub struct ThreadEvent {
     /// Generic value associated with the thread event.
     pub val: u64,
+}
+
+pub const MAX_BLOCK_NAME: usize = 28;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ThreadBlocked {
+    /// UTF-8 bytes of name of this block point.
+    pub block_name: [u8; MAX_BLOCK_NAME],
+    /// Length of the block_name.
+    pub block_name_len: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ThreadResumed {
+    /// Time spent blocked.
+    pub duration: TimeSpan,
 }
 
 /// Event data for system call entry.
@@ -248,18 +302,49 @@ pub struct SyscallEntryEvent {
     pub args: [u64; 6],
 }
 
+/// Event data for system call entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SyscallExitEvent {
+    pub entry: SyscallEntryEvent,
+    /// The return value.
+    pub ret: [u64; 2],
+    /// Time spent processing system call.
+    pub duration: TimeSpan,
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    /// Flags describing memory fault characteristics.
+    pub struct SwitchFlags: u64 {
+        /// Switch to kernel thread
+        const TO_KTHREAD = 1;
+        /// Switching to tracing thread
+        const IS_TRACE = 2;
+        /// Switch to idle thread
+        const TO_IDLE = 4;
+        /// Thread was preempted
+        const PREEMPTED = 8;
+        /// Thread is going to sleep
+        const SLEEPING = 0x10;
+    }
+}
+
 /// Event data for thread context switches.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadCtxSwitch {
     /// ID of the thread being switched to, if any.
     pub to: Option<ObjID>,
+    pub flags: SwitchFlags,
 }
 
 /// Event data for thread migration between CPUs.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ThreadMigrate {
+    /// ID of the CPU being migrated from.
+    pub from: u64,
     /// ID of the CPU being migrated to.
     pub to: u64,
 }
@@ -396,6 +481,26 @@ impl TraceDataCast for SyscallEntryEvent {
     const EVENT: u64 = THREAD_SYSCALL_ENTRY;
 }
 
+impl TraceDataCast for SyscallExitEvent {
+    const EVENT: u64 = THREAD_SYSCALL_EXIT;
+}
+
 impl TraceDataCast for ThreadSamplingEvent {
     const EVENT: u64 = THREAD_SAMPLE;
+}
+
+impl TraceDataCast for ThreadBlocked {
+    const EVENT: u64 = THREAD_BLOCK;
+}
+
+impl TraceDataCast for ThreadResumed {
+    const EVENT: u64 = THREAD_RESUME;
+}
+
+impl TraceDataCast for RuntimeAllocationEvent {
+    const EVENT: u64 = RUNTIME_ALLOC;
+}
+
+impl TraceDataCast for KernelAllocationEvent {
+    const EVENT: u64 = KERNEL_ALLOC;
 }

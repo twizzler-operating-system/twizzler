@@ -42,7 +42,7 @@ impl Compartment {
     ) -> Result<TlsRegion, DynlinkError> {
         let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
             DynlinkError::new(DynlinkErrorKind::NoTLSInfo {
-                library: self.name.clone(),
+                library: self.name.as_str().into(),
             })
         })?;
         let alloc_layout = tls_info
@@ -50,7 +50,7 @@ impl Compartment {
             .map_err(DynlinkErrorKind::from)?;
         // Each compartment has its own libstd, so we can just all alloc directly.
         let base = alloc(alloc_layout).ok_or_else(|| DynlinkErrorKind::FailedToAllocate {
-            comp: self.name.clone(),
+            comp: self.name.as_str().into(),
             layout: alloc_layout,
         })?;
         debug!(
@@ -63,7 +63,7 @@ impl Compartment {
 
         let tls_info = self.tls_info.get(&self.tls_gen).ok_or_else(|| {
             DynlinkError::new(DynlinkErrorKind::NoTLSInfo {
-                library: self.name.clone(),
+                library: self.name.as_str().into(),
             })
         })?;
         let tls_region = tls_info.allocate(self, base, tcb);

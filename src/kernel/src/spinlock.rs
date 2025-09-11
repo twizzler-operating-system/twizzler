@@ -5,7 +5,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::processor::spin_wait_until;
+use crate::processor::{
+    sched::{schedule, SchedFlags},
+    spin_wait_until,
+};
 
 pub trait RelaxStrategy {
     fn relax(iters: usize);
@@ -16,7 +19,7 @@ impl RelaxStrategy for Reschedule {
     #[inline]
     fn relax(iters: usize) {
         if iters > 100 {
-            crate::sched::schedule(true);
+            schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT);
         }
     }
 }
@@ -68,10 +71,12 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             || {
                 iters += 1;
                 if iters == 10000 {
-                    log::debug!("spinlock pause: {}", caller);
+                    //emerglogln!("spinlock pause: {}", caller);
                 }
                 if iters == 100000 {
-                    log::warn!("spinlock long pause: {}", caller);
+                    emerglogln!("spinlock long pause: {}, locked at {:?}", caller, unsafe {
+                        self.locked_from.get().as_ref().unwrap()
+                    });
                 }
                 Relax::relax(iters);
             },
