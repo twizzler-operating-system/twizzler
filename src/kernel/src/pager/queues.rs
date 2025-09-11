@@ -16,6 +16,7 @@ use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES
 use crate::{
     arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
+    instant::Instant,
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
@@ -150,8 +151,15 @@ fn pager_compl_handle_page_data(
     phys_range: PhysRange,
     flags: PageFlags,
 ) {
+    let start = Instant::now();
     let pcount = phys_range.pages().count();
-    log::trace!("got : {} {:?} {:?}", objid, obj_range, phys_range);
+    log::trace!(
+        "got : {} {:?} {:?} ({} pages)",
+        objid,
+        obj_range,
+        phys_range,
+        pcount
+    );
 
     if !flags.contains(PageFlags::WIRED) {
         log::trace!(
@@ -167,6 +175,7 @@ fn pager_compl_handle_page_data(
             super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
         }
     }
+    let done_mem = Instant::now();
 
     if let Ok(object) = lookup_object(objid, LookupFlags::empty()).ok_or(()) {
         let mut object_tree = object.lock_page_tree();
@@ -189,6 +198,7 @@ fn pager_compl_handle_page_data(
                     max_pages,
                 )
             } else {
+                todo: this is slow, here. Would be nice to get this to use large pages.
                 (
                     if let Some(frame) = crate::memory::frame::get_frame(pa) {
                         Page::new(frame)
@@ -216,10 +226,19 @@ fn pager_compl_handle_page_data(
             count += thiscount;
         }
         drop(object_tree);
+        let done_add = Instant::now();
 
         inflight_mgr()
             .lock()
+                todo: this is slow, here. can't track individual pages, too expensive.
             .pages_ready(objid, obj_range.pages().map(|x| x as usize));
+        let done_signal = Instant::now();
+        log::info!(
+            "::: {}ns {}us {}us",
+            (done_mem - start).as_nanos(),
+            (done_add - done_mem).as_micros(),
+            (done_signal - done_add).as_micros()
+        );
     } else {
         // TODO
         logln!("kernel: pager: got unknown object ID");

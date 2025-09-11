@@ -41,36 +41,32 @@ impl WorkerThread {
     fn new() -> Self {
         let (send, recv) = async_channel::bounded::<WorkItem>(8);
         Self {
-            handle: std::thread::spawn(|| {
-                LOCAL_EXEC
-                    .spawn(async move {
-                        loop {
-                            let wi = recv.recv().await.unwrap();
-                            tracing::info!(
-                                "{}: starting handling after {}us",
-                                wi.qid,
-                                wi.start.elapsed().as_micros()
-                            );
-                            let resp =
-                                handle_kernel_request(PAGER_CTX.get().unwrap(), wi.qid, wi.req)
-                                    .await;
-                            tracing::info!(
-                                "{}: done handling after {}us",
-                                wi.qid,
-                                wi.start.elapsed().as_micros()
-                            );
-                            for resp in resp {
-                                PAGER_CTX
-                                    .get()
-                                    .unwrap()
-                                    .kernel_notify
-                                    .complete(wi.qid, resp, SubmissionFlags::empty())
-                                    .unwrap();
-                            }
-                        }
-                    })
-                    .detach();
-                block_on(LOCAL_EXEC.run(std::future::pending::<()>()));
+            handle: std::thread::spawn(move || loop {
+                let wi = block_on(LOCAL_EXEC.run(recv.recv())).unwrap();
+                tracing::trace!(
+                    "{}: starting handling after {}us",
+                    wi.qid,
+                    wi.start.elapsed().as_micros()
+                );
+
+                let resp = run_async(handle_kernel_request(
+                    PAGER_CTX.get().unwrap(),
+                    wi.qid,
+                    wi.req,
+                ));
+                tracing::trace!(
+                    "{}: done handling after {}us",
+                    wi.qid,
+                    wi.start.elapsed().as_micros()
+                );
+                for resp in resp {
+                    PAGER_CTX
+                        .get()
+                        .unwrap()
+                        .kernel_notify
+                        .complete(wi.qid, resp, SubmissionFlags::empty())
+                        .unwrap();
+                }
             }),
             pending: send,
         }
@@ -83,9 +79,11 @@ pub struct Workers {
 
 impl Workers {
     fn new() -> Self {
-        Self {
-            threads: vec![WorkerThread::new()],
+        let mut threads = Vec::new();
+        for i in 0..available_parallelism().unwrap().get() {
+            threads.push(WorkerThread::new());
         }
+        Self { threads }
     }
 }
 
@@ -118,6 +116,7 @@ fn kq_handler_main(
     workers: Arc<Workers>,
     queue: &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
 ) {
+    let mut i = 0;
     loop {
         let mut tmp = heapless::Vec::<(u32, RequestFromKernel), 8>::new();
         while !tmp.is_full() {
@@ -139,10 +138,12 @@ fn kq_handler_main(
         }
 
         for (id, req) in tmp {
-            workers.threads[0]
+            let wi = WorkItem::new(id, req);
+            workers.threads[i % workers.threads.len()]
                 .pending
-                .send_blocking(WorkItem::new(id, req))
+                .send_blocking(wi)
                 .unwrap();
+            i += 1;
         }
     }
 }

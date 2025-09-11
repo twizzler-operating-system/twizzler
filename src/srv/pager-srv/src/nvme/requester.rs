@@ -54,17 +54,30 @@ impl<'a> InflightRequest<'a> {
     pub fn wait(&self) -> std::io::Result<CommonCompletion> {
         loop {
             let wait = self.wait_item_read();
+            let flags = self.req.get_flags(self);
             for _ in 0..100 {
-                let req = self.req.poll(self);
-                if req.is_ok() {
-                    return req;
-                }
-                let kind = req.as_ref().unwrap_err().kind();
-                if kind != ErrorKind::WouldBlock {
-                    return req;
+                if unsafe { &*flags }.load(Ordering::Relaxed) & READY != 0 {
+                    let req = self.req.poll(self);
+                    if req.is_ok() {
+                        return req;
+                    }
+                    let kind = req.as_ref().unwrap_err().kind();
+                    if kind != ErrorKind::WouldBlock {
+                        return req;
+                    }
                 }
             }
 
+            let req = self.req.poll(self);
+            if req.is_ok() {
+                return req;
+            }
+            let kind = req.as_ref().unwrap_err().kind();
+            if kind != ErrorKind::WouldBlock {
+                return req;
+            }
+
+            unsafe { &*flags }.fetch_or(WAITER, Ordering::Release);
             sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None)?;
         }
     }
@@ -75,6 +88,7 @@ unsafe impl Sync for NvmeRequester {}
 
 const READY: u64 = 1;
 const DROPPED: u64 = 2;
+const WAITER: u64 = 4;
 
 pub struct NvmeRequest {
     cmd: CommonCommand,
@@ -98,7 +112,7 @@ impl<'a> TwizzlerWaitable for InflightRequest<'a> {
         let req = requests.get(self.id as usize).unwrap();
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&req.flags),
-            0,
+            WAITER,
             twizzler_abi::syscall::ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         )
@@ -161,9 +175,10 @@ impl NvmeRequesterInner {
         let id: u16 = resp.command_id().into();
         let entry = self.requests.get(id as usize).unwrap();
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
-        if entry.flags.fetch_or(READY, Ordering::SeqCst) & DROPPED != 0 {
+        let flags = entry.flags.fetch_or(READY, Ordering::SeqCst);
+        if flags & DROPPED != 0 {
             self.requests.remove(id as usize);
-        } else {
+        } else if flags & WAITER != 0 {
             let _ = twizzler_abi::syscall::sys_thread_sync(
                 &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                     ThreadSyncReference::Virtual(&entry.flags),
@@ -254,6 +269,17 @@ impl NvmeRequester {
 
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
         self.inner.lock().unwrap().poll(inflight)
+    }
+
+    pub fn get_flags(&self, inflight: &InflightRequest) -> *const AtomicU64 {
+        &self
+            .inner
+            .lock()
+            .unwrap()
+            .requests
+            .get(inflight.id as usize)
+            .unwrap()
+            .flags
     }
 
     pub fn check_completions(&self) -> bool {

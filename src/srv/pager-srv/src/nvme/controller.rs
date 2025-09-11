@@ -3,6 +3,7 @@ use std::{
     mem::size_of,
     sync::{Arc, OnceLock},
     thread::JoinHandle,
+    time::Instant,
 };
 
 use async_io::Async;
@@ -607,6 +608,7 @@ impl NvmeController {
         out_buffer: &mut [u8],
         offset: usize,
     ) -> std::io::Result<()> {
+        let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
         let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
@@ -621,17 +623,8 @@ impl NvmeController {
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
         let cc = inflight.wait()?;
+        tracing::trace!("blocking read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
@@ -727,6 +720,7 @@ impl NvmeController {
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
         // TODO: get from controller
+        let start = Instant::now();
         let count = phys.len().min(128);
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
@@ -753,6 +747,7 @@ impl NvmeController {
         };
         */
         let cc = inflight.wait()?;
+        tracing::trace!("seq read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
             tracing::warn!("got nvme error: {:?}", cc);

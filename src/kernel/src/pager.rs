@@ -29,7 +29,7 @@ pub use queues::init_pager_queue;
 pub use request::Request;
 
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
-pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 8;
+pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 16;
 
 static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
 
@@ -172,7 +172,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         return false;
     }
 
-    if needed_additional > 0 && !low_mem {
+    if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
