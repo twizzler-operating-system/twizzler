@@ -265,7 +265,7 @@ impl Request {
     }
 
     pub fn signal(&mut self) {
-        log::trace!(
+        log::info!(
             "request {} ({:?}) took {}us",
             self.id,
             self.reqkind,

@@ -283,7 +283,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     remove_from_requeue(&thread);
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let done = Instant::now();
-    log::info!(
+    log::trace!(
         "{}: ts-optimized-sleep: {:7?} {:7?} {:7?}",
         current_thread_ref().unwrap().id(),
         prep_done - start,
@@ -299,7 +299,7 @@ pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
     let count = wakeup(&op)?;
     requeue_all();
     let done = Instant::now();
-    log::info!(
+    log::trace!(
         "{}: ts-optimized-wake {}: {:7?}",
         current_thread_ref().unwrap().id(),
         count,
@@ -321,7 +321,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     if ops.len() == 1 && timeout.is_none() {
         match &mut ops[0] {
             ThreadSync::Sleep(thread_sync_sleep, res) => {
-                log::info!(
+                log::trace!(
                     "{}: optimized sleep {:?}",
                     current_thread_ref().unwrap().id(),
                     thread_sync_sleep
@@ -331,7 +331,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
                 return did_sleep.map(|x| if x { 1 } else { 0 });
             }
             ThreadSync::Wake(thread_sync_wake, res) => {
-                log::info!(
+                log::trace!(
                     "{}: optimized wake {:?}",
                     current_thread_ref().unwrap().id(),
                     thread_sync_wake

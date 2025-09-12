@@ -162,7 +162,6 @@ fn pager_compl_handle_page_data(
     phys_range: PhysRange,
     flags: PageFlags,
 ) {
-    let start = Instant::now();
     let pcount = phys_range.page_count();
     log::trace!(
         "got : {} {:?} {:?} ({} pages)",
@@ -186,12 +185,6 @@ fn pager_compl_handle_page_data(
             super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
         }
     }
-    let done_mem = Instant::now();
-    let mut done_lock = Instant::zero();
-    let mut done_calc = Instant::zero();
-    let mut done_new = Instant::zero();
-    let mut done_add = Instant::zero();
-    let mut done_drop = Instant::zero();
 
     let mut count = 0;
     let max_obj = obj_range.page_count();
@@ -204,7 +197,6 @@ fn pager_compl_handle_page_data(
         let pa = PhysAddr::new(physpage_nr * PageNumber::PAGE_SIZE as u64).unwrap();
 
         let thiscount = (max_obj - count).min(max_phys - count);
-        done_calc = Instant::now();
         let page = if flags.contains(PageFlags::WIRED) {
             log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
             Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
@@ -221,7 +213,6 @@ fn pager_compl_handle_page_data(
         };
 
         let page = PageRef::new(Arc::new(page), 0, thiscount);
-        done_new = Instant::now();
         log::trace!(
             "Adding page {}: {} {} {:?} {:?}",
             obj.id(),
@@ -231,31 +222,14 @@ fn pager_compl_handle_page_data(
             flags
         );
         let mut object_tree = obj.lock_page_tree();
-        done_lock = Instant::now();
         object_tree.add_page(pn, page, None);
-        let done_add = Instant::now();
         drop(object_tree);
-        let done_drop = Instant::now();
         count += thiscount;
     }
 
-    //inflight_mgr()
-    //.lock()
-    //.pages_ready(objid, obj_range.pages().map(|x| x as usize));
     inflight_mgr()
         .lock()
         .pages_ready(obj.id(), obj_range.pages().next().map(|x| x as usize));
-    let done_signal = Instant::now();
-    log::info!(
-        "::: {}ns {}ns {}ns {}ns {}ns {}ns {}ns",
-        (done_mem - start).as_nanos(),
-        (done_calc - done_mem).as_nanos(),
-        (done_new - done_calc).as_nanos(),
-        (done_lock - done_new).as_nanos(),
-        (done_add - done_lock).as_nanos(),
-        (done_drop - done_add).as_nanos(),
-        (done_signal - done_drop).as_nanos(),
-    );
 }
 
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
@@ -288,11 +262,6 @@ pub(super) fn pager_compl_handler_main() {
         last_ticks = current_ticks;
         current_ticks = crate::time::bench_clock().map(|bc| bc.read());
         let completion = sender.queue.recv_completion();
-        log::info!(
-            "{}: got completion {:?}",
-            current_thread_ref().unwrap().id(),
-            completion
-        );
 
         count += 1;
 
@@ -337,7 +306,6 @@ pub(super) fn pager_compl_handler_main() {
             }
             _ => {}
         };
-        log::info!("done handling completion");
 
         match request.req.cmd() {
             KernelCommand::ObjectEvict(info) => {
@@ -352,16 +320,13 @@ pub(super) fn pager_compl_handler_main() {
         }
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
-            log::info!("removing completion");
             sender.idmap.lock().remove(&completion.0);
             sender.ids.release_simple(SimpleId::from(completion.0));
-            log::info!("done removing completion");
         }
     }
 }
 
 pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>) {
-    log::info!("submitting pager request: {:?}", req);
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
     let old = sender

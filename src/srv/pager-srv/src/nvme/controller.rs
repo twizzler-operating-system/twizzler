@@ -31,7 +31,7 @@ use twizzler_driver::{
 use volatile::map_field;
 
 use super::{
-    dma::NvmeDmaRegion,
+    dma::{CachedDmaPool, NvmeDmaRegion},
     requester::{InflightRequest, NvmeRequester},
 };
 use crate::nvme::dma::NvmeDmaSliceRegion;
@@ -40,7 +40,7 @@ struct NvmeControllerInner {
     data_requester: NvmeRequester,
     admin_requester: NvmeRequester,
     device: Device,
-    dma_pool: DmaPool,
+    dma_pool: Arc<CachedDmaPool>,
 }
 
 pub struct NvmeController {
@@ -54,7 +54,8 @@ const ADMIN_QUEUE_LEN: u16 = 32;
 const DATA_QUEUE_ID: u16 = 1;
 const DATA_QUEUE_LEN: u16 = 32;
 
-fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result<NvmeController> {
+fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<NvmeController> {
+    let dma_pool = Arc::new(CachedDmaPool::new(dma_pool));
     let bar = device.get_mmio(1).unwrap();
     let mut reg = unsafe {
         bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
@@ -77,12 +78,14 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
     map_field!(reg.admin_queue_attr).write(aqa);
 
     let saq = dma_pool
+        .dma
         .allocate_array(
             ADMIN_QUEUE_LEN as usize,
             nvme::ds::queue::subentry::CommonCommand::default(),
         )
         .unwrap();
     let caq = dma_pool
+        .dma
         .allocate_array(
             ADMIN_QUEUE_LEN as usize,
             nvme::ds::queue::comentry::CommonCompletion::default(),
@@ -170,7 +173,7 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
 
     let req = NvmeController::create_queue_pair(
         &mut admin_requester,
-        &mut dma_pool,
+        &dma_pool,
         &mut device,
         cqid,
         sqid,
@@ -230,7 +233,7 @@ impl NvmeController {
 
     fn create_queue_pair(
         admin_requester: &mut NvmeRequester,
-        dma_pool: &mut DmaPool,
+        dma_pool: &Arc<CachedDmaPool>,
         device: &mut Device,
         cqid: QueueId,
         sqid: QueueId,
@@ -238,6 +241,7 @@ impl NvmeController {
         queue_len: usize,
     ) -> std::io::Result<NvmeRequester> {
         let saq = dma_pool
+            .dma
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::subentry::CommonCommand::default(),
@@ -245,6 +249,7 @@ impl NvmeController {
             .unwrap();
 
         let caq = dma_pool
+            .dma
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::comentry::CommonCompletion::default(),
@@ -373,6 +378,7 @@ impl NvmeController {
         let ident = self
             .inner
             .dma_pool
+            .dma
             .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
             .unwrap();
         let mut ident = NvmeDmaRegion::new(ident);
@@ -396,7 +402,12 @@ impl NvmeController {
     pub fn send_list_namespaces(
         &self,
     ) -> Option<(InflightRequest<'_>, NvmeDmaRegion<[u8; DMA_PAGE_SIZE]>)> {
-        let nslist = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let nslist = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
         let mut nslist = NvmeDmaRegion::new(nslist);
         let nslist_cmd = nvme::admin::Identify::new(
             CommandId::new(),
@@ -424,6 +435,7 @@ impl NvmeController {
         let ident = self
             .inner
             .dma_pool
+            .dma
             .allocate(nvme::ds::identify::namespace::IdentifyNamespaceDataStructure::default())
             .unwrap();
         let mut ident = NvmeDmaRegion::new(ident);
@@ -610,7 +622,12 @@ impl NvmeController {
     ) -> std::io::Result<()> {
         let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
             .get_dptr(
@@ -642,7 +659,12 @@ impl NvmeController {
         offset: usize,
     ) -> std::io::Result<()> {
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let mut buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let mut buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
         buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
@@ -656,16 +678,6 @@ impl NvmeController {
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
         let cc = inflight.wait()?;
 
         if cc.status().is_error() {
@@ -736,16 +748,7 @@ impl NvmeController {
         let inflight = self
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
+
         let cc = inflight.wait()?;
         tracing::trace!("seq read took {}us", start.elapsed().as_micros());
 
@@ -765,6 +768,7 @@ impl NvmeController {
         let mut buffer = self
             .inner
             .dma_pool
+            .dma
             .allocate_array(NR * DMA_PAGE_SIZE, 0u8)
             .unwrap();
         buffer.with_mut(0..buffer.len(), |data| data.copy_from_slice(in_buffer));

@@ -1,6 +1,5 @@
 use std::sync::Mutex;
 
-use async_io::block_on;
 use object_store::ExternalFile;
 use secgate::{
     secure_gate,

@@ -1,9 +1,9 @@
 use std::{
     future::Future,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Mutex},
     task::Waker,
     thread::{available_parallelism, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use async_executor::LocalExecutor;
@@ -80,7 +80,7 @@ pub struct Workers {
 impl Workers {
     fn new() -> Self {
         let mut threads = Vec::new();
-        for i in 0..available_parallelism().unwrap().get() {
+        for _ in 0..available_parallelism().unwrap().get() {
             threads.push(WorkerThread::new());
         }
         Self { threads }

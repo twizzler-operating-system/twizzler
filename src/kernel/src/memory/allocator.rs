@@ -158,15 +158,12 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
             }
         };
         let end = Instant::now();
-        if current_thread_ref().is_some_and(|ct| ct.id() > 10) {
+        if false && current_thread_ref().is_some_and(|ct| ct.id() > 10) {
             emerglogln!(
                 "{}: alloc: {}ns",
                 current_thread_ref().unwrap().id(),
                 (end - start).as_nanos()
             );
-            if current_thread_ref().unwrap().id() == 17 {
-                crate::panic::backtrace(false, None);
-            }
         }
         trace_kalloc(layout, end - start, false);
         ret

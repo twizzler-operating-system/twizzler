@@ -3,7 +3,6 @@ use std::{
     io::{Read, Result, Seek, Write},
     mem::MaybeUninit,
     ptr::null_mut,
-    sync::{Condvar, Mutex},
     u64,
 };
 

@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use nvme::{
     ds::cmd::PrpListOrBuffer,
     hosted::memory::{PhysicalPageCollection, PrpMode},
@@ -6,10 +8,10 @@ use twizzler_driver::dma::{
     DeviceSync, DmaPool, DmaRegion, DmaSliceRegion, PhysInfo, DMA_PAGE_SIZE,
 };
 
-#[derive(Debug)]
 pub struct PrpMgr {
     _list: Vec<DmaSliceRegion<u64>>,
     mode: PrpMode,
+    dma: Arc<CachedDmaPool>,
     buffer: bool,
     embed: [u64; 2],
 }
@@ -17,6 +19,33 @@ pub struct PrpMgr {
 pub struct NvmeDmaRegion<T: DeviceSync> {
     reg: DmaRegion<T>,
     prp: Option<PrpMgr>,
+}
+
+pub struct CachedDmaPool {
+    pub dma: DmaPool,
+    reuse: Mutex<Vec<DmaSliceRegion<u64>>>,
+}
+
+impl CachedDmaPool {
+    pub fn new(dma: DmaPool) -> Self {
+        Self {
+            dma,
+            reuse: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn get(&self) -> Option<DmaSliceRegion<u64>> {
+        if let Ok(mut reuse) = self.reuse.try_lock() {
+            if !reuse.is_empty() {
+                return Some(reuse.pop().unwrap());
+            }
+        }
+        self.dma.allocate_array(DMA_PAGE_SIZE / 8, 0u64).ok()
+    }
+
+    fn put(&self, region: DmaSliceRegion<u64>) {
+        self.reuse.lock().unwrap().push(region);
+    }
 }
 
 impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
@@ -36,7 +65,7 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
     }
 }
 
-pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) -> PrpMgr {
+pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &Arc<CachedDmaPool>, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
     let mut pin_iter = pin.into_iter();
@@ -45,11 +74,13 @@ pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) ->
         1 => PrpMgr {
             _list: vec![],
             embed: [pin_iter.next().unwrap().into(), 0],
+            dma: dma.clone(),
             mode,
             buffer: true,
         },
         2 if mode == PrpMode::Double => PrpMgr {
             _list: vec![],
+            dma: dma.clone(),
             embed: [
                 pin_iter.next().unwrap().into(),
                 pin_iter.next().unwrap().into(),
@@ -58,7 +89,7 @@ pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) ->
             buffer: false,
         },
         _ => {
-            let mut first_prp_page = dma.allocate_array(entries_per_page, 0u64).unwrap();
+            let mut first_prp_page = dma.get().unwrap();
             let start = first_prp_page
                 .pin()
                 .unwrap()
@@ -73,7 +104,7 @@ pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) ->
                 let index = num % entries_per_page;
                 if (num + 1) % entries_per_page == 0 && num != pin_len - 1 {
                     // Last entry with more to record, chain.
-                    let mut next_prp_page = dma.allocate_array(entries_per_page, 0u64).unwrap();
+                    let mut next_prp_page = dma.get().unwrap();
                     let pin = next_prp_page.pin().unwrap();
                     assert_eq!(pin.len(), 1);
                     let phys = pin.into_iter().next().unwrap().addr();
@@ -94,14 +125,22 @@ pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &DmaPool, mode: PrpMode) ->
             }
             PrpMgr {
                 _list: list,
+                dma: dma.clone(),
                 mode,
                 embed,
                 buffer: false,
             }
         }
     };
-    //tracing::info!("got: {:?}", prp);
     prp
+}
+
+impl Drop for PrpMgr {
+    fn drop(&mut self) {
+        for d in self._list.drain(..) {
+            self.dma.put(d);
+        }
+    }
 }
 
 impl PrpMgr {
@@ -142,7 +181,7 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaRegion<T> {
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
-    type DmaType = &'a DmaPool;
+    type DmaType = &'a Arc<CachedDmaPool>;
 }
 
 pub struct NvmeDmaSliceRegion<T: DeviceSync> {
@@ -184,5 +223,5 @@ impl<'a, T: DeviceSync> PhysicalPageCollection for &'a mut NvmeDmaSliceRegion<T>
         Some(self.prp.as_ref().unwrap().prp_list_or_buffer())
     }
 
-    type DmaType = &'a DmaPool;
+    type DmaType = &'a Arc<CachedDmaPool>;
 }
