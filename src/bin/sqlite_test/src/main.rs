@@ -335,6 +335,40 @@ fn query_persistent_vtab(conn: &Connection) -> Result<std::time::Duration> {
     Ok(duration)
 }
 
+fn benchmark_file_persistence() -> Result<(std::time::Duration)> {
+    println!("Benchmarking SQLite persistent storage for opening and querying existing data...");
+    let start = Instant::now();
+    let conn = Connection::open("benchmark_test.db")?;
+
+    let query_duration = query_file_sqlite(&conn)?;
+    let duration = start.elapsed();
+    println!("Reopened and queried existing SQLite file database in {:?}", duration);
+    Ok((duration))
+}
+
+fn benchmark_persistent_vtab_persistence() -> Result<(std::time::Duration)> {
+    println!("Benchmarking Twizzler persistent virtual table for opening and querying existing data...");
+    let start = Instant::now();
+    let conn = Connection::open_in_memory()?;
+    conn.setup_twz_vtab();
+    
+    // Recreate the persistent virtual table
+    conn.execute(
+        "CREATE VIRTUAL TABLE test_table USING twz_persistent_vtab(
+            id INTEGER,
+            name TEXT,
+            value INTEGER,
+            data BLOB
+        )",
+        [],
+    )?;
+
+    let query_duration = query_persistent_vtab(&conn)?;
+    let duration = start.elapsed();
+    println!("Reopened and queried existing Twizzler persistent virtual table in {:?}", duration);
+    Ok((duration))
+}
+
 fn run_bench() -> Result<()> {
     println!("\n=== Batch Insert Performance Comparison ===");
     
@@ -377,14 +411,26 @@ fn run_bench() -> Result<()> {
     println!("Transient VTab:    {:?}", transient_query_duration);
     println!("Persistent VTab:   {:?}", persistent_query_duration);
 
+    // // Benchmark reopening and querying existing data
+    // drop(file_conn);
+    // drop(persistent_conn);
+
+    // // let file_persistence_duration = benchmark_file_persistence()?;
+    // let persistent_vtab_persistence_duration = benchmark_persistent_vtab_persistence()?;
+
+    // println!("\n=== Persistence Performance Summary ===");
+    // // println!("Reopen & Query File SQLite:       {:?}", file_persistence_duration);
+    // println!("Reopen & Query Persistent VTab:   {:?}", persistent_vtab_persistence_duration);
+    
     Ok(())
 }
 
 fn cleanup() -> Result<()> {
     // Clean up test file
-    let _ = std::fs::remove_file("benchmark_test.db");
+    // let _ = std::fs::remove_file("benchmark_test.db");
 
-    // let _ = namer.remove(persistent_vtab_path);
+    // let mut nh = naming::dynamic_naming_factory().unwrap();
+    // let _ = nh.remove("/data/vtab-test_table");
 
     Ok(())
 }
