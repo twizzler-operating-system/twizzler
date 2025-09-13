@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::{ObjID, ObjectHandle};
@@ -100,7 +100,12 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![PagedPhysMem::new(p.1)]))
+                .map(|p| {
+                    (
+                        p.0,
+                        mayheap::Vec::from_slice(&[PagedPhysMem::new(p.1)]).unwrap(),
+                    )
+                })
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -113,11 +118,11 @@ impl PerObject {
                         Err((x, y))
                     }
                 })
-                .collect::<Vec<_>>();
+                .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
             tracing::debug!("drained {:?}", pages);
             pages
         };
-        let reqs = pages
+        let mut reqs = pages
             .into_iter()
             .map(|p| {
                 let mut start_page = p.0.pages().next().unwrap();
@@ -128,8 +133,8 @@ impl PerObject {
                 assert_eq!(nr_pages, p.0.pages().count());
                 PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
-            .collect_vec();
-        let count = match page_out_many(ctx, self.id, reqs).await {
+            .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
             Err(e) => {
                 let mut inner = self.inner.1.lock().await;
                 inner.syncing = false;
@@ -457,7 +462,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
         _partial: bool,
-    ) -> Result<Vec<PagedPhysMem>> {
+    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(4096 * 128);
         tracing::trace!(
@@ -468,15 +473,15 @@ impl PagerData {
         );
 
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = obj_range.pages().count().min(max_pages).max(1);
-        let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
-        let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
+        let nr_pages = obj_range.page_count().min(max_pages).max(1);
+        let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
+        let count = page_in_many(ctx, id, &mut reqs).await?;
         if count == 0 {
             // TODO: free pages in incomplete requests.
             todo!();
         }
 
-        Ok(reqs.pop().unwrap().into_list())
+        Ok(reqs.into_iter().next().unwrap().into_list())
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
@@ -486,7 +491,7 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<Vec<PagedPhysMem>> {
+    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
         // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self

@@ -72,7 +72,7 @@ async fn handle_page_data_request_task(
         COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
-    let total = req_range.pages().count() as u64;
+    let total = req_range.page_count() as u64;
     let mut count = 0;
     while count < total {
         tracing::trace!(
@@ -107,39 +107,29 @@ async fn handle_page_data_request_task(
         // try to compress page ranges
         let runs = crate::helpers::consecutive_slices(pages.as_slice());
         let mut acc = 0;
-        let comps = runs
-            .map(|run| {
-                let start = run[0];
-                let last = run.last().unwrap();
-                let flags = if start.is_wired() {
-                    PageFlags::WIRED
-                } else {
-                    PageFlags::empty()
-                };
-                let phys_range = PhysRange {
-                    start: start.range.start,
-                    end: last.range.end,
-                };
+        for comp in runs.map(|run| {
+            let start = run[0];
+            let last = run.last().unwrap();
+            let flags = if start.is_wired() {
+                PageFlags::WIRED
+            } else {
+                PageFlags::empty()
+            };
+            let phys_range = PhysRange {
+                start: start.range.start,
+                end: last.range.end,
+            };
 
-                let start = req_range.start + (count + acc as u64) * PAGE;
-                let range = ObjectRange::new(start, start + phys_range.len() as u64);
+            let start = req_range.start + (count + acc as u64) * PAGE;
+            let range = ObjectRange::new(start, start + phys_range.len() as u64);
 
-                acc += phys_range.pages().count();
-                CompletionToKernel::new(
-                    KernelCompletionData::PageDataCompletion(id, range, phys_range, flags),
-                    KernelCompletionFlags::empty(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        tracing::trace!(
-            "sending {} kernel notifs for {} ({} pages)",
-            comps.len(),
-            id,
-            thiscount
-        );
-        for comp in comps.iter() {
-            ctx.notify_kernel(qid, *comp);
+            acc += phys_range.page_count();
+            CompletionToKernel::new(
+                KernelCompletionData::PageDataCompletion(id, range, phys_range, flags),
+                KernelCompletionFlags::empty(),
+            )
+        }) {
+            ctx.notify_kernel(qid, comp);
         }
         count += thiscount;
     }

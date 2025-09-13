@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use async_io::block_on;
-use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, PAGE_SIZE};
+use object_store::{
+    DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN, PAGE_SIZE,
+};
 use twizzler::{
     error::{NamingError, ResourceError},
     Result,
@@ -129,7 +131,7 @@ impl PagedDevice for VirtioMem {
     async fn phys_addrs(
         &self,
         start: DevicePage,
-        phys_list: &mut Vec<PagedPhysMem>,
+        phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
     ) -> Result<usize> {
         // TODO: bounds check
         let alloc_page = || {

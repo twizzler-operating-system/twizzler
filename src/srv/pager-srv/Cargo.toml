@@ -24,6 +24,7 @@ stable-vec = "*"
 rand = "*"
 heapless = "*"
 async-channel = "*"
+mayheap = "*"
 
 async-trait = "0.1.66"
 volatile = "0.6"

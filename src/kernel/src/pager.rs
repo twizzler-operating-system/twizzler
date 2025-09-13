@@ -240,7 +240,8 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
         }
     } else {
         count_to_end.min(1024)
-    };
+    }
+    .min(1);
     log::trace!(
         "get page: {} {:?} {}",
         pn,

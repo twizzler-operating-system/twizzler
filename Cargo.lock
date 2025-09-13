@@ -4225,6 +4225,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mayheap"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acbc2f58104ec9b149972c3b4108ece000cdad4f6df7c2e691fea572aadeba62"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4721,6 +4730,7 @@ dependencies = [
  "intervaltree",
  "lru 0.13.0",
  "lwext4-rs",
+ "mayheap",
  "obliviate-core",
  "rand 0.8.5",
  "tracing",
@@ -4991,8 +5001,9 @@ dependencies = [
  "colored 3.0.0",
  "devmgr",
  "futures",
- "heapless 0.8.0",
+ "heapless 0.9.1",
  "itertools 0.14.0",
+ "mayheap",
  "miette",
  "nvme",
  "object-store",

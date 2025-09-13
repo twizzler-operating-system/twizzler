@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_io::block_on;
-use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo};
+use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN};
 use twizzler::Result;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
@@ -89,7 +89,7 @@ impl PagedDevice for Disk {
     async fn phys_addrs(
         &self,
         start: DevicePage,
-        phys_list: &mut Vec<PagedPhysMem>,
+        phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
     ) -> Result<usize> {
         let ctx = PAGER_CTX.get().unwrap();
         let page = match ctx.data.try_alloc_page() {
@@ -107,7 +107,7 @@ impl PagedDevice for Disk {
         if start.as_hole().is_some() {
             mem.set_completed();
         }
-        phys_list.push(mem);
+        phys_list.push(mem).unwrap();
         Ok(1)
     }
 }
