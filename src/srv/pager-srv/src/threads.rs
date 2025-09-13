@@ -30,7 +30,7 @@ impl WorkItem {
 }
 
 pub struct WorkerThread {
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
     pending: async_channel::Sender<WorkItem>,
 }
 
@@ -41,7 +41,7 @@ impl WorkerThread {
     fn new() -> Self {
         let (send, recv) = async_channel::bounded::<WorkItem>(8);
         Self {
-            handle: std::thread::spawn(move || loop {
+            _handle: std::thread::spawn(move || loop {
                 let wi = block_on(LOCAL_EXEC.run(recv.recv())).unwrap();
                 tracing::trace!(
                     "{}: starting handling after {}us",
@@ -88,8 +88,8 @@ impl Workers {
 }
 
 pub struct PagerThreadPool {
-    workers: Arc<Workers>,
-    kq_handler: JoinHandle<()>,
+    _workers: Arc<Workers>,
+    _kq_handler: JoinHandle<()>,
 }
 
 impl PagerThreadPool {
@@ -98,8 +98,8 @@ impl PagerThreadPool {
     ) -> Self {
         let pool = Arc::new(Workers::new());
         PagerThreadPool {
-            workers: pool.clone(),
-            kq_handler: std::thread::spawn(move || kq_handler_main(pool, queue)),
+            _workers: pool.clone(),
+            _kq_handler: std::thread::spawn(move || kq_handler_main(pool, queue)),
         }
     }
 }

@@ -13,11 +13,13 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{ObjectError, RawTwzError, TwzError};
 
-use super::{inflight_mgr, provide_pager_memory, DEFAULT_PAGER_OUTSTANDING_FRAMES};
+use super::{
+    inflight::NR_REQUESTS, inflight_mgr, provide_pager_memory, request::ReqKind,
+    DEFAULT_PAGER_OUTSTANDING_FRAMES,
+};
 use crate::{
     arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
-    instant::Instant,
     is_test_mode,
     memory::{
         context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
@@ -35,7 +37,6 @@ use crate::{
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::{
-        current_thread_ref,
         entry::{run_closure_in_new_thread, start_new_kernel},
         priority::Priority,
     },
@@ -45,12 +46,13 @@ use crate::{
 struct SentRequestInfo {
     req: RequestFromKernel,
     obj: Option<ObjectRef>,
+    reqkind: ReqKind,
 }
 
 struct RequestSender {
     ids: IdCounter,
     queue: QueueObject<RequestFromKernel, CompletionToKernel>,
-    idmap: Spinlock<heapless::index_map::FnvIndexMap<u32, SentRequestInfo, 1024>>,
+    idmap: Spinlock<heapless::index_map::FnvIndexMap<u32, SentRequestInfo, NR_REQUESTS>>,
 }
 
 static SENDER: Once<RequestSender> = Once::new();
@@ -157,15 +159,15 @@ pub(super) fn pager_request_handler_main() {
 }
 
 fn pager_compl_handle_page_data(
-    obj: &ObjectRef,
+    request: &SentRequestInfo,
     obj_range: ObjectRange,
     phys_range: PhysRange,
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::trace!(
+    log::info!(
         "got : {} {:?} {:?} ({} pages)",
-        obj.id(),
+        request.obj.as_ref().unwrap().id(),
         obj_range,
         phys_range,
         pcount
@@ -215,36 +217,34 @@ fn pager_compl_handle_page_data(
         let page = PageRef::new(Arc::new(page), 0, thiscount);
         log::trace!(
             "Adding page {}: {} {} {:?} {:?}",
-            obj.id(),
+            request.obj.as_ref().unwrap().id(),
             pn,
             thiscount,
             page.physical_address(),
             flags
         );
-        let mut object_tree = obj.lock_page_tree();
+        let mut object_tree = request.obj.as_ref().unwrap().lock_page_tree();
         object_tree.add_page(pn, page, None);
         drop(object_tree);
         count += thiscount;
     }
 
-    inflight_mgr()
-        .lock()
-        .pages_ready(obj.id(), obj_range.pages().next().map(|x| x as usize));
+    inflight_mgr().lock().request_ready(&request.reqkind);
 }
 
-fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo) {
+fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
     let obj = Object::new(id, info.lifetime, &[]);
     crate::obj::register_object(Arc::new(obj));
-    inflight_mgr().lock().cmd_ready(id, false);
+    inflight_mgr().lock().request_ready(rk);
 }
 
-fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) {
+fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqKind) {
     logln!("pager returned error: {} for {:?}", err, request);
     match err {
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
                 crate::obj::no_exist(obj_id);
-                inflight_mgr().lock().cmd_ready(obj_id, false);
+                inflight_mgr().lock().request_ready(rk);
             }
         }
         _ => {}
@@ -285,48 +285,36 @@ pub(super) fn pager_compl_handler_main() {
             logln!("warn -- received completion for unknown request");
             continue;
         };
+        log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
 
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
-                objid,
+                _,
                 obj_range,
                 phys_range,
                 flags,
-            ) => pager_compl_handle_page_data(
-                request.obj.as_ref().unwrap(),
-                obj_range,
-                phys_range,
-                flags,
-            ),
+            ) => pager_compl_handle_page_data(&request, obj_range, phys_range, flags),
             twizzler_abi::pager::KernelCompletionData::ObjectInfoCompletion(id, info) => {
-                pager_compl_handle_object_info(id, info)
+                pager_compl_handle_object_info(id, info, &request.reqkind)
             }
             twizzler_abi::pager::KernelCompletionData::Error(err) => {
-                pager_compl_handle_error(request.req, err.error())
+                pager_compl_handle_error(request.req, err.error(), &request.reqkind)
             }
             _ => {}
+            //twizzler_abi::pager::KernelCompletionData::Okay => {
+            //}
         };
 
-        match request.req.cmd() {
-            KernelCommand::ObjectEvict(info) => {
-                if matches!(
-                    completion.1.data(),
-                    twizzler_abi::pager::KernelCompletionData::Okay
-                ) {
-                    inflight_mgr().lock().cmd_ready(info.obj_id, true);
-                }
-            }
-            _ => {}
-        }
-
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
+            inflight_mgr().lock().request_ready(&request.reqkind);
+            inflight_mgr().lock().remove_request(&request.reqkind);
             sender.idmap.lock().remove(&completion.0);
             sender.ids.release_simple(SimpleId::from(completion.0));
         }
     }
 }
 
-pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>) {
+pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
     let old = sender
@@ -337,6 +325,7 @@ pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>) {
             SentRequestInfo {
                 req,
                 obj: obj.cloned(),
+                reqkind,
             },
         )
         .unwrap();
@@ -348,7 +337,7 @@ pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>) {
             req
         );
     }
-    SENDER.wait().queue.submit(req, id);
+    sender.queue.submit(req, id);
 }
 
 extern "C" fn pager_compl_handler_entry() {

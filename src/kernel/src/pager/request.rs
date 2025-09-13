@@ -1,5 +1,7 @@
-use alloc::{collections::btree_set::BTreeSet, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
+use intrusive_collections::{intrusive_adapter, KeyAdapter, LinkedList, RBTreeAtomicLink};
 use twizzler_abi::{
     object::ObjID,
     pager::{
@@ -10,18 +12,21 @@ use twizzler_abi::{
 };
 
 use crate::{
+    arch::PhysAddr,
+    condvar::CondVarLinkAdapter,
     instant::Instant,
     memory::context::virtmem::region::Shadow,
-    obj::{pages::PageRef, range::GetPageFlags, PageNumber},
+    obj::{range::GetPageFlags, ObjectRef, PageNumber},
     processor::sched::schedule_thread,
     random::getrandom,
+    spinlock::Spinlock,
     thread::{CriticalGuard, ThreadRef},
 };
 
 #[derive(Debug, Clone)]
 pub struct SyncRegionInfo {
     pub reqs: Arc<Vec<RequestFromKernel>>,
-    shadow: Arc<Shadow>,
+    shadow: Option<Arc<Shadow>>,
     pub id: ObjID,
     pub unique_id: ObjID,
     pub sync_info: SyncInfo,
@@ -72,43 +77,38 @@ impl ReqKind {
     }
 
     pub fn new_sync_region(
-        id: ObjID,
-        shadow: Shadow,
+        object: &ObjectRef,
+        shadow: Option<Shadow>,
         mut dirty_set: Vec<PageNumber>,
         sync_info: SyncInfo,
         version: u64,
     ) -> Self {
         dirty_set.sort();
 
-        let pages = shadow.with_page_tree(|page_tree| {
-            dirty_set
-                .iter()
-                .filter_map(|dirty_page| {
-                    match page_tree.try_get_page(*dirty_page, GetPageFlags::empty()) {
-                        crate::obj::range::PageStatus::Ready(page_ref, _) => {
-                            Some((*dirty_page, page_ref))
-                        }
-                        _ => {
-                            logln!("warn -- no page found for page in dirty set");
-                            None
-                        }
+        let mut page_tree = object.lock_page_tree();
+        let pages = dirty_set
+            .iter()
+            .filter_map(|dirty_page| {
+                match page_tree.try_get_page(*dirty_page, GetPageFlags::empty()) {
+                    crate::obj::range::PageStatus::Ready(page_ref, _) => {
+                        Some((*dirty_page, page_ref.physical_address()))
                     }
-                })
-                .collect::<Vec<_>>()
-        });
+                    _ => {
+                        logln!("warn -- no page found for page in dirty set");
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        drop(page_tree);
 
         fn consecutive_slices(
-            data: &[(PageNumber, PageRef)],
-        ) -> impl Iterator<Item = &[(PageNumber, PageRef)]> {
+            data: &[(PageNumber, PhysAddr)],
+        ) -> impl Iterator<Item = &[(PageNumber, PhysAddr)]> {
             let mut slice_start = 0;
             (1..=data.len()).flat_map(move |i| {
                 if i == data.len()
-                    || data[i - 1]
-                        .1
-                        .physical_address()
-                        .offset(data[i - 1].1.nr_pages() * PageNumber::PAGE_SIZE)
-                        .unwrap()
-                        != data[i].1.physical_address()
+                    || data[i - 1].1.offset(PageNumber::PAGE_SIZE).unwrap() != data[i].1
                     || data[i - 1].0.next() != data[i].0.next()
                 {
                     let begin = slice_start;
@@ -126,20 +126,15 @@ impl ReqKind {
                 let is_last = i == pages.len() - 1;
                 let range = ObjectRange::new(
                     run[0].0.as_byte_offset() as u64,
-                    run.last()
-                        .unwrap()
-                        .0
-                        .offset(run.last().unwrap().1.nr_pages())
-                        .as_byte_offset() as u64,
+                    run.last().unwrap().0.offset(1).as_byte_offset() as u64,
                 );
 
                 let phys = PhysRange::new(
-                    run[0].1.physical_address().raw(),
+                    run[0].1.raw(),
                     run.last()
                         .unwrap()
                         .1
-                        .physical_address()
-                        .offset(run.last().unwrap().1.nr_pages() * PageNumber::PAGE_SIZE)
+                        .offset(PageNumber::PAGE_SIZE)
                         .unwrap()
                         .raw(),
                 );
@@ -150,23 +145,27 @@ impl ReqKind {
                 };
                 log::debug!(
                     "sync object {:?} pages {:?} => {:?} (is last: {})",
-                    id,
+                    object.id(),
                     range,
                     phys,
                     is_last
                 );
                 RequestFromKernel::new(KernelCommand::ObjectEvict(ObjectEvictInfo::new(
-                    id, range, phys, version, flags,
+                    object.id(),
+                    range,
+                    phys,
+                    version,
+                    flags,
                 )))
             });
 
         let mut unique = [0u8; 16];
         getrandom(&mut unique, false);
-        let unique_id = u128::from_ne_bytes(unique) ^ id.raw();
+        let unique_id = u128::from_ne_bytes(unique) ^ object.id().raw();
         ReqKind::SyncRegion(SyncRegionInfo {
             reqs: Arc::new(runs.collect()),
-            shadow: Arc::new(shadow),
-            id,
+            shadow: shadow.map(Arc::new),
+            id: object.id(),
             unique_id: unique_id.into(),
             sync_info,
         })
@@ -184,7 +183,7 @@ impl ReqKind {
         ReqKind::Pages(range)
     }
 
-    pub fn pages(&self) -> impl Iterator<Item = usize> {
+    pub fn all_pages(&self) -> impl Iterator<Item = usize> {
         match self {
             ReqKind::PageData(_, start, len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
                 (*start..(*start + *len)).into_iter()
@@ -196,7 +195,6 @@ impl ReqKind {
     pub fn required_pages(&self) -> impl Iterator<Item = usize> {
         match self {
             ReqKind::PageData(_, start, _len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
-                //(*start..(*start + *len)).into_iter()
                 (*start..(*start + 1)).into_iter()
             }
             _ => (0..0).into_iter(),
@@ -230,29 +228,34 @@ impl ReqKind {
     }
 }
 
+intrusive_adapter!(pub RequestMapAdapter = &'static Request : Request { link: intrusive_collections::rbtree::AtomicLink });
+
 pub struct Request {
-    id: usize,
+    pub id: usize,
     reqkind: ReqKind,
-    remaining_pages: BTreeSet<usize>,
-    cmd_ready: bool,
-    waiting_threads: Vec<ThreadRef>,
+    waiters: Spinlock<LinkedList<CondVarLinkAdapter>>,
+    done: AtomicBool,
     start_time: Instant,
+    link: RBTreeAtomicLink,
+}
+
+impl<'a> KeyAdapter<'a> for RequestMapAdapter {
+    type Key = &'a ReqKind;
+    fn get_key(&self, s: &'a Request) -> &'a ReqKind {
+        &s.reqkind
+    }
 }
 
 impl Request {
     pub fn new(id: usize, reqkind: ReqKind) -> Self {
         let start_time = Instant::now();
-        let mut remaining_pages = BTreeSet::new();
-        for page in reqkind.required_pages() {
-            remaining_pages.insert(page);
-        }
         Self {
             id,
-            cmd_ready: !reqkind.needs_cmd(),
             reqkind,
-            waiting_threads: Vec::new(),
-            remaining_pages,
+            waiters: Spinlock::new(LinkedList::new(CondVarLinkAdapter::NEW)),
+            done: AtomicBool::new(false),
             start_time,
+            link: RBTreeAtomicLink::new(),
         }
     }
 
@@ -261,35 +264,34 @@ impl Request {
     }
 
     pub fn done(&self) -> bool {
-        self.cmd_ready && self.remaining_pages.is_empty()
+        self.done.load(Ordering::Acquire)
     }
 
-    pub fn signal(&mut self) {
-        log::info!(
-            "request {} ({:?}) took {}us",
-            self.id,
-            self.reqkind,
-            (Instant::now() - self.start_time).as_micros()
-        );
-        for thread in self.waiting_threads.drain(..) {
+    pub fn mark_done(&self) {
+        if !self.done() {
+            log::info!(
+                "request {} ({:?}) took {}us",
+                self.id,
+                self.reqkind(),
+                (Instant::now() - self.start_time).as_micros()
+            );
+        }
+        self.done.store(true, Ordering::Release);
+    }
+
+    pub fn signal(&self) {
+        let mut waiters = self.waiters.lock();
+        while let Some(thread) = waiters.pop_front() {
             schedule_thread(thread);
         }
     }
 
-    pub fn cmd_ready(&mut self) {
-        self.cmd_ready = true;
-    }
-
-    pub fn page_ready(&mut self, page: usize) {
-        self.remaining_pages.remove(&page);
-    }
-
-    pub fn setup_wait<'a>(&mut self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {
+    pub fn setup_wait<'a>(&self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {
         if self.done() {
             return None;
         }
         let critical = thread.enter_critical();
-        self.waiting_threads.push(thread.clone());
+        self.waiters.lock().push_back(thread.clone());
         Some(critical)
     }
 }

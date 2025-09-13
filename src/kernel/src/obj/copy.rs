@@ -635,7 +635,11 @@ mod test {
                 PageStatus::NoPage => tree
                     .add_page(
                         pn,
-                        PageRef::new(Arc::new(Page::new(allocator.try_allocate().unwrap())), 0, 1),
+                        PageRef::new(
+                            Arc::new(Page::new(allocator.try_allocate().unwrap(), 1)),
+                            0,
+                            1,
+                        ),
                         Some(&mut allocator),
                     )
                     .unwrap(),

@@ -165,7 +165,7 @@ impl Page {
         match self.frame {
             FrameOrWired::Frame(frame, count) => match other.frame {
                 FrameOrWired::Frame(otherframe, othercount) => {
-                    assert_eq!(count, othercount);
+                    assert!(count <= othercount);
                     assert_eq!(count, 1);
                     frame.copy_contents_from(otherframe, doff, soff, len)
                 }

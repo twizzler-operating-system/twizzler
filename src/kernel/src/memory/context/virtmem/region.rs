@@ -288,7 +288,7 @@ impl MapRegion {
             check_settings(addr, &settings, cause)?;
             if settings.perms().contains(Protections::WRITE) {
                 if self.object().use_pager() {
-                    log::debug!(
+                    log::trace!(
                         "adding persist dirty page {} to region {:?}, obj {:?}",
                         page_number,
                         self.range,
@@ -320,7 +320,10 @@ impl MapRegion {
 
             let aligned = (phys_page_aligned - phys_large_aligned)
                 == (addr_page_aligned - addr_large_aligned);
-            if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+            if self.flags.contains(MapFlags::NO_NULLPAGE)
+                && !page_number.is_meta()
+                && large_diff > 0
+            {
                 large_diff -= 1;
             }
             if page.nr_pages() > 1 {

@@ -21,7 +21,7 @@ struct SleepEntry {
 impl SleepEntry {
     pub fn new(thread: ThreadRef) -> Self {
         let mut threads = FnvIndexMap::new();
-        threads.insert(thread.id(), thread);
+        let _ = threads.insert(thread.id(), thread);
         Self { threads }
     }
 
@@ -58,7 +58,7 @@ impl SleepEntry {
 impl Drop for SleepEntry {
     fn drop(&mut self) {
         for idx in 0..self.threads.capacity() {
-            if let Some((id, thread)) = self.threads.get_index(idx) {
+            if let Some((_, thread)) = self.threads.get_index(idx) {
                 if thread.reset_sync_sleep() {
                     add_to_requeue(thread.clone());
                 }

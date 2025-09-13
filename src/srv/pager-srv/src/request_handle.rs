@@ -8,10 +8,13 @@ use twizzler::{
     error::RawTwzError,
     object::{MetaFlags, MetaInfo, ObjID},
 };
-use twizzler_abi::pager::{
-    CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
-    ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PageFlags, PagerFlags, PhysRange,
-    RequestFromKernel,
+use twizzler_abi::{
+    object::MAX_SIZE,
+    pager::{
+        CompletionToKernel, KernelCommand, KernelCompletionData, KernelCompletionFlags,
+        ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PageFlags, PagerFlags,
+        PhysRange, RequestFromKernel,
+    },
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
@@ -32,6 +35,28 @@ async fn handle_page_data_request_task(
         req_range.start = PAGE;
     }
     let start_time = Instant::now();
+    let max_len = ctx
+        .paged_ostore(None)
+        .unwrap()
+        .len(id.raw())
+        .await
+        .unwrap_or(MAX_SIZE as u64)
+        .min(MAX_SIZE as u64);
+    if req_range.start >= MAX_SIZE as u64 {
+        let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
+        ctx.notify_kernel(qid, done);
+        return;
+    }
+    if req_range.end > MAX_SIZE as u64 {
+        req_range.end = MAX_SIZE as u64;
+    }
+    // TODO: need better logic to decide when we want to actually extend object size.
+    if req_range.start < max_len && req_range.end > max_len {
+        req_range.end = max_len.next_multiple_of(PAGE);
+    }
+    if req_range.start == max_len && req_range.end > max_len {
+        req_range.end = max_len.next_multiple_of(PAGE) + PAGE;
+    }
     if prefetch {
         tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
         if let Ok(len) = ctx.paged_ostore(None).unwrap().len(id.raw()).await {
@@ -165,6 +190,7 @@ async fn handle_sync_region(
     ctx: &'static PagerContext,
     info: ObjectEvictInfo,
 ) -> CompletionToKernel {
+    tracing::debug!("sync request: {:?}", info);
     if !info.flags.contains(ObjectEvictFlags::SYNC) {
         return CompletionToKernel::new(
             KernelCompletionData::Error(TwzError::NOT_SUPPORTED.into()),

@@ -143,7 +143,7 @@ struct PagerContext {
     data: PagerData,
     sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     kernel_notify: &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
-    pool: PagerThreadPool,
+    _pool: PagerThreadPool,
 
     store: OnceLock<Ext4Store<Disk>>,
 }
@@ -184,7 +184,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         sender: sq,
         kernel_notify: rq,
         store: OnceLock::new(),
-        pool: PagerThreadPool::new(rq),
+        _pool: PagerThreadPool::new(rq),
     });
     let ctx = PAGER_CTX.get().unwrap();
 
