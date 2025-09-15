@@ -344,7 +344,24 @@ impl Object {
 
 impl Drop for Object {
     fn drop(&mut self) {
-        //logln!("Dropping object {}", self.id);
+        /*
+        let pt = self.lock_page_tree();
+        let range = pt.range(PageNumber::base_page()..PageNumber::meta_page().next());
+        let mut private_mem = 0;
+        let mut shared_mem = 0;
+        for r in range {
+            let pr = r.1.value();
+            let (p, s) = pr.estimate_memory_usage();
+            private_mem += p;
+            shared_mem += s;
+        }
+        logln!(
+            "Dropping object {} (p: {}MB, s: {}MB)",
+            self.id,
+            private_mem / (1024 * 1024),
+            shared_mem / (1024 * 1024)
+        );
+        */
     }
 }
 

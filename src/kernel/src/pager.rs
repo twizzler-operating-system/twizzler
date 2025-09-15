@@ -10,9 +10,7 @@ use twizzler_abi::{
 
 use crate::{
     memory::{
-        context::virtmem::region::{MapRegion, Shadow},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::FrameAllocFlags,
+        context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
     },
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
@@ -241,7 +239,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
     } else {
         count_to_end.min(1024)
     }
-    .min(1);
+    .min(16);
     log::trace!(
         "get page: {} {:?} {}",
         pn,

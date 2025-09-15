@@ -269,7 +269,7 @@ impl Request {
 
     pub fn mark_done(&self) {
         if !self.done() {
-            log::info!(
+            log::trace!(
                 "request {} ({:?}) took {}us",
                 self.id,
                 self.reqkind(),

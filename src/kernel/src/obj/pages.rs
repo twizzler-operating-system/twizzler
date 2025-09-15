@@ -346,10 +346,11 @@ impl Object {
                         let page = PageRef::new(page, 0, pages_per_large);
                         let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
                         log::trace!(
-                            "{}: mapping {} for {}",
+                            "{}: mapping {} for {}: {:x}",
                             self.id(),
                             large_page_number,
-                            page_number
+                            page_number,
+                            page.physical_address().raw()
                         );
                         if page_tree
                             .add_page(large_page_number, page, Some(&mut frame_allocator))

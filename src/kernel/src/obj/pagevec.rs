@@ -6,6 +6,7 @@ use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use super::{
     pages::{Page, PageRef},
     range::PageRange,
+    PageNumber,
 };
 use crate::{
     memory::{pagetables::MappingSettings, tracker::FrameAllocator},
@@ -38,6 +39,20 @@ impl PageVec {
 
     pub fn len(&self) -> usize {
         self.tree.len()
+    }
+
+    pub fn estimate_memory_usage(&self) -> (usize, usize) {
+        let mut private_mem = 0;
+        let mut shared_mem = 0;
+        for r in self.tree.range(0..usize::MAX) {
+            let page_ref = r.1.value();
+            if page_ref.ref_count() > 1 {
+                shared_mem += page_ref.nr_pages() * PageNumber::PAGE_SIZE;
+            } else {
+                private_mem += page_ref.nr_pages() * PageNumber::PAGE_SIZE;
+            }
+        }
+        (private_mem, shared_mem)
     }
 
     /// Remove the first pages up to offset, and then truncate the vector to the given page count.
