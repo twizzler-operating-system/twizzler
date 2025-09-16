@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Condvar, Mutex,
     },
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -89,11 +90,13 @@ unsafe impl Sync for NvmeRequester {}
 const READY: u64 = 1;
 const DROPPED: u64 = 2;
 const WAITER: u64 = 4;
+const WAKER: u64 = 8;
 
 pub struct NvmeRequest {
     cmd: CommonCommand,
     ready: UnsafeCell<MaybeUninit<CommonCompletion>>,
     flags: AtomicU64,
+    waker: Mutex<Option<Waker>>,
 }
 
 impl<'a> Drop for InflightRequest<'a> {
@@ -129,6 +132,7 @@ impl NvmeRequest {
             cmd,
             ready: UnsafeCell::new(MaybeUninit::uninit()),
             flags: AtomicU64::new(0),
+            waker: Mutex::new(None),
         }
     }
 }
@@ -186,6 +190,11 @@ impl NvmeRequesterInner {
                 ))],
                 None,
             );
+        } else if flags & WAKER != 0 {
+            let mut w = entry.waker.lock().unwrap();
+            if let Some(waker) = w.take() {
+                waker.wake();
+            }
         }
 
         Some(resp)
@@ -204,6 +213,53 @@ impl NvmeRequesterInner {
         } else {
             self.requests.remove(id as usize);
             None
+        }
+    }
+
+    #[inline]
+    pub fn async_poll(
+        &mut self,
+        inflight: &InflightRequest,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<CommonCompletion>> {
+        let Some(mut entry) = self.requests.get(inflight.id as usize) else {
+            return Poll::Ready(Err(ErrorKind::Other.into()));
+        };
+        let flags = entry.flags.load(Ordering::Acquire);
+        if flags & READY != 0 {
+            return Poll::Ready(Ok(unsafe {
+                entry.ready.get().as_ref().unwrap().assume_init_read()
+            }));
+        }
+
+        if flags & WAKER == 0 {
+            for i in 0..30_000 {
+                if entry.flags.load(Ordering::Acquire) & READY != 0 {
+                    return Poll::Ready(Ok(unsafe {
+                        entry.ready.get().as_ref().unwrap().assume_init_read()
+                    }));
+                }
+                core::hint::spin_loop();
+                if i % 4 == 0 {
+                    if let Some(cc) = self.get_completion() {
+                        return Poll::Ready(Ok(cc));
+                    }
+                    entry = self.requests.get(inflight.id as usize).unwrap();
+                }
+            }
+        }
+
+        let Some(entry) = self.requests.get(inflight.id as usize) else {
+            return Poll::Ready(Err(ErrorKind::Other.into()));
+        };
+
+        if entry.flags.fetch_or(WAKER, Ordering::SeqCst) & READY != 0 {
+            Poll::Ready(Ok(unsafe {
+                entry.ready.get().as_ref().unwrap().assume_init_read()
+            }))
+        } else {
+            *entry.waker.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
         }
     }
 
@@ -265,6 +321,14 @@ impl NvmeRequester {
                 inner = self.cv.wait(inner).unwrap();
             }
         }
+    }
+
+    pub fn async_poll(
+        &self,
+        inflight: &InflightRequest,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<CommonCompletion>> {
+        self.inner.lock().unwrap().async_poll(inflight, cx)
     }
 
     pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {

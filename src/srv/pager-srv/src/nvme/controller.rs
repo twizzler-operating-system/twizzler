@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     io::ErrorKind,
     mem::size_of,
     sync::{Arc, OnceLock},
@@ -582,15 +583,20 @@ impl NvmeController {
         }
     }
 
-    /*
-    pub async fn read_page(
+    pub async fn async_read_page(
         &self,
         lba_start: u64,
         out_buffer: &mut [u8],
         offset: usize,
     ) -> std::io::Result<()> {
-        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
-        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let start = Instant::now();
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
             .get_dptr(
@@ -600,10 +606,12 @@ impl NvmeController {
             .unwrap();
         // TODO: queue full
         let inflight = self
-            .send_read_page(lba_start, dptr, nr_blocks, false)
+            .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
-        let asif = Async::new(inflight)?;
-        let cc = asif.read_with(|inflight| inflight.poll()).await?;
+
+        let cc = inflight.await?;
+        tracing::trace!("blocking read took {}us", start.elapsed().as_micros());
+
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
         }
@@ -612,7 +620,6 @@ impl NvmeController {
             Ok(())
         })
     }
-    */
 
     pub fn blocking_read_page(
         &self,
@@ -650,6 +657,40 @@ impl NvmeController {
             out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
             Ok(())
         })
+    }
+
+    pub async fn async_write_page(
+        &self,
+        lba_start: u64,
+        in_buffer: &[u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let mut buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
+        buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
+        let cc = inflight.await?;
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(())
     }
 
     pub fn blocking_write_page(
@@ -759,6 +800,39 @@ impl NvmeController {
         Ok(count)
     }
 
+    pub async fn sequential_read_async<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let start = Instant::now();
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = count * lbas_per_page;
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
+        let cc = inflight.await?;
+        tracing::trace!("async seq read took {}us", start.elapsed().as_micros());
+
+        if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
+    }
+
     pub fn blocking_write_pages<const NR: usize>(
         &self,
         lba_start: u64,
@@ -800,5 +874,16 @@ impl NvmeController {
             return Err(ErrorKind::Other.into());
         }
         Ok(())
+    }
+}
+
+impl<'a> Future for InflightRequest<'a> {
+    type Output = std::io::Result<CommonCompletion>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.req.async_poll(&*self, cx)
     }
 }

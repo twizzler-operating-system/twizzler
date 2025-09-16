@@ -57,7 +57,8 @@ impl PagedDevice for Disk {
             .collect::<Vec<_>>();
         let count = self
             .ctrl
-            .sequential_read::<PAGE_SIZE>(start, phys.as_slice())?;
+            .sequential_read_async::<PAGE_SIZE>(start, phys.as_slice())
+            .await?;
         Ok(count)
     }
 
@@ -132,7 +133,8 @@ impl PosIo for Disk {
             }; // If I want to write more than the boundary of a page
 
             self.ctrl
-                .blocking_read_page(lba as u64, &mut read_buffer, 0)?;
+                .async_read_page(lba as u64, &mut read_buffer, 0)
+                .await?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -176,7 +178,8 @@ impl PosIo for Disk {
             pos += right - left;
 
             self.ctrl
-                .blocking_write_page(lba as u64, &mut write_buffer, 0)?;
+                .async_write_page(lba as u64, &mut write_buffer, 0)
+                .await?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
