@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, LinkedList, RBTreeAtomicLink};
 use twizzler_abi::{
@@ -151,6 +151,7 @@ impl ReqKind {
         version: u64,
     ) -> Self {
         dirty_set.sort();
+        log::info!("dirty set: {:?}", dirty_set);
 
         let mut page_tree = object.lock_page_tree();
         let pages = dirty_set
@@ -169,6 +170,7 @@ impl ReqKind {
             .collect::<Vec<_>>();
         drop(page_tree);
 
+        log::info!("pages: {:?}", pages);
         fn consecutive_slices(
             data: &[(PageNumber, PhysAddr)],
         ) -> impl Iterator<Item = &[(PageNumber, PhysAddr)]> {
@@ -176,7 +178,7 @@ impl ReqKind {
             (1..=data.len()).flat_map(move |i| {
                 if i == data.len()
                     || data[i - 1].1.offset(PageNumber::PAGE_SIZE).unwrap() != data[i].1
-                    || data[i - 1].0.next() != data[i].0.next()
+                    || data[i - 1].0.next() != data[i].0
                 {
                     let begin = slice_start;
                     slice_start = i;
@@ -187,44 +189,43 @@ impl ReqKind {
             })
         }
 
-        let runs = consecutive_slices(pages.as_slice())
-            .enumerate()
-            .map(|(i, run)| {
-                let is_last = i == pages.len() - 1;
-                let range = ObjectRange::new(
-                    run[0].0.as_byte_offset() as u64,
-                    run.last().unwrap().0.offset(1).as_byte_offset() as u64,
-                );
+        let slices = consecutive_slices(pages.as_slice()).collect::<Vec<_>>();
+        let runs = slices.iter().enumerate().map(|(i, run)| {
+            let is_last = i == slices.len() - 1;
+            let range = ObjectRange::new(
+                run[0].0.as_byte_offset() as u64,
+                run.last().unwrap().0.offset(1).as_byte_offset() as u64,
+            );
 
-                let phys = PhysRange::new(
-                    run[0].1.raw(),
-                    run.last()
-                        .unwrap()
-                        .1
-                        .offset(PageNumber::PAGE_SIZE)
-                        .unwrap()
-                        .raw(),
-                );
-                let flags = if is_last {
-                    ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE
-                } else {
-                    ObjectEvictFlags::SYNC
-                };
-                log::debug!(
-                    "sync object {:?} pages {:?} => {:?} (is last: {})",
-                    object.id(),
-                    range,
-                    phys,
-                    is_last
-                );
-                RequestFromKernel::new(KernelCommand::ObjectEvict(ObjectEvictInfo::new(
-                    object.id(),
-                    range,
-                    phys,
-                    version,
-                    flags,
-                )))
-            });
+            let phys = PhysRange::new(
+                run[0].1.raw(),
+                run.last()
+                    .unwrap()
+                    .1
+                    .offset(PageNumber::PAGE_SIZE)
+                    .unwrap()
+                    .raw(),
+            );
+            let flags = if is_last {
+                ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE
+            } else {
+                ObjectEvictFlags::SYNC
+            };
+            log::info!(
+                "sync object {:?} pages {:?} => {:?} (is last: {})",
+                object.id(),
+                range,
+                phys,
+                is_last
+            );
+            RequestFromKernel::new(KernelCommand::ObjectEvict(ObjectEvictInfo::new(
+                object.id(),
+                range,
+                phys,
+                version,
+                flags,
+            )))
+        });
 
         let mut unique = [0u8; 16];
         getrandom(&mut unique, false);
@@ -301,6 +302,7 @@ pub struct Request {
     pub id: usize,
     reqkind: ReqKind,
     waiters: Spinlock<LinkedList<CondVarLinkAdapter>>,
+    remaining_pages: AtomicUsize,
     done: AtomicBool,
     start_time: Instant,
     link: RBTreeAtomicLink,
@@ -318,6 +320,7 @@ impl Request {
         let start_time = Instant::now();
         Self {
             id,
+            remaining_pages: AtomicUsize::new(reqkind.all_pages().count()),
             reqkind,
             waiters: Spinlock::new(LinkedList::new(CondVarLinkAdapter::NEW)),
             done: AtomicBool::new(false),
@@ -334,9 +337,15 @@ impl Request {
         self.done.load(Ordering::Acquire)
     }
 
+    pub fn finished_pages(&self, count: usize) -> bool {
+        let old = self.remaining_pages.fetch_sub(count, Ordering::SeqCst);
+        assert!(old >= count);
+        old - count == 0
+    }
+
     pub fn mark_done(&self) {
         if !self.done() {
-            log::trace!(
+            log::debug!(
                 "request {} ({:?}) took {}us",
                 self.id,
                 self.reqkind(),

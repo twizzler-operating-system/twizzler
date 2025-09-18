@@ -295,7 +295,9 @@ impl MapRegion {
                         self.object().id(),
                     );
                 }
-                self.object().dirty_set().add_dirty(page_number);
+                for dpn in page_number.num()..page_number.offset(page.nr_pages()).num() {
+                    self.object().dirty_set().add_dirty(PageNumber::from(dpn));
+                }
             }
 
             let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();

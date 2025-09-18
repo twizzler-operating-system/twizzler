@@ -165,7 +165,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::trace!(
+    log::info!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -229,7 +229,13 @@ fn pager_compl_handle_page_data(
         count += thiscount;
     }
 
-    inflight_mgr().lock().request_ready(&request.reqkind);
+    let mut mgr = inflight_mgr().lock();
+    mgr.with_request(&request.reqkind, |req| {
+        if req.finished_pages(count) {
+            req.mark_done();
+            req.signal();
+        }
+    });
 }
 
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
@@ -306,8 +312,8 @@ pub(super) fn pager_compl_handler_main() {
         };
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
-            inflight_mgr().lock().request_ready(&request.reqkind);
-            inflight_mgr().lock().remove_request(&request.reqkind);
+            let mut mgr = inflight_mgr().lock();
+            mgr.remove_request(&request.reqkind);
             sender.idmap.lock().remove(&completion.0);
             sender.ids.release_simple(SimpleId::from(completion.0));
         }

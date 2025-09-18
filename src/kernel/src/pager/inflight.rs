@@ -89,6 +89,11 @@ impl InflightManager {
 
     pub fn add_request(&mut self, rk: ReqKind) -> Option<Inflight> {
         if let Some(req) = self.req_map.find(&rk).get() {
+            log::trace!(
+                "found existing request {:?} for request {:?}",
+                req.reqkind(),
+                rk
+            );
             return Some(Inflight::new(req.id, rk, false));
         }
 
@@ -115,6 +120,8 @@ impl InflightManager {
 
     pub fn remove_request(&mut self, rk: &ReqKind) {
         if let Some(request) = self.req_map.find_mut(rk).remove() {
+            request.mark_done();
+            request.signal();
             let id = request.id;
             self.avail.bit_set(id);
             self.requests[id] = None;
@@ -140,6 +147,10 @@ impl InflightManager {
         } else {
             log::warn!("failed to find request: {:?}", rk);
         }
+    }
+
+    pub fn with_request<R>(&mut self, rk: &ReqKind, f: impl FnOnce(&Request) -> R) -> Option<R> {
+        Some(f(self.req_map.find_mut(rk).get()?))
     }
 
     pub fn set_ready(&mut self) {
