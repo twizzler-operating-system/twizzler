@@ -260,7 +260,9 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
 pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
     match cmd {
         ObjectControlCmd::Sync => {
-            crate::pager::sync_object(id);
+            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
+                crate::pager::sync_object(&obj);
+            }
         }
         ObjectControlCmd::Delete(_) => {
             let mut invoke_pager = true;

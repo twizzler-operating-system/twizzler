@@ -114,6 +114,20 @@ impl PageRange {
         }
     }
 
+    pub fn estimate_memory_usage(&self) -> (usize, usize) {
+        match &self.backing {
+            BackingPages::Nothing => (0, 0),
+            BackingPages::Single(page_ref) => {
+                if page_ref.ref_count() > 1 {
+                    (0, page_ref.nr_pages() * PageNumber::PAGE_SIZE)
+                } else {
+                    (page_ref.nr_pages() * PageNumber::PAGE_SIZE, 0)
+                }
+            }
+            BackingPages::Many(mutex) => mutex.lock().estimate_memory_usage(),
+        }
+    }
+
     pub fn pages<const MAX: usize>(
         &self,
         pn: PageNumber,
@@ -338,7 +352,7 @@ impl PageRangeTree {
                 Some(match backing {
                     BackingPages::Nothing => BackingPages::Nothing,
                     BackingPages::Single(page_ref) => {
-                        let new_page = Arc::new(Page::new(allocator.try_allocate()?));
+                        let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                         let mut new_page = PageRef::new(new_page, 0, page_ref.nr_pages());
                         new_page.copy_from(&page_ref);
                         BackingPages::Single(new_page)

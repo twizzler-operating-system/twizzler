@@ -1,17 +1,17 @@
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, Mutex, OnceLock,
+        Arc, OnceLock,
     },
-    task::Waker,
     thread::JoinHandle,
 };
 
-use futures::Future;
 use twizzler::object::ObjID;
 use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
 use twizzler_queue::{QueueSender, SubmissionFlags};
 use twizzler_rt_abi::{error::TwzError, Result};
+
+use crate::threads::Waiter;
 
 type Queue = QueueSender<RequestFromPager, CompletionToPager>;
 type QueueRef = Arc<Queue>;
@@ -23,32 +23,10 @@ fn get_object(ptr: *const u8) -> (ObjID, usize) {
     })
 }
 
-#[derive(Default)]
-struct Waiter {
-    data: Mutex<(Option<CompletionToPager>, Option<Waker>)>,
-}
-
-impl Future for &Waiter {
-    type Output = CompletionToPager;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let mut data = self.data.lock().unwrap();
-        if data.0.is_some() {
-            std::task::Poll::Ready(data.0.unwrap())
-        } else {
-            data.1.replace(cx.waker().clone());
-            std::task::Poll::Pending
-        }
-    }
-}
-
 #[derive(Clone)]
 struct Request {
     req: RequestFromPager,
-    waiter: Arc<Waiter>,
+    waiter: Arc<Waiter<CompletionToPager>>,
 }
 
 impl Request {
@@ -64,11 +42,7 @@ impl Request {
     }
 
     fn finish(&self, comp: CompletionToPager) {
-        let mut data = self.waiter.data.lock().unwrap();
-        data.0 = Some(comp);
-        if let Some(waker) = data.1.take() {
-            waker.wake();
-        }
+        self.waiter.finish(comp);
     }
 }
 

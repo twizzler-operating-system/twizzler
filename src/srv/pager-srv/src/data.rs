@@ -3,10 +3,11 @@ use std::{
     future::Future,
     sync::{Arc, Mutex},
     task::Waker,
+    time::Instant,
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::{ObjID, ObjectHandle};
@@ -30,41 +31,29 @@ use crate::{
     PagerContext,
 };
 
-type PageNum = u64;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PerPageData {
-    paddr: u64,
-    version: u64,
-}
-
 #[derive(Default)]
 pub struct PerObjectInner {
     #[allow(dead_code)]
     id: ObjID,
-    sync_map: HashMap<PageNum, PerPageData>,
+    sync_map: Vec<(ObjectRange, PhysRange, u64)>,
     syncing: bool,
 }
 
 impl PerObjectInner {
     pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange, version: u64) {
-        assert_eq!(obj_range.len(), phys_range.len());
+        self.sync_map.push((obj_range, phys_range, version));
+        /*
         for (op, pp) in obj_range.pages().zip(phys_range.pages()) {
             let entry = self.sync_map.entry(op).or_default();
             if entry.version <= version {
                 entry.paddr = pp * PAGE;
             }
         }
+        */
     }
 
     fn drain_pending_syncs(&mut self) -> impl Iterator<Item = (ObjectRange, PhysRange, u64)> + '_ {
-        self.sync_map.drain().map(|(obj_page, pp)| {
-            (
-                ObjectRange::new(obj_page * PAGE, (obj_page + 1) * PAGE),
-                PhysRange::new(pp.paddr, pp.paddr + PAGE),
-                pp.version,
-            )
-        })
+        self.sync_map.drain(..)
     }
 
     pub fn new(id: ObjID) -> Self {
@@ -90,6 +79,7 @@ impl PerObject {
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
     ) -> (usize, CompletionToKernel) {
+        let start = Instant::now();
         let pages = {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
@@ -100,7 +90,12 @@ impl PerObject {
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs()
-                .map(|p| (p.0, vec![PagedPhysMem::new(p.1)]))
+                .map(|p| {
+                    (
+                        p.0,
+                        mayheap::Vec::from_slice(&[PagedPhysMem::new(p.1)]).unwrap(),
+                    )
+                })
                 .collect::<Vec<_>>();
             pages.sort_by_key(|p| p.0);
             let pages = pages
@@ -113,23 +108,40 @@ impl PerObject {
                         Err((x, y))
                     }
                 })
-                .collect::<Vec<_>>();
-            tracing::debug!("drained {:?}", pages);
+                .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
             pages
         };
-        let reqs = pages
+        let pages_done = Instant::now();
+        let mut page_count = 0;
+        let mut reqs = pages
             .into_iter()
-            .map(|p| {
-                let mut start_page = p.0.pages().next().unwrap();
-                if p.0.start == (MAX_SIZE as u64) - PAGE {
-                    start_page = 0;
+            .filter_map(|p| {
+                if let Some(mut start_page) = p.0.pages().next() {
+                    if p.0.start == (MAX_SIZE as u64) - PAGE {
+                        start_page = 0;
+                    }
+                    let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
+                    page_count += nr_pages;
+                    assert_eq!(nr_pages, p.0.page_count());
+                    Some(PageRequest::new_from_list(
+                        p.1,
+                        start_page as i64,
+                        nr_pages as u32,
+                    ))
+                } else {
+                    None
                 }
-                let nr_pages = p.1.len();
-                assert_eq!(nr_pages, p.0.pages().count());
-                PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
-            .collect_vec();
-        let count = match page_out_many(ctx, self.id, reqs).await {
+            .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+        if page_count >= 1024 {
+            tracing::info!(
+                "pager starting large sync for {}: {}MB",
+                self.id,
+                (page_count as u64 * PAGE) / (1024 * 1024)
+            );
+        }
+        let reqs_done = Instant::now();
+        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
             Err(e) => {
                 let mut inner = self.inner.1.lock().await;
                 inner.syncing = false;
@@ -144,11 +156,27 @@ impl PerObject {
             }
             Ok(count) => count,
         };
-
+        let io_done = Instant::now();
+        if page_count >= 1024 {
+            tracing::info!(
+                "pager finished large sync for {}: {}ms, {}ms",
+                self.id,
+                (reqs_done - pages_done).as_millis(),
+                (io_done - reqs_done).as_millis(),
+            );
+        }
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_all();
+        let done = Instant::now();
 
+        tracing::debug!(
+            "==> {}ms {}ms {}ms {}ms",
+            (pages_done - start).as_millis(),
+            (reqs_done - pages_done).as_millis(),
+            (io_done - pages_done).as_millis(),
+            (done - io_done).as_millis()
+        );
         (
             count,
             CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
@@ -168,7 +196,7 @@ impl PerObject {
             inner.track(info.range, info.phys, info.version);
             (
                 0,
-                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty()),
+                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
             )
         }
     }
@@ -457,7 +485,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
         _partial: bool,
-    ) -> Result<Vec<PagedPhysMem>> {
+    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
         let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
         let max_pages = (current_mem_pages / 2).min(4096 * 128);
         tracing::trace!(
@@ -468,15 +496,15 @@ impl PagerData {
         );
 
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = obj_range.pages().count().min(max_pages).max(1);
-        let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
-        let (mut reqs, count) = page_in_many(ctx, id, reqs).await?;
+        let nr_pages = obj_range.page_count().min(max_pages).max(1);
+        let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
+        let count = page_in_many(ctx, id, &mut reqs).await?;
         if count == 0 {
             // TODO: free pages in incomplete requests.
             todo!();
         }
 
-        Ok(reqs.pop().unwrap().into_list())
+        Ok(reqs.into_iter().next().unwrap().into_list())
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
@@ -486,7 +514,7 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<Vec<PagedPhysMem>> {
+    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
         // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
@@ -567,9 +595,10 @@ impl PagerData {
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
+        //let start = Instant::now();
         let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
-            blocking::unblock(move || ctx.paged_ostore(None)?.find_external(id.raw())).await?;
+            ctx.paged_ostore(None)?.find_external(id.raw()).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -578,7 +607,12 @@ impl PagerData {
                 Protections::empty(),
             ));
         }
-        blocking::unblock(move || ctx.paged_ostore(None)?.read_object(id.raw(), 0, &mut b)).await?;
+
+        ctx.paged_ostore(None)?
+            .read_object(id.raw(), 0, &mut b)
+            .await?;
+        //let end = Instant::now();
+        //tracing::info!("request took {}us", (end - start).as_micros());
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,
