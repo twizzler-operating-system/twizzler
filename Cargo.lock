@@ -577,20 +577,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blocking"
-version = "1.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e83f8d02be6967315521be875afa792a316e28d57b5a2d401897e2a7921b7f21"
-dependencies = [
- "async-channel",
- "async-task",
- "futures-io",
- "futures-lite",
- "piper",
- "tracing",
-]
-
-[[package]]
 name = "bootstrap"
 version = "0.1.0"
 dependencies = [
@@ -4198,6 +4184,9 @@ dependencies = [
 [[package]]
 name = "lwext4-rs"
 version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
 
 [[package]]
 name = "managed"
@@ -4233,6 +4222,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.100",
+]
+
+[[package]]
+name = "mayheap"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acbc2f58104ec9b149972c3b4108ece000cdad4f6df7c2e691fea572aadeba62"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4725,20 +4723,20 @@ dependencies = [
 name = "object-store"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "chacha20",
  "efs",
  "fatfs 0.4.0",
+ "futures",
  "intervaltree",
  "lru 0.13.0",
  "lwext4-rs",
+ "mayheap",
  "obliviate-core",
  "rand 0.8.5",
  "tracing",
  "tracing-subscriber",
  "twizzler",
  "twizzler-abi",
- "volatile",
 ]
 
 [[package]]
@@ -4993,17 +4991,19 @@ dependencies = [
 name = "pager-srv"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "async-condvar-fair",
  "async-executor",
  "async-io",
  "async-lock",
  "async-trait",
  "bitvec",
- "blocking",
  "colored 3.0.0",
  "devmgr",
  "futures",
+ "heapless 0.9.1",
  "itertools 0.14.0",
+ "mayheap",
  "miette",
  "nvme",
  "object-store",
@@ -5254,17 +5254,6 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
-
-[[package]]
-name = "piper"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96c8c490f422ef9a4efd2cb5b42b76c8613d7e7dfc1caf667b8a3350a5acc066"
-dependencies = [
- "atomic-waker",
- "fastrand",
- "futures-io",
-]
 
 [[package]]
 name = "pkcs8"
@@ -6283,6 +6272,9 @@ dependencies = [
 [[package]]
 name = "st"
 version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+]
 
 [[package]]
 name = "stable-vec"

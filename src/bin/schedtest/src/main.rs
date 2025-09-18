@@ -1,6 +1,43 @@
-use std::{io::Write, time::Instant};
+use std::{
+    io::Write,
+    time::{Duration, Instant},
+};
+
+use rand::seq::SliceRandom;
+
+#[allow(dead_code)]
+fn jointest() {
+    let threads = (0..4).into_iter().map(|j| {
+        std::thread::spawn(move || {
+            const MAX_TRIALS: u32 = 40;
+            for i in 0..MAX_TRIALS {
+                println!("trial {}/{}", i * j, MAX_TRIALS * j);
+                let mut threads = (0..4)
+                    .into_iter()
+                    .map(|_| {
+                        std::thread::spawn(move || {
+                            let delay = rand::random::<u32>() % 100_000;
+                            if delay > 10_000 {
+                                std::thread::sleep(Duration::from_nanos(delay as u64));
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                threads.shuffle(&mut rand::thread_rng());
+                for th in threads {
+                    th.join().unwrap();
+                }
+            }
+        })
+    });
+    for th in threads {
+        th.join().unwrap();
+    }
+}
 
 fn main() {
+    //jointest();
+    //return;
     let threads = (0..4)
         .into_iter()
         .map(|i| std::thread::spawn(move || thread_main(i)))

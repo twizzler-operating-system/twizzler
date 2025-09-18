@@ -6,7 +6,7 @@ use super::{Vec, VecObjectAlloc};
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},
     marker::{Invariant, StoreCopy},
-    object::{Object, ObjectBuilder, TypedObject},
+    object::{Object, ObjectBuilder, RawObject, TypedObject},
     ptr::{Ref, RefMut, RefSlice},
     Result,
 };
@@ -42,7 +42,7 @@ impl<T: Invariant, A: Allocator> VecObject<T, A> {
         if self.len() == 0 {
             return VecIter {
                 pos: 0,
-                data: core::ptr::null(),
+                data: self.object().handle().start().cast(),
                 len: 0,
                 _ref: None,
             };

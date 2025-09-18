@@ -2,6 +2,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::{
     alloc::Layout,
     cell::UnsafeCell,
+    fmt::Debug,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     u32,
 };
@@ -77,6 +78,15 @@ unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
 
 pub type ThreadRef = Arc<Thread>;
+
+impl Debug for Thread {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Thread")
+            .field("id", &self.id)
+            .field("objid", &self.objid())
+            .finish()
+    }
+}
 
 #[thread_local]
 static CURRENT_THREAD: UnsafeCell<*const ThreadRef> = UnsafeCell::new(core::ptr::null());
@@ -183,15 +193,22 @@ impl Thread {
     }
 
     #[inline]
-    pub fn exit_critical(&self) {
+    pub fn exit_critical(&self, loc: &'static core::panic::Location) {
         let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
+        if res == 0 {
+            panic!("critical underflow, critical from {}", loc);
+        }
         assert!(res > 0);
     }
 
-    #[inline]
+    //#[inline]
+    #[track_caller]
     pub fn enter_critical(&self) -> CriticalGuard {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
-        CriticalGuard { thread: self }
+        CriticalGuard {
+            thread: self,
+            loc: core::panic::Location::caller(),
+        }
     }
 
     #[inline]
@@ -394,11 +411,12 @@ impl Ord for Thread {
 
 pub struct CriticalGuard<'a> {
     thread: &'a Thread,
+    loc: &'static core::panic::Location<'static>,
 }
 
 impl<'a> Drop for CriticalGuard<'a> {
     fn drop(&mut self) {
-        self.thread.exit_critical();
+        self.thread.exit_critical(self.loc);
     }
 }
 
@@ -414,6 +432,12 @@ pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();
+        log::trace!(
+            "thread {} ({}) exits with code {}",
+            th.id(),
+            th.objid(),
+            code
+        );
         th.set_state_and_code(ExecutionState::Exited, code);
         crate::interrupt::disable();
         th.set_is_exiting();

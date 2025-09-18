@@ -246,7 +246,7 @@ impl MapRegion {
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             log::warn!("fallback allocate in fault to page {}", page_number);
             if let Some(frame) = fa.try_allocate() {
-                let page = Page::new(frame);
+                let page = Page::new(frame, 1);
                 obj_page_tree.add_page(
                     page_number,
                     PageRef::new(Arc::new(page), 0, 1),
@@ -288,14 +288,16 @@ impl MapRegion {
             check_settings(addr, &settings, cause)?;
             if settings.perms().contains(Protections::WRITE) {
                 if self.object().use_pager() {
-                    log::debug!(
+                    log::trace!(
                         "adding persist dirty page {} to region {:?}, obj {:?}",
                         page_number,
                         self.range,
                         self.object().id(),
                     );
                 }
-                self.object().dirty_set().add_dirty(page_number);
+                self.object()
+                    .dirty_set()
+                    .add_dirty(page_number, page.nr_pages());
             }
 
             let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
@@ -320,7 +322,10 @@ impl MapRegion {
 
             let aligned = (phys_page_aligned - phys_large_aligned)
                 == (addr_page_aligned - addr_large_aligned);
-            if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+            if self.flags.contains(MapFlags::NO_NULLPAGE)
+                && !page_number.is_meta()
+                && large_diff > 0
+            {
                 large_diff -= 1;
             }
             if page.nr_pages() > 1 {
@@ -425,13 +430,13 @@ impl MapRegion {
 
                 if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
-                    log::debug!(
+                    log::trace!(
                         "sync region {:?} with dirty pages {:?}",
                         self.range,
                         dirty_pages
                     );
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages, sync_info, version);
+                        crate::pager::sync_region(self, dirty_pages.as_slice(), sync_info, version);
                     }
                 }
 

@@ -298,9 +298,9 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
 fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
     if context.num() as u64 != Syscall::KernelConsoleWrite.num() {
         log::trace!(
-            "sys {}: {}",
+            "sys {}: {:?}",
             crate::thread::current_thread_ref().unwrap().id(),
-            context.num()
+            Syscall::from(context.num())
         );
     }
 

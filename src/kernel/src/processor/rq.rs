@@ -64,7 +64,7 @@ impl<T> core::ops::DerefMut for SchedLockGuard<'_, T> {
 
 impl<T> Drop for SchedLockGuard<'_, T> {
     fn drop(&mut self) {
-        current_thread_ref().map(|c| c.exit_critical());
+        current_thread_ref().map(|c| c.exit_critical(self.queue.locker));
     }
 }
 

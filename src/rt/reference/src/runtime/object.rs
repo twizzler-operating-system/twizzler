@@ -1,6 +1,6 @@
 use std::{
     ffi::c_void,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use fotcache::FotCache;
@@ -10,14 +10,14 @@ use twizzler_abi::{
     meta::{FotEntry, FotFlags},
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
-        sys_map_ctrl, sys_object_create, sys_object_read_map, CreateTieFlags, CreateTieSpec,
-        MapControlCmd, ObjectCreate,
+        sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_read_map, CreateTieFlags,
+        CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate,
     },
 };
 use twizzler_rt_abi::{
-    bindings::object_handle,
+    bindings::{object_cmd, object_handle, release_flags, RELEASE_NO_CACHE},
     error::{ObjectError, ResourceError, TwzError},
-    object::{MapFlags, ObjID, ObjectHandle},
+    object::{MapFlags, ObjID, ObjectCmd, ObjectHandle},
     Result,
 };
 
@@ -30,12 +30,14 @@ mod handlecache;
 pub(crate) struct RuntimeHandleInfo {
     refs: AtomicU64,
     fot_cache: FotCache,
+    is_deleted: AtomicBool,
 }
 
 pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
     let rhi = Box::new(RuntimeHandleInfo {
         refs: AtomicU64::new(1),
         fot_cache: FotCache::new(),
+        is_deleted: AtomicBool::new(false),
     });
     Box::into_raw(rhi)
 }
@@ -91,10 +93,27 @@ impl ReferenceRuntime {
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
-    pub fn release_handle(&self, handle: *mut object_handle) {
-        self.object_manager.lock().release(handle);
+    pub fn release_handle(&self, handle: *mut object_handle, flags: release_flags) {
+        self.object_manager.lock().release(handle, flags);
         if self.is_monitor().is_some() {
             self.object_manager.lock().cache.flush();
+        }
+    }
+
+    pub fn object_cmd(&self, handle: *mut object_handle, cmd: object_cmd, _arg: u64) -> Result<()> {
+        let cmd: ObjectCmd = cmd.try_into()?;
+        let handle = unsafe { &*handle };
+        match cmd {
+            ObjectCmd::Delete => {
+                sys_object_ctrl(
+                    handle.id.into(),
+                    ObjectControlCmd::Delete(DeleteFlags::empty()),
+                )?;
+                unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() }
+                    .is_deleted
+                    .store(true, Ordering::Release);
+                Ok(())
+            }
         }
     }
 
@@ -295,8 +314,14 @@ impl ObjectHandleManager {
     }
 
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
-    pub fn release(&mut self, handle: *mut object_handle) {
+    pub fn release(&mut self, handle: *mut object_handle, mut flags: release_flags) {
         let handle = unsafe { handle.as_mut().unwrap() };
-        self.cache.release(handle);
+        if unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() }
+            .is_deleted
+            .load(Ordering::Acquire)
+        {
+            flags |= RELEASE_NO_CACHE;
+        }
+        self.cache.release(handle, flags);
     }
 }

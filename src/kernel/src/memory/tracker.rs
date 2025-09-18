@@ -120,6 +120,7 @@ impl MemoryTracker {
             old_idle,
             self.idle()
         );
+        print_tracker_stats();
         let Some(current_thread) = current_thread_ref() else {
             panic!("warning -- cannot wait on memory before threading initialized");
         };

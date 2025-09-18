@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    time::Instant,
+};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
@@ -89,6 +92,7 @@ enum SubCommand {
     Hw,
     Rdb,
     Preload,
+    Big,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
@@ -268,6 +272,28 @@ fn main() {
             sys_object_ctrl(id, twizzler_abi::syscall::ObjectControlCmd::Preload).unwrap();
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
+        }
+        SubCommand::Big => {
+            let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
+            let obj = unsafe { obj.as_mut().unwrap() };
+            const LEN: usize = 1024 * 1024 * 800;
+            let mut obj = unsafe { obj.cast::<[u8; LEN]>() };
+            println!("filling...");
+            let start = Instant::now();
+            let mut base = obj.base_mut();
+            base.fill(27);
+            println!("{}ms. syncing...", start.elapsed().as_millis());
+            let start = Instant::now();
+            obj.sync().unwrap();
+            println!("=> {}ms", start.elapsed().as_millis());
+            println!("okay, rewriting and syncing");
+            let start = Instant::now();
+            let mut base = obj.base_mut();
+            base.fill(24);
+            println!("{}ms. syncing...", start.elapsed().as_millis());
+            let start = Instant::now();
+            obj.sync().unwrap();
+            println!("=> {}ms", start.elapsed().as_millis());
         }
         SubCommand::Rdb => {
             println!("in progress");

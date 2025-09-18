@@ -82,7 +82,7 @@ fn copy_single(
         PageStatus::Ready(page, _) => page,
         PageStatus::NoPage => dest_tree.add_page(
             dest_point,
-            PageRef::new(Arc::new(Page::new(allocator.try_allocate()?)), 0, 1),
+            PageRef::new(Arc::new(Page::new(allocator.try_allocate()?, 1)), 0, 1),
             Some(allocator),
         )?,
         _ => return None,
@@ -352,7 +352,7 @@ fn copy_bytes(
             PageStatus::Ready(page, _) => page,
             PageStatus::NoPage => dest_tree.add_page(
                 dest_point,
-                PageRef::new(Arc::new(Page::new(allocator.try_allocate()?)), 0, 1),
+                PageRef::new(Arc::new(Page::new(allocator.try_allocate()?, 1)), 0, 1),
                 Some(allocator),
             )?,
             PageStatus::AllocFail => return None,
@@ -635,7 +635,11 @@ mod test {
                 PageStatus::NoPage => tree
                     .add_page(
                         pn,
-                        PageRef::new(Arc::new(Page::new(allocator.try_allocate().unwrap())), 0, 1),
+                        PageRef::new(
+                            Arc::new(Page::new(allocator.try_allocate().unwrap(), 1)),
+                            0,
+                            1,
+                        ),
                         Some(&mut allocator),
                     )
                     .unwrap(),

@@ -222,6 +222,12 @@ impl PhysRange {
         let last_page = self.end / NULLPAGE_SIZE as u64;
         first_page..last_page
     }
+
+    pub fn page_count(&self) -> usize {
+        let first_page = self.start / NULLPAGE_SIZE as u64;
+        let last_page = self.end / NULLPAGE_SIZE as u64;
+        (last_page - first_page) as usize
+    }
 }
 
 impl core::ops::Add<u64> for PhysRange {
@@ -249,6 +255,12 @@ impl ObjectRange {
         let first_page = self.start / NULLPAGE_SIZE as u64;
         let last_page = self.end / NULLPAGE_SIZE as u64;
         first_page..last_page
+    }
+
+    pub fn page_count(&self) -> usize {
+        let first_page = self.start / NULLPAGE_SIZE as u64;
+        let last_page = self.end / NULLPAGE_SIZE as u64;
+        (last_page - first_page) as usize
     }
 }
 

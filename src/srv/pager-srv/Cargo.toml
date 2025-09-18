@@ -19,10 +19,12 @@ twizzler = { path = "../../lib/twizzler" }
 nvme = { path = "../../lib/nvme-rs" }
 devmgr = { path = "../../lib/devmgr" }
 slab = { version = "*", features = [] }
-blocking = { version = "*", features = ["tracing"] }
 itertools = "*"
 stable-vec = "*"
 rand = "*"
+heapless = "*"
+async-channel = "*"
+mayheap = "*"
 
 async-trait = "0.1.66"
 volatile = "0.6"

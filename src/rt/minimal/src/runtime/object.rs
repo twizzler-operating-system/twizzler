@@ -5,13 +5,13 @@ use core::sync::atomic::AtomicU64;
 use rustc_alloc::boxed::Box;
 use slot::global_allocate;
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_map, UnmapFlags},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
+    syscall::{UnmapFlags, sys_object_map},
 };
 use twizzler_rt_abi::{
+    Result,
     error::{GenericError, ResourceError},
     object::{MapFlags, ObjectHandle},
-    Result,
 };
 
 use super::MinimalRuntime;
@@ -53,7 +53,11 @@ impl MinimalRuntime {
         })
     }
 
-    pub fn release_handle(&self, handle: *mut twizzler_rt_abi::bindings::object_handle) {
+    pub fn release_handle(
+        &self,
+        handle: *mut twizzler_rt_abi::bindings::object_handle,
+        _flags: twizzler_rt_abi::bindings::release_flags,
+    ) {
         let slot = (unsafe { (*handle).start } as usize) / MAX_SIZE;
 
         if twizzler_abi::syscall::sys_object_unmap(None, slot, UnmapFlags::empty()).is_ok() {

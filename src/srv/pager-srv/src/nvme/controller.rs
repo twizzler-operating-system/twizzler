@@ -1,8 +1,10 @@
 use std::{
+    future::Future,
     io::ErrorKind,
     mem::size_of,
     sync::{Arc, OnceLock},
     thread::JoinHandle,
+    time::Instant,
 };
 
 use async_io::Async;
@@ -30,7 +32,7 @@ use twizzler_driver::{
 use volatile::map_field;
 
 use super::{
-    dma::NvmeDmaRegion,
+    dma::{CachedDmaPool, NvmeDmaRegion},
     requester::{InflightRequest, NvmeRequester},
 };
 use crate::nvme::dma::NvmeDmaSliceRegion;
@@ -39,7 +41,7 @@ struct NvmeControllerInner {
     data_requester: NvmeRequester,
     admin_requester: NvmeRequester,
     device: Device,
-    dma_pool: DmaPool,
+    dma_pool: Arc<CachedDmaPool>,
 }
 
 pub struct NvmeController {
@@ -53,7 +55,8 @@ const ADMIN_QUEUE_LEN: u16 = 32;
 const DATA_QUEUE_ID: u16 = 1;
 const DATA_QUEUE_LEN: u16 = 32;
 
-fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result<NvmeController> {
+fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<NvmeController> {
+    let dma_pool = Arc::new(CachedDmaPool::new(dma_pool));
     let bar = device.get_mmio(1).unwrap();
     let mut reg = unsafe {
         bar.get_mmio_offset_mut::<nvme::ds::controller::properties::ControllerProperties>(0)
@@ -76,12 +79,14 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
     map_field!(reg.admin_queue_attr).write(aqa);
 
     let saq = dma_pool
+        .dma
         .allocate_array(
             ADMIN_QUEUE_LEN as usize,
             nvme::ds::queue::subentry::CommonCommand::default(),
         )
         .unwrap();
     let caq = dma_pool
+        .dma
         .allocate_array(
             ADMIN_QUEUE_LEN as usize,
             nvme::ds::queue::comentry::CommonCompletion::default(),
@@ -169,7 +174,7 @@ fn init_controller(mut device: Device, mut dma_pool: DmaPool) -> std::io::Result
 
     let req = NvmeController::create_queue_pair(
         &mut admin_requester,
-        &mut dma_pool,
+        &dma_pool,
         &mut device,
         cqid,
         sqid,
@@ -229,7 +234,7 @@ impl NvmeController {
 
     fn create_queue_pair(
         admin_requester: &mut NvmeRequester,
-        dma_pool: &mut DmaPool,
+        dma_pool: &Arc<CachedDmaPool>,
         device: &mut Device,
         cqid: QueueId,
         sqid: QueueId,
@@ -237,6 +242,7 @@ impl NvmeController {
         queue_len: usize,
     ) -> std::io::Result<NvmeRequester> {
         let saq = dma_pool
+            .dma
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::subentry::CommonCommand::default(),
@@ -244,6 +250,7 @@ impl NvmeController {
             .unwrap();
 
         let caq = dma_pool
+            .dma
             .allocate_array(
                 queue_len,
                 nvme::ds::queue::comentry::CommonCompletion::default(),
@@ -372,6 +379,7 @@ impl NvmeController {
         let ident = self
             .inner
             .dma_pool
+            .dma
             .allocate(nvme::ds::identify::controller::IdentifyControllerDataStructure::default())
             .unwrap();
         let mut ident = NvmeDmaRegion::new(ident);
@@ -395,7 +403,12 @@ impl NvmeController {
     pub fn send_list_namespaces(
         &self,
     ) -> Option<(InflightRequest<'_>, NvmeDmaRegion<[u8; DMA_PAGE_SIZE]>)> {
-        let nslist = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let nslist = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
         let mut nslist = NvmeDmaRegion::new(nslist);
         let nslist_cmd = nvme::admin::Identify::new(
             CommandId::new(),
@@ -423,6 +436,7 @@ impl NvmeController {
         let ident = self
             .inner
             .dma_pool
+            .dma
             .allocate(nvme::ds::identify::namespace::IdentifyNamespaceDataStructure::default())
             .unwrap();
         let mut ident = NvmeDmaRegion::new(ident);
@@ -569,46 +583,15 @@ impl NvmeController {
         }
     }
 
-    /*
-    pub async fn read_page(
+    pub async fn async_read_page(
         &self,
         lba_start: u64,
         out_buffer: &mut [u8],
         offset: usize,
     ) -> std::io::Result<()> {
-        let nr_blocks = DMA_PAGE_SIZE / self.get_lba_size().await;
-        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
-        let mut buffer = NvmeDmaRegion::new(buffer);
-        let dptr = (&mut buffer)
-            .get_dptr(
-                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
-                &self.inner.dma_pool,
-            )
-            .unwrap();
-        // TODO: queue full
-        let inflight = self
-            .send_read_page(lba_start, dptr, nr_blocks, false)
-            .unwrap();
-        let asif = Async::new(inflight)?;
-        let cc = asif.read_with(|inflight| inflight.poll()).await?;
-        if cc.status().is_error() {
-            return Err(ErrorKind::Other.into());
-        }
-        buffer.dma_region().with(|data| {
-            out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
-            Ok(())
-        })
-    }
-    */
-
-    pub fn blocking_read_page(
-        &self,
-        lba_start: u64,
-        out_buffer: &mut [u8],
-        offset: usize,
-    ) -> std::io::Result<()> {
+        let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let buffer = self.inner.dma_pool.get_page().unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
             .get_dptr(
@@ -621,17 +604,48 @@ impl NvmeController {
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
+        let cc = inflight.await?;
+        tracing::trace!("async read took {}us", start.elapsed().as_micros());
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        buffer.dma_region().with(|data| {
+            out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
+        });
+        self.inner.dma_pool.put_page(buffer.into_inner());
+
+        Ok(())
+    }
+
+    pub fn blocking_read_page(
+        &self,
+        lba_start: u64,
+        out_buffer: &mut [u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let start = Instant::now();
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
         let cc = inflight.wait()?;
+        tracing::trace!("blocking read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
@@ -642,14 +656,15 @@ impl NvmeController {
         })
     }
 
-    pub fn blocking_write_page(
+    pub async fn async_write_page(
         &self,
         lba_start: u64,
         in_buffer: &[u8],
         offset: usize,
     ) -> std::io::Result<()> {
+        let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let mut buffer = self.inner.dma_pool.allocate([0u8; DMA_PAGE_SIZE]).unwrap();
+        let mut buffer = self.inner.dma_pool.get_page().unwrap();
         buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
@@ -663,16 +678,42 @@ impl NvmeController {
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
+        let cc = inflight.await?;
+        tracing::trace!("async write took {}us", start.elapsed().as_micros());
+        self.inner.dma_pool.put_page(buffer.into_inner());
+
+        if cc.status().is_error() {
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(())
+    }
+
+    pub fn blocking_write_page(
+        &self,
+        lba_start: u64,
+        in_buffer: &[u8],
+        offset: usize,
+    ) -> std::io::Result<()> {
+        let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
+        let mut buffer = self
+            .inner
+            .dma_pool
+            .dma
+            .allocate([0u8; DMA_PAGE_SIZE])
+            .unwrap();
+        buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
+        let mut buffer = NvmeDmaRegion::new(buffer);
+        let dptr = (&mut buffer)
+            .get_dptr(
+                nvme::hosted::memory::DptrMode::Prp(PrpMode::Double),
+                &self.inner.dma_pool,
+            )
+            .unwrap();
+        // TODO: queue full
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
         let cc = inflight.wait()?;
 
         if cc.status().is_error() {
@@ -727,6 +768,7 @@ impl NvmeController {
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
         // TODO: get from controller
+        let start = Instant::now();
         let count = phys.len().min(128);
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
@@ -742,17 +784,79 @@ impl NvmeController {
         let inflight = self
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
-        /*
-        let cc = loop {
-            inflight.req.get_completion();
-            if let Ok(cc) = inflight.poll() {
-                if cc.command_id() == inflight.id.into() {
-                    break cc;
-                }
-            }
-        };
-        */
+
         let cc = inflight.wait()?;
+        tracing::trace!("seq read took {}us", start.elapsed().as_micros());
+
+        if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
+    }
+
+    pub async fn sequential_read_async<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let start = Instant::now();
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = count * lbas_per_page;
+        let inflight = self
+            .send_read_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
+        let cc = inflight.await?;
+        tracing::trace!("async seq read took {}us", start.elapsed().as_micros());
+
+        if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
+    }
+
+    pub async fn sequential_write_async<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let start = Instant::now();
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = count * lbas_per_page;
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
+        let cc = inflight.await?;
+        tracing::trace!(
+            "async seq write took {}us ({} pages)",
+            start.elapsed().as_micros(),
+            count
+        );
 
         if cc.status().is_error() {
             tracing::warn!("got nvme error: {:?}", cc);
@@ -770,6 +874,7 @@ impl NvmeController {
         let mut buffer = self
             .inner
             .dma_pool
+            .dma
             .allocate_array(NR * DMA_PAGE_SIZE, 0u8)
             .unwrap();
         buffer.with_mut(0..buffer.len(), |data| data.copy_from_slice(in_buffer));
@@ -801,5 +906,16 @@ impl NvmeController {
             return Err(ErrorKind::Other.into());
         }
         Ok(())
+    }
+}
+
+impl<'a> Future for InflightRequest<'a> {
+    type Output = std::io::Result<CommonCompletion>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.req.async_poll(&*self, cx)
     }
 }

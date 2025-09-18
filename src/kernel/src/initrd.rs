@@ -1,13 +1,11 @@
 use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
+use log::{debug, info};
 use twizzler_abi::{
     meta::{MetaExt, MetaFlags, MetaInfo, MEXT_SIZED},
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_rt_abi::object::Nonce;
-
-use log::info;
-use log::debug;
 
 use crate::{
     memory::{
@@ -70,9 +68,10 @@ pub fn init(modules: &[BootModule]) {
             let mut total = 0;
             let mut pagenr = 1;
             while total < data.len() {
-                let page = Page::new(alloc_frame(
-                    FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
-                ));
+                let page = Page::new(
+                    alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
+                    1,
+                );
                 let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
                 let thislen = core::cmp::min(4096, data.len() - total);
                 unsafe {
@@ -102,9 +101,10 @@ pub fn init(modules: &[BootModule]) {
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
-            let page = Page::new(alloc_frame(
-                FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
-            ));
+            let page = Page::new(
+                alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
+                1,
+            );
             let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
             unsafe {
                 va.copy_from(buffer.as_ptr(), 0x1000);

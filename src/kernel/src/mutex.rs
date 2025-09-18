@@ -151,6 +151,15 @@ impl<T> Mutex<T> {
         queue.owned = false;
         if let Some(thread) = queue.queue.pop_front() {
             drop(queue);
+            let mut i = 0;
+            while thread.is_critical() {
+                arch::processor::spin_wait_iteration();
+                core::hint::spin_loop();
+                i += 1;
+                if i == 1000 {
+                    log::warn!("critical thread in queue won't drop critical flag");
+                }
+            }
             schedule_thread(thread);
         } else {
             queue.pri = None;

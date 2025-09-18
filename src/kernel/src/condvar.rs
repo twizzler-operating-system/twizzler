@@ -111,8 +111,8 @@ impl CondVar {
 
     pub fn signal(&self) {
         const MAX_PER_ITER: usize = 8;
-        let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
         loop {
+            let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
@@ -128,7 +128,7 @@ impl CondVar {
             }
 
             drop(inner);
-            for t in threads_to_wake.drain(..) {
+            for t in threads_to_wake {
                 add_to_requeue(t);
             }
         }

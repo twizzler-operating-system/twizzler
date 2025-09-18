@@ -1,12 +1,8 @@
-use alloc::{
-    collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-    vec::Vec,
-};
 use core::u64;
 
-use stable_vec::StableVec;
+use intrusive_collections::RBTree;
 use twizzler_abi::{
-    object::{ObjID, NULLPAGE_SIZE},
+    object::NULLPAGE_SIZE,
     pager::{
         KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectInfo, ObjectRange, PhysRange,
         RequestFromKernel,
@@ -14,12 +10,15 @@ use twizzler_abi::{
     syscall::LifetimeType,
 };
 
-use super::{request::ReqKind, Request};
+use super::{
+    request::{ReqKind, RequestMapAdapter},
+    Request,
+};
 use crate::thread::{CriticalGuard, ThreadRef};
 
 pub struct Inflight {
     id: usize,
-    rk: ReqKind,
+    pub rk: ReqKind,
     needs_send: bool,
 }
 
@@ -69,83 +68,63 @@ impl Inflight {
     }
 }
 
-#[derive(Default)]
-struct PerObjectData {
-    page_map: BTreeMap<usize, BTreeSet<usize>>,
-    info_list: BTreeSet<usize>,
-    sync_list: BTreeSet<usize>,
-}
-
-impl PerObjectData {
-    fn insert(&mut self, rk: ReqKind, id: usize) {
-        for page in rk.pages() {
-            self.page_map.entry(page).or_default().insert(id);
-        }
-        if rk.needs_info() {
-            self.info_list.insert(id);
-        }
-        if rk.needs_sync() {
-            self.sync_list.insert(id);
-        }
-    }
-
-    fn remove_all(&mut self, rk: &ReqKind, id: usize) {
-        for page in rk.pages() {
-            self.page_map.entry(page).or_default().remove(&id);
-        }
-        if rk.needs_info() {
-            self.info_list.remove(&id);
-        }
-        if rk.needs_sync() {
-            self.sync_list.remove(&id);
-        }
-    }
-}
-
+pub(super) const NR_REQUESTS: usize = 256;
+use bitset_core::BitSet;
 pub(super) struct InflightManager {
-    requests: StableVec<Request>,
-    req_map: BTreeMap<ReqKind, usize>,
-    per_object: BTreeMap<ObjID, PerObjectData>,
+    requests: [Option<Request>; NR_REQUESTS],
+    avail: [u64; NR_REQUESTS / 64],
+    req_map: RBTree<RequestMapAdapter>,
     pager_ready: bool,
 }
 
 impl InflightManager {
     pub fn new() -> Self {
         Self {
-            requests: StableVec::new(),
-            req_map: BTreeMap::new(),
-            per_object: BTreeMap::new(),
+            requests: [const { None }; NR_REQUESTS],
+            avail: [!0; NR_REQUESTS / 64],
+            req_map: RBTree::new(RequestMapAdapter::NEW),
             pager_ready: false,
         }
     }
 
-    pub fn add_request(&mut self, rk: ReqKind) -> Inflight {
-        if let Some(id) = self.req_map.get(&rk) {
-            return Inflight::new(*id, rk, false);
+    pub fn add_request(&mut self, rk: ReqKind) -> Option<Inflight> {
+        if let Some(req) = self.req_map.find(&rk).get() {
+            log::trace!(
+                "found existing request {:?} for request {:?}",
+                req.reqkind(),
+                rk
+            );
+            return Some(Inflight::new(req.id, rk, false));
         }
-        let id = self.requests.next_push_index();
+
+        let mut id = None;
+        for b in 0..NR_REQUESTS {
+            if self.avail.bit_test(b) {
+                self.avail.bit_reset(b);
+                id = Some(b);
+                break;
+            }
+        }
+
+        let Some(id) = id else {
+            return None;
+        };
         let request = Request::new(id, rk.clone());
-        self.requests.push(request);
-        self.req_map.insert(rk.clone(), id);
-        if let Some(objid) = rk.objid() {
-            let per_obj = self
-                .per_object
-                .entry(objid)
-                .or_insert_with(|| PerObjectData::default());
-            per_obj.insert(rk.clone(), id);
-        }
-        Inflight::new(id, rk, true)
+        assert!(self.requests[id].is_none());
+        self.requests[id] = Some(request);
+        let request = self.requests[id].as_ref().unwrap();
+        self.req_map
+            .insert(unsafe { (request as *const Request).as_ref().unwrap_unchecked() });
+        Some(Inflight::new(id, rk, true))
     }
 
-    fn remove_request(&mut self, id: usize) {
-        let Some(request) = self.requests.get(id) else {
-            return;
-        };
-        self.req_map.remove(&request.reqkind());
-        if let Some(objid) = request.reqkind().objid() {
-            if let Some(po) = self.per_object.get_mut(&objid) {
-                po.remove_all(request.reqkind(), id);
-            }
+    pub fn remove_request(&mut self, rk: &ReqKind) {
+        if let Some(request) = self.req_map.find_mut(rk).remove() {
+            request.mark_done();
+            request.signal();
+            let id = request.id;
+            self.avail.bit_set(id);
+            self.requests[id] = None;
         }
     }
 
@@ -154,55 +133,24 @@ impl InflightManager {
         inflight: &Inflight,
         thread: &'a ThreadRef,
     ) -> Option<CriticalGuard<'a>> {
-        let Some(request) = self.requests.get_mut(inflight.id) else {
+        let Some(Some(request)) = self.requests.get_mut(inflight.id) else {
             return None;
         };
         request.setup_wait(thread)
     }
 
-    pub fn cmd_ready(&mut self, objid: ObjID, sync: bool) {
-        let mut done = Vec::new();
-        if let Some(po) = self.per_object.get_mut(&objid) {
-            let list = if sync { &po.sync_list } else { &po.info_list };
-            for id in list {
-                if let Some(req) = self.requests.get_mut(*id) {
-                    req.cmd_ready();
-                    if req.done() {
-                        req.signal();
-                        done.push(*id);
-                    }
-                } else {
-                    logln!("[pager] warning -- stale ID");
-                }
-            }
-        }
-        for id in done {
-            self.remove_request(id);
+    pub fn request_ready(&mut self, rk: &ReqKind) {
+        let cursor = self.req_map.find_mut(rk);
+        if let Some(request) = cursor.get() {
+            request.mark_done();
+            request.signal();
+        } else {
+            log::warn!("failed to find request: {:?}", rk);
         }
     }
 
-    pub fn pages_ready(&mut self, objid: ObjID, pages: impl IntoIterator<Item = usize>) {
-        let mut done = Vec::new();
-        if let Some(po) = self.per_object.get_mut(&objid) {
-            for page in pages {
-                if let Some(idset) = po.page_map.get(&page) {
-                    for id in idset {
-                        if let Some(req) = self.requests.get_mut(*id) {
-                            req.page_ready(page);
-                            if req.done() {
-                                req.signal();
-                                done.push(*id);
-                            }
-                        } else {
-                            logln!("[pager] warning -- stale ID");
-                        }
-                    }
-                }
-            }
-        }
-        for id in done {
-            self.remove_request(id);
-        }
+    pub fn with_request<R>(&mut self, rk: &ReqKind, f: impl FnOnce(&Request) -> R) -> Option<R> {
+        Some(f(self.req_map.find_mut(rk).get()?))
     }
 
     pub fn set_ready(&mut self) {

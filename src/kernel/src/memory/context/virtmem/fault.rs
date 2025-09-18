@@ -28,7 +28,7 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
-    // logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {

@@ -12,7 +12,7 @@ use crate::syscall::{
 };
 
 /// Simple mutex, supporting sleeping and wakeup. Does no attempt at handling priority or fairness.
-pub(crate) struct MutexImp {
+pub struct MutexImp {
     lock: AtomicU64,
 }
 

@@ -125,7 +125,7 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 // alloc.h
 
-use twizzler_rt_abi::bindings::{ZERO_MEMORY, alloc_flags, io_ctx};
+use twizzler_rt_abi::bindings::{ZERO_MEMORY, alloc_flags, io_ctx, release_flags};
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
     sz: usize,
@@ -404,10 +404,13 @@ pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -
 check_ffi_type!(twz_rt_map_object, _, _);
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn twz_rt_release_handle(handle: *mut object_handle) {
-    OUR_RUNTIME.release_handle(handle)
+pub unsafe extern "C-unwind" fn twz_rt_release_handle(
+    handle: *mut object_handle,
+    flags: release_flags,
+) {
+    OUR_RUNTIME.release_handle(handle, flags)
 }
-check_ffi_type!(twz_rt_release_handle, _);
+check_ffi_type!(twz_rt_release_handle, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(

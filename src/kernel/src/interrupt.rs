@@ -200,15 +200,17 @@ impl GlobalInterruptState {
 
 static GLOBAL_INT: Once<GlobalInterruptState> = Once::new();
 fn get_global_interrupts() -> &'static GlobalInterruptState {
-    let mut v = Vec::new();
-    for i in 0..NUM_VECTORS {
-        v.push(Interrupt::new(i));
-    }
-    GLOBAL_INT.call_once(|| GlobalInterruptState {
-        ints: v,
-        device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
-        device_waiters: [const { Spinlock::new(LinkedList::new(MutexLinkAdapter::NEW)) };
-            MAX_VECTOR + 1],
+    GLOBAL_INT.call_once(|| {
+        let mut v = Vec::new();
+        for i in 0..NUM_VECTORS {
+            v.push(Interrupt::new(i));
+        }
+        GlobalInterruptState {
+            ints: v,
+            device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
+            device_waiters: [const { Spinlock::new(LinkedList::new(MutexLinkAdapter::NEW)) };
+                MAX_VECTOR + 1],
+        }
     })
 }
 
@@ -322,11 +324,6 @@ pub fn external_interrupt_entry(number: u32) {
     let vectors = gi.device_vectors[number as usize].lock();
     if !vectors.is_empty() && !vectors.is_full() {
         for di in vectors.iter() {
-            log::trace!(
-                "got external interrupt {}, storing to word {:p}",
-                number,
-                di.raw_word
-            );
             unsafe {
                 di.raw_word
                     .as_ref_unchecked()
