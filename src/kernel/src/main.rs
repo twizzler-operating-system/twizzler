@@ -67,6 +67,7 @@ use processor::{
     sched::{schedule, SchedFlags},
 };
 use random::start_entropy_contribution_thread;
+use syscall::sync::requeue_all;
 
 use crate::{processor::mp::current_processor, thread::entry::start_new_init};
 
@@ -235,7 +236,9 @@ pub fn idle_main() -> ! {
         {
             current_processor().cleanup_exited();
         }
+        requeue_all();
         schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
+        requeue_all();
         arch::processor::halt_and_wait();
     }
 }

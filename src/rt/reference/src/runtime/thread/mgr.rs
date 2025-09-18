@@ -228,7 +228,6 @@ impl ReferenceRuntime {
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
-        trace!("joining on thread {} with timeout {:?}", id, timeout);
         let repr = {
             let mut inner = THREAD_MGR.inner.lock();
             inner.scan_for_exited_except(id);
@@ -249,7 +248,6 @@ impl ReferenceRuntime {
                 let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);
                 inner.do_thread_gc();
-                trace!("join {} completed", id);
                 return Ok(());
             }
         }

@@ -89,6 +89,7 @@ enum SubCommand {
     Hw,
     Rdb,
     Preload,
+    Big,
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
@@ -268,6 +269,15 @@ fn main() {
             sys_object_ctrl(id, twizzler_abi::syscall::ObjectControlCmd::Preload).unwrap();
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
+        }
+        SubCommand::Big => {
+            let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
+            let obj = unsafe { obj.as_mut().unwrap() };
+            const LEN: usize = 4096 * 128;
+            let mut obj = unsafe { obj.cast::<[u8; LEN]>() };
+            let mut base = obj.base_mut();
+            base.fill(24);
+            obj.sync().unwrap();
         }
         SubCommand::Rdb => {
             println!("in progress");

@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::NUM_DEVICE_INTERRUPTS,
+    object::ObjID,
     syscall::{ThreadSyncFlags, ThreadSyncOp},
 };
 
@@ -15,41 +16,47 @@ use crate::{
 };
 
 struct SleepEntry {
-    threads: FnvIndexMap<u64, ThreadRef, 16>,
+    of_obj: ObjID,
+    threads: FnvIndexMap<ObjID, ThreadRef, 16>,
 }
 
 impl SleepEntry {
-    pub fn new(thread: ThreadRef) -> Self {
+    pub fn new(thread: ThreadRef, of_obj: ObjID) -> Self {
         let mut threads = FnvIndexMap::new();
-        let _ = threads.insert(thread.id(), thread);
-        Self { threads }
+        let _ = threads.insert(thread.objid(), thread);
+        Self { threads, of_obj }
     }
 
     pub fn add_thread(&mut self, thread: ThreadRef) {
-        if let Err((_, thread)) = self.threads.insert(thread.id(), thread) {
+        let ret = self.threads.insert(thread.objid(), thread);
+        if let Err((_, thread)) = ret {
             log::warn!("overflowed thread sleep list");
             self.wake_n(2);
             return self.add_thread(thread);
         }
     }
 
-    pub fn remove_thread(&mut self, id: u64) {
+    pub fn remove_thread(&mut self, id: ObjID) {
         self.threads.remove(&id);
     }
 
     pub fn wake_n(&mut self, max_count: usize) -> usize {
         let mut count = 0;
-        for idx in 0..self.threads.capacity() {
+        let mut idx = 0;
+        while idx < self.threads.capacity() {
             if count >= max_count {
                 break;
             }
             if let Some((id, thread)) = self.threads.get_index(idx) {
                 if thread.reset_sync_sleep() {
-                    let nid = *id;
-                    add_to_requeue(self.threads.remove(&nid).unwrap());
+                    let id = *id;
+                    add_to_requeue(self.threads.remove(&id).unwrap());
                     count += 1;
+                    // Don't increment idx here, since we called remove.
+                    continue;
                 }
             }
+            idx += 1;
         }
         return count;
     }
@@ -69,15 +76,17 @@ impl Drop for SleepEntry {
 }
 
 pub struct SleepInfo {
+    of_obj: ObjID,
     some_words: FnvIndexMap<usize, SleepEntry, 16>,
     more_words: Option<BTreeMap<usize, SleepEntry>>,
 }
 
 impl SleepInfo {
-    pub fn new() -> Self {
+    pub fn new(of_obj: ObjID) -> Self {
         SleepInfo {
             some_words: FnvIndexMap::new(),
             more_words: None,
+            of_obj,
         }
     }
 
@@ -94,12 +103,15 @@ impl SleepInfo {
             se.add_thread(thread);
         } else {
             if let Some(words) = self.more_words.as_mut() {
-                words.insert(offset, SleepEntry::new(thread));
+                words.insert(offset, SleepEntry::new(thread, self.of_obj));
             } else {
-                match self.some_words.insert(offset, SleepEntry::new(thread)) {
+                match self
+                    .some_words
+                    .insert(offset, SleepEntry::new(thread, self.of_obj))
+                {
                     Ok(_) => {}
                     Err((_, se)) => {
-                        log::info!("overflowing sleep entries");
+                        log::warn!("overflowing sleep entries");
                         // Clear the old words, wake up all those threads.
                         self.some_words.clear();
                         let mw = self.more_words.get_or_insert(BTreeMap::new());
@@ -110,7 +122,7 @@ impl SleepInfo {
         }
     }
 
-    pub fn remove(&mut self, offset: usize, thread_id: u64) {
+    pub fn remove(&mut self, offset: usize, thread_id: ObjID) {
         if let Some(se) = self.word(offset) {
             se.remove_thread(thread_id);
         }
@@ -178,6 +190,13 @@ impl Object {
             .map(|vaddr| vaddr.load(Ordering::SeqCst))
             .unwrap_or_else(|| unsafe { self.read_atomic_u64(offset) });
         let res = op.check(cur, val, flags);
+        log::trace!(
+            "thread {} ({}) setting sleep word on {} (did sleep? {})",
+            thread.id(),
+            thread.objid(),
+            self.id(),
+            res,
+        );
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
@@ -221,6 +240,6 @@ impl Object {
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
-        sleep_info.remove(offset, thread.id());
+        sleep_info.remove(offset, thread.objid());
     }
 }

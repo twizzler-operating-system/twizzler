@@ -241,7 +241,7 @@ impl Object {
             id,
             flags: AtomicU32::new(0),
             range_tree: Mutex::new(range::PageRangeTree::new(id)),
-            sleep_info: Mutex::new(SleepInfo::new()),
+            sleep_info: Mutex::new(SleepInfo::new(id)),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
             ties: ties.to_vec(),
