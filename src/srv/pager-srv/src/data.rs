@@ -31,14 +31,6 @@ use crate::{
     PagerContext,
 };
 
-type PageNum = u64;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PerPageData {
-    paddr: u64,
-    version: u64,
-}
-
 #[derive(Default)]
 pub struct PerObjectInner {
     #[allow(dead_code)]
@@ -120,6 +112,7 @@ impl PerObject {
             pages
         };
         let pages_done = Instant::now();
+        let mut page_count = 0;
         let mut reqs = pages
             .into_iter()
             .filter_map(|p| {
@@ -128,6 +121,7 @@ impl PerObject {
                         start_page = 0;
                     }
                     let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
+                    page_count += nr_pages;
                     assert_eq!(nr_pages, p.0.page_count());
                     Some(PageRequest::new_from_list(
                         p.1,
@@ -139,6 +133,13 @@ impl PerObject {
                 }
             })
             .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+        if page_count >= 1024 {
+            tracing::info!(
+                "pager starting large sync for {}: {}MB",
+                self.id,
+                (page_count as u64 * PAGE) / (1024 * 1024)
+            );
+        }
         let reqs_done = Instant::now();
         let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
             Err(e) => {
@@ -156,7 +157,14 @@ impl PerObject {
             Ok(count) => count,
         };
         let io_done = Instant::now();
-
+        if page_count >= 1024 {
+            tracing::info!(
+                "pager finished large sync for {}: {}ms, {}ms",
+                self.id,
+                (reqs_done - pages_done).as_millis(),
+                (io_done - reqs_done).as_millis(),
+            );
+        }
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_all();
@@ -188,7 +196,7 @@ impl PerObject {
             inner.track(info.range, info.phys, info.version);
             (
                 0,
-                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty()),
+                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
             )
         }
     }

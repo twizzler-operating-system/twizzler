@@ -193,15 +193,22 @@ impl Thread {
     }
 
     #[inline]
-    pub fn exit_critical(&self) {
+    pub fn exit_critical(&self, loc: &'static core::panic::Location) {
         let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
+        if res == 0 {
+            panic!("critical underflow, critical from {}", loc);
+        }
         assert!(res > 0);
     }
 
-    #[inline]
+    //#[inline]
+    #[track_caller]
     pub fn enter_critical(&self) -> CriticalGuard {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
-        CriticalGuard { thread: self }
+        CriticalGuard {
+            thread: self,
+            loc: core::panic::Location::caller(),
+        }
     }
 
     #[inline]
@@ -404,11 +411,12 @@ impl Ord for Thread {
 
 pub struct CriticalGuard<'a> {
     thread: &'a Thread,
+    loc: &'static core::panic::Location<'static>,
 }
 
 impl<'a> Drop for CriticalGuard<'a> {
     fn drop(&mut self) {
-        self.thread.exit_critical();
+        self.thread.exit_critical(self.loc);
     }
 }
 

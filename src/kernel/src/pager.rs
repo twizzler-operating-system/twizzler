@@ -154,7 +154,7 @@ pub fn sync_region(
     version: u64,
 ) {
     // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.
-    let shadow = Shadow::from(region);
+    let _shadow = Shadow::from(region);
     let req = ReqKind::new_sync_region(region.object(), None, dirty_set, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
@@ -240,7 +240,7 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
     } else {
         count_to_end.min(1024)
     }
-    .min(16);
+    .min(1024);
     log::trace!(
         "get page: {} {:?} {}",
         pn,

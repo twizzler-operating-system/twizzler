@@ -591,12 +591,7 @@ impl NvmeController {
     ) -> std::io::Result<()> {
         let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let buffer = self
-            .inner
-            .dma_pool
-            .dma
-            .allocate([0u8; DMA_PAGE_SIZE])
-            .unwrap();
+        let buffer = self.inner.dma_pool.get_page().unwrap();
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
             .get_dptr(
@@ -610,15 +605,17 @@ impl NvmeController {
             .unwrap();
 
         let cc = inflight.await?;
-        tracing::trace!("blocking read took {}us", start.elapsed().as_micros());
+        tracing::trace!("async read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());
         }
         buffer.dma_region().with(|data| {
             out_buffer.copy_from_slice(&data[offset..DMA_PAGE_SIZE]);
-            Ok(())
-        })
+        });
+        self.inner.dma_pool.put_page(buffer.into_inner());
+
+        Ok(())
     }
 
     pub fn blocking_read_page(
@@ -665,13 +662,9 @@ impl NvmeController {
         in_buffer: &[u8],
         offset: usize,
     ) -> std::io::Result<()> {
+        let start = Instant::now();
         let nr_blocks = DMA_PAGE_SIZE / self.blocking_get_lba_size();
-        let mut buffer = self
-            .inner
-            .dma_pool
-            .dma
-            .allocate([0u8; DMA_PAGE_SIZE])
-            .unwrap();
+        let mut buffer = self.inner.dma_pool.get_page().unwrap();
         buffer.with_mut(|data| data[offset..(offset + in_buffer.len())].copy_from_slice(in_buffer));
         let mut buffer = NvmeDmaRegion::new(buffer);
         let dptr = (&mut buffer)
@@ -686,6 +679,8 @@ impl NvmeController {
             .unwrap();
 
         let cc = inflight.await?;
+        tracing::trace!("async write took {}us", start.elapsed().as_micros());
+        self.inner.dma_pool.put_page(buffer.into_inner());
 
         if cc.status().is_error() {
             return Err(ErrorKind::Other.into());

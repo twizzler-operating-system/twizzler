@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
@@ -36,7 +37,9 @@ use crate::{
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
     spinlock::Spinlock,
+    syscall::sync::sys_thread_sync,
     thread::{
+        current_thread_ref,
         entry::{run_closure_in_new_thread, start_new_kernel},
         priority::Priority,
     },
@@ -264,10 +267,13 @@ pub(super) fn pager_compl_handler_main() {
     let mut elapsed = 0;
     let mut last_ticks;
     let mut current_ticks = None;
+    let current_thread = current_thread_ref().unwrap();
     loop {
         last_ticks = current_ticks;
         current_ticks = crate::time::bench_clock().map(|bc| bc.read());
+        assert!(!current_thread.is_critical());
         let completion = sender.queue.recv_completion();
+        assert!(!current_thread.is_critical());
 
         count += 1;
 
@@ -291,7 +297,8 @@ pub(super) fn pager_compl_handler_main() {
             logln!("warn -- received completion for unknown request");
             continue;
         };
-        log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
+        assert!(!current_thread.is_critical());
+        //log::info!("got completion for {:?}: {:?}", request.req, completion.1);
 
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
@@ -310,6 +317,7 @@ pub(super) fn pager_compl_handler_main() {
             //twizzler_abi::pager::KernelCompletionData::Okay => {
             //}
         };
+        assert!(!current_thread.is_critical());
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
             let mut mgr = inflight_mgr().lock();
@@ -323,21 +331,22 @@ pub(super) fn pager_compl_handler_main() {
 pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
-    let old = sender
-        .idmap
-        .lock()
-        .insert(
-            id,
-            SentRequestInfo {
-                req,
-                obj: obj.cloned(),
-                reqkind,
-            },
-        )
-        .unwrap();
-    if let Some(old) = old {
-        logln!(
-            "warn -- replaced old item on request index ({}: {:?} -> {:?})",
+    let mut old = sender.idmap.lock().insert(
+        id,
+        SentRequestInfo {
+            req,
+            obj: obj.cloned(),
+            reqkind,
+        },
+    );
+    while let Err((id, sri)) = old {
+        log::warn!("overflowing pager queue, waiting...");
+        let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(200)));
+        old = sender.idmap.lock().insert(id, sri);
+    }
+    if let Ok(Some(ref old)) = old {
+        log::warn!(
+            "replaced old item on request index ({}: {:?} -> {:?})",
             id,
             old,
             req

@@ -24,6 +24,7 @@ pub struct NvmeDmaRegion<T: DeviceSync> {
 pub struct CachedDmaPool {
     pub dma: DmaPool,
     reuse: Mutex<Vec<DmaSliceRegion<u64>>>,
+    reuse_pages: Mutex<Vec<DmaRegion<[u8; DMA_PAGE_SIZE]>>>,
 }
 
 impl CachedDmaPool {
@@ -31,7 +32,21 @@ impl CachedDmaPool {
         Self {
             dma,
             reuse: Mutex::new(Vec::new()),
+            reuse_pages: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn get_page(&self) -> Option<DmaRegion<[u8; DMA_PAGE_SIZE]>> {
+        if let Ok(mut reuse) = self.reuse_pages.try_lock() {
+            if !reuse.is_empty() {
+                return Some(reuse.pop().unwrap());
+            }
+        }
+        self.dma.allocate([0u8; DMA_PAGE_SIZE]).ok()
+    }
+
+    pub fn put_page(&self, page: DmaRegion<[u8; DMA_PAGE_SIZE]>) {
+        self.reuse_pages.lock().unwrap().push(page);
     }
 
     fn get(&self) -> Option<DmaSliceRegion<u64>> {
@@ -62,6 +77,10 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
 
     pub fn dma_region_mut(&mut self) -> &mut DmaRegion<T> {
         &mut self.reg
+    }
+
+    pub fn into_inner(self) -> DmaRegion<T> {
+        self.reg
     }
 }
 

@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    time::Instant,
+};
 
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
@@ -12,10 +15,10 @@ use twizzler::{
     },
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
-    object::{MapFlags, ObjID, Object, ObjectBuilder, RawObject},
+    object::{MapFlags, ObjID, Object, ObjectBuilder},
 };
 use twizzler_abi::syscall::sys_object_ctrl;
-use twizzler_rt_abi::{bindings::twz_rt_object_cmd, error::TwzError, object::ObjectHandle};
+use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
 
 #[allow(dead_code)]
 #[derive(Invariant)]
@@ -273,15 +276,24 @@ fn main() {
         SubCommand::Big => {
             let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
             let obj = unsafe { obj.as_mut().unwrap() };
-            const LEN: usize = 4096 * 1024;
+            const LEN: usize = 1024 * 1024 * 800;
             let mut obj = unsafe { obj.cast::<[u8; LEN]>() };
+            println!("filling...");
+            let start = Instant::now();
             let mut base = obj.base_mut();
             base.fill(27);
+            println!("{}ms. syncing...", start.elapsed().as_millis());
+            let start = Instant::now();
             obj.sync().unwrap();
+            println!("=> {}ms", start.elapsed().as_millis());
             println!("okay, rewriting and syncing");
+            let start = Instant::now();
             let mut base = obj.base_mut();
             base.fill(24);
+            println!("{}ms. syncing...", start.elapsed().as_millis());
+            let start = Instant::now();
             obj.sync().unwrap();
+            println!("=> {}ms", start.elapsed().as_millis());
         }
         SubCommand::Rdb => {
             println!("in progress");
