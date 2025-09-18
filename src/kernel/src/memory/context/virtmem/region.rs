@@ -430,13 +430,13 @@ impl MapRegion {
 
                 if sync_info.flags.contains(SyncFlags::DURABLE) {
                     let dirty_pages = self.object().dirty_set().drain_all();
-                    log::debug!(
+                    log::trace!(
                         "sync region {:?} with dirty pages {:?}",
                         self.range,
                         dirty_pages
                     );
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages, sync_info, version);
+                        crate::pager::sync_region(self, dirty_pages.as_slice(), sync_info, version);
                     }
                 }
 

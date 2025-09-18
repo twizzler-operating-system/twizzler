@@ -146,7 +146,7 @@ impl ReqKind {
     pub fn new_sync_region(
         object: &ObjectRef,
         shadow: Option<Shadow>,
-        dirty_set: Vec<(PageNumber, usize)>,
+        dirty_set: &[(PageNumber, usize)],
         sync_info: SyncInfo,
         version: u64,
     ) -> Self {

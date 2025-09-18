@@ -122,14 +122,21 @@ impl PerObject {
         let pages_done = Instant::now();
         let mut reqs = pages
             .into_iter()
-            .map(|p| {
-                let mut start_page = p.0.pages().next().unwrap();
-                if p.0.start == (MAX_SIZE as u64) - PAGE {
-                    start_page = 0;
+            .filter_map(|p| {
+                if let Some(mut start_page) = p.0.pages().next() {
+                    if p.0.start == (MAX_SIZE as u64) - PAGE {
+                        start_page = 0;
+                    }
+                    let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
+                    assert_eq!(nr_pages, p.0.page_count());
+                    Some(PageRequest::new_from_list(
+                        p.1,
+                        start_page as i64,
+                        nr_pages as u32,
+                    ))
+                } else {
+                    None
                 }
-                let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
-                assert_eq!(nr_pages, p.0.page_count());
-                PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
             .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
         let reqs_done = Instant::now();

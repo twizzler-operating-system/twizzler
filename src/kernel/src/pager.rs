@@ -149,14 +149,13 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 
 pub fn sync_region(
     region: &MapRegion,
-    dirty_set: Vec<(PageNumber, usize)>,
+    dirty_set: &[(PageNumber, usize)],
     sync_info: SyncInfo,
     version: u64,
 ) {
     // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.
     let shadow = Shadow::from(region);
-    let req =
-        ReqKind::new_sync_region(region.object(), None, dirty_set.clone(), sync_info, version);
+    let req = ReqKind::new_sync_region(region.object(), None, dirty_set, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
