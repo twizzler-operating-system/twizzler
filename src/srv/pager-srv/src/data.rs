@@ -3,6 +3,7 @@ use std::{
     future::Future,
     sync::{Arc, Mutex},
     task::Waker,
+    time::Instant,
 };
 
 use itertools::Itertools;
@@ -42,29 +43,25 @@ pub struct PerPageData {
 pub struct PerObjectInner {
     #[allow(dead_code)]
     id: ObjID,
-    sync_map: HashMap<PageNum, PerPageData>,
+    sync_map: Vec<(ObjectRange, PhysRange, u64)>,
     syncing: bool,
 }
 
 impl PerObjectInner {
     pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange, version: u64) {
-        assert_eq!(obj_range.len(), phys_range.len());
+        self.sync_map.push((obj_range, phys_range, version));
+        /*
         for (op, pp) in obj_range.pages().zip(phys_range.pages()) {
             let entry = self.sync_map.entry(op).or_default();
             if entry.version <= version {
                 entry.paddr = pp * PAGE;
             }
         }
+        */
     }
 
     fn drain_pending_syncs(&mut self) -> impl Iterator<Item = (ObjectRange, PhysRange, u64)> + '_ {
-        self.sync_map.drain().map(|(obj_page, pp)| {
-            (
-                ObjectRange::new(obj_page * PAGE, (obj_page + 1) * PAGE),
-                PhysRange::new(pp.paddr, pp.paddr + PAGE),
-                pp.version,
-            )
-        })
+        self.sync_map.drain(..)
     }
 
     pub fn new(id: ObjID) -> Self {
@@ -90,6 +87,7 @@ impl PerObject {
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
     ) -> (usize, CompletionToKernel) {
+        let start = Instant::now();
         let pages = {
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version);
@@ -119,9 +117,9 @@ impl PerObject {
                     }
                 })
                 .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
-            tracing::debug!("drained {:?}", pages);
             pages
         };
+        let pages_done = Instant::now();
         let mut reqs = pages
             .into_iter()
             .map(|p| {
@@ -129,11 +127,12 @@ impl PerObject {
                 if p.0.start == (MAX_SIZE as u64) - PAGE {
                     start_page = 0;
                 }
-                let nr_pages = p.1.len();
-                assert_eq!(nr_pages, p.0.pages().count());
+                let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
+                assert_eq!(nr_pages, p.0.page_count());
                 PageRequest::new_from_list(p.1, start_page as i64, nr_pages as u32)
             })
             .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+        let reqs_done = Instant::now();
         let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
             Err(e) => {
                 let mut inner = self.inner.1.lock().await;
@@ -149,11 +148,20 @@ impl PerObject {
             }
             Ok(count) => count,
         };
+        let io_done = Instant::now();
 
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_all();
+        let done = Instant::now();
 
+        tracing::debug!(
+            "==> {}ms {}ms {}ms {}ms",
+            (pages_done - start).as_millis(),
+            (reqs_done - pages_done).as_millis(),
+            (io_done - pages_done).as_millis(),
+            (done - io_done).as_millis()
+        );
         (
             count,
             CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),

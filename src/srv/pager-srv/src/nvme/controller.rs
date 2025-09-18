@@ -833,6 +833,43 @@ impl NvmeController {
         Ok(count)
     }
 
+    pub async fn sequential_write_async<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+    ) -> std::io::Result<usize> {
+        // TODO: get from controller
+        let start = Instant::now();
+        let count = phys.len().min(128);
+        let dptr = super::dma::get_prp_list_or_buffer(
+            &phys[0..count],
+            &self.inner.dma_pool,
+            PrpMode::Double,
+        )
+        .prp_list_or_buffer()
+        .dptr();
+        let lba_size = self.blocking_get_lba_size();
+        let lbas_per_page = PAGE_SIZE / lba_size;
+        let lba_start = disk_page_start * lbas_per_page as u64;
+        let nr_blocks = count * lbas_per_page;
+        let inflight = self
+            .send_write_page(lba_start, dptr, nr_blocks, true)
+            .unwrap();
+
+        let cc = inflight.await?;
+        tracing::trace!(
+            "async seq write took {}us ({} pages)",
+            start.elapsed().as_micros(),
+            count
+        );
+
+        if cc.status().is_error() {
+            tracing::warn!("got nvme error: {:?}", cc);
+            return Err(ErrorKind::Other.into());
+        }
+        Ok(count)
+    }
+
     pub fn blocking_write_pages<const NR: usize>(
         &self,
         lba_start: u64,

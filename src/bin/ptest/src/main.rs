@@ -12,10 +12,10 @@ use twizzler::{
     },
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
-    object::{MapFlags, ObjID, Object, ObjectBuilder},
+    object::{MapFlags, ObjID, Object, ObjectBuilder, RawObject},
 };
 use twizzler_abi::syscall::sys_object_ctrl;
-use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
+use twizzler_rt_abi::{bindings::twz_rt_object_cmd, error::TwzError, object::ObjectHandle};
 
 #[allow(dead_code)]
 #[derive(Invariant)]
@@ -273,8 +273,12 @@ fn main() {
         SubCommand::Big => {
             let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
             let obj = unsafe { obj.as_mut().unwrap() };
-            const LEN: usize = 4096 * 128;
+            const LEN: usize = 4096 * 1024;
             let mut obj = unsafe { obj.cast::<[u8; LEN]>() };
+            let mut base = obj.base_mut();
+            base.fill(27);
+            obj.sync().unwrap();
+            println!("okay, rewriting and syncing");
             let mut base = obj.base_mut();
             base.fill(24);
             obj.sync().unwrap();

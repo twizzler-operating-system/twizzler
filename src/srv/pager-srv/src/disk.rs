@@ -79,7 +79,8 @@ impl PagedDevice for Disk {
             .collect::<Vec<_>>();
         let count = self
             .ctrl
-            .sequential_write::<PAGE_SIZE>(start, phys.as_slice())?;
+            .sequential_write_async::<PAGE_SIZE>(start, phys.as_slice())
+            .await?;
         Ok(count)
     }
 

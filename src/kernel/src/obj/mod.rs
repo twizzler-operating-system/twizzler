@@ -9,6 +9,7 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
+use bitset_core::BitSet;
 use pages::PageRef;
 use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
@@ -521,31 +522,57 @@ pub fn no_exist(id: ObjID) {
 
 #[derive(Clone)]
 pub struct DirtySet {
-    set: Arc<Mutex<BTreeSet<PageNumber>>>,
+    set: Arc<Mutex<Vec<u8>>>,
 }
 
 impl DirtySet {
     pub fn new() -> Self {
         Self {
-            set: Arc::new(Mutex::new(BTreeSet::new())),
+            set: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn drain_all(&self) -> Vec<PageNumber> {
-        let dirty = self.set.lock().extract_if(|_| true).collect::<Vec<_>>();
-        dirty
+    pub fn drain_all(&self) -> Vec<(PageNumber, usize)> {
+        let mut set = self.set.lock();
+        let mut pages: Vec<(PageNumber, usize)> = Vec::new();
+        for b in 0..set.bit_len() {
+            if set.bit_test(b) {
+                if b > 0 && set.bit_test(b - 1) {
+                    pages.last_mut().unwrap().1 += 1;
+                } else {
+                    pages.push((PageNumber::from(b), 1));
+                }
+            }
+        }
+        set.fill(0);
+        pages
     }
 
     fn is_dirty(&self, pn: PageNumber) -> bool {
-        self.set.lock().contains(&pn)
+        let set = self.set.lock();
+        if pn.0 < set.bit_len() {
+            set.bit_test(pn.0)
+        } else {
+            false
+        }
     }
 
-    pub fn add_dirty(&self, pn: PageNumber) {
-        self.set.lock().insert(pn);
+    pub fn add_dirty(&self, pn: PageNumber, num: usize) {
+        let mut set = self.set.lock();
+        if pn.0 + num > set.bit_len() {
+            let add = ((pn.0 + num) - set.bit_len()) / 8 + 1;
+            set.extend((0..add).into_iter().map(|_| 0));
+        }
+        for i in 0..num {
+            set.bit_set(pn.0 + i);
+        }
     }
 
     fn reset_dirty(&self, pn: PageNumber) {
-        self.set.lock().remove(&pn);
+        let mut set = self.set.lock();
+        if pn.0 < set.bit_len() {
+            set.bit_reset(pn.0);
+        }
     }
 }
 

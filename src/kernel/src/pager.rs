@@ -10,7 +10,9 @@ use twizzler_abi::{
 
 use crate::{
     memory::{
-        context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
+        context::virtmem::region::{MapRegion, Shadow},
+        frame::PHYS_LEVEL_LAYOUTS,
+        tracker::FrameAllocFlags,
     },
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
@@ -147,12 +149,12 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 
 pub fn sync_region(
     region: &MapRegion,
-    dirty_set: Vec<PageNumber>,
+    dirty_set: Vec<(PageNumber, usize)>,
     sync_info: SyncInfo,
     version: u64,
 ) {
     // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.
-    //let shadow = Shadow::from(region);
+    let shadow = Shadow::from(region);
     let req =
         ReqKind::new_sync_region(region.object(), None, dirty_set.clone(), sync_info, version);
     let mut mgr = inflight_mgr().lock();

@@ -146,39 +146,49 @@ impl ReqKind {
     pub fn new_sync_region(
         object: &ObjectRef,
         shadow: Option<Shadow>,
-        mut dirty_set: Vec<PageNumber>,
+        dirty_set: Vec<(PageNumber, usize)>,
         sync_info: SyncInfo,
         version: u64,
     ) -> Self {
-        dirty_set.sort();
-        log::info!("dirty set: {:?}", dirty_set);
-
         let mut page_tree = object.lock_page_tree();
         let pages = dirty_set
             .iter()
-            .filter_map(|dirty_page| {
-                match page_tree.try_get_page(*dirty_page, GetPageFlags::empty()) {
-                    crate::obj::range::PageStatus::Ready(page_ref, _) => {
-                        Some((*dirty_page, page_ref.physical_address()))
-                    }
-                    _ => {
-                        logln!("warn -- no page found for page in dirty set");
-                        None
+            .flat_map(|dirty_page| {
+                let mut pages = Vec::new();
+                let mut off = 0;
+                while off < dirty_page.1 {
+                    match page_tree.try_get_page(dirty_page.0.offset(off), GetPageFlags::empty()) {
+                        crate::obj::range::PageStatus::Ready(page_ref, _) => {
+                            pages.push((
+                                dirty_page.0.offset(off),
+                                page_ref.physical_address(),
+                                page_ref.nr_pages(),
+                            ));
+                            off += page_ref.nr_pages();
+                        }
+                        _ => {
+                            logln!("warn -- no page found for page in dirty set");
+                            off += 1;
+                        }
                     }
                 }
+                pages
             })
             .collect::<Vec<_>>();
         drop(page_tree);
 
-        log::info!("pages: {:?}", pages);
         fn consecutive_slices(
-            data: &[(PageNumber, PhysAddr)],
-        ) -> impl Iterator<Item = &[(PageNumber, PhysAddr)]> {
+            data: &[(PageNumber, PhysAddr, usize)],
+        ) -> impl Iterator<Item = &[(PageNumber, PhysAddr, usize)]> {
             let mut slice_start = 0;
             (1..=data.len()).flat_map(move |i| {
                 if i == data.len()
-                    || data[i - 1].1.offset(PageNumber::PAGE_SIZE).unwrap() != data[i].1
-                    || data[i - 1].0.next() != data[i].0
+                    || data[i - 1]
+                        .1
+                        .offset(PageNumber::PAGE_SIZE * data[i - 1].2)
+                        .unwrap()
+                        != data[i].1
+                    || data[i - 1].0.offset(data[i - 1].2) != data[i].0
                 {
                     let begin = slice_start;
                     slice_start = i;
@@ -192,26 +202,23 @@ impl ReqKind {
         let slices = consecutive_slices(pages.as_slice()).collect::<Vec<_>>();
         let runs = slices.iter().enumerate().map(|(i, run)| {
             let is_last = i == slices.len() - 1;
+            let first = &run[0];
+            let last = run.last().unwrap();
             let range = ObjectRange::new(
-                run[0].0.as_byte_offset() as u64,
-                run.last().unwrap().0.offset(1).as_byte_offset() as u64,
+                first.0.as_byte_offset() as u64,
+                last.0.offset(last.2).as_byte_offset() as u64,
             );
 
             let phys = PhysRange::new(
-                run[0].1.raw(),
-                run.last()
-                    .unwrap()
-                    .1
-                    .offset(PageNumber::PAGE_SIZE)
-                    .unwrap()
-                    .raw(),
+                first.1.raw(),
+                last.1.offset(PageNumber::PAGE_SIZE * last.2).unwrap().raw(),
             );
             let flags = if is_last {
                 ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE
             } else {
                 ObjectEvictFlags::SYNC
             };
-            log::info!(
+            log::trace!(
                 "sync object {:?} pages {:?} => {:?} (is last: {})",
                 object.id(),
                 range,

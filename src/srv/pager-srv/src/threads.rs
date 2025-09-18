@@ -8,7 +8,7 @@ use std::{
 
 use async_executor::LocalExecutor;
 use async_io::block_on;
-use twizzler_abi::pager::{CompletionToKernel, RequestFromKernel};
+use twizzler_abi::pager::{CompletionToKernel, KernelCommand, ObjectEvictFlags, RequestFromKernel};
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::{request_handle::handle_kernel_request, PAGER_CTX};
@@ -138,12 +138,34 @@ fn kq_handler_main(
         }
 
         for (id, req) in tmp {
-            let wi = WorkItem::new(id, req);
-            workers.threads[i % workers.threads.len()]
-                .pending
-                .send_blocking(wi)
-                .unwrap();
-            i += 1;
+            if let KernelCommand::ObjectEvict(evict) = req.cmd() {
+                // Send all per-object evict streams to one thread so they preserve order.
+                if evict.flags.contains(ObjectEvictFlags::FENCE) {
+                    let wi = WorkItem::new(id, req);
+                    let idx = req.id().map_or(0, |x| x.parts()[0] ^ x.parts()[1]) + id as u64;
+                    workers.threads[(idx as usize) % workers.threads.len()]
+                        .pending
+                        .send_blocking(wi)
+                        .unwrap();
+                } else {
+                    let resp = run_async(handle_kernel_request(PAGER_CTX.get().unwrap(), id, req));
+                    for resp in resp {
+                        PAGER_CTX
+                            .get()
+                            .unwrap()
+                            .kernel_notify
+                            .complete(id, resp, SubmissionFlags::empty())
+                            .unwrap();
+                    }
+                }
+            } else {
+                let wi = WorkItem::new(id, req);
+                workers.threads[i % workers.threads.len()]
+                    .pending
+                    .send_blocking(wi)
+                    .unwrap();
+                i += 1;
+            }
         }
     }
 }
