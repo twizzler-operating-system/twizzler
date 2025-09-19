@@ -17,9 +17,9 @@ use crate::{
     instant::Instant,
     memory::context::virtmem::region::Shadow,
     obj::{range::GetPageFlags, ObjectRef, PageNumber},
-    processor::sched::schedule_thread,
     random::getrandom,
     spinlock::Spinlock,
+    syscall::sync::{add_all_to_requeue, requeue_all},
     thread::{CriticalGuard, ThreadRef},
 };
 
@@ -364,9 +364,9 @@ impl Request {
 
     pub fn signal(&self) {
         let mut waiters = self.waiters.lock();
-        while let Some(thread) = waiters.pop_front() {
-            schedule_thread(thread);
-        }
+        add_all_to_requeue(waiters.take().into_iter());
+        drop(waiters);
+        requeue_all();
     }
 
     pub fn setup_wait<'a>(&self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {
@@ -375,6 +375,7 @@ impl Request {
         }
         let critical = thread.enter_critical();
         self.waiters.lock().push_back(thread.clone());
+        thread.set_sync_sleep_done();
         Some(critical)
     }
 }

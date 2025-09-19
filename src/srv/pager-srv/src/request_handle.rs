@@ -178,6 +178,7 @@ async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<Object
 
 async fn handle_sync_region(
     ctx: &'static PagerContext,
+    id: u32,
     info: ObjectEvictInfo,
 ) -> CompletionToKernel {
     tracing::debug!("sync request: {:?}", info);
@@ -187,7 +188,16 @@ async fn handle_sync_region(
             KernelCompletionFlags::DONE,
         );
     }
-    ctx.data.sync_region(ctx, &info).await
+
+    if info.flags.contains(ObjectEvictFlags::FENCE) {
+        spawn_async(async move {
+            let comp = ctx.data.sync_region(ctx, &info).await;
+            ctx.notify_kernel(id, comp);
+        });
+        CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
+    } else {
+        ctx.data.sync_region(ctx, &info).await
+    }
 }
 
 pub async fn handle_kernel_request(
@@ -264,7 +274,7 @@ pub async fn handle_kernel_request(
             KernelCompletionData::Okay
         }
         KernelCommand::ObjectEvict(info) => {
-            return vec![handle_sync_region(ctx, info).await];
+            return vec![handle_sync_region(ctx, qid, info).await];
         }
     };
 

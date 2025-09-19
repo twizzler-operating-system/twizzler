@@ -18,7 +18,7 @@ use crate::{
     once::Once,
     processor::sched::{schedule, SchedFlags},
     spinlock::Spinlock,
-    syscall::sync::finish_blocking,
+    syscall::sync::{add_all_to_requeue, finish_blocking, requeue_all},
     thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, Thread, ThreadRef},
 };
 
@@ -127,6 +127,7 @@ impl MemoryTracker {
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
         self.waiters.lock().push_back(current_thread.clone());
+        current_thread.set_sync_sleep_done();
         self.trigger_reclaim();
         {
             current_thread.set_state(ExecutionState::Sleeping);
@@ -140,9 +141,9 @@ impl MemoryTracker {
 
     fn wake(&self) {
         let mut waiters = self.waiters.lock();
-        while let Some(waiter) = waiters.pop_back() {
-            crate::processor::sched::schedule_thread(waiter);
-        }
+        add_all_to_requeue(waiters.take().into_iter());
+        drop(waiters);
+        requeue_all();
     }
 
     fn trigger_reclaim(&self) {

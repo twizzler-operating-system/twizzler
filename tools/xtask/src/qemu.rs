@@ -82,7 +82,7 @@ impl QemuCommand {
             "PATH",
             format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
         );
-        let fs_type = "ext4";
+        let fs_type = "ext2";
         if !already_exists {
             println!("creating {} FS for image", fs_type);
             if !Command::new("mke2fs")

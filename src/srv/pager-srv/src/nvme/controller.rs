@@ -305,7 +305,7 @@ impl NvmeController {
             let cmd: CommonCommand = cmd.into();
             let inflight = admin_requester.submit(cmd).unwrap();
             loop {
-                if let Some(resp) = admin_requester.get_completion() {
+                if let Some((_, resp)) = admin_requester.get_completion() {
                     if resp.status().is_error() {
                         return Err(ErrorKind::Other.into());
                     }
@@ -332,7 +332,7 @@ impl NvmeController {
             let cmd: CommonCommand = cmd.into();
             let inflight = admin_requester.submit(cmd).unwrap();
             loop {
-                if let Some(resp) = admin_requester.get_completion() {
+                if let Some((_, resp)) = admin_requester.get_completion() {
                     if resp.status().is_error() {
                         return Err(ErrorKind::Other.into());
                     }
@@ -604,10 +604,13 @@ impl NvmeController {
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        let cc = inflight.await?;
+        let cc = inflight
+            .await
+            .inspect_err(|e| tracing::warn!("nvme err async_r_p: {}", e))?;
         tracing::trace!("async read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
+            tracing::warn!("got nvme err: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         buffer.dma_region().with(|data| {
@@ -678,11 +681,14 @@ impl NvmeController {
             .send_write_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        let cc = inflight.await?;
+        let cc = inflight
+            .await
+            .inspect_err(|e| tracing::warn!("nvme err async_w_p: {}", e))?;
         tracing::trace!("async write took {}us", start.elapsed().as_micros());
         self.inner.dma_pool.put_page(buffer.into_inner());
 
         if cc.status().is_error() {
+            tracing::warn!("got nvme err: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(())
@@ -818,7 +824,9 @@ impl NvmeController {
             .send_read_page(lba_start, dptr, nr_blocks, true)
             .unwrap();
 
-        let cc = inflight.await?;
+        let cc = inflight
+            .await
+            .inspect_err(|e| tracing::warn!("nvme err: {}", e))?;
         tracing::trace!("async seq read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
