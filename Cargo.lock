@@ -48,7 +48,7 @@ dependencies = [
  "getrandom 0.3.1",
  "once_cell",
  "version_check",
- "zerocopy",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -4233,12 +4233,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
-name = "managed"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
-
-[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4996,7 +4990,8 @@ dependencies = [
  "rand 0.8.5",
  "tracing",
  "tracing-subscriber",
- "volatile 0.6.1",
+ "twizzler",
+ "twizzler-abi",
 ]
 
 [[package]]
@@ -5482,7 +5477,7 @@ version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
- "zerocopy",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -5659,6 +5654,7 @@ checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -6487,7 +6483,7 @@ dependencies = [
  "byteorder",
  "cfg-if 1.0.0",
  "defmt 0.3.100",
- "heapless",
+ "heapless 0.8.0",
  "libc",
  "log",
  "managed",
@@ -8693,6 +8689,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2586fea28e186957ef732a5f8b3be2da217d65c5969d4b1e17f973ebbe876879"
 dependencies = [
  "zerocopy-derive 0.8.24",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.7.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
