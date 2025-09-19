@@ -17,6 +17,9 @@ use lwext4::{
 mod lwext4;
 
 fn errno_to_result(errno: i32) -> Result<()> {
+    if errno != 0 {
+        eprintln!("errno: {}", errno);
+    }
     match errno {
         0 => Ok(()),
         _ => Err(std::io::Error::from_raw_os_error(errno)),

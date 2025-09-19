@@ -23,9 +23,8 @@ use twizzler_abi::thread::ExecutionState;
 use crate::{
     arch,
     idcounter::StableId,
-    processor::sched::schedule_thread,
     spinlock::Spinlock,
-    syscall::sync::finish_blocking,
+    syscall::sync::{add_all_to_requeue, add_to_requeue, finish_blocking, requeue_all},
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
@@ -42,9 +41,8 @@ intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrus
 
 impl Drop for SleepQueue {
     fn drop(&mut self) {
-        while let Some(t) = self.queue.pop_front() {
-            schedule_thread(t);
-        }
+        add_all_to_requeue(self.queue.take().into_iter());
+        requeue_all();
     }
 }
 
@@ -119,6 +117,7 @@ impl<T> Mutex<T> {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
+                        thread.set_sync_sleep_done();
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
@@ -151,16 +150,8 @@ impl<T> Mutex<T> {
         queue.owned = false;
         if let Some(thread) = queue.queue.pop_front() {
             drop(queue);
-            let mut i = 0;
-            while thread.is_critical() {
-                arch::processor::spin_wait_iteration();
-                core::hint::spin_loop();
-                i += 1;
-                if i == 1000 {
-                    log::warn!("critical thread in queue won't drop critical flag");
-                }
-            }
-            schedule_thread(thread);
+            add_to_requeue(thread);
+            requeue_all();
         } else {
             queue.pri = None;
         }
