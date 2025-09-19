@@ -610,7 +610,7 @@ impl NvmeController {
         tracing::trace!("async read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme err: {:?}", cc);
+            tracing::warn!("got nvme err arp: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         buffer.dma_region().with(|data| {
@@ -688,7 +688,7 @@ impl NvmeController {
         self.inner.dma_pool.put_page(buffer.into_inner());
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme err: {:?}", cc);
+            tracing::warn!("got nvme err awp: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(())
@@ -762,7 +762,7 @@ impl NvmeController {
         let cc = inflight.wait()?;
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme error: {:?}", cc);
+            tracing::warn!("got nvme error sw: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)
@@ -795,7 +795,7 @@ impl NvmeController {
         tracing::trace!("seq read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme error: {:?}", cc);
+            tracing::warn!("got nvme error sr: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)
@@ -830,7 +830,7 @@ impl NvmeController {
         tracing::trace!("async seq read took {}us", start.elapsed().as_micros());
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme error: {:?}", cc);
+            tracing::warn!("got nvme error sra: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)
@@ -867,7 +867,7 @@ impl NvmeController {
         );
 
         if cc.status().is_error() {
-            tracing::warn!("got nvme error: {:?}", cc);
+            tracing::warn!("got nvme error swa: {:?}", cc);
             return Err(ErrorKind::Other.into());
         }
         Ok(count)

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
     time::Duration,
     u32, u64,
@@ -119,6 +120,10 @@ impl PagedDevice for Disk {
         run_async(async {
             Timer::after(Duration::from_micros(100)).await;
         });
+    }
+
+    fn run_async<R: 'static>(&self, f: impl Future<Output = R>) -> R {
+        run_async(f)
     }
 }
 
