@@ -86,6 +86,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             lock: self,
             interrupt_state,
             dont_unlock_on_drop: false,
+            locker: core::panic::Location::caller(),
         }
     }
 
@@ -100,6 +101,7 @@ pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     lock: &'a GenericSpinlock<T, Relax>,
     interrupt_state: bool,
     dont_unlock_on_drop: bool,
+    pub locker: &'static core::panic::Location<'static>,
 }
 
 pub type SpinLockGuard<'a, T> = LockGuard<'a, T, SpinLoop>;

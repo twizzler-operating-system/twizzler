@@ -157,7 +157,15 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
                 _ => inner.ctx.allocate_chunk(layout).as_ptr(),
             }
         };
-        trace_kalloc(layout, Instant::now() - start, false);
+        let end = Instant::now();
+        if false && current_thread_ref().is_some_and(|ct| ct.id() > 10) {
+            emerglogln!(
+                "{}: alloc: {}ns",
+                current_thread_ref().unwrap().id(),
+                (end - start).as_nanos()
+            );
+        }
+        trace_kalloc(layout, end - start, false);
         ret
     }
 

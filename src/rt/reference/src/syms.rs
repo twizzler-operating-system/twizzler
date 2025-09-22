@@ -79,7 +79,9 @@ use std::{
 use tracing::warn;
 use twizzler_abi::object::ObjID;
 // core.h
-use twizzler_rt_abi::bindings::{endpoint, io_ctx, option_exit_code, twz_error, u32_result};
+use twizzler_rt_abi::bindings::{
+    endpoint, io_ctx, object_cmd, option_exit_code, release_flags, twz_error, u32_result,
+};
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
 use crate::{runtime::OUR_RUNTIME, set_upcall_handler};
@@ -590,10 +592,26 @@ pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -
 check_ffi_type!(twz_rt_map_object, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_release_handle(handle: *mut object_handle) {
-    OUR_RUNTIME.release_handle(handle)
+pub unsafe extern "C-unwind" fn twz_rt_release_handle(
+    handle: *mut object_handle,
+    flags: release_flags,
+) {
+    OUR_RUNTIME.release_handle(handle, flags)
 }
-check_ffi_type!(twz_rt_release_handle, _);
+check_ffi_type!(twz_rt_release_handle, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_object_cmd(
+    handle: *mut object_handle,
+    cmd: object_cmd,
+    arg: u64,
+) -> twz_error {
+    match OUR_RUNTIME.object_cmd(handle, cmd, arg) {
+        Ok(_) => 0,
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_object_cmd, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_update_handle(handle: *mut object_handle) -> twz_error {

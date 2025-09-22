@@ -3,7 +3,6 @@ use std::{
     io::{Read, Result, Seek, Write},
     mem::MaybeUninit,
     ptr::null_mut,
-    sync::{Condvar, Mutex},
     u64,
 };
 
@@ -212,6 +211,7 @@ impl Drop for Ext4File<'_> {
 }
 
 pub use lwext4::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
+use twizzler_abi::simple_mutex::MutexImp;
 
 pub struct Ext4InodeRef {
     inode: ext4_inode_ref,
@@ -308,31 +308,26 @@ impl Drop for Ext4InodeRef {
 }
 
 struct MpLock {
-    inner: Mutex<bool>,
-    cv: Condvar,
+    imp: MutexImp,
 }
 
 impl MpLock {
-    fn lock(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        while *inner {
-            inner = self.cv.wait(inner).unwrap();
+    const fn new() -> Self {
+        Self {
+            imp: MutexImp::new(),
         }
-        *inner = true;
+    }
+
+    fn lock(&self) {
+        unsafe { self.imp.lock() };
     }
 
     fn unlock(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        assert!(*inner);
-        *inner = false;
-        self.cv.notify_all();
+        unsafe { self.imp.unlock() };
     }
 }
 
-static MP_LOCK: MpLock = MpLock {
-    inner: Mutex::new(false),
-    cv: Condvar::new(),
-};
+static MP_LOCK: MpLock = MpLock::new();
 
 unsafe extern "C" fn _mp_lock() {
     MP_LOCK.lock();
@@ -342,10 +337,7 @@ unsafe extern "C" fn _mp_unlock() {
     MP_LOCK.unlock();
 }
 
-static BC_LOCK: MpLock = MpLock {
-    inner: Mutex::new(false),
-    cv: Condvar::new(),
-};
+static BC_LOCK: MpLock = MpLock::new();
 
 unsafe extern "C" fn _bc_lock() {
     BC_LOCK.lock();
@@ -355,10 +347,7 @@ unsafe extern "C" fn _bc_unlock() {
     BC_LOCK.unlock();
 }
 
-static BA_LOCK: MpLock = MpLock {
-    inner: Mutex::new(false),
-    cv: Condvar::new(),
-};
+static BA_LOCK: MpLock = MpLock::new();
 
 unsafe extern "C" fn _ba_lock() {
     BA_LOCK.lock();
@@ -368,10 +357,7 @@ unsafe extern "C" fn _ba_unlock() {
     BA_LOCK.unlock();
 }
 
-static IA_LOCK: MpLock = MpLock {
-    inner: Mutex::new(false),
-    cv: Condvar::new(),
-};
+static IA_LOCK: MpLock = MpLock::new();
 
 unsafe extern "C" fn _ia_lock() {
     IA_LOCK.lock();

@@ -32,9 +32,14 @@ use crate::{
     },
 };
 
-struct Requeue {
-    //list: Spinlock<BTreeMap<u64, ThreadRef>>,
+pub struct Requeue {
     list: Spinlock<RBTree<RequeueLinkAdapter>>,
+}
+
+impl Requeue {
+    pub fn len(&self) -> usize {
+        self.list.lock().iter().count()
+    }
 }
 
 intrusive_adapter!(pub RequeueLinkAdapter = ThreadRef: Thread { requeue_link: intrusive_collections::rbtree::AtomicLink });
@@ -49,7 +54,7 @@ impl<'a> KeyAdapter<'a> for RequeueLinkAdapter {
 /* TODO: make this thread-local */
 static REQUEUE: Once<Requeue> = Once::new();
 
-fn get_requeue_list() -> &'static Requeue {
+pub fn get_requeue_list() -> &'static Requeue {
     REQUEUE.call_once(|| Requeue {
         list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
     })
@@ -74,11 +79,28 @@ pub fn requeue_all() {
     }
 }
 
+#[track_caller]
 pub fn add_to_requeue(thread: ThreadRef) {
     if !thread.is_critical() && thread.reset_sync_sleep_done() {
+        log::trace!(
+            "adding {} ({}) to immediate schedule, from {}",
+            thread.id(),
+            thread.objid(),
+            core::panic::Location::caller(),
+        );
+        let id = thread.objid();
         crate::processor::sched::schedule_thread(thread);
+        let requeue = get_requeue_list();
+        let mut list = requeue.list.lock();
+        let _ = list.find_mut(&id).remove();
         return;
     }
+    log::trace!(
+        "adding {} ({}) to requeue, from {}",
+        thread.id(),
+        thread.objid(),
+        core::panic::Location::caller()
+    );
     let requeue = get_requeue_list();
     requeue.list.lock().insert(thread);
 }
@@ -277,6 +299,11 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     let prep_done = Instant::now();
     finish_blocking(guard);
     let woke_up = Instant::now();
+    log::trace!(
+        "thread {} ({}) woke up",
+        current_thread_ref().unwrap().id(),
+        current_thread_ref().unwrap().objid()
+    );
 
     thread.reset_sync_sleep_done();
     thread.reset_sync_sleep();
@@ -284,7 +311,8 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let done = Instant::now();
     log::trace!(
-        "ts-optimized-sleep: {:7?} {:7?} {:7?}",
+        "{}: ts-optimized-sleep: {:7?} {:7?} {:7?}",
+        current_thread_ref().unwrap().id(),
         prep_done - start,
         woke_up - prep_done,
         done - woke_up
@@ -298,13 +326,19 @@ pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
     let count = wakeup(&op)?;
     requeue_all();
     let done = Instant::now();
-    log::trace!("ts-optimized-wake {}: {:7?}", count, done - start);
+    log::trace!(
+        "{}: ts-optimized-wake {}: {:7?}",
+        current_thread_ref().unwrap().id(),
+        count,
+        done - start
+    );
 
     Ok(count)
 }
 
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     if let Some(ref timeout) = timeout {
+        log::trace!("{}: simple timed sleep", current_thread_ref().unwrap().id());
         if ops.is_empty() {
             simple_timed_sleep(timeout);
             return Ok(0);
@@ -314,11 +348,21 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     if ops.len() == 1 && timeout.is_none() {
         match &mut ops[0] {
             ThreadSync::Sleep(thread_sync_sleep, res) => {
+                log::trace!(
+                    "{}: optimized sleep {:?}",
+                    current_thread_ref().unwrap().id(),
+                    thread_sync_sleep
+                );
                 let did_sleep = optimized_single_sleep(*thread_sync_sleep);
                 *res = did_sleep.map(|_| 0);
                 return did_sleep.map(|x| if x { 1 } else { 0 });
             }
             ThreadSync::Wake(thread_sync_wake, res) => {
+                log::trace!(
+                    "{}: optimized wake {:?}",
+                    current_thread_ref().unwrap().id(),
+                    thread_sync_wake
+                );
                 *res = optimized_single_wake(*thread_sync_wake);
                 return Ok(1);
             }

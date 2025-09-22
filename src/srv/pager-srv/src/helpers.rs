@@ -62,10 +62,11 @@ pub async fn page_in(
                 )
             }
 
-            let len =
-                blocking::unblock(move || ctx.paged_ostore(None)?.find_external(obj_id.raw()))
-                    .await
-                    .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
+            let len = ctx
+                .paged_ostore(None)?
+                .find_external(obj_id.raw())
+                .await
+                .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
             let mut buffer = [0; PAGE as usize];
             let meta = MetaInfo {
@@ -91,42 +92,38 @@ pub async fn page_in(
     }
 
     let nr_pages = obj_range.len() / PAGE as usize;
-    let reqs = vec![PageRequest::new(start_page as i64, nr_pages as u32)];
-    page_in_many(ctx, obj_id, reqs).await.map(|_| ())
+    let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
+    page_in_many(ctx, obj_id, &mut reqs).await.map(|_| ())
 }
 
 pub async fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    mut reqs: Vec<PageRequest>,
+    reqs: &mut [PageRequest],
 ) -> Result<usize> {
-    blocking::unblock(move || {
-        let mut reqslice = &mut reqs[..];
-        while reqslice.len() > 0 {
-            let donecount = ctx
-                .paged_ostore(None)?
-                .page_out_object(obj_id.raw(), reqslice)
-                .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
-            reqslice = &mut reqslice[donecount..];
-        }
-        Ok(reqs.len())
-    })
-    .await
+    let mut reqslice = &mut reqs[..];
+    while reqslice.len() > 0 {
+        let donecount = ctx
+            .paged_ostore(None)?
+            .page_out_object(obj_id.raw(), reqslice)
+            .await
+            .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
+        reqslice = &mut reqslice[donecount..];
+    }
+    Ok(reqs.len())
 }
 
 pub async fn page_in_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
-    mut reqs: Vec<PageRequest>,
-) -> Result<(Vec<PageRequest>, usize)> {
-    blocking::unblock(move || {
-        let ret = ctx
-            .paged_ostore(None)?
-            .page_in_object(obj_id.raw(), &mut reqs)
-            .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
-        Ok((reqs, ret))
-    })
-    .await
+    reqs: &mut [PageRequest],
+) -> Result<usize> {
+    let ret = ctx
+        .paged_ostore(None)?
+        .page_in_object(obj_id.raw(), reqs)
+        .await
+        .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
+    Ok(ret)
 }
 
 #[cfg(test)]

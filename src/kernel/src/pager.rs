@@ -17,6 +17,7 @@ use crate::{
     mutex::Mutex,
     obj::{LookupFlags, ObjectRef, PageNumber},
     once::Once,
+    processor::sched::{schedule, SchedFlags},
     syscall::sync::finish_blocking,
     thread::current_thread_ref,
 };
@@ -29,7 +30,7 @@ pub use queues::init_pager_queue;
 pub use request::Request;
 
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
-pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 8;
+pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 16;
 
 static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
 
@@ -49,10 +50,15 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         if !mgr.is_ready() {
             return None;
         }
-        let inflight = mgr.add_request(ReqKind::new_info(id));
+        let Some(inflight) = mgr.add_request(ReqKind::new_info(id)) else {
+            log::warn!("out of pager request slots");
+            drop(mgr);
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            continue;
+        };
         drop(mgr);
         inflight.for_each_pager_req(|pager_req| {
-            queues::submit_pager_request(pager_req);
+            queues::submit_pager_request(pager_req, None, inflight.rk.clone());
         });
 
         let mut mgr = inflight_mgr().lock();
@@ -64,17 +70,34 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerFlags) -> bool {
+pub fn get_pages_and_wait(
+    obj: &ObjectRef,
+    page: PageNumber,
+    len: usize,
+    flags: PagerFlags,
+) -> bool {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return false;
     }
-    let inflight = mgr.add_request(ReqKind::new_page_data(id, page.num(), len, flags));
+    log::trace!(
+        "{}: getting page {} from {}",
+        current_thread_ref().unwrap().id(),
+        page,
+        obj.id()
+    );
+    let Some(inflight) = mgr.add_request(ReqKind::new_page_data(obj.id(), page.num(), len, flags))
+    else {
+        log::warn!("out of pager request slots");
+        drop(mgr);
+        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        return get_pages_and_wait(obj, page, len, flags);
+    };
     drop(mgr);
     let mut submitted = false;
     inflight.for_each_pager_req(|pager_req| {
         submitted = true;
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, Some(obj), inflight.rk.clone());
     });
 
     if !flags.contains(PagerFlags::PREFETCH) {
@@ -88,15 +111,20 @@ pub fn get_pages_and_wait(id: ObjID, page: PageNumber, len: usize, flags: PagerF
     submitted
 }
 
-fn cmd_object(req: ReqKind) {
+fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let inflight = mgr.add_request(req);
+    let Some(inflight) = mgr.add_request(req.clone()) else {
+        log::warn!("out of pager request slots");
+        drop(mgr);
+        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        return cmd_object(req, obj);
+    };
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, obj, inflight.rk.clone());
     });
 
     let mut mgr = inflight_mgr().lock();
@@ -107,34 +135,40 @@ fn cmd_object(req: ReqKind) {
     };
 }
 
-pub fn sync_object(id: ObjID) {
-    cmd_object(ReqKind::new_sync(id));
+pub fn sync_object(obj: &ObjectRef) {
+    cmd_object(ReqKind::new_sync(obj.id()), Some(obj));
 }
 
 pub fn del_object(id: ObjID) {
-    cmd_object(ReqKind::new_del(id));
+    cmd_object(ReqKind::new_del(id), None);
 }
 
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
-    cmd_object(ReqKind::new_create(id, create, nonce));
+    cmd_object(ReqKind::new_create(id, create, nonce), None);
 }
 
 pub fn sync_region(
     region: &MapRegion,
-    dirty_set: Vec<PageNumber>,
+    dirty_set: &[(PageNumber, usize)],
     sync_info: SyncInfo,
     version: u64,
 ) {
-    let shadow = Shadow::from(region);
-    let req = ReqKind::new_sync_region(region.object().id(), shadow, dirty_set, sync_info, version);
+    // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.
+    let _shadow = Shadow::from(region);
+    let req = ReqKind::new_sync_region(region.object(), None, dirty_set, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let inflight = mgr.add_request(req);
+    let Some(inflight) = mgr.add_request(req) else {
+        log::warn!("out of pager request slots");
+        drop(mgr);
+        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        return sync_region(region, dirty_set, sync_info, version);
+    };
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
-        queues::submit_pager_request(pager_req);
+        queues::submit_pager_request(pager_req, Some(&region.object()), inflight.rk.clone());
     });
 
     let mut mgr = inflight_mgr().lock();
@@ -172,11 +206,11 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         return false;
     }
 
-    if needed_additional > 0 && !low_mem {
+    if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
         provide_pager_memory(needed_additional, wait_for_additional);
     }
 
-    get_pages_and_wait(obj.id(), start, len, flags)
+    get_pages_and_wait(obj, start, len, flags)
 }
 
 // Returns true if the pager was engaged.
@@ -205,7 +239,8 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
         }
     } else {
         count_to_end.min(1024)
-    };
+    }
+    .min(1024);
     log::trace!(
         "get page: {} {:?} {}",
         pn,
@@ -282,7 +317,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
         .iter()
         .map(|range| {
             let req = ReqKind::new_pager_memory(*range);
-            mgr.add_request(req)
+            mgr.add_request(req).expect("TODO")
         })
         .collect::<Vec<_>>();
 
@@ -291,7 +326,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     for inflight in &inflights {
         inflight.for_each_pager_req(|pager_req| {
             log::trace!("providing: {:?}", pager_req);
-            queues::submit_pager_request(pager_req);
+            queues::submit_pager_request(pager_req, None, inflight.rk.clone());
         });
     }
 

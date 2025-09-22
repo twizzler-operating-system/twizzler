@@ -91,6 +91,7 @@ pub fn set_interrupt(
 }
 
 pub fn debug_shutdown(code: u32) {
+    log::info!("performing debug shutdown with code {}", code);
     unsafe {
         x86::io::outw(0xf4, code as u16);
     }
