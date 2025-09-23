@@ -111,6 +111,7 @@ impl CondVar {
 
     pub fn signal(&self) {
         const MAX_PER_ITER: usize = 8;
+        let critical_guard = current_thread_ref().unwrap().enter_critical();
         loop {
             let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
             let mut inner = self.inner.lock();
@@ -133,6 +134,7 @@ impl CondVar {
             }
         }
         requeue_all();
+        drop(critical_guard);
     }
 
     pub fn has_waiters(&self) -> bool {

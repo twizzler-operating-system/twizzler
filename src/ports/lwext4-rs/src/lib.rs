@@ -323,8 +323,9 @@ impl MpLock {
         }
     }
 
+    #[track_caller]
     pub fn lock(&self) {
-        unsafe { self.imp.lock() };
+        unsafe { self.imp.lock(core::panic::Location::caller()) };
     }
 
     pub fn unlock(&self) {

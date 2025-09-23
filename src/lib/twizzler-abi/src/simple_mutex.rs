@@ -14,9 +14,11 @@ use crate::syscall::{
 /// Simple mutex, supporting sleeping and wakeup. Does no attempt at handling priority or fairness.
 pub struct MutexImp {
     lock: AtomicU64,
+    caller: UnsafeCell<&'static core::panic::Location<'static>>,
 }
 
 unsafe impl Send for MutexImp {}
+unsafe impl Sync for MutexImp {}
 
 impl MutexImp {
     /// Construct a new mutex.
@@ -24,6 +26,7 @@ impl MutexImp {
     pub const fn new() -> MutexImp {
         MutexImp {
             lock: AtomicU64::new(0),
+            caller: UnsafeCell::new(core::panic::Location::caller()),
         }
     }
 
@@ -42,12 +45,14 @@ impl MutexImp {
     /// Note, this is why you should use the standard library mutex, which enforces all of these
     /// things.
     #[allow(dead_code)]
-    pub unsafe fn lock(&self) {
+    #[track_caller]
+    pub unsafe fn lock(&self, caller: &'static core::panic::Location<'static>) {
         for _ in 0..100 {
             let result = self
                 .lock
                 .compare_exchange_weak(0, 1, Ordering::SeqCst, Ordering::SeqCst);
             if result.is_ok() {
+                unsafe { self.caller.get().write(caller) };
                 return;
             }
             core::hint::spin_loop();
@@ -68,6 +73,7 @@ impl MutexImp {
             }
             let _ = sys_thread_sync(&mut [sleep], None);
         }
+        unsafe { self.caller.get().write(caller) };
     }
 
     #[inline]
@@ -135,9 +141,10 @@ impl<T> Mutex<T> {
     }
 
     #[allow(dead_code)]
+    #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
         unsafe {
-            self.imp.lock();
+            self.imp.lock(core::panic::Location::caller());
         }
         LockGuard { lock: self }
     }

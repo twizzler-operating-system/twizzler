@@ -15,13 +15,12 @@
 
 // TODO: reenable priority donation, and make it cheaper.
 
-use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
+use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
-    arch,
     idcounter::StableId,
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, add_to_requeue, finish_blocking, requeue_all},
@@ -41,8 +40,10 @@ intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrus
 
 impl Drop for SleepQueue {
     fn drop(&mut self) {
+        let guard = current_thread_ref().map(|ct| ct.enter_critical());
         add_all_to_requeue(self.queue.take().into_iter());
         requeue_all();
+        drop(guard);
     }
 }
 
@@ -50,6 +51,7 @@ impl Drop for SleepQueue {
 pub struct Mutex<T> {
     queue: Spinlock<SleepQueue>,
     cell: UnsafeCell<T>,
+    locked_at: UnsafeCell<&'static Location<'static>>,
 }
 
 impl<T> Mutex<T> {
@@ -63,6 +65,7 @@ impl<T> Mutex<T> {
                 owned: false,
             }),
             cell: UnsafeCell::new(data),
+            locked_at: UnsafeCell::new(Location::caller()),
         }
     }
 
@@ -91,7 +94,10 @@ impl<T> Mutex<T> {
             if i == 1000 {
                 log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
-            let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
+            let guard = current_thread.as_ref().map(|ct| {
+                ct.reset_sync_sleep_done();
+                ct.enter_critical()
+            });
             let _reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
@@ -103,6 +109,7 @@ impl<T> Mutex<T> {
                     }
 
                     queue.owner = current_thread.cloned();
+                    unsafe { self.locked_at.get().write(Location::caller()) };
                     break;
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
@@ -116,8 +123,8 @@ impl<T> Mutex<T> {
                 if let Some(thread) = current_thread {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
-                        queue.queue.push_back(thread.clone());
                         thread.set_sync_sleep_done();
+                        queue.queue.push_back(thread.clone());
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
@@ -131,8 +138,6 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
-            arch::processor::spin_wait_iteration();
-            core::hint::spin_loop();
             if let Some(guard) = guard {
                 finish_blocking(guard);
             }
@@ -148,13 +153,15 @@ impl<T> Mutex<T> {
         let mut queue = self.queue.lock();
         queue.owner = None;
         queue.owned = false;
+        let g = current_thread_ref().map(|ct| ct.enter_critical());
         if let Some(thread) = queue.queue.pop_front() {
-            drop(queue);
             add_to_requeue(thread);
             requeue_all();
+            drop(queue);
         } else {
             queue.pri = None;
         }
+        drop(g);
     }
 }
 

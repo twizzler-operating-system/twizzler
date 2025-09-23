@@ -13,7 +13,7 @@ use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};
 use crate::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject, TxObject},
-    ptr::{GlobalPtr, RefMut},
+    ptr::{GlobalPtr, RefMut, RefSliceMut},
     Result,
 };
 
@@ -142,6 +142,24 @@ impl Allocator for ArenaAllocator {
 impl TxObject<ArenaBase> {
     pub fn alloc<T>(&mut self, value: T) -> Result<OwnedGlobalPtr<T, ArenaAllocator>> {
         self.alloc_inplace(|p| Ok(p.write(value)))
+    }
+
+    pub fn alloc_with_slice<T: Copy>(
+        &mut self,
+        slice: &[T],
+    ) -> Result<(usize, OwnedGlobalPtr<T, ArenaAllocator>)> {
+        let layout = Layout::array::<T>(slice.len()).unwrap();
+        let reserve = self.base_mut().reserve(layout)?;
+        let gp = GlobalPtr::<T>::new(self.id(), reserve);
+        let res = unsafe { gp.resolve_mut() };
+        let mut slice_alloc = unsafe { RefSliceMut::from_ref(res, slice.len()) };
+        slice_alloc.copy_from_slice(slice);
+        Ok(unsafe {
+            (
+                slice.len(),
+                OwnedGlobalPtr::from_global(gp.cast(), self.allocator()),
+            )
+        })
     }
 
     pub fn alloc_inplace<T>(

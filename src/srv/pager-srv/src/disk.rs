@@ -104,6 +104,7 @@ impl PagedDevice for Disk {
                 if !phys_list.is_empty() {
                     return Ok(0);
                 }
+                tracing::info!("task out of memory, waiting");
                 block_on(mw)
             }
         };

@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, LinkedList, RBTreeAtomicLink};
 use twizzler_abi::{
@@ -17,10 +17,9 @@ use crate::{
     instant::Instant,
     memory::context::virtmem::region::Shadow,
     obj::{range::GetPageFlags, ObjectRef, PageNumber},
-    random::getrandom,
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{CriticalGuard, ThreadRef},
+    thread::{current_thread_ref, CriticalGuard, ThreadRef},
 };
 
 #[derive(Debug, Clone)]
@@ -199,6 +198,9 @@ impl ReqKind {
             })
         }
 
+        static COUNTER_1: AtomicU64 = AtomicU64::new(1);
+        let unique_id = COUNTER_1.fetch_add(1, Ordering::Relaxed) as u128;
+
         let slices = consecutive_slices(pages.as_slice()).collect::<Vec<_>>();
         let runs = slices.iter().enumerate().map(|(i, run)| {
             let is_last = i == slices.len() - 1;
@@ -231,12 +233,10 @@ impl ReqKind {
                 phys,
                 version,
                 flags,
+                unique_id.into(),
             )))
         });
 
-        let mut unique = [0u8; 16];
-        getrandom(&mut unique, false);
-        let unique_id = u128::from_ne_bytes(unique) ^ object.id().raw();
         ReqKind::SyncRegion(SyncRegionInfo {
             reqs: Arc::new(runs.collect()),
             shadow: shadow.map(Arc::new),
@@ -260,9 +260,7 @@ impl ReqKind {
 
     pub fn all_pages(&self) -> impl Iterator<Item = usize> {
         match self {
-            ReqKind::PageData(_, start, len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
-                (*start..(*start + *len)).into_iter()
-            }
+            ReqKind::PageData(_, start, len, _flags) => (*start..(*start + *len)).into_iter(),
             _ => (0..0).into_iter(),
         }
     }
@@ -345,9 +343,20 @@ impl Request {
     }
 
     pub fn finished_pages(&self, count: usize) -> bool {
-        let old = self.remaining_pages.fetch_sub(count, Ordering::SeqCst);
-        assert!(old >= count);
-        old - count == 0
+        loop {
+            let current = self.remaining_pages.load(Ordering::Acquire);
+            if current < count {
+                self.remaining_pages.store(0, Ordering::Release);
+                return true;
+            }
+            if self
+                .remaining_pages
+                .compare_exchange(current, current - count, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return current - count == 0;
+            }
+        }
     }
 
     pub fn mark_done(&self) {
@@ -363,10 +372,12 @@ impl Request {
     }
 
     pub fn signal(&self) {
+        let g = current_thread_ref().unwrap().enter_critical();
         let mut waiters = self.waiters.lock();
         add_all_to_requeue(waiters.take().into_iter());
-        drop(waiters);
         requeue_all();
+        drop(waiters);
+        drop(g);
     }
 
     pub fn setup_wait<'a>(&self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {

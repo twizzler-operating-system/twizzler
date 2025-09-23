@@ -5,7 +5,7 @@ use memoffset::offset_of;
 use twizzler_abi::{
     device::{
         BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MmioInfo,
-        SubObjectType,
+        SubObjectType, MMIO_OFFSET,
     },
     kso::{
         pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len, KactionCmd,
@@ -15,7 +15,7 @@ use twizzler_abi::{
     syscall::PinnedPage,
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, GenericError, ObjectError},
+    error::{ArgumentError, GenericError, ObjectError, TwzError},
     Result,
 };
 
@@ -23,7 +23,9 @@ use crate::{
     interrupt::WakeInfo,
     memory::PhysAddr,
     mutex::Mutex,
-    obj::{lookup_object, LookupFlags, ObjectRef},
+    obj::{
+        lookup_object, register_object, InvalidateMode, LookupFlags, Object, ObjectRef, PageNumber,
+    },
     once::Once,
     syscall::create_user_slice,
 };
@@ -160,6 +162,50 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                     Err(ArgumentError::InvalidArgument.into())
                 }
             }
+            KactionGenericCmd::MapPhys(obj_start_hi) => {
+                let obj_start_lo = arg2 >> 32;
+                let len = (arg2 & 0xFFFFFFFF) as usize;
+                let obj_start = ((obj_start_hi as u64) << 32) | obj_start_lo;
+                let phys_start = arg;
+                /*
+                logln!(
+                    "{:x} {:x} mapping physical pages for object {:?}, {:x}, {:x}, {:x}",
+                    arg,
+                    arg2,
+                    id,
+                    obj_start,
+                    phys_start,
+                    len
+                );
+                */
+                let Some(id) = id else {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                };
+                let obj = match lookup_object(id, LookupFlags::empty()) {
+                    crate::obj::LookupResult::Found(o) => o,
+                    _ => {
+                        let mut obj = Object::new_kernel();
+                        obj.id = id;
+                        let obj = Arc::new(obj);
+                        register_object(obj.clone());
+                        obj
+                    }
+                };
+                let start = PhysAddr::new(phys_start & !(1 << 63)).unwrap();
+                let end = PhysAddr::new((phys_start & !(1 << 63)) + len as u64).unwrap();
+                let ct = if phys_start & (1 << 63) != 0 {
+                    CacheType::Uncacheable
+                } else {
+                    CacheType::WriteBack
+                };
+                obj.map_phys(obj_start, start, end, ct);
+                obj.invalidate(
+                    PageNumber::from_offset(obj_start as usize)
+                        ..PageNumber::from_offset(obj_start as usize + len),
+                    InvalidateMode::Full,
+                );
+                Ok(KactionValue::U64(0))
+            }
         },
         KactionCmd::Specific(cmd) => id.map_or(Err(ArgumentError::InvalidArgument.into()), |id| {
             let dev = {
@@ -254,7 +300,7 @@ impl Device {
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = Arc::new(crate::obj::Object::new_kernel());
-        obj.map_phys(start, end, ct);
+        obj.map_phys(MMIO_OFFSET as u64, start, end, ct);
         let mmio_info = MmioInfo {
             length: (end - start) as u64,
             cache_type: CacheType::Uncacheable,

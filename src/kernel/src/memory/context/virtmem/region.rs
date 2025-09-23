@@ -410,6 +410,14 @@ impl MapRegion {
                 ret
             }
         } else {
+            log::warn!(
+                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}",
+                page_number,
+                self.object().id(),
+                addr.raw(),
+                cause,
+                pfflags
+            );
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),
                 ObjectMemoryError::BackingFailed(RawTwzError::new(

@@ -38,6 +38,7 @@ impl<T> TxObject<T> {
     }
 
     pub fn into_object(mut self) -> Result<Object<T>> {
+        tracing::trace!("IO: {} {}", self.id(), self.sync_on_drop);
         if self.sync_on_drop {
             self.obj.sync()?;
             self.sync_on_drop = false;
@@ -50,11 +51,12 @@ impl<T> TxObject<T> {
     }
 
     pub unsafe fn cast<U>(mut self) -> TxObject<U> {
+        let old_sync = self.sync_on_drop;
         self.sync_on_drop = false;
         TxObject {
             obj: unsafe { self.obj.clone().cast() },
             static_alloc: self.static_alloc,
-            sync_on_drop: self.sync_on_drop,
+            sync_on_drop: old_sync,
         }
     }
 

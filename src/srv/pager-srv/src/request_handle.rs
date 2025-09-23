@@ -181,7 +181,7 @@ async fn handle_sync_region(
     id: u32,
     info: ObjectEvictInfo,
 ) -> CompletionToKernel {
-    tracing::debug!("sync request: {:?}", info);
+    tracing::trace!("sync request: {:?}", info);
     if !info.flags.contains(ObjectEvictFlags::SYNC) {
         return CompletionToKernel::new(
             KernelCompletionData::Error(TwzError::NOT_SUPPORTED.into()),

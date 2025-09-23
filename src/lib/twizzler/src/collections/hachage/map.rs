@@ -9,7 +9,7 @@ use crate::{
     alloc::Allocator,
     collections::hachage::{raw::*, DefaultHashBuilder},
     marker::Invariant,
-    object::{Object, ObjectBuilder, TypedObject},
+    object::{Object, ObjectBuilder, TxObject, TypedObject},
     ptr::{Ref, RefMut},
     Result,
 };
@@ -244,6 +244,7 @@ pub struct PHMsession<
     tx_base: RefMut<'a, RawTable<(K, V), S, A>>,
     imm_base: Ref<'a, RawTable<(K, V), S, A>>,
     ctx: CarryCtxMut<'a>,
+    _tx: TxObject<()>,
 }
 
 impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher> PHMsession<'_, K, V, S> {
@@ -302,6 +303,7 @@ impl<K: Invariant + Eq + Hash, V: Invariant, S: BuildHasher>
             tx_base: base,
             imm_base,
             ctx,
+            _tx: tx.into_unit(),
         })
     }
 

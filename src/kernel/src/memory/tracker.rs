@@ -35,7 +35,7 @@ pub struct MemoryTracker {
     reclaim: Once<ReclaimThread>,
     waiters: Spinlock<LinkedList<LinkAdapter>>,
 }
-intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
+intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { memwait_link: intrusive_collections::linked_list::AtomicLink });
 
 impl MemoryTracker {
     fn free_frame(&self, frame: FrameRef) {
@@ -135,15 +135,18 @@ impl MemoryTracker {
                 finish_blocking(guard);
             }
             current_thread.set_state(ExecutionState::Running);
+            current_thread.reset_sync_sleep_done();
         }
         self.waiting.fetch_sub(1, Ordering::SeqCst);
     }
 
     fn wake(&self) {
+        let g = current_thread_ref().map(|ct| ct.enter_critical());
         let mut waiters = self.waiters.lock();
         add_all_to_requeue(waiters.take().into_iter());
-        drop(waiters);
         requeue_all();
+        drop(waiters);
+        drop(g);
     }
 
     fn trigger_reclaim(&self) {

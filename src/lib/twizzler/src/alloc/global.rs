@@ -3,13 +3,18 @@ use std::alloc::Layout;
 use twizzler_abi::object::ObjID;
 
 use super::Allocator;
-use crate::ptr::{GlobalPtr, Ref};
+use crate::{
+    marker::Invariant,
+    ptr::{GlobalPtr, Ref},
+};
 
 /// A global pointer that owns the memory it points to, and will free it on drop.
 pub struct OwnedGlobalPtr<T, A: Allocator> {
     global: GlobalPtr<T>,
     alloc: A,
 }
+
+unsafe impl<T: Invariant, A: Allocator> Invariant for OwnedGlobalPtr<T, A> {}
 
 impl<T, A: Allocator> Drop for OwnedGlobalPtr<T, A> {
     fn drop(&mut self) {
