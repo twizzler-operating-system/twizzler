@@ -27,6 +27,7 @@ use crate::{
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, PAGE},
     iotop::PagerIOTop,
+    iotop::PagerIotopData,
     PagerContext,
 };
 
@@ -382,9 +383,6 @@ impl PagerDataInner {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
     }
 
-    pub fn display_iotop(&mut self) -> String {
-        self.iotop.display()
-    }
 
     pub fn record_io(&mut self, obj_id: ObjID, read_pages: usize, written_pages: usize) {
         self.iotop.record_io(obj_id, read_pages, written_pages);
@@ -599,11 +597,6 @@ impl PagerData {
         inner.handles.remove(comp, ds);
     }
 
-    pub fn display_iotop(&self) -> String {
-        let mut inner = self.inner.lock().unwrap();
-        inner.iotop.display()
-    }
-
     pub fn record_io_read(&self, obj_id: ObjID, read_pages: usize) {
         let mut inner = self.inner.lock().unwrap();
         inner.iotop.record_io(obj_id, read_pages, 0);
@@ -613,5 +606,16 @@ impl PagerData {
         let mut inner = self.inner.lock().unwrap();
         inner.iotop.record_io(obj_id, 0, written_pages);
     }
+
+    pub fn get_object_pager_data(&self, obj_id: ObjID) -> Option<PagerIotopData> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.iotop.get_object_data(obj_id)
+    }
+
+    pub fn get_nth_iotop_object_id(&self, n: usize) -> Option<ObjID> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.iotop.get_nth_object_id(n)
+    }
+
 
 }

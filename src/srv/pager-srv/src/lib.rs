@@ -25,13 +25,15 @@ use twizzler_abi::pager::{
 use twizzler_queue::{QueueBase, QueueSender};
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
-use crate::{data::PagerData, request_handle::handle_kernel_request};
+use crate::{data::PagerData, request_handle::handle_kernel_request, iotop::PagerIotopData};
+
+
 
 mod data;
 mod disk;
 mod handle;
 mod helpers;
-mod iotop;
+pub mod iotop;
 // in-progress
 #[allow(unused)]
 mod memstore;
@@ -366,20 +368,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     tracing::info!("pager ready");
 
     //disk::benches::bench_disk(ctx);
-    // Remove this eventually
-    if true { 
-        let _ = ex
-            .spawn(async {
-                let pager = PAGER_CTX.get().unwrap();
-                loop {
-                    let display = pager.data.display_iotop();
-                    print!("{}", display);
-                    Timer::after(Duration::from_millis(1000)).await;
-                }
-            })
-            .detach();
-    }
-
     let bootstrap_id = ctx.paged_ostore(None).map_or(0u128, |po| {
         po.get_config_id().unwrap_or_else(|_| {
             tracing::info!("creating new naming object");
@@ -410,12 +398,16 @@ pub fn adv_lethe() -> Result<()> {
     Ok(())
 }
 
-// #[secgate::secure_gate]
-pub fn get_pager_iotop_data_string() -> Result<String> {
-    let data = unsafe {
-        PAGER_CTX.get().unwrap().data.display_iotop()
-    };
-    Ok(data)
+#[secgate::secure_gate]
+pub fn get_object_pager_data(obj_id: ObjID) -> Result<Option<PagerIotopData>> {
+    let pager_ctx = PAGER_CTX.get().unwrap();
+    Ok(pager_ctx.data.get_object_pager_data(obj_id))
+}
+
+#[secgate::secure_gate]
+pub fn get_nth_iotop_object_id(n: usize) -> Result<Option<ObjID>> {
+    let pager_ctx = PAGER_CTX.get().unwrap();
+    Ok(pager_ctx.data.get_nth_iotop_object_id(n))
 }
 
 #[secgate::secure_gate]

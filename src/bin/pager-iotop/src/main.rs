@@ -8,7 +8,8 @@ use std::{
 
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::{SystemTime, UNIX_EPOCH};
-
+use pager_srv::{get_object_pager_data, get_nth_iotop_object_id, iotop::PagerIotopData};
+use twizzler::object::ObjID;
 
 struct IOTopConfig {
     refresh_rate: u64,
@@ -80,10 +81,110 @@ fn print_help() {
     println!("  -                Decrease refresh rate");
 }
 
-fn get_pager_iotop_data() -> Result<String, Box<dyn std::error::Error>> {
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+fn get_all_iotop_objs() -> Result<Vec<ObjID>, Box<dyn std::error::Error>> {
+    let mut obj_ids = Vec::new();
+    let mut n = 0;
+    
+    // Keep getting object IDs until we get None
+    while let Ok(Some(obj_id)) = get_nth_iotop_object_id(n) {
+        obj_ids.push(obj_id);
+        n += 1;
+    }
+    
+    Ok(obj_ids)
+}
 
-    Ok(pager_srv::get_pager_iotop_data_string()?)
+fn get_all_iotop_data() -> Result<Vec<PagerIotopData>, Box<dyn std::error::Error>> {
+    let obj_ids = get_all_iotop_objs()?;
+    let mut data_list = Vec::new();
+    
+    for obj_id in obj_ids {
+        if let Ok(Some(data)) = get_object_pager_data(obj_id) {
+            data_list.push(data);
+        }
+    }
+    
+    Ok(data_list)
+}
+
+fn format_bytes(bytes: f64) -> String {
+    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
+    let mut size = bytes;
+    let mut unit_idx = 0;
+    
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    
+    if size >= 100.0 {
+        format!("{:.0} {}", size, UNITS[unit_idx])
+    } else if size >= 10.0 {
+        format!("{:.1} {}", size, UNITS[unit_idx])
+    } else {
+        format!("{:.2} {}", size, UNITS[unit_idx])
+    }
+}
+
+fn format_total_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    
+    if size >= 100.0 {
+        format!("{:.0} {}", size, UNITS[unit_idx])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_idx])
+    }
+}
+
+// Add function to format the display from PagerIotopData list
+fn format_iotop_display(data_list: &[PagerIotopData]) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+    
+    writeln!(output, "\x1B[2J\x1B[H").unwrap();
+    writeln!(output, "Twizzler Pager I/O Top - {} processes", data_list.len()).unwrap();
+    
+    let total_read_bytes: u64 = data_list.iter().map(|d| d.total_read as u64 * 4096).sum(); // Assuming PAGE = 4096
+    let total_written_bytes: u64 = data_list.iter().map(|d| d.total_written as u64 * 4096).sum();
+    let total_current_read: f64 = data_list.iter().map(|d| d.current_read_bps).sum();
+    let total_current_write: f64 = data_list.iter().map(|d| d.current_write_bps).sum();
+    
+    writeln!(output, "Total: {} read, {} written", 
+            format_total_bytes(total_read_bytes),
+            format_total_bytes(total_written_bytes)).unwrap();
+    
+    writeln!(output, "Current: {} read, {} write",
+            format_bytes(total_current_read),
+            format_bytes(total_current_write)).unwrap();
+    writeln!(output).unwrap();
+    
+    writeln!(output, "{:<18} {:>10} {:>10} {:>12} {:>12} {:>12} {:>12}",
+            "OBJECT_ID", "TOTAL_READ", "TOTAL_WRITE", "READ/s", "WRITE/s", "AVG_READ/s", "AVG_WRITE/s").unwrap();
+    writeln!(output, "{}", "-".repeat(98)).unwrap();
+    
+    for data in data_list.iter().take(20) {
+        let obj_id_str = format!("{:016x}", data.obj_id.raw());
+        writeln!(output, "{:<18} {:>10} {:>10} {:>12} {:>12} {:>12} {:>12}",
+                obj_id_str,
+                format_total_bytes(data.total_read as u64 * 4096),
+                format_total_bytes(data.total_written as u64 * 4096),
+                format_bytes(data.current_read_bps),
+                format_bytes(data.current_write_bps),
+                format_bytes(data.avg_read_bps),
+                format_bytes(data.avg_write_bps)).unwrap();
+    }
+    
+    writeln!(output).unwrap();
+    writeln!(output, "Press Ctrl+C to exit").unwrap();
+    
+    output
 }
 
 fn run_interactive_mode(config: IOTopConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -92,14 +193,15 @@ fn run_interactive_mode(config: IOTopConfig) -> Result<(), Box<dyn std::error::E
     
     let mut iteration = 0;
     loop {
-        let display_data = get_pager_iotop_data()?;
+        let data_list = get_all_iotop_data()?;
+        let display_output = format_iotop_display(&data_list);
         
         if !config.batch_mode {
-            print!("{}", display_data);
+            print!("{}", display_output);
             io::stdout().flush()?;
         } else {
             println!("--- Iteration {} ---", iteration + 1);
-            println!("{}", display_data);
+            println!("{}", display_output);
         }
         
         iteration += 1;
@@ -120,9 +222,11 @@ fn run_batch_mode(config: IOTopConfig) -> Result<(), Box<dyn std::error::Error>>
     let iterations = config.count.unwrap_or(10);
     
     for i in 0..iterations {
-        let display_data = get_pager_iotop_data()?;
+        let data_list = get_all_iotop_data()?;
+        let display_output = format_iotop_display(&data_list);
+        
         println!("=== Batch {} of {} ===", i + 1, iterations);
-        println!("{}", display_data);
+        println!("{}", display_output);
         println!();
         
         if i < iterations - 1 {

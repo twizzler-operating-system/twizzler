@@ -25,6 +25,19 @@ pub struct ProcessIOStats {
     pub last_update: Instant,
 }
 
+#[derive(Clone, Debug, Copy)]
+#[repr(C)]
+pub struct PagerIotopData {
+    pub obj_id: ObjID,
+    pub total_read: usize,
+    pub total_written: usize,
+    pub current_read_bps: f64,
+    pub current_write_bps: f64,
+    pub avg_read_bps: f64,
+    pub avg_write_bps: f64,
+    pub last_update: Instant,
+}
+
 impl ProcessIOStats {
     pub fn new(obj_id: ObjID) -> Self {
         Self {
@@ -91,6 +104,20 @@ impl ProcessIOStats {
         let sum: f64 = self.samples.iter().map(|s| s.write_bytes_per_sec).sum();
         sum / self.samples.len() as f64
     }
+
+    pub fn to_pager_iotop_data(&self) -> PagerIotopData {
+            PagerIotopData {
+                obj_id: self.obj_id,
+                total_read: self.total_read,
+                total_written: self.total_written,
+                current_read_bps: self.current_read_bps(),
+                current_write_bps: self.current_write_bps(),
+                avg_read_bps: self.avg_read_bps(),
+                avg_write_bps: self.avg_write_bps(),
+                last_update: self.last_update,
+            }
+        }
+
 }
 
 #[derive(Debug)]
@@ -144,80 +171,12 @@ impl PagerIOTop {
             }
         });
     }   
-    fn format_bytes(bytes: f64) -> String {
-        const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
-        let mut size = bytes;
-        let mut unit_idx = 0;
-        
-        while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_idx += 1;
-        }
-        
-        if size >= 100.0 {
-            format!("{:.0} {}", size, UNITS[unit_idx])
-        } else if size >= 10.0 {
-            format!("{:.1} {}", size, UNITS[unit_idx])
-        } else {
-            format!("{:.2} {}", size, UNITS[unit_idx])
-        }
-    }
-    
-    fn format_total_bytes(bytes: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        let mut size = bytes as f64;
-        let mut unit_idx = 0;
-        
-        while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_idx += 1;
-        }
-        
-        if size >= 100.0 {
-            format!("{:.0} {}", size, UNITS[unit_idx])
-        } else {
-            format!("{:.1} {}", size, UNITS[unit_idx])
-        }
-    }
-    
-    pub fn display(&mut self) -> String {
-        let now = Instant::now();
-        let uptime = now.duration_since(self.start_time);
-        
-        let since_last = now.checked_duration_since(self.last_display)
-            .unwrap_or(Duration::from_secs(0));
-        
-        self.last_display = now;
-        self.cleanup_old_entries();
-        
-        let mut output = String::new();
-        
-        writeln!(output, "\x1B[2J\x1B[H").unwrap();
-        
-        writeln!(output, "Twizzler Pager I/O Top - {} processes", self.processes.len()).unwrap();
-        writeln!(output, "Uptime: {:.1}s, Update: {:.1}s ago", 
-                uptime.as_secs_f64(), since_last.as_secs_f64()).unwrap();
 
-        writeln!(output, "Total: {} read, {} written", 
-                Self::format_total_bytes(self.total_read_bytes),
-                Self::format_total_bytes(self.total_written_bytes)).unwrap();
-        
-        let total_current_read: f64 = self.processes.values()
-            .map(|p| p.current_read_bps())
-            .sum();
-        let total_current_write: f64 = self.processes.values()
-            .map(|p| p.current_write_bps())
-            .sum();
-            
-        writeln!(output, "Current: {} read, {} write",
-                Self::format_bytes(total_current_read),
-                Self::format_bytes(total_current_write)).unwrap();
-        writeln!(output).unwrap();
-        
-        writeln!(output, "{:<18} {:>10} {:>10} {:>12} {:>12} {:>12} {:>12}",
-                "OBJECT_ID", "TOTAL_READ", "TOTAL_WRITE", "READ/s", "WRITE/s", "AVG_READ/s", "AVG_WRITE/s").unwrap();
-        writeln!(output, "{}", "-".repeat(98)).unwrap();
-        
+    pub fn get_object_data(&self, obj_id: ObjID) -> Option<PagerIotopData> {
+        self.processes.get(&obj_id).map(|stats| stats.to_pager_iotop_data())
+    }
+
+    pub fn get_nth_object_id(&self, n: usize) -> Option<ObjID> {
         let mut sorted_processes: Vec<_> = self.processes.values().collect();
         sorted_processes.sort_by(|a, b| {
             let a_io = a.current_read_bps() + a.current_write_bps();
@@ -225,24 +184,10 @@ impl PagerIOTop {
             b_io.partial_cmp(&a_io).unwrap_or(std::cmp::Ordering::Equal)
         });
         
-        for stats in sorted_processes.iter().take(20) {
-            let obj_id_str = format!("{:016x}", stats.obj_id.raw());
-            writeln!(output, "{:<18} {:>10} {:>10} {:>12} {:>12} {:>12} {:>12}",
-                    obj_id_str,
-                    Self::format_total_bytes(stats.total_read as u64 * PAGE),
-                    Self::format_total_bytes(stats.total_written as u64 * PAGE),
-                    Self::format_bytes(stats.current_read_bps()),
-                    Self::format_bytes(stats.current_write_bps()),
-                    Self::format_bytes(stats.avg_read_bps()),
-                    Self::format_bytes(stats.avg_write_bps())).unwrap();
-        }
-        
-        writeln!(output).unwrap();
-        writeln!(output, "Press Ctrl+C to exit").unwrap();
-        
-        output
+        sorted_processes.get(n).map(|stats| stats.obj_id)
     }
-    
+
+
     pub fn get_top_io_objects(&self, count: usize) -> Vec<(ObjID, f64, f64)> {
         let mut objects: Vec<_> = self.processes.iter()
             .map(|(id, stats)| (*id, stats.current_read_bps(), stats.current_write_bps()))
@@ -256,6 +201,18 @@ impl PagerIOTop {
         
         objects.into_iter().take(count).collect()
     }
+
+    pub fn get_all_object_ids(&self) -> Vec<ObjID> {
+        let mut sorted_processes: Vec<_> = self.processes.values().collect();
+        sorted_processes.sort_by(|a, b| {
+            let a_io = a.current_read_bps() + a.current_write_bps();
+            let b_io = b.current_read_bps() + b.current_write_bps();
+            b_io.partial_cmp(&a_io).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        sorted_processes.iter().map(|stats| stats.obj_id).collect()
+    }
+
 
 }
 
