@@ -79,13 +79,14 @@ impl TimeoutEntry {
     }
 }
 
+const NR_WINDOW_ENTRIES: usize = 32;
 #[derive(Debug)]
 struct TimeoutQueue {
-    queues: [Vec<TimeoutEntry>; NR_WINDOWS],
+    queues: [heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES>; NR_WINDOWS],
     current: usize,
     next_wake: usize,
     soft_current: usize,
-    keys: Vec<usize>,
+    keys: heapless::Vec<usize, { NR_WINDOW_ENTRIES * NR_WINDOWS }>,
     next_key: usize,
 }
 
@@ -100,27 +101,19 @@ impl TimeoutKey {
     /// hasn't fired).
     pub fn release(self) -> bool {
         let did_remove = TIMEOUT_QUEUE.lock().remove(&self);
-        // Our destructor just calls remove, above, so skip it when doing this manual release.
-        core::mem::forget(self);
         did_remove
-    }
-}
-
-impl Drop for TimeoutKey {
-    fn drop(&mut self) {
-        TIMEOUT_QUEUE.lock().remove(self);
     }
 }
 
 impl TimeoutQueue {
     const fn new() -> Self {
-        const INIT: Vec<TimeoutEntry> = Vec::new();
+        const INIT: heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES> = heapless::Vec::new();
         Self {
             queues: [INIT; NR_WINDOWS],
             current: 0,
             next_wake: 0,
             soft_current: 0,
-            keys: Vec::new(),
+            keys: heapless::Vec::new(),
             next_key: 0,
         }
     }
@@ -139,7 +132,9 @@ impl TimeoutQueue {
         if key == self.next_key {
             self.next_key -= 1;
         } else {
-            self.keys.push(key);
+            if self.keys.push(key).is_err() {
+                log::warn!("leaking timeout key {}", key);
+            }
         }
     }
 
@@ -178,7 +173,10 @@ impl TimeoutQueue {
             expire_ticks: expire_ticks as u64,
             key,
         };
-        self.queues[window].push(entry);
+        if let Err(entry) = self.queues[window].push(entry) {
+            log::warn!("timeout queue overflow");
+            entry.call();
+        }
         if expire_ticks < self.next_wake {
             // TODO: #41 signal CPU to wake up early.
         }
@@ -188,7 +186,12 @@ impl TimeoutQueue {
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
     fn remove(&mut self, key: &TimeoutKey) -> bool {
         let old_len = self.queues[key.window].len();
-        for _ in self.queues[key.window].extract_if(.., |entry| entry.key == key.key) {}
+        while let Some(pos) = self.queues[key.window]
+            .iter()
+            .position(|entry| entry.key == key.key)
+        {
+            self.queues[key.window].swap_remove(pos);
+        }
         self.release_key(key.key);
         // Did we remove anything?
         old_len != self.queues[key.window].len()

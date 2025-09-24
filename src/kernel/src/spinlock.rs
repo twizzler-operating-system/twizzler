@@ -2,7 +2,7 @@ use core::{
     cell::UnsafeCell,
     marker::PhantomData,
     panic::Location,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use crate::processor::{
@@ -35,7 +35,7 @@ pub struct GenericSpinlock<T, Relax: RelaxStrategy> {
     next_ticket: AlignedAtomicU64,
     current: AlignedAtomicU64,
     cell: UnsafeCell<T>,
-    locked_from: UnsafeCell<Option<Location<'static>>>,
+    locked_from: AtomicPtr<Location<'static>>,
     _pd: PhantomData<Relax>,
 }
 
@@ -48,7 +48,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             next_ticket: AlignedAtomicU64(AtomicU64::new(0)),
             current: AlignedAtomicU64(AtomicU64::new(0)),
             cell: UnsafeCell::new(data),
-            locked_from: UnsafeCell::new(None),
+            locked_from: AtomicPtr::new(core::ptr::null_mut()),
             _pd: PhantomData,
         }
     }
@@ -74,14 +74,20 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                     //emerglogln!("spinlock pause: {}", caller);
                 }
                 if iters == 100000 {
-                    emerglogln!("spinlock long pause: {}, locked at {:?}", caller, unsafe {
-                        self.locked_from.get().as_ref().unwrap()
-                    });
+                    let locked_from = unsafe { self.locked_from.load(Ordering::SeqCst).as_ref() };
+                    emerglogln!(
+                        "spinlock long pause: {}, locked at {:?}",
+                        caller,
+                        locked_from
+                    );
                 }
                 Relax::relax(iters);
             },
         );
-        unsafe { *self.locked_from.get().as_mut().unwrap() = Some(caller) };
+        self.locked_from.store(
+            core::panic::Location::caller() as *const _ as *mut _,
+            Ordering::SeqCst,
+        );
         LockGuard {
             lock: self,
             interrupt_state,
@@ -92,7 +98,6 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
 
     fn release(&self) {
         let next = self.current.0.load(Ordering::Relaxed) + 1;
-        unsafe { *self.locked_from.get().as_mut().unwrap() = None };
         self.current.0.store(next, Ordering::Release);
     }
 }

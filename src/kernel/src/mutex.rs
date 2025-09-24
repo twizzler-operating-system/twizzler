@@ -23,7 +23,7 @@ use twizzler_abi::thread::ExecutionState;
 use crate::{
     idcounter::StableId,
     spinlock::Spinlock,
-    syscall::sync::{add_all_to_requeue, add_to_requeue, finish_blocking, requeue_all},
+    syscall::sync::{add_to_requeue, finish_blocking, remove_from_requeue, requeue_all},
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
@@ -37,15 +37,6 @@ struct SleepQueue {
 }
 
 intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
-
-impl Drop for SleepQueue {
-    fn drop(&mut self) {
-        let guard = current_thread_ref().map(|ct| ct.enter_critical());
-        add_all_to_requeue(self.queue.take().into_iter());
-        requeue_all();
-        drop(guard);
-    }
-}
 
 /// A container data structure to manage mutual exclusion.
 pub struct Mutex<T> {
@@ -86,6 +77,7 @@ impl<T> Mutex<T> {
 
         if let Some(ref current_thread) = current_thread {
             assert!(!current_thread.is_critical());
+            assert!(!current_thread.mutex_link.is_linked());
         }
 
         let mut i = 0;
@@ -123,8 +115,8 @@ impl<T> Mutex<T> {
                 if let Some(thread) = current_thread {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
-                        thread.set_sync_sleep_done();
                         queue.queue.push_back(thread.clone());
+                        thread.set_sync_sleep_done();
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
@@ -138,8 +130,31 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
+            crate::arch::processor::spin_wait_iteration();
             if let Some(guard) = guard {
                 finish_blocking(guard);
+                let current_thread = current_thread_ref().unwrap();
+                if current_thread.mutex_link.is_linked() {
+                    log::info!("still linked");
+                    // This is rare -- it can happen if we are locking and
+                    // have (e.g.) set up a timeout. Search the list for our thread
+                    // and get rid of it.
+                    let mut queue = self.queue.lock();
+                    let mut cursor = queue.queue.front_mut();
+                    while !cursor.is_null() {
+                        if let Some(th) = cursor.get() {
+                            if th.id() == current_thread.id() {
+                                log::info!("still linked: found");
+                                cursor.remove();
+                                break;
+                            } else {
+                                cursor.move_next();
+                            }
+                        }
+                    }
+                }
+                remove_from_requeue(current_thread);
+                assert!(!current_thread.mutex_link.is_linked());
             }
         }
 

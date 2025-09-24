@@ -2,7 +2,7 @@ use std::{
     fs::OpenOptions,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
     time::Duration,
@@ -11,7 +11,6 @@ use std::{
 use unittest_report::ReportStatus;
 
 use crate::{
-    image::ImageInfo,
     toolchain::get_toolchain_path,
     triple::{Arch, Machine},
     QemuOptions,
@@ -48,7 +47,7 @@ impl QemuCommand {
         }
     }
 
-    pub fn config(&mut self, options: &QemuOptions, image_info: ImageInfo) {
+    pub fn config(&mut self, options: &QemuOptions, disk_image: PathBuf) {
         // Set up the basic stuff, memory and bios, etc.
         self.cmd.arg("-m").arg("12000,slots=4,maxmem=128G");
 
@@ -58,7 +57,7 @@ impl QemuCommand {
         // Connect disk image
         self.cmd.arg("-drive").arg(format!(
             "format=raw,file={}",
-            image_info.disk_image.as_path().display()
+            disk_image.as_path().display()
         ));
 
         let already_exists = std::fs::exists("target/nvme.img").unwrap();
@@ -248,14 +247,24 @@ impl QemuCommand {
 }
 
 pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
-    let image_info = crate::image::do_make_image((&cli).into())?;
-
     let mut run_cmd = QemuCommand::new(&cli);
-    run_cmd.config(&cli, image_info);
+    if cli.no_build {
+        run_cmd.config(
+            &cli,
+            PathBuf::from(format!(
+                "target/kernel/{}-unknown-none/{}/disk.img",
+                cli.config.arch.to_string(),
+                cli.config.profile.to_string()
+            )),
+        );
+    } else {
+        let image_info = crate::image::do_make_image((&cli).into())?;
+        run_cmd.config(&cli, image_info.disk_image.clone());
+    }
 
     use wait_timeout::ChildExt;
-    let timeout = cli.tests;
-    let heartbeat = cli.tests;
+    let timeout = cli.tests && !cli.no_test_monitor;
+    let heartbeat = cli.tests && !cli.no_test_monitor;
     if heartbeat {
         run_cmd.cmd.stdin(Stdio::piped());
         run_cmd.cmd.stdout(Stdio::piped());
@@ -333,7 +342,7 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
             total,
             report.time.as_millis() as f64 / 1000.0,
         );
-    } else if cli.tests {
+    } else if cli.tests && !cli.no_test_monitor {
         eprintln!("qemu didn't produce report");
         std::process::exit(34);
     }

@@ -142,12 +142,6 @@ impl CondVar {
     }
 }
 
-impl Drop for CondVar {
-    fn drop(&mut self) {
-        self.signal()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;

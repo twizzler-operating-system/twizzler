@@ -59,7 +59,8 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
-            return match current_thread_ref().unwrap().secctx.switch_context(id) {
+            let res = current_thread_ref().unwrap().secctx.switch_context(id);
+            return match res {
                 SwitchResult::NotAttached => [1, 1],
                 _ => [0, 0],
             };
