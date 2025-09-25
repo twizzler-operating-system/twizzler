@@ -100,11 +100,18 @@ pub struct NvmeRequest {
 }
 
 impl<'a> Drop for InflightRequest<'a> {
+    #[track_caller]
     fn drop(&mut self) {
         let requests = &mut self.req.inner.lock().unwrap().requests;
         let entry = requests.get(self.id as usize).unwrap();
         if entry.flags.fetch_or(DROPPED, Ordering::SeqCst) & READY != 0 {
             requests.remove(self.id as usize);
+        } else {
+            tracing::warn!(
+                "drop inflight request {} while not ready: {}",
+                self.id,
+                core::panic::Location::caller()
+            );
         }
     }
 }
@@ -170,7 +177,7 @@ impl NvmeRequesterInner {
     }
 
     #[inline]
-    pub fn get_completion(&mut self) -> Option<CommonCompletion> {
+    pub fn get_completion(&mut self) -> Option<(u16, CommonCompletion)> {
         let Some((bell, resp)) = self.comq.get_completion::<CommonCompletion>() else {
             return None;
         };
@@ -181,6 +188,7 @@ impl NvmeRequesterInner {
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
         let flags = entry.flags.fetch_or(READY, Ordering::SeqCst);
         if flags & DROPPED != 0 {
+            tracing::info!("removing request {} due completion", id);
             self.requests.remove(id as usize);
         } else if flags & WAITER != 0 {
             let _ = twizzler_abi::syscall::sys_thread_sync(
@@ -197,7 +205,7 @@ impl NvmeRequesterInner {
             }
         }
 
-        Some(resp)
+        Some((id, resp))
     }
 
     #[inline]
@@ -211,6 +219,7 @@ impl NvmeRequesterInner {
             self.sub_bell().write(tail as u32);
             Some(id)
         } else {
+            tracing::info!("removing request {} due overflow", id);
             self.requests.remove(id as usize);
             None
         }
@@ -223,6 +232,7 @@ impl NvmeRequesterInner {
         cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<CommonCompletion>> {
         let Some(mut entry) = self.requests.get(inflight.id as usize) else {
+            tracing::warn!("no such request {}", inflight.id);
             return Poll::Ready(Err(ErrorKind::Other.into()));
         };
         let flags = entry.flags.load(Ordering::Acquire);
@@ -241,8 +251,10 @@ impl NvmeRequesterInner {
                 }
                 core::hint::spin_loop();
                 if i % 4 == 0 {
-                    if let Some(cc) = self.get_completion() {
-                        return Poll::Ready(Ok(cc));
+                    if let Some((id, cc)) = self.get_completion() {
+                        if id == inflight.id {
+                            return Poll::Ready(Ok(cc));
+                        }
                     }
                     entry = self.requests.get(inflight.id as usize).unwrap();
                 }
@@ -250,6 +262,7 @@ impl NvmeRequesterInner {
         }
 
         let Some(entry) = self.requests.get(inflight.id as usize) else {
+            tracing::warn!("no such request (post-poll) {}", inflight.id);
             return Poll::Ready(Err(ErrorKind::Other.into()));
         };
 
@@ -358,7 +371,7 @@ impl NvmeRequester {
         more
     }
 
-    pub fn get_completion(&self) -> Option<CommonCompletion> {
+    pub fn get_completion(&self) -> Option<(u16, CommonCompletion)> {
         let cc = self.inner.lock().unwrap().get_completion();
         if cc.is_some() {
             self.cv.notify_one();

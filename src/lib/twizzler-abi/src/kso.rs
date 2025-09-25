@@ -131,6 +131,8 @@ pub enum KactionGenericCmd {
     PinPages(u16),
     /// Release Pin
     ReleasePin,
+    /// Map Physical Pages
+    MapPhys(u16),
 }
 
 impl From<KactionGenericCmd> for u32 {
@@ -141,6 +143,7 @@ impl From<KactionGenericCmd> for u32 {
             KactionGenericCmd::GetSubObject(t, v) => (2, ((t as u16) << 8) | (v as u16)),
             KactionGenericCmd::PinPages(v) => (3, v),
             KactionGenericCmd::ReleasePin => (4, 0),
+            KactionGenericCmd::MapPhys(v) => (5, v),
         };
         ((h as u32) << 16) | l as u32
     }
@@ -156,7 +159,8 @@ impl TryFrom<u32> for KactionGenericCmd {
             2 => KactionGenericCmd::GetSubObject((l >> 8) as u8, l as u8),
             3 => KactionGenericCmd::PinPages(l),
             4 => KactionGenericCmd::ReleasePin,
-            _ => return Err(ArgumentError::InvalidArgument.into()),
+            5 => KactionGenericCmd::MapPhys(l),
+            _ => return Err(TwzError::INVALID_ARGUMENT),
         };
         Ok(v)
     }

@@ -39,7 +39,7 @@ static LOCAL_EXEC: LocalExecutor<'static> = LocalExecutor::new();
 
 impl WorkerThread {
     fn new() -> Self {
-        let (send, recv) = async_channel::bounded::<WorkItem>(8);
+        let (send, recv) = async_channel::bounded::<WorkItem>(32);
         Self {
             _handle: std::thread::spawn(move || loop {
                 let wi = block_on(LOCAL_EXEC.run(recv.recv())).unwrap();
@@ -80,7 +80,8 @@ pub struct Workers {
 impl Workers {
     fn new() -> Self {
         let mut threads = Vec::new();
-        for _ in 0..available_parallelism().unwrap().get() {
+        let nr_threads = (available_parallelism().unwrap().get() / 3).clamp(2, 8);
+        for _ in 0..nr_threads {
             threads.push(WorkerThread::new());
         }
         Self { threads }
@@ -145,7 +146,7 @@ fn kq_handler_main(
                     let idx = req.id().map_or(0, |x| x.parts()[0] ^ x.parts()[1]) + id as u64;
                     workers.threads[(idx as usize) % workers.threads.len()]
                         .pending
-                        .send_blocking(wi)
+                        .try_send(wi)
                         .unwrap();
                 } else {
                     let resp = run_async(handle_kernel_request(PAGER_CTX.get().unwrap(), id, req));
@@ -162,7 +163,7 @@ fn kq_handler_main(
                 let wi = WorkItem::new(id, req);
                 workers.threads[i % workers.threads.len()]
                     .pending
-                    .send_blocking(wi)
+                    .try_send(wi)
                     .unwrap();
                 i += 1;
             }

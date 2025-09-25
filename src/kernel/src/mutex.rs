@@ -15,17 +15,16 @@
 
 // TODO: reenable priority donation, and make it cheaper.
 
-use core::{cell::UnsafeCell, sync::atomic::AtomicU64};
+use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
-    arch,
     idcounter::StableId,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
-    syscall::sync::finish_blocking,
+    syscall::sync::{finish_blocking, remove_from_requeue},
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
@@ -40,18 +39,11 @@ struct SleepQueue {
 
 intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
 
-impl Drop for SleepQueue {
-    fn drop(&mut self) {
-        while let Some(t) = self.queue.pop_front() {
-            schedule_thread(t);
-        }
-    }
-}
-
 /// A container data structure to manage mutual exclusion.
 pub struct Mutex<T> {
     queue: Spinlock<SleepQueue>,
     cell: UnsafeCell<T>,
+    locked_at: UnsafeCell<&'static Location<'static>>,
 }
 
 impl<T> Mutex<T> {
@@ -65,6 +57,7 @@ impl<T> Mutex<T> {
                 owned: false,
             }),
             cell: UnsafeCell::new(data),
+            locked_at: UnsafeCell::new(Location::caller()),
         }
     }
 
@@ -84,16 +77,25 @@ impl<T> Mutex<T> {
             .and_then(|t| t.get_donated_priority());
 
         if let Some(ref current_thread) = current_thread {
+            if current_thread.is_critical() {
+                crate::panic::backtrace(false, None);
+            }
             assert!(!current_thread.is_critical());
+            assert!(!current_thread.mutex_link.is_linked());
+            assert!(!current_thread.reset_sync_sleep_done());
         }
 
+        let int_state = crate::interrupt::disable();
         let mut i = 0;
         loop {
             i += 1;
             if i == 1000 {
                 log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
-            let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
+            let guard = current_thread.as_ref().map(|ct| {
+                ct.reset_sync_sleep_done();
+                ct.enter_critical()
+            });
             let _reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
@@ -105,6 +107,7 @@ impl<T> Mutex<T> {
                     }
 
                     queue.owner = current_thread.cloned();
+                    unsafe { self.locked_at.get().write(Location::caller()) };
                     break;
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
@@ -119,6 +122,7 @@ impl<T> Mutex<T> {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
+                        thread.set_sync_sleep_done();
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
@@ -132,13 +136,35 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
-            arch::processor::spin_wait_iteration();
-            core::hint::spin_loop();
+            crate::arch::processor::spin_wait_iteration();
             if let Some(guard) = guard {
                 finish_blocking(guard);
+                let current_thread = current_thread_ref().unwrap();
+                if current_thread.mutex_link.is_linked() {
+                    log::info!("still linked");
+                    // This is rare -- it can happen if we are locking and
+                    // have (e.g.) set up a timeout. Search the list for our thread
+                    // and get rid of it.
+                    let mut queue = self.queue.lock();
+                    let mut cursor = queue.queue.front_mut();
+                    while !cursor.is_null() {
+                        if let Some(th) = cursor.get() {
+                            if th.id() == current_thread.id() {
+                                log::info!("still linked: found");
+                                cursor.remove();
+                                break;
+                            } else {
+                                cursor.move_next();
+                            }
+                        }
+                    }
+                }
+                remove_from_requeue(current_thread);
+                assert!(!current_thread.mutex_link.is_linked());
             }
         }
 
+        crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
@@ -149,21 +175,14 @@ impl<T> Mutex<T> {
         let mut queue = self.queue.lock();
         queue.owner = None;
         queue.owned = false;
+        let g = current_thread_ref().map(|ct| ct.enter_critical());
         if let Some(thread) = queue.queue.pop_front() {
-            drop(queue);
-            let mut i = 0;
-            while thread.is_critical() {
-                arch::processor::spin_wait_iteration();
-                core::hint::spin_loop();
-                i += 1;
-                if i == 1000 {
-                    log::warn!("critical thread in queue won't drop critical flag");
-                }
-            }
             schedule_thread(thread);
+            drop(queue);
         } else {
             queue.pri = None;
         }
+        drop(g);
     }
 }
 

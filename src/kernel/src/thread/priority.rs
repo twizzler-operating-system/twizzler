@@ -55,7 +55,7 @@ impl Priority {
         };
         Self {
             class,
-            value: (d & 0xffff) as u16,
+            value: ((d & 0xffff) as u16).min(MAX_PRIORITY - 1),
         }
     }
 
@@ -165,7 +165,7 @@ mod test {
             },
             Priority {
                 class: PriorityClass::Idle,
-                value: MAX_PRIORITY,
+                value: MAX_PRIORITY - 1,
             },
             Priority {
                 class: PriorityClass::Background,
@@ -173,7 +173,7 @@ mod test {
             },
             Priority {
                 class: PriorityClass::Background,
-                value: MAX_PRIORITY,
+                value: MAX_PRIORITY - 1,
             },
             Priority {
                 class: PriorityClass::User,
@@ -181,7 +181,7 @@ mod test {
             },
             Priority {
                 class: PriorityClass::User,
-                value: MAX_PRIORITY,
+                value: MAX_PRIORITY - 1,
             },
             Priority {
                 class: PriorityClass::Realtime,
@@ -189,7 +189,7 @@ mod test {
             },
             Priority {
                 class: PriorityClass::Realtime,
-                value: MAX_PRIORITY,
+                value: MAX_PRIORITY - 1,
             },
         ];
 

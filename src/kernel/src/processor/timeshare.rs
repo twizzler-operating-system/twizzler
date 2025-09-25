@@ -106,8 +106,9 @@ impl<const N: usize> TimeshareQueue<N> {
             let q = (self.take_idx + i) % N;
             if let Some(th) = self.queues[q].pop_front() {
                 self.take_idx = q;
-                self.priorities[th.get_stable_effective_priority().value as usize
-                    / (MAX_PRIORITY as usize / N)] -= 1;
+                let p = &mut self.priorities[th.get_stable_effective_priority().value as usize
+                    / (MAX_PRIORITY as usize / N)];
+                *p = (*p).saturating_sub(1);
                 self.count -= 1;
                 if self.take_idx != self.insert_idx && self.queues[q].is_empty() {
                     self.take_idx = (self.take_idx + 1) % N;

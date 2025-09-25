@@ -46,7 +46,7 @@ pub mod ties;
 const OBJ_DELETED: u32 = 1;
 pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 pub struct Object {
-    id: ObjID,
+    pub id: ObjID,
     flags: AtomicU32,
     range_tree: Mutex<range::PageRangeTree>,
     sleep_info: Mutex<SleepInfo>,

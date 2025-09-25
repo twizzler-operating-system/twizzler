@@ -7,7 +7,9 @@ use std::{
 };
 
 use twizzler::object::ObjID;
-use twizzler_abi::pager::{CompletionToPager, PagerRequest, PhysRange, RequestFromPager};
+use twizzler_abi::pager::{
+    CompletionToPager, PagerCompletionData, PagerRequest, PhysRange, RequestFromPager,
+};
 use twizzler_queue::{QueueSender, SubmissionFlags};
 use twizzler_rt_abi::{error::TwzError, Result};
 
@@ -79,6 +81,7 @@ fn pr_mgr_thread_main(recv: Receiver<Request>) {
             None => break,
         }
     }
+    tracing::error!("Pager Request Thread should not exit");
 }
 
 pub fn init_pr_mgr(queue: QueueRef) {
@@ -95,6 +98,14 @@ pub fn init_pr_mgr(queue: QueueRef) {
 
 fn pr_mgr() -> &'static PageRequestMgr {
     PR_MGR.get().unwrap()
+}
+
+pub async fn report_ready() -> Option<PagerCompletionData> {
+    tracing::debug!("sending ready signal to kernel");
+    let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
+    let comp = pr_mgr().submit_and_wait(request).await;
+    tracing::debug!("received completion for ready signal: {:?}", comp);
+    Some(comp.data())
 }
 
 pub async fn register_phys(start: u64, len: u64) -> Result<()> {

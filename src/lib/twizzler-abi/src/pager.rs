@@ -271,6 +271,7 @@ pub struct ObjectEvictInfo {
     pub phys: PhysRange,
     pub version: u64,
     pub flags: ObjectEvictFlags,
+    pub uniq_id: ObjID,
 }
 
 impl ObjectEvictInfo {
@@ -280,8 +281,10 @@ impl ObjectEvictInfo {
         phys: PhysRange,
         version: u64,
         flags: ObjectEvictFlags,
+        uniq_id: ObjID,
     ) -> Self {
         Self {
+            uniq_id,
             obj_id,
             range,
             phys,

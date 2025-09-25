@@ -28,7 +28,9 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
-    //logln!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
+        log::trace!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    }
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
@@ -308,6 +310,15 @@ pub fn do_page_fault(
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     let res = do_page_fault(addr, cause, flags, ip);
+    if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
+        log::trace!(
+            "done page-fault: {:?} {:?} {:?} ip={:?}",
+            addr,
+            cause,
+            flags,
+            ip
+        );
+    }
     if let Err(upcall) = res {
         current_thread_ref().unwrap().send_upcall(upcall);
     }

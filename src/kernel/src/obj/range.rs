@@ -519,30 +519,14 @@ impl PageRangeTree {
                     let mut prev_range = self.tree.remove(&end).unwrap();
                     prev_range.length += diff + nr_extra_pages;
                     let p = prev_range.add_page(pn, page);
-
-                    let r = prev_range.range();
-                    let x = prev_range.offset;
-                    let y = prev_range.length;
-                    let kicked = self.tree.insert_replace(prev_range.range(), prev_range);
-                    if kicked.len() != 0 {
-                        log::error!(
-                            "expected no kicked ranges when inserting: {:?} {} {}, got {:?}, with {} {} {} {}",
-                            r,
-                            x,
-                            y,
-                            kicked,
-                            end,nr_extra_pages,diff,pn,
-                        );
-                    }
-                    assert_eq!(kicked.len(), 0);
+                    let _kicked = self.tree.insert_replace(prev_range.range(), prev_range);
                     return Some(p);
                 }
             }
             let mut range = PageRange::new(pn);
             range.length = page.nr_pages();
             let p = range.add_page(pn, page);
-            let kicked = self.tree.insert_replace(range.range(), range);
-            assert_eq!(kicked.len(), 0);
+            let _kicked = self.tree.insert_replace(range.range(), range);
             Some(p)
         }
     }

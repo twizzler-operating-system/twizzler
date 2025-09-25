@@ -5,7 +5,7 @@ use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 
 use super::{Ref, RefMut};
-use crate::object::RawObject;
+use crate::{marker::Invariant, object::RawObject};
 
 #[derive(Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.
@@ -14,6 +14,8 @@ pub struct GlobalPtr<T> {
     offset: u64,
     _pd: PhantomData<*const T>,
 }
+
+unsafe impl<T: Invariant> Invariant for GlobalPtr<T> {}
 
 impl<T> Debug for GlobalPtr<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

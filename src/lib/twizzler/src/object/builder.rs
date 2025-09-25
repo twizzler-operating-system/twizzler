@@ -1,12 +1,12 @@
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
-    object::Protections,
+    object::{ObjID, Protections},
     syscall::{
         BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
     },
 };
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};
 
 use super::{Object, TxObject};
 use crate::{
@@ -20,6 +20,7 @@ pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
     src_objs: Vec<ObjectSource>,
     ties: Vec<CreateTieSpec>,
+    name: Option<String>,
     _pd: PhantomData<Base>,
 }
 
@@ -29,6 +30,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         Self {
             spec,
             _pd: PhantomData,
+            name: None,
             src_objs: Vec::new(),
             ties: Vec::new(),
         }
@@ -56,6 +58,21 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         self.ties.push(tie);
         self
     }
+
+    pub fn named(mut self, name: impl ToString) -> Self {
+        self.name = Some(name.to_string());
+        self
+    }
+}
+
+fn bind_name(id: ObjID, name: &str) -> Result<()> {
+    let create = twizzler_rt_abi::bindings::create_options {
+        id: id.raw(),
+        kind: CREATE_KIND_NEW,
+    };
+    let fd = twizzler_rt_abi::fd::twz_rt_fd_open(name, create, 0)?;
+    twizzler_rt_abi::fd::twz_rt_fd_close(fd);
+    Ok(())
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
@@ -94,6 +111,17 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
+            if let Some(ref name) = self.name {
+                bind_name(id, name)?;
+            }
+        } else {
+            if let Some(ref name) = self.name {
+                tracing::warn!(
+                    "tried to name volatile object at creation time: {} {}",
+                    id,
+                    name
+                );
+            }
         }
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
         let object = ctor(mu_object.into_tx()?)?;

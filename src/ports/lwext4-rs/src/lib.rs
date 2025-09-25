@@ -1,16 +1,17 @@
 use std::{
     ffi::{c_void, CString},
-    io::{Read, Result, Seek, Write},
+    io::{ErrorKind, Read, Result, Seek, Write},
     mem::MaybeUninit,
     ptr::null_mut,
     u64,
 };
 
 use lwext4::{
-    ext4_block, ext4_blockdev, ext4_blockdev_iface, ext4_dir_iterator_fini, ext4_dir_iterator_init,
-    ext4_dir_iterator_next, ext4_extent_get_blocks, ext4_file, ext4_fs_init_inode_dblk_idx,
-    ext4_fs_insert_inode_dblk, ext4_fs_put_inode_ref, ext4_fsblk_t, ext4_get_mount,
-    ext4_inode_get_size, ext4_inode_ref, ext4_mount, EOK, SEEK_CUR, SEEK_END, SEEK_SET,
+    ext4_block, ext4_blockdev, ext4_blockdev_iface, ext4_cache_flush, ext4_dir_iterator_fini,
+    ext4_dir_iterator_init, ext4_dir_iterator_next, ext4_extent_get_blocks, ext4_file,
+    ext4_fs_fini, ext4_fs_init_inode_dblk_idx, ext4_fs_insert_inode_dblk, ext4_fs_put_inode_ref,
+    ext4_fsblk_t, ext4_get_mount, ext4_inode_get_flags, ext4_inode_get_size, ext4_inode_ref,
+    ext4_mount, EOK, EXT4_INODE_FLAG_EXTENTS, SEEK_CUR, SEEK_END, SEEK_SET,
 };
 
 #[allow(unused, nonstandard_style)]
@@ -245,6 +246,10 @@ impl Ext4InodeRef {
         max_blocks: u32,
         create: bool,
     ) -> Result<(ext4_fsblk_t, u32)> {
+        let flags = unsafe { ext4_inode_get_flags(self.inode.inode) };
+        if flags & EXT4_INODE_FLAG_EXTENTS == 0 {
+            return Err(ErrorKind::Unsupported.into());
+        }
         let mut count = 0;
         let mut dblock = 0;
         errno_to_result(unsafe {
@@ -307,22 +312,23 @@ impl Drop for Ext4InodeRef {
     }
 }
 
-struct MpLock {
+pub struct MpLock {
     imp: MutexImp,
 }
 
 impl MpLock {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             imp: MutexImp::new(),
         }
     }
 
-    fn lock(&self) {
-        unsafe { self.imp.lock() };
+    #[track_caller]
+    pub fn lock(&self) {
+        unsafe { self.imp.lock(core::panic::Location::caller()) };
     }
 
-    fn unlock(&self) {
+    pub fn unlock(&self) {
         unsafe { self.imp.unlock() };
     }
 }
@@ -484,6 +490,19 @@ impl Ext4Fs {
         let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
         let path = CString::new(name).unwrap();
         errno_to_result(unsafe { lwext4::ext4_dir_mk(path.as_ptr()) })
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        let fs = unsafe { lwext4::ext4_mountpoint_fs(self.mnt_name.as_ptr()) };
+        let e = unsafe { ext4_fs_fini(fs) };
+
+        errno_to_result(e)?;
+        unsafe {
+            _bc_lock();
+            errno_to_result(ext4_cache_flush(self.mnt_name.as_ptr()))?;
+            _bc_unlock();
+        }
+        Ok(())
     }
 }
 

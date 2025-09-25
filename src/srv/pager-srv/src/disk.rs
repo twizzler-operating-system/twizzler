@@ -1,10 +1,12 @@
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
+    time::Duration,
     u32, u64,
 };
 
-use async_io::block_on;
+use async_io::{block_on, Timer};
 use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN};
 use twizzler::Result;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
@@ -12,6 +14,7 @@ use twizzler_driver::dma::{PhysAddr, PhysInfo};
 use crate::{
     helpers::PAGE,
     nvme::{init_nvme, NvmeController},
+    threads::run_async,
     PAGER_CTX,
 };
 
@@ -101,6 +104,7 @@ impl PagedDevice for Disk {
                 if !phys_list.is_empty() {
                     return Ok(0);
                 }
+                tracing::info!("task out of memory, waiting");
                 block_on(mw)
             }
         };
@@ -111,6 +115,16 @@ impl PagedDevice for Disk {
         }
         phys_list.push(mem).unwrap();
         Ok(1)
+    }
+
+    fn yield_now(&self) {
+        run_async(async {
+            Timer::after(Duration::from_micros(100)).await;
+        });
+    }
+
+    fn run_async<R: 'static>(&self, f: impl Future<Output = R>) -> R {
+        run_async(f)
     }
 }
 

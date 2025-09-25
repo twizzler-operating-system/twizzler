@@ -44,6 +44,7 @@ impl Inflight {
                 phys: PhysRange::new(0, 0),
                 version: 0,
                 flags: ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE,
+                uniq_id: 0.into(),
             }),
             ReqKind::Del(obj_id) => KernelCommand::ObjectDel(*obj_id),
             ReqKind::Create(obj_id, create, nonce) => KernelCommand::ObjectCreate(

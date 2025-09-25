@@ -6,9 +6,9 @@ use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
     pager::{
-        CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags, ObjectInfo,
-        ObjectRange, PageFlags, PagerCompletionData, PagerRequest, PhysRange, RequestFromKernel,
-        RequestFromPager,
+        CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags,
+        ObjectEvictFlags, ObjectInfo, ObjectRange, PageFlags, PagerCompletionData, PagerRequest,
+        PhysRange, RequestFromKernel, RequestFromPager,
     },
     syscall::{MapFlags, NANOS_PER_SEC},
 };
@@ -69,6 +69,7 @@ fn pager_request_copy_user_phys(
     phys: PhysRange,
     write_phys: bool,
 ) -> CompletionToPager {
+    log::info!("copy user phys");
     let Ok(phys_start) = PhysAddr::new(phys.start) else {
         return CompletionToPager::new(PagerCompletionData::Error(
             TwzError::INVALID_ARGUMENT.into(),
@@ -129,12 +130,12 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                log::debug!("pager ready");
+                log::info!("pager ready");
                 inflight_mgr().lock().set_ready();
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
-                log::debug!("reclaim thread started");
+                log::info!("reclaim thread started");
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
@@ -298,7 +299,7 @@ pub(super) fn pager_compl_handler_main() {
             continue;
         };
         assert!(!current_thread.is_critical());
-        //log::info!("got completion for {:?}: {:?}", request.req, completion.1);
+        log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
 
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
@@ -314,14 +315,18 @@ pub(super) fn pager_compl_handler_main() {
                 pager_compl_handle_error(request.req, err.error(), &request.reqkind)
             }
             _ => {}
-            //twizzler_abi::pager::KernelCompletionData::Okay => {
-            //}
         };
         assert!(!current_thread.is_critical());
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
             let mut mgr = inflight_mgr().lock();
-            mgr.remove_request(&request.reqkind);
+            if let KernelCommand::ObjectEvict(evict) = request.req.cmd() {
+                if evict.flags.contains(ObjectEvictFlags::FENCE) {
+                    mgr.remove_request(&request.reqkind);
+                }
+            } else {
+                mgr.remove_request(&request.reqkind);
+            }
             sender.idmap.lock().remove(&completion.0);
             sender.ids.release_simple(SimpleId::from(completion.0));
         }
