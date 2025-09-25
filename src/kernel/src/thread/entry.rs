@@ -141,10 +141,13 @@ where
         let info = unsafe { Arc::from_raw(arg as *const KthreadClosure<F, R>) };
         // Take this out, but don't hold the lock when we run the closure.
         let closure = { info.closure.lock().take().unwrap() };
+        assert!(!current_thread_ref().unwrap().is_critical());
         let result = (closure)();
+        assert!(!current_thread_ref().unwrap().is_critical());
         let mut guard = info.result.lock();
         guard.1.write(result);
         guard.0 = true;
+        drop(guard);
         info.signal.signal();
     };
 

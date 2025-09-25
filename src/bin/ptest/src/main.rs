@@ -15,7 +15,7 @@ use twizzler::{
     },
     collections::vec::{VecObject, VecObjectAlloc},
     marker::Invariant,
-    object::{MapFlags, ObjID, Object, ObjectBuilder},
+    object::{MapFlags, ObjID, Object, ObjectBuilder, RawObject},
 };
 use twizzler_abi::syscall::sys_object_ctrl;
 use twizzler_rt_abi::{error::TwzError, object::ObjectHandle};
@@ -274,18 +274,48 @@ fn main() {
             println!("done!: {:?}", end - start);
         }
         SubCommand::Big => {
+            const LEN: usize = 1024 * 1024 * 100;
+
+            //let _ = nh.remove("/data/big");
+            if let Ok(n) = nh.get("/data/big", GetFlags::empty()) {
+                let obj = Object::<u8>::map(n.id, MapFlags::READ).unwrap();
+                let obj = unsafe { obj.cast::<[u8; LEN]>() };
+                let base = obj.base_ptr::<u8>();
+                let slice = unsafe { core::slice::from_raw_parts(base, LEN) };
+                let sum = slice.iter().fold(0u32, |acc, x| acc + *x as u32);
+                println!("SUM for {} IS: {}", obj.id(), sum);
+                let mut b = 0u16;
+                for (i, s) in slice.iter().enumerate() {
+                    b += 1;
+                    if *s != (b - 1) as u8 {
+                        println!("wrong at {}: expect: {}, got: {}", i, (b - 1) as u8, *s);
+                    }
+                }
+                return;
+            }
+
             let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
-            let obj = unsafe { obj.as_mut().unwrap() };
-            const LEN: usize = 1024 * 1024 * 800;
-            let mut obj = unsafe { obj.cast::<[u8; LEN]>() };
+            let obj = unsafe { obj.cast::<[u8; LEN]>() };
+            let mut obj = unsafe { obj.as_mut().unwrap() };
             println!("filling...");
             let start = Instant::now();
             let mut base = obj.base_mut();
-            base.fill(27);
+            let mut b = 0u16;
+            base.fill_with(|| {
+                b += 1;
+                (b - 1) as u8
+            });
+
+            let sum = base.iter().fold(0u32, |acc, x| acc + *x as u32);
+            println!("SUM WAS: {} for {}", sum, obj.id());
             println!("{}ms. syncing...", start.elapsed().as_millis());
             let start = Instant::now();
             obj.sync().unwrap();
             println!("=> {}ms", start.elapsed().as_millis());
+            let _ = nh.remove("/data/big");
+            nh.put("/data/big", obj.id()).unwrap();
+
+            /*
             println!("okay, rewriting and syncing");
             let start = Instant::now();
             let mut base = obj.base_mut();
@@ -294,6 +324,7 @@ fn main() {
             let start = Instant::now();
             obj.sync().unwrap();
             println!("=> {}ms", start.elapsed().as_millis());
+            */
         }
         SubCommand::Rdb => {
             println!("in progress");

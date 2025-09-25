@@ -30,7 +30,7 @@ impl SleepEntry {
     pub fn add_thread(&mut self, thread: ThreadRef) {
         let ret = self.threads.insert(thread.objid(), thread);
         if let Err((_, thread)) = ret {
-            log::warn!("overflowed thread sleep list");
+            log::info!("overflowed thread sleep list");
             self.wake_n(2);
             return self.add_thread(thread);
         }
@@ -77,7 +77,7 @@ impl Drop for SleepEntry {
 
 pub struct SleepInfo {
     of_obj: ObjID,
-    some_words: FnvIndexMap<usize, SleepEntry, 16>,
+    some_words: FnvIndexMap<usize, SleepEntry, 32>,
     more_words: Option<BTreeMap<usize, SleepEntry>>,
 }
 
@@ -111,7 +111,7 @@ impl SleepInfo {
                 {
                     Ok(_) => {}
                     Err((_, se)) => {
-                        log::warn!("overflowing sleep entries");
+                        log::debug!("overflowing sleep entries");
                         // Clear the old words, wake up all those threads.
                         self.some_words.clear();
                         let mw = self.more_words.get_or_insert(BTreeMap::new());

@@ -150,6 +150,15 @@ impl<Base> Object<Base> {
     pub fn update(&mut self) -> Result<()> {
         twizzler_rt_abi::object::twz_rt_update_handle(&mut self.handle)
     }
+
+    /// Sync the underlying object.
+    ///
+    /// # Safety
+    /// The caller must ensure that the object is not being concurrently modified by
+    /// another thread, and that the memory is in a valid state to represent the object.
+    pub unsafe fn sync(&mut self) -> Result<()> {
+        self.as_mut()?.sync()
+    }
 }
 
 impl<Base> RawObject for Object<Base> {

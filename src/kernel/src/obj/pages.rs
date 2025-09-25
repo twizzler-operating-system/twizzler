@@ -5,7 +5,7 @@ use core::{
 };
 
 use twizzler_abi::{
-    device::{CacheType, MMIO_OFFSET},
+    device::CacheType,
     meta::MetaInfo,
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
 };
@@ -501,8 +501,8 @@ impl Object {
         }
     }
 
-    pub fn map_phys(&self, start: PhysAddr, end: PhysAddr, ct: CacheType) {
-        let pn_start = PageNumber::from_address(VirtAddr::new(MMIO_OFFSET as u64).unwrap()); //TODO: arch-dep
+    pub fn map_phys(&self, object_offset: u64, start: PhysAddr, end: PhysAddr, ct: CacheType) {
+        let pn_start = PageNumber::from_address(VirtAddr::new(object_offset).unwrap()); //TODO: arch-dep
         let nr = (end.raw() - start.raw()) as usize / PageNumber::PAGE_SIZE;
         for i in 0..nr {
             let pn = pn_start.offset(i);

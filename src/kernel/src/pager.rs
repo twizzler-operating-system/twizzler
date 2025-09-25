@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
+use core::time::Duration;
 
 use inflight::InflightManager;
+use itertools::Itertools;
 use request::ReqKind;
 use twizzler_abi::{
     object::{ObjID, MAX_SIZE},
@@ -14,11 +16,11 @@ use crate::{
         frame::PHYS_LEVEL_LAYOUTS,
         tracker::FrameAllocFlags,
     },
-    mutex::Mutex,
-    obj::{LookupFlags, ObjectRef, PageNumber},
+    mutex::{LockGuard, Mutex},
+    obj::{range::PageRangeTree, LookupFlags, ObjectRef, PageNumber},
     once::Once,
     processor::sched::{schedule, SchedFlags},
-    syscall::sync::finish_blocking,
+    syscall::sync::{finish_blocking, sys_thread_sync},
     thread::current_thread_ref,
 };
 
@@ -70,11 +72,12 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-pub fn get_pages_and_wait(
+fn get_pages_and_wait(
     obj: &ObjectRef,
     page: PageNumber,
     len: usize,
     flags: PagerFlags,
+    tree: LockGuard<'_, PageRangeTree>,
 ) -> bool {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
@@ -91,9 +94,10 @@ pub fn get_pages_and_wait(
         log::warn!("out of pager request slots");
         drop(mgr);
         schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
-        return get_pages_and_wait(obj, page, len, flags);
+        return get_pages_and_wait(obj, page, len, flags, tree);
     };
     drop(mgr);
+    drop(tree);
     let mut submitted = false;
     inflight.for_each_pager_req(|pager_req| {
         submitted = true;
@@ -191,7 +195,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::trace!(
+    log::debug!(
         "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
         start.num(),
@@ -207,10 +211,32 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
     }
 
     if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
-        provide_pager_memory(needed_additional, wait_for_additional);
+        provide_pager_memory(needed_additional.min(512), wait_for_additional);
     }
 
-    get_pages_and_wait(obj, start, len, flags)
+    let mut cur = start;
+    let end = start.offset(len);
+    let mut used_pager = false;
+    let mut tree = obj.lock_page_tree();
+    while cur < end {
+        if let Some(range) = tree.get(cur) {
+            // TODO: find holes in the range
+            cur = range.start.offset(range.length);
+        } else {
+            let mut r = tree.range(cur..end);
+            let thislen = if let Some(first) = r.next() {
+                *first.0 - cur
+            } else {
+                end - cur
+            };
+            if get_pages_and_wait(obj, cur, thislen, flags, tree) {
+                used_pager = true;
+            }
+            cur = cur.offset(thislen);
+            tree = obj.lock_page_tree();
+        }
+    }
+    used_pager
 }
 
 // Returns true if the pager was engaged.
@@ -218,40 +244,28 @@ pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
     let max = PageNumber::from_offset(MAX_SIZE);
     if pn >= max {
         log::warn!("invalid page number: {:?}", pn);
-    }
-    let count_to_end = max - pn;
-    let count = count_to_end.min(1024);
-
-    let tree = obj.lock_page_tree();
-    let mut range = tree.range(pn..pn.offset(count));
-    let first_present = range.next();
-
-    let count = if let Some(first_present) = first_present {
-        if first_present.0.num() <= pn.num() {
-            1
-        } else {
-            log::debug!(
-                "found partial in check for range {:?}: {:?}",
-                pn..pn.offset(count),
-                first_present.0
-            );
-            first_present.0.num().saturating_sub(pn.num())
-        }
-    } else {
-        count_to_end.min(1024)
-    }
-    .min(1024);
-    log::trace!(
-        "get page: {} {:?} {}",
-        pn,
-        first_present.map(|f| f.1.range()),
-        count
-    );
-    drop(tree);
-    if count == 0 {
         return false;
     }
-    ensure_in_core(obj, pn, count, PagerFlags::empty())
+
+    if pn.is_meta() {
+        return ensure_in_core(obj, pn, 1, PagerFlags::empty());
+    }
+
+    let chunk_size = 1024;
+
+    let mut aligned_pn = PageNumber::from((pn.num() + 1).next_multiple_of(chunk_size) - chunk_size);
+
+    let count_to_end = PageNumber::meta_page() - aligned_pn;
+    let mut chunk_count = count_to_end.min(chunk_size);
+
+    if pn.num() < chunk_size && pn.num() != 0 {
+        aligned_pn = PageNumber::base_page();
+        chunk_count -= 1;
+    }
+    if chunk_count == 0 {
+        return false;
+    }
+    ensure_in_core(obj, aligned_pn, chunk_count, PagerFlags::empty())
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -295,14 +309,28 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             }
         }
     }
+    ranges.sort_unstable_by_key(|r| r.start);
     ranges
+        .into_iter()
+        .coalesce(|a, b| {
+            if a.end == b.start {
+                Ok(PhysRange {
+                    start: a.start,
+                    end: b.end,
+                })
+            } else {
+                Err((a, b))
+            }
+        })
+        .collect()
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {
-    let mut mgr = inflight_mgr().lock();
+    let mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
+    drop(mgr);
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
     log::trace!(
@@ -316,12 +344,19 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     let inflights = ranges
         .iter()
         .map(|range| {
+            let mut mgr = inflight_mgr().lock();
             let req = ReqKind::new_pager_memory(*range);
-            mgr.add_request(req).expect("TODO")
+            loop {
+                if let Some(inflight) = mgr.add_request(req.clone()) {
+                    break inflight;
+                }
+                log::warn!("out of pager request slots");
+                drop(mgr);
+                let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(100)));
+                mgr = inflight_mgr().lock();
+            }
         })
         .collect::<Vec<_>>();
-
-    drop(mgr);
 
     for inflight in &inflights {
         inflight.for_each_pager_req(|pager_req| {

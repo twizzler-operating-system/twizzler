@@ -130,6 +130,9 @@ impl<const N: usize> PriorityQueue<N> {
         } else {
             priority.value as usize / (MAX_PRIORITY as usize / N)
         };
+        if q > 8 {
+            logln!("{} ==> {}", q, priority.value);
+        }
         self.queues[q].push_back(th);
         self.count += 1;
     }
@@ -260,7 +263,7 @@ impl<const N: usize> RunQueue<N> {
         if self.current_priority().class == PriorityClass::Realtime {
             if realtime.is_empty() {
                 let priority = Priority {
-                    value: MAX_PRIORITY,
+                    value: MAX_PRIORITY - 1,
                     class: PriorityClass::User,
                 };
                 self.current_priority

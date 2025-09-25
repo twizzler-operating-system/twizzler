@@ -29,7 +29,6 @@ impl VirtioMem {
 
 impl PosIo for VirtioMem {
     async fn read(&self, start: u64, mut buf: &mut [u8]) -> Result<usize> {
-        let queue = &PAGER_CTX.get().unwrap().sender;
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
@@ -67,7 +66,6 @@ impl PosIo for VirtioMem {
     }
 
     async fn write(&self, start: u64, mut buf: &[u8]) -> Result<usize> {
-        let queue = &PAGER_CTX.get().unwrap().sender;
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;

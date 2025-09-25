@@ -18,7 +18,7 @@ use crate::{
     once::Once,
     processor::sched::{schedule, SchedFlags},
     spinlock::Spinlock,
-    syscall::sync::finish_blocking,
+    syscall::sync::{add_all_to_requeue, finish_blocking, requeue_all},
     thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, Thread, ThreadRef},
 };
 
@@ -35,7 +35,7 @@ pub struct MemoryTracker {
     reclaim: Once<ReclaimThread>,
     waiters: Spinlock<LinkedList<LinkAdapter>>,
 }
-intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
+intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { memwait_link: intrusive_collections::linked_list::AtomicLink });
 
 impl MemoryTracker {
     fn free_frame(&self, frame: FrameRef) {
@@ -127,6 +127,7 @@ impl MemoryTracker {
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
         self.waiters.lock().push_back(current_thread.clone());
+        current_thread.set_sync_sleep_done();
         self.trigger_reclaim();
         {
             current_thread.set_state(ExecutionState::Sleeping);
@@ -134,15 +135,18 @@ impl MemoryTracker {
                 finish_blocking(guard);
             }
             current_thread.set_state(ExecutionState::Running);
+            current_thread.reset_sync_sleep_done();
         }
         self.waiting.fetch_sub(1, Ordering::SeqCst);
     }
 
     fn wake(&self) {
+        let g = current_thread_ref().map(|ct| ct.enter_critical());
         let mut waiters = self.waiters.lock();
-        while let Some(waiter) = waiters.pop_back() {
-            crate::processor::sched::schedule_thread(waiter);
-        }
+        add_all_to_requeue(waiters.take().into_iter());
+        requeue_all();
+        drop(waiters);
+        drop(g);
     }
 
     fn trigger_reclaim(&self) {

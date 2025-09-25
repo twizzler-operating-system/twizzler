@@ -3,7 +3,7 @@ use twizzler_rt_abi::Result;
 use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{
     arch::syscall::raw_syscall,
-    kso::{KactionCmd, KactionFlags, KactionValue},
+    kso::{KactionCmd, KactionFlags, KactionGenericCmd, KactionValue},
     object::ObjID,
 };
 
@@ -45,4 +45,27 @@ impl PinnedPage {
     pub fn physical_address(&self) -> u64 {
         self.phys
     }
+}
+
+pub fn map_pages(
+    id: Option<ObjID>,
+    obj_start: u64,
+    phys_start: u64,
+    len: u32,
+    uc: bool,
+) -> Result<()> {
+    let mut arg = phys_start;
+    if uc {
+        arg |= 1 << 63;
+    }
+    let arg2 = (len as u64) | (obj_start & 0xFFFFFFFF) << 32;
+    let obj_start_hi = (obj_start >> 32) & 0xFFFF;
+    sys_kaction(
+        KactionCmd::Generic(KactionGenericCmd::MapPhys(obj_start_hi as u16)),
+        id,
+        arg,
+        arg2,
+        KactionFlags::empty(),
+    )
+    .map(|_| ())
 }

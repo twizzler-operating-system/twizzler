@@ -808,6 +808,9 @@ unsafe extern "C" {
     pub fn ext4_bcache_cleanup(bc: *mut ext4_bcache);
 }
 unsafe extern "C" {
+    pub fn ext4_bcache_flush(bc: *mut ext4_bcache);
+}
+unsafe extern "C" {
     #[doc = "@brief   Dynamic de-initialization of block cache.\n @param   bc block cache descriptor\n @return  standard error code"]
     pub fn ext4_bcache_fini_dynamic(bc: *mut ext4_bcache) -> ::std::os::raw::c_int;
 }

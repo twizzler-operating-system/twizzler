@@ -67,6 +67,7 @@ pub struct Thread {
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
+    pub memwait_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
     pub requeue_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
@@ -145,6 +146,7 @@ impl Thread {
             control_object: ControlObjectCacher::new(ThreadRepr::default()),
             sched_link: AtomicLink::default(),
             mutex_link: AtomicLink::default(),
+            memwait_link: AtomicLink::default(),
             suspend_link: RBTreeAtomicLink::default(),
             requeue_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),

@@ -12,7 +12,7 @@ use async_io::Timer;
 use disk::Disk;
 use memstore::virtio::init_virtio;
 use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
-use physrw::init_pr_mgr;
+use physrw::{init_pr_mgr, report_ready};
 use threads::{run_async, spawn_async, PagerThreadPool};
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
@@ -21,9 +21,9 @@ use twizzler::{
     Result,
 };
 use twizzler_abi::pager::{
-    CompletionToKernel, CompletionToPager, PagerCompletionData, RequestFromKernel, RequestFromPager,
+    CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager,
 };
-use twizzler_queue::{QueueBase, QueueSender, SubmissionFlags};
+use twizzler_queue::{QueueBase, SubmissionFlags};
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
 use crate::data::PagerData;
@@ -123,25 +123,8 @@ fn pager_init(
     return (rq, sq, data);
 }
 
-async fn report_ready(ctx: &PagerContext) -> Option<PagerCompletionData> {
-    tracing::debug!("sending ready signal to kernel");
-    let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
-
-    match ctx.sender.submit_and_wait(request).await {
-        Ok(completion) => {
-            tracing::debug!("received completion for ready signal: {:?}", completion);
-            return Some(completion.data());
-        }
-        Err(e) => {
-            tracing::warn!("error from ready signal {:?}", e);
-            return None;
-        }
-    }
-}
-
 struct PagerContext {
     data: PagerData,
-    sender: Arc<QueueSender<RequestFromPager, CompletionToPager>>,
     kernel_notify: &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
     _pool: PagerThreadPool,
 
@@ -175,13 +158,12 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data) = pager_init(q1, q2);
     let sq = Arc::new(sq);
-    init_pr_mgr(sq.clone());
+    init_pr_mgr(sq);
     #[allow(unused_variables)]
     let disk = run_async(Disk::new()).unwrap();
 
     let _ = PAGER_CTX.set(PagerContext {
         data,
-        sender: sq,
         kernel_notify: rq,
         store: OnceLock::new(),
         _pool: PagerThreadPool::new(rq),
@@ -195,7 +177,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let _ = ctx.store.set(ext4_store);
 
     run_async(async move {
-        let _ = report_ready(&ctx).await.unwrap();
+        let _ = report_ready().await.unwrap();
     });
 
     tracing::info!("pager ready");

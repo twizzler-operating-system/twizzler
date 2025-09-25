@@ -35,13 +35,20 @@ use crate::{
 pub struct PerObjectInner {
     #[allow(dead_code)]
     id: ObjID,
-    sync_map: Vec<(ObjectRange, PhysRange, u64)>,
+    sync_map: Vec<(ObjectRange, PhysRange, u64, u128)>,
     syncing: bool,
 }
 
 impl PerObjectInner {
-    pub fn track(&mut self, obj_range: ObjectRange, phys_range: PhysRange, version: u64) {
-        self.sync_map.push((obj_range, phys_range, version));
+    pub fn track(
+        &mut self,
+        obj_range: ObjectRange,
+        phys_range: PhysRange,
+        version: u64,
+        uniq_id: u128,
+    ) {
+        self.sync_map
+            .push((obj_range, phys_range, version, uniq_id));
         /*
         for (op, pp) in obj_range.pages().zip(phys_range.pages()) {
             let entry = self.sync_map.entry(op).or_default();
@@ -52,8 +59,13 @@ impl PerObjectInner {
         */
     }
 
-    fn drain_pending_syncs(&mut self) -> impl Iterator<Item = (ObjectRange, PhysRange, u64)> + '_ {
-        self.sync_map.drain(..)
+    fn drain_pending_syncs(
+        &mut self,
+        version: u64,
+        uniq_id: u128,
+    ) -> impl Iterator<Item = (ObjectRange, PhysRange, u64, u128)> + '_ {
+        self.sync_map
+            .extract_if(.., move |p| p.2 <= version && p.3 == uniq_id)
     }
 
     pub fn new(id: ObjID) -> Self {
@@ -82,14 +94,15 @@ impl PerObject {
         let start = Instant::now();
         let pages = {
             let mut inner = self.inner.1.lock().await;
-            inner.track(info.range, info.phys, info.version);
+            inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             while inner.syncing {
+                tracing::info!("waiting for syncing {:?}", info);
                 self.inner.0.wait_no_relock(inner).await;
                 inner = self.inner.1.lock().await;
             }
             inner.syncing = true;
             let mut pages = inner
-                .drain_pending_syncs()
+                .drain_pending_syncs(info.version, info.uniq_id.raw())
                 .map(|p| {
                     (
                         p.0,
@@ -97,7 +110,9 @@ impl PerObject {
                     )
                 })
                 .collect::<Vec<_>>();
+            // TODO: sort with -version as well
             pages.sort_by_key(|p| p.0);
+            pages.dedup_by_key(|p| p.0);
             let pages = pages
                 .into_iter()
                 .coalesce(|mut x, y| {
@@ -135,9 +150,10 @@ impl PerObject {
             .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
         if page_count >= 1024 {
             tracing::info!(
-                "pager starting large sync for {}: {}MB",
+                "pager starting large sync for {}: {}MB: {}",
                 self.id,
-                (page_count as u64 * PAGE) / (1024 * 1024)
+                (page_count as u64 * PAGE) / (1024 * 1024),
+                reqs.len(),
             );
         }
         let reqs_done = Instant::now();
@@ -167,7 +183,7 @@ impl PerObject {
         }
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
-        self.inner.0.notify_all();
+        self.inner.0.notify_one();
         let done = Instant::now();
 
         tracing::debug!(
@@ -193,7 +209,7 @@ impl PerObject {
             self.do_sync_region(ctx, info).await
         } else {
             let mut inner = self.inner.1.lock().await;
-            inner.track(info.range, info.phys, info.version);
+            inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             (
                 0,
                 CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE),
@@ -595,8 +611,6 @@ impl PagerData {
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
-        //let start = Instant::now();
-        let mut b = [];
         if objid_to_ino(id.raw()).is_some() {
             ctx.paged_ostore(None)?.find_external(id.raw()).await?;
             return Ok(ObjectInfo::new(
@@ -608,11 +622,7 @@ impl PagerData {
             ));
         }
 
-        ctx.paged_ostore(None)?
-            .read_object(id.raw(), 0, &mut b)
-            .await?;
-        //let end = Instant::now();
-        //tracing::info!("request took {}us", (end - start).as_micros());
+        ctx.paged_ostore(None)?.len(id.raw()).await?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

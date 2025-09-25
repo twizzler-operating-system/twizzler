@@ -63,8 +63,7 @@ pub fn get_requeue_list() -> &'static Requeue {
 pub fn requeue_all() {
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    let mut cursor = list.cursor_mut();
-    cursor.move_next();
+    let mut cursor = list.front_mut();
     while !cursor.is_null() {
         if cursor
             .get()
@@ -77,6 +76,16 @@ pub fn requeue_all() {
             cursor.move_next();
         }
     }
+}
+
+fn do_add_to_requeue(list: &mut RBTree<RequeueLinkAdapter>, thread: ThreadRef) {
+    if thread.requeue_link.is_linked() && !list.find(&thread.objid()).is_null() {
+        // Already on the requeue list. This should be rare, as it can only really happen with a
+        // spurious wakeup while waiting for a mutex.
+        return;
+    }
+    assert!(!thread.requeue_link.is_linked());
+    list.insert(thread);
 }
 
 #[track_caller]
@@ -102,7 +111,8 @@ pub fn add_to_requeue(thread: ThreadRef) {
         core::panic::Location::caller()
     );
     let requeue = get_requeue_list();
-    requeue.list.lock().insert(thread);
+    let mut list = requeue.list.lock();
+    do_add_to_requeue(&mut *list, thread);
 }
 
 pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
@@ -118,7 +128,7 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
         } else {
             // Need to take the lock if we haven't yet.
             let list = list.get_or_insert_with(|| requeue.list.lock());
-            list.insert(thread);
+            do_add_to_requeue(&mut *list, thread);
         }
     }
 }
@@ -282,7 +292,9 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     thread.set_sync_sleep_done();
     finish_blocking(guard);
     remove_from_requeue(&thread);
-    drop(timeout_key);
+    timeout_key.release();
+    thread.reset_sync_sleep();
+    thread.reset_sync_sleep_done();
 }
 
 pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {

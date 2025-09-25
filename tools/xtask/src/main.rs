@@ -189,6 +189,10 @@ struct QemuOptions {
         default_value_t = 2159
     )]
     gdb: u16,
+    #[clap(long, help = "Don't build anything, just start QEMU immediately")]
+    no_build: bool,
+    #[clap(long, help = "Don't monitor testing system")]
+    no_test_monitor: bool,
 }
 
 impl From<&QemuOptions> for ImageOptions {
