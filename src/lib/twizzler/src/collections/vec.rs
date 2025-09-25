@@ -503,3 +503,54 @@ impl<T: Invariant, Alloc: Allocator + SingleObjectAllocator> Vec<T, Alloc> {
         Ok(())
     }
 }
+
+impl<T: Invariant, A: Allocator, U> PartialEq<&[U]> for Vec<T, A>
+where
+    T: PartialEq<U>,
+{
+    fn eq(&self, other: &&[U]) -> bool {
+        self.with_slice(|s| s.eq(*other))
+    }
+}
+
+impl<T: Invariant, A: Allocator, U: Invariant, A2: Allocator> PartialEq<Vec<U, A2>> for Vec<T, A>
+where
+    T: PartialEq<U>,
+{
+    fn eq(&self, other: &Vec<U, A2>) -> bool {
+        self.with_slice(|s| other.with_slice(|o| s.eq(o)))
+    }
+}
+
+impl<T: Invariant, A: Allocator, U> PartialOrd<&[U]> for Vec<T, A>
+where
+    T: PartialOrd<U>,
+{
+    fn partial_cmp(&self, other: &&[U]) -> Option<std::cmp::Ordering> {
+        self.with_slice(|s| s.iter().partial_cmp(*other))
+    }
+}
+
+impl<T: Invariant, A: Allocator, U: Invariant, A2: Allocator> PartialOrd<Vec<U, A2>> for Vec<T, A>
+where
+    T: PartialOrd<U>,
+{
+    fn partial_cmp(&self, other: &Vec<U, A2>) -> Option<std::cmp::Ordering> {
+        self.with_slice(|s| other.with_slice(|o| s.iter().partial_cmp(o)))
+    }
+}
+
+impl<T: Invariant + Eq, A: Allocator> Eq for Vec<T, A> {}
+
+impl<T: Invariant + Ord, A: Allocator> Ord for Vec<T, A> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+use std::fmt::Debug;
+impl<T: Debug + Invariant, A: Allocator> Debug for Vec<T, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.with_slice(|s| f.debug_list().entries(s.iter()).finish())
+    }
+}
