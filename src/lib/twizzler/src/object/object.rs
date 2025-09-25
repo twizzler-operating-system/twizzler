@@ -9,6 +9,7 @@ use twizzler_rt_abi::{
 use super::{MutObject, RawObject, TxObject, TypedObject};
 use crate::{marker::BaseType, ptr::Ref, util::maybe_remap};
 
+#[derive(Debug)]
 pub struct Object<Base> {
     handle: ObjectHandle,
     _pd: PhantomData<*const Base>,

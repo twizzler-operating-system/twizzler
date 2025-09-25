@@ -473,6 +473,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     lapic.eoi();
     match number as u32 {
         14 => {
+            if ctx.get_ip() == 0 {
+                emerglogln!("==> {:?}", ctx);
+                unsafe {
+                    emerglogln!("==> {:x}", *(ctx.rbp as usize as *const u64));
+                    emerglogln!("==>+8 {:x}", *((ctx.rbp + 8) as usize as *const u64));
+                }
+            }
             let cr2 = unsafe { x86::controlregs::cr2() };
             let err = ctx.err;
             let cause = if err & (1 << 4) == 0 {
