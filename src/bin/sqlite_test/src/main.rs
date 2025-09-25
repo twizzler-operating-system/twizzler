@@ -12,7 +12,7 @@ unsafe extern "C" fn __dlapi_resolve() -> i32 { return 0; }
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __dlapi_reverse() -> i32 { return 0; }
 
-const NUM_INSERTS: usize = 1000;
+const NUM_INSERTS: usize = 100000;
 
 fn benchmark_transient_sqlite() -> Result<(Connection, std::time::Duration)> {
     println!("Benchmarking transient SQLite in-memory database...");
@@ -275,6 +275,8 @@ fn benchmark_persistent_vtab() -> Result<(Connection, std::time::Duration)> {
     
     let start = Instant::now();
 
+    conn.execute("BEGIN TRANSACTION", [])?;
+
     for i in 0..NUM_INSERTS {
         conn.execute(
             "INSERT INTO test_table (id, name, value, data) VALUES (?1, ?2, ?3, ?4)",
@@ -286,6 +288,8 @@ fn benchmark_persistent_vtab() -> Result<(Connection, std::time::Duration)> {
             ],
         )?;
     }
+
+    conn.execute("COMMIT", [])?;
     
     let duration = start.elapsed();
     println!("Persistent VTab: Inserted {} records in {:?}", NUM_INSERTS, duration);
