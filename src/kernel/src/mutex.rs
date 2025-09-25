@@ -22,8 +22,9 @@ use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     idcounter::StableId,
+    processor::sched::schedule_thread,
     spinlock::Spinlock,
-    syscall::sync::{add_to_requeue, finish_blocking, remove_from_requeue, requeue_all},
+    syscall::sync::{finish_blocking, remove_from_requeue},
     thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
 };
 
@@ -76,10 +77,15 @@ impl<T> Mutex<T> {
             .and_then(|t| t.get_donated_priority());
 
         if let Some(ref current_thread) = current_thread {
+            if current_thread.is_critical() {
+                crate::panic::backtrace(false, None);
+            }
             assert!(!current_thread.is_critical());
             assert!(!current_thread.mutex_link.is_linked());
+            assert!(!current_thread.reset_sync_sleep_done());
         }
 
+        let int_state = crate::interrupt::disable();
         let mut i = 0;
         loop {
             i += 1;
@@ -158,6 +164,7 @@ impl<T> Mutex<T> {
             }
         }
 
+        crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
@@ -170,8 +177,7 @@ impl<T> Mutex<T> {
         queue.owned = false;
         let g = current_thread_ref().map(|ct| ct.enter_critical());
         if let Some(thread) = queue.queue.pop_front() {
-            add_to_requeue(thread);
-            requeue_all();
+            schedule_thread(thread);
             drop(queue);
         } else {
             queue.pri = None;

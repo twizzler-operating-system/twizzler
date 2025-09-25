@@ -294,10 +294,10 @@ impl MapRegion {
                         self.range,
                         self.object().id(),
                     );
+                    self.object()
+                        .dirty_set()
+                        .add_dirty(page_number, page.nr_pages());
                 }
-                self.object()
-                    .dirty_set()
-                    .add_dirty(page_number, page.nr_pages());
             }
 
             let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
