@@ -7,7 +7,10 @@
 
 - [Introduction to Twizzler](./Introduction/Introduction_to_Twizzler.md)
 
-- [Getting Started](./Introduction/Getting_Started.md)
+- [Getting Started](./Introduction/Getting_Started/Getting_Started.md)
+
+- [Building Twizzler](./Introduction/Getting_Started/Building_Twizzler.md)
+- [Resources](./Introduction/Getting_Started/Resources.md)
 
 
 # Primitives
