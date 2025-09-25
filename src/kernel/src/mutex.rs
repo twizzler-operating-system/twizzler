@@ -93,7 +93,6 @@ impl<T> Mutex<T> {
                 log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
             let guard = current_thread.as_ref().map(|ct| {
-                ct.reset_sync_sleep_done();
                 ct.enter_critical()
             });
             let _reinsert = {
@@ -122,7 +121,6 @@ impl<T> Mutex<T> {
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
-                        thread.set_sync_sleep_done();
                         reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
