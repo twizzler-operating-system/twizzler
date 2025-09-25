@@ -417,14 +417,14 @@ fn run_bench() -> Result<()> {
 
     // // Benchmark reopening and querying existing data
     // drop(file_conn);
-    // drop(persistent_conn);
+    drop(persistent_conn);
 
-    // // let file_persistence_duration = benchmark_file_persistence()?;
-    // let persistent_vtab_persistence_duration = benchmark_persistent_vtab_persistence()?;
+    // let file_persistence_duration = benchmark_file_persistence()?;
+    let persistent_vtab_persistence_duration = benchmark_persistent_vtab_persistence()?;
 
-    // println!("\n=== Persistence Performance Summary ===");
+    println!("\n=== Persistence Performance Summary ===");
     // // println!("Reopen & Query File SQLite:       {:?}", file_persistence_duration);
-    // println!("Reopen & Query Persistent VTab:   {:?}", persistent_vtab_persistence_duration);
+    println!("Reopen & Query Persistent VTab:   {:?}", persistent_vtab_persistence_duration);
     
     Ok(())
 }
@@ -433,8 +433,8 @@ fn cleanup() -> Result<()> {
     // Clean up test file
     // let _ = std::fs::remove_file("benchmark_test.db");
 
-    // let mut nh = naming::dynamic_naming_factory().unwrap();
-    // let _ = nh.remove("/data/vtab-test_table");
+    let mut nh = naming::dynamic_naming_factory().unwrap();
+    let _ = nh.remove("/data/vtab-test_table");
 
     Ok(())
 }
@@ -446,6 +446,6 @@ fn main() -> Result<()> {
     run_bench()?;
 
     cleanup()?;
-    
+
     Ok(())
 }
