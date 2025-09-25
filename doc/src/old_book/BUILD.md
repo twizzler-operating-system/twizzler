@@ -1,0 +1,130 @@
+# Building Twizzler
+
+A bit of a time consuming process the first time, so make sure you have some nice tea or something before you start :)
+
+## Requirements
+
+This build process has been tested on an Ubuntu 20.04 system with standard development tools
+installed, in addition to rustup (which is required). We require rustup because we will build our
+own toolchain during the build, and link the result through rustup for easier invocation of the Rust
+compiler.
+
+To build a boot image, you'll need the limine bootloader installed. In particular, we need the EFI
+code to help boot Twizzler through their boot protocol.
+
+To run qemu through the build system, you'll need qemu installed.
+
+## WSL Setup
+
+WSL needs additional setup to enable KVM virtualization:
+
+1. **Enable nested virtualization** - Add to `.wslconfig` in your Windows user directory (you may have to create the file):
+   ```
+   [wsl2]
+   nestedVirtualization=true
+   ```
+
+2. **Add yourself to `kvm` group** - In WSL:
+   ```
+   sudo usermod -a -G kvm ${USER}
+   ```
+
+3. **Change default group of `/dev/kvm`** - Add to `/etc/wsl.conf` in WSL:
+   ```
+   [boot]
+   command = /bin/bash -c 'chown -v root:kvm /dev/kvm && chmod 660 /dev/kvm'
+   ```
+
+4. **Restart WSL**
+   ```
+   wsl --shutdown
+   ```
+
+## Overview
+Installing the tools:
+  1. Install Rust https://www.rust-lang.org/tools/install
+  2. Run `init.sh`
+
+Note that the `init.sh` script only supports debian-based systems and macos, if youre
+on a different distribution, please install the packages specified inside the script.
+
+Also note that we depend on the system LLVM for some initial bindgen commands. The minimum version for this is 18.
+
+On Ubuntu, this can be selected for building twizzler by env vars: `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+- Note that its possible for the build system to work without this export, but if something is broken and you havent done this step, its best to start here.
+
+See here: https://apt.llvm.org/ for install instructions. You may need to `export LLVM_CONFIG_PATH=/usr/bin/llvm-config-18`.
+
+
+Building Twizzler is done in several steps:
+
+  0. Building xtask.
+  1. (*Optional*) Building the toolchain.
+  2. Building Twizzler itself.
+
+Fortunately, step 0 is handled automatically whenever we try to do anything. That's because xtask is
+the "build system orchestrator". Essentially, building Twizzler requires using the right toolchain,
+target specification, and compile flags at the right times, so we've placed that complexity in an
+automation tool to make builds easier. To get an idea of what xtask is doing, you can run
+`cargo xtask --help`. Note that this repo's cargo config provides aliases for the common commands,
+as we will see below. In fact, it's advisable to NOT use the default cargo commands, and instead run
+everything through xtask.
+
+## Step 1: Building the Toolchain
+NOTE: you will only need to perform this step if Twizzler doesn't have
+a hosted toolchain for your specific architecture / os combo. To see if you
+ can skip this step, please run `cargo toolchain pull`. 
+
+Now to perform the bootstrap run the following.
+
+```bash
+cd where/you/cloned/twizzler
+git submodule update --init --recursive
+cargo toolchain bootstrap
+```
+
+and then wait, while you sip your tea. This will compile llvm and bootstrap the rust compiler, both
+of which take a long time. At the end, you should see a "build completed successfully" message,
+followed by a few lines about building crti and friends.
+
+## Step 2: Building Twizzler
+Now that we've got the toolchain built and linked (or pulled down if it exists remotely), we can compile the rest of Twizzler. Run
+
+```
+cargo build-all
+```
+
+which will compile several "collections" of packages:
+  1. The build tools, for things like making the initrd.
+  2. The kernel.
+  3. The userspace applications.
+
+By default all will be built in debug mode, which will run very slow. You can build for release mode
+with:
+
+```
+cargo build-all --profile release
+```
+
+## Step 3: Running Twizzler
+
+You can start Twizzler in Qemu by running
+
+```
+cargo start-qemu
+```
+
+which will bootup a qemu instance. If you want to run the release mode version, you can run
+
+```
+cargo start-qemu --profile release
+```
+
+
+
+When running from command line, if you don't have access to a screen, QEMU may require you add `-q=-nographic` to the command.
+
+
+## Step 4: Exiting Twizzler
+
+At the moment Twizzler does not have a shutdown command.  To exit the QEMU based simulation use the ```Ctrl-a X``` command which is a part of the simulator.
