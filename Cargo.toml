@@ -43,6 +43,8 @@ members = [
     "src/bin/cache",
 
     "src/ports/lwext4-rs",
+    "src/ports/rusqlite",
+    "src/ports/rusqlite/libsqlite3-sys",
 
     #"src/ports/candle-test",
 
@@ -55,6 +57,7 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
+    "src/bin/ptest", "src/bin/sqlite_test",
     "src/bin/ptest",
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
@@ -90,6 +93,7 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
+    "crate:sqlite_test",
     #"crate:persistent-hashmap-test",
 
     #"crate:twzcandle",
@@ -149,6 +153,9 @@ ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", b
 #memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
+rusqlite = { path = "src/ports/rusqlite" }
+libsqlite3-sys = { path = "src/ports/rusqlite/libsqlite3-sys" }
+sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
