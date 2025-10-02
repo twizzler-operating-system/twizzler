@@ -238,24 +238,13 @@ pub async fn get_checked_download_url() -> anyhow::Result<String> {
 
 /// Pulls down the toolchain, erroring if toolchain doesnt exist remotely
 pub async fn pull_toolchain() -> anyhow::Result<()> {
-    let download_url = get_checked_download_url().await?;
-
-    let tc_os_arch_tag = generate_os_arch_tag()?;
     let tc_tag = generate_tag()?;
-    let archive_filename = format!("{}.tar.zst", tc_os_arch_tag);
-    println!("pulling toolchain for {}", tc_tag);
 
-    let client = Client::new();
-
-    let local_archive_path = archive_filename;
-
-    download_file(&client, &download_url, &local_archive_path)
-        .await
-        .map_err(|e| {
-            let error_msg = e.to_string();
-            if error_msg.contains("404") {
-                return anyhow!(
-                    r#"
+    let download_url = get_checked_download_url().await.map_err(|e| {
+        let error_msg = e.to_string();
+        if error_msg.contains("404") {
+            return anyhow!(
+                r#"
 Toolchain release not found, it might not exist for the tag {tc_tag}
 or it hasn't been built for your os-architecture combination!
 You can check at {BASE_REPO_URL}/releases
@@ -268,10 +257,20 @@ If you are comfortable with compiling the toolchain locally please run
 git submodule update --init --recursive
 cargo toolchain bootstrap
                     "#,
-                );
-            }
-            e
-        })?;
+            );
+        }
+        e
+    })?;
+
+    let tc_os_arch_tag = generate_os_arch_tag()?;
+    let archive_filename = format!("{}.tar.zst", tc_os_arch_tag);
+    println!("pulling toolchain for {}", tc_tag);
+
+    let client = Client::new();
+
+    let local_archive_path = archive_filename;
+
+    download_file(&client, &download_url, &local_archive_path).await?;
 
     println!("download suceeeded!");
 
