@@ -5,4 +5,4 @@ mod control;
 mod benches;
 pub mod map;
 
-pub use map::PersistentHashMap;
+pub use map::{PersistentHashMap, PHMsession};
