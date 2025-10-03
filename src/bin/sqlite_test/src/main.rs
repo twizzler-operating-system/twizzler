@@ -66,7 +66,7 @@ fn query_transient_sqlite(conn: &Connection) -> Result<std::time::Duration> {
     
     // 2. Select specific records by ID
     let mut stmt = conn.prepare("SELECT id, name, value FROM test_table WHERE id BETWEEN ? AND ?")?;
-    let mut rows = stmt.query_map([&100, &110], |row| {
+    let rows = stmt.query_map([&100, &110], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -94,6 +94,7 @@ fn query_transient_sqlite(conn: &Connection) -> Result<std::time::Duration> {
     Ok(duration)
 }
 
+#[allow(dead_code)]
 fn benchmark_file_sqlite() -> Result<(Connection, std::time::Duration)> {
     println!("Benchmarking SQLite file database...");
     
@@ -135,6 +136,7 @@ fn benchmark_file_sqlite() -> Result<(Connection, std::time::Duration)> {
     Ok((conn, duration))
 }
 
+#[allow(dead_code)]
 fn query_file_sqlite(conn: &Connection) -> Result<std::time::Duration> {
     println!("Querying SQLite file database...");
     
@@ -149,7 +151,7 @@ fn query_file_sqlite(conn: &Connection) -> Result<std::time::Duration> {
     
     // 2. Select specific records by ID
     let mut stmt = conn.prepare("SELECT id, name, value FROM test_table WHERE id BETWEEN ? AND ?")?;
-    let mut rows = stmt.query_map([&100, &110], |row| {
+    let rows = stmt.query_map([&100, &110], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -228,7 +230,7 @@ fn query_transient_vtab(conn: &Connection) -> Result<std::time::Duration> {
     
     // 2. Select specific records by ID
     let mut stmt = conn.prepare("SELECT id, name, value FROM test_table WHERE id BETWEEN ? AND ?")?;
-    let mut rows = stmt.query_map([&100, &110], |row| {
+    let rows = stmt.query_map([&100, &110], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -311,7 +313,7 @@ fn query_persistent_vtab(conn: &Connection) -> Result<std::time::Duration> {
     
     // 2. Select specific records by ID
     let mut stmt = conn.prepare("SELECT id, name, value FROM test_table WHERE id BETWEEN ? AND ?")?;
-    let mut rows = stmt.query_map([&100, &110], |row| {
+    let rows = stmt.query_map([&100, &110], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -339,18 +341,19 @@ fn query_persistent_vtab(conn: &Connection) -> Result<std::time::Duration> {
     Ok(duration)
 }
 
-fn benchmark_file_persistence() -> Result<(std::time::Duration)> {
+#[allow(dead_code)]
+fn benchmark_file_persistence() -> Result<std::time::Duration> {
     println!("Benchmarking SQLite persistent storage for opening and querying existing data...");
     let start = Instant::now();
     let conn = Connection::open("benchmark_test.db")?;
 
-    let query_duration = query_file_sqlite(&conn)?;
+    let _ = query_file_sqlite(&conn)?;
     let duration = start.elapsed();
     println!("Reopened and queried existing SQLite file database in {:?}", duration);
-    Ok((duration))
+    Ok(duration)
 }
 
-fn benchmark_persistent_vtab_persistence() -> Result<(std::time::Duration)> {
+fn benchmark_persistent_vtab_persistence() -> Result<std::time::Duration> {
     println!("Benchmarking Twizzler persistent virtual table for opening and querying existing data...");
     let start = Instant::now();
     let conn = Connection::open_in_memory()?;
@@ -367,10 +370,10 @@ fn benchmark_persistent_vtab_persistence() -> Result<(std::time::Duration)> {
         [],
     )?;
 
-    let query_duration = query_persistent_vtab(&conn)?;
+    let _ = query_persistent_vtab(&conn)?;
     let duration = start.elapsed();
     println!("Reopened and queried existing Twizzler persistent virtual table in {:?}", duration);
-    Ok((duration))
+    Ok(duration)
 }
 
 fn run_bench() -> Result<()> {
