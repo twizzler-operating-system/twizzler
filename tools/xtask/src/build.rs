@@ -319,6 +319,8 @@ fn maybe_build_tests_dynamic<'a>(
                 "uuhelper" => None,
                 "unittest" => None,
                 "unittest-report" => None,
+                "rusqlite" => None,
+                "libsqlite3-sys" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),
