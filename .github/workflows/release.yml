@@ -43,7 +43,7 @@ jobs:
       - name: Generate tag from submodules
         id: tag
         run: |
-          tag=$(cargo +nightly toolchain tag)
+          tag=$(cargo toolchain tag)
           echo "tag=$tag" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
