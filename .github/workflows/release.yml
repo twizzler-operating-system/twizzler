@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-tag:
-    runs-on: self-hosted
+    runs-on: self-hosted, macOS
     # runs-on: macos-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
