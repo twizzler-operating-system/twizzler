@@ -1,18 +1,19 @@
 # Building Twizzler
 
-A bit of a time consuming process the first time, so make sure you have some nice tea or something before you start :)
-
 ## Requirements
 
-This build process has been tested on an Ubuntu 20.04 system with standard development tools
-installed, in addition to rustup (which is required). We require rustup because we will build our
-own toolchain during the build, and link the result through rustup for easier invocation of the Rust
-compiler.
+This build process has been tested on an Ubuntu 22.04, WSL 2.0, and
+MacOS. Ensure rustup is installed on your machine as we build our own
+toolchain during the build, and link the result through rustup for
+easier invocation of the Rust compiler.
 
 To build a boot image, you'll need the limine bootloader installed. In particular, we need the EFI
 code to help boot Twizzler through their boot protocol.
 
 To run qemu through the build system, you'll need qemu installed.
+
+All packages can be installed using our install script (`./init.sh`); if that fails
+please create an issue detailing what happened.
 
 ## WSL Setup
 
@@ -43,7 +44,7 @@ WSL needs additional setup to enable KVM virtualization:
 ## Overview
 
 Installing the tools:
-  1. sudo apt install build-essential python3 python3-pip cmake ninja-build
+  1. Run the install script `./init.sh`
   2. Install Rust https://www.rust-lang.org/tools/install
 
 Note that you'll need mke2fs (typically found in e2fsprogs). Most Linux installations should already have this
@@ -78,12 +79,17 @@ built for your specific OS/Arch combination.
 
 ```
 cd where/you/cloned/twizzler
-git submodule update --init --recursive -- ':!toolchain/src/*'
+./init.sh 
 cargo toolchain pull
 ```
 
+If this step succeeds, move on to step 2.
 
-This step takes the longest, but only has to happen once. Run
+If not, please make an issue requesting support for your OS/architecture combination,
+and in the meantime do the following to use a locally compiled toolchain.
+
+Warning! This will take around 1-3 hours depending on your machine, as well as
+requiring 50 gigs of free storage for that duration.
 
 ```
 cd where/you/cloned/twizzler
@@ -91,7 +97,7 @@ git submodule update --init --recursive
 cargo bootstrap
 ```
 
-and then wait, while you sip your tea. This will compile llvm and bootstrap the rust compiler, both
+This will compile llvm and bootstrap the rust compiler, both
 of which take a long time. At the end, you should see a "build completed successfully" message,
 followed by a few lines about building crti and friends.
 
