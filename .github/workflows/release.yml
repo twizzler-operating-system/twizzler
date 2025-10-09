@@ -27,12 +27,7 @@ jobs:
           fetch-depth: 0
           clean: true
           submodules: false
-      - name: Install Rust & Cargo
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
+          
       - name: Setup dependencies
         uses: ./.github/actions/setup
 

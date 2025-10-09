@@ -6,16 +6,31 @@ runs:
     - name: Install latest nightly
       uses: actions-rs/toolchain@v1
       with:
-          toolchain: nightly
+        toolchain: nightly
+
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+
     - name: Setup cmake
       uses: jwlawson/actions-setup-cmake@v2
       with:
         cmake-version: '3.20.x'
-    - name: Setup llvm
+
+    # Ubuntu/Debian
+    - name: Setup LLVM (Linux)
+      if: runner.os == 'Linux'
       run: (wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 18) || true
       shell: bash
 
+    # macOS
+    - name: Setup LLVM (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew update
+        brew install llvm@18
+        echo 'export PATH="/usr/local/opt/llvm@18/bin:$PATH"' >> $GITHUB_ENV
+        echo 'export CC=clang-18' >> $GITHUB_ENV
+        echo 'export CXX=clang++-18' >> $GITHUB_ENV
+      shell: bash
