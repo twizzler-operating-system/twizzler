@@ -93,21 +93,21 @@ jobs:
           path: ${{ steps.bootstrap.outputs.filename }}
           retention-days: 1
 
-  # release:
-  #   needs: [check-tag, build]
-  #   if: needs.check-tag.outputs.should-release == 'true'
-  #   runs-on: self-hosted
-  #   steps:
-  #     - name: Download all artifacts
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         merge-multiple: true
+  release:
+    needs: [check-tag, build]
+    if: needs.check-tag.outputs.should-release == 'true'
+    runs-on: self-hosted
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
-  #     - name: Create release and upload all artifacts
-  #       uses: softprops/action-gh-release@v1
-  #       with:
-  #         tag_name: ${{ needs.check-tag.outputs.tag }}
-  #         name: Release for ${{ needs.check-tag.outputs.tag }}
-  #         files: toolchain_*.tar.zst
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release and upload all artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.check-tag.outputs.tag }}
+          name: Release for ${{ needs.check-tag.outputs.tag }}
+          files: toolchain_*.tar.zst
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
