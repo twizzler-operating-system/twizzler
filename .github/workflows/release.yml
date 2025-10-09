@@ -44,7 +44,9 @@ jobs:
         id: tag_check
         run: |
           if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
-            echo "should-release=false" >> $GITHUB_OUTPUT
+            # NOTE: REMOVE THIS LINE AFTER PR MERGE
+            # echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "should-release=true" >> $GITHUB_OUTPUT
             echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
           else
             echo "should-release=true" >> $GITHUB_OUTPUT
