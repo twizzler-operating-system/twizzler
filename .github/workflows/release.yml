@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   check-tag:
-    runs-on: self-hosted
+    runs-on: self-hosted, macOS
+    # runs-on: macos-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       should-release: ${{ steps.tag_check.outputs.should-release }}
@@ -26,7 +27,7 @@ jobs:
           fetch-depth: 0
           clean: true
           submodules: false
-
+          
       - name: Setup dependencies
         uses: ./.github/actions/setup
 
@@ -37,14 +38,16 @@ jobs:
       - name: Generate tag from submodules
         id: tag
         run: |
-          tag=$(cargo +nightly toolchain tag)
+          tag=$(cargo toolchain tag)
           echo "tag=$tag" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
         id: tag_check
         run: |
           if git ls-remote --tags origin "refs/tags/${{ steps.tag.outputs.tag }}" | grep -q .; then
-            echo "should-release=false" >> $GITHUB_OUTPUT
+            # NOTE: REMOVE THIS LINE AFTER PR MERGE
+            # echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "should-release=true" >> $GITHUB_OUTPUT
             echo "Tag ${{ steps.tag.outputs.tag }} already exists. skipping release"
           else
             echo "should-release=true" >> $GITHUB_OUTPUT
@@ -56,8 +59,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        # runner: [self-hosted, macos-latest]
-        runner: [self-hosted]
+        runner: 
+          - self-hosted
+          - macos-latest
+        # runner: [self-hosted]
 
     steps:
       - name: Checkout
@@ -78,7 +83,7 @@ jobs:
         id: bootstrap
         shell: bash
         run: |
-          RUST_BACKTRACE=1 cargo +nightly xtask toolchain bootstrap --compress
+          RUST_BACKTRACE=1 cargo xtask toolchain bootstrap --compress
           os=$(uname)
           arch=$(uname -m)
           base_tag="${{ needs.check-tag.outputs.tag }}"

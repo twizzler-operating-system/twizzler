@@ -15,7 +15,9 @@ env:
 
 jobs:
   release:
-    if: github.event_name == 'push'
+    # if: github.event_name == 'push'
+    # NOTE: CHANGE BACK TO PUSH BEFORE MERGING PR, ONLY CHANGING THIS TO PULL REQUEST TO TEST MACOS RELEASE PIPELINE
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
