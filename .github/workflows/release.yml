@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   check-tag:
-    runs-on: self-hosted
+    # runs-on: self-hosted
+    runs-on: macos-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       should-release: ${{ steps.tag_check.outputs.should-release }}
@@ -26,7 +27,12 @@ jobs:
           fetch-depth: 0
           clean: true
           submodules: false
-
+      - name: Install Rust & Cargo
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
       - name: Setup dependencies
         uses: ./.github/actions/setup
 
