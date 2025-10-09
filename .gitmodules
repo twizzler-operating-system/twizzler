@@ -49,4 +49,4 @@
 	branch = twizzler
 [submodule "src/ports/ferroc"]
 	path = src/ports/ferroc
-	url = git@github.com:dbittman/ferroc
+	url = https://github.com/dbittman/ferroc.git
