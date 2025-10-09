@@ -15,8 +15,7 @@ permissions:
 
 jobs:
   check-tag:
-    # runs-on: self-hosted
-    runs-on: [self-hosted, macos-latest]
+    runs-on: self-hosted
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       should-release: ${{ steps.tag_check.outputs.should-release }}
@@ -57,7 +56,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        runner: [self-hosted, macos-latest]
+        runner: 
+          - self-hosted
+          - macos-latest
         # runner: [self-hosted]
 
     steps:
