@@ -18,7 +18,7 @@ runs:
       with:
         cmake-version: '3.20.x'
 
-    # Ubuntu/Debian
+    # Linux (Ubuntu/Debian)
     - name: Setup LLVM (Linux)
       if: runner.os == 'Linux'
       run: (wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 18) || true
@@ -30,7 +30,13 @@ runs:
       run: |
         brew update
         brew install llvm@18
-        echo 'export PATH="/usr/local/opt/llvm@18/bin:$PATH"' >> $GITHUB_ENV
-        echo 'export CC=clang-18' >> $GITHUB_ENV
-        echo 'export CXX=clang++-18' >> $GITHUB_ENV
+
+        LLVM_PATH="$(brew --prefix llvm@18)/bin"
+        echo "export PATH=\"$LLVM_PATH:\$PATH\"" >> $GITHUB_ENV
+        echo "export CC=clang-18" >> $GITHUB_ENV
+        echo "export CXX=clang++-18" >> $GITHUB_ENV
+
+        # Create symlinks for clang-18 and clang++-18
+        sudo ln -sf "$LLVM_PATH/clang" /usr/local/bin/clang-18
+        sudo ln -sf "$LLVM_PATH/clang++" /usr/local/bin/clang++-18
       shell: bash
