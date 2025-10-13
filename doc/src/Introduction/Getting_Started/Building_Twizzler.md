@@ -94,7 +94,7 @@ requiring 50 gigs of free storage for that duration.
 ```
 cd where/you/cloned/twizzler
 git submodule update --init --recursive
-cargo bootstrap
+cargo toolchain bootstrap
 ```
 
 This will compile llvm and bootstrap the rust compiler, both
