@@ -78,7 +78,7 @@ This step takes the longest, but only has to happen once. Run
 ```
 cd where/you/cloned/twizzler
 git submodule update --init --recursive
-cargo bootstrap
+cargo toolchain bootstrap
 ```
 
 and then wait, while you sip your tea. This will compile llvm and bootstrap the rust compiler, both
