@@ -1,0 +1,176 @@
+#include <assert.h>
+#include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/ucontext.h>
+#include <unistd.h>
+
+#include "wasmtime-platform.h"
+
+//#ifdef WASMTIME_VIRTUAL_MEMORY
+//
+//static int wasmtime_to_mmap_prot_flags(uint32_t prot_flags) {
+//  int flags = 0;
+//  if (prot_flags & WASMTIME_PROT_READ)
+//    flags |= PROT_READ;
+//  if (prot_flags & WASMTIME_PROT_WRITE)
+//    flags |= PROT_WRITE;
+//  if (prot_flags & WASMTIME_PROT_EXEC)
+//    flags |= PROT_EXEC;
+//  return flags;
+//}
+//
+//int wasmtime_mmap_new(uintptr_t size, uint32_t prot_flags, uint8_t **ret) {
+//  void *rc = twz_rt_malloc(size, 128, ZERO_MEMORY);
+//  if (*rc == NULL) {
+//    return -1;
+//  }
+//    return 0;
+//  *ret = rc;
+//  return 0;
+//}
+//extern void *twz_rt_realloc(void *ptr, size_t sz, size_t align, size_t new_size, alloc_flags flags);
+//
+//int wasmtime_mmap_remap(uint8_t *addr, uintptr_t size, uint32_t prot_flags) {
+//    if ptr.is_null() {
+//        return rust_global_allocator_alloc(size);
+//    }
+//    let new_size = size + LAYOUT_DATA_SIZE;
+//
+//    let (block_start, layout) = restore_layout(ptr as *const u8);
+//    let new_layout = Layout::from_size_align(new_size, layout.align())
+//        .expect("invalid memory layout");
+//
+//    let new_block_start = realloc(block_start, layout, new_size);
+//
+//    if new_block_start.is_null() {
+//        return null_mut::<c_void>();
+//    }
+//
+//    store_layout(new_layout, new_block_start) as *mut c_void
+//
+//
+//  void *rc = twz_rt_realloc(addr, -1, 128, size, ZERO_MEMORY);
+//  if (*rc == NULL) {
+//    return -1;
+//  }
+//    return 0;
+//  *ret = rc;
+//  return 0;
+//}
+//
+//int wasmtime_munmap(uint8_t *ptr, uintptr_t size) {
+//  int rc = munmap(ptr, size);
+//  if (rc != 0)
+//    return errno;
+//  return 0;
+//}
+//
+//int wasmtime_mprotect(uint8_t *ptr, uintptr_t size, uint32_t prot_flags) {
+//  int rc = mprotect(ptr, size, wasmtime_to_mmap_prot_flags(prot_flags));
+//  if (rc != 0)
+//    return errno;
+//  return 0;
+//}
+//
+//uintptr_t wasmtime_page_size(void) { return sysconf(_SC_PAGESIZE); }
+//
+//#endif // WASMTIME_VIRTUAL_MEMORY
+//
+//bool wasmtime_setjmp(const uint8_t **jmp_buf_out,
+//                     bool (*callback)(uint8_t *, uint8_t *), uint8_t *payload,
+//                     uint8_t *callee) {
+//  jmp_buf buf;
+//  if (setjmp(buf) != 0)
+//    return false;
+//  *jmp_buf_out = (uint8_t *)&buf;
+//  return callback(payload, callee);
+//}
+//
+//void wasmtime_longjmp(const uint8_t *jmp_buf_ptr) {
+//  longjmp(*(jmp_buf *)jmp_buf_ptr, 1);
+//}
+//
+//#ifdef WASMTIME_NATIVE_SIGNALS
+//
+//static wasmtime_trap_handler_t g_handler = NULL;
+//
+//static void handle_signal(int signo, siginfo_t *info, void *context) {
+//  assert(g_handler != NULL);
+//  uintptr_t ip, fp;
+//#if defined(__aarch64__)
+//  ucontext_t *cx = context;
+//  ip = cx->uc_mcontext.pc;
+//  fp = cx->uc_mcontext.regs[29];
+//#elif defined(__x86_64__)
+//  ucontext_t *cx = context;
+//  ip = cx->uc_mcontext.gregs[REG_RIP];
+//  fp = cx->uc_mcontext.gregs[REG_RBP];
+//#else
+//#error "Unsupported platform"
+//#endif
+//
+//  bool has_faulting_addr = signo == SIGSEGV;
+//  uintptr_t faulting_addr = 0;
+//  if (has_faulting_addr)
+//    faulting_addr = (uintptr_t)info->si_addr;
+//  g_handler(ip, fp, has_faulting_addr, faulting_addr);
+//
+//  // If wasmtime didn't handle this trap then reset the handler to the default
+//  // behavior which will probably abort the process.
+//  signal(signo, SIG_DFL);
+//}
+//
+//int wasmtime_init_traps(wasmtime_trap_handler_t handler) {
+//  int rc;
+//  g_handler = handler;
+//
+//  struct sigaction action;
+//  memset(&action, 0, sizeof(action));
+//
+//  action.sa_sigaction = handle_signal;
+//  action.sa_flags = SA_SIGINFO | SA_NODEFER;
+//  sigemptyset(&action.sa_mask);
+//
+//  rc = sigaction(SIGILL, &action, NULL);
+//  if (rc != 0)
+//    return errno;
+//  rc = sigaction(SIGSEGV, &action, NULL);
+//  if (rc != 0)
+//    return errno;
+//  rc = sigaction(SIGFPE, &action, NULL);
+//  if (rc != 0)
+//    return errno;
+//  return 0;
+//}
+//
+//#endif // WASMTIME_NATIVE_SIGNALS
+//
+//#ifdef WASMTIME_VIRTUAL_MEMORY
+//
+//int wasmtime_memory_image_new(const uint8_t *ptr, uintptr_t len,
+//                              struct wasmtime_memory_image **ret) {
+//  *ret = NULL;
+//  return 0;
+//}
+//
+//int wasmtime_memory_image_map_at(struct wasmtime_memory_image *image,
+//                                 uint8_t *addr, uintptr_t len) {
+//  abort();
+//}
+//
+//void wasmtime_memory_image_free(struct wasmtime_memory_image *image) {
+//  abort();
+//}
+//
+//#endif // WASMTIME_VIRTUAL_MEMORY
+
+// Pretend that this platform doesn't have threads where storing in a static is
+// ok.
+static uint8_t *WASMTIME_TLS = NULL;
+
+uint8_t *wasmtime_tls_get() { return WASMTIME_TLS; }
+
+void wasmtime_tls_set(uint8_t *val) { WASMTIME_TLS = val; }

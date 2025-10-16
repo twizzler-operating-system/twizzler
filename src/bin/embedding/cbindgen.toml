@@ -1,0 +1,32 @@
+language = "C"
+include_guard = "_WASMTIME_PLATFORM_H"
+include_version = true
+cpp_compat = true
+
+header = """
+// Platform support for Wasmtime's `no_std` build.
+//
+// This header file is what Wasmtime will rely on when it does not otherwise
+// have support for the native platform. This can happen with `no_std` binaries
+// for example where the traditional Unix-or-Windows implementation is not
+// suitable.
+//
+// Embedders are expected to implement the symbols defined in this header file.
+// These symbols can be defined either in C/C++ or in Rust (using
+// `#[unsafe(no_mangle)]`).
+//
+// Note that there are some `#define`s here which can be added before this
+// header file is included to indicate how Wasmtime was built. This corresponds
+// to the `wasmtime` crate's Cargo features where if the feature is disabled
+// then the symbols will not be required.
+//
+// * `WASMTIME_SIGNALS_BASED_TRAPS` - corresponds to `signals-based-traps`
+//
+// Some more information about this header can additionally be found at
+// <https://docs.wasmtime.dev/stability-platform-support.html>.
+"""
+
+[defines]
+has_virtual_memory = 'WASMTIME_VIRTUAL_MEMORY'
+has_native_signals = 'WASMTIME_NATIVE_SIGNALS'
+has_host_compiler_backend = 'WASMTIME_HOST_COMPILER_BACKEND'
