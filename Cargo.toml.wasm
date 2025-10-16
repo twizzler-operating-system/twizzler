@@ -1,0 +1,173 @@
+
+#cargo-features = ["profile-rustflags"]
+
+[workspace]
+members = [
+    "tools/xtask",
+    "tools/image_builder",
+    "tools/initrd_gen",
+    "src/bin/init",
+    "src/bin/bootstrap",
+    "src/kernel",
+    "src/lib/twizzler-queue-raw",
+    "src/lib/twizzler-queue",
+    "src/lib/twizzler-futures",
+    "src/lib/twizzler-security",
+    "src/bin/sec-test",
+    "src/lib/dynlink",
+    "src/lib/secgate",
+    "src/lib/twizzler",
+    "src/lib/twizzler/twizzler-derive",
+    "src/rt/monitor",
+    "src/rt/monitor-api",
+    "src/rt/monitor/tests/montest",
+    "src/rt/monitor/tests/montest-lib",
+    "src/rt",
+    "src/rt/reference",
+    "src/rt/minimal",
+    "src/lib/logboi",
+    "src/srv/logboi-srv",
+    "src/srv/pager-srv",
+    "src/bin/logboi-test",
+    "src/lib/naming/naming-core",
+    "src/lib/naming",
+    "src/srv/naming-srv",
+    "src/lib/pager",
+    "src/lib/devmgr",
+    "src/srv/devmgr-srv",
+    "src/bin/unittest",
+    "src/bin/unittest/unittest-report",
+    "src/lib/pager/pager-dynamic",
+    "src/bin/uuhelper",
+    "src/srv/cache-srv",
+    "src/bin/cache",
+
+    "src/ports/lwext4-rs",
+    "src/ports/rusqlite",
+    "src/ports/rusqlite/libsqlite3-sys",
+
+    #"src/ports/candle-test",
+
+    #"src/bin/etl_twizzler",
+    #"src/bin/test-tiny-http",
+    #"src/bin/random_validation",
+    #"src/bin/randtest",
+    #"src/bin/stdfs_demo",
+    #"src/lib/virtio-net",
+    #"src/bin/ls",
+    #"src/lib/devmgr",
+    #"src/bin/serialecho", "tools/serialtest",
+    "src/bin/ptest", "src/bin/sqlite_test",
+    "src/bin/ptest",
+    #"src/bin/persistent-hashmap-test",
+    "src/bin/debug",
+    "src/bin/trace",
+    "src/bin/schedtest",
+    "src/bin/embedding",
+    "src/bin/wasmtest",
+]
+
+exclude = [
+    "toolchain/src/rust",
+    "src/ports/candle-test/candle",
+    "src/ports/candle-test/gemm",
+]
+resolver = "2"
+
+[workspace.metadata]
+initrd = [
+    "crate:bootstrap",
+    "crate:init",
+    "lib:devmgr-srv",
+    "crate:monitor",
+    "crate:montest",
+    "lib:naming-srv",
+    "lib:twz-rt",
+    "lib:montest-lib",
+    "lib:logboi-srv",
+    "lib:pager-srv",
+    "lib:cache-srv",
+    "crate:unittest",
+    "crate:uuhelper",
+    "crate:debug",
+    "crate:cache",
+    "crate:trace",
+
+    "crate:sec-test",
+    "crate:ptest",
+    "crate:sqlite_test",
+    #"crate:persistent-hashmap-test",
+
+    #"crate:twzcandle",
+    "crate:st",
+
+    #"third-party:hello-world-rs"
+    #"crate:test-tiny-http",
+    #"crate:etl_twizzler",
+    #"crate:stdfs_demo",
+    #"crate:random_validation",
+    #"crate:random_validation",
+    #"crate:randtest",
+    #"crate:ls",
+    #"crate:gadget",
+    #"crate:serialecho",
+    "crate:embedding",
+    "crate:wasmtest",
+]
+
+[workspace.metadata.third-party]
+# hello-world-rs = "1.0.0"
+
+[profile.release]
+debug = true
+
+[patch.'https://github.com/dbittman/twizzler-abi']
+twizzler-abi = { path = "src/lib/twizzler-abi" }
+
+[patch.crates-io]
+#ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
+getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
+# Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
+getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
+
+polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
+#polling = { path = "src/ports/polling" }
+async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
+#async-io = { path = "src/ports/async-io" }
+async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
+#async-executor = { path = "src/ports/async-executor" }
+parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+#parking_lot = { path = "src/ports/parking_lot" }
+# lock_api comes from the parking_lot repo
+lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+#lock_api = { path = "src/ports/parking_lot/lock_api" }
+#blocking = { path = "src/ports/blocking" }
+
+num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
+
+
+candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+twizzler-futures = { path = "src/lib/twizzler-futures" }
+twizzler-abi = { path = "src/lib/twizzler-abi" }
+twizzler-rt-abi = { path = "src/abi/rt-abi" }
+filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", branch = "twizzler" }
+iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
+hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
+ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
+#memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+memmap2 = { path = "src/ports/memmap2-rs" }
+tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
+rusqlite = { path = "src/ports/rusqlite" }
+libsqlite3-sys = { path = "src/ports/rusqlite/libsqlite3-sys" }
+sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
+hwlocality = { path = "src/ports/hwlocality" }
+hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
+errno = { path = "src/ports/rust-errno" }
+libc = { path = "src/ports/libc" }
+ferroc = { path = "src/ports/ferroc" }
+candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
+#rocksdb = { path = "src/ports/rust-rocksdb" }
+#librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
+target-lexicon = { git = "https://github.com/owenarden/target-lexicon.git", branch="twizzler-patch"}
