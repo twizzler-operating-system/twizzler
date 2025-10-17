@@ -1,0 +1,30 @@
+[package]
+name = "twasm"
+version = "0.1.0"
+edition = "2021"   
+
+
+# [lints]
+# workspace = true
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+twizzler-runtime = { path = "../../rt" }
+anyhow = { version = "1.0.93", default-features = false }
+wasmtime = {git = "https://github.com/bytecodealliance/wasmtime.git", rev = "192f2fc", default-features = false, features = ['runtime','cranelift','wat','custom-virtual-memory']} 
+
+#, custom-virtual-memory,custom-native-signals
+# Note that default-features of wasmtime are disabled and only those required
+# are enabled, in this case compilation is done in the guest from the wasm text
+# format so `cranelift` and `wat` are enabled.
+# wasmtime = { workspace = true,  }
+
+
+[lib]
+# crate-type = ['staticlib']
+test = false
+doctest = false
+
+[features]
+default = ["wasmtime/custom-virtual-memory"]

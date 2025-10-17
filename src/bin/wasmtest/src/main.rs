@@ -1,5 +1,4 @@
 use anyhow::Result;
-use embedding::run;
 
 // #[cfg(not(target_os = "linux"))]
 // fn main() -> Result<()> {
@@ -9,7 +8,7 @@ use embedding::run;
 
 #[cfg(target_os = "twizzler")]
 fn main() -> Result<()> {
-    use anyhow::{Context, anyhow};
+    // use anyhow::{Context, anyhow};
     use std::io::Write;
     use wasmtime::{Config, Engine};
 
@@ -19,10 +18,14 @@ fn main() -> Result<()> {
     // function below.
     //
     // Note that `Config::target` is used here to enable cross-compilation.
-    let triple = "aarch64-unknown-twizzler";
-    let mut config = Config::new();
-    config.target(&triple)?;
+    // std::io::stderr().write_all(&error_buf).unwrap();
+    eprintln!("This is going to standard error!, {}", "awesome");
 
+    let triple = "aarch64-unknown-linux";
+    let mut config = Config::new();
+    // config.target(&triple)?;
+
+    eprintln!("Here!, {}", "awesome");
     // If signals-based-traps are disabled then that additionally means that
     // some configuration knobs need to be turned to match the expectations of
     // the guest program being loaded.
@@ -35,7 +38,9 @@ fn main() -> Result<()> {
     // }
 
     let engine = Engine::new(&config)?;
+    eprintln!("Now here!, {}", "awesome");
     let smoke = engine.precompile_module(b"(module)")?;
+    eprintln!("And here!, {}", "awesome");
     let simple_add = engine.precompile_module(
         br#"
             (module
@@ -44,6 +49,7 @@ fn main() -> Result<()> {
             )
         "#,
     )?;
+    eprintln!("And also here!, {}", "awesome");
     let simple_host_fn = engine.precompile_module(
         br#"
             (module
@@ -74,7 +80,7 @@ fn main() -> Result<()> {
     // any, is written to stderr.
     unsafe {
         let mut error_buf = Vec::with_capacity(1024);
-        let len = run(
+        let len = twasm::run(
             error_buf.as_mut_ptr(),
             error_buf.capacity(),
             smoke.as_ptr(),

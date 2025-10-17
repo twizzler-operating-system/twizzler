@@ -63,6 +63,8 @@ members = [
     "src/bin/debug",
     "src/bin/trace",
     "src/bin/schedtest",
+    "src/bin/twasm",
+    "src/bin/wasmtest",
 ]
 
 exclude = [
@@ -109,6 +111,8 @@ initrd = [
     #"crate:ls",
     #"crate:gadget",
     #"crate:serialecho",
+    #"crate:twasm",
+    "crate:wasmtest",
 ]
 
 [workspace.metadata.third-party]
@@ -166,3 +170,4 @@ candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman
 gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
+target-lexicon = { git = "https://github.com/owenarden/target-lexicon.git", branch="twizzler-patch"}
