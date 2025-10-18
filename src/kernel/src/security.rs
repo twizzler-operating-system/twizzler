@@ -198,7 +198,7 @@ impl SecCtxMgr {
         //TODO: will probably have to hook up the gate check here as well?
         // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
         // now for some reason
-        // let perms = self.lookup(_access_info.target_id);
+        let perms = self.lookup(_access_info.target_id);
         let perms = PermsInfo {
             ctx: self.active_id(),
             provide: Protections::all(),
