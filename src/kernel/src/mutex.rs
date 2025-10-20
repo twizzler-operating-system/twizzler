@@ -18,6 +18,7 @@
 use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
+use log::info;
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
@@ -92,9 +93,7 @@ impl<T> Mutex<T> {
             if i == 1000 {
                 log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
-            let guard = current_thread.as_ref().map(|ct| {
-                ct.enter_critical()
-            });
+            let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {
@@ -111,6 +110,8 @@ impl<T> Mutex<T> {
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
+                            info!("current_thread: {:?}", cur_thread);
+                            info!("current_owner: {:?}", cur_owner);
                             panic!("this mutex is not re-entrant");
                         }
                     }
