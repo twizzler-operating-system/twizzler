@@ -1,5 +1,6 @@
 use core::fmt::Display;
 
+use heapless::Vec;
 #[cfg(feature = "log")]
 use log::error;
 use p256::ecdsa::Signature as EcdsaSignature;
@@ -8,17 +9,15 @@ use crate::{SecurityError, SigningScheme};
 
 const MAX_SIG_SIZE: usize = 128;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Signature {
-    //TODO: could just replace this as a heapless vec
-    buf: [u8; MAX_SIG_SIZE],
-    pub len: usize,
+    buf: Vec<u8, MAX_SIG_SIZE>,
     scheme: SigningScheme,
 }
 
 impl Signature {
     fn as_bytes(&self) -> &[u8] {
-        &self.buf[0..self.len]
+        self.buf.as_slice()
     }
 }
 
@@ -27,9 +26,10 @@ impl Display for Signature {
         write!(
             f,
             "Signature(scheme: {:?}, len: {}, bytes: ",
-            self.scheme, self.len
+            self.scheme,
+            self.buf.len()
         )?;
-        for byte in &self.buf[0..self.len] {
+        for byte in self.buf.iter() {
             write!(f, "{:02x}", byte)?;
         }
         write!(f, ")")
@@ -38,14 +38,14 @@ impl Display for Signature {
 
 impl From<EcdsaSignature> for Signature {
     fn from(value: EcdsaSignature) -> Self {
-        let mut buf = [0_u8; MAX_SIG_SIZE];
+        let mut buf = Vec::<u8, MAX_SIG_SIZE>::new();
         let binding = value.to_bytes();
         let slice = binding.as_slice();
+        // bounds check
+        assert!(binding.len() < buf.len());
         buf[0..slice.len()].copy_from_slice(slice);
-
         Self {
             buf,
-            len: slice.len(),
             scheme: SigningScheme::Ecdsa,
         }
     }
