@@ -34,7 +34,7 @@ use crate::{
 /// // Example of creating and using a capability
 /// todo
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Cap {
     /// Object ID this capability grants access to
     pub target: ObjID,

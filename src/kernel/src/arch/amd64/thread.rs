@@ -260,6 +260,7 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
     frame.prior_ctx = upcall_data.source_ctx;
+    // commenting this out temporarily since its just barfing things out
     log::info!("upcall frame: {:?}", frame);
 
     // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer

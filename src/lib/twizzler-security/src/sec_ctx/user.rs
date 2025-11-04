@@ -195,8 +195,10 @@ impl SecCtx {
                         .expect("address should be inside of object!")
                         .cast::<Cap>();
 
+                    // SAFETY: This code is safe following that the user object's entries are only
+                    // well-spaced serialized capabilites.
                     unsafe {
-                        let cap = *ptr;
+                        let cap = (*ptr).clone();
 
                         if cap.verify_sig(v_key).is_ok() {
                             granted_perms.provide |= cap.protections;

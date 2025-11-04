@@ -77,33 +77,44 @@ impl SecurityContext {
         }
 
         let mut granted_perms =
+            // PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
             PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
 
+        info!("performing kobj detection check for object: {_id:#?}");
         let Some(ref obj) = self.kobj.clone() else {
+            info!("there is no object backing this security context, giving default permissions!");
             // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
 
+        info!("accessing base for obj: {_id:#?}");
         let base = obj.base();
+        info!("succesfully accessed base for object: {_id:#?}");
 
+        info!("accessing base.map for object: {_id:#?}");
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
+            info!("there are no capabilites or delegations for target object: {_id:#?}");
             // if no entries for the target, return already granted perms
             return granted_perms;
         };
 
         let v_obj = {
+            info!("looking up object: {_id:#?}");
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
-                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+                _ => return granted_perms,
             };
 
+            info!("found object: {target_obj:#?}");
             let Some(meta) = target_obj.read_meta(true) else {
                 // failed to read meta, no perms granted
-                return PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+                return granted_perms;
             };
+            info!("found object metadata: {meta:#?}");
             match lookup_object(meta.kuid, LookupFlags::empty()) {
                 LookupResult::Found(v_obj) => {
+                    info!("found verifying key! {v_obj:#?}");
                     let k_ctx = kernel_context();
 
                     let handle =
@@ -116,7 +127,7 @@ impl SecurityContext {
                     handle
                 }
                 // verifying key wasnt found, return no perms
-                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+                _ => return granted_perms,
             }
         };
 
@@ -180,7 +191,11 @@ impl SecurityContext {
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
     pub fn lookup(&self, id: ObjID) -> PermsInfo {
-        self.inner.lock().active.lookup(id)
+        let active = self.active();
+        active.lookup(id)
+
+        // in this function we would have to call lookup without calling the lock on self.inner()
+        // self.inner.lock().active.lookup(id)
     }
 
     /// Get the active context.
@@ -199,13 +214,12 @@ impl SecCtxMgr {
         //TODO: will probably have to hook up the gate check here as well?
         // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
         // now for some reason
-
         let perms = self.lookup(_access_info.target_id);
-        let perms = PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::all(),
-            restrict: Protections::empty(),
-        };
+        // let perms = PermsInfo {
+        //     ctx: self.active_id(),
+        //     provide: Protections::all(),
+        //     restrict: Protections::empty(),
+        // };
 
         perms
     }
