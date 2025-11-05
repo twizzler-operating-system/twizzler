@@ -3,6 +3,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
+use log::info;
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,
@@ -578,16 +579,6 @@ pub struct KernelObjectVirtHandle<T> {
     _pd: PhantomData<T>,
 }
 
-impl<T> Clone for KernelObjectVirtHandle<T> {
-    fn clone(&self) -> Self {
-        Self {
-            info: self.info.clone(),
-            slot: self.slot,
-            _pd: PhantomData,
-        }
-    }
-}
-
 impl<T> KernelObjectVirtHandle<T> {
     pub fn start_addr(&self) -> VirtAddr {
         VirtAddr::new(0)
@@ -606,6 +597,8 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         let kctx = kernel_context();
         {
             let mut slots = kctx.regions.lock();
+
+            info!("removed region: {:?}", self.slot.start_vaddr());
             // We don't need to tell the object that it's no longer mapped in the kernel context,
             // since object invalidation always informs the kernel context.
             slots.remove_region(self.slot.start_vaddr());

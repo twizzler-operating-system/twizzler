@@ -79,21 +79,24 @@ impl SecurityContext {
 
         // by default granted permissions are going to be the most restrictive
         let mut granted_perms =
-            // PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
-            PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+            // PermsInfo::new(self.id(), Protections::all(), Protections::empty());
+        PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+        //
 
         info!("performing kobj detection check for object: {_id:#?}");
-        let Some(ref obj) = self.kobj.clone() else {
+        let Some(ref obj) = self.kobj else {
             info!("there is no object backing this security context, giving default permissions!");
             // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
 
-        info!("accessing base for obj: {_id:#?}");
-        let base = obj.base();
-        info!("succesfully accessed base for object: {_id:#?}");
+        let kobj_id = obj.id();
 
-        info!("accessing base.map for object: {_id:#?}");
+        info!("accessing base for obj: {kobj_id:#?}");
+        let base = obj.base();
+        info!("succesfully accessed base for object: {kobj_id:#?}");
+
+        info!("accessing base.map for object: {kobj_id:#?}");
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
             info!("there are no capabilites or delegations for target object: {_id:#?}");

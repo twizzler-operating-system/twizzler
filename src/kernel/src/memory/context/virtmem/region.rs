@@ -1,6 +1,7 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 
+use log::info;
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
@@ -501,6 +502,10 @@ impl RegionManager {
     pub fn insert_region(&mut self, region: MapRegion) {
         let object_entry = self.objects.entry(region.object.id()).or_default();
         let range = region.range.clone();
+        info!(
+            "insterted region, id:{:?} into range: {range:?}",
+            region.object.id()
+        );
         let old = self.tree.insert_replace(range.clone(), region);
         for old_region in old {
             let pos = object_entry
