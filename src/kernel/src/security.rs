@@ -72,10 +72,12 @@ pub struct AccessInfo {
 impl SecurityContext {
     /// Lookup the permission info for an object, and maybe cache it.
     pub fn lookup(&self, _id: ObjID) -> PermsInfo {
+        // check the cache to see if we already have something
         if let Some(cache_entry) = self.cache.lock().get(&_id) {
             return *cache_entry;
         }
 
+        // by default granted permissions are going to be the most restrictive
         let mut granted_perms =
             // PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
             PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
@@ -98,8 +100,9 @@ impl SecurityContext {
             // if no entries for the target, return already granted perms
             return granted_perms;
         };
-
+        info!("finished acessing base.map for object: {_id:#?}");
         let v_obj = {
+            // so far, we are never able to reach this point
             info!("looking up object: {_id:#?}");
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
@@ -168,6 +171,7 @@ impl SecurityContext {
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
 
+        // insert into cache
         self.cache.lock().insert(_id, granted_perms.clone());
 
         granted_perms
@@ -193,7 +197,6 @@ impl SecCtxMgr {
     pub fn lookup(&self, id: ObjID) -> PermsInfo {
         let active = self.active();
         active.lookup(id)
-
         // in this function we would have to call lookup without calling the lock on self.inner()
         // self.inner.lock().active.lookup(id)
     }
