@@ -41,6 +41,14 @@ impl From<EcdsaSignature> for Signature {
         let mut buf = Vec::<u8, MAX_SIG_SIZE>::new();
         let binding = value.to_bytes();
         let slice = binding.as_slice();
+
+        #[cfg(feature = "log")]
+        error!(
+            "binding length: {}, buf length: {}",
+            binding.len(),
+            buf.len()
+        );
+
         // bounds check
         assert!(binding.len() < buf.len());
         buf[0..slice.len()].copy_from_slice(slice);

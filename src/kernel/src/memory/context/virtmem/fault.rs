@@ -30,7 +30,7 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
     // if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
-    log::info!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    //     log::info!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
     // }
 }
 
@@ -116,9 +116,7 @@ fn check_security(
     ip: VirtAddr,
     default_prot: Protections,
 ) -> Result<PermsInfo, UpcallInfo> {
-    info!("running check_securty: id: {id:?}, addr: {addr:?}, ip: {ip:?}");
     if ip.is_kernel() {
-        info!("giving all permissions to kernel ip!");
         return Ok(PermsInfo {
             ctx: user_sctx,
             provide: Protections::all(),
@@ -200,10 +198,6 @@ fn page_fault_to_region(
     }
 
     let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
-
-    info!(
-        "after security check, gave perms: {perms:#?}, id: {id:?}, default prots:{default_prot:?}"
-    );
 
     // Do we need to switch contexts?
     if perms.ctx != sctx_id && !addr.is_kernel() {
@@ -307,11 +301,7 @@ fn get_map_region(
     k_regions
         .lookup_region(slot.start_vaddr())
         .cloned()
-        .ok_or_else(|| {
-            let x = slot.start_vaddr();
-            error!("unable to find slot in kernel_context at addr: {x:?}");
-            upcall
-        })
+        .ok_or(upcall)
 }
 
 pub fn do_page_fault(

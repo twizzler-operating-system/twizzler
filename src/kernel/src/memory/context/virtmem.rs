@@ -597,8 +597,6 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         let kctx = kernel_context();
         {
             let mut slots = kctx.regions.lock();
-
-            info!("removed region: {:?}", self.slot.start_vaddr());
             // We don't need to tell the object that it's no longer mapped in the kernel context,
             // since object invalidation always informs the kernel context.
             slots.remove_region(self.slot.start_vaddr());

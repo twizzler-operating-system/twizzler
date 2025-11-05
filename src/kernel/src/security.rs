@@ -79,48 +79,35 @@ impl SecurityContext {
 
         // by default granted permissions are going to be the most restrictive
         let mut granted_perms =
-            // PermsInfo::new(self.id(), Protections::all(), Protections::empty());
-        PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
-        //
+            PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
 
-        info!("performing kobj detection check for object: {_id:#?}");
         let Some(ref obj) = self.kobj else {
-            info!("there is no object backing this security context, giving default permissions!");
             // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
 
         let kobj_id = obj.id();
 
-        info!("accessing base for obj: {kobj_id:#?}");
         let base = obj.base();
-        info!("succesfully accessed base for object: {kobj_id:#?}");
 
-        info!("accessing base.map for object: {kobj_id:#?}");
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
-            info!("there are no capabilites or delegations for target object: {_id:#?}");
             // if no entries for the target, return already granted perms
             return granted_perms;
         };
-        info!("finished acessing base.map for object: {_id:#?}");
         let v_obj = {
             // so far, we are never able to reach this point
-            info!("looking up object: {_id:#?}");
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
                 _ => return granted_perms,
             };
 
-            info!("found object: {target_obj:#?}");
             let Some(meta) = target_obj.read_meta(true) else {
                 // failed to read meta, no perms granted
                 return granted_perms;
             };
-            info!("found object metadata: {meta:#?}");
             match lookup_object(meta.kuid, LookupFlags::empty()) {
                 LookupResult::Found(v_obj) => {
-                    info!("found verifying key! {v_obj:#?}");
                     let k_ctx = kernel_context();
 
                     let handle =
@@ -281,9 +268,7 @@ impl SecCtxMgr {
             return SwitchResult::NoSwitch;
         }
 
-        info!("trying to acquired guard");
         let mut inner = self.inner.lock();
-        info!("called to switch to id: {id:#?}");
 
         let ret = if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
@@ -297,7 +282,6 @@ impl SecCtxMgr {
             SwitchResult::NotAttached
         };
 
-        info!("dropped guard!");
         ret
     }
 
