@@ -5980,7 +5980,6 @@ dependencies = [
  "clap",
  "colog",
  "getrandom 0.2.16",
- "hex",
  "log",
  "twizzler",
  "twizzler-abi",
