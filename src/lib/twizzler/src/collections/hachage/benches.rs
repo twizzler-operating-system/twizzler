@@ -133,7 +133,7 @@ fn random_insert_500_persistent(b: &mut Bencher) {
 
 #[bench]
 fn random_insert_500_persistent_batch(b: &mut Bencher) {
-    let mut phm = PersistentHashMap::with_builder(ObjectBuilder::default().persist()).unwrap();
+    let mut phm = PersistentHashMap::with_builder(ObjectBuilder::default().persist(true)).unwrap();
     b.iter(|| {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 
@@ -147,7 +147,7 @@ fn random_insert_500_persistent_batch(b: &mut Bencher) {
 
 #[bench]
 fn random_insert_1_persistent(b: &mut Bencher) {
-    let mut phm = PersistentHashMap::with_builder(ObjectBuilder::default().persist()).unwrap();
+    let mut phm = PersistentHashMap::with_builder(ObjectBuilder::default().persist(true)).unwrap();
     b.iter(|| {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
 

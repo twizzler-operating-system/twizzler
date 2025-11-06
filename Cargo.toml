@@ -43,8 +43,8 @@ members = [
     "src/bin/cache",
 
     "src/ports/lwext4-rs",
-    "src/ports/rusqlite",
-    "src/ports/rusqlite/libsqlite3-sys",
+    #"src/ports/rusqlite",
+    #"src/ports/rusqlite/libsqlite3-sys",
 
     #"src/ports/candle-test",
 
@@ -57,7 +57,8 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest", "src/bin/sqlite_test",
+  "src/bin/ptest",
+  #"src/bin/sqlite_test",
     "src/bin/ptest",
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
@@ -93,7 +94,7 @@ initrd = [
 
     "crate:sec-test",
     "crate:ptest",
-    "crate:sqlite_test",
+    #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
 
     #"crate:twzcandle",
