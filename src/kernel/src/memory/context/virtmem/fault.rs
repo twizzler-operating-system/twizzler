@@ -137,11 +137,14 @@ fn check_security(
     };
     if let Some(ct) = current_thread_ref() {
         let perms = ct.secctx.check_active_access(&access_info, default_prot);
+
+        // info!("active_perms for obj:{id:#?}, perms:{perms:#?}");
         if perms.provide & !perms.restrict & access_kind == access_kind {
             let evaluated = perms.provide & !perms.restrict & access_kind;
             return Ok(perms);
         }
         let perms = ct.secctx.search_access(&access_info, default_prot);
+        // info!("search_access_perms for obj:{id:#?}, perms:{perms:#?}");
         if perms.provide & !perms.restrict & access_kind != access_kind {
             Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
                 address: addr.raw(),

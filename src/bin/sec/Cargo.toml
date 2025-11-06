@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
 twizzler-abi = {path = "../../lib/twizzler-abi"}
-twizzler-security = {path = "../../lib/twizzler-security", features = ["user", "log"]}
+twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
 twizzler = { path = "../../lib/twizzler" }
 twizzler-rt-abi = "0.99"
 getrandom = "0.2"

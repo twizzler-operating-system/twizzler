@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use colog::default_builder;
 use log::{LevelFilter, info};
 use twizzler::{
@@ -15,27 +15,9 @@ use twizzler_abi::{
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct CliArgs {
-    #[command(subcommand)]
-    pub command: Commands,
-}
+mod args;
+use args::*;
 
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    Test,
-    Create,
-    Access(AccessArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct AccessArgs {
-    #[arg(short, long)]
-    obj_id: String,
-    #[arg(short, long)]
-    sec_ctx_id: String,
-}
 fn main() {
     let mut builder = default_builder();
     builder.filter_level(LevelFilter::Trace);
@@ -44,6 +26,136 @@ fn main() {
     let args = CliArgs::parse();
 
     match args.command {
+        Commands::Obj(commands) => match commands {
+            ObjCommands::Inspect(args) => {
+                if let Some(sec_ctx_id) = args.sec_ctx_id {
+                    let sec_ctx = SecCtx::try_from(sec_ctx_id).unwrap();
+                    sys_sctx_attach(sec_ctx.id()).unwrap();
+                    sys_thread_set_active_sctx_id(sec_ctx.id()).unwrap();
+                    println!("attached to SecCtx: {sec_ctx_id:#?}");
+                }
+
+                let target =
+                    Object::<MessageStoreObj>::map(args.obj_id, MapFlags::READ | MapFlags::WRITE)
+                        .unwrap();
+
+                let obj = target.base();
+
+                println!("{target:#?}{obj:#?}");
+            }
+            ObjCommands::New(args) => {
+                // by default an object has empty permissions
+                let spec = ObjectCreate::new(
+                    Default::default(),
+                    Default::default(),
+                    Some(args.verifying_key_id),
+                    Default::default(),
+                    Protections::READ | Protections::WRITE,
+                );
+
+                // println!("creating target object with spec: {:?}", spec);
+
+                let target_obj = ObjectBuilder::new(spec)
+                    .build(MessageStoreObj {
+                        message: args.message,
+                    })
+                    .unwrap();
+
+                // seal the object
+                // let obj = if args.seal {
+                //     let mut tx = target_obj.into_tx().expect("failed to turn into tx");
+
+                //     //NOTE: you shouldnt have to do all this to change the default
+                // protections...,     // I honestly think it should be a part of
+                // the object     // creation spec?
+                //     //
+                //     // i.e when the object is created, its always created with READ | WRITE, and
+                //     // then after the base is written the default prots get
+                //     // changed to what the user specified
+                //     let meta_ptr = tx.meta_mut_ptr();
+
+                //     unsafe {
+                //         (*meta_ptr).default_prot = Protections::empty();
+                //     }
+
+                //     tx.into_object().expect("failed to save ")
+                // } else {
+                //     target_obj
+                // };
+
+                let mut tx = target_obj.into_tx().expect("failed to turn into tx");
+
+                //NOTE: you shouldnt have to do all this to change the default protections...,
+                // I honestly think it should be a part of the object
+                // creation spec?
+                //
+                // i.e when the object is created, its always created with READ | WRITE, and
+                // then after the base is written the default prots get
+                // changed to what the user specified
+                let meta_ptr = tx.meta_mut_ptr();
+
+                let prots = if args.seal {
+                    Protections::empty()
+                } else {
+                    Protections::READ | Protections::WRITE
+                };
+
+                unsafe {
+                    (*meta_ptr).default_prot = prots;
+                }
+
+                let obj = tx.into_object().expect("failed to save ");
+
+                unsafe {
+                    println!(
+                        "created Object with id: {:#?}\n{:#?}",
+                        obj.id(),
+                        *obj.meta_ptr()
+                    );
+                }
+            }
+        },
+        Commands::Key(KeyCommands::NewPair) => {
+            let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
+                .expect("should have worked");
+
+            println!(
+                "Keypair created!\nSigning Key: {:#?}\nVerifying Key: {:#?}",
+                s_key.id(),
+                v_key.id()
+            );
+        }
+        Commands::Ctx(ctxcommands) => match ctxcommands {
+            CtxCommands::New(args) => {
+                let flags = if args.undetachable {
+                    SecCtxFlags::UNDETACHABLE
+                } else {
+                    SecCtxFlags::empty()
+                };
+
+                let sec_ctx = SecCtx::new(
+                    ObjectCreate::new(
+                        Default::default(),
+                        Default::default(),
+                        None,
+                        Default::default(),
+                        Protections::all(),
+                    ),
+                    Protections::all(),
+                    flags,
+                )
+                .unwrap();
+
+                let id = sec_ctx.id();
+
+                let base = sec_ctx.base();
+
+                println!("Created SecCtx: {id:#?}\n{base:#?}");
+            }
+
+            CtxCommands::Inspect(args) => {}
+        },
+
         Commands::Create => {
             let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
                 .expect("should have worked");
@@ -70,7 +182,6 @@ fn main() {
                 ),
                 Protections::all(),
                 SecCtxFlags::UNDETACHABLE,
-                // SecCtxFlags::empty(),
             )
             .unwrap();
 
@@ -78,8 +189,8 @@ fn main() {
 
             // we build that object
             let target_obj = ObjectBuilder::new(spec)
-                .build(DumbBase {
-                    _payload: 123456789,
+                .build(MessageStoreObj {
+                    message: "hi".to_owned(),
                 })
                 .unwrap();
 
@@ -87,6 +198,12 @@ fn main() {
 
             let mut tx = target_obj.into_tx().expect("failed to turn into tx");
 
+            //NOTE: you shouldnt have to do all this to change the default protections..., I
+            // honestly think it should be a part of the object creation spec?
+            //
+            // i.e when the object is created, its always created with READ | WRITE, and then
+            // after the base is written the default prots get changed to what the
+            // user specified
             let meta_ptr = tx.meta_mut_ptr();
 
             unsafe {
@@ -127,8 +244,10 @@ fn main() {
             let obj_id_u128 =
                 u128::from_str_radix(&args.obj_id, 16).expect("failed to parse as object id");
 
-            let sec_ctx_id_u128 =
-                u128::from_str_radix(&args.sec_ctx_id, 16).expect("failed to parse as object id");
+            let sec_ctx_id_u128 = u128::from_str_radix(&args.sec_ctx_id, 16).expect(
+                "failed to parse as object
+            id",
+            );
 
             let obj_id = ObjID::new(obj_id_u128);
             let sec_ctx_id = ObjID::new(sec_ctx_id_u128);
@@ -142,7 +261,8 @@ fn main() {
 
             println!("active sec id: {active_sec_id:#?}");
 
-            let target = Object::<DumbBase>::map(obj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
+            let target =
+                Object::<MessageStoreObj>::map(obj_id, MapFlags::READ | MapFlags::WRITE).unwrap();
 
             let meta = target.meta_ptr();
 
@@ -164,12 +284,12 @@ fn main() {
     // println!("Hello, world!");
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DumbBase {
-    _payload: u128,
+#[derive(Debug, Clone)]
+struct MessageStoreObj {
+    message: String,
 }
 
-impl BaseType for DumbBase {
+impl BaseType for MessageStoreObj {
     fn fingerprint() -> u64 {
         11234
     }

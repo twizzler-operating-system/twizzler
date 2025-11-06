@@ -22,6 +22,7 @@ use crate::{
     Cap, Del, VerifyingKey,
 };
 
+#[derive(Debug)]
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
     cache: BTreeMap<ObjID, PermsInfo>,
@@ -54,6 +55,10 @@ impl Display for SecCtx {
 impl SecCtx {
     pub fn attached_ctx() -> SecCtx {
         todo!("unsure how to get attached sec_ctx as of rn")
+    }
+
+    pub fn base(&self) -> &SecCtxBase {
+        self.uobj.base()
     }
 
     pub fn new(

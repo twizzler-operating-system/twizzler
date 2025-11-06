@@ -1,0 +1,155 @@
+kernel: "/Users/suri/dev/work/owenlab/twizzler_os/twizzler/target/kernel/x86_64-unknown-none/release/twizzler-kernel", cmdline: 
+Allocated port 5555 for Qemu!
+gdb debugging port: 2159
+qemu: "qemu-system-x86_64" "-m" "12000,slots=4,maxmem=128G" "-bios" "toolchain/toolchain_13150dd-3497ae5-980d399/OVMF.fd" "-machine" "q35,nvdimm=on" "-cpu" "max" "-drive" "format=raw,file=/Users/suri/dev/work/owenlab/twizzler_os/twizzler/target/kernel/x86_64-unknown-none/release/disk.img" "-drive" "file=target/nvme.img,if=none,id=nvme" "-device" "nvme,serial=deadbeef,drive=nvme" "-device" "virtio-pmem-pci,memdev=dataset,id=nv2" "-object" "memory-backend-file,id=dataset,size=107374182400,mem-path=target/nvme.img,share=on" "-device" "virtio-net-pci,netdev=net0" "-netdev" "user,id=net0,hostfwd=tcp::5555-:5555" "--no-reboot" "-serial" "mon:stdio" "-serial" "tcp::2159,server,nowait" "-nographic"
+wait 
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: failed to load Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0): Not Found
+BdsDxe: failed to load Boot0002 "UEFI QEMU NVMe Ctrl deadbeef 1" from PciRoot(0x0)/Pci(0x2,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00): Not Found
+BdsDxe: loading Boot0003 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0003 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+[2J[01;01H[01;01H[2J[01;01H[01;01H[2J[01;01H[01;01H[2J[01;01H[01;01H[01;01H[02;01H[02;27H[0m[36m[40mL[02;28Hi[02;29Hm[02;30Hi[02;31Hn[02;32He[02;33H [02;34H8[02;35H.[02;36H4[02;37H.[02;38H0[02;39H [02;40H([02;41Hx[02;42H8[02;43H6[02;44H-[02;45H6[02;46H4[02;47H,[02;48H [02;49HU[02;50HE[02;51HF[02;52HI[02;53H)[02;54H[0m[37m[40m[03;01H[04;01H[05;01H[06;01H[13;01H [13;02H [13;03H [13;04H [13;05H [13;06H [13;07H [13;08H [13;09H [13;10H [13;11H [13;12H [13;13H [13;14H [13;15H [13;16H [13;17H [13;18H [13;19H [13;20H [13;21H [13;22H [13;23H [13;24H [13;25H [13;26H [13;27H [13;28H [13;29H [13;30H [13;31H [13;32H [13;33H [13;34H [13;35H[0m[30m[47m [13;36HT[13;37Hw[13;38Hi[13;39Hz[13;40Hz[13;41Hl[13;42He[13;43Hr[13;44H [13;45H[0m[37m[40m[14;01H[04;01H [04;02H [04;03H [04;04H [04;05H[0m[32m[40mA[04;06HR[04;07HR[04;08HO[04;09HW[04;10HS[04;11H[0m[37m[40m [04;12HS[04;13He[04;14Hl[04;15He[04;16Hc[04;17Ht[04;18H [04;19H [04;20H [04;21H [04;22H[0m[32m[40mE[04;23HN[04;24HT[04;25HE[04;26HR[04;27H[0m[37m[40m [04;28HB[04;29Ho[04;30Ho[04;31Ht[04;32H [04;33H [04;34H [04;35H [04;36H[0m[32m[40mE[04;37H[0m[37m[40m [04;38HE[04;39Hd[04;40Hi[04;41Ht[04;42H[04;44H[0m[32m[40mS[04;45H[0m[37m[40m [04;46HF[04;47Hi[04;48Hr[04;49Hm[04;50Hw[04;51Ha[04;52Hr[04;53He[04;54H [04;55HS[04;56He[04;57Ht[04;58Hu[04;59Hp[04;60H[04;64H[0m[32m[40mB[04;65H[0m[37m[40m [04;66HB[04;67Hl[04;68Ha[04;69Hn[04;70Hk[04;71H [04;72HE[04;73Hn[04;74Ht[04;75Hr[04;76Hy[04;77H[14;01H[15;01H[16;01H[24;01H[24;01H [24;02H [24;03H [24;04H [24;05H [24;06H [24;07H [24;08H [24;09H [24;10H [24;11H [24;12H [24;13H [24;14H [24;15H [24;16H [24;17H [24;18H [24;19H [24;20H [24;21H [24;22H [24;23H [24;24H [24;25H [24;26H [24;27H [24;28H [24;29H [24;30H [24;31H [24;32H [24;33H [24;34H [24;35H [24;36H [24;37H [24;38H [24;39H [24;40H [24;41H [24;42H [24;43H [24;44H [24;45H [24;46H [24;47H [24;48H [24;49H [24;50H [24;51H [24;52H [24;53H [24;54H [24;55H [24;56H [24;57H [24;58H [24;59H [24;60H [24;61H [24;62H [24;63H [24;64H [24;65H [24;66H [24;67H [24;68H [24;69H [24;70H [24;71H [24;72H [24;73H [24;74H [24;75H [24;76H [24;77H [24;78H [24;79H [24;80H[24;01H[0m[32m[40mB[24;02Ho[24;03Ho[24;04Ht[24;05Hi[24;06Hn[24;07Hg[24;08H [24;09Ha[24;10Hu[24;11Ht[24;12Ho[24;13Hm[24;14Ha[24;15Ht[24;16Hi[24;17Hc[24;18Ha[24;19Hl[24;20Hl[24;21Hy[24;22H [24;23Hi[24;24Hn[24;25H [24;26H[1m[32m[40m1[24;27H[0m[32m[40m,[24;28H [24;29Hp[24;30Hr[24;31He[24;32Hs[24;33Hs[24;34H [24;35Ha[24;36Hn[24;37Hy[24;38H [24;39Hk[24;40He[24;41Hy[24;42H [24;43Ht[24;44Ho[24;45H [24;46Hs[24;47Ht[24;48Ho[24;49Hp[24;50H [24;51Ht[24;52Hh[24;53He[24;54H [24;55Hc[24;56Ho[24;57Hu[24;58Hn[24;59Ht[24;60Hd[24;61Ho[24;62Hw[24;63Hn[24;64H.[24;65H.[24;66H.[24;67H[0m[37m[40m[2J[01;01H[01;01Hl[01;02Hi[01;03Hm[01;04Hi[01;05Hn[01;06He[01;07H:[01;08H [01;09HL[01;10Ho[01;11Ha[01;12Hd[01;13Hi[01;14Hn[01;15Hg[01;16H [01;17Hk[01;18He[01;19Hr[01;20Hn[01;21He[01;22Hl[01;23H [01;24H`[01;25Hb[01;26Ho[01;27Ho[01;28Ht[01;29H([01;30H)[01;31H:[01;32H/[01;33Hk[01;34He[01;35Hr[01;36Hn[01;37He[01;38Hl[01;39H.[01;40He[01;41Hl[01;42Hf[01;43H`[01;44H.[01;45H.[01;46H.[01;47H[02;01Hl[02;02Hi[02;03Hm[02;04Hi[02;05Hn[02;06He[02;07H:[02;08H [02;09HP[02;10Hh[02;11Hy[02;12Hs[02;13Hi[02;14Hc[02;15Ha[02;16Hl[02;17H [02;18Hb[02;19Ha[02;20Hs[02;21He[02;22H:[02;23H [02;24H [02;25H [02;26H0[02;27Hx[02;28H7[02;29H0[02;30H1[02;31H7[02;32Hf[02;33H0[02;34H0[02;35H0[02;36H[03;01Hl[03;02Hi[03;03Hm[03;04Hi[03;05Hn[03;06He[03;07H:[03;08H [03;09HV[03;10Hi[03;11Hr[03;12Ht[03;13Hu[03;14Ha[03;15Hl[03;16H [03;17Hb[03;18Ha[03;19Hs[03;20He[03;21H:[03;22H [03;23H [03;24H [03;25H [03;26H0[03;27Hx[03;28Hf[03;29Hf[03;30Hf[03;31Hf[03;32Hf[03;33Hf[03;34Hf[03;35Hf[03;36H8[03;37H0[03;38H1[03;39H0[03;40H0[03;41H0[03;42H0[03;43H0[03;44H[04;01Hl[04;02Hi[04;03Hm[04;04Hi[04;05Hn[04;06He[04;07H:[04;08H [04;09HS[04;10Hl[04;11Hi[04;12Hd[04;13He[04;14H:[04;15H [04;16H [04;17H [04;18H [04;19H [04;20H [04;21H [04;22H [04;23H [04;24H [04;25H [04;26H0[04;27Hx[04;28H0[04;29H[05;01Hl[05;02Hi[05;03Hm[05;04Hi[05;05Hn[05;06He[05;07H:[05;08H [05;09HE[05;10HL[05;11HF[05;12H [05;13He[05;14Hn[05;15Ht[05;16Hr[05;17Hy[05;18H [05;19Hp[05;20Ho[05;21Hi[05;22Hn[05;23Ht[05;24H:[05;25H [05;26H0[05;27Hx[05;28H0[05;29H[06;01Hl[06;02Hi[06;03Hm[06;04Hi[06;05Hn[06;06He[06;07H:[06;08H [06;09HB[06;10Ha[06;11Hs[06;12He[06;13H [06;14Hr[06;15He[06;16Hv[06;17Hi[06;18Hs[06;19Hi[06;20Ho[06;21Hn[06;22H:[06;23H [06;24H [06;25H [06;26H1[06;27H[07;01Hl[07;02Hi[07;03Hm[07;04Hi[07;05Hn[07;06He[07;07H:[07;08H [07;09HR[07;10He[07;11Hq[07;12Hu[07;13He[07;14Hs[07;15Ht[07;16Hs[07;17H [07;18Hc[07;19Ho[07;20Hu[07;21Hn[07;22Ht[07;23H:[07;24H [07;25H [07;26H8[07;27H[08;01Hl[08;02Hi[08;03Hm[08;04Hi[08;05Hn[08;06He[08;07H:[08;08H [08;09HT[08;10Ho[08;11Hp[08;12H [08;13Ho[08;14Hf[08;15H [08;16HH[08;17HH[08;18HD[08;19HM[08;20H:[08;21H [08;22H [08;23H [08;24H [08;25H [08;26H0[08;27Hx[08;28H3[08;29H8[08;30H0[08;31H0[08;32H0[08;33H0[08;34H0[08;35H0[08;36H0[08;37H[09;01Hl[09;02Hi[09;03Hm[09;04Hi[09;05Hn[09;06He[09;07H:[09;08H [09;09HC[09;10HP[09;11HU[09;12H [09;13Hh[09;14Ha[09;15Hs[09;16H [09;17H5[09;18H-[09;19Hl[09;20He[09;21Hv[09;22He[09;23Hl[09;24H [09;25Hp[09;26Ha[09;27Hg[09;28Hi[09;29Hn[09;30Hg[09;31H [09;32Hs[09;33Hu[09;34Hp[09;35Hp[09;36Ho[09;37Hr[09;38Ht[09;39H[10;01Hl[10;02Hi[10;03Hm[10;04Hi[10;05Hn[10;06He[10;07H:[10;08H [10;09HE[10;10Hn[10;11Ht[10;12Hr[10;13Hy[10;14H [10;15Hp[10;16Ho[10;17Hi[10;18Hn[10;19Ht[10;20H [10;21Ha[10;22Ht[10;23H [10;24H0[10;25Hx[10;26Hf[10;27Hf[10;28Hf[10;29Hf[10;30Hf[10;31Hf[10;32Hf[10;33Hf[10;34H8[10;35H0[10;36H1[10;37Ha[10;38H6[10;39H3[10;40Hf[10;41H0[10;42H[11;01Ha[11;02Hc[11;03Hp[11;04Hi[11;05H:[11;06H [11;07HF[11;08Ho[11;09Hu[11;10Hn[11;11Hd[11;12H [11;13HR[11;14HS[11;15HD[11;16HP[11;17H [11;18Ha[11;19Ht[11;20H [11;21H0[11;22Hx[11;23H7[11;24Hf[11;25Hb[11;26H7[11;27He[11;28H0[11;29H0[11;30H0[11;31H[12;01Ha[12;02Hc[12;03Hp[12;04Hi[12;05H:[12;06H [12;07HF[12;08Ho[12;09Hu[12;10Hn[12;11Hd[12;12H [12;13HX[12;14HS[12;15HD[12;16HP[12;17H [12;18Ha[12;19Ht[12;20H [12;21H0[12;22Hx[12;23H7[12;24Hf[12;25Hb[12;26H7[12;27He[12;28H0[12;29H1[12;30H4[12;31H[13;01Hl[13;02Hi[13;03Hm[13;04Hi[13;05Hn[13;06He[13;07H:[13;08H [13;09HL[13;10Ho[13;11Ha[13;12Hd[13;13Hi[13;14Hn[13;15Hg[13;16H [13;17Hm[13;18Ho[13;19Hd[13;20Hu[13;21Hl[13;22He[13;23H [13;24H`[13;25Hb[13;26Ho[13;27Ho[13;28Ht[13;29H([13;30H)[13;31H:[13;32H/[13;33Hi[13;34Hn[13;35Hi[13;36Ht[13;37Hr[13;38Hd[13;39H`[13;40H.[13;41H.[13;42H.[13;43H[14;01H[x86::apic] initializing APIC version X2Apic
+[kernel] boot with cmd `'
+[kernel] WARN -- TEST LOG
+[kernel::mm] initializing memory management
+[kernel::debug] parsing kernel debug image
+[kernel::cpu] enumerating secondary CPUs
+xsave size: 576
+[kernel::initrd] INFO -- [kernel::initrd] loading module, 503 MB...
+[tar_no_std::archive] ERROR -- Unparsable size (ParseIntError { kind: Empty }) in header PosixHeader {
+    name: str='Ok("")',byte_usage=0/100,
+    mode: Err(
+        ParseInt(
+            ParseIntError {
+                kind: Empty,
+            },
+        ),
+    ),
+    uid: cannot parse integer from empty string [],
+    gid: cannot parse integer from empty string [],
+    size: cannot parse integer from empty string [],
+    mtime: cannot parse integer from empty string [],
+    cksum: cannot parse integer from empty string [],
+    typeflag: Ok(
+        AREGTYPE,
+    ),
+    linkname: str='Ok("")',byte_usage=0/100,
+    magic: str='Ok("")',byte_usage=0/6,
+    version: str='Ok("")',byte_usage=0/2,
+    uname: str='Ok("")',byte_usage=0/32,
+    gname: str='Ok("")',byte_usage=0/32,
+    dev_major: cannot parse integer from empty string [],
+    dev_minor: cannot parse integer from empty string [],
+    prefix: str='Ok("")',byte_usage=0/155,
+    _pad: [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ],
+}
+[kernel::initrd] INFO -- [kernel::initrd]  done, loaded 503 MB of object data
+[kernel::cpu] booting secondary CPUs
+[kernel::arch::tsc] switching to pit calibration: LeafNotupported(21)
+[kernel::arch::tsc] tsc frequency 1000340000 (Hz), 999660 fs
+[kernel::arch::x86-pit] setting up for statclock with freq 127 (7 ms)
+[kernel::arch::tsc] switching to pit calibration: LeafNotupported(21)
+[kernel::arch::tsc] tsc frequency 1000015000 (Hz), 999985 fs
+[kernel::machine::pcie] init
+Starting entropy contribution loop; once every 100s
+[kernel::main] processor 0 entering main idle loop
+[32m INFO[0m [2mbootstrap[0m[2m:[0m bootstrapping runtime monitor
+[32m INFO[0m monitor early init completed, starting init
+[32m INFO[0m [2minit[0m[2m:[0m starting logger
+[32m INFO[0m [2minit[0m[2m:[0m starting device manager
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m [devmgr] scanning PCIe bus
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:00.00 -- HostBridge
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:01.00 -- VgaCompatibleController
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:02.00 -- NvmeController
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:03.00 -- Unknown
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:04.00 -- EthernetController
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:1f.00 -- IsaBridge
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:1f.02 -- SataController
+[32m INFO[0m [2mdevmgr_srv[0m[2m:[0m pcie device: 00:1f.03 -- SmBusController
+[32m INFO[0m [2minit[0m[2m:[0m device manager ready
+[32m INFO[0m [2minit[0m[2m:[0m starting pager
+[32m INFO[0m [2mpager_srv::nvme[0m[2m:[0m found nvme controller at 00:02.00
+[32m INFO[0m [2mpager_srv::memstore::virtio[0m[2m:[0m found virtio-mem controller at 00:03.00
+[32m INFO[0m [2mpager_srv::memstore::virtio[0m[2m:[0m virtio-mem start at 380000000 len: 1900000000
+[kernel::pager::queues] INFO -- register phys: 380000000 - 1c80000000
+[32m INFO[0m [2mpager_srv::memstore::virtio[0m[2m:[0m virtio-mem registered physical region with kernel
+[kernel::pager::queues] INFO -- pager ready
+[kernel::pager::queues] INFO -- reclaim thread started
+[32m INFO[0m [2mpager_srv[0m[2m:[0m pager ready
+[32m INFO[0m [2mpager_srv[0m[2m:[0m found root namespace: f8e8d04ebf3f7bc264b4ef039dac109c
+[32m INFO[0m [2minit[0m[2m:[0m starting namer
+[32m INFO[0m [2minit[0m[2m:[0m naming ready
+[32m INFO[0m [2minit[0m[2m:[0m setting monitor nameroot: ObjID(150a721c3f2a310dd98dee8a5e4bebf8)
+[32m INFO[0m [2minit[0m[2m:[0m starting cache service
+[32m INFO[0m [2minit[0m[2m:[0m cache manager ready
+Hi, welcome to the basic twizzler test console.
+To run a program, type its name.
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ha[51;11H[51;10H[J[51;10Hc[51;11Hr[51;12He[51;13Ha[51;14Ht[51;15He[51;16H
+[D] Creating new signing key with scheme: Ecdsa
+[*] creating target object with spec: ObjectCreate { kuid: ObjID(e79628d098653ae3a091fc6baca1fdb5), bt: Normal, lt: Volatile, flags: ObjectCreateFlags(0x0), def_prot: Protections(READ | WRITE) }
+metadata: MetaInfo {
+    nonce: Nonce(
+        182817845136871914185839469884745543408,
+    ),
+    kuid: ObjID(e79628d098653ae3a091fc6baca1fdb5),
+    flags: MetaFlags(
+        0x0,
+    ),
+    default_prot: Protections(
+        0x0,
+    ),
+    fotcount: 0,
+    extcount: 0,
+}
+[D] Using flags: CapFlags { Blake3 } to create capability for target: ObjID(56dbe67297067129163e6ec287edeb48)
+[D] write offset into object for entry: 0x27A0
+[D] Added capability at ptr: 0x0000002ac00027a0
+[*] object id of created object: ObjID(56dbe67297067129163e6ec287edeb48)
+[*] object id of sec ctx: ObjID(83304c569edb8901d06634d863b04c97)
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ha[51;11Hc[51;12Hc[51;13He[51;14Hs[51;15Hs[51;16H [51;17H-[51;18H-[51;19Ho[51;20Hb[51;21Hj[51;22H-[51;23Hi[51;24Hd[51;25H [51;26H5[51;27H6[51;28Hd[51;29Hb[51;30He[51;31H6[51;32H7[51;33H2[51;34H9[51;35H7[51;36H0[51;37H6[51;38H7[51;39H1[51;40H2[51;41H9[51;42H1[51;43H6[51;44H3[51;45He[51;46H6[51;47He[51;48Hc[51;49H2[51;50H8[51;51H7[51;52He[51;53Hd[51;54He[51;55Hb[51;56H4[51;57H8[51;58H [51;59H-[51;60H-[51;61Hs[51;62He[51;63Hc[51;64H-[51;65Hc[51;66Ht[51;67Hx[51;68H-[51;69Hi[51;70Hd[51;71H [51;72H8[51;73H3[51;74H3[51;75H0[51;76H4[51;77Hc[51;78H5[51;79H6[51;80H9[51;81He[51;82Hd[51;83Hb[51;84H8[51;85H9[51;86H0[51;87H1[51;88Hd[51;89H0[51;90H6[51;91H6[51;92H3[51;93H4[51;94Hd[51;95H8[51;96H6[51;97H3[51;98Hb[51;99H0[51;100H4[51;101Hc[51;102H9[51;103H7[51;104H
+active sec id: ObjID(83304c569edb8901d06634d863b04c97)
+[kernel::security] INFO -- verified signature! adding perms: Protections(
+    0x0,
+)
+[kernel::security] INFO -- default perms: Protections(
+    0x0,
+)
+[kernel::security] INFO -- granted_perms: PermsInfo {
+    ctx: ObjID(83304c569edb8901d06634d863b04c97),
+    provide: Protections(
+        0x0,
+    ),
+    restrict: Protections(
+        0x0,
+    ),
+}
+[kernel::security] INFO -- UNDETACHABLE bit set, refusing to evaluate inactive security contexts.
+[kernel::thread] INFO -- upcall: 24: SecurityViolation(SecurityViolationInfo { address: 201863458816, access_kind: Read })
+   0 - 0xffffffff801c57b3
+   1 - 0xffffffff80222e07
+   2 - 0xffffffff801de232
+   3 - 0xffffffff801b7e2e
+   4 - 0xffffffff801b043f
+   5 -       0x2c0009d3f5
+   6 -       0x2b8006a9db
+   7 -       0x2c0008e884
+   8 -       0x2b80062b82
+   9 -       0x2c000b4382
+  10 -       0x2c800242d5
+  11 -       0x2c800317f5
+  12 -       0x2c80016f78
+  13 -       0x2c80016fbf
+  14 -       0x2c80016fa8
+7[999;999H[6n8[Jtwz> [6n
