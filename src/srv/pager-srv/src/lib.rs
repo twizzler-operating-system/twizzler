@@ -200,7 +200,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         } else {
             tracing::info!("creating new naming object");
             let vo =
-                VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist()).unwrap();
+                VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist(true)).unwrap();
             run_async(po.set_config_id(vo.object().id().raw())).unwrap();
             vo.object().id().raw()
         }

@@ -3,14 +3,14 @@ use std::{
     marker::PhantomData,
 };
 
-use equivalent::Equivalent;
+pub use equivalent::Equivalent;
 
 use crate::{
     alloc::Allocator,
     collections::hachage::{raw::*, DefaultHashBuilder},
     marker::Invariant,
     object::{Object, ObjectBuilder, TxObject, TypedObject},
-    ptr::{Ref, RefMut},
+    ptr::{GlobalPtr, Ref, RefMut},
     Result,
 };
 
@@ -56,7 +56,7 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
     }
 
     pub fn new_persist() -> Result<Self> {
-        let builder = ObjectBuilder::default().persist();
+        let builder = ObjectBuilder::default().persist(true);
         Self::with_builder(builder)
     }
 
@@ -74,6 +74,25 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
         base.bootstrap(1)?;
 
         Ok(phm)
+    }
+}
+
+impl<K: Invariant, V: Invariant, S, A: Allocator> From<Object<RawTable<(K, V), S, A>>> for PersistentHashMap<K, V, S, A> {
+    fn from(table: Object<RawTable<(K, V), S, A>>) -> Self {
+        Self { table }
+    }
+}
+
+impl<K: Invariant, V: Invariant, S, A: Allocator> From<GlobalPtr<RawTable<(K, V), S, A>>>
+    for PersistentHashMap<K, V, S, A>
+{
+    fn from(value: GlobalPtr<RawTable<(K, V), S, A>>) -> Self {
+        unsafe {
+            let value = Ref::handle(&value.resolve()).clone();
+            Self {
+                table: Object::from_handle(value).unwrap(),
+            }
+        }
     }
 }
 
@@ -105,10 +124,6 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
         };
 
         Ok(phm)
-    }
-
-    pub fn from(value: Object<RawTable<(K, V), S, A>>) -> Self {
-        Self { table: value }
     }
 
     pub fn len(&self) -> usize {

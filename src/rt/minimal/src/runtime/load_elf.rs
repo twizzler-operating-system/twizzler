@@ -175,6 +175,7 @@ const INITIAL_STACK_SIZE: usize = 1024 * 1024 * 4;
 
 extern crate alloc;
 
+#[derive(Debug)]
 /// Possible errors for [spawn_new_executable].
 pub enum SpawnExecutableError {
     ObjectCreateFailed,

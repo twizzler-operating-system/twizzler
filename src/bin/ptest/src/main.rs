@@ -51,7 +51,7 @@ impl Display for Foo {
 }
 
 fn create_arena() -> Result<ArenaObject> {
-    let obj = ObjectBuilder::default().persist();
+    let obj = ObjectBuilder::default().persist(true);
     ArenaObject::new(obj).into_diagnostic()
 }
 
@@ -60,7 +60,7 @@ fn open_arena(id: ObjID) -> Result<ArenaObject> {
 }
 
 fn create_vector_object<T: Debug + Invariant>() -> Result<VecObject<T, VecObjectAlloc>> {
-    let obj = ObjectBuilder::default().persist();
+    let obj = ObjectBuilder::default().persist(true);
     VecObject::<T, VecObjectAlloc>::new(obj).into_diagnostic()
 }
 
@@ -294,7 +294,7 @@ fn main() {
                 return;
             }
 
-            let obj = ObjectBuilder::default().persist().build(0u8).unwrap();
+            let obj = ObjectBuilder::default().persist(true).build(0u8).unwrap();
             let obj = unsafe { obj.cast::<[u8; LEN]>() };
             let mut obj = unsafe { obj.as_mut().unwrap() };
             println!("filling...");
@@ -360,7 +360,7 @@ fn main() {
     let len = vo.iter().count();
     println!("pushing items");
     let start = std::time::Instant::now();
-    let alloc = ArenaObject::new(ObjectBuilder::default().persist()).unwrap();
+    let alloc = ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap();
     for i in 0..3 {
         //println!("pushing: {}", i);
         //vo.push(i).unwrap();

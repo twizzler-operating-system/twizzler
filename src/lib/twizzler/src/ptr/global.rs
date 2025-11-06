@@ -7,12 +7,20 @@ use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
 use super::{Ref, RefMut};
 use crate::{marker::Invariant, object::RawObject};
 
-#[derive(Default, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Default, PartialOrd, Ord, Hash)]
 /// A global pointer, containing a fully qualified object ID and offset.
 pub struct GlobalPtr<T> {
     id: ObjID,
     offset: u64,
     _pd: PhantomData<*const T>,
+}
+
+impl<T> Eq for GlobalPtr<T> {}
+
+impl<T> PartialEq for GlobalPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.offset() == other.offset()
+    }
 }
 
 unsafe impl<T: Invariant> Invariant for GlobalPtr<T> {}

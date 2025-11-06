@@ -170,13 +170,20 @@ pub enum CreateOptions {
     CreateKindExisting,
     CreateKindNew,
     CreateKindEither,
+    CreateKindBind(ObjID),
 }
 
 impl From<create_options> for CreateOptions {
     fn from(value: create_options) -> Self {
         match value.kind {
             twizzler_rt_abi::bindings::CREATE_KIND_EITHER => CreateOptions::CreateKindEither,
-            twizzler_rt_abi::bindings::CREATE_KIND_NEW => CreateOptions::CreateKindNew,
+            twizzler_rt_abi::bindings::CREATE_KIND_NEW => {
+                if value.id != 0 {
+                    CreateOptions::CreateKindBind(value.id.into())
+                } else {
+                    CreateOptions::CreateKindNew
+                }
+            }
             twizzler_rt_abi::bindings::CREATE_KIND_EXISTING => CreateOptions::CreateKindExisting,
             _ => CreateOptions::UNEXPECTED,
         }
@@ -250,6 +257,12 @@ impl ReferenceRuntime {
                     true,
                     NsNodeKind::Object,
                 )
+            }
+            CreateOptions::CreateKindBind(id) => {
+                if session.get(path, GetFlags::empty()).is_ok() {
+                    return Err(NamingError::AlreadyExists.into());
+                }
+                (id, true, NsNodeKind::Object)
             }
             CreateOptions::CreateKindEither => session
                 .get(path, get_flags)
