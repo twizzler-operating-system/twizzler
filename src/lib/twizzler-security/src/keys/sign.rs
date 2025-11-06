@@ -27,6 +27,8 @@ pub struct SigningKey {
 }
 
 // maybe implement rsa so there is some other key?
+//
+//TODO: impl TryFrom<ObjId> for Signing key
 
 impl SigningKey {
     #[cfg(feature = "user")]

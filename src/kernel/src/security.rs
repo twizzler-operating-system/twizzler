@@ -172,9 +172,7 @@ impl SecurityContext {
         let Some(mask) = base.masks.get(&_id) else {
             // no mask for target object
             // final perms are granted_perms & global_mask
-            info!("default perms: {default_prots:#?}");
             granted_perms.provide &= base.global_mask;
-            info!("granted_perms: {granted_perms:#?}");
             self.cache.lock().insert(_id, granted_perms.clone());
             return granted_perms;
         };

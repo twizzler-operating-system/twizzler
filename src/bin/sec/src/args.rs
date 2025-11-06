@@ -41,6 +41,10 @@ pub enum CtxCommands {
     New(NewCtxArgs),
 
     Inspect(CtxInspectArgs),
+
+    /// Commands pertaining to adding security primitives to Security Contexts.
+    #[command(subcommand)]
+    Add(CtxAddCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -48,7 +52,30 @@ pub enum KeyCommands {
     #[command(short_flag = 'n')]
     NewPair,
 }
+#[derive(Subcommand, Debug)]
+pub enum CtxAddCommands {
+    Cap(CapAddArgs),
+}
 
+#[derive(Args, Debug)]
+pub struct CapAddArgs {
+    /// The signing key of the object
+    #[arg(short = 's', long, value_parser=parse_obj_id)]
+    pub signing_key_id: ObjID,
+
+    /// The Security Context that will be modified.
+    #[arg(short = 'm', long, value_parser=parse_obj_id)]
+    pub modifying_ctx: ObjID,
+
+    /// The target object this capability will be usable for.
+    #[arg(short = 't', long, value_parser=parse_obj_id)]
+    pub target_obj: ObjID,
+
+    /// Optionally specify if this operation needs to be specified in a
+    /// specific security context
+    #[arg(short = 'e', long, value_parser=parse_obj_id)]
+    pub executing_ctx: Option<ObjID>,
+}
 #[derive(Subcommand, Debug)]
 pub enum ObjCommands {
     /// Create a new object.

@@ -35,7 +35,9 @@ impl Display for CapFlags {
 
 impl Debug for CapFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_set().entries(self.iter()).finish()
+        write!(f, "to_implement_later")
+        // f.debug_set().entries(self.iter()).finish()
+        // f.debug_set().entries(self.iter()).finish()
     }
 }
 
