@@ -41,7 +41,7 @@ fn main() {
 
                 let obj = target.base();
 
-                println!("{target:#?}{obj:#?}");
+                println!("{target:#?}\n{obj:#?}");
             }
             ObjCommands::New(args) => {
                 // by default an object has empty permissions
@@ -57,33 +57,34 @@ fn main() {
 
                 let target_obj = ObjectBuilder::new(spec)
                     .build(MessageStoreObj {
-                        message: args.message,
+                        // message: args.message,
+                        message: heapless::String::<256>::try_from(args.message.as_str())
+                            .expect("message was longer than 256 characters!!"),
                     })
                     .unwrap();
 
                 // seal the object
-                // let obj = if args.seal {
-                //     let mut tx = target_obj.into_tx().expect("failed to turn into tx");
+                let obj = if args.seal {
+                    let mut tx = target_obj.into_tx().expect("failed to turn into tx");
+                    // NOTE: you shouldnt have to do all this to change the default
+                    // protections...,     I honestly think it should be a part of
+                    // the object     creation spec?
+                    //
+                    // i.e when the object is created, its always created with READ | WRITE, and
+                    // then after the base is written the default prots get
+                    // changed to what the user specified
+                    let meta_ptr = tx.meta_mut_ptr();
 
-                //     //NOTE: you shouldnt have to do all this to change the default
-                // protections...,     // I honestly think it should be a part of
-                // the object     // creation spec?
-                //     //
-                //     // i.e when the object is created, its always created with READ | WRITE, and
-                //     // then after the base is written the default prots get
-                //     // changed to what the user specified
-                //     let meta_ptr = tx.meta_mut_ptr();
+                    unsafe {
+                        (*meta_ptr).default_prot = Protections::empty();
+                    }
 
-                //     unsafe {
-                //         (*meta_ptr).default_prot = Protections::empty();
-                //     }
+                    tx.into_object().expect("failed to save ")
+                } else {
+                    target_obj
+                };
 
-                //     tx.into_object().expect("failed to save ")
-                // } else {
-                //     target_obj
-                // };
-
-                let mut tx = target_obj.into_tx().expect("failed to turn into tx");
+                // let mut tx = target_obj.into_tx().expect("failed to turn into tx");
 
                 //NOTE: you shouldnt have to do all this to change the default protections...,
                 // I honestly think it should be a part of the object
@@ -92,19 +93,19 @@ fn main() {
                 // i.e when the object is created, its always created with READ | WRITE, and
                 // then after the base is written the default prots get
                 // changed to what the user specified
-                let meta_ptr = tx.meta_mut_ptr();
+                // let meta_ptr = tx.meta_mut_ptr();
 
-                let prots = if args.seal {
-                    Protections::empty()
-                } else {
-                    Protections::READ | Protections::WRITE
-                };
+                // let prots = if args.seal {
+                //     Protections::empty()
+                // } else {
+                //     Protections::READ | Protections::WRITE
+                // };
 
-                unsafe {
-                    (*meta_ptr).default_prot = prots;
-                }
+                // unsafe {
+                //     (*meta_ptr).default_prot = prots;
+                // }
 
-                let obj = tx.into_object().expect("failed to save ");
+                // let obj = tx.into_object().expect("failed to save ");
 
                 unsafe {
                     println!(
@@ -190,7 +191,7 @@ fn main() {
             // we build that object
             let target_obj = ObjectBuilder::new(spec)
                 .build(MessageStoreObj {
-                    message: "hi".to_owned(),
+                    message: heapless::String::<256>::try_from("lol").expect("should have worked"),
                 })
                 .unwrap();
 
@@ -207,7 +208,8 @@ fn main() {
             let meta_ptr = tx.meta_mut_ptr();
 
             unsafe {
-                (*meta_ptr).default_prot = Protections::empty();
+                // (*meta_ptr).default_prot = Protections::empty();
+                (*meta_ptr).default_prot = Protections::all();
             }
 
             let updated_obj = tx.into_object().expect("failed to save ");
@@ -286,7 +288,7 @@ fn main() {
 
 #[derive(Debug, Clone)]
 struct MessageStoreObj {
-    message: String,
+    message: heapless::String<256>,
 }
 
 impl BaseType for MessageStoreObj {

@@ -58,10 +58,10 @@ xsave size: 576
 [kernel::initrd] INFO -- [kernel::initrd]  done, loaded 503 MB of object data
 [kernel::cpu] booting secondary CPUs
 [kernel::arch::tsc] switching to pit calibration: LeafNotupported(21)
-[kernel::arch::tsc] tsc frequency 1000340000 (Hz), 999660 fs
+[kernel::arch::tsc] tsc frequency 1000285000 (Hz), 999715 fs
 [kernel::arch::x86-pit] setting up for statclock with freq 127 (7 ms)
 [kernel::arch::tsc] switching to pit calibration: LeafNotupported(21)
-[kernel::arch::tsc] tsc frequency 1000015000 (Hz), 999985 fs
+[kernel::arch::tsc] tsc frequency 1000025000 (Hz), 999975 fs
 [kernel::machine::pcie] init
 Starting entropy contribution loop; once every 100s
 [kernel::main] processor 0 entering main idle loop
@@ -91,19 +91,54 @@ Starting entropy contribution loop; once every 100s
 [32m INFO[0m [2mpager_srv[0m[2m:[0m found root namespace: f8e8d04ebf3f7bc264b4ef039dac109c
 [32m INFO[0m [2minit[0m[2m:[0m starting namer
 [32m INFO[0m [2minit[0m[2m:[0m naming ready
-[32m INFO[0m [2minit[0m[2m:[0m setting monitor nameroot: ObjID(150a721c3f2a310dd98dee8a5e4bebf8)
+[32m INFO[0m [2minit[0m[2m:[0m setting monitor nameroot: ObjID(35f5f7b73d0c84803a72264dab9351e5)
 [32m INFO[0m [2minit[0m[2m:[0m starting cache service
 [32m INFO[0m [2minit[0m[2m:[0m cache manager ready
 Hi, welcome to the basic twizzler test console.
 To run a program, type its name.
-7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ha[51;11H[51;10H[J[51;10Hc[51;11Hr[51;12He[51;13Ha[51;14Ht[51;15He[51;16H
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Hv[51;11He[51;12H[51;11H[J[51;11H[51;10H[J[51;10Hk[51;11He[51;12Hy[51;13H [51;14H-[51;15Hn[51;16H
 [D] Creating new signing key with scheme: Ecdsa
-[*] creating target object with spec: ObjectCreate { kuid: ObjID(e79628d098653ae3a091fc6baca1fdb5), bt: Normal, lt: Volatile, flags: ObjectCreateFlags(0x0), def_prot: Protections(READ | WRITE) }
-metadata: MetaInfo {
+Keypair created!
+Signing Key: ObjID(5ef68a11d8e07b5a70ba9f774f4ad3bd)
+Verifying Key: ObjID(b179c8f6c12a7aa0efb906723e6d4332)
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ho[51;11Hb[51;12Hj[51;13H [51;14H-[51;15Hv[51;16H [51;17Hb[51;18H1[51;19H7[51;20H9[51;21Hc[51;22H8[51;23Hf[51;24H6[51;25Hc[51;26H1[51;27H2[51;28Ha[51;29H7[51;30Ha[51;31Ha[51;32H0[51;33He[51;34Hf[51;35Hb[51;36H9[51;37H0[51;38H6[51;39H7[51;40H2[51;41H3[51;42He[51;43H6[51;44Hd[51;45H4[51;46H3[51;47H3[51;48H2[51;49H[51;48H[51;47H[51;46H[51;45H[51;44H[51;43H[51;42H[51;41H[51;40H[51;39H[51;38H[51;37H[51;36H[51;35H[51;34H[51;33H[51;32H[51;31H[51;30H[51;29H[51;28H[51;27H[51;26H[51;25H[51;24H[51;23H[51;22H[51;21H[51;20H[51;19H[51;18H[51;17H[51;16H[51;15H[51;14Hn-v b179c8f6c12a7aa0efb906723e6d4332[51;15He-v b179c8f6c12a7aa0efb906723e6d4332[51;16Hw-v b179c8f6c12a7aa0efb906723e6d4332[51;17H -v b179c8f6c12a7aa0efb906723e6d4332[51;18H
+error: the following required arguments were not provided:
+  --message <MESSAGE>
+
+Usage: sec obj new --verifying-key-id <VERIFYING_KEY_ID> --message <MESSAGE>
+
+For more information, try '--help'.
+7[999;999H[6n8[Jtwz> [6n[51;6H[Jsec obj new -v b179c8f6c12a7aa0efb906723e6d4332 [51;54H-[51;55Hm[51;56H [51;57H"[51;58Hm[51;59Ha[51;60Hs[51;61Hs[51;62Ha[51;63Hg[51;64He[51;65H"[51;66H[51;65H[J[51;65H[51;64H[51;63H[51;62H[51;61H[51;60H[51;59H[51;58H[51;57H[51;58H[51;57H[Jmassage[51;57H
+created Object with id: ObjID(9e698c91b185f953b49be5097f86cbbf)
+MetaInfo {
     nonce: Nonce(
-        182817845136871914185839469884745543408,
+        168174936250851082920910931208053077957,
     ),
-    kuid: ObjID(e79628d098653ae3a091fc6baca1fdb5),
+    kuid: ObjID(b179c8f6c12a7aa0efb906723e6d4332),
+    flags: MetaFlags(
+        0x0,
+    ),
+    default_prot: Protections(
+        READ | WRITE,
+    ),
+    fotcount: 0,
+    extcount: 0,
+}
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ho[51;11Hb[51;12Hj[51;13H [51;14Hi[51;15Hn[51;16Hs[51;17Hp[51;18He[51;19Hc[51;20Ht[51;21H [51;22H\[51;23Ho[51;24H[51;23H[J[51;23H[51;22H[J[51;22H-[51;23Ho[51;24H [51;25H9[51;26He[51;27H6[51;28H9[51;29H8[51;30Hc[51;31H9[51;32H1[51;33Hb[51;34H1[51;35H8[51;36H5[51;37Hf[51;38H9[51;39H5[51;40H3[51;41Hb[51;42H4[51;43H9[51;44Hb[51;45He[51;46H5[51;47H0[51;48H9[51;49H7[51;50Hf[51;51H8[51;52H6[51;53Hc[51;54Hb[51;55Hb[51;56Hf[51;57H
+Object {
+    handle: ObjectHandle(ObjID(9e698c91b185f953b49be5097f86cbbf), 0x34c0000000, 3fffe000, MapFlags(READ | WRITE)),
+    _pd: PhantomData<*const sec::MessageStoreObj>,
+}
+MessageStoreObj {
+    message: "massage",
+}
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ho[51;11Hb[51;12Hj[51;13H [51;14H[51;13H[J[51;13H[51;12H[J[51;12H[51;11H[J[51;11H[51;10H[J[51;10H[51;9H[J[51;9H[51;8H[J[51;8H[51;7H[J[51;7H[51;6H[J[51;6H[51;6H[Jsec obj inspect -o 9e698c91b185f953b49be5097f86cbbf[51;6H[Jsec obj new -v b179c8f6c12a7aa0efb906723e6d4332 -m massage [51;65H-[51;66Hs[51;67H[51;66H[51;65H[51;64H[51;63H[51;62H[51;61H[51;60H[51;59H[51;58H[51;57Hsmassage -s[51;58Hemassage -s[51;59Hcmassage -s[51;60Hrmassage -s[51;61Hemassage -s[51;62Htmassage -s[51;63H_massage -s[51;64H
+created Object with id: ObjID(86a0b0ee75cc9029cae0c35afda45646)
+MetaInfo {
+    nonce: Nonce(
+        168174936250851082920910931208053077868,
+    ),
+    kuid: ObjID(b179c8f6c12a7aa0efb906723e6d4332),
     flags: MetaFlags(
         0x0,
     ),
@@ -113,43 +148,32 @@ metadata: MetaInfo {
     fotcount: 0,
     extcount: 0,
 }
-[D] Using flags: CapFlags { Blake3 } to create capability for target: ObjID(56dbe67297067129163e6ec287edeb48)
-[D] write offset into object for entry: 0x27A0
-[D] Added capability at ptr: 0x0000002ac00027a0
-[*] object id of created object: ObjID(56dbe67297067129163e6ec287edeb48)
-[*] object id of sec ctx: ObjID(83304c569edb8901d06634d863b04c97)
-7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ha[51;11Hc[51;12Hc[51;13He[51;14Hs[51;15Hs[51;16H [51;17H-[51;18H-[51;19Ho[51;20Hb[51;21Hj[51;22H-[51;23Hi[51;24Hd[51;25H [51;26H5[51;27H6[51;28Hd[51;29Hb[51;30He[51;31H6[51;32H7[51;33H2[51;34H9[51;35H7[51;36H0[51;37H6[51;38H7[51;39H1[51;40H2[51;41H9[51;42H1[51;43H6[51;44H3[51;45He[51;46H6[51;47He[51;48Hc[51;49H2[51;50H8[51;51H7[51;52He[51;53Hd[51;54He[51;55Hb[51;56H4[51;57H8[51;58H [51;59H-[51;60H-[51;61Hs[51;62He[51;63Hc[51;64H-[51;65Hc[51;66Ht[51;67Hx[51;68H-[51;69Hi[51;70Hd[51;71H [51;72H8[51;73H3[51;74H3[51;75H0[51;76H4[51;77Hc[51;78H5[51;79H6[51;80H9[51;81He[51;82Hd[51;83Hb[51;84H8[51;85H9[51;86H0[51;87H1[51;88Hd[51;89H0[51;90H6[51;91H6[51;92H3[51;93H4[51;94Hd[51;95H8[51;96H6[51;97H3[51;98Hb[51;99H0[51;100H4[51;101Hc[51;102H9[51;103H7[51;104H
-active sec id: ObjID(83304c569edb8901d06634d863b04c97)
-[kernel::security] INFO -- verified signature! adding perms: Protections(
-    0x0,
-)
-[kernel::security] INFO -- default perms: Protections(
-    0x0,
-)
-[kernel::security] INFO -- granted_perms: PermsInfo {
-    ctx: ObjID(83304c569edb8901d06634d863b04c97),
-    provide: Protections(
-        0x0,
-    ),
-    restrict: Protections(
-        0x0,
-    ),
+7[999;999H[6n8[Jtwz> [6ns[51;7He[51;8Hc[51;9H [51;10Ho[51;11Hb[51;12Hj[51;13H [51;14Hi[51;15Hn[51;16Hs[51;17Hp[51;18He[51;19Hc[51;20Ht[51;21H [51;22H\[51;23H[51;22H[J[51;22H-[51;23Ho[51;24H [51;25H8[51;26H6[51;27Ha[51;28H0[51;29Hb[51;30H0[51;31He[51;32He[51;33H7[51;34H5[51;35Hc[51;36Hc[51;37H9[51;38H0[51;39H2[51;40H9[51;41Hc[51;42Ha[51;43He[51;44H0[51;45Hc[51;46H3[51;47H5[51;48Ha[51;49Hf[51;50Hd[51;51Ha[51;52H4[51;53H5[51;54H6[51;55H4[51;56H6[51;57H
+Object {
+    handle: ObjectHandle(ObjID(86a0b0ee75cc9029cae0c35afda45646), 0x3bc0000000, 3fffe000, MapFlags(READ | WRITE)),
+    _pd: PhantomData<*const sec::MessageStoreObj>,
 }
-[kernel::security] INFO -- UNDETACHABLE bit set, refusing to evaluate inactive security contexts.
-[kernel::thread] INFO -- upcall: 24: SecurityViolation(SecurityViolationInfo { address: 201863458816, access_kind: Read })
+MessageStoreObj {
+[kernel::thread] INFO -- upcall: 24: SecurityViolation(SecurityViolationInfo { address: 256624300032, access_kind: Read })
    0 - 0xffffffff801c57b3
    1 - 0xffffffff80222e07
    2 - 0xffffffff801de232
    3 - 0xffffffff801b7e2e
    4 - 0xffffffff801b043f
-   5 -       0x2c0009d3f5
-   6 -       0x2b8006a9db
-   7 -       0x2c0008e884
-   8 -       0x2b80062b82
-   9 -       0x2c000b4382
-  10 -       0x2c800242d5
-  11 -       0x2c800317f5
-  12 -       0x2c80016f78
-  13 -       0x2c80016fbf
-  14 -       0x2c80016fa8
+   5 -       0x398010172b
+   6 -       0x39000621c1
+   7 -       0x398010072f
+   8 -       0x3980073222
+   9 -       0x3980074a2c
+  10 -       0x390006434e
+  11 -       0x398009d3f5
+  12 -       0x390006d57b
+  13 -       0x398008e884
+  14 -       0x3900065342
+  15 -       0x39800b4382
+  16 -       0x3a000242d5
+  17 -       0x3a000317f5
+  18 -       0x3a00016f78
+  19 -       0x3a00016fbf
+  20 -       0x3a00016fa8
 7[999;999H[6n8[Jtwz> [6n
