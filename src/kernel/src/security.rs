@@ -1,6 +1,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use log::info;
+use addr2line::gimli::DW_ATE_numeric_string;
+use log::{info, warn};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -96,7 +97,6 @@ impl SecurityContext {
             return granted_perms;
         };
         let v_obj = {
-            // so far, we are never able to reach this point
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
                 _ => return granted_perms,
@@ -133,14 +133,15 @@ impl SecurityContext {
                 }
 
                 CtxMapItemType::Cap => {
-                    //NOTE: is this going to return the same as Object.lea?
                     let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
+                        warn!("Failed to map capability");
                         // something weird going on, entry offset not inside object bounds,
                         // return already granted perms to avoid panic
                         return granted_perms;
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
+                        warn!("verified signature!");
                         granted_perms.provide = granted_perms.provide | cap.protections;
                     };
                 }
@@ -185,10 +186,10 @@ impl SecurityContext {
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
     pub fn lookup(&self, id: ObjID) -> PermsInfo {
-        let active = self.active();
-        active.lookup(id)
-        // in this function we would have to call lookup without calling the lock on self.inner()
-        // self.inner.lock().active.lookup(id)
+        // let active = self.active();
+        // active.lookup(id)
+
+        self.active().lookup(id)
     }
 
     /// Get the active context.
@@ -204,39 +205,24 @@ impl SecCtxMgr {
 
     /// Check access rights in the active context.
     pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        //TODO: will probably have to hook up the gate check here as well?
-        // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
-        // now for some reason
         let perms = self.lookup(_access_info.target_id);
-        // let perms = PermsInfo {
-        //     ctx: self.active_id(),
-        //     provide: Protections::all(),
-        //     restrict: Protections::empty(),
-        // };
-
         perms
     }
 
     /// Search all attached contexts for access.
     pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
-        // let mut greatest_perms = self.lookup(_access_info.target_id);
+        let mut greatest_perms = self.lookup(_access_info.target_id);
 
-        // for (_, ctx) in &self.inner.lock().inactive {
-        //     let perms = ctx.lookup(_access_info.target_id);
-        //     // how do you determine what prots is more expressive? like more
-        //     // lets just return if its anything other than empty
-        //     if perms.provide & !perms.restrict != Protections::empty() {
-        //         greatest_perms = perms
-        //     }
-        // }
-        // greatest_perms
-
-        PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::all(),
-            restrict: Protections::empty(),
+        for (_, ctx) in &self.inner.lock().inactive {
+            let perms = ctx.lookup(_access_info.target_id);
+            // how do you determine what prots is more expressive? like more
+            // lets just return if its anything other than empty
+            if perms.provide & !perms.restrict != Protections::empty() {
+                greatest_perms = perms
+            }
         }
+        greatest_perms
     }
 
     /// Build a new SctxMgr for user threads.

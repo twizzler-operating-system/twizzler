@@ -125,7 +125,7 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
     ObjID::from_parts([hi, lo])
 }
 
-/// Get the active security context ID for the calling thread.
+/// Set the active security context ID for the calling thread.
 pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
     let (code, val) = unsafe {
         raw_syscall(

@@ -1,0 +1,15 @@
+[package]
+name = "sec"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+twizzler-abi = {path = "../../lib/twizzler-abi"}
+twizzler-security = {path = "../../lib/twizzler-security", features = ["user", "log"]}
+twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = "0.99"
+getrandom = "0.2"
+colog = "1.3.0"
+log = "0.4.27"
+hex = "0.4.3"

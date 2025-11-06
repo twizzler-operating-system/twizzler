@@ -1,3 +1,4 @@
+use alloc::format;
 use core::fmt::Display;
 
 use heapless::Vec;
@@ -42,16 +43,10 @@ impl From<EcdsaSignature> for Signature {
         let binding = value.to_bytes();
         let slice = binding.as_slice();
 
-        #[cfg(feature = "log")]
-        error!(
-            "binding length: {}, buf length: {}",
-            binding.len(),
-            buf.len()
+        buf.extend_from_slice(slice).expect(
+            format!("ECDSA signature longer than {MAX_SIG_SIZE}, invariant broken...").as_str(),
         );
 
-        // bounds check
-        assert!(binding.len() < buf.len());
-        buf[0..slice.len()].copy_from_slice(slice);
         Self {
             buf,
             scheme: SigningScheme::Ecdsa,

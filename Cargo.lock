@@ -1004,9 +1004,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.45"
+version = "4.5.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fc0e74a703892159f5ae7d3aac52c8e6c392f5ae5f359c70b5881d60aaac318"
+checksum = "4c26d721170e0295f191a69bd9a1f93efcdb0aff38684b61ab5750468972e5f5"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1014,9 +1014,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.44"
+version = "4.5.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3e7f4214277f3c7aa526a59dd3fbe306a370daee1f8b7b8c987069cd8e888a8"
+checksum = "75835f0c7bf681bfd05abe44e965760fea999a5286c6eb2d59883634fd02011a"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1039,9 +1039,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.45"
+version = "4.5.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14cb31bb0a7d536caef2639baa7fad459e15c3144efefa6dbd1c84562c4739f6"
+checksum = "2a0b5487afeab2deb2ff4e03a807ad1a03ac532ff5a2cee5d86884440c7f7671"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -5473,7 +5473,7 @@ dependencies = [
  "libc",
  "miette",
  "naming",
- "rand 0.8.5",
+ "rand 0.9.0",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -5974,6 +5974,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sec"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "colog",
+ "getrandom 0.2.16",
+ "hex",
+ "log",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-security",
+]
+
+[[package]]
 name = "sec-test"
 version = "0.1.0"
 dependencies = [
@@ -6418,7 +6433,7 @@ dependencies = [
 name = "st"
 version = "0.1.0"
 dependencies = [
- "rand 0.8.5",
+ "rand 0.9.0",
 ]
 
 [[package]]
@@ -7060,7 +7075,7 @@ dependencies = [
  "heapless 0.9.1",
  "hex-literal",
  "intrusive-collections",
- "itertools 0.9.0",
+ "itertools 0.14.0",
  "limine",
  "linked_list_allocator",
  "log",
