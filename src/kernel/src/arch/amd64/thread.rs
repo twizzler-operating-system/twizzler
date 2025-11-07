@@ -89,6 +89,7 @@ unsafe extern "C" fn __do_switch(
         "pushfq",
         /* save the stack pointer. */
         "mov [rsi], rsp",
+        "sfence",
         /* okay, now we can release the switch lock. We can probably relax this, but for now do
          * a seq_cst store (mov + mfence). */
         "mov qword ptr [rcx], 0",
@@ -182,6 +183,11 @@ where
     } else {
         target.self_address
     };
+
+    if target_addr == 0 {
+        logln!("warning -- upcall to target address 0");
+        return false;
+    }
 
     // If the address is not canonical, leave.
     let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
@@ -331,6 +337,10 @@ impl Thread {
     /// generated to this thread after calling this function but before returning
     /// to userspace will cause the thread to immediately abort.
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+        if frame.ip() == 0 {
+            logln!("warning -- tried to restore thread to 0 IP");
+            crate::thread::exit(UPCALL_EXIT_CODE);
+        }
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!("warning -- tried to restore thread to non-attached security context");
@@ -462,6 +472,11 @@ impl Thread {
         let old_stack_save = old_thread.arch.rsp.get();
         let new_stack_save = self.arch.rsp.get();
         assert!(old_thread.switch_lock.load(Ordering::SeqCst) != 0);
+        let new_sp = unsafe { new_stack_save.read() } as usize as *const u64;
+        let new_rip = unsafe { new_sp.add(7).read() };
+        if new_rip == 0 {
+            panic!("tried to switch to a zero RIP task");
+        }
         unsafe {
             __do_switch(
                 new_stack_save,
@@ -474,9 +489,10 @@ impl Thread {
 
     pub unsafe fn init_va(&mut self, jmptarget: u64) {
         let stack = self.kernel_stack.as_ptr() as *mut u64;
+        assert!(jmptarget != 0);
         stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
         stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 4).write(0);
+        stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
         stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
         stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
         stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
