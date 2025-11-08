@@ -242,6 +242,23 @@ fn main() {
         }
     }
 
+    let (sender, recv) = std::sync::mpsc::channel();
+    if let Ok(gpu) = virtio_gpu::get_device(sender) {
+        gpu.with_device(|gpu| {
+            let res = gpu.resolution();
+            println!("current res: {:?}", res);
+            let fb = gpu.setup_framebuffer().unwrap();
+            let cursor_image = [255u8; 64 * 64 * 4];
+            fb.fill(255);
+            for i in 0..fb.len() {
+                fb[i] = (i % 256) as u8;
+            }
+            gpu.flush().unwrap();
+            gpu.setup_cursor(&cursor_image, 0, 0, 0, 0).unwrap();
+            gpu.move_cursor(100, 100).unwrap();
+        });
+    }
+
     println!("To run a program, type its name.");
 
     let mut io = TwzIo;

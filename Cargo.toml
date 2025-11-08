@@ -43,8 +43,8 @@ members = [
     "src/bin/cache",
 
     "src/ports/lwext4-rs",
-    #"src/ports/rusqlite",
-    #"src/ports/rusqlite/libsqlite3-sys",
+    "src/ports/rusqlite",
+    "src/ports/rusqlite/libsqlite3-sys",
 
     #"src/ports/candle-test",
 
@@ -53,12 +53,12 @@ members = [
     #"src/bin/random_validation",
     #"src/bin/randtest",
     #"src/bin/stdfs_demo",
-    #"src/lib/virtio-net",
+    "src/lib/virtio-gpu",
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
   "src/bin/ptest",
-  #"src/bin/sqlite_test",
+  "src/bin/sqlite_test",
     "src/bin/ptest",
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
