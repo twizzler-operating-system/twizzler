@@ -220,9 +220,6 @@ impl Object {
         let mut v = Vec::new();
         // Best case scenario is to map contiguous pages for large requests
         if len > 1 {
-            for i in 0..len {
-                tree.remove(&start.offset(i));
-            }
             let mut rem = len;
             let mut current = start;
             let mut fa = if len * PageNumber::PAGE_SIZE >= PHYS_LEVEL_LAYOUTS[1].size() {
@@ -256,13 +253,22 @@ impl Object {
                     0,
                     frame.size() / PHYS_LEVEL_LAYOUTS[0].size(),
                 );
-                tree.add_page(current, page, None);
+                log::info!(
+                    "adding page {} {} {:x}",
+                    current.0,
+                    page.nr_pages(),
+                    frame.start_address().raw()
+                );
+                if tree.add_page(current, page, None).is_none() {
+                    panic!("todo")
+                }
                 current = current.offset(frame.size() / PHYS_LEVEL_LAYOUTS[0].size());
                 rem = rem.saturating_sub(frame.size() / PHYS_LEVEL_LAYOUTS[0].size());
             }
             let id = pin_info.id_counter.next_simple();
             let token = id.value().try_into().ok()?;
             pin_info.pins.push(id);
+            self.invalidate(start..start.offset(len), InvalidateMode::Full);
             return Some((v, token));
         }
 
@@ -284,6 +290,7 @@ impl Object {
         let token = id.value().try_into().ok()?;
         pin_info.pins.push(id);
 
+        self.invalidate(start..start.offset(len), InvalidateMode::Full);
         Some((v, token))
     }
 

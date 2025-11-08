@@ -69,6 +69,7 @@ unsafe impl Hal for TwzHal {
             let pin = dma_slice.pin().unwrap();
             let phys_addr: virtio_drivers::PhysAddr =
                 u64::from(pin.into_iter().next().unwrap().addr()) as virtio_drivers::PhysAddr;
+            println!("big start at {:x}", phys_addr);
             let virt = unsafe { NonNull::<u8>::new(dma_slice.get_mut().as_mut_ptr()) }.unwrap();
             std::mem::forget(dma_slice);
             return (phys_addr as PhysAddr, virt);
@@ -112,7 +113,7 @@ unsafe impl Hal for TwzHal {
 
     unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
         let buf_len = buffer.len();
-        tracing::info!("SHARE: {:p} {}", buffer, buf_len);
+        //tracing::info!("SHARE: {:p} {}", buffer, buf_len);
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
         let (phys, virt) = TwzHal::dma_alloc(1, direction);
 

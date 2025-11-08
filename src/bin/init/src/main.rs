@@ -250,12 +250,14 @@ fn main() {
             let fb = gpu.setup_framebuffer().unwrap();
             let cursor_image = [255u8; 64 * 64 * 4];
             fb.fill(255);
+            println!("fb: {:p}, {}", fb, fb.len());
             for i in 0..fb.len() {
                 fb[i] = (i % 256) as u8;
             }
             gpu.flush().unwrap();
-            gpu.setup_cursor(&cursor_image, 0, 0, 0, 0).unwrap();
-            gpu.move_cursor(100, 100).unwrap();
+            loop {}
+            //gpu.setup_cursor(&cursor_image, 0, 0, 0, 0).unwrap();
+            //gpu.move_cursor(100, 100).unwrap();
         });
     }
 
