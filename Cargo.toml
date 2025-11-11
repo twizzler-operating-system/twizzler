@@ -41,6 +41,9 @@ members = [
     "src/bin/uuhelper",
     "src/srv/cache-srv",
     "src/bin/cache",
+    "src/srv/display-srv",
+    "src/lib/twizzler-display",
+    "src/lib/twizzler-display/display-core",
 
     "src/ports/lwext4-rs",
     #"src/ports/rusqlite",
@@ -63,7 +66,7 @@ members = [
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest",
+    "src/bin/schedtest", "src/bin/gfxtest",
 ]
 
 exclude = [
@@ -86,11 +89,13 @@ initrd = [
     "lib:logboi-srv",
     "lib:pager-srv",
     "lib:cache-srv",
+    "lib:display-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",
     "crate:cache",
     "crate:trace",
+    "crate:gfxtest",
 
     "crate:sec-test",
     "crate:ptest",

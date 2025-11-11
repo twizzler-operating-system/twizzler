@@ -1,0 +1,15 @@
+[package]
+name = "twizzler-display"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+secgate = { path = "../../lib/secgate" }
+twizzler-runtime = { path = "../../rt" }
+twizzler-rt-abi = "0.99"
+display-srv = { path = "../../srv/display-srv" }
+display-core = { path = "display-core" }
+twizzler = { path = "../../lib/twizzler" }

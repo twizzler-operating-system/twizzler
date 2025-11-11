@@ -21,5 +21,5 @@ twizzler = { path = "../../lib/twizzler" }
 naming-core = { path = "../../lib/naming/naming-core" }
 embedded-io = { version = "*", features = ["std"] }
 noline = "*"
-
-virtio-gpu = { path = "../../lib/virtio-gpu" }
+twizzler-display = { path = "../../lib/twizzler-display" }
+secgate = { path = "../../lib/secgate" }

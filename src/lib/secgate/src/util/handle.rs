@@ -95,6 +95,13 @@ impl<ServerData> HandleMgr<ServerData> {
         let idx: usize = ds.try_into().ok()?;
         self.handles.get_mut(&comp)?.remove(idx)
     }
+
+    pub fn handles(&self) -> impl Iterator<Item = (u32, &ServerData)> {
+        self.handles
+            .iter()
+            .map(|c| c.1.iter().map(|x| (x.0 as u32, x.1)))
+            .flatten()
+    }
 }
 
 #[cfg(test)]

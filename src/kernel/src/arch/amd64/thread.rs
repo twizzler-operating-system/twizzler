@@ -475,7 +475,7 @@ impl Thread {
         let new_sp = unsafe { new_stack_save.read() } as usize as *const u64;
         let new_rip = unsafe { new_sp.add(7).read() };
         if new_rip == 0 {
-            panic!("tried to switch to a zero RIP task");
+            log::warn!("tried to switch to a zero RIP task");
         }
         unsafe {
             __do_switch(

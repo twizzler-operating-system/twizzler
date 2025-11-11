@@ -1,14 +1,19 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    time::Duration,
+};
 
 use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use secgate::util::Handle;
 use tracing::{info, warn};
-use twizzler::object::RawObject;
+use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
     object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
     syscall::{sys_new_handle, NewHandleFlags},
 };
+use twizzler_display::WindowConfig;
 use twizzler_queue::Queue;
 
 struct TwzIo;
@@ -161,6 +166,29 @@ fn initialize_cache() {
     std::mem::forget(comp);
 }
 
+fn initialize_display() {
+    info!("starting display manager");
+    let comp: CompartmentHandle = CompartmentLoader::new(
+        "display",
+        "libdisplay_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["display-srv"])
+    .load()
+    .expect("failed to initialize display manager");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
+    let start_display = unsafe {
+        comp.dynamic_gate::<(), RawTwzError>("start_display")
+            .unwrap()
+    };
+    let _ = start_display();
+    tracing::info!("display manager ready");
+    std::mem::forget(comp);
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -206,6 +234,7 @@ fn main() {
         .inspect_err(|_| tracing::warn!("failed to set nameroot for monitor"));
 
     initialize_cache();
+    initialize_display();
 
     if start_unittest {
         // Load and wait for tests to complete
@@ -240,25 +269,6 @@ fn main() {
         } else {
             warn!("failed to start {}", autostart);
         }
-    }
-
-    let (sender, recv) = std::sync::mpsc::channel();
-    if let Ok(gpu) = virtio_gpu::get_device(sender) {
-        gpu.with_device(|gpu| {
-            let res = gpu.resolution();
-            println!("current res: {:?}", res);
-            let fb = gpu.setup_framebuffer().unwrap();
-            let cursor_image = [255u8; 64 * 64 * 4];
-            fb.fill(255);
-            println!("fb: {:p}, {}", fb, fb.len());
-            for i in 0..fb.len() {
-                fb[i] = (i % 256) as u8;
-            }
-            gpu.flush().unwrap();
-            loop {}
-            //gpu.setup_cursor(&cursor_image, 0, 0, 0, 0).unwrap();
-            //gpu.move_cursor(100, 100).unwrap();
-        });
     }
 
     println!("To run a program, type its name.");
