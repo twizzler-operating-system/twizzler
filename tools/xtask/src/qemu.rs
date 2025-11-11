@@ -181,15 +181,6 @@ impl QemuCommand {
                 .arg(&format!("tcp::{},server,nowait", gdb_port));
         }
 
-        /*
-        self.cmd
-            .arg("-vga")
-            .arg("none")
-            .arg("-display")
-            .arg("vnc=0.0.0.0:0")
-            .arg("-device")
-            .arg("virtio-vga");
-            */
         self.cmd.arg("-vga").arg("virtio");
 
         // add additional options for qemu

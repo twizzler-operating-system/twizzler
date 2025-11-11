@@ -7,5 +7,4 @@ edition = "2024"
 twizzler = { path = "../../lib/twizzler" }
 twizzler-display = { path = "../../lib/twizzler-display" }
 secgate = { path = "../../lib/secgate" }
-png_pong = "*"
-pix = "*"
+image = "*"

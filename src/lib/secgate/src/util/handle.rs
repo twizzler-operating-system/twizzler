@@ -96,10 +96,10 @@ impl<ServerData> HandleMgr<ServerData> {
         self.handles.get_mut(&comp)?.remove(idx)
     }
 
-    pub fn handles(&self) -> impl Iterator<Item = (u32, &ServerData)> {
+    pub fn handles(&self) -> impl Iterator<Item = (ObjID, u32, &ServerData)> {
         self.handles
             .iter()
-            .map(|c| c.1.iter().map(|x| (x.0 as u32, x.1)))
+            .map(|c| c.1.iter().map(|x| (*c.0, x.0 as u32, x.1)))
             .flatten()
     }
 }

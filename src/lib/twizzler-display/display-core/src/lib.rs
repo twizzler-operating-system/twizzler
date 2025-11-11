@@ -12,6 +12,7 @@ use twizzler_abi::syscall::{
 };
 
 #[derive(Clone)]
+/// An object holding a double-buffered compositor surface for a window.
 pub struct BufferObject {
     obj: Object<DisplayBufferBase>,
 }
@@ -97,10 +98,12 @@ impl BufferObject {
         Ok(BufferObject { obj })
     }
 
+    /// Returns true if the buffers currently need to be read out.
     pub fn has_data_for_compositor(&self) -> bool {
         self.obj.base().flags.load(Ordering::SeqCst) & DBF_COMP_DONE == 0
     }
 
+    /// Read out the compositor buffer.
     pub fn read_compositor_buffer<R>(&self, f: impl FnOnce(&[u32], u32, u32) -> R) -> R {
         let base = self.obj.base();
         let flags = base.flags.load(Ordering::SeqCst);
@@ -113,13 +116,23 @@ impl BufferObject {
         let cw = buffer.width.load(Ordering::SeqCst);
         let ch = buffer.height.load(Ordering::SeqCst);
         let buf = unsafe { buffer.buffer() };
-        let buf = buf.slice(0..((cw * ch * 4) as usize));
+        let buf = buf.slice(0..((cw * ch) as usize));
         let r = f(buf.as_slice(), cw, ch);
         r
     }
 
-    pub fn compositor_done(&self) {
+    /// Mark that the compositor has finished reading the buffer. Provides the new width and height
+    /// to use next time this buffer should be filled out. These values may be unchanged.
+    pub fn compositor_done(&self, new_w: u32, new_h: u32) {
         let base = self.obj.base();
+        let flags = base.flags.load(Ordering::SeqCst);
+        let buffer = if flags & DBF_PHASE != 0 {
+            &base.buffers[0]
+        } else {
+            &base.buffers[1]
+        };
+        buffer.comp_height.store(new_h, Ordering::Release);
+        buffer.comp_width.store(new_w, Ordering::Release);
         base.flags.fetch_or(DBF_COMP_DONE, Ordering::SeqCst);
         let _ = sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
@@ -130,6 +143,7 @@ impl BufferObject {
         );
     }
 
+    /// Fill the current application-owned buffer with data within the callback.
     pub fn fill_current_buffer<R>(&self, f: impl FnOnce(&mut [u32], u32, u32) -> R) -> R {
         let base = self.obj.base();
         let mut flags = base.flags.load(Ordering::SeqCst);
@@ -156,13 +170,14 @@ impl BufferObject {
         let ch = buffer.comp_height.load(Ordering::SeqCst);
 
         let buf = unsafe { buffer.buffer_mut() };
-        let mut buf = buf.slice(0..((cw * ch * 4) as usize));
+        let mut buf = buf.slice(0..((cw * ch) as usize));
         let r = f(buf.as_slice_mut(), cw, ch);
         buffer.height.store(ch, Ordering::Release);
         buffer.width.store(cw, Ordering::Release);
         r
     }
 
+    /// Flip the buffer, indicating that the compositor can now read the buffer.
     pub fn flip(&self) {
         let base = self.obj.base();
         let flags = base.flags.load(Ordering::SeqCst);
@@ -186,4 +201,5 @@ pub struct WindowConfig {
     pub h: u32,
     pub x: u32,
     pub y: u32,
+    pub z: u32,
 }

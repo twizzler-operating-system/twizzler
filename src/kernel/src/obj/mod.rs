@@ -211,7 +211,7 @@ impl Object {
     }
 
     pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
-        log::info!("pinning {} {}", start.0, len);
+        log::debug!("pinning {} {}", start.0, len);
         assert!(!self.use_pager());
         let mut tree = self.lock_page_tree();
 
@@ -223,7 +223,7 @@ impl Object {
             let mut rem = len;
             let mut current = start;
             let mut fa = if len * PageNumber::PAGE_SIZE >= PHYS_LEVEL_LAYOUTS[1].size() {
-                log::info!("trying to allocate large DMA region ({} pages)", len);
+                log::debug!("trying to allocate large DMA region ({} pages)", len);
                 FrameAllocator::new(
                     FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
                     PHYS_LEVEL_LAYOUTS[2],
@@ -252,12 +252,6 @@ impl Object {
                     Arc::new(page),
                     0,
                     frame.size() / PHYS_LEVEL_LAYOUTS[0].size(),
-                );
-                log::info!(
-                    "adding page {} {} {:x}",
-                    current.0,
-                    page.nr_pages(),
-                    frame.start_address().raw()
                 );
                 if tree.add_page(current, page, None).is_none() {
                     panic!("todo")

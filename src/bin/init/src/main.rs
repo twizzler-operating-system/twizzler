@@ -1,11 +1,7 @@
-use std::{
-    io::{Read, Write},
-    time::Duration,
-};
+use std::io::{Read, Write};
 
 use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
-use secgate::util::Handle;
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
@@ -13,7 +9,6 @@ use twizzler_abi::{
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
     syscall::{sys_new_handle, NewHandleFlags},
 };
-use twizzler_display::WindowConfig;
 use twizzler_queue::Queue;
 
 struct TwzIo;

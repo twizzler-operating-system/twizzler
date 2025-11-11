@@ -69,7 +69,6 @@ unsafe impl Hal for TwzHal {
             let pin = dma_slice.pin().unwrap();
             let phys_addr: virtio_drivers::PhysAddr =
                 u64::from(pin.into_iter().next().unwrap().addr()) as virtio_drivers::PhysAddr;
-            println!("big start at {:x}", phys_addr);
             let virt = unsafe { NonNull::<u8>::new(dma_slice.get_mut().as_mut_ptr()) }.unwrap();
             std::mem::forget(dma_slice);
             return (phys_addr as PhysAddr, virt);
@@ -92,7 +91,6 @@ unsafe impl Hal for TwzHal {
     }
 
     unsafe fn dma_dealloc(paddr: PhysAddr, _vaddr: NonNull<u8>, pages: usize) -> i32 {
-        return 0;
         //tracing::info!("DEALLOC: {:?} {:p}", paddr, _vaddr);
         let mut twzhal = get_twz_hal().lock().unwrap();
 
