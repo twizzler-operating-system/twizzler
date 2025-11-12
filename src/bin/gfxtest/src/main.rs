@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use secgate::util::Handle;
-use twizzler_display::WindowConfig;
+use twizzler_display::{Rect, WindowConfig};
 
 static IMG: &'static [u8] = include_bytes!("../img.png");
 
@@ -21,7 +21,7 @@ fn main() {
         z: 0,
     })
     .unwrap();
-    window.window_buffer.fill_current_buffer(|buf, _, _| {
+    window.window_buffer.update_buffer(|mut buf, _, _| {
         for y in 0..pixels.height() {
             for x in 0..pixels.width() {
                 let px = pixels[(x, y)];
@@ -34,6 +34,7 @@ fn main() {
                 buf[(y * pixels.width() + x) as usize] = r << 16 | g << 8 | b << 0 | 0xff000000;
             }
         }
+        buf.damage(Rect::full());
     });
     window.window_buffer.flip();
     std::thread::sleep(Duration::from_secs(3));
