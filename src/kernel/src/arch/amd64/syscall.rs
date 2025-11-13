@@ -75,6 +75,9 @@ impl UpcallAble for X86SyscallContext {
 
 impl SyscallContext for X86SyscallContext {
     fn create_jmp_context(target: VirtAddr, stack: VirtAddr, arg: u64) -> Self {
+        if target.raw() == 0 {
+            panic!("cannot create zero RIP jump context");
+        }
         Self {
             rsp: stack.into(),
             rcx: target.into(),
@@ -212,6 +215,10 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
 
             let int_frame = IsrContext::from(up_frame);
 
+            if int_frame.get_ip() == 0 {
+                panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+            }
+
             x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);
         }
@@ -228,8 +235,11 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
     );
     */
 
-    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     /* TODO: check that rcx is canonical */
+    if (*context).pc().raw() == 0 || (*context).pc().is_kernel() {
+        panic!("tried to set IP to 0 or kernel! {}", (*context).pc().raw());
+    }
+    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
     return_to_user(context);
 }
 

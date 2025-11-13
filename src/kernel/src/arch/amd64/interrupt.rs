@@ -181,6 +181,9 @@ unsafe extern "C" fn common_handler_entry(
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
         let t = current_thread_ref().unwrap();
+        if (*ctx).get_ip() == 0 {
+            panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+        }
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
     }
     generic_isr_handler(ctx, number, user);
@@ -188,8 +191,16 @@ unsafe extern "C" fn common_handler_entry(
     if user {
         let t = current_thread_ref().unwrap();
         let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
+
+        if (*ctx).get_ip() == 0 {
+            panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+        }
         t.set_entry_registers(Registers::None);
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    } else {
+        if (*ctx).get_ip() == 0 {
+            panic!("tried to set IP to 0!");
+        }
     }
 }
 
@@ -227,6 +238,7 @@ pub unsafe extern "C" fn user_interrupt() {
 #[naked]
 pub unsafe extern "C" fn return_from_interrupt() -> ! {
     core::arch::naked_asm!(
+        "cli",
         "pop r15",
         "pop r14",
         "pop r13",
@@ -262,6 +274,7 @@ macro_rules! interrupt {
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
             core::arch::naked_asm!(
+                "cli",
                 "mov qword ptr [rsp - 8], 0",
                 "sub rsp, 8",
                 "push rax",
@@ -294,6 +307,7 @@ macro_rules! interrupt_err {
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
             core::arch::naked_asm!(
+                "cli",
                 "push rax",
                 "push rbx",
                 "push rcx",
@@ -474,7 +488,14 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     match number as u32 {
         14 => {
             if ctx.get_ip() == 0 {
-                emerglogln!("==> {:?}", ctx);
+                emerglogln!(
+                    "==> {:?} {} {} {} {:x}",
+                    ctx,
+                    current_thread_ref().map(|ct| ct.id()).unwrap_or(0),
+                    user,
+                    number,
+                    current_thread_ref().map(|ct| ct.read_ip()).unwrap_or(0)
+                );
                 unsafe {
                     emerglogln!("==> {:x}", *(ctx.rbp as usize as *const u64));
                     emerglogln!("==>+8 {:x}", *((ctx.rbp + 8) as usize as *const u64));
