@@ -1,0 +1,13 @@
+[package]
+name = "display-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+twizzler-rt-abi = "0.99"
+twizzler = { path = "../../twizzler" }
+twizzler-abi = "*"
+secgate = { path = "../../secgate" }

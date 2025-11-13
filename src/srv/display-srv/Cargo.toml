@@ -1,0 +1,20 @@
+[package]
+name = "display-srv"
+version = "0.1.0"
+edition = "2021"
+
+
+# Important: this should be compiled as both an rlib, for exporting the trampoline,
+# and as a cdylib, as the actual .so file that will be exporting the gates.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-runtime = { path = "../../rt" }
+secgate = { path = "../../lib/secgate" }
+twizzler-rt-abi = "0.99"
+tracing-subscriber = "*"
+tracing = "*"
+virtio-gpu = { path = "../../lib/virtio-gpu" }
+display-core = { path = "../../lib/twizzler-display/display-core" }
