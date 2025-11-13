@@ -30,10 +30,6 @@ pub enum Commands {
     /// Commands pertaining to objects.
     #[command(subcommand)]
     Obj(ObjCommands),
-
-    Test,
-    Create,
-    Access(AccessArgs),
 }
 
 #[derive(Subcommand, Debug)]

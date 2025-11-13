@@ -188,8 +188,12 @@ fn page_fault_to_region(
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
 
+    // before
+    //TODO: check if this id is actually wrong
+    // make updating the metadata a test case
     let (id_ok, _) = info.object.check_id();
 
+    //TODO: remove this later
     //NOTE: I dont know why but the default prots returned by check_id() arent
     // actually the default prots if an objects default prots are updated after
     // its been created.

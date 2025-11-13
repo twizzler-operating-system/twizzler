@@ -123,7 +123,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
                 );
             }
         }
+
+        //
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
+        //TODO: in here you would have to be attached to a sec_ctz with a cap
+        // to the id
         let object = ctor(mu_object.into_tx()?)?;
         object.into_object()
     }

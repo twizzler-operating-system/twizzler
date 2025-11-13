@@ -102,6 +102,7 @@ impl SecurityContext {
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
             // if there arent any items inside this context, just return default perms
+            // info!("ret 0, base: {:?}", base);
             return granted_perms;
         };
 
@@ -138,6 +139,7 @@ impl SecurityContext {
                 // verifying key wasnt found, return no perms
                 _ => {
                     granted_perms.provide &= base.global_mask;
+                    info!("ret 3");
                     return granted_perms;
                 }
             }
@@ -157,10 +159,12 @@ impl SecurityContext {
                         // something weird going on, entry offset not inside object bounds,
                         // return already granted perms to avoid panic
                         granted_perms.provide &= base.global_mask;
+                        info!("ret 4");
                         return granted_perms;
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
+                        info!("ret 5");
                         info!("verified signature! adding perms: {:#?}", cap.protections);
                         granted_perms.provide |= cap.protections;
                     };
@@ -172,7 +176,9 @@ impl SecurityContext {
         let Some(mask) = base.masks.get(&_id) else {
             // no mask for target object
             // final perms are granted_perms & global_mask
+            info!("default perms: {default_prots:#?}");
             granted_perms.provide &= base.global_mask;
+            info!("granted_perms: {granted_perms:#?}");
             self.cache.lock().insert(_id, granted_perms.clone());
             return granted_perms;
         };
@@ -205,7 +211,7 @@ impl SecCtxMgr {
     pub fn lookup(&self, id: ObjID, default_prots: Protections) -> PermsInfo {
         // let active = self.active();
         // active.lookup(id)
-
+        //
         self.active().lookup(id, default_prots)
     }
 
