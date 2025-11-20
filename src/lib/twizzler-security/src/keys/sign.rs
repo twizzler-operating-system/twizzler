@@ -18,8 +18,6 @@ use twizzler_rt_abi::error::TwzError;
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
 
-//TODO: implement tryfrom<ObjID> for signing key, for user.
-
 /// The Objects signing key stored internally in the kernel used during the signing of capabilities.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SigningKey {
@@ -27,10 +25,6 @@ pub struct SigningKey {
     len: usize,
     pub scheme: SigningScheme,
 }
-
-// maybe implement rsa so there is some other key?
-//
-//TODO: impl TryFrom<ObjId> for Signing key
 
 impl SigningKey {
     #[cfg(feature = "user")]
@@ -261,6 +255,17 @@ mod tests {
                 SigningKey::new_keypair(&SigningScheme::Ecdsa, object_create_spec.clone())
                     .expect("Keys should be generated properly.");
         });
+    }
+}
+
+#[cfg(feature = "user")]
+use twizzler::object::{MapFlags, ObjID, RawObject, TypedObject};
+#[cfg(feature = "user")]
+impl TryFrom<ObjID> for SigningKey {
+    type Error = TwzError;
+    fn try_from(value: ObjID) -> Result<Self, Self::Error> {
+        let obj = Object::<SigningKey>::map(value, MapFlags::READ)?;
+        Ok(obj.base().clone())
     }
 }
 

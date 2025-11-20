@@ -299,7 +299,7 @@ impl SecCtxMgr {
 
         let mut inner = self.inner.lock();
 
-        let ret = if let Some(mut ctx) = inner.inactive.remove(&id) {
+        if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
 
             *self.active_id.lock() = id;
@@ -309,9 +309,7 @@ impl SecCtxMgr {
             SwitchResult::Switched
         } else {
             SwitchResult::NotAttached
-        };
-
-        ret
+        }
     }
 
     /// Attach a security context.

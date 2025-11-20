@@ -35,9 +35,11 @@ impl Display for CapFlags {
 
 impl Debug for CapFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "to_implement_later")
-        // f.debug_set().entries(self.iter()).finish()
-        // f.debug_set().entries(self.iter()).finish()
+        f.debug_struct("CapFlags")
+            .field("blake3", &self.contains(CapFlags::Blake3))
+            .field("sha256", &self.contains(CapFlags::Sha256))
+            .field("bits", &self.bits())
+            .finish()
     }
 }
 
