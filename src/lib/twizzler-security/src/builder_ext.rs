@@ -8,7 +8,7 @@ use twizzler_abi::{object::Protections, syscall::sys_thread_active_sctx_id};
 use super::SecCtx;
 use crate::{Cap, Revoc, SigningKey};
 
-pub trait BuilderExt<Base: BaseType + StoreCopy> {
+pub trait SecureBuilderExt<Base: BaseType + StoreCopy> {
     fn build_secure(
         &self,
         base: Base,
@@ -17,7 +17,7 @@ pub trait BuilderExt<Base: BaseType + StoreCopy> {
     ) -> Result<Object<Base>, TwzError>;
 }
 
-impl<Base> BuilderExt<Base> for ObjectBuilder<Base>
+impl<Base> SecureBuilderExt<Base> for ObjectBuilder<Base>
 where
     Base: BaseType + StoreCopy,
 {
@@ -25,6 +25,8 @@ where
         &self,
         base: Base,
         s_key: &SigningKey,
+        //NOTE: once default global masks get fixed to all prots, remove this argument,use
+        // currently attached ctx always, caller can choose what to attach to.
         ctx: Option<ObjID>,
     ) -> Result<Object<Base>, TwzError> {
         self.build_inplace(|tx| {
@@ -74,7 +76,7 @@ mod tests {
     }
     #[test]
     fn build_sealed_object() {
-        use super::BuilderExt as _;
+        use super::SecureBuilderExt as _;
 
         let (s_key, v_key) = SigningKey::new_keypair(&SigningScheme::Ecdsa, Default::default())
             .expect("should have worked");
@@ -97,7 +99,6 @@ mod tests {
             .expect("should have built successfully");
 
         // our current thing should be able to read this just fine
-
         let base_ptr = obj.base_ptr();
 
         unsafe {

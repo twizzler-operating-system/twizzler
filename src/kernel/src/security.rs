@@ -202,9 +202,6 @@ impl SecurityContext {
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
     pub fn lookup(&self, id: ObjID, default_prots: Protections) -> PermsInfo {
-        // let active = self.active();
-        // active.lookup(id)
-        //
         self.active().lookup(id, default_prots)
     }
 

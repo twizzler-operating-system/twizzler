@@ -23,10 +23,6 @@ use crate::{
     Cap, Del, VerifyingKey,
 };
 
-mod builder_ext;
-
-pub use builder_ext::*;
-
 #[derive(Debug)]
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
@@ -67,7 +63,6 @@ impl SecCtx {
 
     pub fn attach(&self) -> Result<(), TwzError> {
         sys_sctx_attach(self.id())
-        // sys_thread_set_active_sctx_id(self.id())
     }
 
     pub fn set_active(&self) -> Result<(), TwzError> {

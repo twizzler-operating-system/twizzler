@@ -88,7 +88,6 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
         //TODO: we should really give a better error here that if the default permissions
         // arent read|write, using this constructor isnt possible, and you should really use
         // build_secure instead
-
         self.build_inplace(|tx| tx.write(base))
     }
 }

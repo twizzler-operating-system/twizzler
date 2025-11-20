@@ -12,6 +12,8 @@ pub(crate) use twizzler_rt_abi::error::SecurityError;
 #[cfg(feature = "user")]
 mod benches;
 
+#[cfg(feature = "user")]
+mod builder_ext;
 mod capability;
 mod delegation;
 mod flags;
@@ -20,6 +22,8 @@ mod keys;
 mod revocation;
 mod sec_ctx;
 
+#[cfg(feature = "user")]
+pub use builder_ext::*;
 pub use capability::*;
 pub use delegation::*;
 pub use flags::*;

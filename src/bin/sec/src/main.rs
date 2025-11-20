@@ -15,7 +15,9 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{BuilderExt, Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
+use twizzler_security::{
+    Cap, SecCtx, SecCtxFlags, SecureBuilderExt as _, SigningKey, SigningScheme,
+};
 
 mod args;
 use args::*;
@@ -59,7 +61,9 @@ fn main() {
                     Default::default(),
                     Protections::empty(),
                 );
+
                 println!("creating target object with spec: {:#?}", spec);
+
                 let mut builder = ObjectBuilder::new(spec);
                 let base = MessageStoreObj {
                     message: heapless::String::<256>::try_from(args.message.as_str())
@@ -70,6 +74,7 @@ fn main() {
                     let s_key = Object::<SigningKey>::map(args.signing_key_id, MapFlags::READ)
                         .expect("failed to map signing key object");
                     builder
+                        // .build_secure(base, s_key.base(), args.sec_ctx_id)
                         .build_secure(base, s_key.base(), args.sec_ctx_id)
                         .expect("secure build should succeed")
                 };
