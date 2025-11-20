@@ -29,9 +29,9 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
-    // if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
-    //     log::info!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
-    // }
+    if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
+        log::trace!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    }
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
@@ -138,13 +138,11 @@ fn check_security(
     if let Some(ct) = current_thread_ref() {
         let perms = ct.secctx.check_active_access(&access_info, default_prot);
 
-        // info!("active_perms for obj:{id:#?}, perms:{perms:#?}");
         if perms.provide & !perms.restrict & access_kind == access_kind {
             let evaluated = perms.provide & !perms.restrict & access_kind;
             return Ok(perms);
         }
         let perms = ct.secctx.search_access(&access_info, default_prot);
-        // info!("search_access_perms for obj:{id:#?}, perms:{perms:#?}");
         if perms.provide & !perms.restrict & access_kind != access_kind {
             Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
                 address: addr.raw(),
@@ -188,27 +186,7 @@ fn page_fault_to_region(
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
 
-    // before
-    //TODO: check if this id is actually wrong
-    // make updating the metadata a test case
-    let (id_ok, _) = info.object.check_id();
-
-    //TODO: remove this later
-    //NOTE: I dont know why but the default prots returned by check_id() arent
-    // actually the default prots if an objects default prots are updated after
-    // its been created.
-    // for some reason running this piece of code again gives you the correct
-    // default prots and im not sure why.
-    // Its probably some weird bug but probably fix this later!
-    let default_prot = {
-        let meta = info.object.read_meta(true);
-        if let Some(meta) = meta {
-            meta.default_prot
-        } else {
-            logln!("failed to read metadata");
-            panic!("critical failure")
-        }
-    };
+    let (id_ok, default_prot) = info.object.check_id();
 
     if !id_ok && !info.object().is_kernel_id() {
         // /*
