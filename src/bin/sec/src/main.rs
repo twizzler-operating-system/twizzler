@@ -1,3 +1,5 @@
+#![warn(missing_debug_implementations, missing_docs)]
+
 use clap::Parser;
 use colog::default_builder;
 use log::{LevelFilter, info};
@@ -47,7 +49,8 @@ fn main() {
                     println!("{target:#?}\n{:#?}\n{base:#?}", *meta);
                 }
             }
-            ObjCommands::New(args) => {
+
+            ObjCommands::Sealed(args) => {
                 // by default an object has empty permissions
                 let spec = ObjectCreate::new(
                     Default::default(),
@@ -56,25 +59,51 @@ fn main() {
                     Default::default(),
                     Protections::empty(),
                 );
+                println!("creating target object with spec: {:#?}", spec);
+                let mut builder = ObjectBuilder::new(spec);
+                let base = MessageStoreObj {
+                    message: heapless::String::<256>::try_from(args.message.as_str())
+                        .expect("message was longer than 256 characters!!"),
+                };
+
+                let obj = {
+                    let s_key = Object::<SigningKey>::map(args.signing_key_id, MapFlags::READ)
+                        .expect("failed to map signing key object");
+                    builder
+                        .build_secure(base, s_key.base(), args.sec_ctx_id)
+                        .expect("secure build should succeed")
+                };
+
+                unsafe {
+                    println!(
+                        "created Object with id: {:#?}\n{:#?}",
+                        obj.id(),
+                        // maybe have a method that gives an immutable copy of the metadata?
+                        *obj.base_ptr::<MessageStoreObj>()
+                    );
+                }
+            }
+            ObjCommands::New(args) => {
+                // by default an object has empty permissions
+                let spec = ObjectCreate::new(
+                    Default::default(),
+                    Default::default(),
+                    Some(args.verifying_key_id),
+                    Default::default(),
+                    Protections::READ | Protections::WRITE,
+                );
 
                 println!("creating target object with spec: {:#?}", spec);
 
-                let mut builder = ObjectBuilder::new(spec);
                 let base = MessageStoreObj {
                     // message: args.message,
                     message: heapless::String::<256>::try_from(args.message.as_str())
                         .expect("message was longer than 256 characters!!"),
                 };
 
-                let obj = if args.seal {
-                    let s_key = Object::<SigningKey>::map(args.signing_key_id, MapFlags::READ)
-                        .expect("failed to map signing key object");
-                    builder
-                        .build_secure(base, s_key.base(), Some(args.sec_ctx_id))
-                        .expect("secure build should succeed")
-                } else {
-                    builder.build(base).expect("build should succeed")
-                };
+                let obj = ObjectBuilder::new(spec)
+                    .build(base)
+                    .expect("build should succeed");
 
                 unsafe {
                     println!(

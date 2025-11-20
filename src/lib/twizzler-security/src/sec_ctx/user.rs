@@ -2,7 +2,6 @@ use alloc::collections::btree_map::BTreeMap;
 use core::fmt::Display;
 
 use heapless::Vec;
-use log::debug;
 use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject, TypedObject},
@@ -113,7 +112,7 @@ impl SecCtx {
         base.offset += alignment;
 
         #[cfg(feature = "log")]
-        debug!("write offset into object for entry: {:#X}", map_item.offset);
+        log::debug!("write offset into object for entry: {:#X}", map_item.offset);
 
         // seeing if a vec already exists for target obj, else create new
         if let Some(vec) = base.map.get_mut(&cap.target) {
@@ -144,7 +143,7 @@ impl SecCtx {
         tx.commit()?;
 
         #[cfg(feature = "log")]
-        debug!("Added capability at ptr: {:#?}", ptr);
+        log::debug!("Added capability at ptr: {:#?}", ptr);
         Ok(())
     }
 
@@ -166,6 +165,8 @@ impl SecCtx {
 
     /// looks up permission info for requested object
     pub fn lookup<T: BaseType>(&mut self, target_id: ObjID) -> PermsInfo {
+        //TODO: need to make this implementation match that in `kernel/security.rs`
+
         // first just check cache
         if let Some(cache_entry) = self.cache.get(&target_id) {
             return *cache_entry;
@@ -207,7 +208,7 @@ impl SecCtx {
             match entry.item_type {
                 CtxMapItemType::Del => {
                     //TODO: skip over for now!! finish up later
-                    todo!("Delegations not supported yet for lookup")
+                    unimplemented!("Delegations not supported yet for lookup")
                 }
 
                 CtxMapItemType::Cap => {

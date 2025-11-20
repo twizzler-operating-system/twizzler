@@ -77,6 +77,10 @@ pub enum ObjCommands {
     /// Create a new object.
     New(NewObjectArgs),
 
+    /// Creates a new _sealed_ object. Sealed here means an object with
+    /// no default permissions, meaning a capability is required to access it
+    Sealed(SealedObjectArgs),
+
     /// Inspect an existing object.
     Inspect(ObjInspectArgs),
 }
@@ -87,15 +91,22 @@ pub struct NewObjectArgs {
     #[arg(short = 'v', long, value_parser=parse_obj_id)]
     pub verifying_key_id: ObjID,
 
+    /// simple string message to store inside the object
+    #[arg(short, long)]
+    pub message: String,
+}
+#[derive(Args, Debug)]
+pub struct SealedObjectArgs {
+    /// the verifying key to use when creating the object
+    #[arg(short = 'v', long, value_parser=parse_obj_id)]
+    pub verifying_key_id: ObjID,
+
     #[arg(short = 's', long, value_parser=parse_obj_id)]
     pub signing_key_id: ObjID,
 
+    /// Optionally a security context to use when creating this object.
     #[arg(short = 'c', long, value_parser=parse_obj_id)]
-    pub sec_ctx_id: ObjID,
-
-    // /// After creating this object, it will have no default permissions
-    #[arg(short, long, default_value = "false")]
-    pub seal: bool,
+    pub sec_ctx_id: Option<ObjID>,
 
     /// simple string message to store inside the object
     #[arg(short, long)]

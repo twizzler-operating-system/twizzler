@@ -1,4 +1,3 @@
-use log::info;
 use twizzler::{
     error::TwzError,
     marker::{BaseType, StoreCopy},
@@ -33,8 +32,6 @@ where
                 .map(|id| {
                     // we need to attach to the context they provided
                     let ctx = SecCtx::try_from(id)?;
-
-                    info!("setting ctx to active {:#?}", ctx);
                     ctx.set_active().unwrap();
                     Ok::<SecCtx, TwzError>(ctx)
                 })
