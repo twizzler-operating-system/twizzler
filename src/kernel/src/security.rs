@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -102,7 +102,6 @@ impl SecurityContext {
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
             // if there arent any items inside this context, just return default perms
-            // info!("ret 0, base: {:?}", base);
             return granted_perms;
         };
 
@@ -139,7 +138,6 @@ impl SecurityContext {
                 // verifying key wasnt found, return no perms
                 _ => {
                     granted_perms.provide &= base.global_mask;
-                    info!("ret 3");
                     return granted_perms;
                 }
             }
@@ -159,13 +157,10 @@ impl SecurityContext {
                         // something weird going on, entry offset not inside object bounds,
                         // return already granted perms to avoid panic
                         granted_perms.provide &= base.global_mask;
-                        info!("ret 4");
                         return granted_perms;
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
-                        info!("ret 5");
-                        info!("verified signature! adding perms: {:#?}", cap.protections);
                         granted_perms.provide |= cap.protections;
                     };
                 }
@@ -176,10 +171,7 @@ impl SecurityContext {
         let Some(mask) = base.masks.get(&_id) else {
             // no mask for target object
             // final perms are granted_perms & global_mask
-            info!("default perms: {default_prots:#?}");
-            info!("global mask: {:#?}", base.global_mask);
             granted_perms.provide &= base.global_mask;
-            info!("granted_perms: {granted_perms:#?}");
             self.cache.lock().insert(_id, granted_perms.clone());
             return granted_perms;
         };
@@ -238,36 +230,42 @@ impl SecCtxMgr {
     }
 
     /// Search all attached contexts for access.
-    pub fn search_access(
-        &self,
-        _access_info: &AccessInfo,
-        default_prots: Protections,
-    ) -> PermsInfo {
-        //TODO: need to actually look through all the contexts, this is just temporary
-        let mut greatest_perms = self.lookup(_access_info.target_id, default_prots);
+    pub fn search_access(&self, access_info: &AccessInfo, default_prots: Protections) -> PermsInfo {
+        let active_perms = self.lookup(access_info.target_id, default_prots);
 
-        info!(
-            "greatest perms before we check inactive: {:#?}",
-            greatest_perms
-        );
+        let perms_satisfy = |granting: &PermsInfo| -> bool {
+            // this is the same boolean expr used by the fault handler to check perms
+            access_info.access_kind & !granting.restrict & granting.provide
+                == access_info.access_kind
+        };
 
-        // if the active context has the undetachable bit set, we cant leave it
+        // the active_perms satisfy the way we are accessing the object, just return
+        if perms_satisfy(&active_perms) {
+            return active_perms;
+        };
+
+        // if the active context has the undetachable bit set, we cant leave it, return what we
+        // already have
         if let Some(flags) = self.active().flags()
             && flags.contains(SecCtxFlags::UNDETACHABLE)
         {
-            info!("UNDETACHABLE bit set, refusing to evaluate inactive security contexts.");
-            return greatest_perms;
+            trace!("UNDETACHABLE bit set, refusing to evaluate inactive security contexts.");
+            return active_perms;
         };
 
+        // look through the other attached contexts to see if any of them match
         for (_, ctx) in &self.inner.lock().inactive {
-            let perms = ctx.lookup(_access_info.target_id, default_prots);
-            // how do you determine what prots is more expressive? like more
-            // lets just return if its anything other than empty
-            if perms.provide & !perms.restrict != Protections::empty() {
-                greatest_perms = perms
+            let perms = ctx.lookup(access_info.target_id, default_prots);
+
+            // the perms granted by this ctx are equal to the way we are accessing the object, so
+            // lets send it
+            if perms_satisfy(&perms) {
+                return perms;
             }
         }
-        greatest_perms
+
+        // we couldnt find an exact match to the access kind, return the (inadequate) active perms
+        active_perms
     }
 
     /// Build a new SctxMgr for user threads.
