@@ -5989,20 +5989,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sec-test"
-version = "0.1.0"
-dependencies = [
- "clap",
- "colog",
- "getrandom 0.2.16",
- "log",
- "twizzler",
- "twizzler-abi",
- "twizzler-rt-abi",
- "twizzler-security",
-]
-
-[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

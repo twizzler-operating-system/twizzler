@@ -13,7 +13,6 @@ members = [
     "src/lib/twizzler-queue",
     "src/lib/twizzler-futures",
     "src/lib/twizzler-security",
-    "src/bin/sec-test",
     "src/lib/dynlink",
     "src/lib/secgate",
     "src/lib/twizzler",
@@ -93,7 +92,6 @@ initrd = [
     "crate:cache",
     "crate:trace",
 
-    "crate:sec-test",
     "crate:sec",
     "crate:ptest",
     "crate:sqlite_test",
