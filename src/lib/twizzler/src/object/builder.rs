@@ -3,7 +3,8 @@ use std::{marker::PhantomData, mem::MaybeUninit};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
+        sys_thread_active_sctx_id, BackingType, CreateTieSpec, LifetimeType, ObjectCreate,
+        ObjectCreateFlags, ObjectSource,
     },
 };
 use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};
@@ -84,6 +85,10 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
     /// let obj = builder.build(42u32).unwrap();
     /// ```
     pub fn build(&self, base: Base) -> Result<Object<Base>> {
+        //TODO: we should really give a better error here that if the default permissions
+        // arent read|write, using this constructor isnt possible, and you should really use
+        // build_secure instead
+
         self.build_inplace(|tx| tx.write(base))
     }
 }

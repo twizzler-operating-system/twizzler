@@ -1,7 +1,6 @@
 #![feature(test)]
 #![no_std]
-//NOTE: temporary, remove later
-#![allow(dead_code)]
+#![warn(missing_debug_implementations, missing_docs)]
 
 extern crate alloc;
 

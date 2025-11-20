@@ -9,7 +9,9 @@ use twizzler::{
 };
 use twizzler_abi::{
     object::{ObjID, Protections},
-    syscall::ObjectCreate,
+    syscall::{
+        sys_sctx_attach, sys_thread_active_sctx_id, sys_thread_set_active_sctx_id, ObjectCreate,
+    },
 };
 use twizzler_rt_abi::{
     error::{ResourceError, TwzError},
@@ -21,6 +23,10 @@ use crate::{
     sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
     Cap, Del, VerifyingKey,
 };
+
+mod builder_ext;
+
+pub use builder_ext::*;
 
 #[derive(Debug)]
 pub struct SecCtx {
@@ -54,7 +60,20 @@ impl Display for SecCtx {
 
 impl SecCtx {
     pub fn attached_ctx() -> SecCtx {
-        todo!("unsure how to get attached sec_ctx as of rn")
+        let curr_sec_ctx_id = sys_thread_active_sctx_id();
+
+        Self::try_from(curr_sec_ctx_id)
+            .expect("We should always be able to parse the currently attached security context")
+    }
+
+    pub fn attach(&self) -> Result<(), TwzError> {
+        sys_sctx_attach(self.id())
+        // sys_thread_set_active_sctx_id(self.id())
+    }
+
+    pub fn set_active(&self) -> Result<(), TwzError> {
+        sys_sctx_attach(self.id())?;
+        sys_thread_set_active_sctx_id(self.id())
     }
 
     pub fn base(&self) -> &SecCtxBase {
@@ -117,7 +136,7 @@ impl SecCtx {
             .cast::<Cap>();
 
         // SAFETY: copies the capability into the object, we check that the pointer is valid above /
-        // fixing its alignment
+        // fix its alignment
         unsafe {
             *ptr = cap;
         }
@@ -138,11 +157,11 @@ impl SecCtx {
     }
 
     pub fn remove_cap(&mut self) {
-        todo!("implement later")
+        unimplemented!()
     }
 
     pub fn remove_del(&mut self) {
-        todo!("implement later")
+        unimplemented!()
     }
 
     /// looks up permission info for requested object

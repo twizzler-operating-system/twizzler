@@ -177,6 +177,7 @@ impl SecurityContext {
             // no mask for target object
             // final perms are granted_perms & global_mask
             info!("default perms: {default_prots:#?}");
+            info!("global mask: {:#?}", base.global_mask);
             granted_perms.provide &= base.global_mask;
             info!("granted_perms: {granted_perms:#?}");
             self.cache.lock().insert(_id, granted_perms.clone());
@@ -244,6 +245,11 @@ impl SecCtxMgr {
     ) -> PermsInfo {
         //TODO: need to actually look through all the contexts, this is just temporary
         let mut greatest_perms = self.lookup(_access_info.target_id, default_prots);
+
+        info!(
+            "greatest perms before we check inactive: {:#?}",
+            greatest_perms
+        );
 
         // if the active context has the undetachable bit set, we cant leave it
         if let Some(flags) = self.active().flags()

@@ -87,7 +87,13 @@ pub struct NewObjectArgs {
     #[arg(short = 'v', long, value_parser=parse_obj_id)]
     pub verifying_key_id: ObjID,
 
-    /// After creating this object, it will have no default permissions
+    #[arg(short = 's', long, value_parser=parse_obj_id)]
+    pub signing_key_id: ObjID,
+
+    #[arg(short = 'c', long, value_parser=parse_obj_id)]
+    pub sec_ctx_id: ObjID,
+
+    // /// After creating this object, it will have no default permissions
     #[arg(short, long, default_value = "false")]
     pub seal: bool,
 

@@ -13,7 +13,7 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::object::MapFlags;
-use twizzler_security::{Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
+use twizzler_security::{BuilderExt, Cap, SecCtx, SecCtxFlags, SigningKey, SigningScheme};
 
 mod args;
 use args::*;
@@ -54,44 +54,33 @@ fn main() {
                     Default::default(),
                     Some(args.verifying_key_id),
                     Default::default(),
-                    Protections::READ | Protections::WRITE,
+                    Protections::empty(),
                 );
 
-                // println!("creating target object with spec: {:?}", spec);
+                println!("creating target object with spec: {:#?}", spec);
 
-                let target_obj = ObjectBuilder::new(spec)
-                    .build(MessageStoreObj {
-                        // message: args.message,
-                        message: heapless::String::<256>::try_from(args.message.as_str())
-                            .expect("message was longer than 256 characters!!"),
-                    })
-                    .unwrap();
+                let mut builder = ObjectBuilder::new(spec);
+                let base = MessageStoreObj {
+                    // message: args.message,
+                    message: heapless::String::<256>::try_from(args.message.as_str())
+                        .expect("message was longer than 256 characters!!"),
+                };
 
-                // seal the object
                 let obj = if args.seal {
-                    let mut tx = target_obj.into_tx().expect("failed to turn into tx");
-                    // NOTE: you shouldnt have to do all this to change the default
-                    // protections...,     I honestly think it should be a part of
-                    // the object     creation spec?
-                    //
-                    // i.e when the object is created, its always created with READ | WRITE, and
-                    // then after the base is written the default prots get
-                    // changed to what the user specified
-                    let meta_ptr = tx.meta_mut_ptr();
-
-                    unsafe {
-                        (*meta_ptr).default_prot = Protections::empty();
-                    }
-
-                    tx.into_object().expect("failed to save ")
+                    let s_key = Object::<SigningKey>::map(args.signing_key_id, MapFlags::READ)
+                        .expect("failed to map signing key object");
+                    builder
+                        .build_secure(base, s_key.base(), Some(args.sec_ctx_id))
+                        .expect("secure build should succeed")
                 } else {
-                    target_obj
+                    builder.build(base).expect("build should succeed")
                 };
 
                 unsafe {
                     println!(
                         "created Object with id: {:#?}\n{:#?}",
                         obj.id(),
+                        // maybe have a method that gives an immutable copy of the metadata?
                         *obj.meta_ptr()
                     );
                 }

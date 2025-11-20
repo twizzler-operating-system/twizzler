@@ -18,6 +18,8 @@ use twizzler_rt_abi::error::TwzError;
 use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
 use crate::{SecurityError, SigningScheme};
 
+//TODO: implement tryfrom<ObjID> for signing key, for user.
+
 /// The Objects signing key stored internally in the kernel used during the signing of capabilities.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SigningKey {
