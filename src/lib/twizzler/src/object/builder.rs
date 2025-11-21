@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::{fs::Permissions, marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
     object::{ObjID, Protections},
@@ -77,7 +77,12 @@ fn bind_name(id: ObjID, name: &str) -> Result<()> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    /// Build an object using the provided base vale.
+    /// Build an object using the provided base value.
+    ///
+    /// # Panics
+    /// This function may panic if the default permissions dont contain READ and WRITE.
+    /// If your usecase requires that the default permissions for an object can't
+    /// contain those flags, please look at the `twizzler_security::SecureBuilderExt` trait.
     /// # Example
     /// ```
     /// # use twizzler::object::ObjectBuilder;
@@ -85,9 +90,19 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
     /// let obj = builder.build(42u32).unwrap();
     /// ```
     pub fn build(&self, base: Base) -> Result<Object<Base>> {
-        //TODO: we should really give a better error here that if the default permissions
-        // arent read|write, using this constructor isnt possible, and you should really use
-        // build_secure instead
+        if !self
+            .spec
+            .def_prot
+            .contains(Protections::READ | Protections::WRITE)
+        {
+            // this panic is more helpful than a memory protection fault
+            panic!(
+                "Unable to build object! Default permissions must contain READ | WRITE...\n
+                If you would like to build an object without those permissions, look at the
+                `twizzler_security::SecureBuilderExt` trait
+                "
+            )
+        }
         self.build_inplace(|tx| tx.write(base))
     }
 }
@@ -130,8 +145,6 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 
         //
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        //TODO: in here you would have to be attached to a sec_ctz with a cap
-        // to the id
         let object = ctor(mu_object.into_tx()?)?;
         object.into_object()
     }

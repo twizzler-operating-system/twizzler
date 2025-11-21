@@ -91,7 +91,7 @@ mod tests {
 
         let base = MessageStoreObj {
             // message: args.message,
-            message: heapless::String::<256>::try_from(args.message.as_str())
+            message: heapless::String::<256>::try_from("Hello")
                 .expect("message was longer than 256 characters!!"),
         };
         let obj = ObjectBuilder::new(spec)
@@ -99,10 +99,11 @@ mod tests {
             .expect("should have built successfully");
 
         // our current thing should be able to read this just fine
-        let base_ptr = obj.base_ptr();
+        let base_ptr = obj.base_ptr::<MessageStoreObj>();
 
         unsafe {
             let base = *base_ptr;
+            assert!(base.message == "Hello")
         }
     }
 }
