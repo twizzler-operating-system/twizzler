@@ -24,7 +24,7 @@ impl NamespaceObject {
     ) -> Result<Self> {
         let mut builder = ObjectBuilder::default();
         if persist {
-            builder = builder.persist();
+            builder = builder.persist(true);
         }
         let this = Self {
             persist,

@@ -62,11 +62,13 @@ fn start_pcie(seg: Device) {
                             map_field!(cfg.subclass).read(),
                         ));
                         tracing::info!(
-                            "pcie device: {:02x}:{:02x}.{:02x} -- {:?}",
+                            "pcie device: {:02x}:{:02x}.{:02x} -- {:?} ({:x} {:x})",
                             bus,
                             device,
                             function,
-                            dt
+                            dt,
+                            map_field!(cfg.class).read(),
+                            map_field!(cfg.subclass).read()
                         );
                         start_pcie_device(&seg, bus, device, function)
                     }
