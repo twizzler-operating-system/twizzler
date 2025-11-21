@@ -27,8 +27,10 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum CtxCommands {
+    /// New security context
     New(NewCtxArgs),
 
+    /// Inspect a Security Context
     Inspect(CtxInspectArgs),
 
     /// Commands pertaining to adding security primitives to Security Contexts.
