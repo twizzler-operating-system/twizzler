@@ -37,11 +37,15 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     }
 
     /// Make the object persistent.
-    pub fn persist(mut self) -> Self {
-        self.spec.lt = LifetimeType::Persistent;
+    pub fn persist(mut self, persist: bool) -> Self {
+        if persist {
+            self.spec.lt = LifetimeType::Persistent;
+        } else {
+            self.spec.lt = LifetimeType::Volatile;
+        }
         self
     }
-
+    
     /// Cast the base type.
     pub fn cast<U: BaseType>(self) -> ObjectBuilder<U> {
         ObjectBuilder::<U>::new(self.spec)

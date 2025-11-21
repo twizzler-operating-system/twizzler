@@ -40,10 +40,13 @@ members = [
     "src/bin/uuhelper",
     "src/srv/cache-srv",
     "src/bin/cache",
+    "src/srv/display-srv",
+    "src/lib/twizzler-display",
+    "src/lib/twizzler-display/display-core",
 
     "src/ports/lwext4-rs",
-    "src/ports/rusqlite",
-    "src/ports/rusqlite/libsqlite3-sys",
+    #"src/ports/rusqlite",
+    #"src/ports/rusqlite/libsqlite3-sys",
 
     #"src/ports/candle-test",
 
@@ -54,16 +57,20 @@ members = [
     #"src/bin/random_validation",
     #"src/bin/randtest",
     #"src/bin/stdfs_demo",
-    #"src/lib/virtio-net",
+    "src/lib/virtio-gpu",
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/ptest", "src/bin/sqlite_test",
+  "src/bin/ptest",
+  #"src/bin/sqlite_test",
     "src/bin/ptest",
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest", "src/bin/sec",
+    "src/bin/schedtest",  
+    "src/bin/sec",
+    "src/bin/gfxtest",
+
 ]
 
 exclude = [
@@ -86,15 +93,17 @@ initrd = [
     "lib:logboi-srv",
     "lib:pager-srv",
     "lib:cache-srv",
+    "lib:display-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",
     "crate:cache",
     "crate:trace",
+    "crate:gfxtest",
 
     "crate:sec",
     "crate:ptest",
-    "crate:sqlite_test",
+    #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
 
     #"crate:twzcandle",
