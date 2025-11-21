@@ -1,14 +1,7 @@
 use std::num::ParseIntError;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 use twizzler::object::ObjID;
-use twizzler_abi::{
-    object::Protections,
-    syscall::{
-        ObjectCreate, ObjectCreateFlags, sys_sctx_attach, sys_thread_active_sctx_id,
-        sys_thread_set_active_sctx_id,
-    },
-};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

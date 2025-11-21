@@ -1,18 +1,17 @@
 #![warn(missing_debug_implementations, missing_docs)]
+//! This crate is a work in progress but aims to be a cli tool to interact with twizzler security
+//! primitives
 
 use clap::Parser;
 use colog::default_builder;
-use log::{LevelFilter, info};
+use log::LevelFilter;
 use twizzler::{
     marker::BaseType,
-    object::{ObjID, Object, ObjectBuilder, RawObject, TypedObject},
+    object::{Object, ObjectBuilder, RawObject, TypedObject},
 };
 use twizzler_abi::{
     object::Protections,
-    syscall::{
-        ObjectCreate, ObjectCreateFlags, sys_sctx_attach, sys_thread_active_sctx_id,
-        sys_thread_set_active_sctx_id,
-    },
+    syscall::{ObjectCreate, sys_sctx_attach, sys_thread_set_active_sctx_id},
 };
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{
@@ -64,9 +63,9 @@ fn main() {
 
                 println!("creating target object with spec: {:#?}", spec);
 
-                let mut builder = ObjectBuilder::new(spec);
+                let builder = ObjectBuilder::new(spec);
                 let base = MessageStoreObj {
-                    message: heapless::String::<256>::try_from(args.message.as_str())
+                    _message: heapless::String::<256>::try_from(args.message.as_str())
                         .expect("message was longer than 256 characters!!"),
                 };
 
@@ -101,8 +100,7 @@ fn main() {
                 println!("creating target object with spec: {:#?}", spec);
 
                 let base = MessageStoreObj {
-                    // message: args.message,
-                    message: heapless::String::<256>::try_from(args.message.as_str())
+                    _message: heapless::String::<256>::try_from(args.message.as_str())
                         .expect("message was longer than 256 characters!!"),
                 };
 
@@ -192,14 +190,19 @@ fn main() {
                 println!("Created SecCtx: {id:#?}\n{base:#?}");
             }
 
-            CtxCommands::Inspect(args) => {}
+            CtxCommands::Inspect(args) => {
+                let sec_ctx =
+                    SecCtx::try_from(args.sec_ctx_id).expect("unable to parse as valid sec_ctx");
+
+                println!("{:#?}", sec_ctx);
+            }
         },
     }
 }
 
 #[derive(Debug, Clone)]
 struct MessageStoreObj {
-    message: heapless::String<256>,
+    _message: heapless::String<256>,
 }
 
 impl BaseType for MessageStoreObj {
