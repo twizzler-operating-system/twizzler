@@ -3,12 +3,22 @@ use twizzler::{
     marker::{BaseType, StoreCopy},
     object::{ObjID, Object, ObjectBuilder, RawObject},
 };
-use twizzler_abi::{object::Protections, syscall::sys_thread_active_sctx_id};
+use twizzler_abi::object::Protections;
 
 use super::SecCtx;
-use crate::{Cap, Revoc, SigningKey};
+use crate::{Cap, SigningKey};
 
+/// An extension trait for the ObjectBuilder from the
+/// `twizzler` crate that allows for the creation of objects
+/// that have restrained default permissions.
+///
+///
+/// We get around
+/// the write requirement by creating a capability before
+/// we write the base of the object.
 pub trait SecureBuilderExt<Base: BaseType + StoreCopy> {
+    /// Builds a "secure" object, one without `Protections::READ|Protections::Write` as its
+    /// `default_prots`.
     fn build_secure(
         &self,
         base: Base,
@@ -37,7 +47,7 @@ where
                     ctx.set_active().unwrap();
                     Ok::<SecCtx, TwzError>(ctx)
                 })
-                .unwrap_or(Ok(SecCtx::attached_ctx()))?;
+                .unwrap_or(Ok(SecCtx::active_ctx()))?;
 
             let cap = Cap::new(
                 tx.id(),

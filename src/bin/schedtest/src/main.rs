@@ -23,7 +23,7 @@ fn jointest() {
                         })
                     })
                     .collect::<Vec<_>>();
-                threads.shuffle(&mut rand::thread_rng());
+                threads.shuffle(&mut rand::rng());
                 for th in threads {
                     th.join().unwrap();
                 }

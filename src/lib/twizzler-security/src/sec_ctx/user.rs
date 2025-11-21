@@ -1,11 +1,7 @@
-use alloc::collections::btree_map::BTreeMap;
 use core::fmt::Display;
 
 use heapless::Vec;
-use twizzler::{
-    marker::BaseType,
-    object::{Object, ObjectBuilder, RawObject, TypedObject},
-};
+use twizzler::object::{Object, ObjectBuilder, RawObject, TypedObject};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
@@ -17,16 +13,16 @@ use twizzler_rt_abi::{
     object::MapFlags,
 };
 
-use super::{CtxMapItem, CtxMapItemType, PermsInfo, SecCtxBase, SecCtxFlags};
+use super::{CtxMapItem, CtxMapItemType, SecCtxBase, SecCtxFlags};
 use crate::{
     sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
-    Cap, Del, VerifyingKey,
+    Cap, Del,
 };
 
 #[derive(Debug)]
+/// A User-space representation of a Security Context.
 pub struct SecCtx {
     uobj: Object<SecCtxBase>,
-    cache: BTreeMap<ObjID, PermsInfo>,
 }
 
 impl Default for SecCtx {
@@ -35,10 +31,7 @@ impl Default for SecCtx {
             .build(SecCtxBase::default())
             .unwrap();
 
-        Self {
-            uobj: obj,
-            cache: BTreeMap::new(),
-        }
+        Self { uobj: obj }
     }
 }
 
@@ -54,26 +47,31 @@ impl Display for SecCtx {
 }
 
 impl SecCtx {
-    pub fn attached_ctx() -> SecCtx {
+    /// Returns the currently active `SecCtx`.
+    pub fn active_ctx() -> SecCtx {
         let curr_sec_ctx_id = sys_thread_active_sctx_id();
 
         Self::try_from(curr_sec_ctx_id)
             .expect("We should always be able to parse the currently attached security context")
     }
 
+    /// Attaches the current process to this `SecCtx`.
     pub fn attach(&self) -> Result<(), TwzError> {
         sys_sctx_attach(self.id())
     }
 
+    /// Sets this `SecCtx` as the active Security Context.
     pub fn set_active(&self) -> Result<(), TwzError> {
         sys_sctx_attach(self.id())?;
         sys_thread_set_active_sctx_id(self.id())
     }
 
+    /// Returns the `SecCtxBase` of this `SecCtx`.
     pub fn base(&self) -> &SecCtxBase {
         self.uobj.base()
     }
 
+    /// Create a new `SecCtx`.
     pub fn new(
         object_create_spec: ObjectCreate,
         global_mask: Protections,
@@ -82,13 +80,11 @@ impl SecCtx {
         let new_obj =
             ObjectBuilder::new(object_create_spec).build(SecCtxBase::new(global_mask, flags))?;
 
-        Ok(Self {
-            uobj: new_obj,
-            cache: BTreeMap::new(),
-        })
+        Ok(Self { uobj: new_obj })
     }
 
-    pub fn insert_cap(&self, cap: Cap) -> Result<(), TwzError> {
+    /// Insert a `Cap` into this `SecCtx`.
+    pub fn insert_cap(&mut self, cap: Cap) -> Result<(), TwzError> {
         let mut tx = self.uobj.clone().into_tx()?;
         let mut base = tx.base_mut();
 
@@ -142,109 +138,33 @@ impl SecCtx {
         Ok(())
     }
 
-    pub fn insert_del(&self, _del: Del) -> Result<(), TwzError> {
-        todo!("implement later")
+    /// Insert a `Del` into this `SecCtx`.
+    ///
+    /// # Panics
+    /// is not implemented yet
+    pub fn insert_del(&mut self, _del: Del) -> Result<(), TwzError> {
+        unimplemented!()
     }
 
+    /// Returns the `ObjID` of this `SecCtx`.
     pub fn id(&self) -> ObjID {
         self.uobj.id()
     }
 
+    /// Remove a `Cap` from this `SecCtx`.
+    ///
+    /// # Panics
+    /// is not implemented yet
     pub fn remove_cap(&mut self) {
         unimplemented!()
     }
 
+    /// Remove a `Del` from this `SecCtx`.
+    ///
+    /// # Panics
+    /// is not implemented yet
     pub fn remove_del(&mut self) {
         unimplemented!()
-    }
-
-    /// looks up permission info for requested object
-    pub fn lookup<T: BaseType>(&mut self, target_id: ObjID) -> PermsInfo {
-        //TODO: need to make this implementation match that in `kernel/security.rs`
-
-        // first just check cache
-        if let Some(cache_entry) = self.cache.get(&target_id) {
-            return *cache_entry;
-        };
-
-        let base = self.uobj.base();
-
-        // fetch default protections
-        let target_object = Object::<T>::map(target_id, MapFlags::READ)
-            .expect("target object should exist!")
-            .meta_ptr();
-
-        let target_obj_default_prot;
-        let v_key_obj_id;
-
-        unsafe {
-            let metadata = *target_object;
-            v_key_obj_id = metadata.kuid;
-
-            target_obj_default_prot = metadata.default_prot;
-        }
-
-        let v_obj = Object::<VerifyingKey>::map(v_key_obj_id, MapFlags::READ | MapFlags::WRITE)
-            .expect("failed to open verifying key for this object");
-        let v_key = v_obj.base();
-
-        // step 1, add up all the permissions granted by VERIFIED capabilities and delegations
-        let mut granted_perms =
-            PermsInfo::new(self.id(), target_obj_default_prot, Protections::empty());
-
-        // check for possible items
-        let Some(results) = base.map.get(&target_id) else {
-            // only default permissions granted, there are no entries in this security context
-            // not even worth adding to cache
-            return granted_perms;
-        };
-
-        for entry in results {
-            match entry.item_type {
-                CtxMapItemType::Del => {
-                    //TODO: skip over for now!! finish up later
-                    unimplemented!("Delegations not supported yet for lookup")
-                }
-
-                CtxMapItemType::Cap => {
-                    // pull capability out of the object
-
-                    let ptr = self
-                        .uobj
-                        .lea(entry.offset, size_of::<Cap>())
-                        .expect("address should be inside of object!")
-                        .cast::<Cap>();
-
-                    // SAFETY: This code is safe following that the user object's entries are only
-                    // well-spaced serialized capabilites.
-                    unsafe {
-                        let cap = (*ptr).clone();
-
-                        if cap.verify_sig(v_key).is_ok() {
-                            granted_perms.provide |= cap.protections;
-                        }
-                    }
-                }
-            }
-        }
-
-        let Some(mask) = base.masks.get(&target_id) else {
-            // no mask inside
-            // final perms are granted_perms (intersection) global_mask
-
-            granted_perms.provide &= base.global_mask;
-
-            self.cache.insert(target_id, granted_perms.clone());
-            return granted_perms;
-        };
-
-        // mask exists, final perms are
-        // granted_perms & permmask & (global_mask | override_mask)
-        granted_perms.provide =
-            granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
-
-        self.cache.insert(target_id, granted_perms.clone());
-        granted_perms
     }
 }
 
@@ -253,13 +173,11 @@ impl TryFrom<ObjID> for SecCtx {
     fn try_from(value: ObjID) -> Result<Self, Self::Error> {
         let uobj = Object::<SecCtxBase>::map(value, MapFlags::READ | MapFlags::WRITE)?;
 
-        Ok(Self {
-            uobj,
-            cache: BTreeMap::new(),
-        })
+        Ok(Self { uobj })
     }
 }
-
+#[cfg(test)]
+#[cfg(feature = "user")]
 mod tests {
     use super::*;
     use crate::sec_ctx::SecCtxFlags;

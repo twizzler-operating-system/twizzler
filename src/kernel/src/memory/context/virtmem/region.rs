@@ -1,7 +1,6 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 
-use log::info;
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,

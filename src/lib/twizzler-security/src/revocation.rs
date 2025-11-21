@@ -7,8 +7,8 @@ pub struct Revoc {
 }
 
 //TODO: impl all the revoc stuff (comparison, creating, allat)
-
 impl Revoc {
+    /// Create a new `Revoc` from a time.
     pub fn new(time: u128) -> Self {
         Revoc { inner: time }
     }

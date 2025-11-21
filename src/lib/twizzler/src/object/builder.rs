@@ -1,10 +1,9 @@
-use std::{fs::Permissions, marker::PhantomData, mem::MaybeUninit};
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        sys_thread_active_sctx_id, BackingType, CreateTieSpec, LifetimeType, ObjectCreate,
-        ObjectCreateFlags, ObjectSource,
+        BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
     },
 };
 use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};

@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use log::{error, info, trace, warn};
+use log::{error, trace};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -94,8 +94,6 @@ impl SecurityContext {
             // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
-
-        let kobj_id = obj.id();
 
         let base = obj.base();
 
@@ -396,12 +394,12 @@ mod tests {
 
     use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, SigningKey, SigningScheme};
+    use twizzler_security::{Cap, SigningKey, SigningScheme, MAX_KEY_SIZE};
 
     use crate::{random::getrandom, utils::benchmark};
     #[kernel_test]
     fn bench_capability_verification() {
-        let mut rand_bytes = [0; 32];
+        let mut rand_bytes = [0; MAX_KEY_SIZE];
 
         getrandom(&mut rand_bytes, false);
 

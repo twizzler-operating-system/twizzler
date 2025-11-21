@@ -3,7 +3,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
-use log::info;
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,

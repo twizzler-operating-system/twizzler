@@ -18,7 +18,6 @@
 use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
 use intrusive_collections::{intrusive_adapter, LinkedList};
-use log::info;
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{

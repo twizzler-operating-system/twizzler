@@ -5,13 +5,16 @@ use bitflags::bitflags;
 use crate::SecurityError;
 
 #[derive(PartialEq, Copy, Clone, Eq, Ord, PartialOrd)]
+/// Flags pertaining to a `Cap`
+/// Currently only used to set which hashing scheme to
+/// use when forming a capability.
 pub struct CapFlags(u16);
 
-#[rustfmt::skip] // so the bits are all nice and neat
 bitflags! {
     impl CapFlags: u16 {
-        //NOTE: flags here indicate which algorithm was used for hashing
-        const Blake3 =   1;
+        /// The Blake3 Hashing Algorithm was used
+        const Blake3 = 1;
+        /// The SHA256 Hashing Algorithm was used
         const Sha256 = 2;
     }
 }
@@ -44,15 +47,20 @@ impl Debug for CapFlags {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+/// The signing scheme used when creating a `Cap`
 pub enum SigningScheme {
     #[default]
+    /// Use the ECDSA signing scheme
     Ecdsa,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+/// The hashing algorithm used when creating a `Cap`
 pub enum HashingAlgo {
     #[default]
+    /// Use the Blake3 Hashing Algorithm
     Blake3,
+    /// Use the SHA256 Hashing Algorithm
     Sha256,
 }
 

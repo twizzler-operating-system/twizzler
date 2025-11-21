@@ -139,7 +139,6 @@ fn check_security(
         let perms = ct.secctx.check_active_access(&access_info, default_prot);
 
         if perms.provide & !perms.restrict & access_kind == access_kind {
-            let evaluated = perms.provide & !perms.restrict & access_kind;
             return Ok(perms);
         }
         let perms = ct.secctx.search_access(&access_info, default_prot);

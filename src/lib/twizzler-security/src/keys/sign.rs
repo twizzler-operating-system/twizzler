@@ -15,14 +15,20 @@ const ECDSA_SECRET_KEY_LENGTH: usize = 32;
 use p256::ecdsa::{signature::Signer, Signature as EcdsaSignature, SigningKey as EcdsaSigningKey};
 use twizzler_rt_abi::error::TwzError;
 
-use super::{Signature, VerifyingKey, MAX_KEY_SIZE};
+#[cfg(feature = "kernel")]
+use super::MAX_KEY_SIZE;
+use super::{KeyBuffer, Signature, VerifyingKey};
 use crate::{SecurityError, SigningScheme};
 
-/// The Objects signing key stored internally in the kernel used during the signing of capabilities.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Helper type for keybuffer
+
+/// An Objects `SigningKey`, used in creating `Cap`s and `Del`s.
+/// Is agnostic over SigningSchemes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SigningKey {
-    key: [u8; MAX_KEY_SIZE],
-    len: usize,
+    /// The buffer that stores the raw key bytes.
+    key: KeyBuffer,
+    /// The signing scheme of this key
     pub scheme: SigningScheme,
 }
 
@@ -45,12 +51,12 @@ impl SigningKey {
             SigningScheme::Ecdsa => {
                 let mut rand_buf = [0_u8; ECDSA_SECRET_KEY_LENGTH];
 
-                if let Err(e) = getrandom(&mut rand_buf) {
+                if let Err(_e) = getrandom(&mut rand_buf) {
                     #[cfg(feature = "log")]
                     error!(
                         "Failed to initialize buffer with random bytes, terminating
                         key creation. Underlying error: {}",
-                        e
+                        _e
                     );
 
                     return Err(TwzError::Generic(
@@ -82,13 +88,16 @@ impl SigningKey {
     }
 
     #[cfg(feature = "kernel")]
+    /// Creates a new SigningKey / VerifyingKey object pairs.
     pub fn new_kernel_keypair(
         scheme: &SigningScheme,
-        random_bytes: [u8; 32],
+        random_bytes: [u8; MAX_KEY_SIZE],
     ) -> Result<(SigningKey, VerifyingKey), TwzError> {
         match scheme {
             SigningScheme::Ecdsa => {
-                let Ok(ecdsa_signing_key) = EcdsaSigningKey::from_slice(&random_bytes) else {
+                let Ok(ecdsa_signing_key) =
+                    EcdsaSigningKey::from_slice(&random_bytes[0..ECDSA_SECRET_KEY_LENGTH])
+                else {
                     #[cfg(feature = "log")]
                     error!("Failed to create ecdsa signing key from bytes");
 
@@ -123,25 +132,24 @@ impl SigningKey {
                 })?;
 
                 let binding = key.to_bytes();
-                let bytes = &binding.as_slice();
 
-                let mut buf = [0_u8; MAX_KEY_SIZE];
-
-                buf[0..bytes.len()].copy_from_slice(bytes);
+                let key = KeyBuffer::from_slice(&binding)
+                    .expect("The ECDSA key cannot fit in the currently configured MAX_KEY_SIZE");
 
                 Ok(Self {
-                    key: buf,
-                    len: bytes.len(),
+                    key,
                     scheme: SigningScheme::Ecdsa,
                 })
             }
         }
     }
 
+    /// returns the inner signature as bytes
     pub fn as_bytes(&self) -> &[u8] {
-        &self.key[0..self.len]
+        self.key.as_slice()
     }
 
+    /// Sign the `msg` slice, returning a signature.
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, SecurityError> {
         match self.scheme {
             SigningScheme::Ecdsa => {
@@ -173,15 +181,12 @@ impl TryFrom<&SigningKey> for EcdsaSigningKey {
 impl From<EcdsaSigningKey> for SigningKey {
     fn from(value: EcdsaSigningKey) -> Self {
         let binding = value.to_bytes();
-        let slice = binding.as_slice();
 
-        let mut buf = [0; MAX_KEY_SIZE];
-
-        buf[0..slice.len()].copy_from_slice(slice);
+        let key = KeyBuffer::from_slice(binding.as_slice())
+            .expect("The ECDSA key cannot fit in the currently configured MAX_KEY_SIZE");
 
         SigningKey {
-            key: buf,
-            len: slice.len(),
+            key,
             scheme: SigningScheme::Ecdsa,
         }
     }
@@ -259,7 +264,7 @@ mod tests {
 }
 
 #[cfg(feature = "user")]
-use twizzler::object::{MapFlags, ObjID, RawObject, TypedObject};
+use twizzler::object::{MapFlags, ObjID, TypedObject};
 #[cfg(feature = "user")]
 impl TryFrom<ObjID> for SigningKey {
     type Error = TwzError;

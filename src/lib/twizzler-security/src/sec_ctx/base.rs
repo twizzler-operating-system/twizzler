@@ -3,8 +3,6 @@ use core::fmt::Display;
 use heapless::{FnvIndexMap, Vec};
 use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
 
-use crate::{Cap, Del};
-
 /// completely arbitrary amount of mask entries in a security context
 pub const MASKS_MAX: usize = 16;
 /// completely arbitrary amount of capabilites and delegations in a security context
@@ -13,6 +11,8 @@ pub const SEC_CTX_MAP_LEN: usize = 16;
 pub const MAP_ITEMS_PER_OBJ: usize = 16;
 
 #[derive(Debug)]
+/// Used to store `Mask` data that will be applied to permissions granted by a `SecCtx` for
+/// specific target object.
 pub struct Mask {
     /// object whose permissions will be masked.
     pub target: ObjID,
@@ -26,6 +26,7 @@ pub struct Mask {
 }
 
 impl Mask {
+    /// Creates a new instance of `Mask`.
     pub fn new(target: ObjID, permmask: Protections, ovrmask: Protections) -> Self {
         Mask {
             target,
@@ -36,13 +37,19 @@ impl Mask {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+/// The type of item stored inside the map inside the `SecCtx`.
 pub enum CtxMapItemType {
     #[default]
+    /// A capability is stored.
     Cap,
+    /// A Delegation is stored.
     Del,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+
+/// This type is stored inside the `CtxMap`. The map serves to store information about where
+/// `Cap`s and `Del`s are stored inside the `SecCtx` object.
 pub struct CtxMapItem {
     /// Type of the Map Item
     pub item_type: CtxMapItemType,
@@ -52,8 +59,9 @@ pub struct CtxMapItem {
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    /// Flags for a `SecCtx`.
     pub struct SecCtxFlags: u16 {
-        // a security context should have an undetachable bit,
+        /// Makes this `SecCtx` undetachable, meaning once its active, its not possible to detach from.
         const UNDETACHABLE = 1;
     }
 }
@@ -75,14 +83,11 @@ pub struct SecCtxBase {
     pub flags: SecCtxFlags,
 }
 
+/// The root offset into the object, after the size of the base.
 pub const OBJECT_ROOT_OFFSET: usize = size_of::<SecCtxBase>() + NULLPAGE_SIZE;
 
-pub enum InsertType {
-    Cap(Cap),
-    Del(Del),
-}
-
 impl SecCtxBase {
+    /// Creates a new `SecCtxBase`.
     pub fn new(global_mask: Protections, flags: SecCtxFlags) -> Self {
         Self {
             map: FnvIndexMap::<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>::new(),
