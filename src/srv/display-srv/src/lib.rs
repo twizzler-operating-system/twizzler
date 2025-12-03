@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use display_core::{BufferObject, Rect, WindowConfig};
-use secgate::{util::HandleMgr, GateCallInfo};
+use secgate::util::HandleMgr;
 use tracing::Level;
 use twizzler_abi::object::ObjID;
+use twizzler_display::{BufferObject, Rect, WindowConfig};
 use twizzler_rt_abi::{error::TwzError, Result};
 use virtio_gpu::{DeviceWrapper, TwizzlerTransport};
 
@@ -35,7 +35,7 @@ struct DisplayInfo {
 unsafe impl Send for DisplayInfo {}
 unsafe impl Sync for DisplayInfo {}
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "twizzler-display")]
 pub fn start_display() -> Result<()> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -294,8 +294,9 @@ fn compositor_thread() {
     }
 }
 
-#[secgate::secure_gate(options(info))]
-pub fn create_window(call_info: &GateCallInfo, winfo: WindowConfig) -> Result<(ObjID, u32)> {
+#[secgate::entry(lib = "twizzler-display")]
+pub fn create_window(winfo: WindowConfig) -> Result<(ObjID, u32)> {
+    let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     let bo = BufferObject::create_new(winfo.w, winfo.h)?;
     let mut handles = info.handles.lock().unwrap();
@@ -313,9 +314,10 @@ pub fn create_window(call_info: &GateCallInfo, winfo: WindowConfig) -> Result<(O
     Ok((bo.id(), handle))
 }
 
-#[secgate::secure_gate(options(info))]
-pub fn drop_window(call_info: &GateCallInfo, handle: u32) -> Result<()> {
+#[secgate::entry(lib = "twizzler-display")]
+pub fn drop_window(handle: u32) -> Result<()> {
     tracing::debug!("dropping window {}", handle);
+    let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     let mut handles = info.handles.lock().unwrap();
     handles
@@ -324,13 +326,10 @@ pub fn drop_window(call_info: &GateCallInfo, handle: u32) -> Result<()> {
     Ok(())
 }
 
-#[secgate::secure_gate(options(info))]
-pub fn reconfigure_window(
-    call_info: &GateCallInfo,
-    handle: u32,
-    wconfig: WindowConfig,
-) -> Result<()> {
+#[secgate::entry(lib = "twizzler-display")]
+pub fn reconfigure_window(handle: u32, wconfig: WindowConfig) -> Result<()> {
     tracing::debug!("reconfiguring window {} => {:?}", handle, wconfig);
+    let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     let handles = info.handles.lock().unwrap();
     let client = handles
@@ -340,9 +339,10 @@ pub fn reconfigure_window(
     Ok(())
 }
 
-#[secgate::secure_gate(options(info))]
-pub fn get_window_config(call_info: &GateCallInfo, handle: u32) -> Result<WindowConfig> {
+#[secgate::entry(lib = "twizzler-display")]
+pub fn get_window_config(handle: u32) -> Result<WindowConfig> {
     let info = DISPLAY_INFO.get().unwrap();
+    let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let handles = info.handles.lock().unwrap();
     let client = handles
         .lookup(call_info.source_context().unwrap_or(0.into()), handle)
@@ -351,7 +351,7 @@ pub fn get_window_config(call_info: &GateCallInfo, handle: u32) -> Result<Window
     Ok(*w)
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "twizzler-display")]
 pub fn get_display_info() -> Result<WindowConfig> {
     let info = DISPLAY_INFO.get().unwrap();
     Ok(WindowConfig {

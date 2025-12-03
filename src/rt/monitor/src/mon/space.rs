@@ -4,7 +4,7 @@ use std::{
 };
 
 use miette::IntoDiagnostic;
-use monitor_api::MappedObjectAddrs;
+use monitor_api::{MappedObjectAddrs, SpaceStats};
 use twizzler_abi::{
     object::Protections,
     syscall::{
@@ -19,7 +19,6 @@ use twizzler_rt_abi::{
 };
 
 use self::handle::MapHandleInner;
-use crate::gates::SpaceStats;
 
 mod handle;
 mod unmapper;

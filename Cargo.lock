@@ -1673,6 +1673,7 @@ name = "devmgr"
 version = "0.1.0"
 dependencies = [
  "monitor-api",
+ "secgate",
  "twizzler",
  "twizzler-rt-abi",
 ]
@@ -1708,24 +1709,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "display-core"
-version = "0.1.0"
-dependencies = [
- "secgate",
- "twizzler",
- "twizzler-abi",
- "twizzler-rt-abi",
-]
-
-[[package]]
 name = "display-srv"
 version = "0.1.0"
 dependencies = [
- "display-core",
  "secgate",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-display",
  "twizzler-rt-abi",
  "twizzler-runtime",
  "virtio-gpu",
@@ -4390,7 +4381,6 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 name = "logboi"
 version = "0.1.0"
 dependencies = [
- "logboi-srv",
  "secgate",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -4400,6 +4390,7 @@ dependencies = [
 name = "logboi-srv"
 version = "0.1.0"
 dependencies = [
+ "logboi",
  "secgate",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -4707,6 +4698,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "montest-srv"
+version = "0.1.0"
+dependencies = [
+ "montest-lib",
+ "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4729,7 +4731,6 @@ dependencies = [
  "arrayvec",
  "monitor-api",
  "naming-core",
- "naming-srv",
  "secgate",
  "twizzler",
  "twizzler-rt-abi",
@@ -4757,6 +4758,7 @@ dependencies = [
  "arrayvec",
  "lazy-init",
  "lazy_static",
+ "naming",
  "naming-core",
  "pager",
  "secgate",
@@ -5306,7 +5308,6 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
- "pager-srv",
  "secgate",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -5343,6 +5344,7 @@ dependencies = [
  "miette",
  "nvme",
  "object-store",
+ "pager",
  "polling",
  "rand 0.9.0",
  "secgate",
@@ -7400,10 +7402,9 @@ dependencies = [
 name = "twizzler-display"
 version = "0.1.0"
 dependencies = [
- "display-core",
- "display-srv",
  "secgate",
  "twizzler",
+ "twizzler-abi",
  "twizzler-rt-abi",
  "twizzler-runtime",
 ]

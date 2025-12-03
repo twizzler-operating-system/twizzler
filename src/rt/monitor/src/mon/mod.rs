@@ -10,7 +10,8 @@ use compartment::{
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{
-    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
+    CompartmentFlags, MonitorCompControlCmd, RuntimeThreadControl, SharedCompConfig,
+    TlsTemplateInfo, MONITOR_INSTANCE_ID,
 };
 use secgate::util::HandleMgr;
 use space::Space;
@@ -30,7 +31,7 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{gates::MonitorCompControlCmd, init::InitDynlinkContext};
+use crate::init::InitDynlinkContext;
 
 pub(crate) mod compartment;
 pub mod library;

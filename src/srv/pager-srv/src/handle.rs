@@ -1,10 +1,7 @@
 use std::sync::Mutex;
 
 use object_store::ExternalFile;
-use secgate::{
-    secure_gate,
-    util::{Descriptor, SimpleBuffer},
-};
+use secgate::util::{Descriptor, SimpleBuffer};
 use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
     object::Protections,
@@ -74,8 +71,9 @@ impl PagerClient {
     }
 }
 
-#[secure_gate(options(info))]
-pub fn pager_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID), TwzError> {
+#[secgate::entry(lib = "pager")]
+pub fn pager_open_handle() -> Result<(Descriptor, ObjID), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
     let handle = pager.new_handle(comp)?;
@@ -84,8 +82,9 @@ pub fn pager_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, Ob
     Ok((handle, id))
 }
 
-#[secure_gate(options(info))]
-pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<(), TwzError> {
+#[secgate::entry(lib = "pager")]
+pub fn pager_close_handle(desc: Descriptor) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
     if let Some(oh) = pager.drop_handle(comp, desc) {
@@ -94,12 +93,9 @@ pub fn pager_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Res
     Ok(())
 }
 
-#[secure_gate(options(info))]
-pub fn pager_enumerate_external(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    id: ObjID,
-) -> Result<usize, TwzError> {
+#[secgate::entry(lib = "pager")]
+pub fn pager_enumerate_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 

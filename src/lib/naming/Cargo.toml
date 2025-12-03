@@ -13,4 +13,3 @@ monitor-api = { path = "../../rt/monitor-api" }
 twizzler-rt-abi = "0.99"
 twizzler = { path = "../../lib/twizzler" }
 naming-core = { path = "naming-core" }
-naming-srv = { path = "../../srv/naming-srv" }

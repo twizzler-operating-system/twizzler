@@ -28,17 +28,121 @@ use secgate::{
     Crossing, DynamicSecGate,
 };
 use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
-
-#[allow(unused_imports, unused_variables, unexpected_cfgs)]
-mod gates {
-    include! {"../../monitor/secapi/gates.rs"}
-}
-
-pub use gates::*;
 use twizzler_rt_abi::{
     debug::{DlPhdrInfo, LinkMap, LoadedImageId},
     error::{ArgumentError, TwzError},
+    thread::ThreadSpawnArgs,
 };
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_library_info(desc: Descriptor) -> Result<LibraryInfoRaw, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_spawn_thread(
+    args: ThreadSpawnArgs,
+    thread_pointer: usize,
+    stack_pointer: usize,
+) -> Result<ObjID, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_comp_config() -> Result<usize, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_get_library_handle(
+    compartment: Option<Descriptor>,
+    lib_n: usize,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_handle(compartment: ObjID) -> Result<Descriptor, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_info(
+    desc: Option<Descriptor>,
+) -> Result<CompartmentInfoRaw, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_compartment_dynamic_gate(
+    desc: Option<Descriptor>,
+    name_len: usize,
+) -> Result<usize, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_deps(
+    desc: Option<Descriptor>,
+    dep_n: usize,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_thread(
+    desc: Option<Descriptor>,
+    dep_n: usize,
+) -> Result<ThreadInfo, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_load_compartment(
+    name_len: u64,
+    args_len: u64,
+    env_len: u64,
+    flags: u32,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_compartment_wait(desc: Option<Descriptor>, flags: u64) -> Result<u64, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_drop_compartment_handle(desc: Descriptor) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_load_library(
+    compartment: Option<Descriptor>,
+    id: ObjID,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_drop_library_handle(desc: Descriptor) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_map(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+) -> Result<crate::MappedObjectAddrs, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_pair_map(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+    id2: ObjID,
+    flags2: twizzler_rt_abi::object::MapFlags,
+) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_unmap(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+) -> Result<(), TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_thread_simple_buffer() -> Result<ObjID, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_comp_ctrl(cmd: MonitorCompControlCmd) -> Result<Option<i32>, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_set_nameroot(root: ObjID) -> Result<(), TwzError> {}
 
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
@@ -183,8 +287,6 @@ impl SharedCompConfig {
     }
 }
 
-pub use gates::LibraryInfo as LibraryInfoRaw;
-
 /// Contains information about a library loaded into the address space.
 #[derive(Debug)]
 pub struct LibraryInfo<'a> {
@@ -237,7 +339,7 @@ pub struct LibraryHandle {
 impl LibraryHandle {
     /// Get the library info.
     pub fn info(&self) -> LibraryInfo<'_> {
-        LibraryInfo::from_raw(gates::monitor_rt_get_library_info(self.desc).unwrap())
+        LibraryInfo::from_raw(monitor_rt_get_library_info(self.desc).unwrap())
     }
 
     /// Get the descriptor for this handle.
@@ -267,7 +369,7 @@ impl<'a> LibraryLoader<'a> {
     /// Load the library.
     pub fn load(&self) -> Result<LibraryHandle, TwzError> {
         let desc: Descriptor =
-            gates::monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)?;
+            monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)?;
         Ok(LibraryHandle { desc })
     }
 }
@@ -280,7 +382,7 @@ pub struct CompartmentHandle {
 impl CompartmentHandle {
     /// Get the compartment info.
     pub fn info(&self) -> CompartmentInfo<'_> {
-        CompartmentInfo::from_raw(gates::monitor_rt_get_compartment_info(self.desc).unwrap())
+        CompartmentInfo::from_raw(monitor_rt_get_compartment_info(self.desc).unwrap())
     }
 
     /// Get the descriptor for this handle, or None if the handle refers to the current compartment.
@@ -293,7 +395,7 @@ impl CompartmentHandle {
         name: &str,
     ) -> Result<DynamicSecGate<'_, A, R>, TwzError> {
         let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
-        let address = gates::monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
+        let address = monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
         Ok(DynamicSecGate::new(address))
     }
 }
@@ -364,7 +466,7 @@ impl CompartmentLoader {
         if len < envs_len + args_len + name_len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let desc = gates::monitor_rt_load_compartment(
+        let desc = monitor_rt_load_compartment(
             name_len as u64,
             args_len as u64,
             envs_len as u64,
@@ -383,13 +485,13 @@ impl Handle for CompartmentHandle {
     where
         Self: Sized,
     {
-        let desc = gates::monitor_rt_get_compartment_handle(info)?;
+        let desc = monitor_rt_get_compartment_handle(info)?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 
     fn release(&mut self) {
         if let Some(desc) = self.desc {
-            let _ = gates::monitor_rt_drop_compartment_handle(desc);
+            let _ = monitor_rt_drop_compartment_handle(desc);
         }
     }
 }
@@ -409,12 +511,12 @@ impl Handle for LibraryHandle {
     where
         Self: Sized,
     {
-        let desc = gates::monitor_rt_get_library_handle(info.0, info.1)?;
+        let desc = monitor_rt_get_library_handle(info.0, info.1)?;
         Ok(LibraryHandle { desc })
     }
 
     fn release(&mut self) {
-        let _ = gates::monitor_rt_drop_library_handle(self.desc);
+        let _ = monitor_rt_drop_library_handle(self.desc);
     }
 }
 
@@ -441,7 +543,7 @@ pub struct CompartmentInfo<'a> {
 }
 
 impl<'a> CompartmentInfo<'a> {
-    fn from_raw(raw: gates::CompartmentInfo) -> Self {
+    fn from_raw(raw: CompartmentInfoRaw) -> Self {
         Self {
             name: lazy_sb::read_string_from_sb(raw.name_len),
             id: raw.id,
@@ -463,7 +565,7 @@ impl CompartmentHandle {
     pub fn lookup(name: impl AsRef<str>) -> Result<Self, TwzError> {
         let name_len = lazy_sb::write_bytes_to_sb(name.as_ref().as_bytes());
         Ok(Self {
-            desc: Some(gates::monitor_rt_lookup_compartment(name_len)?),
+            desc: Some(monitor_rt_lookup_compartment(name_len)?),
         })
     }
 
@@ -489,7 +591,7 @@ impl CompartmentHandle {
 
     pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
         CompartmentFlags::from_bits_truncate(
-            gates::monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
+            monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
         )
     }
 }
@@ -534,7 +636,7 @@ impl<'a> Iterator for CompartmentDepsIter<'a> {
     type Item = CompartmentHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let desc = gates::monitor_rt_get_compartment_deps(self.comp.desc, self.n).ok()?;
+        let desc = monitor_rt_get_compartment_deps(self.comp.desc, self.n).ok()?;
         self.n += 1;
         Some(CompartmentHandle { desc: Some(desc) })
     }
@@ -561,7 +663,7 @@ impl<'a> Iterator for CompartmentThreadsIter<'a> {
     type Item = ThreadInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let info = gates::monitor_rt_get_compartment_thread(self.comp.desc, self.n).ok()?;
+        let info = monitor_rt_get_compartment_thread(self.comp.desc, self.n).ok()?;
         self.n += 1;
         Some(info)
     }
@@ -610,8 +712,8 @@ impl MappedObjectAddrs {
 }
 
 /// Get stats from the monitor
-pub fn stats() -> Option<gates::MonitorStats> {
-    gates::monitor_rt_stats().ok()
+pub fn stats() -> Option<MonitorStats> {
+    monitor_rt_stats().ok()
 }
 
 mod lazy_sb {
@@ -635,7 +737,7 @@ mod lazy_sb {
         }
 
         fn init() -> SimpleBuffer {
-            let id = super::gates::monitor_rt_get_thread_simple_buffer()
+            let id = super::monitor_rt_get_thread_simple_buffer()
                 .expect("failed to get per-thread monitor simple buffer");
             let oh =
                 twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
@@ -755,5 +857,90 @@ impl RuntimeThreadControl {
 }
 
 pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
-    gates::monitor_rt_set_nameroot(root)
+    monitor_rt_set_nameroot(root)
 }
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct MonitorStats {
+    pub space: SpaceStats,
+    pub thread_mgr: ThreadMgrStats,
+    pub comp_mgr: CompartmentMgrStats,
+    pub handles: HandleStats,
+    pub dynlink: DynlinkStats,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct SpaceStats {
+    pub mapped: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct ThreadMgrStats {
+    pub nr_threads: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct CompartmentMgrStats {
+    pub nr_compartments: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct HandleStats {
+    pub nr_comp_handles: usize,
+    pub nr_lib_handles: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct DynlinkStats {
+    pub nr_libs: usize,
+    pub nr_comps: usize,
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[allow(dead_code)]
+pub enum MonitorCompControlCmd {
+    RuntimeReady,
+    RuntimePostMain,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LibraryInfoRaw {
+    pub name_len: usize,
+    pub compartment_id: ObjID,
+    pub objid: ObjID,
+    pub slot: usize,
+    pub start: *const u8,
+    pub len: usize,
+    pub dl_info: DlPhdrInfo,
+    pub link_map: LinkMap,
+    pub desc: Descriptor,
+}
+
+unsafe impl Crossing for LibraryInfoRaw {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompartmentInfoRaw {
+    pub name_len: usize,
+    pub id: ObjID,
+    pub sctx: ObjID,
+    pub flags: u64,
+    pub nr_libs: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Copy)]
+#[repr(C)]
+pub struct ThreadInfo {
+    pub repr_id: ObjID,
+}
+
+/// Reserved instance ID for the security monitor.
+pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);

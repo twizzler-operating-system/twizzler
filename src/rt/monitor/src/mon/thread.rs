@@ -6,7 +6,7 @@ use std::{
 };
 
 use dynlink::{compartment::Compartment, tls::TlsRegion};
-use monitor_api::{RuntimeThreadControl, MONITOR_INSTANCE_ID};
+use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
@@ -22,7 +22,7 @@ use super::{
     get_monitor,
     space::{MapHandle, MapInfo},
 };
-use crate::{gates::ThreadMgrStats, mon::space::Space};
+use crate::mon::space::Space;
 
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;

@@ -15,14 +15,12 @@ use twizzler_abi::{object::NULLPAGE_SIZE, simple_mutex::Mutex};
 use twizzler_rt_abi::object::MapFlags;
 
 mod dlengine;
+mod gates;
 pub mod init;
 mod mon;
 mod upcall;
 
 pub use monitor_api::MappedObjectAddrs;
-
-#[path = "../secapi/gates.rs"]
-mod gates;
 
 extern crate dynlink;
 extern crate twizzler_runtime;

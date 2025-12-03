@@ -78,7 +78,7 @@ fn start_pcie(seg: Device) {
     }
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "devmgr")]
 pub fn devmgr_start() -> Result<(), TwzError> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -97,7 +97,7 @@ pub fn devmgr_start() -> Result<(), TwzError> {
     Ok(())
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "devmgr")]
 pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
     match spec.supported {
         devmgr::Supported::PcieClass(class, subclass, progif) => {

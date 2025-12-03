@@ -6,7 +6,7 @@ edition = "2021"
 # Important: this should be compiled as both an rlib, for exporting the trampoline,
 # and as a cdylib, as the actual .so file that will be exporting the gates.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 lazy_static = "1.5.0"
@@ -21,5 +21,6 @@ lazy-init = "0.5.1"
 tracing = "*"
 pager = { path = "../../lib/pager/" }
 tracing-subscriber = "*"
+naming = { path = "../../lib/naming/" }
 
 [features]
