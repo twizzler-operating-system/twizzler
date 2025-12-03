@@ -192,6 +192,9 @@ fn main() {
     let cli = Cli::parse();
     println!("==> {:?}", cli);
 
+    let f = sgtest::bar(sgtest::Foo { x: 42 });
+    println!("==> foo: {:?}", f);
+
     let mut nh = naming::dynamic_naming_factory().unwrap();
     match cli.sub {
         SubCommand::Hw => {

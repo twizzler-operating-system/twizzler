@@ -95,6 +95,7 @@ initrd = [
     "lib:pager-srv",
     "lib:cache-srv",
     "lib:display-srv",
+    "lib:sgtest-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",

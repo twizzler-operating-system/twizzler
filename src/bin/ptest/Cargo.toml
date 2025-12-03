@@ -17,3 +17,5 @@ hwlocality = { workspace = true, features = ["vendored"] }
 libc = { workspace = true }
 rand = "*"
 #rocksdb = "*"
+
+sgtest = { path = "../../lib/sgtest" }

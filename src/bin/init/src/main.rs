@@ -178,6 +178,24 @@ fn initialize_display() {
     std::mem::forget(comp);
 }
 
+fn initialize_sgtest() {
+    info!("starting display manager");
+    let comp: CompartmentHandle = CompartmentLoader::new(
+        "sgtest",
+        "libsgtest_srv.so",
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["display-srv"])
+    .load()
+    .expect("failed to initialize sgtest");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
+    tracing::info!("sgtest ready");
+    std::mem::forget(comp);
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -222,6 +240,7 @@ fn main() {
 
     initialize_cache();
     initialize_display();
+    initialize_sgtest();
 
     if start_unittest {
         // Load and wait for tests to complete
