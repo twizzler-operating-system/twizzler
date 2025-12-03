@@ -10,6 +10,5 @@ crate-type = ["rlib"]
 secgate = { workspace = true }
 twizzler-runtime = { workspace = true }
 twizzler-rt-abi = "0.99"
-display-srv = { workspace = true }
-display-core = { workspace = true }
-twizzler = { workspace = true }
+twizzler = { path = "../../lib/twizzler" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }

@@ -1,6 +1,3 @@
-#[link(name = "logboi_srv")]
-extern "C" {}
-
 use secgate::util::{Descriptor, Handle, SimpleBuffer};
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
@@ -9,6 +6,13 @@ pub struct LogHandle {
     desc: Descriptor,
     buffer: SimpleBuffer,
 }
+
+#[secgate::gatecall]
+pub fn logboi_open_handle() -> Result<(Descriptor, twizzler_rt_abi::object::ObjID), TwzError> {}
+#[secgate::gatecall]
+pub fn logboi_close_handle(desc: Descriptor) -> Result<(), TwzError> {}
+#[secgate::gatecall]
+pub fn logboi_post(desc: Descriptor, buf_len: usize) -> Result<(), TwzError> {}
 
 // A service typically implements these handles via this interface.
 // You can see that internally, this is where most of the secure gate APIs
@@ -22,7 +26,7 @@ impl Handle for LogHandle {
     where
         Self: Sized,
     {
-        let (desc, id) = logboi_srv::logboi_open_handle()?;
+        let (desc, id) = logboi_open_handle()?;
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
         let sb = SimpleBuffer::new(handle);
@@ -30,7 +34,7 @@ impl Handle for LogHandle {
     }
 
     fn release(&mut self) {
-        let _ = logboi_srv::logboi_close_handle(self.desc);
+        let _ = logboi_close_handle(self.desc);
     }
 }
 
@@ -54,7 +58,7 @@ impl LogHandle {
             return Some(0);
         }
 
-        if logboi_srv::logboi_post(self.desc, len).ok().is_some() {
+        if logboi_post(self.desc, len).ok().is_some() {
             Some(len)
         } else {
             None

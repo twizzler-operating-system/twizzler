@@ -169,7 +169,7 @@ impl PagedDevice for VirtioMem {
 }
 
 pub async fn init_virtio() -> Result<VirtioMem> {
-    let devices = devmgr::get_devices(devmgr::DriverSpec {
+    let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::Vendor(0x1af4, 0x105b),
     })?;
 

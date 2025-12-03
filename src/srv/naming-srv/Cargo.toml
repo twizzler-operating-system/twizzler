@@ -6,7 +6,7 @@ edition = "2021"
 # Important: this should be compiled as both an rlib, for exporting the trampoline,
 # and as a cdylib, as the actual .so file that will be exporting the gates.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 lazy_static = { workspace = true }
@@ -14,6 +14,7 @@ secgate = { workspace = true }
 twizzler-runtime = { workspace = true }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+naming = { path = "../../lib/naming/" }
 twizzler = { workspace = true }
 arrayvec = { workspace = true }
 naming-core = { workspace = true }

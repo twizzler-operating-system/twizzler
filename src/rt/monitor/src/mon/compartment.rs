@@ -6,15 +6,13 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
-use monitor_api::{CompartmentLoaderConfig, ControllerOption, MONITOR_INSTANCE_ID};
+use monitor_api::{CompartmentInfoRaw, CompartmentMgrStats, ThreadInfo, MONITOR_INSTANCE_ID};
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
 };
-
-use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
 
 mod compconfig;
 mod compthread;
@@ -261,7 +259,7 @@ impl super::Monitor {
         instance: ObjID,
         thread: ObjID,
         desc: Option<Descriptor>,
-    ) -> Result<CompartmentInfo, TwzError> {
+    ) -> Result<CompartmentInfoRaw, TwzError> {
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -280,7 +278,7 @@ impl super::Monitor {
             .library_ids()
             .count();
 
-        Ok(CompartmentInfo {
+        Ok(CompartmentInfoRaw {
             name_len,
             id: comp_id,
             sctx: comp.sctx,

@@ -11,6 +11,5 @@ arrayvec = { workspace = true }
 secgate = { workspace = true }
 monitor-api = { workspace = true }
 twizzler-rt-abi = "0.99"
-twizzler = { workspace = true }
-naming-core = { workspace = true }
-naming-srv = { workspace = true }
+twizzler = { path = "../../lib/twizzler" }
+naming-core = { path = "naming-core" }

@@ -1,9 +1,6 @@
 use std::sync::Mutex;
 
-use secgate::{
-    secure_gate,
-    util::{Descriptor, HandleMgr, SimpleBuffer},
-};
+use secgate::util::{Descriptor, HandleMgr, SimpleBuffer};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
@@ -73,8 +70,9 @@ static LOGBOI: LogBoi = LogBoi {
     inner: Mutex::new(Logger::new()),
 };
 
-#[secure_gate(options(info))]
-pub fn logboi_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID), TwzError> {
+#[secgate::entry(lib = "logboi")]
+pub fn logboi_open_handle() -> Result<(Descriptor, ObjID), TwzError> {
+    let info = secgate::get_caller().unwrap();
     let mut logger = LOGBOI.inner.lock().ok().ok_or(GenericError::Internal)?;
     let client = LogClient::new().ok_or(ResourceError::Unavailable)?;
     let id = client.sbid();
@@ -86,8 +84,9 @@ pub fn logboi_open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, O
     Ok((desc, id))
 }
 
-#[secure_gate(options(info))]
-pub fn logboi_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<(), TwzError> {
+#[secgate::entry(lib = "logboi")]
+pub fn logboi_close_handle(desc: Descriptor) -> Result<(), TwzError> {
+    let info = secgate::get_caller().unwrap();
     let mut logger = LOGBOI.inner.lock().unwrap();
     logger
         .handles
@@ -95,12 +94,9 @@ pub fn logboi_close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Re
     Ok(())
 }
 
-#[secure_gate(options(info))]
-pub fn logboi_post(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    buf_len: usize,
-) -> Result<(), TwzError> {
+#[secgate::entry(lib = "logboi")]
+pub fn logboi_post(desc: Descriptor, buf_len: usize) -> Result<(), TwzError> {
+    let info = secgate::get_caller().unwrap();
     let mut buf = vec![0u8; buf_len];
     let mut logger = LOGBOI.inner.lock().unwrap();
     let Some(client) = logger

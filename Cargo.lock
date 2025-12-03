@@ -1587,6 +1587,7 @@ name = "devmgr"
 version = "0.1.0"
 dependencies = [
  "monitor-api",
+ "secgate",
  "twizzler",
  "twizzler-rt-abi",
 ]
@@ -1622,40 +1623,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "discard"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
-
-[[package]]
-name = "dispatch2"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89a09f22a6c6069a18470eb92d2298acf25463f14256d24778e1230d789a2aec"
-dependencies = [
- "bitflags 2.9.1",
- "objc2",
-]
-
-[[package]]
-name = "display-core"
-version = "0.1.0"
-dependencies = [
- "secgate",
- "twizzler",
- "twizzler-abi",
- "twizzler-rt-abi",
-]
-
-[[package]]
 name = "display-srv"
 version = "0.1.0"
 dependencies = [
- "display-core",
  "secgate",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-display",
  "twizzler-rt-abi",
  "twizzler-runtime",
  "virtio-gpu",
@@ -4189,7 +4164,6 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 name = "logboi"
 version = "0.1.0"
 dependencies = [
- "logboi-srv",
  "secgate",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -4199,6 +4173,7 @@ dependencies = [
 name = "logboi-srv"
 version = "0.1.0"
 dependencies = [
+ "logboi",
  "secgate",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -4489,6 +4464,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "montest-srv"
+version = "0.1.0"
+dependencies = [
+ "montest-lib",
+ "secgate",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4511,7 +4497,6 @@ dependencies = [
  "arrayvec",
  "monitor-api",
  "naming-core",
- "naming-srv",
  "secgate",
  "twizzler",
  "twizzler-rt-abi",
@@ -4539,6 +4524,7 @@ dependencies = [
  "arrayvec",
  "lazy-init",
  "lazy_static",
+ "naming",
  "naming-core",
  "pager",
  "secgate",
@@ -5196,7 +5182,6 @@ dependencies = [
 name = "pager"
 version = "0.1.0"
 dependencies = [
- "pager-srv",
  "secgate",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -5233,6 +5218,7 @@ dependencies = [
  "miette",
  "nvme",
  "object-store",
+ "pager",
  "polling",
  "rand 0.9.2",
  "secgate",
@@ -7351,10 +7337,9 @@ dependencies = [
 name = "twizzler-display"
 version = "0.1.0"
 dependencies = [
- "display-core",
- "display-srv",
  "secgate",
  "twizzler",
+ "twizzler-abi",
  "twizzler-rt-abi",
  "twizzler-runtime",
 ]

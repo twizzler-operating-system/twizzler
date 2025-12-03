@@ -359,7 +359,7 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
 #[thread_local]
 static CALLER_INFO: RefCell<Option<GateCallInfo>> = RefCell::new(None);
 
-fn set_caller(info: GateCallInfo) {
+pub fn set_caller(info: GateCallInfo) {
     CALLER_INFO.borrow_mut().replace(info);
 }
 
@@ -368,5 +368,8 @@ fn _reset_caller() {
 }
 
 pub fn get_caller() -> Option<GateCallInfo> {
+    if CALLER_INFO.borrow().is_none() {
+        panic!("..")
+    }
     CALLER_INFO.borrow().clone()
 }

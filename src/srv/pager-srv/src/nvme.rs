@@ -10,7 +10,7 @@ pub use controller::NvmeController;
 use twizzler_rt_abi::error::{NamingError, TwzError};
 
 pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
-    let devices = devmgr::get_devices(devmgr::DriverSpec {
+    let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
     })?;
 

@@ -10,4 +10,3 @@ crate-type = ["rlib"]
 secgate = { workspace = true }
 twizzler-runtime = { workspace = true }
 twizzler-rt-abi = "0.99"
-pager-srv = { workspace = true }

@@ -29,13 +29,15 @@ pub struct OwnedDevice {
 
 unsafe impl Invariant for OwnedDevice {}
 
-pub fn get_devices(spec: DriverSpec) -> Result<VecObject<OwnedDevice, VecObjectAlloc>, TwzError> {
-    let devcomp = monitor_api::CompartmentHandle::lookup("devmgr")?;
-    let get_devices = unsafe {
-        devcomp
-            .dynamic_gate::<(DriverSpec,), ObjID>("get_devices")
-            .unwrap()
-    };
-    let id = (get_devices)(spec)?;
+#[secgate::gatecall]
+pub fn devmgr_start() -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {}
+
+pub fn enumerate_devices(
+    spec: DriverSpec,
+) -> Result<VecObject<OwnedDevice, VecObjectAlloc>, TwzError> {
+    let id = get_devices(spec)?;
     Ok(VecObject::from(Object::map(id, MapFlags::READ)?))
 }
