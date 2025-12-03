@@ -50,8 +50,16 @@ members = [
 
     #"src/ports/candle-test",
 
+<<<<<<< HEAD
     "src/bin/sec",
-    
+
+=======
+<<<<<<< HEAD
+=======
+    "src/bin/sec",
+
+>>>>>>> b4001ed6... Implementing new proc-macro api for gates.
+>>>>>>> cd0b56eb... Implementing new proc-macro api for gates.
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
     #"src/bin/random_validation",
@@ -67,10 +75,10 @@ members = [
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest",  
+    "src/bin/schedtest",
     "src/bin/sec",
     "src/bin/gfxtest",
-
+    "src/lib/sgtest", "src/srv/sgtest-srv",
 ]
 
 exclude = [
@@ -94,6 +102,7 @@ initrd = [
     "lib:pager-srv",
     "lib:cache-srv",
     "lib:display-srv",
+    "lib:sgtest-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",

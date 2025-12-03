@@ -312,7 +312,7 @@ fn build_entry(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, 
     call_point.block = Box::new(parse2(quote::quote! {
         {
             if unsafe {(*info)}.source_context().is_some() {
-                let pe_ret = secgate::runtime_preentry();
+                let pe_ret = secgate::runtime_preentry(unsafe{&*info});
                 match pe_ret {
                     Ok(_) => {},
                     Err(e) => {
@@ -486,5 +486,327 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         pub type Ret = secgate::Return<#ret_type>;
         pub const ARGS_SIZE: usize = core::mem::size_of::<Args>();
         pub const RET_SIZE: usize = core::mem::size_of::<Ret>();
+    })
+}
+
+#[proc_macro_attribute]
+pub fn gatecall(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    match handle_gate_call(attr.into(), item.into()) {
+        Ok(ts) => ts.into(),
+        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
+    }
+}
+
+fn handle_gate_call(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, Error> {
+    let mut tree = syn::parse2::<syn::ItemFn>(item)?;
+
+    let types: Vec<_> = tree
+        .sig
+        .inputs
+        .iter()
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(_) => todo!(),
+            syn::FnArg::Typed(pt) => pt.ty.clone(),
+        })
+        .collect();
+
+    let arg_names: Vec<_> = tree
+        .sig
+        .inputs
+        .iter()
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(_) => todo!(),
+            syn::FnArg::Typed(pt) => syn::parse2::<Ident>(pt.pat.to_token_stream()),
+        })
+        .try_collect()?;
+
+    let attr_args = darling::ast::NestedMeta::parse_meta_list(attr)?;
+    let attr_args = MacroArgs::from_list(&attr_args)?;
+
+    let opt_info: Ident = parse_quote!(info);
+    let opt_api: Ident = parse_quote!(api);
+
+    /*
+    let has_info = if attr_args
+        .options
+        .iter()
+        .any(|item| item.is_ident(&opt_info))
+    {
+        if types.is_empty() {
+            Diagnostic::spanned(
+                tree.sig.ident.span().unwrap(),
+                Level::Error,
+                "option info requires at least one argument, the info struct",
+            )
+            .emit();
+        }
+        let first = tree.sig.inputs.first().unwrap();
+        match first {
+            syn::FnArg::Receiver(rec) => {
+                Diagnostic::spanned(
+                    rec.self_token.span.unwrap(),
+                    Level::Error,
+                    "option info may not be used on a receiver function",
+                )
+                .emit();
+            }
+            syn::FnArg::Typed(pat) => match &*pat.ty {
+                Type::Reference(tr) => {
+                    if tr.mutability.is_some() {
+                        Diagnostic::spanned(
+                            tree.sig.ident.span().unwrap(),
+                            Level::Error,
+                            "option info requires first argument to be immutable",
+                        )
+                        .emit();
+                    }
+                }
+                _ => Diagnostic::spanned(
+                    tree.sig.ident.span().unwrap(),
+                    Level::Error,
+                    "option info requires first argument to be a reference type to GateCallInfo",
+                )
+                .emit(),
+            },
+        }
+        true
+    } else {
+        false
+    };
+    */
+
+    let has_info = false;
+    let ret_type = tree.sig.output.clone();
+    let fn_name = tree.sig.ident.clone();
+    let names = build_names(fn_name, types, ret_type, arg_names, has_info);
+    /*
+    let trampoline = build_trampoline(&tree, &names)?;
+    let entry = build_entry(&tree, &names)?;
+    let struct_def = build_struct(&tree, &names)?;
+    */
+    let extern_trampoline = build_extern_trampoline(&tree, &names)?;
+    let types_def = build_types(&tree, &names)?;
+    let public_call_point = build_gatecall_public(&tree, &names)?;
+
+    //let link_section_text: Attribute = parse_quote!(#[link_section = ".twz_secgate_text"]);
+    //let link_section_data: Attribute = parse_quote!(#[link_section = ".twz_secgate_info"]);
+
+    let Info {
+        mod_name,
+        internal_fn_name,
+        ..
+    } = names;
+    tree.sig.ident = parse_quote!(#internal_fn_name);
+
+    Ok(quote::quote! {
+        pub mod #mod_name {
+            use super::*;
+            #extern_trampoline
+            #types_def
+        }
+        #public_call_point
+    })
+}
+
+fn build_gatecall_public(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
+    let mut call_point = tree.clone();
+    call_point.attrs.push(parse_quote!(#[inline(always)]));
+    call_point.vis = Visibility::Public(Pub::default());
+
+    let ret_type = tree.sig.output.clone();
+
+    let ret_type = match ret_type {
+        ReturnType::Default => Box::new(parse_quote!(())),
+        ReturnType::Type(_, ty) => ty.clone(),
+    };
+    call_point.sig.output = ReturnType::Type(Default::default(), ret_type);
+
+    let mod_name = &names.mod_name;
+    let trampoline_name_without_prefix = &names.trampoline_name_without_prefix;
+    let arg_names = &names.arg_names;
+    let args_tuple = if arg_names.is_empty() {
+        quote! {let tuple = ();}
+    } else {
+        quote! {
+            let tuple = (#(#arg_names),*,);
+        }
+    };
+
+    call_point.block = Box::new(parse2(quote::quote! {
+        {
+            #args_tuple
+            let frame = secgate::frame();
+            // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
+            let ret = secgate::GateCallInfo::with_alloca(secgate::get_thread_id(), secgate::get_sctx_id(), |info| {
+                #mod_name::Args::with_alloca(tuple, |args| {
+                    #mod_name::Ret::with_alloca(|ret| {
+                        // Call the trampoline in the mod.
+                        unsafe {
+                            #mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
+                        }
+                        ret.into_inner()
+                    })
+                })
+            });
+            secgate::restore_frame(frame);
+            ret.ok_or(secgate::ResourceError::Unavailable)?
+        }
+    })?);
+
+    Ok(quote::quote!(#call_point))
+}
+
+#[proc_macro_attribute]
+pub fn entry(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    match handle_entry_point(attr.into(), item.into()) {
+        Ok(ts) => ts.into(),
+        Err(err) => proc_macro::TokenStream::from(err.to_compile_error()),
+    }
+}
+
+#[derive(FromMeta)]
+struct EntryParams {
+    // Accept any expression that we should use to compute the
+    // key. This can be a constant string, or some computation
+    // based on function arguments.
+    lib: Ident,
+}
+
+fn handle_entry_point(
+    attr: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, Error> {
+    let mut tree = syn::parse2::<syn::ItemFn>(item)?;
+
+    let types: Vec<_> = tree
+        .sig
+        .inputs
+        .iter()
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(_) => todo!(),
+            syn::FnArg::Typed(pt) => pt.ty.clone(),
+        })
+        .collect();
+
+    let arg_names: Vec<_> = tree
+        .sig
+        .inputs
+        .iter()
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(_) => todo!(),
+            syn::FnArg::Typed(pt) => syn::parse2::<Ident>(pt.pat.to_token_stream()),
+        })
+        .try_collect()?;
+
+    let attr_args = darling::ast::NestedMeta::parse_meta_list(attr)?;
+    let attr_args = EntryParams::from_list(&attr_args)?;
+
+    /*
+    let has_info = if attr_args
+        .options
+        .iter()
+        .any(|item| item.is_ident(&opt_info))
+    {
+        if types.is_empty() {
+            Diagnostic::spanned(
+                tree.sig.ident.span().unwrap(),
+                Level::Error,
+                "option info requires at least one argument, the info struct",
+            )
+            .emit();
+        }
+        let first = tree.sig.inputs.first().unwrap();
+        match first {
+            syn::FnArg::Receiver(rec) => {
+                Diagnostic::spanned(
+                    rec.self_token.span.unwrap(),
+                    Level::Error,
+                    "option info may not be used on a receiver function",
+                )
+                .emit();
+            }
+            syn::FnArg::Typed(pat) => match &*pat.ty {
+                Type::Reference(tr) => {
+                    if tr.mutability.is_some() {
+                        Diagnostic::spanned(
+                            tree.sig.ident.span().unwrap(),
+                            Level::Error,
+                            "option info requires first argument to be immutable",
+                        )
+                        .emit();
+                    }
+                }
+                _ => Diagnostic::spanned(
+                    tree.sig.ident.span().unwrap(),
+                    Level::Error,
+                    "option info requires first argument to be a reference type to GateCallInfo",
+                )
+                .emit(),
+            },
+        }
+        true
+    } else {
+        false
+    };
+    */
+    let has_info = false;
+
+    let ret_type = tree.sig.output.clone();
+
+    let fn_name = tree.sig.ident.clone();
+    let names = build_names(fn_name, types, ret_type, arg_names, has_info);
+    let trampoline = build_trampoline(&tree, &names)?;
+    let extern_trampoline = build_extern_trampoline(&tree, &names)?;
+    let public_call_point = build_public_call(&tree, &names)?;
+    let entry = build_entry(&tree, &names)?;
+    let struct_def = build_struct(&tree, &names)?;
+    let types_def = build_types(&tree, &names)?;
+
+    let link_section_text: Attribute = parse_quote!(#[link_section = ".twz_secgate_text"]);
+    let link_section_data: Attribute = parse_quote!(#[link_section = ".twz_secgate_info"]);
+
+    let Info {
+        mod_name,
+        internal_fn_name,
+        ..
+    } = names;
+    tree.sig.ident = parse_quote!(#internal_fn_name);
+    let wrap_lib = &attr_args.lib;
+
+    // For now, we put all this stuff in a mod to keep it contained.
+    Ok(quote::quote! {
+        // the implementation (user-written)
+        #tree
+        pub mod #mod_name {
+            use super::*;
+            pub(super) use super::#internal_fn_name;
+            // the generated entry function
+            #entry
+            // info struct data
+            #link_section_data
+            #struct_def
+            #types_def
+            fn type_check_args(y: #wrap_lib::#mod_name::Args) -> Args {
+                y
+            }
+            fn type_check_ret(y: #wrap_lib::#mod_name::Ret) -> Ret {
+                y
+            }
+            // trampoline text
+            mod trampoline_impl {
+                use super::*;
+                #link_section_text
+                #trampoline
+            }
+        }
     })
 }

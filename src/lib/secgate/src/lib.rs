@@ -10,7 +10,7 @@
 
 use core::ffi::{c_char, CStr};
 use std::{
-    cell::UnsafeCell,
+    cell::{RefCell, UnsafeCell},
     fmt::Debug,
     marker::{PhantomData, Tuple},
     mem::MaybeUninit,
@@ -19,7 +19,7 @@ use std::{
 
 pub use secgate_macros::*;
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::error::{ResourceError, TwzError};
+pub use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 pub mod util;
 
@@ -260,8 +260,10 @@ pub fn get_sctx_id() -> ObjID {
     }
 }
 
-pub fn runtime_preentry() -> Result<(), TwzError> {
-    twizzler_rt_abi::core::twz_rt_cross_compartment_entry()
+pub fn runtime_preentry(info: &GateCallInfo) -> Result<(), TwzError> {
+    twizzler_rt_abi::core::twz_rt_cross_compartment_entry()?;
+    set_caller(info.clone());
+    Ok(())
 }
 
 pub struct SecFrame {
@@ -353,4 +355,19 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
     });
     restore_frame(frame);
     ret.ok_or(ResourceError::Unavailable)?
+}
+
+#[thread_local]
+static CALLER_INFO: RefCell<Option<GateCallInfo>> = RefCell::new(None);
+
+fn set_caller(info: GateCallInfo) {
+    CALLER_INFO.borrow_mut().replace(info);
+}
+
+fn _reset_caller() {
+    CALLER_INFO.borrow_mut().take();
+}
+
+pub fn get_caller() -> Option<GateCallInfo> {
+    CALLER_INFO.borrow().clone()
 }

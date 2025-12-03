@@ -5749,6 +5749,7 @@ dependencies = [
  "miette",
  "naming",
  "rand 0.9.0",
+ "sgtest",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -6521,6 +6522,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.100",
+]
+
+[[package]]
+name = "sgtest"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+]
+
+[[package]]
+name = "sgtest-srv"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "sgtest",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
