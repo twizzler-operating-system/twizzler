@@ -57,7 +57,6 @@ impl ReferenceRuntime {
     /// Set the runtime ready state. If the runtime has not been initialized, the result is
     /// undefined.
     pub unsafe fn set_runtime_ready(&self) {
-        twizzler_abi::klog_println!("runtime ready");
         self.state
             .fetch_or(RuntimeState::READY.bits(), Ordering::SeqCst);
     }

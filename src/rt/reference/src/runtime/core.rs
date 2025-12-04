@@ -11,7 +11,6 @@ use dynlink::context::runtime::RuntimeInitInfo;
 use monitor_api::{RuntimeThreadControl, SharedCompConfig};
 use tracing::Level;
 use twizzler_abi::{
-    klog_println,
     syscall::{sys_get_random, GetRandomFlags},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -87,7 +86,6 @@ impl ReferenceRuntime {
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
         let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
-        klog_println!("runtime entry");
         match rtinfo.kind {
             RUNTIME_INIT_MONITOR => {
                 let init_info = unsafe {
@@ -111,7 +109,6 @@ impl ReferenceRuntime {
                         .unwrap()
                 };
                 let _ = MON_RTINFO.set(None);
-                klog_println!("?? {:?}", self.state());
                 let mut entry_stack = Vec::new();
                 entry_stack.push(rtinfo.argc);
                 if !rtinfo.args.is_null() {
@@ -126,7 +123,6 @@ impl ReferenceRuntime {
                     }
                 }
                 entry_stack.push(0);
-                klog_println!("GOT HERE");
                 self.init_for_compartment(init_info, entry_stack.as_mut_ptr());
                 std::mem::forget(entry_stack);
             }

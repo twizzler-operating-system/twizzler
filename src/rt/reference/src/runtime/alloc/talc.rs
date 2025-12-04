@@ -68,7 +68,6 @@ fn release_object(id: ObjID) {
 }
 
 fn create_and_map() -> Option<(usize, ObjID)> {
-    twizzler_abi::klog_println!("cam: a");
     let id = sys_object_create(
         ObjectCreate::new(
             BackingType::Normal,
@@ -81,7 +80,6 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         &[],
     )
     .ok()?;
-    twizzler_abi::klog_println!("cam: b");
 
     if OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR) {
         // Map directly, avoiding complex machinery in the monitor that depends on an allocator.
@@ -96,15 +94,12 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         .unwrap();
         return Some((slot, id));
     }
-    twizzler_abi::klog_println!("cam: c");
 
     if std::env::var("MONDEBUG").is_ok() {
         twizzler_abi::klog_println!("created object {} for allocation", id,)
     }
 
-    twizzler_abi::klog_println!("cam: d");
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE).ok();
-    twizzler_abi::klog_println!("cam: e");
 
     if let Some(slot) = slot {
         Some((slot.slot, id))
@@ -116,7 +111,6 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
-        twizzler_abi::klog_println!("here a");
         let (slot, id) = create_and_map().ok_or(())?;
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
@@ -127,7 +121,6 @@ impl OomHandler for RuntimeOom {
         let base = slot * MAX_SIZE + HEAP_OFFSET;
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
 
-        twizzler_abi::klog_println!("here b");
         unsafe {
             if talc
                 .claim(Span::new(base as *mut _, top as *mut _))
@@ -137,11 +130,9 @@ impl OomHandler for RuntimeOom {
                 return Err(());
             }
         }
-        twizzler_abi::klog_println!("here c");
 
         if talc.oom_handler.list_obj.is_none() {
             talc.oom_handler.list_obj = Some(create_and_map().ok_or(())?);
-            twizzler_abi::klog_println!("here ca");
             let slot = talc.oom_handler.list_obj.unwrap().0;
             let list_vec_start = slot * MAX_SIZE + HEAP_OFFSET;
             let list_vec_bytes = MAX_SIZE - TOP_OFFSET;
@@ -149,10 +140,8 @@ impl OomHandler for RuntimeOom {
             let na = FailAlloc;
             talc.oom_handler.objects =
                 unsafe { Vec::from_raw_parts_in(list_vec_start as *mut _, 0, list_vec_cap, na) };
-            twizzler_abi::klog_println!("here cx");
         }
 
-        twizzler_abi::klog_println!("here d");
         talc.oom_handler.objects.push((slot, id));
 
         Ok(())

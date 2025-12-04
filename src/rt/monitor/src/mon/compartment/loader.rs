@@ -251,7 +251,7 @@ impl RunCompLoader {
         // the information about the extra compartments.
         let mut cache = HashSet::new();
         let extra_compartments = loads.0.iter().filter_map(|load| {
-            tracing::info!(
+            tracing::trace!(
                 "extra? {} {} {}",
                 load.comp,
                 root_comp_id,
@@ -290,7 +290,7 @@ impl RunCompLoader {
             },
             extra_compartments,
         )?;
-        tracing::info!("extras: {:?}", extra_compartments);
+        tracing::trace!("extras: {:?}", extra_compartments);
 
         let root_id = loads.0[0].lib;
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id, &mut load_ctx)?;
