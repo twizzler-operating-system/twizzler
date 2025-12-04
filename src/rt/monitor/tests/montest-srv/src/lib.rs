@@ -55,6 +55,5 @@ static ___cons_test___ctor: unsafe extern "C" fn() = {
     ___cons_test___ctor
 };
 unsafe fn cons_test() {
-    twizzler_abi::klog_println!("srv constructors run");
     WAS_CTOR_RUN.store(true, Ordering::SeqCst);
 }

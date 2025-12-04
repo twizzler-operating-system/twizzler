@@ -60,6 +60,20 @@ pub fn increment_counter() -> Result<u32, secgate::TwzError> {
 The `lib = "counter"` option allows the `entry` macro to type check against the
 definition given in `counter`'s src/lib.rs.
 
+### Adding to initrd and running
+
+At this point, you can create a binary program as usual, and add it to the initrd.
+Add the `counter` crate as a dependency. Add to the initrd list: `lib:counter-srv`.
+This will cause the initrd builder to copy over the .so file for that crate.
+
+In the binary program's source, you can call the exposed increment_counter function
+from the counter crate.
+
+Once Twizzler has started, you can load the .so file via LD_PRELOAD (which will NOT
+put the .so file in a separate security context) or with SCTX_PRELOAD (which will):
+
+`SCTX_PRELOAD=libcounter_srv.so <binary-name>`
+
 ## Getting Caller Information
 
 The counter-srv increment_counter implementation can get access to caller
