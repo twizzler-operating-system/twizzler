@@ -257,6 +257,15 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
     })
 }
 
+/// Declare a secure call point as a publically-callable function. This does not
+/// include the implementation, but instead defines the call in the user-facing library.
+///
+/// ```
+/// #[secgate::gatecall]
+/// pub fn increment_counter() -> Result<u32, TwzError> {}
+/// ```
+///
+/// Note the empty body. The macro will fill it in automatically.
 #[proc_macro_attribute]
 pub fn gatecall(
     attr: proc_macro::TokenStream,
@@ -297,17 +306,9 @@ fn handle_gate_call(
     let ret_type = tree.sig.output.clone();
     let fn_name = tree.sig.ident.clone();
     let names = build_names(fn_name, types, ret_type, arg_names);
-    /*
-    let trampoline = build_trampoline(&tree, &names)?;
-    let entry = build_entry(&tree, &names)?;
-    let struct_def = build_struct(&tree, &names)?;
-    */
     let extern_trampoline = build_extern_trampoline(&tree, &names)?;
     let types_def = build_types(&tree, &names)?;
     let public_call_point = build_gatecall_public(&tree, &names)?;
-
-    //let link_section_text: Attribute = parse_quote!(#[link_section = ".twz_secgate_text"]);
-    //let link_section_data: Attribute = parse_quote!(#[link_section = ".twz_secgate_info"]);
 
     let Info {
         mod_name,
@@ -374,6 +375,10 @@ fn build_gatecall_public(tree: &ItemFn, names: &Info) -> Result<proc_macro2::Tok
     Ok(quote::quote!(#call_point))
 }
 
+/// Declare a secure gate implementation and entry point.
+///
+/// This macro will generate a number of functions that serve as the entry point for
+/// a secure gate call, and will eventually call the function defined under this macro.
 #[proc_macro_attribute]
 pub fn entry(
     attr: proc_macro::TokenStream,

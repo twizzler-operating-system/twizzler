@@ -211,13 +211,13 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .arch
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
-            cur_th.set_entry_registers(Registers::None);
 
             let int_frame = IsrContext::from(up_frame);
 
             if int_frame.get_ip() == 0 {
                 panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
             }
+            cur_th.set_entry_registers(Registers::None);
 
             x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);

@@ -12,6 +12,5 @@ tracing-subscriber = "*"
 tracing = "*"
 twizzler = { path = "../../lib/twizzler" }
 naming = { path = "../../lib/naming" }
-cache-srv = { path = "../../srv/cache-srv" }
 clap = { version = "4.0.0", features = ["derive"] }
 miette = { version = "*", features = ["fancy"] }

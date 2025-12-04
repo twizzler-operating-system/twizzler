@@ -695,7 +695,6 @@ checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 name = "cache"
 version = "0.1.0"
 dependencies = [
- "cache-srv",
  "clap",
  "miette",
  "naming",
@@ -6941,13 +6940,12 @@ dependencies = [
 
 [[package]]
 name = "tar-no-std"
-version = "0.3.3"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b86f35512dae48782f49a15538f9af3e7ef3ea8226ee073c88f081958583924"
+checksum = "715f9a4586706a61c571cb5ee1c3ac2bbb2cf63e15bce772307b95befef5f5ee"
 dependencies = [
  "bitflags 2.9.0",
  "log",
- "memchr",
  "num-traits",
 ]
 

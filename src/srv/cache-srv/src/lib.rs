@@ -50,20 +50,9 @@ impl CacheState {
 
 static STATE: Mutex<CacheState> = Mutex::new(CacheState::new());
 
-#[secgate::gatecall]
-pub fn hold(id: ObjID, flags: MapFlags) -> Result<bool> {}
-#[secgate::gatecall]
-pub fn drop(id: ObjID, flags: MapFlags) -> Result<bool> {}
-#[secgate::gatecall]
-pub fn preload(id: ObjID) -> Result<()> {}
-#[secgate::gatecall]
-pub fn stat(_id: ObjID) -> Result<()> {}
-#[secgate::gatecall]
-pub fn list_nth(nth: u64) -> Result<Option<CachedStats>> {}
-
 mod gates {
     use super::*;
-    #[secgate::entry(lib = "super")]
+    #[secgate::entry(lib = "")]
     pub fn hold(id: ObjID, flags: MapFlags) -> Result<bool> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         let mut state = STATE.lock().unwrap();
@@ -73,23 +62,23 @@ mod gates {
             .is_some())
     }
 
-    #[secgate::entry(lib = "super")]
+    #[secgate::entry(lib = "")]
     pub fn drop(id: ObjID, flags: MapFlags) -> Result<bool> {
         let mut state = STATE.lock().unwrap();
         Ok(state.map.remove(&(id, flags)).is_some())
     }
 
-    #[secgate::entry(lib = "super")]
+    #[secgate::entry(lib = "")]
     pub fn preload(id: ObjID) -> Result<()> {
         sys_object_ctrl(id, ObjectControlCmd::Preload)
     }
 
-    #[secgate::entry(lib = "super")]
+    #[secgate::entry(lib = "")]
     pub fn stat(_id: ObjID) -> Result<()> {
         Ok(())
     }
 
-    #[secgate::entry(lib = "super")]
+    #[secgate::entry(lib = "")]
     pub fn list_nth(nth: u64) -> Result<Option<CachedStats>> {
         let state = STATE.lock().unwrap();
         if let Some(v) = state.map.values().nth(nth as usize) {
