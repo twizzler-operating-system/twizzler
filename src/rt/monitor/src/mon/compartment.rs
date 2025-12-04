@@ -445,6 +445,20 @@ impl super::Monitor {
             })
             .collect::<Vec<_>>();
         tracing::debug!("ld preload extras: {:?}", extras);
+        let extras_sctx = env
+            .iter()
+            .filter_map(|item| {
+                let item = item.to_str().ok()?;
+                if item.starts_with("SCTX_PRELOAD=") {
+                    Some(UnloadedLibrary::new(
+                        item.trim_start_matches("SCTX_PRELOAD="),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        tracing::debug!("sctx preload extras: {:?}", extras);
 
         let mondebug = env
             .iter()
@@ -452,7 +466,15 @@ impl super::Monitor {
             .is_some();
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-            loader::RunCompLoader::new(*dynlink, compname, root, &extras, new_comp_flags, mondebug)
+            loader::RunCompLoader::new(
+                *dynlink,
+                compname,
+                root,
+                &extras,
+                &extras_sctx,
+                new_comp_flags,
+                mondebug,
+            )
         }
         .map_err(|_| GenericError::Internal)?;
 

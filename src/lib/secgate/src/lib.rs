@@ -241,6 +241,9 @@ fn get_tp() -> usize {
 }
 
 pub fn get_thread_id() -> ObjID {
+    if !unsafe { __is_monitor_ready() } {
+        return twizzler_abi::syscall::sys_thread_self_id();
+    }
     #[thread_local]
     static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
     if get_tp() != 0 {
@@ -251,6 +254,9 @@ pub fn get_thread_id() -> ObjID {
 }
 
 pub fn get_sctx_id() -> ObjID {
+    if !unsafe { __is_monitor_ready() } {
+        return twizzler_abi::syscall::sys_thread_active_sctx_id();
+    }
     #[thread_local]
     static ONCE_ID: OnceLock<ObjID> = OnceLock::new();
     if get_tp() != 0 {
@@ -360,15 +366,26 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
 #[thread_local]
 static CALLER_INFO: RefCell<Option<GateCallInfo>> = RefCell::new(None);
 
+unsafe extern "C" {
+    fn __is_monitor_ready() -> bool;
+}
+
 pub fn set_caller(info: GateCallInfo) {
-    CALLER_INFO.borrow_mut().replace(info);
+    if unsafe { __is_monitor_ready() } {
+        CALLER_INFO.borrow_mut().replace(info);
+    }
 }
 
 fn _reset_caller() {
-    CALLER_INFO.borrow_mut().take();
+    if unsafe { __is_monitor_ready() } {
+        CALLER_INFO.borrow_mut().take();
+    }
 }
 
 pub fn get_caller() -> Option<GateCallInfo> {
+    if !unsafe { __is_monitor_ready() } {
+        return None;
+    }
     if CALLER_INFO.borrow().is_none() {
         panic!("..")
     }

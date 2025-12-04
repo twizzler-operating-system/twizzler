@@ -132,32 +132,39 @@ impl<'a> Drop for IdDropper<'a> {
 
 impl ReferenceRuntime {
     pub fn cross_compartment_entry(&self) -> Result<()> {
+        twizzler_abi::klog_println!("A");
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into()).inspect_err(|e| {
                 twizzler_abi::klog_println!("failed to set sctx: {}", e);
             })?;
         } else {
+            twizzler_abi::klog_println!("0");
             let _ = twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx)
                 .inspect_err(|e| {
                     if !matches!(e, TwzError::Naming(NamingError::AlreadyBound)) {
                         twizzler_abi::klog_println!("failed to attach sctx: {}", e);
                     }
                 });
+            twizzler_abi::klog_println!("1");
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(
                 monitor_api::get_comp_config().sctx,
             )
             .inspect_err(|e| {
                 twizzler_abi::klog_println!("failed to set-a sctx: {}", e);
             })?;
+            twizzler_abi::klog_println!("2");
         }
+        twizzler_abi::klog_println!("B");
         let mut inner = THREAD_MGR.inner.lock();
         let id = inner.next_id().freeze();
         drop(inner);
+        twizzler_abi::klog_println!("C");
         let tls = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
+        twizzler_abi::klog_println!("Z");
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
         Ok(())
     }

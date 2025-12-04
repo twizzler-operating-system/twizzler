@@ -1,6 +1,6 @@
 use std::{alloc::GlobalAlloc, ptr::NonNull, sync::atomic::Ordering};
 
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{klog_println, object::ObjID};
 
 use super::{ReferenceRuntime, RuntimeState};
 
@@ -16,6 +16,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         {
             return LOCAL_ALLOCATOR.alloc(layout);
         }
+        klog_println!("==> {:?}", self.state());
 
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc
