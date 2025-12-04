@@ -8,10 +8,9 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-runtime = { workspace = true }
 secgate = { workspace = true }
 twizzler-rt-abi = "0.99"
-tracing-subscriber = { workspace = true }
-tracing = { workspace = true }
-twizzler = { workspace = true }
-naming = { workspace = true }
-cache-srv = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-miette = { workspace = true, features = ["fancy"] }
+tracing-subscriber = "*"
+tracing = "*"
+twizzler = { path = "../../lib/twizzler" }
+naming = { path = "../../lib/naming" }
+clap = { version = "4.0.0", features = ["derive"] }
+miette = { version = "*", features = ["fancy"] }

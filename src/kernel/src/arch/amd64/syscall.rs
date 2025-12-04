@@ -191,53 +191,38 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         //let syscall_done = Instant::now();
         crate::thread::exit_kernel();
 
-        let user_fs = {
-            let cur_th = current_thread_ref().unwrap();
-            let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
-            // Okay, now check if we are restoring an upcall frame, and if so, do that.
-            // Unfortunately, we can't use the sysret/exit instruction for this, since
-            // it clobbers registers. Instead, we'll use the ISR return path, which
-            // doesn't.
-            let rf = cur_th.arch.take_upcall_restore_frame();
-            if let Some(up_frame) = rf {
-                // Restore the sse registers. These don't get restored by the isr return path, so we
-                // have to do it ourselves.
-                if use_xsave() {
-                    core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
-                    super::processor::init_fpu_state();
-                } else {
-                    core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
-                }
-
-                // Restore the thread pointer (it might have changed, and we also allow for it to
-                // change inside the upcall frame during the upcall)
-                cur_th
-                    .arch
-                    .user_fs
-                    .store(up_frame.thread_ptr, Ordering::SeqCst);
-                cur_th.set_entry_registers(Registers::None);
-
-                let int_frame = IsrContext::from(up_frame);
-
-                if int_frame.get_ip() == 0 {
-                    panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
-                }
-
-                x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
-                return_with_frame_to_user(int_frame);
+        let cur_th = current_thread_ref().unwrap();
+        let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
+        // Okay, now check if we are restoring an upcall frame, and if so, do that.
+        // Unfortunately, we can't use the sysret/exit instruction for this, since
+        // it clobbers registers. Instead, we'll use the ISR return path, which
+        // doesn't.
+        let rf = cur_th.arch.take_upcall_restore_frame();
+        if let Some(up_frame) = rf {
+            // Restore the sse registers. These don't get restored by the isr return path, so we
+            // have to do it ourselves.
+            if use_xsave() {
+                core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
+                super::processor::init_fpu_state();
+            } else {
+                core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
-            cur_th.set_entry_registers(Registers::None);
-            user_fs
-        };
-        /*
-        let finished = Instant::now();
-        log::trace!(
-            "==> {:?} {:?} {:?}",
-            init_done - start,
-            syscall_done - init_done,
-            finished - syscall_done
-        );
-        */
+
+            // Restore the thread pointer (it might have changed, and we also allow for it to
+            // change inside the upcall frame during the upcall)
+            cur_th
+                .arch
+                .user_fs
+                .store(up_frame.thread_ptr, Ordering::SeqCst);
+
+            if int_frame.get_ip() == 0 {
+                panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+            }
+
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            return_with_frame_to_user(int_frame);
+        }
+        cur_th.set_entry_registers(Registers::None);
 
         /* TODO: check that rcx is canonical */
         if (*context).pc().raw() == 0 || (*context).pc().is_kernel() {

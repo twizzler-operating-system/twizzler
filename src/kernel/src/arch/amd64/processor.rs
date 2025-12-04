@@ -123,8 +123,6 @@ pub fn init(tls: VirtAddr) {
                 1024
             };
 
-            logln!("xsave size: {}", xsave_size);
-
             if xsave_size > XSAVE_LEN {
                 panic!(
                     "increase xsave length (need {}, have {})",
