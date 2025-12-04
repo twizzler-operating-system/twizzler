@@ -247,7 +247,7 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
         let mut i = 0;
         let mut tmp = [0u8; MAX_SINGLE_READ];
         let mut timedout = false;
-        while i < slice.len() {
+        while i < slice.len() && i < MAX_SINGLE_READ {
             let mut reader = self.read_lock.lock();
             match reader.read_byte() {
                 Some(x) => {
