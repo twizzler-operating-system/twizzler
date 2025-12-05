@@ -27,9 +27,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             *current_thread_ref().unwrap().upcall_target.lock() = Some(*data);
         }
         ThreadControl::ResumeFromUpcall => {
-            let Some(data) = (unsafe { (arg as usize as *const UpcallFrame).as_ref() }) else {
-                return [1, 1];
-            };
+            let data = unsafe { (arg as usize as *const UpcallFrame).read() };
             let flags = ResumeFlags::from_bits_truncate(arg2);
             // TODO: verify args, check perms.
 

@@ -1,5 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
+use heapless::index_map::FnvIndexMap;
 use log::{error, trace};
 use twizzler_abi::{
     device::CacheType,
@@ -22,18 +23,31 @@ use crate::{
     thread::current_memory_context,
 };
 
-#[derive(Clone)]
 struct SecCtxMgrInner {
     active: SecurityContextRef,
     //ObjID here refers to the security contexts ID
-    inactive: BTreeMap<ObjID, SecurityContextRef>,
+    inactive: heapless::index_map::FnvIndexMap<ObjID, SecurityContextRef, 512>,
+    //inactive: BTreeMap<ObjID, SecurityContextRef>,
+}
+
+impl Clone for SecCtxMgrInner {
+    fn clone(&self) -> Self {
+        let inactive = self
+            .inactive
+            .iter()
+            .map(|x| (*x.0, x.1.clone()))
+            .collect::<FnvIndexMap<ObjID, SecurityContextRef, 512>>();
+        Self {
+            active: self.active.clone(),
+            inactive,
+        }
+    }
 }
 
 /// Management of per-thread security context info.
 pub struct SecCtxMgr {
-    inner: Mutex<SecCtxMgrInner>,
-    // Cache this here so we can access it quickly and without grabbing a mutex.
-    active_id: Spinlock<ObjID>,
+    inner: Spinlock<SecCtxMgrInner>,
+    thid: u64,
 }
 
 /// A single security context.
@@ -203,6 +217,17 @@ impl SecCtxMgr {
         self.active().lookup(id, default_prots)
     }
 
+    #[track_caller]
+    pub fn list_all(&self) {
+        logln!(
+            "{} :: {} {}",
+            self.thid,
+            self.active_id(),
+            core::panic::Location::caller()
+        );
+        logln!("{} :: :: {:?}", self.thid, self.inner.lock().inactive);
+    }
+
     /// Get the active context.
     pub fn active(&self) -> SecurityContextRef {
         self.inner.lock().active.clone()
@@ -211,7 +236,7 @@ impl SecCtxMgr {
     /// Get the active ID. This is faster than active().id() and doesn't allocate memory (and only
     /// uses a spinlock).
     pub fn active_id(&self) -> ObjID {
-        *self.active_id.lock()
+        self.inner.lock().active.id()
     }
 
     /// Check access rights in the active context.
@@ -264,45 +289,60 @@ impl SecCtxMgr {
     }
 
     /// Build a new SctxMgr for user threads.
-    pub fn new(ctx: SecurityContextRef) -> Self {
-        let id = ctx.id();
+    pub fn new(ctx: SecurityContextRef, thid: u64) -> Self {
         Self {
-            inner: Mutex::new(SecCtxMgrInner {
+            inner: Spinlock::new(SecCtxMgrInner {
                 active: ctx,
                 inactive: Default::default(),
             }),
-            active_id: Spinlock::new(id),
+            thid,
         }
     }
 
     /// Build a new SctxMgr for kernel threads.
     pub fn new_kernel() -> Self {
         Self {
-            inner: Mutex::new(SecCtxMgrInner {
+            inner: Spinlock::new(SecCtxMgrInner {
                 active: Arc::new(SecurityContext::new(None)),
                 inactive: Default::default(),
             }),
-            active_id: Spinlock::new(KERNEL_SCTX),
+            thid: 0,
+        }
+    }
+
+    pub fn inherit(other: &SecCtxMgr, thid: u64) -> Self {
+        let other_inner = other.inner.lock();
+        let mut inactive = FnvIndexMap::new();
+        for (k, v) in other_inner.inactive.iter() {
+            inactive.insert(*k, v.clone()).unwrap();
+        }
+        Self {
+            inner: Spinlock::new(SecCtxMgrInner {
+                active: other_inner.active.clone(),
+                inactive,
+            }),
+            thid,
         }
     }
 
     /// Switch to the specified context.
+    #[track_caller]
     pub fn switch_context(&self, id: ObjID) -> SwitchResult {
-        if *self.active_id.lock() == id {
+        let mut inner = self.inner.lock();
+        if inner.active_id() == id {
             return SwitchResult::NoSwitch;
         }
-
-        let mut inner = self.inner.lock();
-
         if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
-
-            *self.active_id.lock() = id;
             // ctx now holds the old active context
-            inner.inactive.insert(ctx.id(), ctx);
+            inner.inactive.insert(ctx.id(), ctx).unwrap();
+            drop(inner);
             current_memory_context().map(|mc| mc.switch_to(id));
             SwitchResult::Switched
         } else {
+            logln!("NOT ATTACHED {}", core::panic::Location::caller());
+            drop(inner);
+            self.list_all();
             SwitchResult::NotAttached
         }
     }
@@ -313,7 +353,7 @@ impl SecCtxMgr {
         if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
             return Err(NamingError::AlreadyBound.into());
         }
-        inner.inactive.insert(sctx.id(), sctx);
+        inner.inactive.insert(sctx.id(), sctx).unwrap();
         Ok(())
     }
 }
@@ -327,17 +367,6 @@ pub enum SwitchResult {
     Switched,
     /// The specified ID was not attached.
     NotAttached,
-}
-
-impl Clone for SecCtxMgr {
-    fn clone(&self) -> Self {
-        let inner = self.inner.lock().clone();
-        let active_id = inner.active.id();
-        Self {
-            inner: Mutex::new(inner),
-            active_id: Spinlock::new(active_id),
-        }
-    }
 }
 
 struct GlobalSecCtxMgr {

@@ -196,6 +196,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         // we'll use the ISR return path, which doesn't.
         let rf = cur_th.arch.take_upcall_restore_frame();
         if let Some(up_frame) = rf {
+            logln!("got upcall frame: {:?}", up_frame);
             // Restore the sse registers. These don't get restored by the isr return path, so we
             // have to do it ourselves.
             if use_xsave() {
@@ -211,7 +212,11 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .arch
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
-
+            let res = cur_th.secctx.switch_context(up_frame.prior_ctx);
+            if matches!(res, crate::security::SwitchResult::NotAttached) {
+                logln!("warning -- tried to restore thread to non-attached security context");
+                crate::thread::exit(twizzler_abi::upcall::UPCALL_EXIT_CODE);
+            }
             let int_frame = IsrContext::from(up_frame);
 
             if int_frame.get_ip() == 0 {

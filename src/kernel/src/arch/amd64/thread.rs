@@ -18,6 +18,7 @@ use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
     processor::KERNEL_STACK_SIZE,
+    spinlock::Spinlock,
     thread::{current_thread_ref, Thread},
 };
 
@@ -57,7 +58,7 @@ pub struct ArchThread {
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
     /// frame and returns to user using this frame.
-    upcall_restore_frame: RefCell<Option<UpcallFrame>>,
+    upcall_restore_frame: Spinlock<Option<UpcallFrame>>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -65,7 +66,10 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
-        self.upcall_restore_frame.borrow_mut().take()
+        self.upcall_restore_frame
+            .lock()
+            .take()
+            .inspect(|x| logln!("took {:?}", x))
     }
 }
 
@@ -135,7 +139,7 @@ impl ArchThread {
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
             entry_registers: RefCell::new(Registers::None),
-            upcall_restore_frame: RefCell::new(None),
+            upcall_restore_frame: Spinlock::new(None),
         }
     }
 }
@@ -336,27 +340,32 @@ impl Thread {
     /// be the one with which we return to user. Note also that any upcalls
     /// generated to this thread after calling this function but before returning
     /// to userspace will cause the thread to immediately abort.
-    pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
+    pub fn restore_upcall_frame(&self, frame: UpcallFrame) {
+        assert_eq!(current_thread_ref().unwrap().id(), self.id());
         if frame.ip() == 0 {
             logln!("warning -- tried to restore thread to 0 IP");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
+        logln!("restoring upcall frame: {:?}", frame);
+        /*
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!("warning -- tried to restore thread to non-attached security context");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
+        */
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
         // to use the ISR return mechanism (see the syscall code).
-        self.arch.upcall_restore_frame.borrow_mut().replace(*frame);
+        self.arch.upcall_restore_frame.lock().replace(frame);
     }
 
     /// Queue up an upcall on this thread. The sup argument denotes if this upcall
     /// is requesting a supervisor context switch. Once this is done, the thread's kernel
     /// entry frame will be setup to enter the upcall handler on return-to-userspace.
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
-        if self.arch.upcall_restore_frame.borrow().is_some() {
+        assert_eq!(current_thread_ref().unwrap().id(), self.id());
+        if self.arch.upcall_restore_frame.lock().is_some() {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
@@ -494,7 +503,7 @@ impl Thread {
 
     pub fn read_ip(&self) -> u64 {
         use crate::syscall::SyscallContext;
-        let frame = &self.arch.upcall_restore_frame.borrow();
+        let frame = &self.arch.upcall_restore_frame.lock();
         if frame.is_none() {
             return match *self.arch.entry_registers.borrow() {
                 Registers::None => {
@@ -519,7 +528,7 @@ impl Thread {
                 twizzler_rt_abi::error::GenericError::AccessDenied,
             ));
         }
-        let frame = &self.arch.upcall_restore_frame.borrow();
+        let frame = &self.arch.upcall_restore_frame.lock();
         if frame.is_none() {
             let frame = match *self.arch.entry_registers.borrow() {
                 Registers::None => {

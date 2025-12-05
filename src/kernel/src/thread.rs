@@ -59,6 +59,7 @@ pub struct Thread {
     pub switch_lock: AtomicU64,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
+    pub secctx: SecCtxMgr,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
@@ -71,7 +72,6 @@ pub struct Thread {
     pub condvar_link: RBTreeAtomicLink,
     pub requeue_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
-    pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
 }
