@@ -1,43 +1,87 @@
 {
-  description = "Dev environment for QEMU, libvirt, and build tools";
+  description = "A Nix-flake-based Rust development environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1"; # unstable Nixpkgs
+    fenix = {
+      url = "https://flakehub.com/f/nix-community/fenix/0.1";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let pkgs = import nixpkgs { inherit system; };
-      in {
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            # Virtualization / QEMU
-            qemu
-            qemu_kvm
-            bridge-utils
-            libvirt
-            virt-manager
+  outputs =
+    { self, ... }@inputs:
 
-            # Build / Development
-            curl
-            build-essential
-            pkg-config
-            openssl
-            python3
-            python3Packages.pip
-            cmake
-            ninja
-            git
-            clang
-            sudo
-          ];
+    let
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forEachSupportedSystem =
+        f:
+        inputs.nixpkgs.lib.genAttrs supportedSystems (
+          system:
+          f {
+            pkgs = import inputs.nixpkgs {
+              inherit system;
+              overlays = [
+                inputs.self.overlays.default
+              ];
+            };
+          }
+        );
+    in
+    {
+      overlays.default = final: prev: {
+        rustToolchain =
+          with inputs.fenix.packages.${prev.stdenv.hostPlatform.system};
+          combine (
+            with stable;
+            [
+              clippy
+              rustc
+              cargo
+              rustfmt
+              rust-src
+            ]
+          );
+      };
 
-          shellHook = ''
-            echo "🐧 Development environment ready."
-            echo "Linux virtualization tools: QEMU, libvirt, virt-manager"
-            echo "Build tools: gcc/clang, cmake, ninja, python, pip"
-          '';
-        };
-      });
+      devShells = forEachSupportedSystem (
+        { pkgs }:
+        {
+          default = pkgs.mkShellNoCC {
+            packages = with pkgs; [
+              rustToolchain
+              openssl
+              pkg-config
+              cargo-deny
+              cargo-edit
+              cargo-watch
+              rust-analyzer
+
+              ninja
+              cmake
+              qemu
+              qemu_kvm
+              bridge-utils
+              virt-manager
+              libvirt
+              libclang
+
+            ];
+
+            env = {
+              # Required by rust-analyzer
+              RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+
+              # Required by bindgen to find libclang.so
+              LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+            };
+          };
+        }
+      );
+    };
 }
