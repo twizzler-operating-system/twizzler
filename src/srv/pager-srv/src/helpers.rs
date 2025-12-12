@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -92,8 +92,15 @@ pub async fn page_in(
     }
 
     let nr_pages = obj_range.len() / PAGE as usize;
+    let mut buffer = [0; PAGE as usize];
     let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
-    page_in_many(ctx, obj_id, &mut reqs).await.map(|_| ())
+    page_in_many(ctx, obj_id, &mut reqs).await.map(|_| ())?;
+    let range = reqs.first().unwrap().phys_list.first().unwrap().range;
+
+    crate::physrw::read_physical_pages(&mut buffer, range).await?;
+
+    tracing::info!("buffer :{:?}", &buffer[0..64]);
+    Ok(())
 }
 
 pub async fn page_out_many(

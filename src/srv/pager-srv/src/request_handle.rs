@@ -255,6 +255,16 @@ pub async fn handle_kernel_request(
                             .await
                             .unwrap();
 
+                        tracing::info!("buffer: {:?}", &buffer[0..64]);
+
+                        ctx.paged_ostore(None)
+                            .unwrap()
+                            .read_object(id.raw(), 0, &mut buffer)
+                            .await
+                            .unwrap();
+
+                        tracing::info!("buffer: {:?}", &buffer[0..64]);
+
                         KernelCompletionData::ObjectInfoCompletion(id, object_info)
                     }
                     Err(e) => {

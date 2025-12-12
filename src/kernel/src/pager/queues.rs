@@ -169,7 +169,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::trace!(
+    log::info!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -219,7 +219,7 @@ fn pager_compl_handle_page_data(
         };
 
         let page = PageRef::new(Arc::new(page), 0, thiscount);
-        log::trace!(
+        log::info!(
             "Adding page {}: {} {} {:?} {:?}",
             request.obj.as_ref().unwrap().id(),
             pn,
@@ -228,6 +228,11 @@ fn pager_compl_handle_page_data(
             flags
         );
         let mut object_tree = request.obj.as_ref().unwrap().lock_page_tree();
+
+        unsafe {
+            let b = page.get_mut_to_val::<[u8; 4096]>(0);
+            log::info!("buffer: {:?}", &(*b)[0..64]);
+        }
         object_tree.add_page(pn, page, None);
         drop(object_tree);
         count += thiscount;
