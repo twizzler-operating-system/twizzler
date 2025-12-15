@@ -11,6 +11,7 @@ use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};
 use super::{Object, TxObject};
 use crate::{
     marker::{BaseType, StoreCopy},
+    object::RawObject,
     Result,
 };
 
@@ -45,7 +46,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }
         self
     }
-    
+
     /// Cast the base type.
     pub fn cast<U: BaseType>(self) -> ObjectBuilder<U> {
         ObjectBuilder::<U>::new(self.spec)
@@ -125,6 +126,8 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
+        tracing::info!("object spec{:#?}", self.spec);
+
         let id = twizzler_abi::syscall::sys_object_create(
             self.spec,
             self.src_objs.as_slice(),
@@ -147,7 +150,15 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }
 
         //
+        //
+        tracing::info!("Creating object with id: {id:?}");
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
+        let metadata = mu_object.meta_ptr();
+
+        unsafe {
+            tracing::info!("metadata:{:#?}", *metadata);
+        }
+
         let object = ctor(mu_object.into_tx()?)?;
         object.into_object()
     }

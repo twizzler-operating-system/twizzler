@@ -49,7 +49,7 @@ pub use handle::{pager_close_handle, pager_open_handle};
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),
@@ -199,8 +199,11 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
             id
         } else {
             tracing::info!("creating new naming object");
-            let vo =
-                VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist(true)).unwrap();
+
+            let ob = ObjectBuilder::default().persist(true);
+
+            let vo = VecObject::<u32, VecObjectAlloc>::new(ob).unwrap();
+            tracing::info!("naming object id: {:#?}", vo.object().id());
             run_async(po.set_config_id(vo.object().id().raw())).unwrap();
             vo.object().id().raw()
         }

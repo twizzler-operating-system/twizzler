@@ -382,6 +382,7 @@ impl Object {
         {
             unsafe {
                 let t = page.get_mut_to_val::<MetaInfo>(0);
+                log::info!("{page:#?}");
                 Some(t.read())
             }
         } else {
