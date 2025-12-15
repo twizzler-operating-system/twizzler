@@ -19,39 +19,22 @@ use crate::{Cap, SigningKey};
 pub trait SecureBuilderExt<Base: BaseType + StoreCopy> {
     /// Builds a "secure" object, one without `Protections::READ|Protections::Write` as its
     /// `default_prots`.
-    fn build_secure(
-        &self,
-        base: Base,
-        s_key: &SigningKey,
-        ctx: Option<ObjID>,
-    ) -> Result<Object<Base>, TwzError>;
+    ///
+    /// It achieves this by creating a capability for the object within the current security context, and then writing
+    /// to the object after that capability has been created.
+    fn build_secure(&self, base: Base, s_key: &SigningKey) -> Result<Object<Base>, TwzError>;
 }
 
 impl<Base> SecureBuilderExt<Base> for ObjectBuilder<Base>
 where
     Base: BaseType + StoreCopy,
 {
-    fn build_secure(
-        &self,
-        base: Base,
-        s_key: &SigningKey,
-        //NOTE: once default global masks get fixed to all prots, remove this argument,use
-        // currently attached ctx always, caller can choose what to attach to.
-        ctx: Option<ObjID>,
-    ) -> Result<Object<Base>, TwzError> {
+    fn build_secure(&self, base: Base, s_key: &SigningKey) -> Result<Object<Base>, TwzError> {
         self.build_inplace(|tx| {
-            let mut sec_ctx = ctx
-                .map(|id| {
-                    // we need to attach to the context they provided
-                    let ctx = SecCtx::try_from(id)?;
-                    ctx.set_active().unwrap();
-                    Ok::<SecCtx, TwzError>(ctx)
-                })
-                .unwrap_or(Ok(SecCtx::active_ctx()))?;
-
+            let mut curr_sec_ctx = SecCtx::active_ctx();
             let cap = Cap::new(
                 tx.id(),
-                sec_ctx.id(),
+                curr_sec_ctx.id(),
                 Protections::READ | Protections::WRITE,
                 s_key,
                 Default::default(),
@@ -59,7 +42,7 @@ where
                 Default::default(),
             )?;
 
-            sec_ctx.insert_cap(cap)?;
+            curr_sec_ctx.insert_cap(cap)?;
 
             // now we have permissions to write here!
             tx.write(base)
@@ -105,7 +88,7 @@ mod tests {
                 .expect("message was longer than 256 characters!!"),
         };
         let obj = ObjectBuilder::new(spec)
-            .build_secure(base, s_key, None)
+            .build_secure(base, s_key)
             .expect("should have built successfully");
 
         // our current thing should be able to read this just fine

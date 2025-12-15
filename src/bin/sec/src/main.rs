@@ -74,7 +74,7 @@ fn main() {
                         .expect("failed to map signing key object");
                     builder
                         // .build_secure(base, s_key.base(), args.sec_ctx_id)
-                        .build_secure(base, s_key.base(), args.sec_ctx_id)
+                        .build_secure(base, s_key.base())
                         .expect("secure build should succeed")
                 };
 
