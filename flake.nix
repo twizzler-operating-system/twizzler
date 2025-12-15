@@ -66,7 +66,8 @@
               cmake
               qemu
               qemu_kvm
-              bridge-utils
+              # this doesnt work on macos
+              # bridge-utils
               virt-manager
               libvirt
               libclang

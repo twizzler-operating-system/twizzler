@@ -16,6 +16,7 @@ use twizzler_rt_abi::{
     error::{NamingError, TwzError},
     object::{MapFlags, ObjID},
 };
+use twizzler_security::SecCtx;
 
 use crate::mon::{
     get_monitor,
@@ -25,19 +26,8 @@ use crate::mon::{
 pub struct Engine;
 
 fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
-    // TODO: we don't support real sctx instances yet
-    twizzler_abi::syscall::sys_object_create(
-        ObjectCreate::new(
-            BackingType::Normal,
-            twizzler_abi::syscall::LifetimeType::Volatile,
-            None,
-            ObjectCreateFlags::empty(),
-            Protections::all(),
-        ),
-        &[],
-        &[],
-    )
-    .unwrap()
+    let sec_ctx = SecCtx::default();
+    sec_ctx.id()
 }
 
 impl ContextEngine for Engine {
