@@ -329,7 +329,7 @@ impl SecCtxMgr {
     #[track_caller]
     pub fn switch_context(&self, id: ObjID) -> SwitchResult {
         let mut inner = self.inner.lock();
-        if inner.active_id() == id {
+        if inner.active.id() == id {
             return SwitchResult::NoSwitch;
         }
         if let Some(mut ctx) = inner.inactive.remove(&id) {
