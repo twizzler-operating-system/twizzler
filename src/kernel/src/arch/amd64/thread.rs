@@ -347,13 +347,11 @@ impl Thread {
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         logln!("restoring upcall frame: {:?}", frame);
-        /*
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!("warning -- tried to restore thread to non-attached security context");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
-        */
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
         // to use the ISR return mechanism (see the syscall code).
@@ -520,6 +518,10 @@ impl Thread {
             };
         }
         frame.unwrap().rip
+    }
+
+    pub fn get_entry_registers(&self) -> Registers {
+        return *self.arch.entry_registers.borrow();
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {

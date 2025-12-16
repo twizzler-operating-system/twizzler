@@ -1,6 +1,6 @@
 use twizzler_abi::{
     arch::ArchRegisters,
-    object::ObjID,
+    object::{ObjID, MAX_SIZE},
     syscall::{ThreadControl, ThreadSpawnArgs},
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
@@ -8,9 +8,11 @@ use twizzler_abi::{
 use twizzler_rt_abi::{error::TwzError, Result};
 
 use crate::{
+    arch::{thread::UpcallAble, VirtAddr},
+    memory::pagetables::MappingCursor,
     processor::sched::{lookup_thread_repr, schedule, SchedFlags},
     security::SwitchResult,
-    thread::current_thread_ref,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
@@ -57,7 +59,30 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
+            logln!(
+                "{}: setting active id {:?}",
+                current_thread_ref().unwrap().id(),
+                id
+            );
+            let ctx = current_thread_ref().unwrap().get_entry_registers();
+            logln!("==> {:?}", ctx);
+            let ptr = match ctx {
+                crate::arch::thread::Registers::None => todo!(),
+                crate::arch::thread::Registers::Syscall(_, x86_syscall_context) => {
+                    x86_syscall_context.get_stack_top()
+                }
+                crate::arch::thread::Registers::Interrupt(_, isr_context) => todo!(),
+            } as usize as *const u64;
+            //logln!(" {:p} ==> {:x}", ptr, unsafe { ptr.read_volatile() });
             let res = current_thread_ref().unwrap().secctx.switch_context(id);
+            current_memory_context().unwrap().with_arch(id, |arch| {
+                arch.unmap(MappingCursor::new(
+                    VirtAddr::new(((ptr as usize) & !MAX_SIZE) as u64).unwrap(),
+                    MAX_SIZE,
+                ));
+            });
+            //logln!(" {:p} ==> {:x}", ptr, unsafe { ptr.read_volatile() });
+
             return match res {
                 SwitchResult::NotAttached => [1, 1],
                 _ => [0, 0],
