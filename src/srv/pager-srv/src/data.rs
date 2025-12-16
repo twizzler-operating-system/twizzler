@@ -7,7 +7,9 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
+use object_store::{
+    objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN, PAGE_SIZE,
+};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::{ObjID, ObjectHandle};
@@ -532,6 +534,7 @@ impl PagerData {
         obj_range: ObjectRange,
     ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
         // TODO: will need to check if the range contains this, not just starts here.
+        tracing::info!("fill partial");
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
                 .fill_mem_pages_legacy(ctx, id, obj_range)
