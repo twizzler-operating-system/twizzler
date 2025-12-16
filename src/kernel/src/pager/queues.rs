@@ -69,7 +69,7 @@ fn pager_request_copy_user_phys(
     phys: PhysRange,
     write_phys: bool,
 ) -> CompletionToPager {
-    log::info!("copy user phys");
+    log::debug!("copy user phys {:?} {:?}", phys, write_phys);
     let Ok(phys_start) = PhysAddr::new(phys.start) else {
         return CompletionToPager::new(PagerCompletionData::Error(
             TwzError::INVALID_ARGUMENT.into(),
@@ -94,6 +94,7 @@ fn pager_request_copy_user_phys(
     };
 
     let vphys = phys_start.kernel_vaddr();
+    log::debug!("addrs: {:?} {:?}", vaddr, vphys);
     let user_slice = unsafe { core::slice::from_raw_parts_mut(vaddr.as_mut_ptr(), len) };
     let phys_slice =
         unsafe { core::slice::from_raw_parts_mut(vphys.as_mut_ptr::<u8>(), phys.len()) };
@@ -169,7 +170,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::info!(
+    log::debug!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -219,20 +220,7 @@ fn pager_compl_handle_page_data(
         };
 
         let page = PageRef::new(Arc::new(page), 0, thiscount);
-        log::info!(
-            "Adding page {}: {} {} {:?} {:?}",
-            request.obj.as_ref().unwrap().id(),
-            pn,
-            thiscount,
-            page.physical_address(),
-            flags
-        );
         let mut object_tree = request.obj.as_ref().unwrap().lock_page_tree();
-
-        unsafe {
-            let b = page.get_mut_to_val::<[u8; 4096]>(0);
-            log::info!("buffer: {:?}", &(*b)[0..64]);
-        }
         object_tree.add_page(pn, page, None);
         drop(object_tree);
         count += thiscount;

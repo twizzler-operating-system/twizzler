@@ -7,9 +7,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{
-    objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN, PAGE_SIZE,
-};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::object::{ObjID, ObjectHandle};
@@ -540,11 +538,6 @@ impl PagerData {
                 .await?
                 .into_iter()
                 .map(|p| PagedPhysMem::new(p.1).completed())
-                .inspect(|p| {
-                    let mut buffer = [0u8; PAGE_SIZE];
-                    crate::physrw::read_physical_pages(&mut buffer, p.range);
-                    tracing::info!("==> {:?}", &buffer[0..32]);
-                })
                 .collect());
         }
 
@@ -593,19 +586,8 @@ impl PagerData {
         );
         // TODO: remove this restriction
         assert_eq!(obj_range.len(), 0x1000);
-        let phys_range = {
-            let page = match self.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    tracing::warn!("out of memory -- task waiting");
-                    mw.await
-                }
-            };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            phys_range
-        };
-        page_in(ctx, id, obj_range, phys_range).await?;
-        tracing::debug!("memory page allocated successfully: {:?}", phys_range);
+
+        let phys_range = page_in(ctx, id, obj_range).await?;
 
         {
             let mut inner = self.inner.lock().unwrap();

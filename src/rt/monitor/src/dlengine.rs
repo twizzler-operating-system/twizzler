@@ -9,8 +9,7 @@ use dynlink::{
 use naming_core::{GetFlags, NameStore, NsNodeKind};
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{BackingType, ObjectCreate, ObjectCreateFlags},
+    object::{MAX_SIZE, NULLPAGE_SIZE},
 };
 use twizzler_rt_abi::{
     error::{NamingError, TwzError},

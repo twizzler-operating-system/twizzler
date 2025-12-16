@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -44,17 +44,26 @@ pub async fn page_in(
     ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
-    phys_range: PhysRange,
-) -> Result<()> {
+) -> Result<PhysRange> {
     assert_eq!(obj_range.len(), PAGE as usize);
-    assert_eq!(phys_range.len(), PAGE as usize);
 
     let mut start_page = obj_range.start / PAGE;
 
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
-        tracing::debug!("found meta page, using 0 page");
+        tracing::debug!("found meta page, using 0 page",);
         start_page = 0;
         if objid_to_ino(obj_id.raw()).is_some() {
+            let phys_range = {
+                let page = match ctx.data.try_alloc_page() {
+                    Ok(page) => page,
+                    Err(mw) => {
+                        tracing::warn!("out of memory -- task waiting");
+                        mw.await
+                    }
+                };
+                let phys_range = PhysRange::new(page, page + PAGE);
+                phys_range
+            };
             unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
                 ::core::slice::from_raw_parts(
                     (p as *const T) as *const u8,
@@ -87,20 +96,15 @@ pub async fn page_in(
                     .copy_from_slice(any_as_u8_slice(&me));
             }
             crate::physrw::fill_physical_pages(&buffer, phys_range).await?;
-            return Ok(());
+            return Ok(phys_range);
         }
     }
 
     let nr_pages = obj_range.len() / PAGE as usize;
-    let mut buffer = [0; PAGE as usize];
     let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
     page_in_many(ctx, obj_id, &mut reqs).await.map(|_| ())?;
     let range = reqs.first().unwrap().phys_list.first().unwrap().range;
-
-    crate::physrw::read_physical_pages(&mut buffer, range).await?;
-
-    tracing::info!("buffer :{:?}", &buffer[0..64]);
-    Ok(())
+    Ok(range)
 }
 
 pub async fn page_out_many(

@@ -1,7 +1,7 @@
 use twizzler::{
     error::TwzError,
     marker::{BaseType, StoreCopy},
-    object::{ObjID, Object, ObjectBuilder, RawObject},
+    object::{Object, ObjectBuilder, RawObject},
 };
 use twizzler_abi::object::Protections;
 
@@ -20,8 +20,8 @@ pub trait SecureBuilderExt<Base: BaseType + StoreCopy> {
     /// Builds a "secure" object, one without `Protections::READ|Protections::Write` as its
     /// `default_prots`.
     ///
-    /// It achieves this by creating a capability for the object within the current security context, and then writing
-    /// to the object after that capability has been created.
+    /// It achieves this by creating a capability for the object within the current security
+    /// context, and then writing to the object after that capability has been created.
     fn build_secure(&self, base: Base, s_key: &SigningKey) -> Result<Object<Base>, TwzError>;
 }
 
