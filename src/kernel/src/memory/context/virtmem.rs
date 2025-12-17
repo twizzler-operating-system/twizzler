@@ -219,6 +219,21 @@ impl VirtContext {
         }
     }
 
+    pub fn reset_cache(&self) {
+        let secctx = self.secctx.lock();
+        // Rebuild the target cache. We have to do it this way because we cannot allocate
+        // memory while holding the target_cache lock (as it's a spinlock).
+        let mut new_target_cache = BTreeMap::new();
+        for value in secctx.iter() {
+            new_target_cache.insert(*value.0, value.1.target);
+        }
+        // Swap out the target caches, dropping the old one after the spinlock is released.
+        {
+            let mut target_cache = self.target_cache.lock();
+            core::mem::swap(&mut *target_cache, &mut new_target_cache);
+        }
+    }
+
     pub fn register_sctx(&self, sctx: ObjID, arch: ArchContext) {
         let mut secctx = self.secctx.lock();
         if secctx.contains_key(&sctx) {

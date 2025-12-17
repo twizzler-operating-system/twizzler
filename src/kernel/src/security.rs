@@ -20,7 +20,7 @@ use crate::{
     obj::{lookup_object, LookupFlags, LookupResult},
     once::Once,
     spinlock::Spinlock,
-    thread::current_memory_context,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 struct SecCtxMgrInner {

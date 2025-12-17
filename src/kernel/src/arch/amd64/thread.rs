@@ -16,7 +16,7 @@ use twizzler_rt_abi::error::TwzError;
 use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
     arch::amd64::gdt::set_kernel_stack,
-    memory::VirtAddr,
+    memory::{pagetables::MappingCursor, VirtAddr},
     processor::KERNEL_STACK_SIZE,
     spinlock::Spinlock,
     thread::{current_thread_ref, Thread},
@@ -66,10 +66,7 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
-        self.upcall_restore_frame
-            .lock()
-            .take()
-            .inspect(|x| logln!("took {:?}", x))
+        self.upcall_restore_frame.lock().take()
     }
 }
 
@@ -270,7 +267,7 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
     frame.prior_ctx = upcall_data.source_ctx;
-    log::info!("upcall frame: {:?}", frame);
+    //log::info!("upcall frame: {:?}", frame);
 
     // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
     // and fpu state.
@@ -346,8 +343,8 @@ impl Thread {
             logln!("warning -- tried to restore thread to 0 IP");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
-        logln!("restoring upcall frame: {:?}", frame);
         let res = self.secctx.switch_context(frame.prior_ctx);
+
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!("warning -- tried to restore thread to non-attached security context");
             crate::thread::exit(UPCALL_EXIT_CODE);

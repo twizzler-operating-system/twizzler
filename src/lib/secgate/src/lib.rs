@@ -293,7 +293,6 @@ pub fn restore_frame(frame: SecFrame) {
     twizzler_abi::syscall::sys_thread_set_active_sctx_id(frame.sctx)
         .inspect_err(|e| eprintln!("failed to set active context to {}: {}", frame.sctx, e))
         .unwrap();
-    twizzler_abi::klog_println!("DONE");
 }
 
 #[derive(Clone, Copy)]
