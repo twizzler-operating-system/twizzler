@@ -14,7 +14,7 @@ assertions = true
 [build]
 target = []
 submodules = false
-docs = true
+docs = false
 sanitizers = true
 
 [rust]

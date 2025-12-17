@@ -154,8 +154,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
     let current_dir = std::env::current_dir().unwrap();
     let builtin_headers =
-        current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/20/include/");
+        current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/21/include/");
     std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
+    std::env::set_var("TWIZZLER_ABI_SYSROOTS", "toolchain/install/sysroots");
 
     let keep_args = if cli.keep_early_stages {
         vec![
@@ -215,7 +216,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
 
         for name in &["crtbegin", "crtend", "crtbeginS", "crtendS"] {
             let src = format!("toolchain/src/rust/build/{}/native/crt/{}.o", &target, name);
-            let dst = format!("toolchain/install/lib/clang/20/lib/{}/{}.o", &target, name);
+            let dst = format!("toolchain/install/lib/clang/21/lib/{}/{}.o", &target, name);
             std::fs::copy(src, dst)?;
         }
         for name in &["crti", "crtn"] {
@@ -223,12 +224,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
                 "toolchain/install/lib/rustlib/{}/lib/self-contained/{}.o",
                 &target, name
             );
-            let dst = format!("toolchain/install/lib/clang/20/lib/{}/{}.o", &target, name);
+            let dst = format!("toolchain/install/lib/clang/21/lib/{}/{}.o", &target, name);
             println!("Copy: {} -> {}", src, dst);
             std::fs::copy(src, dst)?;
         }
         let src = format!("toolchain/install/lib/rustlib/{}/lib/libunwind.a", &target);
-        let dst = format!("toolchain/install/lib/clang/20/lib/{}/libunwind.a", &target);
+        let dst = format!("toolchain/install/lib/clang/21/lib/{}/libunwind.a", &target);
         println!("Copy: {} -> {}", src, dst);
         std::fs::copy(src, dst)?;
     }
