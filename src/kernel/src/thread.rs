@@ -7,14 +7,14 @@ use core::{
     u32,
 };
 
-use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
-use time::{ThreadSched, ThreadStats, SAMPLE_PERIOD_TICKS};
+use intrusive_collections::{RBTreeAtomicLink, linked_list::AtomicLink, offset_of};
+use time::{SAMPLE_PERIOD_TICKS, ThreadSched, ThreadStats};
 use twizzler_abi::{
-    object::{ObjID, NULLPAGE_SIZE},
-    syscall::{ThreadSpawnArgs, PERTHREAD_TRACE_GEN_SAMPLE},
+    object::{NULLPAGE_SIZE, ObjID},
+    syscall::{PERTHREAD_TRACE_GEN_SAMPLE, ThreadSpawnArgs},
     thread::{ExecutionState, ThreadRepr},
     trace::{ThreadSamplingEvent, TraceEntryFlags, TraceKind},
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UPCALL_EXIT_CODE, UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget},
 };
 use twizzler_rt_abi::error::TwzError;
 
@@ -27,14 +27,14 @@ use crate::{
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{
-        mp::get_processor,
-        sched::{remove_thread, schedule, SchedFlags},
         KERNEL_STACK_SIZE,
+        mp::get_processor,
+        sched::{SchedFlags, remove_thread, schedule},
     },
     security::SecCtxMgr,
     spinlock::Spinlock,
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -106,8 +106,10 @@ pub fn current_thread_ref() -> Option<&'static ThreadRef> {
 
 pub unsafe fn set_current_thread(thread: &ThreadRef) {
     let ptr = CURRENT_THREAD.get();
-    let r = thread.self_reference.get().as_ref().unwrap_unchecked();
-    ptr.write(*r);
+    unsafe {
+        let r = thread.self_reference.get().as_ref().unwrap_unchecked();
+        ptr.write(*r);
+    }
     core::sync::atomic::fence(Ordering::Release);
 }
 
@@ -205,7 +207,7 @@ impl Thread {
 
     //#[inline]
     #[track_caller]
-    pub fn enter_critical(&self) -> CriticalGuard {
+    pub fn enter_critical(&self) -> CriticalGuard<'_> {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
         CriticalGuard {
             thread: self,

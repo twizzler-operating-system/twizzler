@@ -2,20 +2,19 @@ use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 
 use log::{debug, info};
 use twizzler_abi::{
-    meta::{MetaExt, MetaFlags, MetaInfo, MEXT_SIZED},
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    meta::{MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
 };
 use twizzler_rt_abi::object::Nonce;
 
 use crate::{
     memory::{
-        tracker::{alloc_frame, FrameAllocFlags},
         VirtAddr,
+        tracker::{FrameAllocFlags, alloc_frame},
     },
     obj::{
-        self,
+        self, ObjectRef, PageNumber,
         pages::{Page, PageRef},
-        ObjectRef, PageNumber,
     },
     once::Once,
 };
@@ -45,7 +44,9 @@ pub fn get_boot_objects() -> &'static BootObjects {
         .expect("tried to get BootObjects before processing modules")
 }
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+    unsafe {
+        ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+    }
 }
 pub fn init(modules: &[BootModule]) {
     let mut boot_objects = BootObjects::default();

@@ -3,7 +3,6 @@
 #![allow(internal_features)]
 #![feature(alloc_error_handler)]
 #![feature(thread_local)]
-#![feature(naked_functions)]
 #![allow(dead_code)]
 #![feature(core_intrinsics)]
 #![feature(optimize_attribute)]
@@ -13,8 +12,6 @@
 #![test_runner(crate::test_runner)]
 #![feature(stmt_expr_attributes)]
 #![feature(int_roundings)]
-#![feature(let_chains)]
-#![feature(btree_extract_if)]
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
 #![feature(ptr_as_ref_unchecked)]
@@ -64,7 +61,7 @@ use memory::{MemoryRegion, VirtAddr};
 use once::Once;
 use processor::{
     mp::{boot_all_secondaries, init_cpu},
-    sched::{schedule, SchedFlags},
+    sched::{SchedFlags, schedule},
 };
 use random::start_entropy_contribution_thread;
 use syscall::sync::requeue_all;

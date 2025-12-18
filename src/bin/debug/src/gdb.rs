@@ -541,7 +541,7 @@ impl TwizzlerTarget {
         &mut self,
         addr: <<TwizzlerTarget as gdbstub::target::Target>::Arch as gdbstub::arch::Arch>::Usize,
         len: usize,
-    ) -> Result<RefSliceMut<u8>, TwzError> {
+    ) -> Result<RefSliceMut<'_, u8>, TwzError> {
         if (addr as usize % MAX_SIZE) < NULLPAGE_SIZE {
             return Err(TwzError::Generic(GenericError::AccessDenied).into());
         }

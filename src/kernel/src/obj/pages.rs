@@ -7,20 +7,20 @@ use core::{
 use twizzler_abi::{
     device::CacheType,
     meta::MetaInfo,
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, Protections},
 };
 
 use super::{
-    range::{PageRangeTree, PageStatus},
     Object, ObjectRef, PageNumber,
+    range::{PageRangeTree, PageStatus},
 };
 use crate::{
     arch::memory::phys_to_virt,
     memory::{
-        frame::{get_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
-        pagetables::{MappingFlags, MappingSettings},
-        tracker::{alloc_frame, free_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
+        pagetables::{MappingFlags, MappingSettings},
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
     mutex::LockGuard,
     obj::range::GetPageFlags,
@@ -135,7 +135,7 @@ impl Page {
          * here */
         let va = self.as_virtaddr();
         let bytes = va.as_mut_ptr::<u8>();
-        bytes.add(offset) as *mut T
+        unsafe { bytes.add(offset) as *mut T }
     }
 
     pub fn as_mut_slice(&self, pnum: usize) -> &mut [u8] {
@@ -249,8 +249,10 @@ impl PageRef {
     }
 
     pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
-        self.page
-            .get_mut_to_val(offset + self.pn * PageNumber::PAGE_SIZE)
+        unsafe {
+            self.page
+                .get_mut_to_val(offset + self.pn * PageNumber::PAGE_SIZE)
+        }
     }
 
     pub fn copy_from(&mut self, other: &Self) {
@@ -283,8 +285,10 @@ impl Object {
             if let PageStatus::Ready(page, _) =
                 obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
             {
-                let t = page.get_mut_to_val::<T>(page_offset);
-                *t = val;
+                unsafe {
+                    let t = page.get_mut_to_val::<T>(page_offset);
+                    *t = val;
+                }
             }
         }
         self.wakeup_word(offset, wakeup_count);
@@ -300,8 +304,10 @@ impl Object {
         if let PageStatus::Ready(page, _) =
             obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
         {
-            let t = page.get_mut_to_val::<AtomicU64>(page_offset);
-            (*t).load(Ordering::SeqCst)
+            unsafe {
+                let t = page.get_mut_to_val::<AtomicU64>(page_offset);
+                (*t).load(Ordering::SeqCst)
+            }
         } else {
             0
         }
@@ -445,8 +451,10 @@ impl Object {
         if let PageStatus::Ready(page, _) =
             obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
         {
-            let t = page.get_mut_to_val::<AtomicU32>(page_offset);
-            (*t).load(Ordering::SeqCst)
+            unsafe {
+                let t = page.get_mut_to_val::<AtomicU32>(page_offset);
+                (*t).load(Ordering::SeqCst)
+            }
         } else {
             0
         }

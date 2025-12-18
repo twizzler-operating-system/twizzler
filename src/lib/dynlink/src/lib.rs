@@ -103,7 +103,6 @@
 #![feature(never_type)]
 #![feature(iterator_try_collect)]
 #![feature(allocator_api)]
-#![feature(result_flattening)]
 #![feature(alloc_layout_extra)]
 #![feature(pointer_is_aligned_to)]
 

@@ -1,5 +1,3 @@
-#![feature(naked_functions)]
-
 use devmgr::{DriverSpec, OwnedDevice};
 use pci_types::device_type::DeviceType;
 use twizzler::{

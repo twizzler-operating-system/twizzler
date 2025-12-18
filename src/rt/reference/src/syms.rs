@@ -849,15 +849,15 @@ pub unsafe extern "C-unwind" fn fwrite(
 }
 
 #[linkage = "weak"]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn fprintf(
     file: *const core::ffi::c_void,
     fmt: *const core::ffi::c_char,
-    mut args: ...
+    args: ...
 ) -> i32 {
     use printf_compat::{format, output};
     let mut s = String::new();
-    let bytes_written = format(fmt.cast(), args.as_va_list(), output::fmt_write(&mut s));
+    let bytes_written = format(fmt.cast(), args, output::fmt_write(&mut s));
     twz_rt_fd_pwrite(
         1,
         s.as_bytes().as_ptr().cast(),

@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(linkage)]
 #![feature(io_error_more)]
 #[warn(unused_variables)]

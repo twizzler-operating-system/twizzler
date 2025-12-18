@@ -1,6 +1,4 @@
-#![feature(naked_functions)]
 #![feature(thread_local)]
-#![feature(new_zeroed_alloc)]
 #![feature(iterator_try_collect)]
 #![feature(linkage)]
 

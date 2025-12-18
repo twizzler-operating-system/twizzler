@@ -16,7 +16,7 @@ use twizzler_queue_raw::{
 use crate::{
     condvar::CondVar,
     memory::context::{
-        kernel_context, Context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+        Context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
     },
     mutex::Mutex,
     obj::ObjectRef,
@@ -37,7 +37,7 @@ unsafe impl<T: Copy> Sync for Queue<T> {}
 impl<T: Copy> Queue<T> {
     unsafe fn new(hdr: *const RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
         Self {
-            raw: RawQueue::new(hdr, buf),
+            raw: unsafe { RawQueue::new(hdr, buf) },
             cv: CondVar::new(),
             lock: Spinlock::new(()),
         }

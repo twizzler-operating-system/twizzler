@@ -6,13 +6,13 @@ use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use super::{
-    kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, UserContext,
+    KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, UserContext, kernel_context,
 };
 use crate::{
     arch::{
@@ -21,15 +21,15 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
+        PhysAddr,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
         },
         tracker::FrameAllocFlags,
-        PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::PageRef, ObjectRef, PageNumber},
+    obj::{self, ObjectRef, PageNumber, pages::PageRef},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -513,7 +513,9 @@ impl KernelMemoryContext for VirtContext {
 
     unsafe fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: NonNull<u8>) {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
-        glb.alloc.deallocate(ptr, layout);
+        unsafe {
+            glb.alloc.deallocate(ptr, layout);
+        }
     }
 
     fn init_allocator(&self) {

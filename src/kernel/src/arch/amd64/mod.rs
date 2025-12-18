@@ -3,10 +3,10 @@ use core::sync::atomic::Ordering;
 pub use address::{PhysAddr, VirtAddr};
 
 use crate::{
+    BootInfo,
     clock::Nanoseconds,
     interrupt::{Destination, PinPolarity, TriggerMode},
     thread::current_thread_ref,
-    BootInfo,
 };
 
 pub mod acpi;
@@ -68,16 +68,18 @@ pub unsafe fn jump_to_user(
     crate::interrupt::set(false);
     crate::thread::exit_kernel();
 
-    {
-        /* we need this scope the drop the current thread ref before returning to user */
-        let user_fs = current_thread_ref()
-            .unwrap()
-            .arch
-            .user_fs
-            .load(Ordering::SeqCst);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+    unsafe {
+        {
+            /* we need this scope the drop the current thread ref before returning to user */
+            let user_fs = current_thread_ref()
+                .unwrap()
+                .arch
+                .user_fs
+                .load(Ordering::SeqCst);
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        }
+        syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
     }
-    syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
 }
 
 pub fn set_interrupt(

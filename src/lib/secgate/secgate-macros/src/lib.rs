@@ -165,8 +165,8 @@ fn handle_secure_gate(
     let struct_def = build_struct(&tree, &names)?;
     let types_def = build_types(&tree, &names)?;
 
-    let link_section_text: Attribute = parse_quote!(#[link_section = ".twz_secgate_text"]);
-    let link_section_data: Attribute = parse_quote!(#[link_section = ".twz_secgate_info"]);
+    let link_section_text: Attribute = parse_quote!(#[unsafe(link_section = ".twz_secgate_text")]);
+    let link_section_data: Attribute = parse_quote!(#[unsafe(link_section = ".twz_secgate_info")]);
 
     let Info {
         mod_name,
@@ -228,8 +228,8 @@ fn get_entry_sig(tree: &ItemFn) -> Signature {
 
 fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
     let mut call_point = tree.clone();
-    call_point.attrs.push(parse_quote!(#[naked]));
-    call_point.attrs.push(parse_quote!(#[no_mangle]));
+    call_point.attrs.push(parse_quote!(#[unsafe(naked)]));
+    call_point.attrs.push(parse_quote!(#[unsafe(no_mangle)]));
     call_point.vis = parse_quote!(pub(super));
     call_point.sig.abi = Some(syn::Abi {
         extern_token: syn::token::Extern::default(),
@@ -271,7 +271,7 @@ fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::T
         semi_token: Token![;](entry_sig.ident.span()),
         sig: entry_sig.clone(),
     };
-    ffn.attrs.push(parse_quote!(#[no_mangle]));
+    ffn.attrs.push(parse_quote!(#[unsafe(no_mangle)]));
     Ok(quote::quote!(extern "C" {
         #ffn
     }))

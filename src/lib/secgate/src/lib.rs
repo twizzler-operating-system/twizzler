@@ -1,7 +1,6 @@
 #![feature(fn_traits)]
 #![feature(unboxed_closures)]
 #![feature(tuple_trait)]
-#![feature(naked_functions)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(linkage)]

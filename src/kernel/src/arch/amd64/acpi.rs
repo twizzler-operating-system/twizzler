@@ -20,13 +20,15 @@ impl acpi::AcpiHandler for AcpiHandlerImpl {
             .offset(phys_off)
             .unwrap();
 
-        acpi::PhysicalMapping::new(
-            physical_address,
-            NonNull::new(virtual_address.as_mut_ptr()).unwrap(),
-            size,
-            size,
-            *self,
-        )
+        unsafe {
+            acpi::PhysicalMapping::new(
+                physical_address,
+                NonNull::new(virtual_address.as_mut_ptr()).unwrap(),
+                size,
+                size,
+                *self,
+            )
+        }
     }
 
     fn unmap_physical_region<T>(_region: &acpi::PhysicalMapping<Self, T>) {}

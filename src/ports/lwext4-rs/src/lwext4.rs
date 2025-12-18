@@ -355,6 +355,7 @@ pub const O_APPEND: u32 = 1024;
 pub const SEEK_SET: u32 = 0;
 pub const SEEK_CUR: u32 = 1;
 pub const SEEK_END: u32 = 2;
+pub const __PRIFAST: &[u8; 2] = b"l\0";
 pub const __PRI64: &[u8; 2] = b"l\0";
 pub const __PRIPTR: &[u8; 2] = b"l\0";
 pub const PRId8: &[u8; 2] = b"d\0";
@@ -441,20 +442,76 @@ pub const PRIoPTR: &[u8; 3] = b"lo\0";
 pub const PRIuPTR: &[u8; 3] = b"lu\0";
 pub const PRIxPTR: &[u8; 3] = b"lx\0";
 pub const PRIXPTR: &[u8; 3] = b"lX\0";
+pub const SCNi8: &[u8; 4] = b"hhi\0";
+pub const SCNi16: &[u8; 3] = b"hi\0";
+pub const SCNi32: &[u8; 2] = b"i\0";
+pub const SCNi64: &[u8; 3] = b"li\0";
+pub const SCNiLEAST8: &[u8; 4] = b"hhi\0";
+pub const SCNiLEAST16: &[u8; 3] = b"hi\0";
+pub const SCNiLEAST32: &[u8; 2] = b"i\0";
+pub const SCNiLEAST64: &[u8; 3] = b"li\0";
+pub const SCNiFAST8: &[u8; 4] = b"hhi\0";
+pub const SCNiFAST16: &[u8; 3] = b"li\0";
+pub const SCNiFAST32: &[u8; 3] = b"li\0";
+pub const SCNiFAST64: &[u8; 3] = b"li\0";
+pub const SCNiMAX: &[u8; 3] = b"li\0";
+pub const SCNiPTR: &[u8; 3] = b"li\0";
+pub const SCNd8: &[u8; 4] = b"hhd\0";
+pub const SCNd16: &[u8; 3] = b"hd\0";
+pub const SCNd32: &[u8; 2] = b"d\0";
+pub const SCNd64: &[u8; 3] = b"ld\0";
+pub const SCNdLEAST8: &[u8; 4] = b"hhd\0";
+pub const SCNdLEAST16: &[u8; 3] = b"hd\0";
+pub const SCNdLEAST32: &[u8; 2] = b"d\0";
+pub const SCNdLEAST64: &[u8; 3] = b"ld\0";
+pub const SCNdFAST8: &[u8; 4] = b"hhd\0";
+pub const SCNdFAST16: &[u8; 3] = b"ld\0";
+pub const SCNdFAST32: &[u8; 3] = b"ld\0";
+pub const SCNdFAST64: &[u8; 3] = b"ld\0";
+pub const SCNdMAX: &[u8; 3] = b"ld\0";
+pub const SCNdPTR: &[u8; 3] = b"ld\0";
+pub const SCNu8: &[u8; 4] = b"hhu\0";
+pub const SCNu16: &[u8; 3] = b"hu\0";
 pub const SCNu32: &[u8; 2] = b"u\0";
 pub const SCNu64: &[u8; 3] = b"lu\0";
+pub const SCNuLEAST8: &[u8; 4] = b"hhu\0";
+pub const SCNuLEAST16: &[u8; 3] = b"hu\0";
+pub const SCNuLEAST32: &[u8; 2] = b"u\0";
+pub const SCNuLEAST64: &[u8; 3] = b"lu\0";
+pub const SCNuFAST8: &[u8; 4] = b"hhu\0";
+pub const SCNuFAST16: &[u8; 3] = b"lu\0";
+pub const SCNuFAST32: &[u8; 3] = b"lu\0";
+pub const SCNuFAST64: &[u8; 3] = b"lu\0";
 pub const SCNuMAX: &[u8; 3] = b"lu\0";
+pub const SCNuPTR: &[u8; 3] = b"lu\0";
+pub const SCNo8: &[u8; 4] = b"hho\0";
+pub const SCNo16: &[u8; 3] = b"ho\0";
+pub const SCNo32: &[u8; 2] = b"o\0";
+pub const SCNo64: &[u8; 3] = b"lo\0";
+pub const SCNoLEAST8: &[u8; 4] = b"hho\0";
+pub const SCNoLEAST16: &[u8; 3] = b"ho\0";
+pub const SCNoLEAST32: &[u8; 2] = b"o\0";
+pub const SCNoLEAST64: &[u8; 3] = b"lo\0";
+pub const SCNoFAST8: &[u8; 4] = b"hho\0";
+pub const SCNoFAST16: &[u8; 3] = b"lo\0";
+pub const SCNoFAST32: &[u8; 3] = b"lo\0";
+pub const SCNoFAST64: &[u8; 3] = b"lo\0";
+pub const SCNoMAX: &[u8; 3] = b"lo\0";
+pub const SCNoPTR: &[u8; 3] = b"lo\0";
+pub const SCNx8: &[u8; 4] = b"hhx\0";
 pub const SCNx16: &[u8; 3] = b"hx\0";
 pub const SCNx32: &[u8; 2] = b"x\0";
 pub const SCNx64: &[u8; 3] = b"lx\0";
+pub const SCNxLEAST8: &[u8; 4] = b"hhx\0";
+pub const SCNxLEAST16: &[u8; 3] = b"hx\0";
+pub const SCNxLEAST32: &[u8; 2] = b"x\0";
+pub const SCNxLEAST64: &[u8; 3] = b"lx\0";
+pub const SCNxFAST8: &[u8; 4] = b"hhx\0";
+pub const SCNxFAST16: &[u8; 3] = b"lx\0";
+pub const SCNxFAST32: &[u8; 3] = b"lx\0";
+pub const SCNxFAST64: &[u8; 3] = b"lx\0";
 pub const SCNxMAX: &[u8; 3] = b"lx\0";
-pub const SCNi8: &[u8; 4] = b"hhi\0";
 pub const SCNxPTR: &[u8; 3] = b"lx\0";
-pub const SCNi64: &[u8; 3] = b"li\0";
-pub const SCNd32: &[u8; 2] = b"d\0";
-pub const SCNd64: &[u8; 3] = b"ld\0";
-pub const SCNdFAST64: &[u8; 3] = b"ld\0";
-pub const SCNu16: &[u8; 3] = b"hu\0";
 pub const DEBUG_BALLOC: u32 = 1;
 pub const DEBUG_BCACHE: u32 = 2;
 pub const DEBUG_BITMAP: u32 = 4;
@@ -481,7 +538,11 @@ pub const DBG_WARN: &[u8; 9] = b"[warn]  \0";
 pub const DBG_ERROR: &[u8; 9] = b"[error] \0";
 pub const SEEK_DATA: u32 = 3;
 pub const SEEK_HOLE: u32 = 4;
+pub const _DEFAULT_SOURCE: u32 = 1;
 pub const __MLIBC_BSD_OPTION: u32 = 1;
+pub const __MLIBC_LINUX_EPOLL_OPTION: u32 = 0;
+pub const __MLIBC_LINUX_TIMERFD_OPTION: u32 = 0;
+pub const __MLIBC_LINUX_SIGNALFD_OPTION: u32 = 0;
 pub const __MLIBC_POSIX_OPTION: u32 = 1;
 pub const __MLIBC_LINUX_OPTION: u32 = 0;
 pub const __MLIBC_GLIBC_OPTION: u32 = 1;
@@ -498,7 +559,7 @@ pub const FILENAME_MAX: u32 = 256;
 pub const L_tmpnam: u32 = 256;
 pub const TMP_MAX: u32 = 1024;
 pub const P_tmpdir: &[u8; 5] = b"/tmp\0";
-pub const RENAME_EXCHANGE: u32 = 2;
+pub const L_ctermid: u32 = 20;
 pub type __mlibc_uint8 = ::std::os::raw::c_uchar;
 pub type __mlibc_uint16 = ::std::os::raw::c_ushort;
 pub type __mlibc_uint32 = ::std::os::raw::c_uint;
@@ -1977,18 +2038,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn __errno_location() -> *mut ::std::os::raw::c_int;
 }
-unsafe extern "C" {
-    pub static mut program_invocation_name: *mut ::std::os::raw::c_char;
-}
-unsafe extern "C" {
-    pub static mut program_invocation_short_name: *mut ::std::os::raw::c_char;
-}
-unsafe extern "C" {
-    pub static mut __progname: *mut ::std::os::raw::c_char;
-}
-unsafe extern "C" {
-    pub static mut __progname_full: *mut ::std::os::raw::c_char;
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct imaxdiv_t {
@@ -2049,8 +2098,9 @@ unsafe extern "C" {
     pub fn ext4_dmask_get() -> u32;
 }
 pub type FILE = __mlibc_file_base;
-pub type off_t = ::std::os::raw::c_long;
-pub type off64_t = ::std::os::raw::c_long;
+pub type off_t = __mlibc_int64;
+pub type off64_t = __mlibc_int64;
+pub type va_list = __builtin_va_list;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct __mlibc_file_base {
@@ -2276,9 +2326,6 @@ unsafe extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
-    pub fn gets(__s: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char;
-}
-unsafe extern "C" {
     pub fn getc(__stream: *mut FILE) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
@@ -2425,17 +2472,13 @@ unsafe extern "C" {
     ) -> usize;
 }
 unsafe extern "C" {
-    pub fn fgets_unlocked(
-        __buffer: *mut ::std::os::raw::c_char,
-        __size: ::std::os::raw::c_int,
-        __stream: *mut FILE,
+    pub fn tempnam(
+        __dir: *const ::std::os::raw::c_char,
+        __pfx: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
 }
 unsafe extern "C" {
-    pub fn fputs_unlocked(
-        __buffer: *const ::std::os::raw::c_char,
-        __stream: *mut FILE,
-    ) -> ::std::os::raw::c_int;
+    pub fn ctermid(__s: *mut ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char;
 }
 unsafe extern "C" {
     pub fn fileno(__file: *mut FILE) -> ::std::os::raw::c_int;
@@ -2473,17 +2516,7 @@ unsafe extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
-    pub fn fseeko64(
-        __stream: *mut FILE,
-        __offset: off64_t,
-        __whence: ::std::os::raw::c_int,
-    ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn ftello(__stream: *mut FILE) -> off_t;
-}
-unsafe extern "C" {
-    pub fn ftello64(__stream: *mut FILE) -> off64_t;
 }
 unsafe extern "C" {
     pub fn dprintf(
@@ -2499,63 +2532,6 @@ unsafe extern "C" {
         __args: *mut __va_list_tag,
     ) -> ::std::os::raw::c_int;
 }
-unsafe extern "C" {
-    pub fn fgetln(__stream: *mut FILE, __size: *mut usize) -> *mut ::std::os::raw::c_char;
-}
-unsafe extern "C" {
-    pub fn tempnam(
-        __dir: *const ::std::os::raw::c_char,
-        __pfx: *const ::std::os::raw::c_char,
-    ) -> *mut ::std::os::raw::c_char;
-}
-pub type cookie_read_function_t = ::std::option::Option<
-    unsafe extern "C" fn(
-        __cookie: *mut ::std::os::raw::c_void,
-        __buffer: *mut ::std::os::raw::c_char,
-        __size: usize,
-    ) -> isize,
->;
-pub type cookie_write_function_t = ::std::option::Option<
-    unsafe extern "C" fn(
-        __cookie: *mut ::std::os::raw::c_void,
-        __buffer: *const ::std::os::raw::c_char,
-        __size: usize,
-    ) -> isize,
->;
-pub type cookie_seek_function_t = ::std::option::Option<
-    unsafe extern "C" fn(
-        __cookie: *mut ::std::os::raw::c_void,
-        arg1: *mut off_t,
-        arg2: ::std::os::raw::c_int,
-    ) -> ::std::os::raw::c_int,
->;
-pub type cookie_close_function_t = ::std::option::Option<
-    unsafe extern "C" fn(__cookie: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int,
->;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct _IO_cookie_io_functions_t {
-    pub read: cookie_read_function_t,
-    pub write: cookie_write_function_t,
-    pub seek: cookie_seek_function_t,
-    pub close: cookie_close_function_t,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of _IO_cookie_io_functions_t"]
-        [::std::mem::size_of::<_IO_cookie_io_functions_t>() - 32usize];
-    ["Alignment of _IO_cookie_io_functions_t"]
-        [::std::mem::align_of::<_IO_cookie_io_functions_t>() - 8usize];
-    ["Offset of field: _IO_cookie_io_functions_t::read"]
-        [::std::mem::offset_of!(_IO_cookie_io_functions_t, read) - 0usize];
-    ["Offset of field: _IO_cookie_io_functions_t::write"]
-        [::std::mem::offset_of!(_IO_cookie_io_functions_t, write) - 8usize];
-    ["Offset of field: _IO_cookie_io_functions_t::seek"]
-        [::std::mem::offset_of!(_IO_cookie_io_functions_t, seek) - 16usize];
-    ["Offset of field: _IO_cookie_io_functions_t::close"]
-        [::std::mem::offset_of!(_IO_cookie_io_functions_t, close) - 24usize];
-};
-pub type cookie_io_functions_t = _IO_cookie_io_functions_t;
 #[doc = "@brief   OS dependent lock interface."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -3614,6 +3590,7 @@ unsafe extern "C" {
         to: ext4_lblk_t,
     ) -> ::std::os::raw::c_int;
 }
+pub type __builtin_va_list = [__va_list_tag; 1usize];
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct __va_list_tag {
@@ -3621,9 +3598,20 @@ pub struct __va_list_tag {
     pub fp_offset: ::std::os::raw::c_uint,
     pub overflow_arg_area: *mut ::std::os::raw::c_void,
     pub reg_save_area: *mut ::std::os::raw::c_void,
-    _unused: [u8; 0],
 }
-pub type __builtin_va_list = [__va_list_tag; 1usize];
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of __va_list_tag"][::std::mem::size_of::<__va_list_tag>() - 24usize];
+    ["Alignment of __va_list_tag"][::std::mem::align_of::<__va_list_tag>() - 8usize];
+    ["Offset of field: __va_list_tag::gp_offset"]
+        [::std::mem::offset_of!(__va_list_tag, gp_offset) - 0usize];
+    ["Offset of field: __va_list_tag::fp_offset"]
+        [::std::mem::offset_of!(__va_list_tag, fp_offset) - 4usize];
+    ["Offset of field: __va_list_tag::overflow_arg_area"]
+        [::std::mem::offset_of!(__va_list_tag, overflow_arg_area) - 8usize];
+    ["Offset of field: __va_list_tag::reg_save_area"]
+        [::std::mem::offset_of!(__va_list_tag, reg_save_area) - 16usize];
+};
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct jbd_fs {

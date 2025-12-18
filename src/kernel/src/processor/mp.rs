@@ -7,8 +7,9 @@ use core::{
 };
 
 use super::{
+    KERNEL_STACK_SIZE, Processor,
     sched::{CPUTopoNode, CPUTopoType},
-    tls_ready, Processor, KERNEL_STACK_SIZE,
+    tls_ready,
 };
 use crate::{
     arch::{self, VirtAddr},
@@ -163,7 +164,7 @@ pub fn get_processor(id: u32) -> &'static Processor {
 /// Obtain a mutable reference to a processor object. This should not be called unless
 /// you know what you are doing. Generally during the boostrap process.
 pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
-    ALL_PROCESSORS[id as usize].as_mut().unwrap()
+    unsafe { ALL_PROCESSORS[id as usize].as_mut().unwrap() }
 }
 
 pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {

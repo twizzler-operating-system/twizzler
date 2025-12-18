@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(portable_simd)]
 #![feature(lock_value_accessors)]
 

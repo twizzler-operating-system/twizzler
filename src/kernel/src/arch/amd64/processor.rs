@@ -6,13 +6,13 @@ use twizzler_abi::arch::XSAVE_LEN;
 use super::{
     acpi::get_acpi_root,
     interrupt::InterProcessorInterrupt,
-    memory::pagetables::{tlb_shootdown_handler, TlbShootdownInfo},
+    memory::pagetables::{TlbShootdownInfo, tlb_shootdown_handler},
 };
 use crate::{
     interrupt::Destination,
     memory::VirtAddr,
     once::Once,
-    processor::{mp::current_processor, Processor},
+    processor::{Processor, mp::current_processor},
 };
 
 #[repr(C)]
@@ -46,7 +46,7 @@ pub fn init(tls: VirtAddr) {
     unsafe {
         x86::msr::wrmsr(
             x86::msr::IA32_LSTAR,
-            super::syscall::syscall_entry as usize as u64,
+            super::syscall::syscall_entry as *const () as usize as u64,
         );
         x86::msr::wrmsr(x86::msr::IA32_STAR, (0x13 << 48) | (0x8 << 32));
         x86::msr::wrmsr(x86::msr::IA32_FMASK, 0xffffffff);
@@ -138,7 +138,8 @@ pub fn init(tls: VirtAddr) {
 pub unsafe fn init_fpu_state() {
     let mut f: u16 = 0;
     let mut x: u32 = 0;
-    core::arch::asm!(
+    unsafe {
+        core::arch::asm!(
         "finit",
         "fstcw [rax]",
         "or qword ptr [rax], 0x33f",
@@ -150,6 +151,7 @@ pub unsafe fn init_fpu_state() {
         "ldmxcsr [rdx]",
         "stmxcsr [rdx]",
         in("rax") &mut f, in("rdx") &mut x);
+    }
 }
 
 pub fn enumerate_cpus() -> u32 {

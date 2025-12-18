@@ -9,7 +9,6 @@
 //! programs.
 
 #![no_std]
-#![feature(naked_functions)]
 #![feature(core_intrinsics)]
 #![feature(int_roundings)]
 #![feature(thread_local)]

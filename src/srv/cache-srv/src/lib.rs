@@ -1,5 +1,3 @@
-#![feature(naked_functions)]
-
 use std::{collections::BTreeMap, sync::Mutex, time::Instant};
 
 use twizzler_abi::{

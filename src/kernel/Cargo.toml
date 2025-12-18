@@ -2,7 +2,7 @@
 [package]
 name = "twizzler-kernel"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 intrusive-collections = { version = "0.9.6", features = ["nightly"] }

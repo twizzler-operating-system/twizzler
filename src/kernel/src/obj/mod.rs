@@ -1,6 +1,6 @@
 use alloc::{
     boxed::Box,
-    collections::{btree_map::Entry, btree_set::BTreeSet, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -15,7 +15,7 @@ use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
     device::{CacheType, NUM_DEVICE_INTERRUPTS},
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::{BackingType, CreateTieSpec, LifetimeType, ObjectInfo},
 };
 use twizzler_rt_abi::object::Nonce;
@@ -25,10 +25,10 @@ use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
-        context::{kernel_context, Context, ContextRef, UserContext},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::{alloc_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
+        context::{Context, ContextRef, UserContext, kernel_context},
+        frame::PHYS_LEVEL_LAYOUTS,
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame},
     },
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
@@ -535,7 +535,7 @@ impl ObjectManager {
 pub fn scan_deleted() {
     let dobjs = {
         let mut om = obj_manager().map.lock();
-        om.extract_if(|_, obj| {
+        om.extract_if(.., |_, obj| {
             if obj.is_pending_delete() {
                 let ctx = obj.contexts.lock();
                 let pin = obj.pin_info.lock();

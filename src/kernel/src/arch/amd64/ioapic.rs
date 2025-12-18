@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use acpi::{madt::Madt, InterruptModel};
+use acpi::{InterruptModel, madt::Madt};
 
 use super::{acpi::get_acpi_root, memory::phys_to_virt, processor::get_bsp_id};
 use crate::{
@@ -19,15 +19,19 @@ static IOAPICS: Spinlock<Vec<IOApic>> = Spinlock::new(alloc::vec![]);
 
 impl IOApic {
     unsafe fn write(&self, reg: u32, val: u32) {
-        let base: *mut u32 = phys_to_virt(self.address).as_mut_ptr();
-        base.write_volatile(reg);
-        base.add(4).write_volatile(val);
+        unsafe {
+            let base: *mut u32 = phys_to_virt(self.address).as_mut_ptr();
+            base.write_volatile(reg);
+            base.add(4).write_volatile(val);
+        }
     }
 
     unsafe fn read(&self, reg: u32) -> u32 {
-        let base: *mut u32 = phys_to_virt(self.address).as_mut_ptr();
-        base.write_volatile(reg);
-        base.add(4).read_volatile()
+        unsafe {
+            let base: *mut u32 = phys_to_virt(self.address).as_mut_ptr();
+            base.write_volatile(reg);
+            base.add(4).read_volatile()
+        }
     }
 
     fn new(id: u8, address: PhysAddr, gsi_base: u32) -> Self {
@@ -39,9 +43,11 @@ impl IOApic {
     }
 
     unsafe fn write_vector_data(&self, regnum: u32, data: u64) {
-        self.write(regnum * 2 + 0x10, 0x10000);
-        self.write(regnum * 2 + 0x10 + 1, (data >> 32) as u32);
-        self.write(regnum * 2 + 0x10, (data & 0xffffffff) as u32);
+        unsafe {
+            self.write(regnum * 2 + 0x10, 0x10000);
+            self.write(regnum * 2 + 0x10 + 1, (data >> 32) as u32);
+            self.write(regnum * 2 + 0x10, (data & 0xffffffff) as u32);
+        }
     }
 
     fn gsi_to_reg(&self, gsi: u32) -> Option<u32> {
@@ -184,7 +190,9 @@ const ICW1_INIT: u8 = 0x10;
 const ICW4_8086: u8 = 0x01;
 fn disable_pic() {
     unsafe fn iowait() {
-        x86::io::outb(0x80, 0);
+        unsafe {
+            x86::io::outb(0x80, 0);
+        }
     }
     /* let's first set the PIC into a known state */
     unsafe {

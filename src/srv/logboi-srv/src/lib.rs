@@ -1,5 +1,3 @@
-#![feature(naked_functions)]
-
 use std::sync::Mutex;
 
 use secgate::{

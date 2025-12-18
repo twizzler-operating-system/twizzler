@@ -1,19 +1,19 @@
 use alloc::vec::Vec;
 
 use limine::{
+    BaseRevision,
     file::File,
     memory_map::EntryType,
     request::{
         BootloaderInfoRequest, EntryPointRequest, FramebufferRequest, HhdmRequest,
         KernelFileRequest, MemoryMapRequest, ModuleRequest, RsdpRequest,
     },
-    BaseRevision,
 };
 
 use crate::{
+    BootInfo,
     initrd::BootModule,
     memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
-    BootInfo,
 };
 
 struct LimineBootInfo {
@@ -136,7 +136,7 @@ extern "C" fn limine_entry() -> ! {
 }
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static LIMINE_REVISION: BaseRevision = BaseRevision::new();
 static LIMINE_BOOTINFO: BootloaderInfoRequest = BootloaderInfoRequest::new();
 static LIMINE_ENTRY: EntryPointRequest = EntryPointRequest::new().with_entry_point(limine_entry);
@@ -147,30 +147,30 @@ static LIMINE_KERNEL: KernelFileRequest = KernelFileRequest::new();
 static LIMINE_TABLE: RsdpRequest = RsdpRequest::new();
 static LIMINE_HHDM: HhdmRequest = HhdmRequest::new();
 
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F1: &'static BootloaderInfoRequest = &LIMINE_BOOTINFO;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F2: &'static EntryPointRequest = &LIMINE_ENTRY;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F3: &'static ModuleRequest = &LIMINE_MOD;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F4: &'static MemoryMapRequest = &LIMINE_MEM;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F5: &'static KernelFileRequest = &LIMINE_KERNEL;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F6: &'static FramebufferRequest = &LIMINE_FB;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F7: &'static RsdpRequest = &LIMINE_TABLE;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F8: &'static HhdmRequest = &LIMINE_HHDM;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static FEND: u64 = 0;

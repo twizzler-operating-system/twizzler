@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(io_error_more)]
 #![feature(test)]
 #![feature(thread_local)]
@@ -199,11 +198,8 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
             id
         } else {
             tracing::info!("creating new naming object");
-
-            let ob = ObjectBuilder::default().persist(true);
-
-            let vo = VecObject::<u32, VecObjectAlloc>::new(ob).unwrap();
-            tracing::info!("naming object id: {:#?}", vo.object().id());
+            let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist(true))
+                .unwrap();
             run_async(po.set_config_id(vo.object().id().raw())).unwrap();
             vo.object().id().raw()
         }

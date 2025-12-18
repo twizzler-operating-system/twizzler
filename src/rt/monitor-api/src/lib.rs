@@ -2,9 +2,7 @@
 //! symbols so that we can just call into the monitor without having to have it as an explicit
 //! dependency.
 
-#![feature(naked_functions)]
 #![feature(linkage)]
-#![feature(result_flattening)]
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
 #![feature(tuple_trait)]
@@ -468,7 +466,7 @@ impl CompartmentHandle {
     }
 
     /// Get an iterator over this compartment's dependencies.
-    pub fn deps(&self) -> CompartmentDepsIter {
+    pub fn deps(&self) -> CompartmentDepsIter<'_> {
         CompartmentDepsIter::new(self)
     }
 

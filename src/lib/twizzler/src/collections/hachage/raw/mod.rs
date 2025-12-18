@@ -209,14 +209,14 @@ pub trait CtxMut: Ctx {
 
 impl CarryCtx<'_> {
     #[inline]
-    pub fn new(base: Ref<u8>) -> CarryCtx<'_> {
+    pub fn new(base: Ref<'_, u8>) -> CarryCtx<'_> {
         CarryCtx { backing: base }
     }
 }
 
 impl CarryCtxMut<'_> {
     #[inline]
-    pub fn new(base: RefMut<u8>) -> CarryCtxMut<'_> {
+    pub fn new(base: RefMut<'_, u8>) -> CarryCtxMut<'_> {
         CarryCtxMut { backing: base }
     }
 }
@@ -352,11 +352,11 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         self.table.items = 0;
     }
 
-    fn bucket(&self, index: usize) -> Ref<T> {
+    fn bucket(&self, index: usize) -> Ref<'_, T> {
         unsafe { self.table.bucket::<T>(index) }
     }
 
-    pub fn carry_ctx(&self) -> CarryCtx {
+    pub fn carry_ctx(&self) -> CarryCtx<'_> {
         CarryCtx::new(unsafe { self.table.ctrl.resolve() })
     }
 
@@ -368,11 +368,11 @@ impl<T: Invariant, S, A: Allocator> RawTable<T, S, A> {
         self.table.iter()
     }
 
-    pub unsafe fn backing(&self) -> Ref<u8> {
+    pub unsafe fn backing(&self) -> Ref<'_, u8> {
         self.table.ctrl.resolve()
     }
 
-    pub unsafe fn backing_mut(&mut self) -> RefMut<u8> {
+    pub unsafe fn backing_mut(&mut self) -> RefMut<'_, u8> {
         self.table.ctrl.resolve_mut()
     }
 }
@@ -431,7 +431,7 @@ impl<T: Invariant, S> RawTable<T, S, HashTableAlloc> {
         mut eq: impl FnMut(&T) -> bool,
         hasher: impl Fn(&T) -> u64,
         ctx: &impl CtxMut,
-    ) -> std::result::Result<Ref<T>, usize> {
+    ) -> std::result::Result<Ref<'_, T>, usize> {
         // self.reserve() can change the invariant pointer (only when the hashtable is empty)
         self.reserve(1, hasher, ctx);
 
@@ -738,7 +738,7 @@ impl RawTableInner {
         self.items -= 1;
     }
 
-    unsafe fn bucket<T: Invariant>(&self, index: usize) -> Ref<T> {
+    unsafe fn bucket<T: Invariant>(&self, index: usize) -> Ref<'_, T> {
         unsafe { self.ctrl.resolve().cast::<T>().sub(index + 1) }
     }
 

@@ -9,8 +9,8 @@ use crate::{
             apic::{
                 ipi::raw_send_ipi,
                 local::{
-                    get_lapic, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL,
-                    LAPIC_ICRLO_STARTUP,
+                    LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_INIT, LAPIC_ICRLO_LEVEL, LAPIC_ICRLO_STARTUP,
+                    get_lapic,
                 },
             },
             pit,
@@ -23,7 +23,7 @@ use crate::{
 
 // TODO: cleanup magic numbers.
 
-#[naked]
+#[unsafe(naked)]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code16() {
     core::arch::naked_asm!(
@@ -49,7 +49,7 @@ unsafe extern "C" fn trampoline_entry_code16() {
         ".code64",
     )
 }
-#[naked]
+#[unsafe(naked)]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code32() {
     core::arch::naked_asm!(
@@ -89,7 +89,7 @@ unsafe extern "C" fn trampoline_entry_code32() {
     )
 }
 
-#[naked]
+#[unsafe(naked)]
 #[allow(named_asm_labels)]
 unsafe extern "C" fn trampoline_entry_code64() {
     core::arch::naked_asm!(
@@ -114,7 +114,7 @@ unsafe extern "C" fn trampoline_entry_code64() {
 }
 
 #[inline(never)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn trampoline_main_entry(id: u32, tcb: u64, stack_base: u64) -> ! {
     rust_entry_secondary(id, tcb, stack_base);
 }
@@ -131,97 +131,99 @@ const TRAMPOLINE_ENTRY64: u32 = 0x7200;
 /// # Safety
 /// The tcb_base and kernel stack must both be valid memory regions for each thing.
 pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
-    outb(0x70, 0xf);
-    pit::wait_ns(100);
-    outb(0x71, 0x0a);
-    pit::wait_ns(100);
+    unsafe {
+        outb(0x70, 0xf);
+        pit::wait_ns(100);
+        outb(0x71, 0x0a);
+        pit::wait_ns(100);
 
-    let phys_mem_offset = phys_to_virt(PhysAddr::new(0).unwrap()).raw();
+        let phys_mem_offset = phys_to_virt(PhysAddr::new(0).unwrap()).raw();
 
-    let bios_reset = (phys_mem_offset + 0x467) as *mut u32;
-    bios_reset.write_unaligned((TRAMPOLINE_ENTRY16 & 0xff000) << 12);
-    let trampoline16 = (phys_mem_offset + TRAMPOLINE_ENTRY16 as u64) as *mut u8;
-    trampoline16.copy_from_nonoverlapping(trampoline_entry_code16 as *const u8, 0x100);
-    let trampoline32 = (TRAMPOLINE_ENTRY32 as u64) as *mut u8;
-    trampoline32.copy_from_nonoverlapping(trampoline_entry_code32 as *const u8, 0x100);
-    let trampoline64 = (TRAMPOLINE_ENTRY64 as u64) as *mut u8;
-    trampoline64.copy_from_nonoverlapping(trampoline_entry_code64 as *const u8, 0x100);
+        let bios_reset = (phys_mem_offset + 0x467) as *mut u32;
+        bios_reset.write_unaligned((TRAMPOLINE_ENTRY16 & 0xff000) << 12);
+        let trampoline16 = (phys_mem_offset + TRAMPOLINE_ENTRY16 as u64) as *mut u8;
+        trampoline16.copy_from_nonoverlapping(trampoline_entry_code16 as *const u8, 0x100);
+        let trampoline32 = (TRAMPOLINE_ENTRY32 as u64) as *mut u8;
+        trampoline32.copy_from_nonoverlapping(trampoline_entry_code32 as *const u8, 0x100);
+        let trampoline64 = (TRAMPOLINE_ENTRY64 as u64) as *mut u8;
+        trampoline64.copy_from_nonoverlapping(trampoline_entry_code64 as *const u8, 0x100);
 
-    let gdt_phys = 0x6f00 as *mut x86::segmentation::Descriptor;
-    let gdt = (0x6f00 + phys_mem_offset) as *mut x86::segmentation::Descriptor;
-    let gdt64_phys = 0x6f50 as *mut x86::segmentation::Descriptor;
-    let gdt64 = (0x6f50 + phys_mem_offset) as *mut x86::segmentation::Descriptor;
-    let mut code_seg: Descriptor = x86::segmentation::DescriptorBuilder::code_descriptor(
-        0,
-        0xfffff,
-        x86::segmentation::CodeSegmentType::ExecuteRead,
-    )
-    .limit_granularity_4kb()
-    .present()
-    .finish();
-    let mut data_seg: Descriptor = x86::segmentation::DescriptorBuilder::data_descriptor(
-        0,
-        0xfffff,
-        x86::segmentation::DataSegmentType::ReadWrite,
-    )
-    .limit_granularity_4kb()
-    .present()
-    .finish();
-    let mut code64_seg = code_seg;
-    code64_seg.set_l();
-    let mut data64_seg = data_seg;
-    data64_seg.set_l();
-    code_seg.set_db();
-    data_seg.set_db();
-    gdt.write(x86::segmentation::Descriptor::default());
-    gdt.add(1).write(code_seg);
-    gdt.add(2).write(data_seg);
-    gdt64.write(x86::segmentation::Descriptor::default());
-    gdt64.add(1).write(code64_seg);
-    gdt64.add(2).write(data64_seg);
-    let gdtp = (0x6f18 + phys_mem_offset)
-        as *mut x86::dtables::DescriptorTablePointer<x86::segmentation::Descriptor>;
-    gdtp.write(x86::dtables::DescriptorTablePointer::new_from_slice(
-        core::slice::from_raw_parts(gdt_phys, 3),
-    ));
-    let gdtp64 = (0x6f68 + phys_mem_offset)
-        as *mut x86::dtables::DescriptorTablePointer<x86::segmentation::Descriptor>;
-    gdtp64.write(x86::dtables::DescriptorTablePointer::new_from_slice(
-        core::slice::from_raw_parts(gdt64_phys, 3),
-    ));
+        let gdt_phys = 0x6f00 as *mut x86::segmentation::Descriptor;
+        let gdt = (0x6f00 + phys_mem_offset) as *mut x86::segmentation::Descriptor;
+        let gdt64_phys = 0x6f50 as *mut x86::segmentation::Descriptor;
+        let gdt64 = (0x6f50 + phys_mem_offset) as *mut x86::segmentation::Descriptor;
+        let mut code_seg: Descriptor = x86::segmentation::DescriptorBuilder::code_descriptor(
+            0,
+            0xfffff,
+            x86::segmentation::CodeSegmentType::ExecuteRead,
+        )
+        .limit_granularity_4kb()
+        .present()
+        .finish();
+        let mut data_seg: Descriptor = x86::segmentation::DescriptorBuilder::data_descriptor(
+            0,
+            0xfffff,
+            x86::segmentation::DataSegmentType::ReadWrite,
+        )
+        .limit_granularity_4kb()
+        .present()
+        .finish();
+        let mut code64_seg = code_seg;
+        code64_seg.set_l();
+        let mut data64_seg = data_seg;
+        data64_seg.set_l();
+        code_seg.set_db();
+        data_seg.set_db();
+        gdt.write(x86::segmentation::Descriptor::default());
+        gdt.add(1).write(code_seg);
+        gdt.add(2).write(data_seg);
+        gdt64.write(x86::segmentation::Descriptor::default());
+        gdt64.add(1).write(code64_seg);
+        gdt64.add(2).write(data64_seg);
+        let gdtp = (0x6f18 + phys_mem_offset)
+            as *mut x86::dtables::DescriptorTablePointer<x86::segmentation::Descriptor>;
+        gdtp.write(x86::dtables::DescriptorTablePointer::new_from_slice(
+            core::slice::from_raw_parts(gdt_phys, 3),
+        ));
+        let gdtp64 = (0x6f68 + phys_mem_offset)
+            as *mut x86::dtables::DescriptorTablePointer<x86::segmentation::Descriptor>;
+        gdtp64.write(x86::dtables::DescriptorTablePointer::new_from_slice(
+            core::slice::from_raw_parts(gdt64_phys, 3),
+        ));
 
-    let pagetables = (0x6f40 + phys_mem_offset) as *mut u64;
-    *pagetables = x86::controlregs::cr3();
-    let stack = (0x6f48 + phys_mem_offset) as *mut u64;
-    *stack = kernel_stack as u64;
-    let entry = (0x6fa0 + phys_mem_offset) as *mut u64;
-    *entry = trampoline_main_entry as *const u8 as u64;
-    let id = (0x6fa8 + phys_mem_offset) as *mut u32;
-    *id = cpu;
-    let tcb = (0x6fb0 + phys_mem_offset) as *mut u64;
-    *tcb = tcb_base.raw();
-    assert!(*pagetables >> 32 == 0);
-    core::arch::asm!("mfence");
+        let pagetables = (0x6f40 + phys_mem_offset) as *mut u64;
+        *pagetables = x86::controlregs::cr3();
+        let stack = (0x6f48 + phys_mem_offset) as *mut u64;
+        *stack = kernel_stack as u64;
+        let entry = (0x6fa0 + phys_mem_offset) as *mut u64;
+        *entry = trampoline_main_entry as *const u8 as u64;
+        let id = (0x6fa8 + phys_mem_offset) as *mut u32;
+        *id = cpu;
+        let tcb = (0x6fb0 + phys_mem_offset) as *mut u64;
+        *tcb = tcb_base.raw();
+        assert!(*pagetables >> 32 == 0);
+        core::arch::asm!("mfence");
 
-    logln!("sending to cpu {}", cpu);
-    get_lapic().clear_err();
-    raw_send_ipi(
-        Destination::Single(cpu),
-        LAPIC_ICRLO_INIT | LAPIC_ICRLO_ASSERT | LAPIC_ICRLO_LEVEL,
-    );
-    pit::wait_ns(100000);
-
-    raw_send_ipi(
-        Destination::Single(cpu),
-        LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL,
-    );
-    pit::wait_ns(100000);
-
-    for _ in 0..3 {
+        logln!("sending to cpu {}", cpu);
+        get_lapic().clear_err();
         raw_send_ipi(
             Destination::Single(cpu),
-            LAPIC_ICRLO_STARTUP | ((TRAMPOLINE_ENTRY16 >> 12) & 0xff) | LAPIC_ICRLO_ASSERT,
+            LAPIC_ICRLO_INIT | LAPIC_ICRLO_ASSERT | LAPIC_ICRLO_LEVEL,
         );
         pit::wait_ns(100000);
+
+        raw_send_ipi(
+            Destination::Single(cpu),
+            LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL,
+        );
+        pit::wait_ns(100000);
+
+        for _ in 0..3 {
+            raw_send_ipi(
+                Destination::Single(cpu),
+                LAPIC_ICRLO_STARTUP | ((TRAMPOLINE_ENTRY16 >> 12) & 0xff) | LAPIC_ICRLO_ASSERT,
+            );
+            pit::wait_ns(100000);
+        }
     }
 }

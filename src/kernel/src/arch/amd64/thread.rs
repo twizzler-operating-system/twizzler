@@ -1,14 +1,14 @@
 use core::{
     cell::{RefCell, UnsafeCell},
-    sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use twizzler_abi::{
     arch::{ArchRegisters, XSAVE_LEN},
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
     thread::ExecutionState,
     upcall::{
-        UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
+        UPCALL_EXIT_CODE, UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget,
     },
 };
 use twizzler_rt_abi::error::TwzError;
@@ -18,7 +18,7 @@ use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
     processor::KERNEL_STACK_SIZE,
-    thread::{current_thread_ref, Thread},
+    thread::{Thread, current_thread_ref},
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -70,8 +70,8 @@ impl ArchThread {
 }
 
 #[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
 unsafe extern "C" fn __do_switch(
     newsp: *const u64,       //rdi
     oldsp: *mut u64,         //rsi
@@ -490,19 +490,24 @@ impl Thread {
     pub unsafe fn init_va(&mut self, jmptarget: u64) {
         let stack = self.kernel_stack.as_ptr() as *mut u64;
         assert!(jmptarget != 0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
-        stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
-        stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
-        self.arch.rsp = core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+        unsafe {
+            stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
+            stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
+            stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
+            self.arch.rsp =
+                core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+        }
     }
 
     pub unsafe fn init(&mut self, f: extern "C" fn()) {
-        self.init_va(f as usize as u64);
+        unsafe {
+            self.init_va(f as usize as u64);
+        }
     }
 
     pub fn read_ip(&self) -> u64 {

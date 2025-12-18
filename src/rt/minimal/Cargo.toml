@@ -21,7 +21,7 @@ twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 static_assertions = "1"
 paste = "1"
-printf-compat = { version = "0.1", default-features = false }
+printf-compat = { version = "0.3", default-features = false }
 spin = "0.10"
 
 [package.metadata]
