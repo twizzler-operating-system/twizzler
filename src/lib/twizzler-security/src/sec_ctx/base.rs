@@ -1,6 +1,6 @@
 use core::fmt::Display;
 
-use heapless::{FnvIndexMap, Vec};
+use heapless::{index_map::FnvIndexMap, Vec};
 use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
 
 /// completely arbitrary amount of mask entries in a security context

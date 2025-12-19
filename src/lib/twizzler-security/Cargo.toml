@@ -7,7 +7,7 @@ edition = "2021"
 bitflags = "2.4.1"
 sha2 = { workspace = true, features = ["force-soft"] }
 p256 = { workspace = true, features = ["ecdsa"] }
-getrandom = { workspace = true, optional = true }
+getrandom = { version = "0.2", optional = true }
 
 blake3 = { workspace = true, features = ["traits-preview", "no_neon"] }
 
@@ -15,7 +15,7 @@ twizzler-abi = { path = "../twizzler-abi"}
 twizzler = { workspace = true, optional = true }
 twizzler-rt-abi = {version = "0.99", default-features = false}
 log = { workspace = true, optional = true }
-heapless = "0.8.0"
+heapless = { workspace = true }
 
 [features]
 default = ["user"]

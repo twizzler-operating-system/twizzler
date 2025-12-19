@@ -22,7 +22,7 @@ slab = { workspace = true, features = [] }
 itertools = { workspace = true }
 stable-vec = { workspace = true }
 rand = "*"
-heapless = "*"
+heapless = { workspace = true }
 async-channel = { workspace = true }
 mayheap = { workspace = true }
 
