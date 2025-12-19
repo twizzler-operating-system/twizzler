@@ -10,7 +10,7 @@ twizzler-abi = { path = "../twizzler-abi" }
 futures = { workspace = true }
 async-trait = { workspace = true }
 bitflags = "2.4.1"
-volatile = { version = "0.6", features = ["unstable"] }
+volatile = { workspace = true, features = ["unstable"] }
 async-io = { workspace = true }
 twizzler-futures = { workspace = true }
 twizzler = { workspace = true }

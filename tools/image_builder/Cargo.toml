@@ -10,7 +10,7 @@ edition = "2021"
 #bootloader-locator = "0.0.4" # for locating the `bootloader` dependency on disk
 locate-cargo-manifest = { workspace = true } # for locating the kernel's `Cargo.toml`
 anyhow = { workspace = true }
-fatfs = "0.3"
+fatfs = { workspace = true }
 gpt = { workspace = true }
 argh = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

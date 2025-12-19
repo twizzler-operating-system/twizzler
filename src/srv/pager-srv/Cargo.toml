@@ -27,7 +27,7 @@ async-channel = { workspace = true }
 mayheap = { workspace = true }
 
 async-trait = { workspace = true }
-volatile = "0.6"
+volatile = { workspace = true }
 bitvec = { workspace = true }
 
 tracing = { workspace = true }

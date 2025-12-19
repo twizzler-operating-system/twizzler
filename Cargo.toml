@@ -164,7 +164,7 @@ core = "1.0.0"
 csplit = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 ctor = "0.6"
 cut = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-darling = "0.20"
+darling = "0.23"
 date = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 devmgr = { path = "src/lib/devmgr" }
 digest = "0.10.7"
@@ -172,7 +172,7 @@ display-core = { path = "src/lib/twizzler-display/display-core" }
 display-srv = { path = "src/srv/display-srv" }
 dynlink = { path = "src/lib/dynlink" }
 echo = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-elf = "0.7"
+elf = "0.8"
 embedded-io = "0.6"
 equivalent = "1.0.2"
 expand = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
@@ -192,7 +192,7 @@ gpt = "4.1"
 guess_host_triple = "0.1"
 happylock = "0.5.0"
 heapless = "0.9"
-hex-literal = { version = "0.4", default-features = false }
+hex-literal = { version = "1.1", default-features = false }
 home = "0.5.9"
 humansize = "2.1"
 hwlocality = "1.0.0-alpha.8"
@@ -212,7 +212,7 @@ locate-cargo-manifest = "0.2.0"
 log = "0.4.27"
 logboi = { path = "src/lib/logboi" }
 logboi-srv = { path = "src/srv/logboi-srv" }
-lru = "0.13.0"
+lru = "0.12"
 ls = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 lwext4-rs = { path = "src/ports/lwext4-rs" }
 mayheap = "0.2"
@@ -244,7 +244,7 @@ pager-dynamic = { path = "src/lib/pager/pager-dynamic" }
 pager-srv = { path = "src/srv/pager-srv" }
 parking_lot = "0.12"
 pci_types = "0.10"
-petgraph = "0.7"
+petgraph = "0.8"
 phf = { version = "0.12", default-features = false }
 phf_codegen = "0.12"
 polling = "3.6.0"
@@ -263,8 +263,8 @@ secgate = { path = "src/lib/secgate" }
 secgate-macros = { path = "src/lib/secgate/secgate-macros" }
 semver = "1.0"
 seq = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-serde = "*"
-serde_json = "*"
+serde = "1.0"
+serde_json = "1.0"
 sha2 = { version = "0.10.8", default-features = false }
 shuf = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 slab = "0.4"
@@ -281,13 +281,13 @@ sum = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/
 syn = "2.0"
 talc = { version = "4.4", default-features = false }
 tar = "0.4"
-tar-no-std = "0.3"
+tar-no-std = "0.4"
 textwrap = "0.16.1"
 thiserror = { version = "2.0", default-features = false }
 tick_counter = "0.4"
 tinyvec = "1.10"
 tokio = "1.17.0"
-toml_edit = "0.22.24"
+toml_edit = "0.22"
 tr = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 tracing = "0.1.41"
 tracing-log = "0.2"
@@ -317,7 +317,8 @@ walkdir = "2.5.0"
 xmas-elf = "0.10.0"
 yes = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 zerocopy = "0.8"
-# hello-world-rs = "1.0.0"
+fatfs = "0.3"
+volatile = "0.6"
 
 [profile.release]
 debug = true

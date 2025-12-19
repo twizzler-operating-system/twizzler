@@ -8,7 +8,7 @@ twizzler-driver = { workspace = true }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 devmgr = { workspace = true }
 virtio-drivers = { workspace = true }
-volatile = { version = "0.6", features = ["unstable"] }
+volatile = { workspace = true, features = ["unstable"] }
 once_cell = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }

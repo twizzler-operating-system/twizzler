@@ -15,7 +15,7 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-runtime = { workspace = true }
 pci_types = { workspace = true }
 async-trait = { workspace = true }
-volatile = "0.6"
+volatile = { workspace = true }
 secgate = { workspace = true }
 twizzler-rt-abi = "0.99"
 tracing-subscriber = { workspace = true }
