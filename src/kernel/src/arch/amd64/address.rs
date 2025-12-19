@@ -22,7 +22,7 @@ impl VirtAddr {
     /// The start of the kernel object mapping.
     const KOBJ_START: Self = Self(0xfffff00000000000);
     /// The start of the physical mapping.
-    const PHYS_START: Self = Self(0xffff800000000000);
+    pub const PHYS_START: Self = Self(0xffff800000000000);
 
     pub const fn start_kernel_memory() -> Self {
         // This is defined by the definitions of the two canonical regions of the virtual memory
@@ -52,7 +52,7 @@ impl VirtAddr {
 
     /// Construct a new virtual address from the provided addr value, only if the provided value is
     /// a valid, canonical address. If not, returns Err.
-    pub const fn new(addr: u64) -> Result<Self, NonCanonical> {
+    pub fn new(addr: u64) -> Result<Self, NonCanonical> {
         // This is defined by the definitions of the two canonical regions of the virtual memory
         // space.
         if addr >= 0xFFFF800000000000 || addr <= 0x00007fffffffffff {
@@ -187,6 +187,13 @@ impl PhysAddr {
                 .physical_address_bits()
                 .into()
         })
+    }
+
+    pub fn phys_mem_map_len() -> usize {
+        let max_map_len = VirtAddr::KOBJ_START.0 - VirtAddr::PHYS_START.0;
+        let bits = Self::get_phys_addr_width();
+        let max_phys: u64 = 1 << bits;
+        max_phys.min(max_map_len) as usize
     }
 
     pub fn new(addr: u64) -> Result<Self, NonCanonical> {

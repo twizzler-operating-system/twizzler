@@ -286,6 +286,20 @@ impl VirtContext {
         );
 
         self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+
+        let cursor = MappingCursor::new(VirtAddr::PHYS_START, PhysAddr::phys_mem_map_len());
+        let settings = MappingSettings::new(
+            Protections::READ | Protections::WRITE | Protections::EXEC,
+            CacheType::WriteBack,
+            MappingFlags::empty(),
+        );
+        let mut phys = ContiguousProvider::new(
+            PhysAddr::new(0).unwrap(),
+            PhysAddr::phys_mem_map_len(),
+            settings,
+        );
+
+        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
     }
 
     pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {

@@ -66,7 +66,7 @@ use processor::{
 use random::start_entropy_contribution_thread;
 use syscall::sync::requeue_all;
 
-use crate::{processor::mp::current_processor, thread::entry::start_new_init};
+use crate::{arch::PhysAddr, processor::mp::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -75,7 +75,7 @@ pub trait BootInfo {
     /// Return the address and length of the whole kernel image.
     fn kernel_image_info(&self) -> (VirtAddr, usize);
     /// Get a system table, the kinds available depend on the platform and architecture.
-    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr;
+    fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr;
     /// Get a static array of the modules loaded by the bootloader
     fn get_modules(&self) -> &'static [BootModule];
     /// Get a pointer to the kernel command line.
@@ -128,7 +128,7 @@ static LOGGER: Logger = Logger {};
 
 fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
-    arch::init(boot_info);
+    arch::init();
     ::log::set_logger(&LOGGER).unwrap();
     ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
@@ -151,6 +151,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     }
     logln!("[kernel::mm] initializing memory management");
     memory::init(boot_info);
+    arch::init_post_memory(boot_info);
 
     logln!("[kernel::debug] parsing kernel debug image");
     let (kernel_image_start, kernel_image_length) = boot_info.kernel_image_info();

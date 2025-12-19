@@ -28,11 +28,13 @@ pub use apic::{poke_cpu, send_ipi};
 pub use start::BootInfoSystemTable;
 
 use self::apic::get_lapic;
-pub fn init(boot_info: &dyn BootInfo) {
+pub fn init() {
     gdt::init();
     interrupt::init_idt();
     apic::init(true);
+}
 
+pub fn init_post_memory(boot_info: &dyn BootInfo) {
     let rsdp = boot_info.get_system_table(BootInfoSystemTable::Rsdp);
     acpi::init(rsdp.raw());
 }

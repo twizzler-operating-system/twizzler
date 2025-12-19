@@ -7,18 +7,18 @@ edition = "2021"
 
 [dependencies]
 twizzler-rt-abi = "0.99"
-secgate = { path = "../secgate" }
-tracing = "0.1"
-thiserror = "2.0"
-talc = { version = "4.4", default-features = false }
-anyhow = "1.0"
-petgraph = "0.7"
-humansize = "2.1"
+secgate = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+talc = { workspace = true }
+anyhow = { workspace = true }
+petgraph = { workspace = true }
+humansize = { workspace = true }
 bitflags = "2.4"
-miette = "7.5"
-itertools = "0.14"
-elf = "0.7"
+miette = { workspace = true }
+itertools = { workspace = true }
+elf = { workspace = true }
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
-stable-vec = "0.4"
-smallstr = "*"
-tinyvec = { version = "*", features = ["alloc"] }
+stable-vec = { workspace = true }
+smallstr = { workspace = true }
+tinyvec = { workspace = true, features = ["alloc"] }

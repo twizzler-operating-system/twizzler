@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
-twizzler = { path = "../../lib/twizzler" }
-monitor-api = { path = "../../rt/monitor-api" }
+twizzler = { workspace = true }
+monitor-api = { workspace = true }

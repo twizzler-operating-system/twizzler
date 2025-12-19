@@ -8,12 +8,12 @@ edition = "2021"
 
 [dependencies]
 #bootloader-locator = "0.0.4" # for locating the `bootloader` dependency on disk
-locate-cargo-manifest = "0.2.0" # for locating the kernel's `Cargo.toml`
-anyhow = "1.0"
+locate-cargo-manifest = { workspace = true } # for locating the kernel's `Cargo.toml`
+anyhow = { workspace = true }
 fatfs = "0.3"
-gpt = "4.1"
-argh = "0.1.12"
-clap = { version = "4.0", features = ["derive"] }
+gpt = { workspace = true }
+argh = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 
 [package.metadata]
 twizzler-build = "tool"

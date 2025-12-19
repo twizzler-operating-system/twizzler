@@ -10,15 +10,15 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-twizzler-driver = { path = "../../lib/twizzler-driver" }
+twizzler-driver = { workspace = true }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler-runtime = { path = "../../rt" }
-pci_types = "*"
-async-trait = "0.1.56"
+twizzler-runtime = { workspace = true }
+pci_types = { workspace = true }
+async-trait = { workspace = true }
 volatile = "0.6"
-secgate = { path = "../../lib/secgate" }
+secgate = { workspace = true }
 twizzler-rt-abi = "0.99"
-tracing-subscriber = "*"
-tracing = "*"
-devmgr = { path = "../../lib/devmgr" }
-twizzler = { path = "../../lib/twizzler" }
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
+devmgr = { workspace = true }
+twizzler = { workspace = true }

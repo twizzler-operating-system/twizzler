@@ -5,8 +5,8 @@ use limine::{
     file::File,
     memory_map::EntryType,
     request::{
-        BootloaderInfoRequest, EntryPointRequest, FramebufferRequest, HhdmRequest,
-        KernelFileRequest, MemoryMapRequest, ModuleRequest, RsdpRequest,
+        BootloaderInfoRequest, EntryPointRequest, ExecutableFileRequest, FramebufferRequest,
+        HhdmRequest, MemoryMapRequest, ModuleRequest, RsdpRequest, StackSizeRequest,
     },
 };
 
@@ -47,16 +47,16 @@ impl BootInfo for LimineBootInfo {
         )
     }
 
-    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
+    fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr {
         match table {
-            BootInfoSystemTable::Rsdp => VirtAddr::new(self.rsdp.unwrap()).unwrap(),
+            BootInfoSystemTable::Rsdp => PhysAddr::new(self.rsdp.unwrap()).unwrap(),
             BootInfoSystemTable::Efi => todo!(),
         }
     }
 
     fn get_cmd_line(&self) -> &'static str {
-        if !self.kernel.cmdline().is_empty() {
-            core::str::from_utf8(self.kernel.cmdline()).unwrap()
+        if !self.kernel.string().is_empty() {
+            core::str::from_utf8(self.kernel.string().to_bytes()).unwrap()
         } else {
             ""
         }
@@ -67,13 +67,12 @@ impl From<EntryType> for MemoryRegionKind {
     fn from(st: EntryType) -> Self {
         match st {
             EntryType::USABLE => MemoryRegionKind::UsableRam,
-            EntryType::KERNEL_AND_MODULES => MemoryRegionKind::BootloaderReserved,
+            EntryType::EXECUTABLE_AND_MODULES => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
 }
 
-const STACK_SIZE: usize = 4096 * 16;
 #[repr(C, align(4096))]
 struct P2Align12<T>(T);
 static STACK: P2Align12<[u8; STACK_SIZE]> = P2Align12([0; STACK_SIZE]);
@@ -106,10 +105,11 @@ extern "C" fn limine_entry() -> ! {
             .file(),
         maps: alloc::vec![],
         modules: alloc::vec![],
-        rsdp: LIMINE_TABLE.get_response().map(
-            |r| r.address() as u64 - 0xffff800000000000, /* TODO: MEGA HACK */
-        ),
+        rsdp: LIMINE_TABLE
+            .get_response()
+            .map(|r| r.address() as u64 /* TODO: MEGA HACK */),
     };
+    logln!("got addr: {:x}", boot_info.rsdp.unwrap());
 
     boot_info.maps = LIMINE_MEM
         .get_response()
@@ -143,9 +143,11 @@ static LIMINE_ENTRY: EntryPointRequest = EntryPointRequest::new().with_entry_poi
 static LIMINE_FB: FramebufferRequest = FramebufferRequest::new();
 static LIMINE_MOD: ModuleRequest = ModuleRequest::new();
 static LIMINE_MEM: MemoryMapRequest = MemoryMapRequest::new();
-static LIMINE_KERNEL: KernelFileRequest = KernelFileRequest::new();
+static LIMINE_KERNEL: ExecutableFileRequest = ExecutableFileRequest::new();
 static LIMINE_TABLE: RsdpRequest = RsdpRequest::new();
 static LIMINE_HHDM: HhdmRequest = HhdmRequest::new();
+const STACK_SIZE: usize = 0x100000;
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(STACK_SIZE as u64);
 
 #[unsafe(link_section = ".limine_reqs")]
 #[used]
@@ -161,7 +163,7 @@ static F3: &'static ModuleRequest = &LIMINE_MOD;
 static F4: &'static MemoryMapRequest = &LIMINE_MEM;
 #[unsafe(link_section = ".limine_reqs")]
 #[used]
-static F5: &'static KernelFileRequest = &LIMINE_KERNEL;
+static F5: &'static ExecutableFileRequest = &LIMINE_KERNEL;
 #[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F6: &'static FramebufferRequest = &LIMINE_FB;
@@ -171,6 +173,9 @@ static F7: &'static RsdpRequest = &LIMINE_TABLE;
 #[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F8: &'static HhdmRequest = &LIMINE_HHDM;
+#[unsafe(link_section = ".limine_reqs")]
+#[used]
+static F9: &'static StackSizeRequest = &STACK_SIZE_REQUEST;
 #[unsafe(link_section = ".limine_reqs")]
 #[used]
 static FEND: u64 = 0;

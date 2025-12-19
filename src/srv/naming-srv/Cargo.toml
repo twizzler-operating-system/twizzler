@@ -9,17 +9,17 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lazy_static = "1.5.0"
-secgate = { path = "../../lib/secgate" }
-twizzler-runtime = { path = "../../rt" }
+lazy_static = { workspace = true }
+secgate = { workspace = true }
+twizzler-runtime = { workspace = true }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-twizzler = { path = "../../lib/twizzler" }
-arrayvec = "0.7.6"
-naming-core = { path = "../../lib/naming/naming-core" }
-lazy-init = "0.5.1"
-tracing = "*"
-pager = { path = "../../lib/pager/" }
-tracing-subscriber = "*"
+twizzler = { workspace = true }
+arrayvec = { workspace = true }
+naming-core = { workspace = true }
+lazy-init = { workspace = true }
+tracing = { workspace = true }
+pager = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [features]

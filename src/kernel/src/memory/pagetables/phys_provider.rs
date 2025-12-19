@@ -3,7 +3,7 @@ use crate::{
     arch::address::PhysAddr,
     memory::{
         frame::FrameRef,
-        tracker::{alloc_frame, free_frame, FrameAllocFlags},
+        tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
 };
 
@@ -76,7 +76,7 @@ impl Drop for ZeroPageProvider {
 
 /// Implements [PhysAddrProvider] by providing physical addresses within a given range.
 pub struct ContiguousProvider {
-    next: PhysAddr,
+    next: Option<PhysAddr>,
     rem: usize,
     settings: MappingSettings,
 }
@@ -85,7 +85,7 @@ impl ContiguousProvider {
     /// Construct a new [ContiguousProvider].
     pub fn new(start: PhysAddr, len: usize, settings: MappingSettings) -> Self {
         Self {
-            next: start,
+            next: Some(start),
             rem: len,
             settings,
         }
@@ -95,14 +95,18 @@ impl ContiguousProvider {
 impl PhysAddrProvider for ContiguousProvider {
     fn peek(&mut self) -> Option<PhysMapInfo> {
         Some(PhysMapInfo {
-            addr: self.next,
+            addr: self.next?,
             len: self.rem,
             settings: self.settings,
         })
     }
 
     fn consume(&mut self, len: usize) {
-        self.next = self.next.offset(len).unwrap();
-        self.rem = self.rem.saturating_sub(len);
+        if let Some(next) = &mut self.next {
+            if let Some(n) = next.offset(len).ok() {
+                *next = n;
+                self.rem = self.rem.saturating_sub(len);
+            }
+        }
     }
 }

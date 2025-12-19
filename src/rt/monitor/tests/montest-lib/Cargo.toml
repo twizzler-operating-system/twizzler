@@ -9,7 +9,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-secgate = { path = "../../../../lib/secgate" }
-twizzler-runtime = { path = "../../.." }
+secgate = { workspace = true }
+twizzler-runtime = { workspace = true }
 twizzler-rt-abi = { path = "../../../../abi/rt-abi/" }
 twizzler-abi = { path = "../../../../lib/twizzler-abi" }
