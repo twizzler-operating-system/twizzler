@@ -120,7 +120,10 @@ impl PageVec {
                 let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                 let mut new_page = PageRef::new(new_page, 0, 1);
                 new_page.copy_from(&entry.adjust(i));
-                pv.tree.insert(thisrange.clone(), new_page);
+                let _kicked = pv.tree.insert_replace(thisrange.clone(), new_page);
+                if !_kicked.is_empty() {
+                    log::warn!("kicked: {:?}", _kicked);
+                }
             }
         }
 
@@ -144,9 +147,7 @@ impl PageVec {
         let mut start = pn;
         for entry in entry {
             if *entry.0 == start && !pages.is_full() {
-                unsafe {
-                    pages.push_unchecked((entry.1.value().clone(), settings));
-                }
+                pages.push((entry.1.value().clone(), settings)).unwrap();
                 start += entry.1.value().nr_pages();
             } else {
                 break;
@@ -157,6 +158,9 @@ impl PageVec {
     pub fn add_page(&mut self, off: usize, page: PageRef) -> PageRef {
         let range = off..(off + page.nr_pages());
         let _k = self.tree.insert_replace(range.clone(), page.clone());
+        if !_k.is_empty() {
+            log::warn!("kicked: {:?}", _k);
+        }
         page
     }
 }

@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use twizzler_abi::{
     arch::XSAVE_LEN,
     kso::{InterruptAllocateOptions, InterruptPriority},
-    object::MAX_SIZE,
     upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
 use x86::current::rflags::RFlags;
@@ -19,7 +18,7 @@ use crate::{
     memory::{context::virtmem::PageFaultFlags, VirtAddr},
     once::Once,
     processor::mp::current_processor,
-    thread::{current_memory_context, current_thread_ref},
+    thread::current_thread_ref,
 };
 
 pub const GENERIC_IPI_VECTOR: u32 = 200;
@@ -184,12 +183,6 @@ unsafe extern "C" fn common_handler_entry(
         let t = current_thread_ref().unwrap();
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
         if (*ctx).get_ip() == 0 {
-            let addr = current_memory_context()
-                .unwrap()
-                .lookup_slot(((*ctx).rsp / MAX_SIZE as u64) as usize);
-            if let Some(addr) = addr {
-                //addr.object.print_page_tree();
-            }
             panic!(
                 "tried to set IP to 0 for in {}! is currently: {:x} {:?}",
                 number,
