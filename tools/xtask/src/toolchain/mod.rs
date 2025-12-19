@@ -341,6 +341,18 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
         clang_path.canonicalize().unwrap()
     };
 
+    let ranlib_path = {
+        let mut path = toolchain_path.clone();
+        path.push("bin/llvm-ranlib");
+        path.canonicalize().unwrap()
+    };
+
+    let ar_path = {
+        let mut path = toolchain_path.clone();
+        path.push("bin/llvm-ar");
+        path.canonicalize().unwrap()
+    };
+
     // When compiling crates that compile C code (e.g. alloca), we need to use our clang.
     // let clang_path = Path::new(format!("{}/bin/clang", toolchain_path).as_str())
     //     .canonicalize()
@@ -348,6 +360,12 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
     std::env::set_var("CC", &clang_path);
     std::env::set_var("LD", &clang_path);
     std::env::set_var("CXX", &clang_path);
+
+    std::env::set_var("AR", &ar_path);
+    std::env::set_var("RANLIB", &ranlib_path);
+
+    std::env::set_var("CMAKE_AR", &ar_path);
+    std::env::set_var("CMAKE_RANLIB", &ranlib_path);
 
     // We don't have any real system-include files, but we can provide these extremely simple ones.
     let sysroot_path = Path::new(&format!(

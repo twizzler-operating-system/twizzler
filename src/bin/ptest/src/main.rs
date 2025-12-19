@@ -195,10 +195,10 @@ fn main() {
     let mut nh = naming::dynamic_naming_factory().unwrap();
     match cli.sub {
         SubCommand::Hw => {
-            //let top = hwlocality::topology::Topology::new().unwrap();
-            //println!("{:#?}", top);
-            //let cpus = top.complete_cpuset();
-            //println!("==> {:?}", cpus);
+            let top = hwlocality::topology::Topology::new().unwrap();
+            println!("{:#?}", top);
+            let cpus = top.complete_cpuset();
+            println!("==> {:?}", cpus);
         }
         SubCommand::New => match cli.ty {
             VecTy::U32 => {

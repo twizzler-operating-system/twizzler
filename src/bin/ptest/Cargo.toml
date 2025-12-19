@@ -13,7 +13,7 @@ clap = { version = "*", features = ["derive"] }
 miette = "*"
 tracing = "*"
 tracing-subscriber = "*"
-#hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
+hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
 libc = "*"
 rand = "*"
 #rocksdb = "*"
