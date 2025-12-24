@@ -83,7 +83,7 @@ fn get_pages_and_wait(
     if !mgr.is_ready() {
         return false;
     }
-    log::info!(
+    log::trace!(
         "{}: getting page {} from {}",
         current_thread_ref().unwrap().id(),
         page,
@@ -195,7 +195,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
         avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::info!(
+    log::debug!(
         "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
         start.num(),

@@ -10,7 +10,6 @@ pub struct CliArgs {
     pub command: Commands,
 }
 
-// noun verb --args
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Commands pertaining to security contexts
@@ -43,6 +42,7 @@ pub enum KeyCommands {
     #[command(short_flag = 'n')]
     NewPair,
 }
+
 #[derive(Subcommand, Debug)]
 pub enum CtxAddCommands {
     Cap(CapAddArgs),
@@ -67,6 +67,7 @@ pub struct CapAddArgs {
     #[arg(short = 'e', long, value_parser=parse_obj_id)]
     pub executing_ctx: Option<ObjID>,
 }
+
 #[derive(Subcommand, Debug)]
 pub enum ObjCommands {
     /// Create a new object.
@@ -82,46 +83,49 @@ pub enum ObjCommands {
 
 #[derive(Args, Debug)]
 pub struct NewObjectArgs {
-    /// the verifyign key to use when creating the object
+    /// The verifyign key to use when creating the object
     #[arg(short = 'v', long, value_parser=parse_obj_id)]
     pub verifying_key_id: ObjID,
 
-    /// simple string message to store inside the object
+    /// Simple string message to store inside the object
     #[arg(short, long)]
     pub message: String,
 }
+
 #[derive(Args, Debug)]
 pub struct SealedObjectArgs {
-    /// the verifying key to use when creating the object
+    /// The verifying key to use when creating the object
     #[arg(short = 'v', long, value_parser=parse_obj_id)]
     pub verifying_key_id: ObjID,
 
     #[arg(short = 's', long, value_parser=parse_obj_id)]
+    /// The signing key to use when creating the capability for the
+    /// sealed object.
     pub signing_key_id: ObjID,
 
     /// Optionally a security context to use when creating this object.
     #[arg(short = 'c', long, value_parser=parse_obj_id)]
     pub sec_ctx_id: Option<ObjID>,
 
-    /// simple string message to store inside the object
+    /// Simple string message to store inside the object
     #[arg(short, long)]
     pub message: String,
 }
 
 #[derive(Args, Debug)]
 pub struct ObjInspectArgs {
-    /// the security context to use when inspecting this object
+    /// The security context to use when inspecting this object.
     #[arg(short = 's', long, value_parser=parse_obj_id)]
     pub sec_ctx_id: Option<ObjID>,
 
-    /// the object to be inspected
+    /// The object to be inspected.
     #[arg(short = 'o', long, value_parser=parse_obj_id)]
     pub obj_id: ObjID,
 }
 
 #[derive(Args, Debug)]
 pub struct CtxInspectArgs {
-    /// the security context to be inspected
+    /// The security context to be inspected.
     #[arg(short = 's', long, value_parser=parse_obj_id)]
     pub sec_ctx_id: ObjID,
 }
@@ -133,6 +137,7 @@ fn parse_obj_id(arg: &str) -> Result<ObjID, ParseIntError> {
 
 #[derive(Args, Debug)]
 pub struct NewCtxArgs {
+    /// Makes this security context undetachable once attached to.
     #[arg(short, long, default_value = "false")]
     pub undetachable: bool,
 }

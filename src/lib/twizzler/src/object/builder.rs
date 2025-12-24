@@ -126,7 +126,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
-        tracing::info!("object spec{:#?}", self.spec);
+        tracing::trace!("object spec{:#?}", self.spec);
 
         let id = twizzler_abi::syscall::sys_object_create(
             self.spec,
@@ -149,14 +149,12 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             }
         }
 
-        //
-        //
-        tracing::info!("Creating object with id: {id:?}");
+        tracing::trace!("Creating object with id: {id:?}");
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
         let metadata = mu_object.meta_ptr();
 
         unsafe {
-            tracing::info!("metadata:{:#?}", *metadata);
+            tracing::trace!("metadata:{:#?}", *metadata);
         }
 
         let object = ctor(mu_object.into_tx()?)?;

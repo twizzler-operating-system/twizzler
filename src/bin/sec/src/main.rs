@@ -33,9 +33,10 @@ fn main() {
             ObjCommands::Inspect(args) => {
                 if let Some(sec_ctx_id) = args.sec_ctx_id {
                     let sec_ctx = SecCtx::try_from(sec_ctx_id).unwrap();
-                    sys_sctx_attach(sec_ctx.id()).unwrap();
-                    sys_thread_set_active_sctx_id(sec_ctx.id()).unwrap();
-                    println!("attached to SecCtx: {sec_ctx_id:#?}");
+                    sec_ctx
+                        .set_active()
+                        .expect("Failed to set sec_ctx to active");
+                    println!("activated SecCtx: {sec_ctx_id:#?}");
                 }
 
                 let target =

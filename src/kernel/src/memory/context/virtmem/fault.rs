@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::error;
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     syscall::MapFlags,
@@ -60,7 +60,7 @@ fn check_violations(
     _ip: VirtAddr,
 ) -> Result<(), UpcallInfo> {
     if flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
-        info!("generating upcall, addr: {addr:?}, flags: {flags:?}");
+        // info!("generating upcall, addr: {addr:?}, flags: {flags:?}");
         return Err(UpcallInfo::MemoryContextViolation(
             MemoryContextViolationInfo::new(addr.raw(), cause),
         ));
@@ -188,7 +188,7 @@ fn page_fault_to_region(
     let (id_ok, default_prot) = info.object.check_id();
 
     if !id_ok && !info.object().is_kernel_id() {
-        // /*
+        /*
         logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
         logln!(
             "id verification failed ({} {}) {:?}",
@@ -196,7 +196,7 @@ fn page_fault_to_region(
             info.object.is_kernel_id(),
             info.object.id(),
         );
-        // */
+        */
     }
 
     let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
