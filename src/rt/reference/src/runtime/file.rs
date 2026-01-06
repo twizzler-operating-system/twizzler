@@ -22,7 +22,7 @@ use twizzler_abi::{
     },
 };
 use twizzler_rt_abi::{
-    bindings::{create_options, io_ctx, io_vec},
+    bindings::{create_options, io_ctx, io_vec, prot_kind},
     error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
     fd::{FdInfo, OpenAnonKind, RawFd},
     object::MapFlags,
@@ -339,6 +339,7 @@ impl ReferenceRuntime {
         open_opt: OperationOptions,
         _bind_info: *mut c_void,
         _bind_info_len: usize,
+        _prot: prot_kind,
     ) -> Result<RawFd> {
         let elem = FdKind::Stdio;
 
@@ -362,6 +363,17 @@ impl ReferenceRuntime {
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
         Ok(session.rename(old, new)?)
+    }
+
+    pub fn reopen_anon(
+        &self,
+        _fd: RawFd,
+        _open_opt: OperationOptions,
+        _bind_info: *mut c_void,
+        _bind_info_len: usize,
+        _prot: prot_kind,
+    ) -> Result<()> {
+        todo!()
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {

@@ -80,7 +80,7 @@ use tracing::warn;
 use twizzler_abi::object::ObjID;
 // core.h
 use twizzler_rt_abi::bindings::{
-    endpoint, io_ctx, object_cmd, option_exit_code, release_flags, twz_error, u32_result,
+    endpoint, io_ctx, object_cmd, option_exit_code, prot_kind, release_flags, twz_error, u32_result,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
@@ -296,15 +296,31 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open_anon(
     flags: u32,
     bind_info: *mut c_void,
     bind_info_len: usize,
+    prot: prot_kind,
 ) -> open_result {
     let Ok(kind) = kind.try_into() else {
         return Err(ArgumentError::InvalidArgument.into()).into();
     };
     OUR_RUNTIME
-        .open_anon(kind, flags.into(), bind_info, bind_info_len)
+        .open_anon(kind, flags.into(), bind_info, bind_info_len, prot)
         .into()
 }
-check_ffi_type!(twz_rt_fd_open_anon, _, _, _, _);
+check_ffi_type!(twz_rt_fd_open_anon, _, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_reopen_anon(
+    fd: descriptor,
+    flags: u32,
+    bind_info: *mut c_void,
+    bind_info_len: usize,
+    prot: prot_kind,
+) -> twz_error {
+    match OUR_RUNTIME.reopen_anon(fd, flags.into(), bind_info, bind_info_len, prot) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_fd_reopen_anon, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
