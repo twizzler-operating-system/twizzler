@@ -131,7 +131,7 @@ impl Engine {
                     .extract_if(0.., |item: &mut (SocketHandle, u16)| {
                         let socket = core.get_mutable_socket(item.0);
                         if socket.state() == State::Closed {
-                            // log::debug!("tracked tcp socket {} in closed state", item.0);
+                            tracing::info!("tracked tcp socket {} in closed state", item.0);
                             core.release_socket(item.0);
                             true
                         } else {
@@ -169,7 +169,7 @@ impl Engine {
                 }
                 .flatten();
                 if let Some(inner) = inner {
-                    // log::debug!("tracking socket {}, port {}", inner.0, inner.1);
+                    tracing::info!("tracking socket {}, port {}", inner.0, inner.1);
                     tracking.push(inner);
                 }
             }
@@ -306,10 +306,10 @@ impl SmolTcpListener {
     ) -> Result<(u16, SocketAddr), Error> {
         let addrs = sock_addrs.to_socket_addrs()?;
         for addr in addrs {
+            tracing::info!("each_addr: {:?}", addr);
             match s.listen(addr.port()) {
                 Ok(_) => return Ok((addr.port(), addr)),
-                // TODO: error map
-                Err(_) => return Err(ErrorKind::AddrNotAvailable.into()),
+                Err(_) => {}
             }
         }
         Err(Error::new(
@@ -329,7 +329,8 @@ impl SmolTcpListener {
     }
 
     fn bind_once<A: ToSocketAddrs>(addrs: A) -> Result<Listener, Error> {
-        let (sock, port, local_address) = Self::do_bind(addrs)?;
+        let (sock, port, local_address) =
+            Self::do_bind(addrs).inspect_err(|e| tracing::warn!("do_bind: {e}"))?;
         let handle = ENGINE.add_socket(sock);
         let tcp_listener = Listener {
             socket_handle: handle,
@@ -352,6 +353,7 @@ impl SmolTcpListener {
     const BACKLOG: usize = 8;
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
+
         for _ in 0..Self::BACKLOG {
             let listener = Self::bind_once(&addrs)?;
             listeners.push(listener);
@@ -384,7 +386,7 @@ impl SmolTcpListener {
      */
     // to think about: each socket must be pulled from the engine and checked for activeness.
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
-        // log::debug!("accept: {}:{}", self.local_addr, self.port);
+        tracing::info!("accept: {}", self.local_addr);
         let engine = &ENGINE;
         let mut i: usize = 0;
         engine.blocking(|core| {
@@ -397,6 +399,7 @@ impl SmolTcpListener {
                         // creating another listener and swapping self's socket handle
                         let sock = Self::do_bind(self.local_addr)?;
                         let newhandle = core.add_socket(sock.0);
+
                         let stream = SmolTcpStream {
                             inner: Arc::new(TcpStreamInner {
                                 socket_handle: handle.socket_handle,
@@ -414,12 +417,14 @@ impl SmolTcpListener {
                 match stream {
                     Ok(stream) => break Ok(stream),
                     Err(e) if e.kind() != ErrorKind::WouldBlock => {
+                        tracing::warn!("TcpStream::connect failed: {}", e);
                         break Err(e);
                     }
                     _ => {
                         i += 1;
                         if i == Self::BACKLOG {
                             i = 0;
+                            tracing::warn!("hit backlog");
                             break Err(ErrorKind::WouldBlock.into());
                         }
                     }
@@ -480,13 +485,22 @@ impl SmolTcpStream {
      */
     pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
         let engine = &ENGINE;
+        tracing::info!("write {} bytes", buf.len());
         engine.blocking(|core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
+                tracing::info!("sending");
                 Ok(socket.send_slice(buf).unwrap())
             } else if !socket.may_send() {
+                tracing::info!(
+                    "can't send {} {} {}",
+                    socket.state(),
+                    socket.is_active(),
+                    socket.is_open(),
+                );
                 Err(ErrorKind::ConnectionReset.into())
             } else {
+                tracing::info!("would block");
                 Err(ErrorKind::WouldBlock.into())
             }
         })
@@ -547,6 +561,18 @@ impl SmolTcpStream {
             return Err(e);
         };
         let handle = ENGINE.add_socket(sock);
+
+        ENGINE.blocking(|core| {
+            let socket = core.get_mutable_socket(handle);
+            if socket.may_send() || socket.may_recv() {
+                Ok(())
+            } else if !socket.is_active() {
+                return Err(ErrorKind::ConnectionReset.into());
+            } else {
+                Err(ErrorKind::WouldBlock.into())
+            }
+        })?;
+
         let smoltcpstream = SmolTcpStream {
             inner: Arc::new(TcpStreamInner {
                 socket_handle: handle,
@@ -575,12 +601,12 @@ impl SmolTcpStream {
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap(); // acquire mutex
         let socket = core.get_mutable_socket(self.inner.socket_handle);
-        // log::debug!(
-        //     "socket {} shutdown: {:?}, state = {:?}",
-        //     self.inner.socket_handle,
-        //     how,
-        //     socket.state()
-        // );
+        tracing::info!(
+            "socket {} shutdown: {:?}, state = {:?}",
+            self.inner.socket_handle,
+            how,
+            socket.state()
+        );
         if socket.state() == State::Closed {
             // if already closed, exit early
             return Ok(());

@@ -68,10 +68,10 @@ members = [
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest",
     "src/bin/sec",
-    "src/bin/gfxtest",
 
+    "src/bin/schedtest", "src/bin/gfxtest",
+    "src/bin/stdnet_test", "src/lib/twizzler-io",
 ]
 
 exclude = [

@@ -1129,6 +1129,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "120133d4db2ec47efe2e26502ee984747630c67f51974fca0b6c1340cf2368d3"
 
 [[package]]
+name = "compiler_builtins"
+version = "0.1.160"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6376049cfa92c0aa8b9ac95fae22184b981c658208d4ed8a1dc553cd83612895"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3768,6 +3774,7 @@ dependencies = [
  "twizzler-abi",
  "twizzler-display",
  "twizzler-futures",
+ "twizzler-io",
  "twizzler-queue",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -7186,6 +7193,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "twizzler-io"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tracing",
+ "twizzler",
+ "twizzler-abi",
+]
+
+[[package]]
 name = "twizzler-kernel"
 version = "0.1.0"
 dependencies = [
@@ -7322,6 +7339,7 @@ version = "0.1.0"
 dependencies = [
  "atomic",
  "bitflags 2.9.1",
+ "compiler_builtins",
  "dynlink",
  "elf",
  "ferroc",

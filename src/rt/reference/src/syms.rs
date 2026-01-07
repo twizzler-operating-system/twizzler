@@ -606,7 +606,10 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_get_config(
     val: *mut c_void,
     val_len: usize,
 ) -> twz_error {
-    todo!()
+    match OUR_RUNTIME.fd_get_config(fd, reg, val, val_len) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
 }
 check_ffi_type!(twz_rt_fd_get_config, _, _, _, _);
 
@@ -617,7 +620,10 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
     val: *const c_void,
     val_len: usize,
 ) -> twz_error {
-    todo!()
+    match OUR_RUNTIME.fd_set_config(fd, reg, val, val_len) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
 }
 check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
 
@@ -963,3 +969,49 @@ pub unsafe extern "C-unwind" fn _ZdlPvj() {}
 #[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn _ZdlPvm() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
+    core::ptr::null()
+}
+use core::ffi::c_int;
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_open(
+    _: *const c_char,
+    _: c_int,
+    _: *const c_void,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_resolve(
+    _: *const c_void,
+    _: *const c_char,
+    _: *const c_void,
+    _: *const c_char,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_find_object() -> *const c_char {
+    core::ptr::null()
+}

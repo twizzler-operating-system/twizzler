@@ -1,6 +1,7 @@
 use std::{
     ffi::c_void,
     io::{ErrorKind, Read, SeekFrom, Write},
+    net::SocketAddr,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -25,7 +26,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::{
     bindings::{create_options, io_ctx, io_vec, prot_kind},
     error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
-    fd::{FdInfo, OpenAnonKind, RawFd},
+    fd::{FdInfo, OpenAnonKind, RawFd, SocketAddress},
     object::MapFlags,
     Result,
 };
@@ -347,15 +348,22 @@ impl ReferenceRuntime {
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<RawFd> {
+        tracing::info!("open_anon: {:?}", kind);
         let elem = match kind {
             OpenAnonKind::Pipe => FdKind::Stdio, //TODO: make sure this is correct
             OpenAnonKind::SocketConnect => {
-                let addr = bind_info as *const std::net::SocketAddr;
-                FdKind::Socket(SocketKind::connect(unsafe { &*addr })?)
+                let addr = bind_info as *const twizzler_rt_abi::fd::SocketAddress;
+                let addr = unsafe { &*addr };
+                FdKind::Socket(SocketKind::connect(SocketAddr::from(*addr))?)
             }
             OpenAnonKind::SocketBind => {
-                let addr = bind_info as *const std::net::SocketAddr;
-                FdKind::Socket(SocketKind::bind(unsafe { &*addr })?)
+                let addr = bind_info as *const twizzler_rt_abi::fd::SocketAddress;
+                if addr.is_null() {
+                    FdKind::Socket(SocketKind::None)
+                } else {
+                    let addr = unsafe { &*addr };
+                    FdKind::Socket(SocketKind::bind(SocketAddr::from(*addr))?)
+                }
             }
             OpenAnonKind::SocketAccept => {
                 let fd_ptr = bind_info as *const RawFd;
@@ -406,14 +414,21 @@ impl ReferenceRuntime {
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<()> {
+        tracing::info!("reopen_anon: {:?}", kind);
         let elem = match kind {
             OpenAnonKind::SocketConnect => {
-                let addr = bind_info as *const std::net::SocketAddr;
-                FdKind::Socket(SocketKind::connect(unsafe { &*addr })?)
+                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_address;
+                let addr = unsafe { &*addr };
+                FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(*addr)))?)
             }
             OpenAnonKind::SocketBind => {
-                let addr = bind_info as *const std::net::SocketAddr;
-                FdKind::Socket(SocketKind::bind(unsafe { &*addr })?)
+                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_address;
+                if addr.is_null() {
+                    FdKind::Socket(SocketKind::None)
+                } else {
+                    let addr = unsafe { &*addr };
+                    FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(*addr)))?)
+                }
             }
             _ => {
                 return Err(TwzError::INVALID_ARGUMENT);
@@ -467,6 +482,39 @@ impl ReferenceRuntime {
             return None;
         };
         fd.stat().ok().map(|x| x.into())
+    }
+
+    pub fn fd_get_config(
+        &self,
+        fd: RawFd,
+        reg: u32,
+        val: *mut c_void,
+        val_len: usize,
+    ) -> Result<()> {
+        let mut binding = get_fd_slots().lock().unwrap();
+        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
+            return Err(TwzError::INVALID_ARGUMENT);
+        };
+
+        let buf = unsafe { core::slice::from_raw_parts_mut(val.cast::<u8>(), val_len) };
+        buf.fill(0);
+
+        Ok(())
+    }
+
+    pub fn fd_set_config(
+        &self,
+        fd: RawFd,
+        reg: u32,
+        val: *const c_void,
+        val_len: usize,
+    ) -> Result<()> {
+        let mut binding = get_fd_slots().lock().unwrap();
+        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
+            return Err(TwzError::INVALID_ARGUMENT);
+        };
+        //fd.set_config(reg, val, val_len)
+        Ok(())
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {

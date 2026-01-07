@@ -252,6 +252,10 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
+    println!("doing pty test");
+
+    twizzler_io::pty::tests::test_basic();
+
     println!("Doing net test");
 
     let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
@@ -263,15 +267,20 @@ fn main() {
                 let mut buf = [0; 1024];
                 let res = client.0.read(&mut buf);
                 tracing::info!("got: {:?}", res);
+                let s = str::from_utf8(&buf[0..res.unwrap_or(0)]).unwrap();
+                tracing::info!("got: {}", s);
             }
             Err(e) => {
                 tracing::error!("failed to accept connection: {}", e);
             }
         }
     });
-    println!("connecting...");
-    let mut client = TcpStream::connect("127.0.0.1:8080").unwrap();
-    client.write(b"this is a test").unwrap();
+    for i in 0..100 {
+        println!("connecting...");
+        let mut client = TcpStream::connect("127.0.0.1:8080").unwrap();
+        println!("connected!");
+        client.write(b"this is a test").unwrap();
+    }
 
     println!("Hi, welcome to the basic twizzler test console.");
 

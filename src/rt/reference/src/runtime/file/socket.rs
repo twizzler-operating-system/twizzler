@@ -6,6 +6,7 @@ use shim::{SmolTcpListener, SmolTcpStream};
 
 #[derive(Clone)]
 pub enum SocketKind {
+    None,
     TcpStream(Arc<SmolTcpStream>),
     TcpListener(Arc<SmolTcpListener>),
 }

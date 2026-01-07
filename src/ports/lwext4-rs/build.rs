@@ -48,7 +48,7 @@ fn main() {
     assert!(status.success());
 
     println!("cargo::rerun-if-changed=src/lwext4.h");
-    //println!("cargo::rustc-link-lib=c");
+    println!("cargo::rustc-link-lib=c");
     println!("cargo::rustc-link-search={}/cmake-build/src/", outdir);
     println!("cargo::rustc-link-lib=lwext4");
 }
