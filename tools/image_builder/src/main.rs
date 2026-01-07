@@ -61,9 +61,13 @@ pub fn create_disk_images(
         kernel_binary_path,
         initrd_path,
         cmdline,
-        efi_binary,
+        efi_binary.clone(),
     ) {
-        panic!("failed to create disk image: {:?}", e);
+        panic!(
+            "failed to create disk image: {:?} (efi = {})",
+            e,
+            efi_binary.as_str()
+        );
     }
     if !disk_image_path.exists() {
         panic!(

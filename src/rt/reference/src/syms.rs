@@ -310,17 +310,21 @@ check_ffi_type!(twz_rt_fd_open_anon, _, _, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_reopen_anon(
     fd: descriptor,
+    kind: open_anon_kind,
     flags: u32,
     bind_info: *mut c_void,
     bind_info_len: usize,
     prot: prot_kind,
 ) -> twz_error {
-    match OUR_RUNTIME.reopen_anon(fd, flags.into(), bind_info, bind_info_len, prot) {
+    let Ok(kind) = kind.try_into() else {
+        return TwzError::INVALID_ARGUMENT.raw();
+    };
+    match OUR_RUNTIME.reopen_anon(fd, kind, flags.into(), bind_info, bind_info_len, prot) {
         Ok(_) => RawTwzError::success().raw(),
         Err(e) => e.raw(),
     }
 }
-check_ffi_type!(twz_rt_fd_reopen_anon, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_reopen_anon, _, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
@@ -594,6 +598,28 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     OUR_RUNTIME.fd_pwritev(fd, slice, ctx).into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_get_config(
+    fd: descriptor,
+    reg: u32,
+    val: *mut c_void,
+    val_len: usize,
+) -> twz_error {
+    todo!()
+}
+check_ffi_type!(twz_rt_fd_get_config, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
+    fd: descriptor,
+    reg: u32,
+    val: *const c_void,
+    val_len: usize,
+) -> twz_error {
+    todo!()
+}
+check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
 
 // object.h
 

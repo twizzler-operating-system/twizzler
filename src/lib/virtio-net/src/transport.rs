@@ -1,7 +1,4 @@
-use core::{
-    mem::size_of,
-    ptr::NonNull,
-};
+use core::{mem::size_of, ptr::NonNull};
 use std::sync::Arc;
 
 use smoltcp::iface::SocketHandle;
@@ -14,9 +11,9 @@ use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, InterruptStatus, Transport},
     Error,
 };
-use zerocopy::{FromBytes, Immutable, IntoBytes};
 use virtio_pcie::{VirtioIsrStatus, VirtioPciNotifyCap};
 use volatile::{map_field, VolatilePtr};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 pub mod virtio_pcie;
 use self::virtio_pcie::{CfgLocation, VirtioCfgType, VirtioCommonCfg, VirtioPciCap};
@@ -39,7 +36,8 @@ unsafe impl Send for TwizzlerTransport {}
 fn get_device() -> Option<Device> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(2, 0, 0),
-    }).ok()?;
+    })
+    .ok()?;
 
     for device in &devices {
         let device = Device::new(device.id).ok();
@@ -164,20 +162,12 @@ impl TwizzlerTransport {
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
         let _thread = std::thread::spawn(move || loop {
-            //for _ in 0..10 {
-            //    for _ in 0..100 {
             if int_device.repr().check_for_interrupt(0).is_some() {
-                //tracing::info!("virtio int");
                 let _ = notifier.send(None);
             }
-            //      core::hint::spin_loop();
-            //  }
-            // twizzler_abi::syscall::sys_thread_yield();
-            // }
 
             if int_device.repr().check_for_interrupt(0).is_none() {
                 let int_sleep = int_device.repr().setup_interrupt_sleep(0);
-                //tracing::info!("virtio int: sleep");
                 let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
             }
         });
@@ -354,7 +344,10 @@ impl Transport for TwizzlerTransport {
         map_field!(ptr.config_generation).read() as u32
     }
 
-    fn read_config_space<T: FromBytes + IntoBytes>(&self, offset: usize) -> virtio_drivers::Result<T> {
+    fn read_config_space<T: FromBytes + IntoBytes>(
+        &self,
+        offset: usize,
+    ) -> virtio_drivers::Result<T> {
         let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
         let config_len = config_space.len() * size_of::<u32>();
         if offset + size_of::<T>() > config_len {
@@ -365,7 +358,11 @@ impl Transport for TwizzlerTransport {
         T::read_from_bytes(src).map_err(|_| Error::ConfigSpaceTooSmall)
     }
 
-    fn write_config_space<T: IntoBytes + Immutable>(&mut self, offset: usize, value: T) -> virtio_drivers::Result<()> {
+    fn write_config_space<T: IntoBytes + Immutable>(
+        &mut self,
+        offset: usize,
+        value: T,
+    ) -> virtio_drivers::Result<()> {
         let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
         let config_len = config_space.len() * size_of::<u32>();
         if offset + size_of::<T>() > config_len {
@@ -374,6 +371,34 @@ impl Transport for TwizzlerTransport {
         let ptr = config_space.as_ptr() as *mut u8;
         let dst = unsafe { core::slice::from_raw_parts_mut(ptr.add(offset), size_of::<T>()) };
         value.write_to(dst).map_err(|_| Error::ConfigSpaceTooSmall)
+    }
+
+    fn write_config_space<T: IntoBytes + Immutable>(
+        &mut self,
+        offset: usize,
+        value: T,
+    ) -> virtio_drivers::Result<()> {
+        if let Some(config_space) = self.config_space {
+            if offset > config_space.len() * size_of::<u32>() {
+                Err(Error::ConfigSpaceTooSmall)
+            } else {
+                // TODO: Use NonNull::as_non_null_ptr once it is stable.
+                unsafe {
+                    config_space
+                        .as_ptr()
+                        .cast::<T>()
+                        .byte_add(offset)
+                        .write_volatile(value)
+                };
+                Ok(())
+            }
+        } else {
+            Err(Error::ConfigSpaceMissing)
+        }
+    }
+
+    fn read_config_generation(&self) -> u32 {
+        0
     }
 }
 

@@ -12,6 +12,9 @@
 
 use twizzler_abi::syscall::KernelConsoleSource;
 
+#[link(name = "c", kind = "static", modifiers = "-bundle,+whole-archive")]
+unsafe extern "C" {}
+
 pub mod arch;
 
 #[allow(unused_extern_crates)]

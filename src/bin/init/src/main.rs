@@ -1,4 +1,7 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+};
 
 use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
@@ -248,6 +251,27 @@ fn main() {
         let _ = std::os::twizzler::fs::symlink("uuhelper", link)
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
+
+    println!("Doing net test");
+
+    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+    println!("Spawning listener");
+    let _listener_thread = std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok(mut client) => {
+                tracing::info!("accepted connection from {}", client.1);
+                let mut buf = [0; 1024];
+                let res = client.0.read(&mut buf);
+                tracing::info!("got: {:?}", res);
+            }
+            Err(e) => {
+                tracing::error!("failed to accept connection: {}", e);
+            }
+        }
+    });
+    println!("connecting...");
+    let mut client = TcpStream::connect("127.0.0.1:8080").unwrap();
+    client.write(b"this is a test").unwrap();
 
     println!("Hi, welcome to the basic twizzler test console.");
 

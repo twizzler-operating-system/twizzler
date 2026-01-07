@@ -1,16 +1,19 @@
 use std::{
-    ffi::c_void, io::{ErrorKind, Read, SeekFrom, Write}, net::TcpListener, sync::{Arc, Mutex, OnceLock}, time::Duration
+    ffi::c_void,
+    io::{ErrorKind, Read, SeekFrom, Write},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 use bitflags::bitflags;
 use file_desc::FileDesc;
-use socket::SocketKind;
 use lazy_static::lazy_static;
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
     GetFlags, NsNodeKind,
 };
 use raw_file::RawFile;
+use socket::SocketKind;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
     object::{ObjID, Protections},
@@ -361,7 +364,7 @@ impl ReferenceRuntime {
                 let Some(fd) = binding.get(fd.try_into().unwrap()) else {
                     return Err(TwzError::INVALID_ARGUMENT);
                 };
-                
+
                 let socket = match fd {
                     FdKind::Socket(socket) => socket.clone(),
                     _ => return Err(TwzError::INVALID_ARGUMENT),
@@ -396,13 +399,34 @@ impl ReferenceRuntime {
 
     pub fn reopen_anon(
         &self,
-        _fd: RawFd,
+        fd: RawFd,
+        kind: OpenAnonKind,
         _open_opt: OperationOptions,
-        _bind_info: *mut c_void,
+        bind_info: *mut c_void,
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<()> {
-        todo!()
+        let elem = match kind {
+            OpenAnonKind::SocketConnect => {
+                let addr = bind_info as *const std::net::SocketAddr;
+                FdKind::Socket(SocketKind::connect(unsafe { &*addr })?)
+            }
+            OpenAnonKind::SocketBind => {
+                let addr = bind_info as *const std::net::SocketAddr;
+                FdKind::Socket(SocketKind::bind(unsafe { &*addr })?)
+            }
+            _ => {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+        };
+
+        let mut binding = get_fd_slots().lock().unwrap();
+        let _ = binding
+            .insert(fd.try_into().unwrap(), elem)
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+
+        Ok(())
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {
@@ -468,10 +492,15 @@ impl ReferenceRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let _file_desc = get_fd_slots()
+        let file_desc = get_fd_slots()
             .lock()
             .unwrap()
             .remove(fd.try_into().unwrap())?;
+
+        match file_desc {
+            FdKind::Socket(socket_kind) => socket_kind.close().ok()?,
+            _ => (),
+        }
 
         Some(())
     }

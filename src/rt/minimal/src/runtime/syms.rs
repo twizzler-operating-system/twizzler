@@ -516,7 +516,21 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
     )
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn dl_iterate_phdr(
+    cb: ::core::option::Option<
+        unsafe extern "C-unwind" fn(
+            arg1: *const dl_phdr_info,
+            size: usize,
+            data: *mut ::core::ffi::c_void,
+        ) -> ::core::ffi::c_int,
+    >,
+    data: *mut core::ffi::c_void,
+) -> i32 {
+    unsafe { twz_rt_iter_phdr(cb, data) }
+}
 
+/*
 // additional definitions for C
 
 #[unsafe(no_mangle)]
@@ -534,20 +548,6 @@ pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {
     core::ptr::null()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn dl_iterate_phdr(
-    cb: ::core::option::Option<
-        unsafe extern "C-unwind" fn(
-            arg1: *const dl_phdr_info,
-            size: usize,
-            data: *mut ::core::ffi::c_void,
-        ) -> ::core::ffi::c_int,
-    >,
-    data: *mut core::ffi::c_void,
-) -> i32 {
-    unsafe { twz_rt_iter_phdr(cb, data) }
 }
 
 #[unsafe(no_mangle)]
@@ -581,4 +581,58 @@ pub unsafe extern "C-unwind" fn fprintf(
         );
         bytes_written
     }
+}
+
+*/
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPv() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPvj() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPvm() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
+    core::ptr::null()
+}
+use core::ffi::{c_char, c_int, c_void};
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_open(
+    _: *const c_char,
+    _: c_int,
+    _: *const c_void,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_resolve(
+    _: *const c_void,
+    _: *const c_char,
+    _: *const c_void,
+    _: *const c_char,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
+    core::ptr::null()
 }
