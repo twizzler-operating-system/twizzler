@@ -26,6 +26,3 @@ pub mod preinit;
 pub mod syms;
 
 pub mod pager;
-
-#[link(name = "c", kind = "static", modifiers = "-bundle,+whole-archive")]
-unsafe extern "C" {}

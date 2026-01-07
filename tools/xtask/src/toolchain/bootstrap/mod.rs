@@ -126,6 +126,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         drop(cf);
 
         let _ = remove_dir_all(&build_dir);
+        /*
         let status = Command::new("meson")
             .arg("setup")
             .arg(format!("-Dprefix={}", sysroot_dir.display()))
@@ -139,6 +140,41 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
             .status()?;
         if !status.success() {
             anyhow::bail!("failed to setup mlibc (headers only)");
+        }
+        */
+
+        let status = Command::new("meson")
+            .arg("setup")
+            .arg(format!("-Dprefix={}", sysroot_dir.display()))
+            .arg("-Ddefault_library=static")
+            .arg("-Duse_freestnd_hdrs=enabled")
+            .arg(format!("--cross-file={}", cross_file))
+            .arg("--buildtype=debugoptimized")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to setup mlibc");
+        }
+        let status = Command::new("meson")
+            .arg("compile")
+            .arg("-C")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to build mlibc");
+        }
+
+        let status = Command::new("meson")
+            .arg("install")
+            .arg("-q")
+            .arg("-C")
+            .arg(&build_dir_name)
+            .current_dir(current_dir.join("toolchain/src/mlibc"))
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("failed to install mlibc");
         }
 
         let status = Command::new("meson")
@@ -261,7 +297,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         let build_dir_name = format!("build-{}", target_triple.to_string());
         let src_dir = current_dir.join("toolchain/src/mlibc");
         let build_dir = src_dir.join(&build_dir_name);
-        let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
+        //let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
         let cxx_install_dir = current_dir.join(&format!(
             "toolchain/src/rust/build/{}/native/libcxx",
@@ -313,40 +349,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         )?;
 
         let _ = remove_dir_all(&build_dir);
-
-        let status = Command::new("meson")
-            .arg("setup")
-            .arg(format!("-Dprefix={}", sysroot_dir.display()))
-            .arg("-Ddefault_library=static")
-            .arg("-Duse_freestnd_hdrs=enabled")
-            .arg(format!("--cross-file={}", cross_file))
-            .arg("--buildtype=debugoptimized")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to setup mlibc");
-        }
-        let status = Command::new("meson")
-            .arg("compile")
-            .arg("-C")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to build mlibc");
-        }
-
-        let status = Command::new("meson")
-            .arg("install")
-            .arg("-q")
-            .arg("-C")
-            .arg(&build_dir_name)
-            .current_dir(current_dir.join("toolchain/src/mlibc"))
-            .status()?;
-        if !status.success() {
-            anyhow::bail!("failed to install mlibc");
-        }
 
         let usr_link = sysroot_dir.join("usr");
         let _ = std::fs::remove_file(&usr_link);
@@ -413,12 +415,22 @@ fn generate_config_toml() -> anyhow::Result<()> {
         let linker = get_rust_lld(host_triple)?.to_str().unwrap().to_string();
         let clangxx = llvm_bin.join("clang++").to_str().unwrap().to_string();
         let ar = llvm_bin.join("llvm-ar").to_str().unwrap().to_string();
+        let current_dir = std::env::current_dir().unwrap();
+        let sysroot_dir = current_dir.join(format!(
+            "toolchain/install/sysroots/{}/lib",
+            triple.to_string()
+        ));
 
         let tstr = &triple.to_string();
         toml["target"][tstr]["cc"] = toml_edit::value(clang);
         toml["target"][tstr]["cxx"] = toml_edit::value(clangxx);
         toml["target"][tstr]["linker"] = toml_edit::value(linker);
         toml["target"][tstr]["ar"] = toml_edit::value(ar);
+        let mut ar = toml_edit::Array::new();
+        ar.push("-L");
+        ar.push(sysroot_dir.to_str().unwrap());
+
+        toml["target"][tstr]["rustflags"] = toml_edit::value(ar);
 
         toml["target"][tstr]["llvm-has-rust-patches"] = toml_edit::value(true);
         toml["target"][tstr]["llvm-libunwind"] = toml_edit::value("in-tree");
