@@ -96,6 +96,21 @@ impl FdKind {
     pub fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
         match self {
             FdKind::File(arc) => arc.lock().unwrap().fd_cmd(cmd, arg, ret),
+            FdKind::Socket(socket) => {
+                if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
+                    let val = unsafe { arg.cast::<u32>().read() };
+                    let shutdown = match val {
+                        0 => return Err(TwzError::INVALID_ARGUMENT),
+                        1 => std::net::Shutdown::Read,
+                        2 => std::net::Shutdown::Write,
+                        _ => std::net::Shutdown::Both,
+                    };
+                    socket.shutdown(shutdown)?;
+                    Ok(())
+                } else {
+                    Err(TwzError::NOT_SUPPORTED)
+                }
+            }
             _ => Err(TwzError::NOT_SUPPORTED),
         }
     }

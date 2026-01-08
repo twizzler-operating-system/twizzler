@@ -211,6 +211,7 @@ impl Engine {
                     return Ok(r);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    self.wake();
                     core = self.waiter.wait(core).unwrap();
                 }
                 Err(e) => return Err(e),
@@ -350,7 +351,7 @@ impl SmolTcpListener {
         SocketAddr::from(([127, 0, 0, 1], 443))
         let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
     */
-    const BACKLOG: usize = 8;
+    const BACKLOG: usize = 64;
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
 
@@ -368,12 +369,6 @@ impl SmolTcpListener {
         Ok(smoltcplistener) // return the first listener
     }
 
-    fn with_handle<R>(&self, listener_no: usize, f: impl FnOnce(&mut Listener) -> R) -> R {
-        let mut listeners = self.listeners.lock().unwrap();
-        let handle = &mut listeners[listener_no];
-        f(handle)
-    }
-
     // accept
     // create a new socket for tcpstream
     // ^^ creating a new one so that the user can call accept() on the previous one again
@@ -387,49 +382,41 @@ impl SmolTcpListener {
     // to think about: each socket must be pulled from the engine and checked for activeness.
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         tracing::info!("accept: {}", self.local_addr);
-        let engine = &ENGINE;
-        let mut i: usize = 0;
-        engine.blocking(|core| {
-            loop {
-                let stream = self.with_handle(i, |handle| {
-                    let sock = core.get_mutable_socket(handle.socket_handle);
-                    if sock.is_active() {
-                        let remote = sock.remote_endpoint().unwrap(); // the socket addr returned is that of the remote endpoint. ie. the client.
-                        let remote_addr = SocketAddr::from((remote.addr, remote.port));
-                        // creating another listener and swapping self's socket handle
-                        let sock = Self::do_bind(self.local_addr)?;
-                        let newhandle = core.add_socket(sock.0);
+        ENGINE.blocking(|core| {
+            let mut listeners = self.listeners.lock().unwrap();
 
-                        let stream = SmolTcpStream {
-                            inner: Arc::new(TcpStreamInner {
-                                socket_handle: handle.socket_handle,
-                                port: self.port,
-                                is_ephemeral_port: false,
-                                rx_shutdown: AtomicBool::new(false),
-                            }),
-                        };
-                        handle.socket_handle = newhandle;
-                        Ok((stream, remote_addr))
-                    } else {
-                        Err(Error::from(ErrorKind::WouldBlock))
-                    }
-                });
-                match stream {
-                    Ok(stream) => break Ok(stream),
-                    Err(e) if e.kind() != ErrorKind::WouldBlock => {
-                        tracing::warn!("TcpStream::connect failed: {}", e);
-                        break Err(e);
-                    }
-                    _ => {
-                        i += 1;
-                        if i == Self::BACKLOG {
-                            i = 0;
-                            tracing::warn!("hit backlog");
-                            break Err(ErrorKind::WouldBlock.into());
-                        }
+            for listener in &mut *listeners {
+                let sock = core.get_mutable_socket(listener.socket_handle);
+                if sock.is_active() {
+                    let remote = sock.remote_endpoint().unwrap(); // the socket addr returned is that of the remote endpoint. ie. the client.
+                    let remote_addr = SocketAddr::from((remote.addr, remote.port));
+                    // creating another listener and swapping self's socket handle
+                    let sock = Self::do_bind(self.local_addr).inspect_err(|e| {
+                        tracing::warn!("failed to rebind new socket after accept: {e}")
+                    })?;
+                    let newhandle = core.add_socket(sock.0);
+
+                    let stream = SmolTcpStream {
+                        inner: Arc::new(TcpStreamInner {
+                            socket_handle: listener.socket_handle,
+                            port: self.port,
+                            is_ephemeral_port: false,
+                            rx_shutdown: AtomicBool::new(false),
+                        }),
+                    };
+                    listener.socket_handle = newhandle;
+                    return Ok((stream, remote_addr));
+                } else if !sock.is_open() {
+                    // Connection was reset?
+                    if let Ok(sock) = Self::do_bind(self.local_addr).inspect_err(|e| {
+                        tracing::warn!("failed to rebind socket after detecting reset: {e}")
+                    }) {
+                        let newhandle = core.add_socket(sock.0);
+                        listener.socket_handle = newhandle;
                     }
                 }
             }
+            Err(Error::from(ErrorKind::WouldBlock))
         })
     }
 }
@@ -556,6 +543,7 @@ impl SmolTcpStream {
         let Some(port) = PORTS.get_ephemeral_port() else {
             return Err(Error::other("dynamic port overflow!"));
         };
+        tracing::info!("connect: {}", port);
         if let Err(e) = Self::each_addr(addr, &mut sock, port) {
             PORTS.return_port(port);
             return Err(e);
@@ -567,6 +555,7 @@ impl SmolTcpStream {
             if socket.may_send() || socket.may_recv() {
                 Ok(())
             } else if !socket.is_active() {
+                tracing::error!("connection reset! ({:?})", socket.state());
                 return Err(ErrorKind::ConnectionReset.into());
             } else {
                 Err(ErrorKind::WouldBlock.into())

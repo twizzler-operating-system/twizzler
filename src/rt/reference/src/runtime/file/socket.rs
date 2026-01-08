@@ -41,6 +41,16 @@ impl SocketKind {
             )),
         }
     }
+
+    pub fn shutdown(&self, shutdown: std::net::Shutdown) -> Result<(), std::io::Error> {
+        match self {
+            SocketKind::TcpStream(stream) => stream.shutdown(shutdown),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Invalid socket kind",
+            )),
+        }
+    }
 }
 
 impl SocketKind {

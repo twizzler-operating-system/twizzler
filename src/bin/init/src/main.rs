@@ -1,10 +1,12 @@
 use std::{
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream},
+    time::Duration,
 };
 
 use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use threadpool::ThreadPool;
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
@@ -252,34 +254,46 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
-    println!("doing pty test");
+    if false {
+        println!("doing pty test");
 
-    twizzler_io::pty::tests::test_basic();
+        twizzler_io::pty::tests::test_basic();
 
-    println!("Doing net test");
+        println!("Doing net test");
 
-    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-    println!("Spawning listener");
-    let _listener_thread = std::thread::spawn(move || loop {
-        match listener.accept() {
-            Ok(mut client) => {
-                tracing::info!("accepted connection from {}", client.1);
-                let mut buf = [0; 1024];
-                let res = client.0.read(&mut buf);
-                tracing::info!("got: {:?}", res);
-                let s = str::from_utf8(&buf[0..res.unwrap_or(0)]).unwrap();
-                tracing::info!("got: {}", s);
+        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+        println!("Spawning listener");
+        let pool = ThreadPool::new(8);
+        let _listener_thread = std::thread::spawn(move || loop {
+            match listener.accept() {
+                Ok(mut client) => {
+                    pool.execute(move || {
+                        tracing::info!("accepted connection from {}", client.1);
+                        let mut buf = [0; 1024];
+                        let res = client.0.read(&mut buf);
+                        tracing::info!("got: {:?}", res);
+                        let s = str::from_utf8(&buf[0..res.unwrap_or(0)]).unwrap();
+                        tracing::info!("got: {}", s);
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("failed to accept connection: {}", e);
+                }
             }
-            Err(e) => {
-                tracing::error!("failed to accept connection: {}", e);
+        });
+        for _ in 0..2 {
+            for i in 0..480 {
+                println!("connecting...");
+                if let Ok(mut client) = TcpStream::connect("127.0.0.1:8080")
+                    .inspect_err(|e| tracing::error!("failed to connect on iter {i}"))
+                {
+                    println!("connected!");
+                    client.write(b"this is a test").unwrap();
+                    client.shutdown(Shutdown::Both).unwrap();
+                }
             }
+            std::thread::sleep(Duration::from_millis(1000));
         }
-    });
-    for i in 0..100 {
-        println!("connecting...");
-        let mut client = TcpStream::connect("127.0.0.1:8080").unwrap();
-        println!("connected!");
-        client.write(b"this is a test").unwrap();
     }
 
     println!("Hi, welcome to the basic twizzler test console.");

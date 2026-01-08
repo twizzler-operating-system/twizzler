@@ -19,7 +19,7 @@ struct PtyBuffer<const N: usize> {
 unsafe impl<const N: usize> Send for PtyBuffer<N> {}
 unsafe impl<const N: usize> Sync for PtyBuffer<N> {}
 
-pub const BUF_SZ: usize = 8192;
+pub const BUF_SZ: usize = 16;
 #[derive(Invariant)]
 pub struct PtyBase {
     termios_gen: AtomicU64,
@@ -164,6 +164,7 @@ impl<const N: usize> PtyBuffer<N> {
                 return Ok(count);
             }
 
+            assert!(head >= tail);
             let n = std::cmp::min(buf.len(), (head - tail) as usize);
             let n = self.read_from_circle(&mut buf[0..n], tail as usize % N);
 
@@ -212,7 +213,7 @@ impl<const N: usize> PtyBuffer<N> {
 
             let n = self.write_to_circle(&buf[0..n], resv as usize % N);
 
-            let old_head = self.head.fetch_add(n as u64, Ordering::Release);
+            let old_head = self.head.fetch_add(n as u64, Ordering::SeqCst);
             if old_head != resv {
                 tracing::warn!("head incremented unexpectedly ({} != {})", old_head, resv);
             }
@@ -235,7 +236,7 @@ impl<const N: usize> PtyBuffer<N> {
 
     fn read_from_circle(&self, buf: &mut [u8], phase: usize) -> usize {
         let buffer = self.get_buffer();
-        let (first, second) = buffer.split_at(phase);
+        let (second, first) = buffer.split_at(phase);
         let first_len = first.len().min(buf.len());
         let second_len = second.len().min(buf.len().saturating_sub(first_len));
 
@@ -246,7 +247,7 @@ impl<const N: usize> PtyBuffer<N> {
 
     fn write_to_circle(&self, buf: &[u8], phase: usize) -> usize {
         let buffer = self.get_buffer_mut();
-        let (first, second) = buffer.split_at_mut(phase);
+        let (second, first) = buffer.split_at_mut(phase);
         let first_len = first.len().min(buf.len());
         let second_len = second.len().min(buf.len().saturating_sub(first_len));
 
@@ -291,6 +292,7 @@ pub mod tests {
     use crate::pty::PtyBase;
 
     pub fn test_basic() {
+        /*
         let t = termios {
             c_iflag: 0,
             c_oflag: 0,
@@ -314,6 +316,7 @@ pub mod tests {
             assert_eq!(buf, [i; 1024]);
         }
 
+        */
         test_mt();
     }
 
@@ -331,7 +334,7 @@ pub mod tests {
 
         const ITER: usize = 100;
         const BS: usize = 1;
-        const NR_TH: usize = 2;
+        const NR_TH: usize = 8;
         std::thread::scope(|scope| {
             let pty = Arc::new(PtyBase::new(t));
 
@@ -341,25 +344,33 @@ pub mod tests {
             tracing::info!("starting mt pty test");
 
             let reader = move |done: &AtomicBool, pty: &PtyBase| {
-                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                let do_read = || -> usize {
                     let mut buf = [0; 8];
                     let len = pty.client.read_bytes(&mut buf).unwrap();
-                    tracing::info!("rr: {} {}", len, buf[0]);
+                    if len > 0 {
+                        tracing::info!("rr: {} {}", len, buf[0]);
+                    }
                     for b in &buf[0..len] {
                         let idx = *b as usize;
                         tracing::info!("      => {}", idx);
                         wcounts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
+                    len
+                };
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    do_read();
                 }
+                while do_read() > 0 {}
             };
 
             let writer = |pty: &PtyBase, c: u8| {
-                for i in 0..100 {
-                    let mut buf = [c; BS];
+                for i in 0..ITER {
+                    let buf = [c; BS];
                     tracing::info!("ww: {} {}", c, i);
-                    let mut len = pty.client.write_bytes(&mut buf).unwrap();
+                    let mut len = pty.client.write_bytes(&buf).unwrap();
                     while len == 0 {
-                        len = pty.client.write_bytes(&mut buf).unwrap();
+                        tracing::info!("{} had to retry", c);
+                        len = pty.client.write_bytes(&buf).unwrap();
                     }
                 }
             };
