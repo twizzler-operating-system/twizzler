@@ -23,7 +23,7 @@ fn capability_creation(b: &mut Bencher) {
             Protections::all(),
             s.base(),
             Revoc::default(),
-            Gates::default(),
+            Gate::default(),
             HashingAlgo::Sha256,
         )
         .expect("Capability should have been created.");
@@ -60,7 +60,7 @@ fn capability_verification(b: &mut Bencher) {
         Protections::all(),
         s.base(),
         Revoc::default(),
-        Gates::default(),
+        Gate::default(),
         HashingAlgo::Sha256,
     )
     .expect("Capability should have been created.");

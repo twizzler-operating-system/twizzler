@@ -11,6 +11,7 @@ use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};
 use super::{Object, TxObject};
 use crate::{
     marker::{BaseType, StoreCopy},
+    object::RawObject,
     Result,
 };
 
@@ -45,7 +46,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         }
         self
     }
-    
+
     /// Cast the base type.
     pub fn cast<U: BaseType>(self) -> ObjectBuilder<U> {
         ObjectBuilder::<U>::new(self.spec)
@@ -80,7 +81,12 @@ fn bind_name(id: ObjID, name: &str) -> Result<()> {
 }
 
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    /// Build an object using the provided base vale.
+    /// Build an object using the provided base value.
+    ///
+    /// # Panics
+    /// This function may panic if the default permissions dont contain READ and WRITE.
+    /// If your usecase requires that the default permissions for an object can't
+    /// contain those flags, please look at the `twizzler_security::SecureBuilderExt` trait.
     /// # Example
     /// ```
     /// # use twizzler::object::ObjectBuilder;
@@ -88,6 +94,19 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
     /// let obj = builder.build(42u32).unwrap();
     /// ```
     pub fn build(&self, base: Base) -> Result<Object<Base>> {
+        if !self
+            .spec
+            .def_prot
+            .contains(Protections::READ | Protections::WRITE)
+        {
+            // this panic is more helpful than a memory protection fault
+            panic!(
+                "Unable to build object! Default permissions must contain READ | WRITE...\n
+                If you would like to build an object without those permissions, look at the
+                `twizzler_security::SecureBuilderExt` trait
+                "
+            )
+        }
         self.build_inplace(|tx| tx.write(base))
     }
 }
@@ -107,6 +126,8 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
+        tracing::trace!("object spec{:#?}", self.spec);
+
         let id = twizzler_abi::syscall::sys_object_create(
             self.spec,
             self.src_objs.as_slice(),
@@ -127,7 +148,15 @@ impl<Base: BaseType> ObjectBuilder<Base> {
                 );
             }
         }
+
+        tracing::trace!("Creating object with id: {id:?}");
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
+        let metadata = mu_object.meta_ptr();
+
+        unsafe {
+            tracing::trace!("metadata:{:#?}", *metadata);
+        }
+
         let object = ctor(mu_object.into_tx()?)?;
         object.into_object()
     }
