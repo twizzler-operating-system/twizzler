@@ -53,9 +53,13 @@ where
 #[cfg(feature = "user")]
 #[cfg(test)]
 mod tests {
-    use twizzler::object::{ObjectBuilder, RawObject};
+    use twizzler::{
+        marker::BaseType,
+        object::{ObjectBuilder, RawObject, TypedObject},
+    };
+    use twizzler_abi::{object::Protections, syscall::ObjectCreate};
 
-    use crate::SigningKey;
+    use crate::{SigningKey, SigningScheme};
 
     #[derive(Debug, Clone)]
     struct MessageStoreObj {
@@ -87,16 +91,14 @@ mod tests {
             message: heapless::String::<256>::try_from("Hello")
                 .expect("message was longer than 256 characters!!"),
         };
+
         let obj = ObjectBuilder::new(spec)
-            .build_secure(base, s_key)
+            .build_secure(base, s_key.base())
             .expect("should have built successfully");
 
         // our current thing should be able to read this just fine
         let base_ptr = obj.base_ptr::<MessageStoreObj>();
 
-        unsafe {
-            let base = *base_ptr;
-            assert!(base.message == "Hello")
-        }
+        unsafe { assert!((*base_ptr).message == "Hello") }
     }
 }

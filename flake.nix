@@ -72,6 +72,8 @@
               libvirt
               libclang
 
+              mdbook
+
             ];
 
             env = {

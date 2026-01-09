@@ -184,6 +184,8 @@ mod tests {
 
     extern crate test;
 
+    #[test]
+    #[test]
     fn test_security_context_creation() {
         let _default_sec_ctx = SecCtx::default();
         let _new_sec_ctx =
