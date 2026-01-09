@@ -1,24 +1,29 @@
+use alloc::format;
 use core::fmt::Display;
 
+use heapless::Vec;
 #[cfg(feature = "log")]
 use log::error;
 use p256::ecdsa::Signature as EcdsaSignature;
 
 use crate::{SecurityError, SigningScheme};
 
+/// The maximum signature size supported by the security system.
+/// NOTE: can be increased while preserving backwards compatibility.
 const MAX_SIG_SIZE: usize = 128;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Represents a Scheme agnostic Signature;
 pub struct Signature {
-    //TODO: could just replace this as a heapless vec
-    buf: [u8; MAX_SIG_SIZE],
-    pub len: usize,
+    /// Buffer to store the bytes
+    buf: Vec<u8, MAX_SIG_SIZE>,
+    /// The scheme used to generate this signature
     scheme: SigningScheme,
 }
 
 impl Signature {
     fn as_bytes(&self) -> &[u8] {
-        &self.buf[0..self.len]
+        self.buf.as_slice()
     }
 }
 
@@ -27,9 +32,10 @@ impl Display for Signature {
         write!(
             f,
             "Signature(scheme: {:?}, len: {}, bytes: ",
-            self.scheme, self.len
+            self.scheme,
+            self.buf.len()
         )?;
-        for byte in &self.buf[0..self.len] {
+        for byte in self.buf.iter() {
             write!(f, "{:02x}", byte)?;
         }
         write!(f, ")")
@@ -38,14 +44,16 @@ impl Display for Signature {
 
 impl From<EcdsaSignature> for Signature {
     fn from(value: EcdsaSignature) -> Self {
-        let mut buf = [0_u8; MAX_SIG_SIZE];
+        let mut buf = Vec::<u8, MAX_SIG_SIZE>::new();
         let binding = value.to_bytes();
         let slice = binding.as_slice();
-        buf[0..slice.len()].copy_from_slice(slice);
+
+        buf.extend_from_slice(slice).expect(
+            format!("ECDSA signature longer than {MAX_SIG_SIZE}, invariant broken...").as_str(),
+        );
 
         Self {
             buf,
-            len: slice.len(),
             scheme: SigningScheme::Ecdsa,
         }
     }

@@ -255,6 +255,12 @@ pub async fn handle_kernel_request(
                             .await
                             .unwrap();
 
+                        ctx.paged_ostore(None)
+                            .unwrap()
+                            .read_object(id.raw(), 0, &mut buffer)
+                            .await
+                            .unwrap();
+
                         KernelCompletionData::ObjectInfoCompletion(id, object_info)
                     }
                     Err(e) => {

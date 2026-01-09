@@ -1,3 +1,4 @@
+use log::error;
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE},
     syscall::MapFlags,
@@ -59,6 +60,7 @@ fn check_violations(
     _ip: VirtAddr,
 ) -> Result<(), UpcallInfo> {
     if flags.contains(PageFaultFlags::USER) && addr.is_kernel() {
+        // info!("generating upcall, addr: {addr:?}, flags: {flags:?}");
         return Err(UpcallInfo::MemoryContextViolation(
             MemoryContextViolationInfo::new(addr.raw(), cause),
         ));
@@ -134,12 +136,13 @@ fn check_security(
         exec_off: ip - exec_info.range.start,
     };
     if let Some(ct) = current_thread_ref() {
-        let perms = ct.secctx.check_active_access(&access_info);
-        if (perms.provide | default_prot) & !perms.restrict & access_kind == access_kind {
+        let perms = ct.secctx.check_active_access(&access_info, default_prot);
+
+        if perms.provide & !perms.restrict & access_kind == access_kind {
             return Ok(perms);
         }
-        let perms = ct.secctx.search_access(&access_info);
-        if (perms.provide | default_prot) & !perms.restrict & access_kind != access_kind {
+        let perms = ct.secctx.search_access(&access_info, default_prot);
+        if perms.provide & !perms.restrict & access_kind != access_kind {
             Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
                 address: addr.raw(),
                 access_kind: cause,
@@ -183,6 +186,7 @@ fn page_fault_to_region(
     check_object_addr(page_number, id, cause, addr)?;
 
     let (id_ok, default_prot) = info.object.check_id();
+
     if !id_ok && !info.object().is_kernel_id() {
         /*
         logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
@@ -285,9 +289,18 @@ fn get_map_region(
 ) -> Result<MapRegion, UpcallInfo> {
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));
-    let slot: Slot = addr.try_into().map_err(|_| upcall)?;
+    let slot: Slot = addr.try_into().map_err(|_| {
+        error!("error while trying into slot from addr");
+        upcall
+    })?;
     let mut slot_mgr = ctx.regions.lock();
-    slot_mgr
+    if let Some(region) = slot_mgr.lookup_region(slot.start_vaddr()) {
+        return Ok(region.clone());
+    }
+    drop(slot_mgr);
+    let kctx = kernel_context();
+    let mut k_regions = kctx.regions.lock();
+    k_regions
         .lookup_region(slot.start_vaddr())
         .cloned()
         .ok_or(upcall)
@@ -304,7 +317,9 @@ pub fn do_page_fault(
     check_violations(addr, cause, flags, ip)?;
 
     let (ctx, sctx_id) = get_context(addr, flags);
-    let info = get_map_region(addr, &ctx, cause)?;
+
+    let info =
+        get_map_region(addr, &ctx, cause).inspect_err(|e| error!("map_region error: {e:?}"))?;
     page_fault_to_region(addr, cause, flags, ip, ctx, sctx_id, info)
 }
 

@@ -1,5 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
+use log::{error, trace};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -7,7 +8,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 pub use twizzler_security::PermsInfo;
-use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, VerifyingKey};
+use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingKey};
 
 use crate::{
     memory::context::{
@@ -69,16 +70,27 @@ pub struct AccessInfo {
 }
 
 impl SecurityContext {
+    pub fn flags(&self) -> Option<SecCtxFlags> {
+        let obj = self.kobj.as_ref()?;
+        let base = obj.base();
+        Some(base.flags.clone())
+    }
+
     /// Lookup the permission info for an object, and maybe cache it.
-    pub fn lookup(&self, _id: ObjID) -> PermsInfo {
+    pub fn lookup(&self, _id: ObjID, default_prots: Protections) -> PermsInfo {
+        // check the cache to see if we already have something
         if let Some(cache_entry) = self.cache.lock().get(&_id) {
             return *cache_entry;
         }
 
+        // by default granted permissions are going to be the most restrictive
         let mut granted_perms =
             PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
 
-        let Some(ref obj) = self.kobj.clone() else {
+        // add default perms here
+        granted_perms.provide = granted_perms.provide | default_prots;
+
+        let Some(ref obj) = self.kobj else {
             // if there is no object underneath the kobj, return nothing;
             return granted_perms;
         };
@@ -87,20 +99,27 @@ impl SecurityContext {
 
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
-            // if no entries for the target, return already granted perms
+            // if there arent any items inside this context, just return default perms
             return granted_perms;
         };
+
+        // from now on, whenever we return granted_perms, it must be &'d with the sec_ctx global
+        // mask, since there are some entries inside the base.map()
 
         let v_obj = {
             let target_obj = match lookup_object(_id, LookupFlags::empty()) {
                 LookupResult::Found(obj) => obj,
-                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+                _ => {
+                    granted_perms.provide &= base.global_mask;
+                    return granted_perms;
+                }
             };
 
             let Some(meta) = target_obj.read_meta(true) else {
-                // failed to read meta, no perms granted
-                return PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+                granted_perms.provide &= base.global_mask;
+                return granted_perms;
             };
+
             match lookup_object(meta.kuid, LookupFlags::empty()) {
                 LookupResult::Found(v_obj) => {
                     let k_ctx = kernel_context();
@@ -115,7 +134,10 @@ impl SecurityContext {
                     handle
                 }
                 // verifying key wasnt found, return no perms
-                _ => return PermsInfo::new(self.id(), Protections::empty(), Protections::empty()),
+                _ => {
+                    granted_perms.provide &= base.global_mask;
+                    return granted_perms;
+                }
             }
         };
 
@@ -128,15 +150,16 @@ impl SecurityContext {
                 }
 
                 CtxMapItemType::Cap => {
-                    //NOTE: is this going to return the same as Object.lea?
                     let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
+                        error!("Failed to map capability from entry: {entry:#?}");
                         // something weird going on, entry offset not inside object bounds,
                         // return already granted perms to avoid panic
+                        granted_perms.provide &= base.global_mask;
                         return granted_perms;
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
-                        granted_perms.provide = granted_perms.provide | cap.protections;
+                        granted_perms.provide |= cap.protections;
                     };
                 }
             }
@@ -151,13 +174,11 @@ impl SecurityContext {
             return granted_perms;
         };
 
-        // final permissions will be ,
+        // final permissions will be:
         // granted_perms & permmask & (global_mask | override_mask)
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
-
         self.cache.lock().insert(_id, granted_perms.clone());
-
         granted_perms
     }
 
@@ -178,8 +199,8 @@ impl SecurityContext {
 
 impl SecCtxMgr {
     /// Lookup the permission info for an object in the active context, and maybe cache it.
-    pub fn lookup(&self, id: ObjID) -> PermsInfo {
-        self.inner.lock().active.lookup(id)
+    pub fn lookup(&self, id: ObjID, default_prots: Protections) -> PermsInfo {
+        self.active().lookup(id, default_prots)
     }
 
     /// Get the active context.
@@ -194,40 +215,52 @@ impl SecCtxMgr {
     }
 
     /// Check access rights in the active context.
-    pub fn check_active_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        //TODO: will probably have to hook up the gate check here as well?
-        // WARN: actually doing the lookup is causing the kernel to die so just skipping that for
-        // now for some reason
-        // let perms = self.lookup(_access_info.target_id);
-        let perms = PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::all(),
-            restrict: Protections::empty(),
-        };
-
+    pub fn check_active_access(
+        &self,
+        _access_info: &AccessInfo,
+        default_prots: Protections,
+    ) -> PermsInfo {
+        let perms = self.lookup(_access_info.target_id, default_prots);
         perms
     }
 
     /// Search all attached contexts for access.
-    pub fn search_access(&self, _access_info: &AccessInfo) -> PermsInfo {
-        //TODO: need to actually look through all the contexts, this is just temporary
-        // let mut greatest_perms = self.lookup(_access_info.target_id);
+    pub fn search_access(&self, access_info: &AccessInfo, default_prots: Protections) -> PermsInfo {
+        let active_perms = self.lookup(access_info.target_id, default_prots);
 
-        // for (_, ctx) in &self.inner.lock().inactive {
-        //     let perms = ctx.lookup(_access_info.target_id);
-        //     // how do you determine what prots is more expressive? like more
-        //     // lets just return if its anything other than empty
-        //     if perms.provide & !perms.restrict != Protections::empty() {
-        //         greatest_perms = perms
-        //     }
-        // }
-        // greatest_perms
+        let perms_satisfy = |granting: &PermsInfo| -> bool {
+            // this is the same boolean expr used by the fault handler to check perms
+            access_info.access_kind & !granting.restrict & granting.provide
+                == access_info.access_kind
+        };
 
-        PermsInfo {
-            ctx: self.active_id(),
-            provide: Protections::all(),
-            restrict: Protections::empty(),
+        // the active_perms satisfy the way we are accessing the object, just return
+        if perms_satisfy(&active_perms) {
+            return active_perms;
+        };
+
+        // if the active context has the undetachable bit set, we cant leave it, return what we
+        // already have
+        if let Some(flags) = self.active().flags()
+            && flags.contains(SecCtxFlags::UNDETACHABLE)
+        {
+            trace!("UNDETACHABLE bit set, refusing to evaluate inactive security contexts.");
+            return active_perms;
+        };
+
+        // look through the other attached contexts to see if any of them match
+        for (_, ctx) in &self.inner.lock().inactive {
+            let perms = ctx.lookup(access_info.target_id, default_prots);
+
+            // the perms granted by this ctx are equal to the way we are accessing the object, so
+            // lets send it
+            if perms_satisfy(&perms) {
+                return perms;
+            }
         }
+
+        // we couldnt find an exact match to the access kind, return the (inadequate) active perms
+        active_perms
     }
 
     /// Build a new SctxMgr for user threads.
@@ -260,8 +293,10 @@ impl SecCtxMgr {
         }
 
         let mut inner = self.inner.lock();
+
         if let Some(mut ctx) = inner.inactive.remove(&id) {
             core::mem::swap(&mut ctx, &mut inner.active);
+
             *self.active_id.lock() = id;
             // ctx now holds the old active context
             inner.inactive.insert(ctx.id(), ctx);
@@ -359,12 +394,12 @@ mod tests {
 
     use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, SigningKey, SigningScheme};
+    use twizzler_security::{Cap, SigningKey, SigningScheme, MAX_KEY_SIZE};
 
     use crate::{random::getrandom, utils::benchmark};
     #[kernel_test]
     fn bench_capability_verification() {
-        let mut rand_bytes = [0; 32];
+        let mut rand_bytes = [0; MAX_KEY_SIZE];
 
         getrandom(&mut rand_bytes, false);
 
