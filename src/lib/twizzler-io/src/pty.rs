@@ -1,46 +1,118 @@
 use std::{
     cell::UnsafeCell,
     io::{Read, Write},
-    mem::MaybeUninit,
     sync::atomic::{AtomicU64, Ordering},
-    thread::current,
 };
 
-use libc::{ICANON, ICRNL, IGNCR, INLCR, OCRNL, ONLCR, VEOF, VEOL, VERASE, VINTR, VKILL, VQUIT};
-use memchr::{memchr, memchr2};
+use libc::{
+    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, ECHO, ECHOCTL, ECHOE, ECHOKE, HUPCL, ICANON, ICRNL,
+    IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR, OPOST, PARENB, VEOF,
+    VEOL, VERASE, VINTR, VKILL, VQUIT, VWERASE, XTABS,
+};
+use memchr::{memchr2, memchr3, memrchr, memrchr2};
 use twizzler::Invariant;
 use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 
-struct PtyBuffer<const N: usize> {
+struct VolatileBuffer<const N: usize> {
     reserve: AtomicU64,
     head: AtomicU64,
     tail: AtomicU64,
     buffer: UnsafeCell<[u8; N]>,
 }
-unsafe impl<const N: usize> Send for PtyBuffer<N> {}
-unsafe impl<const N: usize> Sync for PtyBuffer<N> {}
+unsafe impl<const N: usize> Send for VolatileBuffer<N> {}
+unsafe impl<const N: usize> Sync for VolatileBuffer<N> {}
 
 pub const BUF_SZ: usize = 16;
 #[derive(Invariant)]
 pub struct PtyBase {
     termios_gen: AtomicU64,
     termios: UnsafeCell<libc::termios>,
-    server: PtyBuffer<BUF_SZ>,
-    client: PtyBuffer<BUF_SZ>,
+    server: VolatileBuffer<BUF_SZ>,
+    client: VolatileBuffer<BUF_SZ>,
 }
 
 unsafe impl Send for PtyBase {}
 unsafe impl Sync for PtyBase {}
+
+const fn ctrl(x: u8) -> u8 {
+    x & 0o37
+}
+
+const CEOF: u8 = ctrl(b'd');
+const CEOL: u8 = _POSIX_VDISABLE;
+const CERASE: u8 = 0o177;
+const CINTR: u8 = ctrl(b'c');
+const CSTATUS: u8 = _POSIX_VDISABLE;
+const CKILL: u8 = ctrl(b'u');
+const CMIN: u8 = 1;
+const CQUIT: u8 = 0o034; // FS, ^\
+const CSUSP: u8 = ctrl(b'z');
+const CTIME: u8 = 0;
+const CDSUSP: u8 = ctrl(b'y');
+const CSTART: u8 = ctrl(b'q');
+const CSTOP: u8 = ctrl(b's');
+const CLNEXT: u8 = ctrl(b'v');
+const CDISCARD: u8 = ctrl(b'o');
+const CWERASE: u8 = ctrl(b'w');
+const CREPRINT: u8 = ctrl(b'r');
+const CEOT: u8 = CEOF;
+const CBRK: u8 = CEOL;
+const CRPRNT: u8 = CREPRINT;
+const CFLUSH: u8 = CDISCARD;
+
+pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
+    c_iflag: BRKINT | ISTRIP | ICRNL | IMAXBEL | IXON | IXANY,
+    c_oflag: OPOST | ONLCR | XTABS,
+    c_cflag: CREAD | CS7 | PARENB | HUPCL,
+    c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOKE | ECHOCTL,
+    c_cc: [
+        CEOF,
+        CEOL,
+        CEOL,
+        CERASE,
+        CWERASE,
+        CKILL,
+        CREPRINT,
+        _POSIX_VDISABLE,
+        CINTR,
+        CQUIT,
+        CSUSP,
+        CDSUSP,
+        CSTART,
+        CSTOP,
+        CLNEXT,
+        CDISCARD,
+        CMIN,
+        CTIME,
+        CSTATUS,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+    ],
+    __c_ispeed: B9600,
+    __c_ospeed: B9600,
+    c_line: 0,
+};
 
 impl PtyBase {
     pub fn new(termios: libc::termios) -> Self {
         Self {
             termios_gen: AtomicU64::new(0),
             termios: UnsafeCell::new(termios),
-            server: PtyBuffer::new(),
-            client: PtyBuffer::new(),
+            server: VolatileBuffer::new(),
+            client: VolatileBuffer::new(),
         }
     }
 
@@ -125,7 +197,7 @@ impl PtyBase {
     }
 }
 
-impl<const N: usize> PtyBuffer<N> {
+impl<const N: usize> VolatileBuffer<N> {
     fn new() -> Self {
         Self {
             buffer: UnsafeCell::new([0; N]),
@@ -295,7 +367,6 @@ pub mod tests {
     use crate::pty::PtyBase;
 
     pub fn test_basic() {
-        /*
         let t = termios {
             c_iflag: 0,
             c_oflag: 0,
@@ -318,9 +389,6 @@ pub mod tests {
             assert_eq!(pty.client.read_bytes(&mut buf).unwrap(), 1024);
             assert_eq!(buf, [i; 1024]);
         }
-
-        */
-        test_mt();
     }
 
     pub fn test_mt() {
@@ -406,6 +474,64 @@ pub mod tests {
     }
 }
 
+pub struct InputPoster<'a, W: Write> {
+    termios: libc::termios,
+    writer: &'a mut W,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtySignal {
+    Interrupt,
+    Quit,
+    Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteReport {
+    pub consumed: usize,
+    pub posted_signal: Option<PtySignal>,
+}
+
+impl<'a, W: Write> InputPoster<'a, W> {
+    pub fn new(termios: libc::termios, writer: &'a mut W) -> Self {
+        Self { termios, writer }
+    }
+
+    pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
+        let vintr = self.termios.c_cc[VINTR];
+        let vquit = self.termios.c_cc[VQUIT];
+
+        let mut total = 0;
+        let mut sig = None;
+
+        while buf.len() > 0 && sig.is_none() {
+            let (count, skip) = if let Some(idx) = memchr2(vintr, vquit, buf) {
+                match buf[idx] {
+                    c if c == vintr => sig = Some(PtySignal::Interrupt),
+                    c if c == vquit => sig = Some(PtySignal::Quit),
+                    _ => unreachable!(),
+                }
+                (idx, true)
+            } else {
+                (buf.len(), false)
+            };
+
+            let wcount = self.writer.write(&buf[0..count])?;
+            total += wcount;
+            buf = &buf[wcount..];
+            if skip && wcount == count {
+                total += 1;
+                buf = &buf[1..];
+            }
+        }
+
+        Ok(WriteReport {
+            consumed: total,
+            posted_signal: sig,
+        })
+    }
+}
+
 pub struct OutputConverter<'a, W: Write> {
     termios: libc::termios,
     writer: &'a mut W,
@@ -483,11 +609,50 @@ impl<'a, R: Read> InputConverter<'a, R> {
     }
 
     fn refill_linebuf(&mut self) -> std::io::Result<()> {
-        if self.linebuf_count == 0 {
-            let count = self.reader.read(&mut self.linebuf)?;
-            let count = Self::input_map(&self.termios, &mut self.linebuf[0..count]);
-            self.linebuf_count = count;
-        }
+        let linebuf = &mut self.linebuf[self.linebuf_count..];
+        let count = self.reader.read(linebuf)?;
+        let count = Self::input_map(&self.termios, &mut linebuf[..count]);
+
+        let verase = self.termios.c_cc[VERASE];
+        let vwerase = self.termios.c_cc[VWERASE];
+        let vkill = self.termios.c_cc[VKILL];
+
+        let count = if let Some(idx) = memchr3(verase, vwerase, vkill, &linebuf[..count]) {
+            let idx = idx + self.linebuf_count;
+
+            let rev_idx = match self.linebuf[idx] {
+                c if c == verase => {
+                    if idx > 0 {
+                        if self.linebuf[idx - 1] != b'\n' {
+                            idx - 1
+                        } else {
+                            idx
+                        }
+                    } else {
+                        0
+                    }
+                }
+                c if c == vwerase => memrchr2(b' ', b'\t', &self.linebuf[0..idx])
+                    .map(|idx| idx + 1)
+                    .unwrap_or_else(|| {
+                        memrchr(b'\n', &self.linebuf[0..idx])
+                            .map(|idx| idx + 1)
+                            .unwrap_or(0)
+                    }),
+                c if c == vkill => memrchr(b'\n', &self.linebuf[0..idx])
+                    .map(|idx| idx + 1)
+                    .unwrap_or(0),
+                _ => panic!("invalid character"),
+            };
+
+            self.linebuf.copy_within((idx + 1).., rev_idx);
+
+            count - (idx - rev_idx)
+        } else {
+            count
+        };
+
+        self.linebuf_count += count;
         Ok(())
     }
 
@@ -495,12 +660,9 @@ impl<'a, R: Read> InputConverter<'a, R> {
         let mut count = buf.len().min(self.linebuf_count);
         let linebuf = &self.linebuf[0..count];
 
+        let mut end = self.linebuf_count == BUF_SZ;
         let veof = self.termios.c_cc[VEOF];
-        //let vstatus = self.termios.c_cc[VSTATUS];
-        let vquit = self.termios.c_cc[VQUIT];
-        let vintr = self.termios.c_cc[VINTR];
 
-        let mut end = false;
         if let Some(idx) = memchr2(b'\n', veof, linebuf) {
             if linebuf[idx] == b'\n' {
                 count = idx + 1;
@@ -510,15 +672,6 @@ impl<'a, R: Read> InputConverter<'a, R> {
                 count = idx;
             }
             end = true;
-        }
-
-        for needle in [vintr, vquit] {
-            let linebuf = &self.linebuf[0..count];
-            if let Some(idx) = memchr(needle, linebuf) {
-                self.linebuf.copy_within((idx + 1).., idx);
-                self.linebuf_count -= 1;
-                count -= 1;
-            }
         }
 
         let linebuf = &self.linebuf[0..count];
@@ -545,6 +698,10 @@ impl<'a, R: Read> InputConverter<'a, R> {
             }
         }
         Ok(total)
+    }
+
+    pub fn pending_linebuf(&self) -> usize {
+        self.linebuf_count
     }
 
     fn input_map(termios: &libc::termios, mut buf: &mut [u8]) -> usize {
@@ -641,7 +798,7 @@ impl<R: Read> Read for InputConverter<'_, R> {
 pub mod more_tests {
     use std::io::{Cursor, Seek};
 
-    use libc::{ICANON, ICRNL, IGNCR, INLCR, OCRNL, ONLCR, VEOF, termios};
+    use libc::{ICANON, ICRNL, IGNCR, INLCR, OCRNL, ONLCR, VEOF, VERASE, VKILL, VWERASE, termios};
 
     use crate::pty::{InputConverter, OutputConverter};
 
@@ -695,6 +852,9 @@ pub mod more_tests {
             c_line: 0,
         };
         t.c_cc[VEOF] = 0x4;
+        t.c_cc[VERASE] = 0x8;
+        t.c_cc[VWERASE] = 0x15;
+        t.c_cc[VKILL] = 0x17;
         let mut converter = InputConverter::new(t, &mut input);
         for expected in expected {
             let mut buf = [0u8; 1024];
@@ -737,6 +897,30 @@ pub mod more_tests {
 
         let input = b"first\x04second\n" as &[u8];
         test_canon(0, input, &[b"first", b"second\n"]);
+
+        let input = b"first" as &[u8];
+        test_canon(0, input, &[]);
+
+        let input = b"\x04" as &[u8];
+        test_canon(0, input, &[]);
+
+        let input = b"test words\x08S\n" as &[u8];
+        test_canon(0, input, &[b"test wordS\n"]);
+
+        let input = b"test\n\x08S\n" as &[u8];
+        test_canon(0, input, &[b"test\n", b"S\n"]);
+
+        let input = b"test words\x15S\n" as &[u8];
+        test_canon(0, input, &[b"test S\n"]);
+
+        let input = b"test\n\x15S\n" as &[u8];
+        test_canon(0, input, &[b"test\n", b"S\n"]);
+
+        let input = b"test words\x17S\n" as &[u8];
+        test_canon(0, input, &[b"S\n"]);
+
+        let input = b"test\n\x17S\n" as &[u8];
+        test_canon(0, input, &[b"test\n", b"S\n"]);
     }
 
     pub fn test_output() {
