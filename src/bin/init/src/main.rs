@@ -254,8 +254,10 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
-    //println!("doing pty test");
-    //twizzler_io::pty::tests::test_basic();
+    println!("doing pty test");
+    twizzler_io::pty::more_tests::test_raw_input_processing();
+    twizzler_io::pty::more_tests::test_canon_input();
+    twizzler_io::pty::more_tests::test_output();
 
     println!("Doing net test");
     let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
@@ -267,8 +269,11 @@ fn main() {
                 let start = Instant::now();
                 let mut buf = [0; 4096];
                 while let Ok(len) = client.0.read(&mut buf) {
-                    tracing::info!("got {}", len);
+                    //tracing::info!("got {}", len);
                     total += len;
+                    if len == 0 {
+                        break;
+                    }
                 }
                 tracing::info!(
                     "read {}MB over {} seconds",

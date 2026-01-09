@@ -69,11 +69,11 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
     let current_dir = std::env::current_dir().unwrap();
     std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
 
-    tracing::info!("generating rust bootstrap.config file");
+    println!("generating rust bootstrap.config file");
     let _ = std::fs::remove_file("toolchain/src/rust/bootstrap.toml");
     generate_config_toml()?;
 
-    tracing::info!("copying twizzler-abi headers and crate to libc and rust");
+    println!("copying twizzler-abi headers and crate to libc and rust");
     let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
     let status = Command::new("cp")
         .arg("-R")

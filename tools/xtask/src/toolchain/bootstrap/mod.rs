@@ -30,8 +30,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         ),
     );
 
-    //libc::build_libc(&cli)?;
-
     let current_dir = std::env::current_dir().unwrap();
     let builtin_headers =
         current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/21/include/");
@@ -39,18 +37,22 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", "toolchain/install/sysroots");
 
     if !cli.skip_rust {
+        println!("starting rust build");
         rust::build_rust(&cli)?;
     }
 
+    println!("rust build finished, packaging toolchain");
     install::install(&cli)?;
 
     if !cli.skip_prune {
         prune_toolchain()?;
     }
 
+    println!("toolchain packaging finished, pruning binaries");
     prune_bins()?;
 
     if cli.compress {
+        println!("compressing toolchain");
         compress_toolchain()?;
     }
 

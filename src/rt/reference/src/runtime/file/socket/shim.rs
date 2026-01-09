@@ -90,8 +90,8 @@ impl IfaceSet {
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
-const RX_BUF_SIZE: usize = 65536;
-const TX_BUF_SIZE: usize = 8192;
+const RX_BUF_SIZE: usize = 65536 * 2;
+const TX_BUF_SIZE: usize = 8192 * 2;
 
 lazy_static! {
     static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
@@ -131,7 +131,7 @@ impl Engine {
                     .extract_if(0.., |item: &mut (SocketHandle, u16)| {
                         let socket = core.get_mutable_socket(item.0);
                         if socket.state() == State::Closed {
-                            tracing::info!("tracked tcp socket {} in closed state", item.0);
+                            tracing::debug!("tracked tcp socket {} in closed state", item.0);
                             core.release_socket(item.0);
                             true
                         } else {
@@ -169,7 +169,7 @@ impl Engine {
                 }
                 .flatten();
                 if let Some(inner) = inner {
-                    tracing::info!("tracking socket {}, port {}", inner.0, inner.1);
+                    tracing::debug!("tracking socket {}, port {}", inner.0, inner.1);
                     tracking.push(inner);
                 }
             }
@@ -198,6 +198,9 @@ impl Engine {
         mut f: impl FnMut(&mut Core) -> std::io::Result<R>,
     ) -> std::io::Result<R> {
         let mut core = self.core.lock().unwrap();
+        if let Ok(r) = f(&mut *core) {
+            return Ok(r);
+        }
         // Immediately poll, since we wait to have as up-to-date state as possible.
         core.poll(&self.waiter);
         // We'll need the polling thread to wake up and do work.
@@ -307,7 +310,7 @@ impl SmolTcpListener {
     ) -> Result<(u16, SocketAddr), Error> {
         let addrs = sock_addrs.to_socket_addrs()?;
         for addr in addrs {
-            tracing::info!("each_addr: {:?}", addr);
+            tracing::debug!("each_addr: {:?}", addr);
             match s.listen(addr.port()) {
                 Ok(_) => return Ok((addr.port(), addr)),
                 Err(_) => {}
@@ -381,7 +384,7 @@ impl SmolTcpListener {
      */
     // to think about: each socket must be pulled from the engine and checked for activeness.
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
-        tracing::info!("accept: {}", self.local_addr);
+        tracing::debug!("accept: {}", self.local_addr);
         ENGINE.blocking(|core| {
             let mut listeners = self.listeners.lock().unwrap();
 
@@ -534,7 +537,7 @@ impl SmolTcpStream {
         let Some(port) = PORTS.get_ephemeral_port() else {
             return Err(Error::other("dynamic port overflow!"));
         };
-        tracing::info!("connect: {}", port);
+        tracing::debug!("connect: {}", port);
         if let Err(e) = Self::each_addr(addr, &mut sock, port) {
             PORTS.return_port(port);
             return Err(e);
@@ -581,7 +584,7 @@ impl SmolTcpStream {
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap(); // acquire mutex
         let socket = core.get_mutable_socket(self.inner.socket_handle);
-        tracing::info!(
+        tracing::debug!(
             "socket {} shutdown: {:?}, state = {:?}",
             self.inner.socket_handle,
             how,

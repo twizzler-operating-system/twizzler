@@ -363,7 +363,7 @@ impl ReferenceRuntime {
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<RawFd> {
-        tracing::info!("open_anon: {:?}", kind);
+        tracing::debug!("open_anon: {:?}", kind);
         let elem = match kind {
             OpenAnonKind::Pipe => FdKind::Stdio, //TODO: make sure this is correct
             OpenAnonKind::SocketConnect => {
@@ -429,7 +429,7 @@ impl ReferenceRuntime {
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<()> {
-        tracing::info!("reopen_anon: {:?}", kind);
+        tracing::debug!("reopen_anon: {:?}", kind);
         let elem = match kind {
             OpenAnonKind::SocketConnect => {
                 let addr = bind_info as *const twizzler_rt_abi::bindings::socket_address;

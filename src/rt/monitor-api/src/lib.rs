@@ -6,6 +6,7 @@
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
 #![feature(tuple_trait)]
+#![allow(unexpected_cfgs)]
 use std::{
     alloc::Layout,
     cell::UnsafeCell,

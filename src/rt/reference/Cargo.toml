@@ -30,6 +30,3 @@ printf-compat = { workspace = true }
 naming-core = { workspace = true }
 pager-dynamic = { workspace = true }
 ferroc = { workspace = true, features = ["global"] }
-
-[profile.release]
-debug = true

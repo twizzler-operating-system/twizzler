@@ -474,8 +474,12 @@ impl Thread {
         assert!(old_thread.switch_lock.load(Ordering::SeqCst) != 0);
         let new_sp = unsafe { new_stack_save.read() } as usize as *const u64;
         let new_rip = unsafe { new_sp.add(7).read() };
-        if new_rip == 0 {
-            log::warn!("tried to switch to a zero RIP task");
+        if false && new_rip == 0 {
+            log::warn!(
+                "tried to switch to a zero RIP task ({} -> {})",
+                old_thread.id(),
+                self.id()
+            );
         }
         unsafe {
             __do_switch(

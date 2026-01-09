@@ -38,6 +38,7 @@ pub fn build_rust(cli: &BootstrapOptions) -> anyhow::Result<()> {
     if !src_status.success() {
         anyhow::bail!("failed to install rust source");
     }
+    println!("building crtx.o's for targets");
     for target in &crate::triple::all_possible_platforms() {
         build_crtx("crti", target)?;
         build_crtx("crtn", target)?;
@@ -54,7 +55,6 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
         build_info, objname
     );
     let objpath = Path::new(&objpath);
-    println!("building {:?} => {:?}", sourcepath, objpath);
     let status = Command::new("toolchain/install/bin/rustc")
         .arg("--emit")
         .arg("obj")

@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
-    tracing::info!("installing LLVM toolchain and native libraries");
+    println!("installing LLVM toolchain and native libraries");
     for target in &crate::triple::all_possible_platforms() {
         let target = target.to_string();
 
@@ -34,7 +34,6 @@ pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
                 &target, name
             );
             let dst = format!("toolchain/install/lib/clang/21/lib/{}/{}.o", &target, name);
-            println!("Copy: {} -> {}", src, dst);
             std::fs::copy(src, dst)?;
         }
         let src = format!("toolchain/install/lib/rustlib/{}/lib/libunwind.a", &target);
@@ -52,7 +51,7 @@ pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
         &CopyOptions::new().overwrite(true),
     )?;
 
-    tracing::info!("installing libc and C headers");
+    println!("installing libc and C headers");
     for target_triple in all_possible_platforms() {
         let current_dir = std::env::current_dir().unwrap();
         let sysroot_dir = current_dir.join(format!(

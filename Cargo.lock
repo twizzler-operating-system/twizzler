@@ -7210,6 +7210,7 @@ name = "twizzler-io"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memchr",
  "tracing",
  "twizzler",
  "twizzler-abi",

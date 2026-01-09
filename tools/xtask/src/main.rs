@@ -8,6 +8,7 @@ use std::{fmt::Display, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use toolchain::ToolchainCommands;
+use tracing::Level;
 use triple::{Arch, Machine, Triple};
 
 #[derive(Parser, Debug)]
@@ -226,7 +227,12 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(Level::WARN)
+            .finish(),
+    )
+    .unwrap();
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {
