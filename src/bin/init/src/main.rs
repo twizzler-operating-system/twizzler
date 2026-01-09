@@ -1,7 +1,7 @@
 use std::{
     io::{Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use embedded_io::ErrorType;
@@ -254,11 +254,45 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
+    //println!("doing pty test");
+    //twizzler_io::pty::tests::test_basic();
+
+    println!("Doing net test");
+    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+    let _listener_thread = std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok(mut client) => {
+                tracing::info!("accepted connection from {}", client.1);
+                let mut total = 0;
+                let start = Instant::now();
+                let mut buf = [0; 4096];
+                while let Ok(len) = client.0.read(&mut buf) {
+                    tracing::info!("got {}", len);
+                    total += len;
+                }
+                tracing::info!(
+                    "read {}MB over {} seconds",
+                    total / (1024 * 1024),
+                    start.elapsed().as_secs_f32()
+                );
+            }
+            Err(e) => {
+                tracing::error!("error accepting connection: {}", e);
+            }
+        }
+    });
+    let mut server = TcpStream::connect("127.0.0.1:8080").unwrap();
+    let len = 1024 * 1024 * 8;
+    let buf = [1; 4096];
+    let mut total = 0;
+    while total < len {
+        let thislen = server.write(&buf).unwrap();
+        total += thislen;
+    }
+    server.shutdown(Shutdown::Both);
+    drop(server);
+
     if false {
-        println!("doing pty test");
-
-        twizzler_io::pty::tests::test_basic();
-
         println!("Doing net test");
 
         let listener = TcpListener::bind("127.0.0.1:8080").unwrap();

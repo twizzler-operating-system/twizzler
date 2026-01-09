@@ -80,7 +80,7 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
     let dir = get_toolchain_path()?
         .join("rust/build")
         .join(host_triple)
-        .join("stage2-std")
+        .join("stage1-std")
         .join(target_triple)
         .join("release");
 

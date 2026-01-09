@@ -5,7 +5,7 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
     let dir = curdir
         .join("toolchain/src/rust/build")
         .join(host_triple)
-        .join("stage2-std")
+        .join("stage1-std")
         .join(target_triple)
         .join("release");
     Ok(dir)

@@ -472,22 +472,13 @@ impl SmolTcpStream {
      */
     pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
         let engine = &ENGINE;
-        tracing::info!("write {} bytes", buf.len());
         engine.blocking(|core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
-                tracing::info!("sending");
                 Ok(socket.send_slice(buf).unwrap())
             } else if !socket.may_send() {
-                tracing::info!(
-                    "can't send {} {} {}",
-                    socket.state(),
-                    socket.is_active(),
-                    socket.is_open(),
-                );
                 Err(ErrorKind::ConnectionReset.into())
             } else {
-                tracing::info!("would block");
                 Err(ErrorKind::WouldBlock.into())
             }
         })

@@ -1,14 +1,12 @@
 use std::{
     fs::remove_dir_all,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use bootstrap::do_bootstrap;
 use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
-use reqwest::Client;
 
 use crate::triple::{Arch, Triple};
 
@@ -173,67 +171,6 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             Ok(())
         }
     }
-}
-
-fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
-    let objname = format!("{}.o", name);
-    let srcname = format!("{}.rs", name);
-    let sourcepath = Path::new("toolchain/src/").join(srcname);
-    let objpath = format!(
-        "toolchain/install/lib/rustlib/{}/lib/self-contained/{}",
-        build_info, objname
-    );
-    let objpath = Path::new(&objpath);
-    println!("building {:?} => {:?}", sourcepath, objpath);
-    let status = Command::new("toolchain/install/bin/rustc")
-        .arg("--emit")
-        .arg("obj")
-        .arg("-o")
-        .arg(objpath)
-        .arg(sourcepath)
-        .arg("--crate-type")
-        .arg("staticlib")
-        .arg("-C")
-        .arg("panic=abort")
-        .arg("--target")
-        .arg(build_info.to_string())
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to compile {}::{}", name, build_info.to_string());
-    }
-
-    Ok(())
-}
-
-async fn download_efi_files(client: &Client) -> anyhow::Result<()> {
-    // efi binaries for x86 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/OVMF.fd",
-        "toolchain/install/OVMF.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTX64.EFI",
-        "toolchain/install/BOOTX64.EFI",
-    )
-    .await?;
-    // efi binaries for aarch64 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/QEMU_EFI.fd",
-        "toolchain/install/OVMF-AA64.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTAA64.EFI",
-        "toolchain/install/BOOTAA64.EFI",
-    )
-    .await?;
-
-    Ok(())
 }
 
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
