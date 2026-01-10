@@ -69,7 +69,7 @@ members = [
     "src/bin/trace",
     "src/bin/schedtest",  
     "src/bin/sec",
-    "src/bin/gfxtest",
+    "src/bin/gfxtest", "src/bin/minigrep",
 
 ]
 
