@@ -30,7 +30,10 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{gates::MonitorCompControlCmd, init::InitDynlinkContext};
+use crate::{
+    gates::{MonitorCompControlCmd, PostSignalFlags},
+    init::InitDynlinkContext,
+};
 
 pub(crate) mod compartment;
 pub mod library;
@@ -399,6 +402,16 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
         crate::dlengine::set_naming(root)
+    }
+
+    pub fn post_signal(
+        &self,
+        info: &secgate::GateCallInfo,
+        target: ObjID,
+        signal: u64,
+        flags: PostSignalFlags,
+    ) -> Result<(), TwzError> {
+        return Ok(());
     }
 }
 

@@ -13,7 +13,7 @@ use std::{
     marker::{PhantomData, Tuple},
     ptr::NonNull,
     sync::{
-        atomic::{AtomicPtr, AtomicU32, Ordering},
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
         OnceLock,
     },
 };
@@ -50,6 +50,7 @@ pub struct SharedCompConfig {
     tls_template: AtomicPtr<TlsTemplateInfo>,
     /// The root library ID for this compartment. May be None if no libraries have been loaded.
     pub root_library_id: Option<LoadedImageId>,
+    pub posted_signals: AtomicU64,
 }
 
 struct CompConfigFinder {
@@ -168,6 +169,7 @@ impl SharedCompConfig {
             sctx,
             tls_template: AtomicPtr::new(tls_template),
             root_library_id: None,
+            posted_signals: AtomicU64::new(0),
         }
     }
 
@@ -179,6 +181,18 @@ impl SharedCompConfig {
     /// Get the current TLS template for the compartment.
     pub fn get_tls_template(&self) -> *const TlsTemplateInfo {
         self.tls_template.load(Ordering::SeqCst)
+    }
+
+    pub fn read_posted_signals(&self) -> u64 {
+        self.posted_signals.swap(0, Ordering::SeqCst)
+    }
+
+    pub fn peek_posted_signals(&self) -> u64 {
+        self.posted_signals.load(Ordering::SeqCst)
+    }
+
+    pub fn post_signal(&self, signal: u64) {
+        self.posted_signals.fetch_or(1 << signal, Ordering::SeqCst);
     }
 }
 

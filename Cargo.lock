@@ -4412,6 +4412,7 @@ dependencies = [
 name = "monitor"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.9.1",
  "dynlink",
  "happylock",
  "lazy_static",
@@ -7373,6 +7374,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-io",
  "twizzler-rt-abi",
  "virtio-net",
 ]

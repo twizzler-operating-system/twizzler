@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::{stdin, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     time::{Duration, Instant},
 };
@@ -12,8 +12,12 @@ use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
     object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
-    syscall::{sys_new_handle, NewHandleFlags},
+    syscall::{
+        sys_new_handle, KernelConsoleReadFlags, KernelConsoleWriteFlags, NewHandleFlags,
+        ObjectCreate,
+    },
 };
+use twizzler_io::pty::DEFAULT_TERMIOS;
 use twizzler_queue::Queue;
 
 struct TwzIo;
@@ -254,50 +258,50 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
-    println!("doing pty test");
-    twizzler_io::pty::more_tests::test_raw_input_processing();
-    twizzler_io::pty::more_tests::test_canon_input();
-    twizzler_io::pty::more_tests::test_output();
-
-    println!("Doing net test");
-    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-    let _listener_thread = std::thread::spawn(move || loop {
-        match listener.accept() {
-            Ok(mut client) => {
-                tracing::info!("accepted connection from {}", client.1);
-                let mut total = 0;
-                let start = Instant::now();
-                let mut buf = [0; 4096];
-                while let Ok(len) = client.0.read(&mut buf) {
-                    //tracing::info!("got {}", len);
-                    total += len;
-                    if len == 0 {
-                        break;
-                    }
-                }
-                tracing::info!(
-                    "read {}MB over {} seconds",
-                    total / (1024 * 1024),
-                    start.elapsed().as_secs_f32()
-                );
-            }
-            Err(e) => {
-                tracing::error!("error accepting connection: {}", e);
-            }
-        }
-    });
-    let mut server = TcpStream::connect("127.0.0.1:8080").unwrap();
-    let len = 1024 * 1024 * 8;
-    let buf = [1; 4096];
-    let mut total = 0;
-    while total < len {
-        let thislen = server.write(&buf).unwrap();
-        total += thislen;
-    }
-    server.shutdown(Shutdown::Both);
-    drop(server);
-
     if false {
+        println!("doing pty test");
+        twizzler_io::pty::more_tests::test_raw_input_processing();
+        twizzler_io::pty::more_tests::test_canon_input();
+        twizzler_io::pty::more_tests::test_output();
+
+        println!("Doing net test");
+        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+        let _listener_thread = std::thread::spawn(move || loop {
+            match listener.accept() {
+                Ok(mut client) => {
+                    tracing::info!("accepted connection from {}", client.1);
+                    let mut total = 0;
+                    let start = Instant::now();
+                    let mut buf = [0; 4096];
+                    while let Ok(len) = client.0.read(&mut buf) {
+                        //tracing::info!("got {}", len);
+                        total += len;
+                        if len == 0 {
+                            break;
+                        }
+                    }
+                    tracing::info!(
+                        "read {}MB over {} seconds",
+                        total / (1024 * 1024),
+                        start.elapsed().as_secs_f32()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("error accepting connection: {}", e);
+                }
+            }
+        });
+        let mut server = TcpStream::connect("127.0.0.1:8080").unwrap();
+        let len = 1024 * 1024 * 8;
+        let buf = [1; 4096];
+        let mut total = 0;
+        while total < len {
+            let thislen = server.write(&buf).unwrap();
+            total += thislen;
+        }
+        server.shutdown(Shutdown::Both);
+        drop(server);
+
         println!("Doing net test");
 
         let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
@@ -354,6 +358,45 @@ fn main() {
 
     println!("To run a program, type its name.");
 
+    twizzler_rt_abi::fd::twz_rt_fd_close(0);
+    let pty =
+        twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
+
+    assert_eq!(client_fd, 0);
+
+    println!("spawning kbd handler");
+    std::thread::spawn(move || loop {
+        let mut buf = [0; 1024];
+        let count = twizzler_abi::syscall::sys_kernel_console_read(
+            twizzler_abi::syscall::KernelConsoleSource::Console,
+            &mut buf,
+            KernelConsoleReadFlags::empty(),
+        )
+        .unwrap();
+        tracing::info!("Read {} bytes from console: {:?}", count, &buf[0..count]);
+        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+        let mut done = 0;
+        while done < count {
+            done += twizzler_rt_abi::io::twz_rt_fd_pwrite(server_fd, &buf[done..count], &mut ioc)
+                .unwrap();
+        }
+    });
+
+    println!("spawning pty output handler");
+    std::thread::spawn(move || loop {
+        let mut buf = [0; 1024];
+        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+        let count = twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
+        tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
+        twizzler_abi::syscall::sys_kernel_console_write(
+            twizzler_abi::syscall::KernelConsoleSource::Console,
+            &buf[0..count],
+            KernelConsoleWriteFlags::empty(),
+        );
+    });
+
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut history = [0; 1024];
@@ -364,8 +407,12 @@ fn main() {
     loop {
         //let mstats = monitor_api::stats().unwrap();
         //println!("{:?}", mstats);
-        let line = editor.readline("twz> ", &mut io).unwrap();
-        let cmd = line.split_whitespace().collect::<Vec<_>>();
+        //let line = editor.readline("twz> ", &mut io).unwrap();
+
+        println!("twz> ");
+        let mut s = String::new();
+        let _ = stdin().read_line(&mut s).unwrap();
+        let cmd = s.split_whitespace().collect::<Vec<_>>();
         if cmd.len() == 0 {
             continue;
         }
@@ -389,7 +436,7 @@ fn main() {
             })
             .collect::<Vec<_>>();
 
-        tracing::debug!("got env: {:?}, cmd: {:?}", vars, cmd);
+        tracing::info!("got env: {:?}, cmd: {:?}", vars, cmd);
 
         let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
             .args(&cmd)

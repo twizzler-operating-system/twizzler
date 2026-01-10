@@ -1,7 +1,10 @@
 use std::{
     cell::UnsafeCell,
     io::{Read, Write},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use libc::{
@@ -10,27 +13,237 @@ use libc::{
     VEOL, VERASE, VINTR, VKILL, VQUIT, VWERASE, XTABS,
 };
 use memchr::{memchr2, memchr3, memrchr, memrchr2};
-use twizzler::Invariant;
+use twizzler::{
+    BaseType, Invariant,
+    object::{MapFlags, ObjID, Object, ObjectBuilder, TypedObject},
+};
 use twizzler_abi::syscall::{
-    ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    ObjectCreate, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+    ThreadSyncWake, sys_thread_sync,
 };
 
-struct VolatileBuffer<const N: usize> {
-    reserve: AtomicU64,
-    head: AtomicU64,
-    tail: AtomicU64,
-    buffer: UnsafeCell<[u8; N]>,
-}
-unsafe impl<const N: usize> Send for VolatileBuffer<N> {}
-unsafe impl<const N: usize> Sync for VolatileBuffer<N> {}
+use crate::buffer::VolatileBuffer;
 
-pub const BUF_SZ: usize = 16;
-#[derive(Invariant)]
+pub const BUF_SZ: usize = 8192;
+
+fn do_sleep(sync: ThreadSyncSleep) -> std::io::Result<()> {
+    sys_thread_sync(&mut [ThreadSync::new_sleep(sync)], None)?;
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PtyInputReader {
+    pty: Object<PtyBase>,
+}
+
+impl Read for PtyInputReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.pty.base().client_input.read_bytes(buf)?;
+        if count == 0 && buf.len() > 0 {
+            do_sleep(self.pty.base().client_input.sync_for_pending_data())?;
+            return self.read(buf);
+        }
+        Ok(count)
+    }
+}
+
+#[derive(Clone)]
+struct PtyOutputWriter {
+    pty: Object<PtyBase>,
+}
+
+impl Write for PtyOutputWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let count = self.pty.base().client_output.write_bytes(buf)?;
+        if count == 0 && buf.len() > 0 {
+            do_sleep(self.pty.base().client_output.sync_for_avail_space())?;
+            return self.write(buf);
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct PtyOutputReader {
+    pty: Object<PtyBase>,
+}
+
+impl Read for PtyOutputReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.pty.base().client_output.read_bytes(buf)?;
+        if count == 0 && buf.len() > 0 {
+            do_sleep(self.pty.base().client_output.sync_for_pending_data())?;
+            return self.read(buf);
+        }
+        Ok(count)
+    }
+}
+
+#[derive(Clone)]
+pub struct PtyClientHandle {
+    input: InputConverter<PtyInputReader>,
+    output: OutputConverter<PtyOutputWriter>,
+    termios_gen: u64,
+}
+
+impl PtyClientHandle {
+    pub fn new(id: ObjID) -> std::io::Result<Self> {
+        let obj =
+            unsafe { Object::<PtyBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
+        let (termios, termios_gen) = obj.base().read_termios();
+        Ok(Self {
+            input: InputConverter::new(termios, PtyInputReader { pty: obj.clone() }),
+            output: OutputConverter::new(termios, PtyOutputWriter { pty: obj.clone() }),
+            termios_gen,
+        })
+    }
+
+    fn update_termios(&mut self) {
+        if let Some((termios, termios_gen)) = self
+            .input
+            .reader
+            .pty
+            .base()
+            .try_read_termios(self.termios_gen)
+        {
+            self.input.termios = termios;
+            self.output.termios = termios;
+            self.termios_gen = termios_gen;
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PtyInputPoster {
+    pty: Object<PtyBase>,
+}
+
+impl Write for PtyInputPoster {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let count = self.pty.base().client_input.write_bytes(buf)?;
+        if count == 0 && buf.len() > 0 {
+            let sync = self.pty.base().client_input.sync_for_avail_space();
+            do_sleep(sync)?;
+            return self.write(buf);
+        } else {
+            Ok(count)
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct PtyServerHandle {
+    client_input: InputPoster<PtyInputPoster>,
+    client_output: PtyOutputReader,
+    termios_gen: u64,
+    signal_handler: Option<fn(PtySignal)>,
+}
+
+impl PtyServerHandle {
+    pub fn new(id: ObjID, signal_handler: Option<fn(PtySignal)>) -> std::io::Result<Self> {
+        let obj =
+            unsafe { Object::<PtyBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
+        let (termios, termios_gen) = obj.base().read_termios();
+        Ok(Self {
+            client_input: InputPoster::new(termios, PtyInputPoster { pty: obj.clone() }),
+            termios_gen,
+            client_output: PtyOutputReader { pty: obj },
+            signal_handler,
+        })
+    }
+
+    fn update_termios(&mut self) {
+        if let Some((termios, termios_gen)) = self
+            .client_output
+            .pty
+            .base()
+            .try_read_termios(self.termios_gen)
+        {
+            self.client_input.termios = termios;
+            self.termios_gen = termios_gen;
+        }
+    }
+}
+
+impl Write for PtyServerHandle {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        tracing::info!("pty server write: {:?}", buf);
+        self.update_termios();
+        let report = self.client_input.write_input(buf)?;
+        tracing::info!("pty server write: wrote {:?}", report);
+        if let Some(signal) = report.posted_signal
+            && let Some(signal_handler) = self.signal_handler
+        {
+            (signal_handler)(signal);
+        }
+        if report.consumed == 0 && buf.len() > 0 {
+            do_sleep(
+                self.client_input
+                    .writer
+                    .pty
+                    .base()
+                    .client_input
+                    .sync_for_avail_space(),
+            )?;
+            return self.write(buf);
+        }
+        Ok(report.consumed)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Read for PtyServerHandle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        tracing::info!("pty server read");
+        self.update_termios();
+        self.client_output.read(buf).inspect(|x| {
+            tracing::info!("pty server read: {}", x);
+        })
+    }
+}
+
+impl Write for PtyClientHandle {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        tracing::info!("pty client write {:?}", buf);
+        self.update_termios();
+        self.output.write(buf).inspect(|x| {
+            tracing::info!("pty client write: {}", x);
+        })
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.update_termios();
+        self.output.flush()
+    }
+}
+
+impl Read for PtyClientHandle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        tracing::info!("pty client read");
+        self.update_termios();
+        self.input.read(buf).inspect(|x| {
+            tracing::info!("pty client read: {}", x);
+        })
+    }
+}
+
+#[derive(Invariant, BaseType)]
 pub struct PtyBase {
     termios_gen: AtomicU64,
     termios: UnsafeCell<libc::termios>,
-    server: VolatileBuffer<BUF_SZ>,
-    client: VolatileBuffer<BUF_SZ>,
+    client_input: VolatileBuffer<BUF_SZ>,
+    client_output: VolatileBuffer<BUF_SZ>,
 }
 
 unsafe impl Send for PtyBase {}
@@ -42,7 +255,7 @@ const fn ctrl(x: u8) -> u8 {
 
 const CEOF: u8 = ctrl(b'd');
 const CEOL: u8 = _POSIX_VDISABLE;
-const CERASE: u8 = 0o177;
+const CERASE: u8 = 0x8;
 const CINTR: u8 = ctrl(b'c');
 const CSTATUS: u8 = _POSIX_VDISABLE;
 const CKILL: u8 = ctrl(b'u');
@@ -62,31 +275,51 @@ const CBRK: u8 = CEOL;
 const CRPRNT: u8 = CREPRINT;
 const CFLUSH: u8 = CDISCARD;
 
+/*
+pub const VINTR: usize = 0;
+pub const VQUIT: usize = 1;
+pub const VERASE: usize = 2;
+pub const VKILL: usize = 3;
+pub const VEOF: usize = 4;
+pub const VTIME: usize = 5;
+pub const VMIN: usize = 6;
+pub const VSWTC: usize = 7;
+pub const VSTART: usize = 8;
+pub const VSTOP: usize = 9;
+pub const VSUSP: usize = 10;
+pub const VEOL: usize = 11;
+pub const VREPRINT: usize = 12;
+pub const VDISCARD: usize = 13;
+pub const VWERASE: usize = 14;
+pub const VLNEXT: usize = 15;
+pub const VEOL2: usize = 16;
+*/
+
 pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
     c_iflag: BRKINT | ISTRIP | ICRNL | IMAXBEL | IXON | IXANY,
     c_oflag: OPOST | ONLCR | XTABS,
     c_cflag: CREAD | CS7 | PARENB | HUPCL,
     c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOKE | ECHOCTL,
     c_cc: [
-        CEOF,
-        CEOL,
-        CEOL,
-        CERASE,
-        CWERASE,
-        CKILL,
-        CREPRINT,
-        _POSIX_VDISABLE,
         CINTR,
         CQUIT,
-        CSUSP,
-        CDSUSP,
+        CERASE,
+        CKILL,
+        CEOF,
+        CTIME,
+        CMIN,
+        _POSIX_VDISABLE,
         CSTART,
         CSTOP,
-        CLNEXT,
+        CSUSP,
+        CEOL,
+        CREPRINT,
         CDISCARD,
-        CMIN,
-        CTIME,
-        CSTATUS,
+        CWERASE,
+        CLNEXT,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
         _POSIX_VDISABLE,
         _POSIX_VDISABLE,
         _POSIX_VDISABLE,
@@ -111,9 +344,19 @@ impl PtyBase {
         Self {
             termios_gen: AtomicU64::new(0),
             termios: UnsafeCell::new(termios),
-            server: VolatileBuffer::new(),
-            client: VolatileBuffer::new(),
+            client_input: VolatileBuffer::new(),
+            client_output: VolatileBuffer::new(),
         }
+    }
+
+    pub fn create_object(
+        spec: ObjectCreate,
+        termios: libc::termios,
+    ) -> std::io::Result<Object<Self>> {
+        println!("creating object");
+        let obj = ObjectBuilder::new(spec).build(PtyBase::new(termios))?;
+        println!("object: {}", obj.id());
+        Ok(obj)
     }
 
     pub fn update_termios(
@@ -174,13 +417,27 @@ impl PtyBase {
         .inspect_err(|e| tracing::error!("failed to wait on termios for pty: {}", e));
     }
 
+    pub fn try_read_termios(&self, current: u64) -> Option<(libc::termios, u64)> {
+        let current_gen = self.termios_gen.load(std::sync::atomic::Ordering::Acquire);
+        if current == current_gen {
+            return None;
+        }
+        let val = unsafe { self.termios.get().read() };
+        let after_gen = self.termios_gen.load(std::sync::atomic::Ordering::SeqCst);
+
+        if current_gen == after_gen && current_gen & 1 == 0 {
+            return Some((val, current_gen));
+        }
+        None
+    }
+
     pub fn read_termios(&self) -> (libc::termios, u64) {
         loop {
             let current_gen = self.termios_gen.load(std::sync::atomic::Ordering::Acquire);
             let val = unsafe { self.termios.get().read() };
             let after_gen = self.termios_gen.load(std::sync::atomic::Ordering::SeqCst);
 
-            if current_gen == after_gen {
+            if current_gen == after_gen && current_gen & 1 == 0 {
                 return (val, current_gen);
             }
             self.do_sleep_for_termios_gen(after_gen);
@@ -197,286 +454,10 @@ impl PtyBase {
     }
 }
 
-impl<const N: usize> VolatileBuffer<N> {
-    fn new() -> Self {
-        Self {
-            buffer: UnsafeCell::new([0; N]),
-            head: AtomicU64::new(0),
-            tail: AtomicU64::new(0),
-            reserve: AtomicU64::new(0),
-        }
-    }
-
-    fn avail_space(&self) -> usize {
-        let tail = self.tail.load(Ordering::SeqCst);
-        let resv = self.reserve.load(Ordering::SeqCst);
-
-        (N - 1) - (resv - tail) as usize
-    }
-
-    fn pending_bytes(&self) -> usize {
-        let head = self.head.load(Ordering::SeqCst);
-        let tail = self.tail.load(Ordering::SeqCst);
-
-        (head - tail) as usize
-    }
-
-    fn is_empty(&self) -> bool {
-        let tail = self.tail.load(Ordering::SeqCst);
-        let head = self.head.load(Ordering::SeqCst);
-
-        head == tail
-    }
-
-    pub fn read_bytes(&self, mut buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut count = 0;
-        while buf.len() > 0 {
-            let head = self.head.load(Ordering::SeqCst);
-            let tail = self.tail.load(Ordering::SeqCst);
-
-            // Empty
-            if tail == head {
-                return Ok(count);
-            }
-
-            assert!(head >= tail);
-            let n = std::cmp::min(buf.len(), (head - tail) as usize);
-            let n = self.read_from_circle(&mut buf[0..n], tail as usize % N);
-
-            if self
-                .tail
-                .compare_exchange(tail, tail + n as u64, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
-                continue;
-            }
-            buf = &mut buf[n..];
-            count += n;
-        }
-        Ok(count)
-    }
-
-    pub fn write_bytes(&self, mut buf: &[u8]) -> std::io::Result<usize> {
-        let mut count = 0;
-        while buf.len() > 0 {
-            let resv = self.reserve.load(Ordering::SeqCst);
-            let tail = self.tail.load(Ordering::SeqCst);
-
-            let avail = (N - 1) - (resv - tail) as usize;
-            if avail == 0 {
-                return Ok(count);
-            }
-
-            let n = std::cmp::min(buf.len(), avail);
-
-            // Step 1: reserve space
-            if self
-                .reserve
-                .compare_exchange(resv, resv + n as u64, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
-                // Someone else reserved space. Try again.
-                continue;
-            }
-
-            // Step 2: wait until our head catches up to the old reserve. Note that since
-            // we succeeded the compare-exchange above, we have to complete this operation
-            // for the pty to remain in a consistent state.
-            while self.head.load(Ordering::SeqCst) != resv {
-                core::hint::spin_loop();
-            }
-
-            let n = self.write_to_circle(&buf[0..n], resv as usize % N);
-
-            let old_head = self.head.fetch_add(n as u64, Ordering::SeqCst);
-            if old_head != resv {
-                tracing::warn!("head incremented unexpectedly ({} != {})", old_head, resv);
-            }
-
-            buf = &buf[n..];
-            count += n;
-        }
-        Ok(count)
-    }
-
-    fn get_buffer(&self) -> &[u8] {
-        let ptr = self.buffer.get();
-        unsafe { ptr.as_ref().unwrap() }
-    }
-
-    fn get_buffer_mut(&self) -> &mut [u8] {
-        let ptr = self.buffer.get();
-        unsafe { ptr.as_mut().unwrap() }
-    }
-
-    fn read_from_circle(&self, buf: &mut [u8], phase: usize) -> usize {
-        let buffer = self.get_buffer();
-        let (second, first) = buffer.split_at(phase);
-        let first_len = first.len().min(buf.len());
-        let second_len = second.len().min(buf.len().saturating_sub(first_len));
-
-        (&mut buf[0..first_len]).copy_from_slice(&first[0..first_len]);
-        (&mut buf[first_len..(first_len + second_len)]).copy_from_slice(&second[0..second_len]);
-        return first_len + second_len;
-    }
-
-    fn write_to_circle(&self, buf: &[u8], phase: usize) -> usize {
-        let buffer = self.get_buffer_mut();
-        let (second, first) = buffer.split_at_mut(phase);
-        let first_len = first.len().min(buf.len());
-        let second_len = second.len().min(buf.len().saturating_sub(first_len));
-
-        (&mut first[0..first_len]).copy_from_slice(&buf[0..first_len]);
-        (&mut second[0..second_len]).copy_from_slice(&buf[first_len..(first_len + second_len)]);
-        return first_len + second_len;
-    }
-
-    fn do_wake(&self, ptr: &AtomicU64) {
-        let _ = twizzler_abi::syscall::sys_thread_sync(
-            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                ThreadSyncReference::Virtual(ptr),
-                usize::MAX,
-            ))],
-            None,
-        )
-        .inspect_err(|e| tracing::error!("failed to wake on termios for pty: {}", e));
-    }
-
-    fn do_sleep(&self, ptr: &AtomicU64, val: u64) {
-        let _ = twizzler_abi::syscall::sys_thread_sync(
-            &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(ptr),
-                val,
-                ThreadSyncOp::Equal,
-                ThreadSyncFlags::empty(),
-            ))],
-            None,
-        )
-        .inspect_err(|e| tracing::error!("failed to wait on termios for pty: {}", e));
-    }
-}
-
-pub mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize},
-    };
-
-    use libc::termios;
-
-    use crate::pty::PtyBase;
-
-    pub fn test_basic() {
-        let t = termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_cc: [0; _],
-            __c_ispeed: 0,
-            __c_ospeed: 0,
-            c_line: 0,
-        };
-        let pty = PtyBase::new(t);
-
-        let mut buf = [0; 1024];
-        assert_eq!(pty.client.read_bytes(&mut buf).unwrap(), 0);
-
-        for i in 0..100 {
-            buf.fill(i);
-
-            assert_eq!(pty.client.write_bytes(&buf).unwrap(), 1024);
-            assert_eq!(pty.client.read_bytes(&mut buf).unwrap(), 1024);
-            assert_eq!(buf, [i; 1024]);
-        }
-    }
-
-    pub fn test_mt() {
-        let t = termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_cc: [0; _],
-            __c_ispeed: 0,
-            __c_ospeed: 0,
-            c_line: 0,
-        };
-
-        const ITER: usize = 100;
-        const BS: usize = 1;
-        const NR_TH: usize = 8;
-        std::thread::scope(|scope| {
-            let pty = Arc::new(PtyBase::new(t));
-
-            let counts = Arc::new([const { AtomicUsize::new(0) }; NR_TH]);
-            let wcounts = counts.clone();
-            let done = Arc::new(AtomicBool::new(false));
-            tracing::info!("starting mt pty test");
-
-            let reader = move |done: &AtomicBool, pty: &PtyBase| {
-                let do_read = || -> usize {
-                    let mut buf = [0; 8];
-                    let len = pty.client.read_bytes(&mut buf).unwrap();
-                    if len > 0 {
-                        tracing::info!("rr: {} {}", len, buf[0]);
-                    }
-                    for b in &buf[0..len] {
-                        let idx = *b as usize;
-                        tracing::info!("      => {}", idx);
-                        wcounts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                    len
-                };
-                while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                    do_read();
-                }
-                while do_read() > 0 {}
-            };
-
-            let writer = |pty: &PtyBase, c: u8| {
-                for i in 0..ITER {
-                    let buf = [c; BS];
-                    tracing::info!("ww: {} {}", c, i);
-                    let mut len = pty.client.write_bytes(&buf).unwrap();
-                    while len == 0 {
-                        tracing::info!("{} had to retry", c);
-                        len = pty.client.write_bytes(&buf).unwrap();
-                    }
-                }
-            };
-
-            let wpty = pty.clone();
-            let wdone = done.clone();
-            let rd = scope.spawn(move || reader(&wdone, &wpty));
-            let ws = (0..NR_TH)
-                .map(|i| {
-                    let pty = pty.clone();
-                    scope.spawn(move || writer(&pty, i as u8))
-                })
-                .collect::<Vec<_>>();
-
-            for t in ws {
-                t.join().unwrap();
-            }
-            done.store(true, std::sync::atomic::Ordering::SeqCst);
-            rd.join().unwrap();
-
-            let expected = ITER * BS;
-            for count in (&*counts).iter().enumerate() {
-                let nr = count.1.load(std::sync::atomic::Ordering::SeqCst);
-                if nr != expected {
-                    tracing::warn!("{}: found wrong count: {} {}", count.0, nr, expected);
-                }
-            }
-        });
-        tracing::info!("finished mt pty test");
-    }
-}
-
-pub struct InputPoster<'a, W: Write> {
+#[derive(Clone)]
+pub struct InputPoster<W: Write> {
     termios: libc::termios,
-    writer: &'a mut W,
+    writer: W,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,14 +473,16 @@ pub struct WriteReport {
     pub posted_signal: Option<PtySignal>,
 }
 
-impl<'a, W: Write> InputPoster<'a, W> {
-    pub fn new(termios: libc::termios, writer: &'a mut W) -> Self {
+impl<W: Write> InputPoster<W> {
+    pub fn new(termios: libc::termios, writer: W) -> Self {
         Self { termios, writer }
     }
 
     pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
         let vintr = self.termios.c_cc[VINTR];
         let vquit = self.termios.c_cc[VQUIT];
+
+        tracing::info!("sig: {:x} {:x}", vintr, vquit);
 
         let mut total = 0;
         let mut sig = None;
@@ -532,13 +515,14 @@ impl<'a, W: Write> InputPoster<'a, W> {
     }
 }
 
-pub struct OutputConverter<'a, W: Write> {
+#[derive(Clone)]
+pub struct OutputConverter<W: Write> {
     termios: libc::termios,
-    writer: &'a mut W,
+    writer: W,
 }
 
-impl<'a, W: Write> OutputConverter<'a, W> {
-    pub fn new(termios: libc::termios, writer: &'a mut W) -> Self {
+impl<W: Write> OutputConverter<W> {
+    pub fn new(termios: libc::termios, writer: W) -> Self {
         Self { termios, writer }
     }
 
@@ -587,15 +571,30 @@ impl<'a, W: Write> OutputConverter<'a, W> {
     }
 }
 
-pub struct InputConverter<'a, R: Read> {
+impl<W: Write> Write for OutputConverter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.termios.c_oflag & OPOST != 0 {
+            self.write_bytes_processed(buf)
+        } else {
+            self.write_bytes_simple(buf)
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+#[derive(Clone)]
+pub struct InputConverter<R: Read> {
     termios: libc::termios,
     linebuf: [u8; BUF_SZ],
     linebuf_count: usize,
-    reader: &'a mut R,
+    reader: R,
 }
 
-impl<'a, R: Read> InputConverter<'a, R> {
-    pub fn new(termios: libc::termios, reader: &'a mut R) -> Self {
+impl<R: Read> InputConverter<R> {
+    pub fn new(termios: libc::termios, reader: R) -> Self {
         Self {
             termios,
             reader,
@@ -632,6 +631,7 @@ impl<'a, R: Read> InputConverter<'a, R> {
                         0
                     }
                 }
+                // TODO: these are wrong. We need to guard against newlines before searching back.
                 c if c == vwerase => memrchr2(b' ', b'\t', &self.linebuf[0..idx])
                     .map(|idx| idx + 1)
                     .unwrap_or_else(|| {
@@ -646,7 +646,9 @@ impl<'a, R: Read> InputConverter<'a, R> {
             };
 
             self.linebuf.copy_within((idx + 1).., rev_idx);
+            self.linebuf_count -= (idx - rev_idx).max(1);
 
+            tracing::info!("deleted chars: {} {} {}", count, idx, rev_idx);
             count - (idx - rev_idx)
         } else {
             count
@@ -674,14 +676,19 @@ impl<'a, R: Read> InputConverter<'a, R> {
             end = true;
         }
 
-        let linebuf = &self.linebuf[0..count];
-        (&mut buf[0..count]).copy_from_slice(linebuf);
-        self.linebuf.copy_within(count.., 0);
-        self.linebuf_count -= count;
-        (count, end)
+        if end {
+            let linebuf = &self.linebuf[0..count];
+            (&mut buf[0..count]).copy_from_slice(linebuf);
+            self.linebuf.copy_within(count.., 0);
+            self.linebuf_count -= count;
+            (count, end)
+        } else {
+            (0, false)
+        }
     }
 
     pub fn read_canon(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
+        tracing::info!("doing canon read");
         let mut total = 0;
         while buf.len() > 0 {
             self.refill_linebuf()?;
@@ -767,6 +774,7 @@ impl<'a, R: Read> InputConverter<'a, R> {
     }
 
     pub fn read_raw(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
+        tracing::info!("doing raw read");
         let mut total = 0;
         while buf.len() > 0 {
             let thisread = self.reader.read(buf)?;
@@ -785,7 +793,7 @@ impl<'a, R: Read> InputConverter<'a, R> {
     }
 }
 
-impl<R: Read> Read for InputConverter<'_, R> {
+impl<R: Read> Read for InputConverter<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.termios.c_lflag & ICANON != 0 {
             self.read_canon(buf)

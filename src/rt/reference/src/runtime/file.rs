@@ -23,6 +23,7 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
+use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
 use twizzler_rt_abi::{
     bindings::{create_options, io_ctx, io_vec, prot_kind},
     error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
@@ -32,8 +33,10 @@ use twizzler_rt_abi::{
 };
 
 use super::ReferenceRuntime;
+use crate::runtime::file::pty::PtyHandleKind;
 
 mod file_desc;
+mod pty;
 mod raw_file;
 mod socket;
 
@@ -45,6 +48,7 @@ enum FdKind {
     Dir(ObjID),
     SymLink,
     Socket(SocketKind),
+    Pty(PtyHandleKind),
 }
 
 impl FdKind {
@@ -134,6 +138,7 @@ impl Read for FdKind {
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.read(buf),
+            FdKind::Pty(pty) => pty.read(buf),
         }
     }
 }
@@ -154,6 +159,7 @@ impl Write for FdKind {
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.write(buf),
+            FdKind::Pty(pty) => pty.write(buf),
         }
     }
 
@@ -165,6 +171,7 @@ impl Write for FdKind {
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.flush(),
+            FdKind::Pty(pty) => pty.flush(),
         }
     }
 }
@@ -363,8 +370,22 @@ impl ReferenceRuntime {
         _bind_info_len: usize,
         _prot: prot_kind,
     ) -> Result<RawFd> {
-        tracing::debug!("open_anon: {:?}", kind);
+        tracing::info!("open_anon: {:?}", kind);
         let elem = match kind {
+            OpenAnonKind::PtyServer => {
+                let id = bind_info as *const twizzler_rt_abi::bindings::objid;
+                let id = unsafe { &*id };
+                let pty = PtyHandleKind::Server(PtyServerHandle::new(ObjID::new(*id), None)?);
+                tracing::info!("open pty: {}", *id);
+                FdKind::Pty(pty)
+            }
+            OpenAnonKind::PtyClient => {
+                let id = bind_info as *const twizzler_rt_abi::bindings::objid;
+                let id = unsafe { &*id };
+                let pty = PtyHandleKind::Client(PtyClientHandle::new(ObjID::new(*id))?);
+                tracing::info!("open pty: {}", *id);
+                FdKind::Pty(pty)
+            }
             OpenAnonKind::Pipe => FdKind::Stdio, //TODO: make sure this is correct
             OpenAnonKind::SocketConnect => {
                 let addr = bind_info as *const twizzler_rt_abi::fd::SocketAddress;

@@ -24,6 +24,7 @@ naming-core = { workspace = true }
 tinyvec = { workspace = true, features = ["alloc"] }
 smallstr = { workspace = true }
 twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
+bitflags = "2"
 
 [features]
 secgate-impl = []

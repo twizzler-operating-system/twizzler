@@ -474,3 +474,25 @@ pub fn monitor_rt_set_nameroot(info: &secgate::GateCallInfo, root: ObjID) -> Res
     let monitor = crate::mon::get_monitor();
     monitor.set_nameroot(info, root)
 }
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct PostSignalFlags : u32 {
+        const GROUP = 1;
+    }
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_post_signal(
+    info: &secgate::GateCallInfo,
+    comp: ObjID,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
+    let monitor = crate::mon::get_monitor();
+    monitor.post_signal(info, comp, signal, flags)
+}

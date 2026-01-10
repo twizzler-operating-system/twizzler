@@ -196,11 +196,15 @@ impl Thread {
         self.critical_counter.load(Ordering::SeqCst) > 0
     }
 
-    #[inline]
+    #[track_caller]
     pub fn exit_critical(&self, loc: &'static core::panic::Location) {
         let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
         if res == 0 {
-            panic!("critical underflow, critical from {}", loc);
+            panic!(
+                "critical underflow, critical from {}, exit_critical called from {}",
+                loc,
+                core::panic::Location::caller()
+            );
         }
         assert!(res > 0);
     }

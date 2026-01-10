@@ -121,11 +121,12 @@ pub enum UpcallInfo {
     ObjectMemoryFault(ObjectMemoryFaultInfo),
     MemoryContextViolation(MemoryContextViolationInfo),
     SecurityViolation(SecurityViolationInfo),
+    Mailbox(u64),
 }
 
 impl UpcallInfo {
     /// The number of upcall info variants
-    pub const NR_UPCALLS: usize = 3;
+    pub const NR_UPCALLS: usize = 4;
     /// Get the number associated with this variant
     pub fn number(&self) -> usize {
         match self {
@@ -133,6 +134,7 @@ impl UpcallInfo {
             UpcallInfo::ObjectMemoryFault(_) => 1,
             UpcallInfo::MemoryContextViolation(_) => 2,
             UpcallInfo::SecurityViolation(_) => 3,
+            UpcallInfo::Mailbox(_) => 4,
         }
     }
 }
