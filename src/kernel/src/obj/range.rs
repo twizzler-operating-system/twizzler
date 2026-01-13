@@ -505,7 +505,7 @@ impl PageRangeTree {
             let p = range.add_page(pn, page);
             let _kicked = self.tree.insert_replace(range.range(), range);
             if !_kicked.is_empty() {
-                log::warn!("kicked (a): {:?}", _kicked);
+                log::debug!("kicked (a): {:?}", _kicked);
             }
             Some(p)
         } else {
@@ -524,7 +524,7 @@ impl PageRangeTree {
                     let p = prev_range.add_page(pn, page);
                     let _kicked = self.tree.insert_replace(prev_range.range(), prev_range);
                     if !_kicked.is_empty() {
-                        log::warn!("kicked (b): {:?}", _kicked);
+                        log::debug!("kicked (b): {:?}", _kicked);
                     }
                     return Some(p);
                 }
@@ -534,7 +534,7 @@ impl PageRangeTree {
             let p = range.add_page(pn, page);
             let _kicked = self.tree.insert_replace(range.range(), range);
             if !_kicked.is_empty() {
-                log::warn!("kicked (c): {:?}", _kicked);
+                log::debug!("kicked (c): {:?}", _kicked);
             }
             Some(p)
         }

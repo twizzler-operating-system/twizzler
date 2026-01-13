@@ -60,12 +60,12 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
         UpcallTargetSpawnOption::SetTo(ut) => *thread.upcall_target.lock() = Some(ut),
     }
     if let Some(cur) = current_thread_ref() {
-        logln!("current thread");
-        cur.secctx.list_all();
+        //logln!("current thread");
+        //cur.secctx.list_all();
         thread.secctx = SecCtxMgr::inherit(&cur.secctx, thread.id());
 
-        logln!("new thread");
-        thread.secctx.list_all();
+        //logln!("new thread");
+        //thread.secctx.list_all();
         let _ = thread
             .set_trace_state(cur.get_trace_state().unwrap_or_default())
             .inspect_err(|e| log::warn!("failed to inherit tracing state: {}", e));

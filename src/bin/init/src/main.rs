@@ -376,7 +376,6 @@ fn run_tests() {
         .expect("failed to start unittest");
     let mut flags = comp.info().flags;
     while !flags.contains(CompartmentFlags::EXITED) {
-        println!("waiting for comp state change: {:?}", flags);
         flags = comp.wait(flags);
     }
 
