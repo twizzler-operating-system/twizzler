@@ -5,7 +5,10 @@ use std::{
 };
 
 use embedded_io::ErrorType;
-use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use monitor_api::{
+    CompartmentFlags, CompartmentHandle, CompartmentLoader, CompartmentLoaderConfig,
+    ControllerOption, NewCompartmentFlags,
+};
 use threadpool::ThreadPool;
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
@@ -438,8 +441,12 @@ fn main() {
 
         tracing::info!("got env: {:?}, cmd: {:?}", vars, cmd);
 
+        let config = CompartmentLoaderConfig {
+            controller: ControllerOption::Object(pty.id()),
+        };
         let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
             .args(&cmd)
+            .config(config)
             .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
             .load();
         if let Ok(comp) = comp {

@@ -55,14 +55,14 @@ use super::{
     rq::RunQueue,
 };
 use crate::{
-    clock::{get_current_ticks, Nanoseconds},
+    clock::{Nanoseconds, get_current_ticks},
     interrupt,
     once::Once,
-    processor::{mp::MAX_CPU_ID, Processor},
+    processor::{Processor, mp::MAX_CPU_ID},
     spinlock::Spinlock,
-    thread::{current_thread_ref, priority::Priority, set_current_thread, Thread, ThreadRef},
+    thread::{Thread, ThreadRef, current_thread_ref, priority::Priority, set_current_thread},
     trace::{
-        mgr::{is_thread_ktrace_thread, TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent, is_thread_ktrace_thread},
         new_trace_entry_thread,
     },
     utils::quick_random,
@@ -873,21 +873,21 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     if PRINT_STATS && s % 200 == 0 {
         if true {
             logln!(
-            "STAT {}; {}({}): load {:2},{:2} (ts = {:3}ms), i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
-            cp.id,
-            cur.as_ref().unwrap().id(),
-            cur.unwrap().is_idle_thread(),
-            cp.current_load(),
-            cp.rq.current_timeshare_load(),
-            cp.rq.timeslice(cp.current_priority().class),
-            cp.stats.idle.load(Ordering::SeqCst),
-            cp.stats.non_idle.load(Ordering::SeqCst),
-            cp.stats.switches.load(Ordering::SeqCst),
-            cp.stats.wakeups.load(Ordering::SeqCst),
-            cp.stats.preempts.load(Ordering::SeqCst),
-            cp.stats.hardticks.load(Ordering::SeqCst),
-            cp.stats.steals.load(Ordering::SeqCst),
-        );
+                "STAT {}; {}({}): load {:2},{:2} (ts = {:3}ms), i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
+                cp.id,
+                cur.as_ref().unwrap().id(),
+                cur.unwrap().is_idle_thread(),
+                cp.current_load(),
+                cp.rq.current_timeshare_load(),
+                cp.rq.timeslice(cp.current_priority().class),
+                cp.stats.idle.load(Ordering::SeqCst),
+                cp.stats.non_idle.load(Ordering::SeqCst),
+                cp.stats.switches.load(Ordering::SeqCst),
+                cp.stats.wakeups.load(Ordering::SeqCst),
+                cp.stats.preempts.load(Ordering::SeqCst),
+                cp.stats.hardticks.load(Ordering::SeqCst),
+                cp.stats.steals.load(Ordering::SeqCst),
+            );
         }
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();

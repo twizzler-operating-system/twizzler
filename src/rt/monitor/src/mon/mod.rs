@@ -16,7 +16,7 @@ use secgate::util::HandleMgr;
 use space::Space;
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
-    syscall::sys_thread_exit,
+    syscall::{sys_thread_exit, sys_thread_send_message},
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
 };
 use twizzler_rt_abi::{
@@ -130,6 +130,7 @@ impl Monitor {
                 * the normal way */
             &[],
             false,
+            None,
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -406,11 +407,55 @@ impl Monitor {
 
     pub fn post_signal(
         &self,
-        info: &secgate::GateCallInfo,
+        _info: &secgate::GateCallInfo,
         target: ObjID,
         signal: u64,
         flags: PostSignalFlags,
     ) -> Result<(), TwzError> {
+        let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
+            tracing::info!("posting signal {} to {}", sig, target);
+            let comp = self.comp_mgr.read(ThreadKey::get().unwrap());
+            let comp = comp.get(target)?;
+            let scc = comp.comp_config_ptr();
+            let scc = unsafe { &*scc };
+            scc.post_signal(signal);
+            if let Some(thread) = comp.main_thread() {
+                sys_thread_send_message(thread.thread.id, signal, 0)?;
+            }
+            Ok(())
+        };
+        if flags.contains(PostSignalFlags::GROUP) {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+        if flags.contains(PostSignalFlags::CONTROLLER) {
+            let targets = self
+                .comp_mgr
+                .read(ThreadKey::get().unwrap())
+                .find_controller_targets(target);
+            for t in targets {
+                let _ = post_signal(t, signal).inspect_err(|e| {
+                    tracing::warn!(
+                        "failed to raise signal via controller {} to target {}: {}",
+                        target,
+                        t,
+                        e
+                    )
+                });
+            }
+        } else {
+            post_signal(target, signal)?;
+        }
+        return Ok(());
+    }
+
+    pub fn set_controller(
+        &self,
+        _info: &secgate::GateCallInfo,
+        target: ObjID,
+        controller: ObjID,
+    ) -> Result<(), TwzError> {
+        let mut cm = self.comp_mgr.write(ThreadKey::get().unwrap());
+        cm.set_controller(target, controller)?;
         return Ok(());
     }
 }

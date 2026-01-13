@@ -17,7 +17,7 @@
 
 use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
-use intrusive_collections::{intrusive_adapter, LinkedList};
+use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     processor::sched::schedule_thread,
     spinlock::Spinlock,
     syscall::sync::{finish_blocking, remove_from_requeue},
-    thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
+    thread::{Thread, ThreadRef, current_thread_ref, priority::Priority},
 };
 
 #[repr(align(64))]
@@ -82,7 +82,6 @@ impl<T> Mutex<T> {
             }
             assert!(!current_thread.is_critical());
             assert!(!current_thread.mutex_link.is_linked());
-            assert!(!current_thread.reset_sync_sleep_done());
         }
 
         let int_state = crate::interrupt::disable();

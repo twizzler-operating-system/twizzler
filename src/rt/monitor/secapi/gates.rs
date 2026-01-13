@@ -201,6 +201,21 @@ pub fn monitor_rt_lookup_compartment(
     monitor.lookup_compartment(caller, info.thread_id(), name_len)
 }
 
+#[repr(C)]
+#[derive(Default)]
+pub enum ControllerOption {
+    #[default]
+    Inherit,
+    NoController,
+    Object(ObjID),
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct CompartmentLoaderConfig {
+    pub controller: ControllerOption,
+}
+
 // Safety: the broken part is just DlPhdrInfo. We ensure that any pointers in there are
 // intra-compartment.
 unsafe impl Crossing for LibraryInfo {}
@@ -216,6 +231,7 @@ pub fn monitor_rt_load_compartment(
     args_len: u64,
     env_len: u64,
     flags: u32,
+    config: u64,
 ) -> Result<Descriptor, TwzError> {
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
@@ -226,6 +242,7 @@ pub fn monitor_rt_load_compartment(
         args_len as usize,
         env_len as usize,
         NewCompartmentFlags::from_bits(flags).ok_or(ArgumentError::InvalidArgument)?,
+        config as usize as *const _,
     )
 }
 
@@ -479,6 +496,7 @@ bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct PostSignalFlags : u32 {
         const GROUP = 1;
+        const CONTROLLER = 2;
     }
 }
 
@@ -495,4 +513,23 @@ pub fn monitor_rt_post_signal(
 ) -> Result<(), TwzError> {
     let monitor = crate::mon::get_monitor();
     monitor.post_signal(info, comp, signal, flags)
+}
+
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_set_controller(
+    info: &secgate::GateCallInfo,
+    comp: ObjID,
+    controller: ObjID,
+) -> Result<(), TwzError> {
+    let monitor = crate::mon::get_monitor();
+    let comp = if comp.raw() == 0 {
+        info.source_context().unwrap_or(MONITOR_INSTANCE_ID)
+    } else {
+        comp
+    };
+    monitor.set_controller(info, comp, controller)
 }

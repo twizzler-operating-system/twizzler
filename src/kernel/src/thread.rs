@@ -74,6 +74,7 @@ pub struct Thread {
     pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
+    pub pending_message: AtomicU64,
 }
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
@@ -157,6 +158,7 @@ impl Thread {
             sample_expire: Spinlock::new(None),
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
+            pending_message: AtomicU64::new(0),
         }
     }
 
@@ -341,6 +343,10 @@ impl Thread {
         if options.flags.contains(UpcallFlags::SUSPEND) {
             self.suspend();
         }
+    }
+
+    pub fn must_return_to_user(&self) -> bool {
+        self.pending_message.load(Ordering::SeqCst) != 0
     }
 
     pub fn set_trace_state(&self, events: u64) -> Result<(), TwzError> {

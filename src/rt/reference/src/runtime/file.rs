@@ -23,9 +23,9 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
+use twizzler_io::pty::{PtyClientHandle, PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
-    bindings::{create_options, io_ctx, io_vec, prot_kind},
+    bindings::{create_options, io_ctx, io_vec, prot_kind, FD_CMD_DUP},
     error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
     fd::{FdInfo, OpenAnonKind, RawFd, SocketAddress},
     object::MapFlags,
@@ -236,6 +236,28 @@ impl From<u32> for OperationOptions {
     }
 }
 
+fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
+    tracing::info!("gotsig {:?}", sig);
+    // TODO
+    let signal = match sig {
+        PtySignal::Interrupt => 1,
+        PtySignal::Quit => 2,
+        PtySignal::Status => 3,
+    };
+    let _ = monitor_api::post_signal(
+        server.object().id(),
+        signal,
+        monitor_api::PostSignalFlags::CONTROLLER,
+    )
+    .inspect_err(|e| {
+        tracing::warn!(
+            "failed to raise signal for controller {}: {}",
+            server.object().id(),
+            e
+        )
+    });
+}
+
 impl ReferenceRuntime {
     pub fn open(
         &self,
@@ -375,7 +397,10 @@ impl ReferenceRuntime {
             OpenAnonKind::PtyServer => {
                 let id = bind_info as *const twizzler_rt_abi::bindings::objid;
                 let id = unsafe { &*id };
-                let pty = PtyHandleKind::Server(PtyServerHandle::new(ObjID::new(*id), None)?);
+                let pty = PtyHandleKind::Server(PtyServerHandle::new(
+                    ObjID::new(*id),
+                    Some(pty_signal_handler),
+                )?);
                 tracing::info!("open pty: {}", *id);
                 FdKind::Pty(pty)
             }
@@ -554,14 +579,27 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
-        let binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().lock().unwrap();
         let file_desc = binding.get(fd.try_into().unwrap()).cloned();
+
+        let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
+
+        if cmd == FD_CMD_DUP {
+            let newfd = if binding.is_compact() {
+                binding.push(file_desc)
+            } else {
+                let newfd = binding.first_empty_slot_from(0).unwrap();
+                binding.insert(newfd, file_desc);
+                newfd
+            };
+            unsafe {
+                ret.cast::<RawFd>().write(newfd.try_into().unwrap());
+            }
+            return Ok(());
+        }
         drop(binding);
 
-        file_desc
-            .map(|file_desc| file_desc.fd_cmd(cmd, arg, ret))
-            .ok_or(TwzError::INVALID_ARGUMENT)
-            .flatten()
+        file_desc.fd_cmd(cmd, arg, ret)
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8], _ctx: *mut io_ctx) -> Result<usize> {

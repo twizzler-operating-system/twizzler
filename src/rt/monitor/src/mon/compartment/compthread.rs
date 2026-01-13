@@ -12,7 +12,7 @@ use crate::mon::{
 };
 
 #[allow(dead_code)]
-pub(super) struct CompThread {
+pub struct CompThread {
     pub(crate) stack_object: StackObject,
     pub(crate) thread: ManagedThread,
 }

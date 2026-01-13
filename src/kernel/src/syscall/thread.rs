@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
@@ -5,10 +7,10 @@ use twizzler_abi::{
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
-use twizzler_rt_abi::{error::TwzError, Result};
+use twizzler_rt_abi::{Result, error::TwzError};
 
 use crate::{
-    processor::sched::{lookup_thread_repr, schedule, SchedFlags},
+    processor::sched::{SchedFlags, lookup_thread_repr, schedule},
     security::SwitchResult,
     thread::current_thread_ref,
 };
@@ -55,7 +57,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
-            return current_thread_ref().unwrap().secctx.active_id().parts()
+            return current_thread_ref().unwrap().secctx.active_id().parts();
         }
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
@@ -146,6 +148,17 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                 Ok(_) => [0, 0],
                 Err(e) => [1, e.raw()],
             };
+        }
+        ThreadControl::SendMessage => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            thread.pending_message.store(arg, Ordering::SeqCst);
         }
         _ => {
             return [1, 1];

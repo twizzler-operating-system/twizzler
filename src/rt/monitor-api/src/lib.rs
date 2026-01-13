@@ -26,7 +26,10 @@ use secgate::{
     util::{Descriptor, Handle},
     Crossing, DynamicSecGate,
 };
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_thread_sync, ThreadSync, ThreadSyncReference, ThreadSyncWake},
+};
 
 #[allow(unused_imports, unused_variables, unexpected_cfgs)]
 mod gates {
@@ -193,6 +196,13 @@ impl SharedCompConfig {
 
     pub fn post_signal(&self, signal: u64) {
         self.posted_signals.fetch_or(1 << signal, Ordering::SeqCst);
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.posted_signals),
+                usize::MAX,
+            ))],
+            None,
+        );
     }
 }
 
@@ -317,6 +327,7 @@ pub struct CompartmentLoader {
     args: Vec<String>,
     env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
+    config: CompartmentLoaderConfig,
 }
 
 impl CompartmentLoader {
@@ -331,7 +342,14 @@ impl CompartmentLoader {
             flags,
             env: None,
             args: vec![],
+            config: CompartmentLoaderConfig::default(),
         }
+    }
+
+    /// Set configuration for compartment loading.
+    pub fn config(&mut self, config: CompartmentLoaderConfig) -> &mut Self {
+        self.config = config;
+        self
     }
 
     /// Append args to this compartment.
@@ -382,6 +400,7 @@ impl CompartmentLoader {
             args_len as u64,
             envs_len as u64,
             self.flags.bits(),
+            (&self.config as *const _) as usize as u64,
         )?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
@@ -769,4 +788,8 @@ impl RuntimeThreadControl {
 
 pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
     gates::monitor_rt_set_nameroot(root)
+}
+
+pub fn post_signal(target: ObjID, signal: u64, flags: PostSignalFlags) -> Result<(), TwzError> {
+    gates::monitor_rt_post_signal(target, signal, flags)
 }

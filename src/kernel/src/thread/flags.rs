@@ -1,6 +1,8 @@
 use core::sync::atomic::Ordering;
 
-use super::{current_thread_ref, Thread};
+use twizzler_abi::upcall::UpcallInfo;
+
+use super::{Thread, current_thread_ref};
 
 pub(super) const THREAD_PROC_IDLE: u32 = 1;
 pub(super) const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
@@ -21,6 +23,10 @@ pub fn exit_kernel() {
     if let Some(thread) = current_thread_ref() {
         thread.flags.fetch_and(!THREAD_IN_KERNEL, Ordering::SeqCst);
         thread.remove_donated_priority();
+        let pending_message = thread.pending_message.swap(0, Ordering::SeqCst);
+        if pending_message != 0 {
+            thread.send_upcall(UpcallInfo::Mailbox(pending_message));
+        }
     }
 }
 

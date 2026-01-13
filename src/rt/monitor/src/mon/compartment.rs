@@ -8,13 +8,15 @@ use dynlink::{
 use happylock::ThreadKey;
 use monitor_api::MONITOR_INSTANCE_ID;
 use secgate::util::Descriptor;
-use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
+use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
 };
 
-use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
+use crate::gates::{
+    CompartmentInfo, CompartmentLoaderConfig, CompartmentMgrStats, ControllerOption, ThreadInfo,
+};
 
 mod compconfig;
 mod compthread;
@@ -30,6 +32,7 @@ pub use runcomp::*;
 pub struct CompartmentMgr {
     names: HashMap<String, ObjID>,
     instances: HashMap<ObjID, RunComp>,
+    controllers: HashMap<ObjID, Vec<ObjID>>,
     dynlink_map: HashMap<CompartmentId, ObjID>,
     cleanup_queue: Vec<RunComp>,
 }
@@ -86,7 +89,25 @@ impl CompartmentMgr {
         }
         self.names.insert(rc.name.clone(), rc.instance);
         self.dynlink_map.insert(rc.compartment_id, rc.instance);
+        self.remove_from_controllers(rc.instance);
+        if let Some(controller) = rc.controller {
+            tracing::info!(
+                "setting controller for new compartment {}: {}",
+                rc.instance,
+                controller
+            );
+            self.controllers
+                .entry(controller)
+                .or_default()
+                .push(rc.instance);
+        }
         self.instances.insert(rc.instance, rc);
+    }
+
+    fn remove_from_controllers(&mut self, id: ObjID) {
+        for c in self.controllers.iter_mut() {
+            c.1.retain(|t| *t != id);
+        }
     }
 
     /// Remove a [RunComp].
@@ -94,7 +115,28 @@ impl CompartmentMgr {
         let rc = self.instances.remove(&id)?;
         self.names.remove(&rc.name);
         self.dynlink_map.remove(&rc.compartment_id);
+        self.remove_from_controllers(id);
         Some(rc)
+    }
+
+    pub fn set_controller(&mut self, target: ObjID, controller: ObjID) -> Result<(), TwzError> {
+        let comp = self.get_mut(target)?;
+        comp.controller = Some(controller);
+        tracing::info!(
+            "setting controller for compartment {}: {}",
+            target,
+            controller
+        );
+        self.remove_from_controllers(target);
+        self.controllers.entry(controller).or_default().push(target);
+        Ok(())
+    }
+
+    pub fn find_controller_targets(&self, controller: ObjID) -> Vec<ObjID> {
+        self.controllers
+            .get(&controller)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get the [RunComp] for the monitor.
@@ -150,7 +192,7 @@ impl CompartmentMgr {
         &self,
         instance: ObjID,
         state: u64,
-    ) -> Result<ThreadSyncSleep, TwzError> {
+    ) -> Result<[ThreadSync; 2], TwzError> {
         let rc = self.get(instance)?;
         Ok(rc.until_change(state))
     }
@@ -406,7 +448,10 @@ impl super::Monitor {
         args_len: usize,
         env_len: usize,
         new_comp_flags: NewCompartmentFlags,
+        config: *const CompartmentLoaderConfig,
     ) -> Result<Descriptor, TwzError> {
+        // TODO: verify config pointer
+        let config = unsafe { config.read() };
         let total_bytes = name_len + args_len + env_len;
         let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
         let name_bytes = &str_bytes[0..name_len];
@@ -461,6 +506,12 @@ impl super::Monitor {
         let root_comp = {
             let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
+
+            let controller = match config.controller {
+                ControllerOption::Inherit => cmp.get(caller)?.controller,
+                ControllerOption::NoController => None,
+                ControllerOption::Object(id) => Some(id),
+            };
             // TODO: dynlink err map
             loader
                 .build_rcs(
@@ -468,6 +519,7 @@ impl super::Monitor {
                     &mut *dynlink,
                     mondebug,
                     new_comp_flags.contains(NewCompartmentFlags::DEBUG),
+                    controller,
                 )
                 .map_err(|_| GenericError::Internal)?
         };
@@ -521,20 +573,20 @@ impl super::Monitor {
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
-        let sl = {
+        let mut sl = {
             let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
             let Ok(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };
 
-            if sl.ready() {
+            if sl.iter().any(|sl| sl.ready()) {
                 return;
             }
             drop(cmp);
             sl
         };
 
-        let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sl)], None);
+        let _ = sys_thread_sync(&mut sl, None);
     }
 }
 

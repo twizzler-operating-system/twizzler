@@ -19,7 +19,6 @@ impl PtyHandleKind {
 
 impl PtyHandleKind {
     pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
-        tracing::info!("WRITE");
         match self {
             PtyHandleKind::Server(server) => server.clone().write(buf),
             PtyHandleKind::Client(client) => client.clone().write(buf),

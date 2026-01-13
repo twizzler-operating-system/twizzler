@@ -6,8 +6,8 @@ use core::{
 
 use twizzler_abi::syscall::{KernelConsoleReadFlags, KernelConsoleSource, ThreadSyncSleep};
 use twizzler_rt_abi::{
-    error::{IoError, TwzError},
     Result,
+    error::{IoError, TwzError},
 };
 
 use crate::{condvar::CondVar, interrupt, spinlock::Spinlock};
@@ -252,7 +252,7 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
             match reader.read_byte() {
                 Some(x) => {
                     tmp[i] = match x {
-                        4 => break,
+                        //4 => break,
                         _ => x,
                     };
                     i += 1;
@@ -326,11 +326,13 @@ pub fn push_input_byte(byte: u8, debug: bool) {
         DEBUG_CONSOLE.read_cv.signal();
         return;
     }
+    /*
     let byte = match byte {
         13 => 10,
         127 => 8,
         x => x,
     };
+    */
     NORMAL_CONSOLE.read_lock.lock().push_input_byte(byte);
     NORMAL_CONSOLE.read_cv.signal();
 }

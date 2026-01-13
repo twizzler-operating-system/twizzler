@@ -1,10 +1,7 @@
 use std::{
     cell::UnsafeCell,
     io::{Read, Write},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use libc::{
@@ -12,7 +9,7 @@ use libc::{
     IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR, OPOST, PARENB, VEOF,
     VEOL, VERASE, VINTR, VKILL, VQUIT, VWERASE, XTABS,
 };
-use memchr::{memchr2, memchr3, memrchr, memrchr2};
+use memchr::{memchr2, memchr3, memrchr, memrchr3};
 use twizzler::{
     BaseType, Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder, TypedObject},
@@ -144,11 +141,14 @@ pub struct PtyServerHandle {
     client_input: InputPoster<PtyInputPoster>,
     client_output: PtyOutputReader,
     termios_gen: u64,
-    signal_handler: Option<fn(PtySignal)>,
+    signal_handler: Option<fn(&PtyServerHandle, PtySignal)>,
 }
 
 impl PtyServerHandle {
-    pub fn new(id: ObjID, signal_handler: Option<fn(PtySignal)>) -> std::io::Result<Self> {
+    pub fn new(
+        id: ObjID,
+        signal_handler: Option<fn(&PtyServerHandle, PtySignal)>,
+    ) -> std::io::Result<Self> {
         let obj =
             unsafe { Object::<PtyBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
         let (termios, termios_gen) = obj.base().read_termios();
@@ -171,18 +171,20 @@ impl PtyServerHandle {
             self.termios_gen = termios_gen;
         }
     }
+
+    pub fn object(&self) -> &Object<PtyBase> {
+        &self.client_output.pty
+    }
 }
 
 impl Write for PtyServerHandle {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        tracing::info!("pty server write: {:?}", buf);
         self.update_termios();
         let report = self.client_input.write_input(buf)?;
-        tracing::info!("pty server write: wrote {:?}", report);
         if let Some(signal) = report.posted_signal
             && let Some(signal_handler) = self.signal_handler
         {
-            (signal_handler)(signal);
+            (signal_handler)(self, signal);
         }
         if report.consumed == 0 && buf.len() > 0 {
             do_sleep(
@@ -205,21 +207,15 @@ impl Write for PtyServerHandle {
 
 impl Read for PtyServerHandle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::info!("pty server read");
         self.update_termios();
-        self.client_output.read(buf).inspect(|x| {
-            tracing::info!("pty server read: {}", x);
-        })
+        self.client_output.read(buf)
     }
 }
 
 impl Write for PtyClientHandle {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        tracing::info!("pty client write {:?}", buf);
         self.update_termios();
-        self.output.write(buf).inspect(|x| {
-            tracing::info!("pty client write: {}", x);
-        })
+        self.output.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -230,11 +226,8 @@ impl Write for PtyClientHandle {
 
 impl Read for PtyClientHandle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::info!("pty client read");
         self.update_termios();
-        self.input.read(buf).inspect(|x| {
-            tracing::info!("pty client read: {}", x);
-        })
+        self.input.read(buf)
     }
 }
 
@@ -255,7 +248,7 @@ const fn ctrl(x: u8) -> u8 {
 
 const CEOF: u8 = ctrl(b'd');
 const CEOL: u8 = _POSIX_VDISABLE;
-const CERASE: u8 = 0x8;
+const CERASE: u8 = 127;
 const CINTR: u8 = ctrl(b'c');
 const CSTATUS: u8 = _POSIX_VDISABLE;
 const CKILL: u8 = ctrl(b'u');
@@ -353,9 +346,7 @@ impl PtyBase {
         spec: ObjectCreate,
         termios: libc::termios,
     ) -> std::io::Result<Object<Self>> {
-        println!("creating object");
         let obj = ObjectBuilder::new(spec).build(PtyBase::new(termios))?;
-        println!("object: {}", obj.id());
         Ok(obj)
     }
 
@@ -481,8 +472,6 @@ impl<W: Write> InputPoster<W> {
     pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
         let vintr = self.termios.c_cc[VINTR];
         let vquit = self.termios.c_cc[VQUIT];
-
-        tracing::info!("sig: {:x} {:x}", vintr, vquit);
 
         let mut total = 0;
         let mut sig = None;
@@ -631,14 +620,9 @@ impl<R: Read> InputConverter<R> {
                         0
                     }
                 }
-                // TODO: these are wrong. We need to guard against newlines before searching back.
-                c if c == vwerase => memrchr2(b' ', b'\t', &self.linebuf[0..idx])
+                c if c == vwerase => memrchr3(b'\n', b' ', b'\t', &self.linebuf[0..idx])
                     .map(|idx| idx + 1)
-                    .unwrap_or_else(|| {
-                        memrchr(b'\n', &self.linebuf[0..idx])
-                            .map(|idx| idx + 1)
-                            .unwrap_or(0)
-                    }),
+                    .unwrap_or(0),
                 c if c == vkill => memrchr(b'\n', &self.linebuf[0..idx])
                     .map(|idx| idx + 1)
                     .unwrap_or(0),
@@ -646,10 +630,9 @@ impl<R: Read> InputConverter<R> {
             };
 
             self.linebuf.copy_within((idx + 1).., rev_idx);
-            self.linebuf_count -= (idx - rev_idx).max(1);
+            self.linebuf_count = self.linebuf_count.saturating_sub((idx - rev_idx).max(1));
 
-            tracing::info!("deleted chars: {} {} {}", count, idx, rev_idx);
-            count - (idx - rev_idx)
+            count.saturating_sub((idx - rev_idx).max(1))
         } else {
             count
         };
@@ -688,7 +671,6 @@ impl<R: Read> InputConverter<R> {
     }
 
     pub fn read_canon(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::info!("doing canon read");
         let mut total = 0;
         while buf.len() > 0 {
             self.refill_linebuf()?;
@@ -774,7 +756,6 @@ impl<R: Read> InputConverter<R> {
     }
 
     pub fn read_raw(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::info!("doing raw read");
         let mut total = 0;
         while buf.len() > 0 {
             let thisread = self.reader.read(buf)?;
