@@ -112,7 +112,7 @@ impl ThreadMgr {
         super_thread_pointer: usize,
         arg: usize,
     ) -> Result<ObjID, TwzError> {
-        let upcall_target = UpcallTarget::new(
+        let mut upcall_target = UpcallTarget::new(
             None,
             Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
             super_stack_start,
@@ -124,6 +124,9 @@ impl ThreadMgr {
                 mode: UpcallMode::CallSuper,
             }; UpcallInfo::NR_UPCALLS],
         );
+
+        let mb = &mut upcall_target.options[UpcallInfo::Mailbox(0).number()];
+        mb.mode = UpcallMode::CallSelf;
 
         sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
             entry: start,

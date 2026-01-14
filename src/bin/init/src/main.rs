@@ -369,7 +369,6 @@ fn main() {
 
     assert_eq!(client_fd, 0);
 
-    println!("spawning kbd handler");
     std::thread::spawn(move || loop {
         let mut buf = [0; 1024];
         let count = twizzler_abi::syscall::sys_kernel_console_read(
@@ -378,7 +377,7 @@ fn main() {
             KernelConsoleReadFlags::empty(),
         )
         .unwrap();
-        tracing::info!("Read {} bytes from console: {:?}", count, &buf[0..count]);
+        //tracing::info!("Read {} bytes from console: {:?}", count, &buf[0..count]);
         let mut ioc = twizzler_rt_abi::io::IoCtx::default();
         let mut done = 0;
         while done < count {
@@ -387,12 +386,11 @@ fn main() {
         }
     });
 
-    println!("spawning pty output handler");
     std::thread::spawn(move || loop {
         let mut buf = [0; 1024];
         let mut ioc = twizzler_rt_abi::io::IoCtx::default();
         let count = twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
-        tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
+        //tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
         twizzler_abi::syscall::sys_kernel_console_write(
             twizzler_abi::syscall::KernelConsoleSource::Console,
             &buf[0..count],

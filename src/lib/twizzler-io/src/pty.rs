@@ -1,13 +1,16 @@
 use std::{
     cell::UnsafeCell,
     io::{Read, Write},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use libc::{
-    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, ECHO, ECHOCTL, ECHOE, ECHOKE, HUPCL, ICANON, ICRNL,
-    IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR, OPOST, PARENB, VEOF,
-    VEOL, VERASE, VINTR, VKILL, VQUIT, VWERASE, XTABS,
+    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, HUPCL,
+    ICANON, ICRNL, IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR, OPOST,
+    PARENB, VEOF, VERASE, VINTR, VKILL, VQUIT, VSTATUS, VWERASE, XTABS,
 };
 use memchr::{memchr2, memchr3, memrchr, memrchr3};
 use twizzler::{
@@ -82,7 +85,7 @@ impl Read for PtyOutputReader {
 
 #[derive(Clone)]
 pub struct PtyClientHandle {
-    input: InputConverter<PtyInputReader>,
+    input: Arc<Mutex<InputConverter<PtyInputReader>>>,
     output: OutputConverter<PtyOutputWriter>,
     termios_gen: u64,
 }
@@ -93,7 +96,10 @@ impl PtyClientHandle {
             unsafe { Object::<PtyBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
         let (termios, termios_gen) = obj.base().read_termios();
         Ok(Self {
-            input: InputConverter::new(termios, PtyInputReader { pty: obj.clone() }),
+            input: Arc::new(Mutex::new(InputConverter::new(
+                termios,
+                PtyInputReader { pty: obj.clone() },
+            ))),
             output: OutputConverter::new(termios, PtyOutputWriter { pty: obj.clone() }),
             termios_gen,
         })
@@ -101,13 +107,13 @@ impl PtyClientHandle {
 
     fn update_termios(&mut self) {
         if let Some((termios, termios_gen)) = self
-            .input
-            .reader
+            .output
+            .writer
             .pty
             .base()
             .try_read_termios(self.termios_gen)
         {
-            self.input.termios = termios;
+            self.input.lock().unwrap().termios = termios;
             self.output.termios = termios;
             self.termios_gen = termios_gen;
         }
@@ -138,7 +144,7 @@ impl Write for PtyInputPoster {
 
 #[derive(Clone)]
 pub struct PtyServerHandle {
-    client_input: InputPoster<PtyInputPoster>,
+    client_input: Arc<Mutex<InputPoster<PtyInputPoster, PtyOutputWriter>>>,
     client_output: PtyOutputReader,
     termios_gen: u64,
     signal_handler: Option<fn(&PtyServerHandle, PtySignal)>,
@@ -153,7 +159,11 @@ impl PtyServerHandle {
             unsafe { Object::<PtyBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
         let (termios, termios_gen) = obj.base().read_termios();
         Ok(Self {
-            client_input: InputPoster::new(termios, PtyInputPoster { pty: obj.clone() }),
+            client_input: Arc::new(Mutex::new(InputPoster::new(
+                termios,
+                PtyInputPoster { pty: obj.clone() },
+                PtyOutputWriter { pty: obj.clone() },
+            ))),
             termios_gen,
             client_output: PtyOutputReader { pty: obj },
             signal_handler,
@@ -167,7 +177,7 @@ impl PtyServerHandle {
             .base()
             .try_read_termios(self.termios_gen)
         {
-            self.client_input.termios = termios;
+            self.client_input.lock().unwrap().termios = termios;
             self.termios_gen = termios_gen;
         }
     }
@@ -180,7 +190,7 @@ impl PtyServerHandle {
 impl Write for PtyServerHandle {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
-        let report = self.client_input.write_input(buf)?;
+        let report = self.client_input.lock().unwrap().write_input(buf)?;
         if let Some(signal) = report.posted_signal
             && let Some(signal_handler) = self.signal_handler
         {
@@ -188,8 +198,8 @@ impl Write for PtyServerHandle {
         }
         if report.consumed == 0 && buf.len() > 0 {
             do_sleep(
-                self.client_input
-                    .writer
+                // we just need the shared pty without locking
+                self.client_output
                     .pty
                     .base()
                     .client_input
@@ -227,7 +237,7 @@ impl Write for PtyClientHandle {
 impl Read for PtyClientHandle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
-        self.input.read(buf)
+        self.input.lock().unwrap().read(buf)
     }
 }
 
@@ -250,43 +260,23 @@ const CEOF: u8 = ctrl(b'd');
 const CEOL: u8 = _POSIX_VDISABLE;
 const CERASE: u8 = 127;
 const CINTR: u8 = ctrl(b'c');
-const CSTATUS: u8 = _POSIX_VDISABLE;
+const CSTATUS: u8 = ctrl(b't');
 const CKILL: u8 = ctrl(b'u');
 const CMIN: u8 = 1;
 const CQUIT: u8 = 0o034; // FS, ^\
 const CSUSP: u8 = ctrl(b'z');
 const CTIME: u8 = 0;
-const CDSUSP: u8 = ctrl(b'y');
+const _CDSUSP: u8 = ctrl(b'y');
 const CSTART: u8 = ctrl(b'q');
 const CSTOP: u8 = ctrl(b's');
 const CLNEXT: u8 = ctrl(b'v');
 const CDISCARD: u8 = ctrl(b'o');
 const CWERASE: u8 = ctrl(b'w');
 const CREPRINT: u8 = ctrl(b'r');
-const CEOT: u8 = CEOF;
-const CBRK: u8 = CEOL;
-const CRPRNT: u8 = CREPRINT;
-const CFLUSH: u8 = CDISCARD;
-
-/*
-pub const VINTR: usize = 0;
-pub const VQUIT: usize = 1;
-pub const VERASE: usize = 2;
-pub const VKILL: usize = 3;
-pub const VEOF: usize = 4;
-pub const VTIME: usize = 5;
-pub const VMIN: usize = 6;
-pub const VSWTC: usize = 7;
-pub const VSTART: usize = 8;
-pub const VSTOP: usize = 9;
-pub const VSUSP: usize = 10;
-pub const VEOL: usize = 11;
-pub const VREPRINT: usize = 12;
-pub const VDISCARD: usize = 13;
-pub const VWERASE: usize = 14;
-pub const VLNEXT: usize = 15;
-pub const VEOL2: usize = 16;
-*/
+const _CEOT: u8 = CEOF;
+const _CBRK: u8 = CEOL;
+const _CRPRNT: u8 = CREPRINT;
+const _CFLUSH: u8 = CDISCARD;
 
 pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
     c_iflag: BRKINT | ISTRIP | ICRNL | IMAXBEL | IXON | IXANY,
@@ -312,7 +302,7 @@ pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
         CLNEXT,
         _POSIX_VDISABLE,
         _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
+        CSTATUS,
         _POSIX_VDISABLE,
         _POSIX_VDISABLE,
         _POSIX_VDISABLE,
@@ -446,9 +436,12 @@ impl PtyBase {
 }
 
 #[derive(Clone)]
-pub struct InputPoster<W: Write> {
+pub struct InputPoster<W: Write, E: Write> {
     termios: libc::termios,
     writer: W,
+    echoer: E,
+    dist_last_nl: usize,
+    dist_last_wd: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,23 +457,39 @@ pub struct WriteReport {
     pub posted_signal: Option<PtySignal>,
 }
 
-impl<W: Write> InputPoster<W> {
-    pub fn new(termios: libc::termios, writer: W) -> Self {
-        Self { termios, writer }
+impl<W: Write, E: Write> InputPoster<W, E> {
+    pub fn new(termios: libc::termios, writer: W, echoer: E) -> Self {
+        Self {
+            termios,
+            writer,
+            echoer,
+            dist_last_nl: 0,
+            dist_last_wd: Vec::new(),
+        }
     }
 
     pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
         let vintr = self.termios.c_cc[VINTR];
         let vquit = self.termios.c_cc[VQUIT];
+        let vstatus = self.termios.c_cc[VSTATUS];
+
+        let echo = self.termios.c_lflag & ECHO != 0;
+        let echoe = self.termios.c_lflag & ECHOE != 0 && self.termios.c_lflag & ICANON != 0;
+        let echok = self.termios.c_lflag & ECHOK != 0 && self.termios.c_lflag & ICANON != 0;
+        let echonl = self.termios.c_lflag & ECHONL != 0 && self.termios.c_lflag & ICANON != 0;
 
         let mut total = 0;
         let mut sig = None;
+        if self.dist_last_wd.is_empty() {
+            self.dist_last_wd.push(0);
+        }
 
         while buf.len() > 0 && sig.is_none() {
-            let (count, skip) = if let Some(idx) = memchr2(vintr, vquit, buf) {
+            let (count, skip) = if let Some(idx) = memchr3(vstatus, vintr, vquit, buf) {
                 match buf[idx] {
                     c if c == vintr => sig = Some(PtySignal::Interrupt),
                     c if c == vquit => sig = Some(PtySignal::Quit),
+                    c if c == vstatus => sig = Some(PtySignal::Status),
                     _ => unreachable!(),
                 }
                 (idx, true)
@@ -489,6 +498,94 @@ impl<W: Write> InputPoster<W> {
             };
 
             let wcount = self.writer.write(&buf[0..count])?;
+
+            // TODO: this kinda works, but it'd be better to get the erase information from the
+            // actual line processing, maybe?
+            if echo {
+                let mut echobuf = &buf[0..wcount];
+                while echobuf.len() > 0 {
+                    let erase_idx = memchr3(CERASE, CKILL, CWERASE, echobuf);
+                    let nl_idx = memchr3(b'\n', b' ', b'\t', echobuf);
+                    let min_idx = if let Some(e) = erase_idx
+                        && let Some(n) = nl_idx
+                    {
+                        Some(e.min(n))
+                    } else {
+                        erase_idx.or(nl_idx)
+                    };
+                    let thislen = if let Some(idx) = min_idx {
+                        if idx > 0 {
+                            self.echoer.write_all(&echobuf[0..idx])?;
+                            self.dist_last_nl += idx;
+                            *self.dist_last_wd.last_mut().unwrap() += idx;
+                        }
+                        match echobuf[idx] {
+                            CERASE if echoe => {
+                                self.echoer.write_all(&[8, b' ', 8])?;
+                                self.dist_last_nl = self.dist_last_nl.saturating_sub(1);
+                                *self.dist_last_wd.last_mut().unwrap() =
+                                    self.dist_last_wd.last().unwrap().saturating_sub(1);
+                            }
+                            CKILL if echok => {
+                                for _ in 0..self.dist_last_nl {
+                                    self.echoer.write_all(&[8, b' ', 8])?;
+                                }
+                                self.dist_last_wd.clear();
+                                self.dist_last_wd.push(0);
+                                self.dist_last_nl = 0;
+                            }
+                            CWERASE if echoe => {
+                                for _ in 0..(*self.dist_last_wd.last().unwrap()).max(1) {
+                                    self.echoer.write_all(&[8, b' ', 8])?;
+                                }
+                                if self.dist_last_wd.len() > 1 {
+                                    self.dist_last_wd.pop();
+                                } else {
+                                    *self.dist_last_wd.last_mut().unwrap() = 0;
+                                }
+                            }
+                            b'\n' => {
+                                self.dist_last_nl = 0;
+                                self.dist_last_wd.clear();
+                                self.dist_last_wd.push(0);
+                                self.echoer.write_all(&[echobuf[idx]])?;
+                            }
+                            b'\t' => {
+                                self.dist_last_wd.push(0);
+                                self.dist_last_wd.push(0);
+                                self.dist_last_nl += 1;
+                                self.echoer.write_all(&[echobuf[idx]])?;
+                            }
+                            b' ' => {
+                                self.dist_last_wd.push(0);
+                                self.dist_last_wd.push(0);
+                                self.dist_last_nl += 1;
+                                self.echoer.write_all(&[echobuf[idx]])?;
+                            }
+                            _ => {
+                                self.dist_last_nl += 1;
+                                *self.dist_last_wd.last_mut().unwrap() += 1;
+                                self.echoer.write_all(&[echobuf[idx]])?;
+                            }
+                        }
+                        idx + 1
+                    } else {
+                        self.echoer.write_all(echobuf)?;
+                        self.dist_last_nl += echobuf.len();
+                        *self.dist_last_wd.last_mut().unwrap() += echobuf.len();
+                        echobuf.len()
+                    };
+
+                    echobuf = &echobuf[thislen..];
+                }
+            } else if echonl {
+                for b in &buf[0..wcount] {
+                    if *b == b'\n' {
+                        self.echoer.write_all(&[b'\n'])?;
+                    }
+                }
+            }
+
             total += wcount;
             buf = &buf[wcount..];
             if skip && wcount == count {

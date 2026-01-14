@@ -26,10 +26,27 @@ pub fn set_upcall_handler(handler: Option<HandlerType>) -> Result<(), HandlerSet
 #[derive(Clone, Copy, Debug)]
 pub struct HandlerSetError;
 
-pub(crate) fn upcall_def_handler(_frame: &mut UpcallFrame, info: &UpcallData) {
+fn print_status(_frame: &mut UpcallFrame) {
+    tracing::info!("status request");
+}
+
+pub(crate) fn upcall_def_handler(frame: &mut UpcallFrame, info: &UpcallData) {
     if info.flags.contains(UpcallHandlerFlags::SWITCHED_CONTEXT) {
         println!("got supervisor upcall");
     }
-    println!("got upcall: {:?}", info);
-    panic!("upcall");
+    match info.info {
+        twizzler_abi::upcall::UpcallInfo::Mailbox(sig) => match sig as i32 {
+            libc::SIGINFO => {
+                print_status(frame);
+            }
+            libc::SIGINT => {
+                tracing::info!("interrupted");
+                twizzler_abi::syscall::sys_thread_exit(128 + sig);
+            }
+            _ => twizzler_abi::syscall::sys_thread_exit(128 + sig),
+        },
+        _ => {
+            panic!("unexpected supervisor upcall in runtime: {:?}", info);
+        }
+    }
 }

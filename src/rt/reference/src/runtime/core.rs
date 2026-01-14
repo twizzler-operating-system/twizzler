@@ -215,7 +215,7 @@ impl ReferenceRuntime {
                 mode: UpcallMode::CallSelf,
             }; UpcallInfo::NR_UPCALLS],
         );
-        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target).unwrap();
         self.set_is_monitor();
         self.init_allocator(init_info);
         self.init_tls(init_info);
@@ -236,6 +236,7 @@ impl ReferenceRuntime {
         let mut tg = TLS_GEN_MGR.lock();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
 
         if !unsafe { __mlibc_entry.is_null() } {
             let mlibc_entry = unsafe {

@@ -142,9 +142,32 @@ pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
     convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
 }
 
+/// Get the upcall location for this thread.
+pub fn sys_thread_get_upcall() -> Result<UpcallTarget, TwzError> {
+    let mut target = MaybeUninit::<UpcallTarget>::uninit();
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                0,
+                0,
+                ThreadControl::GetUpcall as u64,
+                target.as_mut_ptr() as usize as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, _| unsafe { target.assume_init() },
+        twzerr,
+    )
+}
+
 /// Set the upcall location for this thread.
-pub fn sys_thread_set_upcall(target: UpcallTarget) {
-    unsafe {
+pub fn sys_thread_set_upcall(target: UpcallTarget) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
             &[
@@ -153,8 +176,9 @@ pub fn sys_thread_set_upcall(target: UpcallTarget) {
                 ThreadControl::SetUpcall as u64,
                 (&target as *const _) as usize as u64,
             ],
-        );
-    }
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
 }
 
 /// Resume from an upcall, restoring registers. If you can

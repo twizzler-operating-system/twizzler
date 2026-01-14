@@ -31,3 +31,4 @@ naming-core = { workspace = true }
 pager-dynamic = { workspace = true }
 ferroc = { workspace = true, features = ["global"] }
 twizzler-io = { path = "../../lib/twizzler-io" }
+libc = {workspace = true}

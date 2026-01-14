@@ -3,10 +3,13 @@
 use core::fmt::Debug;
 
 use bitflags::bitflags;
-use twizzler_rt_abi::error::RawTwzError;
+use twizzler_rt_abi::error::{RawTwzError, TwzError};
 
 pub use crate::arch::upcall::UpcallFrame;
-use crate::object::ObjID;
+use crate::{
+    object::ObjID,
+    syscall::{sys_thread_get_upcall, sys_thread_set_upcall},
+};
 
 /// Information about an exception.
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -126,7 +129,7 @@ pub enum UpcallInfo {
 
 impl UpcallInfo {
     /// The number of upcall info variants
-    pub const NR_UPCALLS: usize = 4;
+    pub const NR_UPCALLS: usize = 5;
     /// Get the number associated with this variant
     pub fn number(&self) -> usize {
         match self {
@@ -258,4 +261,13 @@ bitflags! {
         /// Suspend the thread during resume.
         const SUSPEND = 1;
     }
+}
+
+pub fn set_self_upcall_ptr(
+    target: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
+) -> Result<(), TwzError> {
+    let mut upcall = sys_thread_get_upcall()?;
+    upcall.self_address = target as usize;
+    sys_thread_set_upcall(upcall)?;
+    Ok(())
 }

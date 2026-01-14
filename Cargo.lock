@@ -7358,6 +7358,7 @@ dependencies = [
  "elf",
  "ferroc",
  "lazy_static",
+ "libc",
  "lru",
  "monitor-api",
  "naming-core",

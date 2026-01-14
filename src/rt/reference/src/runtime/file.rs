@@ -237,13 +237,11 @@ impl From<u32> for OperationOptions {
 }
 
 fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
-    tracing::info!("gotsig {:?}", sig);
-    // TODO
     let signal = match sig {
-        PtySignal::Interrupt => 1,
-        PtySignal::Quit => 2,
-        PtySignal::Status => 3,
-    };
+        PtySignal::Interrupt => libc::SIGINT,
+        PtySignal::Quit => libc::SIGQUIT,
+        PtySignal::Status => libc::SIGINFO,
+    } as u64;
     let _ = monitor_api::post_signal(
         server.object().id(),
         signal,
