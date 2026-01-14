@@ -1,6 +1,6 @@
 use std::{
     cell::UnsafeCell,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -237,7 +237,25 @@ impl Write for PtyClientHandle {
 impl Read for PtyClientHandle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
-        self.input.lock().unwrap().read(buf)
+        let res = self.input.lock().unwrap().read(buf);
+        match res {
+            Ok(c) => Ok(c),
+            Err(e) if e.kind() != ErrorKind::WouldBlock => Err(e),
+            _ => {
+                if buf.len() == 0 {
+                    return Ok(0);
+                }
+                do_sleep(
+                    self.output
+                        .writer
+                        .pty
+                        .base()
+                        .client_input
+                        .sync_for_pending_data(),
+                )?;
+                self.read(buf)
+            }
+        }
     }
 }
 
@@ -440,8 +458,8 @@ pub struct InputPoster<W: Write, E: Write> {
     termios: libc::termios,
     writer: W,
     echoer: E,
-    dist_last_nl: usize,
-    dist_last_wd: Vec<usize>,
+    echobuf: [u8; BUF_SZ],
+    echobuf_len: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,9 +481,118 @@ impl<W: Write, E: Write> InputPoster<W, E> {
             termios,
             writer,
             echoer,
-            dist_last_nl: 0,
-            dist_last_wd: Vec::new(),
+            echobuf: [0; _],
+            echobuf_len: 0,
         }
+    }
+
+    fn maybe_echo(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+        let echo = self.termios.c_lflag & ECHO != 0;
+        let echoe = self.termios.c_lflag & ECHOE != 0 && self.termios.c_lflag & ICANON != 0;
+        let echok = self.termios.c_lflag & ECHOK != 0 && self.termios.c_lflag & ICANON != 0;
+        let echonl = self.termios.c_lflag & ECHONL != 0 && self.termios.c_lflag & ICANON != 0;
+
+        if !echo && !echonl {
+            return Ok(());
+        }
+
+        if !echo {
+            self.echobuf_len = 0;
+            for _ in 0..buf.iter().filter(|p| **p == b'\n').count() {
+                self.echoer.write_all(&[b'\n'])?;
+            }
+            return Ok(());
+        }
+
+        while buf.len() > 0 {
+            // If we overrun the buffer, give up.
+            if self.echobuf_len == BUF_SZ {
+                self.echobuf_len = 0;
+            }
+
+            let thislen = (BUF_SZ - self.echobuf_len).min(buf.len());
+            self.echobuf[self.echobuf_len..(self.echobuf_len + thislen)]
+                .copy_from_slice(&buf[0..thislen]);
+
+            let mut cur_echo_off = self.echobuf_len;
+            self.echobuf_len += thislen;
+
+            while cur_echo_off < self.echobuf_len {
+                let echobuf = &self.echobuf[cur_echo_off..self.echobuf_len];
+                let erase_idx = memchr3(CERASE, CKILL, CWERASE, echobuf);
+                let nl_idx = memchr::memchr(b'\n', echobuf);
+                let min_idx = if let Some(e) = erase_idx
+                    && let Some(n) = nl_idx
+                {
+                    Some(e.min(n))
+                } else {
+                    erase_idx.or(nl_idx)
+                };
+
+                let erase_chars = |this: &mut Self, erase_start: usize, erase_char: usize| {
+                    this.echobuf.copy_within((erase_char + 1).., erase_start);
+                    this.echobuf_len = this
+                        .echobuf_len
+                        .saturating_sub((erase_char + 1) - erase_start);
+                };
+
+                let echolen = if let Some(idx) = min_idx {
+                    if idx > 0 {
+                        self.echoer.write_all(&echobuf[0..idx])?;
+                    }
+                    match echobuf[idx] {
+                        CERASE if echoe => {
+                            self.echoer.write_all(&[8, b' ', 8])?;
+                            erase_chars(
+                                self,
+                                (cur_echo_off + idx).saturating_sub(1),
+                                cur_echo_off + idx,
+                            );
+                        }
+                        CKILL if echok => {
+                            let idx = idx + cur_echo_off;
+                            let space = memrchr(b'\n', &self.echobuf[0..idx]).unwrap_or(0);
+                            for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
+                                self.echoer.write_all(&[8, b' ', 8])?;
+                            }
+                            if space + 1 == idx {
+                                erase_chars(self, space, idx);
+                            } else {
+                                erase_chars(self, space + 1, idx);
+                            }
+                        }
+                        CWERASE if echoe => {
+                            let idx = idx + cur_echo_off;
+                            let space =
+                                memrchr3(b'\n', b'\t', b' ', &self.echobuf[0..idx]).unwrap_or(0);
+                            for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
+                                self.echoer.write_all(&[8, b' ', 8])?;
+                            }
+                            if space + 1 == idx {
+                                erase_chars(self, space, idx);
+                            } else {
+                                erase_chars(self, space + 1, idx);
+                            }
+                        }
+                        b'\n' => {
+                            self.echoer.write_all(&[echobuf[idx]])?;
+                            self.echobuf_len = 0;
+                        }
+                        _ => {
+                            self.echoer.write_all(&[echobuf[idx]])?;
+                        }
+                    }
+                    idx + 1
+                } else {
+                    self.echoer.write_all(echobuf)?;
+                    echobuf.len()
+                };
+                cur_echo_off += echolen;
+            }
+
+            buf = &buf[thislen..];
+        }
+        Ok(())
     }
 
     pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
@@ -473,16 +600,8 @@ impl<W: Write, E: Write> InputPoster<W, E> {
         let vquit = self.termios.c_cc[VQUIT];
         let vstatus = self.termios.c_cc[VSTATUS];
 
-        let echo = self.termios.c_lflag & ECHO != 0;
-        let echoe = self.termios.c_lflag & ECHOE != 0 && self.termios.c_lflag & ICANON != 0;
-        let echok = self.termios.c_lflag & ECHOK != 0 && self.termios.c_lflag & ICANON != 0;
-        let echonl = self.termios.c_lflag & ECHONL != 0 && self.termios.c_lflag & ICANON != 0;
-
         let mut total = 0;
         let mut sig = None;
-        if self.dist_last_wd.is_empty() {
-            self.dist_last_wd.push(0);
-        }
 
         while buf.len() > 0 && sig.is_none() {
             let (count, skip) = if let Some(idx) = memchr3(vstatus, vintr, vquit, buf) {
@@ -498,93 +617,7 @@ impl<W: Write, E: Write> InputPoster<W, E> {
             };
 
             let wcount = self.writer.write(&buf[0..count])?;
-
-            // TODO: this kinda works, but it'd be better to get the erase information from the
-            // actual line processing, maybe?
-            if echo {
-                let mut echobuf = &buf[0..wcount];
-                while echobuf.len() > 0 {
-                    let erase_idx = memchr3(CERASE, CKILL, CWERASE, echobuf);
-                    let nl_idx = memchr3(b'\n', b' ', b'\t', echobuf);
-                    let min_idx = if let Some(e) = erase_idx
-                        && let Some(n) = nl_idx
-                    {
-                        Some(e.min(n))
-                    } else {
-                        erase_idx.or(nl_idx)
-                    };
-                    let thislen = if let Some(idx) = min_idx {
-                        if idx > 0 {
-                            self.echoer.write_all(&echobuf[0..idx])?;
-                            self.dist_last_nl += idx;
-                            *self.dist_last_wd.last_mut().unwrap() += idx;
-                        }
-                        match echobuf[idx] {
-                            CERASE if echoe => {
-                                self.echoer.write_all(&[8, b' ', 8])?;
-                                self.dist_last_nl = self.dist_last_nl.saturating_sub(1);
-                                *self.dist_last_wd.last_mut().unwrap() =
-                                    self.dist_last_wd.last().unwrap().saturating_sub(1);
-                            }
-                            CKILL if echok => {
-                                for _ in 0..self.dist_last_nl {
-                                    self.echoer.write_all(&[8, b' ', 8])?;
-                                }
-                                self.dist_last_wd.clear();
-                                self.dist_last_wd.push(0);
-                                self.dist_last_nl = 0;
-                            }
-                            CWERASE if echoe => {
-                                for _ in 0..(*self.dist_last_wd.last().unwrap()).max(1) {
-                                    self.echoer.write_all(&[8, b' ', 8])?;
-                                }
-                                if self.dist_last_wd.len() > 1 {
-                                    self.dist_last_wd.pop();
-                                } else {
-                                    *self.dist_last_wd.last_mut().unwrap() = 0;
-                                }
-                            }
-                            b'\n' => {
-                                self.dist_last_nl = 0;
-                                self.dist_last_wd.clear();
-                                self.dist_last_wd.push(0);
-                                self.echoer.write_all(&[echobuf[idx]])?;
-                            }
-                            b'\t' => {
-                                self.dist_last_wd.push(0);
-                                self.dist_last_wd.push(0);
-                                self.dist_last_nl += 1;
-                                self.echoer.write_all(&[echobuf[idx]])?;
-                            }
-                            b' ' => {
-                                self.dist_last_wd.push(0);
-                                self.dist_last_wd.push(0);
-                                self.dist_last_nl += 1;
-                                self.echoer.write_all(&[echobuf[idx]])?;
-                            }
-                            _ => {
-                                self.dist_last_nl += 1;
-                                *self.dist_last_wd.last_mut().unwrap() += 1;
-                                self.echoer.write_all(&[echobuf[idx]])?;
-                            }
-                        }
-                        idx + 1
-                    } else {
-                        self.echoer.write_all(echobuf)?;
-                        self.dist_last_nl += echobuf.len();
-                        *self.dist_last_wd.last_mut().unwrap() += echobuf.len();
-                        echobuf.len()
-                    };
-
-                    echobuf = &echobuf[thislen..];
-                }
-            } else if echonl {
-                for b in &buf[0..wcount] {
-                    if *b == b'\n' {
-                        self.echoer.write_all(&[b'\n'])?;
-                    }
-                }
-            }
+            self.maybe_echo(&buf[0..wcount])?;
 
             total += wcount;
             buf = &buf[wcount..];
@@ -772,6 +805,9 @@ impl<R: Read> InputConverter<R> {
         while buf.len() > 0 {
             self.refill_linebuf()?;
             if self.linebuf_count == 0 {
+                if total == 0 {
+                    return Err(ErrorKind::WouldBlock.into());
+                }
                 return Ok(total);
             }
 
