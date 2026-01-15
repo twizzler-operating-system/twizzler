@@ -109,7 +109,7 @@ impl<T> Mutex<T> {
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
-                            panic!("this mutex is not re-entrant");
+                            panic!("this mutex is not re-entrant (locked at {})", queue.locker);
                         }
                     }
                 }

@@ -314,13 +314,13 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
                     .write_all(b"status\n")
                     .unwrap();
                 i += 1;
-                if i > 12 {
+                if i > 100 {
                     break None;
                 }
             }
         } else {
             println!("wait timeout");
-            child.wait_timeout(Duration::from_secs(80))?
+            child.wait_timeout(Duration::from_secs(600))?
         }
     } else {
         println!("wait ");

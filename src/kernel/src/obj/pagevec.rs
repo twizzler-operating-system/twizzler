@@ -122,7 +122,7 @@ impl PageVec {
                 new_page.copy_from(&entry.adjust(i));
                 let _kicked = pv.tree.insert_replace(thisrange.clone(), new_page);
                 if !_kicked.is_empty() {
-                    log::warn!("kicked: {:?}", _kicked);
+                    log::debug!("kicked: {:?}", _kicked);
                 }
             }
         }
@@ -159,7 +159,7 @@ impl PageVec {
         let range = off..(off + page.nr_pages());
         let _k = self.tree.insert_replace(range.clone(), page.clone());
         if !_k.is_empty() {
-            log::warn!("kicked: {:?}", _k);
+            log::debug!("kicked: {:?}", _k);
         }
         page
     }
