@@ -28,6 +28,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
+    OUR_RUNTIME,
 };
 
 #[derive(Copy, Clone)]
@@ -237,6 +238,8 @@ impl ReferenceRuntime {
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
+
+        OUR_RUNTIME.init_fds();
 
         if !unsafe { __mlibc_entry.is_null() } {
             let mlibc_entry = unsafe {

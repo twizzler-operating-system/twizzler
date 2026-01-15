@@ -6,7 +6,7 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
-use monitor_api::MONITOR_INSTANCE_ID;
+use monitor_api::{CompartmentLoaderConfig, ControllerOption, MONITOR_INSTANCE_ID};
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
@@ -14,9 +14,7 @@ use twizzler_rt_abi::{
     object::ObjID,
 };
 
-use crate::gates::{
-    CompartmentInfo, CompartmentLoaderConfig, CompartmentMgrStats, ControllerOption, ThreadInfo,
-};
+use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
 
 mod compconfig;
 mod compthread;
@@ -520,6 +518,7 @@ impl super::Monitor {
                     mondebug,
                     new_comp_flags.contains(NewCompartmentFlags::DEBUG),
                     controller,
+                    config,
                 )
                 .map_err(|_| GenericError::Internal)?
         };

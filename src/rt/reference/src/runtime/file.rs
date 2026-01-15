@@ -1,21 +1,23 @@
 use std::{
     ffi::c_void,
     io::{ErrorKind, Read, SeekFrom, Write},
+    mem::ManuallyDrop,
     net::SocketAddr,
+    ops::Deref,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use bitflags::bitflags;
-use file_desc::FileDesc;
 use lazy_static::lazy_static;
+use monitor_api::get_comp_config;
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
     GetFlags, NsNodeKind,
 };
 use raw_file::RawFile;
 use socket::SocketKind;
-use stable_vec::{self, StableVec};
+use stable_vec::{self};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
@@ -25,9 +27,12 @@ use twizzler_abi::{
 };
 use twizzler_io::pty::{PtyClientHandle, PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
-    bindings::{create_options, io_ctx, io_vec, prot_kind, FD_CMD_DUP},
-    error::{ArgumentError, GenericError, IoError, NamingError, TwzError},
-    fd::{FdInfo, OpenAnonKind, RawFd, SocketAddress},
+    bindings::{
+        binding_info, create_options, io_ctx, io_vec, open_kind, open_kind_OpenKind_Path,
+        open_kind_OpenKind_Pipe, BIND_DATA_MAX, FD_CMD_DUP,
+    },
+    error::{ArgumentError, GenericError, IoError, NamingError, ResourceError, TwzError},
+    fd::{FdInfo, OpenKind, RawFd, SocketAddress},
     object::MapFlags,
     Result,
 };
@@ -42,7 +47,7 @@ mod socket;
 
 #[derive(Clone)]
 enum FdKind {
-    File(Arc<Mutex<FileDesc>>),
+    //File(Arc<Mutex<FileDesc>>),
     RawFile(Arc<Mutex<RawFile>>),
     Stdio,
     Dir(ObjID),
@@ -54,7 +59,7 @@ enum FdKind {
 impl FdKind {
     fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().seek(pos),
+            //FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
             _ => Err(GenericError::NotSupported.into()),
         }
@@ -62,7 +67,7 @@ impl FdKind {
 
     fn stat(&mut self) -> Result<FdInfo> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().stat(),
+            //FdKind::File(arc) => arc.lock().unwrap().stat(),
             FdKind::RawFile(arc) => arc.lock().unwrap().stat(),
             FdKind::Dir(id) => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
@@ -99,7 +104,7 @@ impl FdKind {
 
     pub fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().fd_cmd(cmd, arg, ret),
+            //FdKind::File(arc) => arc.lock().unwrap().fd_cmd(cmd, arg, ret),
             FdKind::Socket(socket) => {
                 if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
                     let val = unsafe { arg.cast::<u32>().read() };
@@ -123,7 +128,7 @@ impl FdKind {
 impl Read for FdKind {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().read(buf),
+            //FdKind::File(arc) => arc.lock().unwrap().read(buf),
             FdKind::RawFile(arc) => arc.lock().unwrap().read(buf),
             FdKind::Stdio => {
                 let len = twizzler_abi::syscall::sys_kernel_console_read(
@@ -146,7 +151,7 @@ impl Read for FdKind {
 impl Write for FdKind {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().write(buf),
+            //FdKind::File(arc) => arc.lock().unwrap().write(buf),
             FdKind::RawFile(arc) => arc.lock().unwrap().write(buf),
             FdKind::Stdio => {
                 twizzler_abi::syscall::sys_kernel_console_write(
@@ -165,7 +170,7 @@ impl Write for FdKind {
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            FdKind::File(arc) => arc.lock().unwrap().flush(),
+            //FdKind::File(arc) => arc.lock().unwrap().flush(),
             FdKind::RawFile(arc) => arc.lock().unwrap().flush(),
             FdKind::Stdio => Ok(()),
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
@@ -176,16 +181,161 @@ impl Write for FdKind {
     }
 }
 
-lazy_static! {
-    static ref FD_SLOTS: Mutex<StableVec<FdKind>> = Mutex::new(StableVec::from([
-        FdKind::Stdio,
-        FdKind::Stdio,
-        FdKind::Stdio
-    ]));
+#[derive(Clone)]
+struct MaybeNoDrop<T> {
+    pub should_drop: bool,
+    t: ManuallyDrop<T>,
 }
+
+impl<T> Deref for MaybeNoDrop<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.t.deref()
+    }
+}
+
+impl<T> MaybeNoDrop<T> {
+    fn new(t: T, should_drop: bool) -> Self {
+        Self {
+            should_drop,
+            t: ManuallyDrop::new(t),
+        }
+    }
+}
+
+impl<T> AsRef<T> for MaybeNoDrop<T> {
+    fn as_ref(&self) -> &T {
+        &self.t
+    }
+}
+
+impl<T> Drop for MaybeNoDrop<T> {
+    fn drop(&mut self) {
+        if self.should_drop {
+            unsafe { ManuallyDrop::<T>::drop(&mut self.t) };
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FileDesc {
+    kind: FdKind,
+    binding: MaybeNoDrop<Arc<binding_info>>,
+}
+
+impl FileDesc {
+    pub fn new(
+        kind: FdKind,
+        bind_kind: open_kind,
+        flags: u32,
+        bind_info: Option<&[u8]>,
+        should_drop: bool,
+    ) -> Self {
+        let bind_len = bind_info.map_or(0, |bi| bi.len()).min(BIND_DATA_MAX);
+        let mut binding = binding_info {
+            kind: bind_kind,
+            fd: 0,
+            flags,
+            bind_data: [0; _],
+            bind_len,
+        };
+        if let Some(bind_info) = bind_info {
+            binding.bind_data[0..bind_len].copy_from_slice(&bind_info[0..bind_len])
+        }
+        FileDesc {
+            kind,
+            binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
+        }
+    }
+
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
+        self.kind.seek(pos)
+    }
+
+    pub fn stat(&mut self) -> Result<FdInfo> {
+        self.kind.stat()
+    }
+
+    pub fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
+        self.kind.fd_cmd(cmd, arg, ret)
+    }
+}
+
+impl Read for FileDesc {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.kind.read(buf)
+    }
+}
+
+impl Write for FileDesc {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.kind.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.kind.flush()
+    }
+}
+
+const MAX_FD: usize = 1024;
+
+struct FdSlots {
+    slots: [Option<FileDesc>; MAX_FD],
+}
+
+impl FdSlots {
+    pub fn insert(&mut self, idx: usize, elem: FileDesc) -> Option<FileDesc> {
+        self.slots[idx].replace(elem)
+    }
+
+    pub fn insert_first_empty(&mut self, elem: FileDesc) -> Option<usize> {
+        for i in 0..MAX_FD {
+            if self.slots[i].is_none() {
+                self.insert(i, elem);
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&FileDesc> {
+        self.slots[idx].as_ref()
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut FileDesc> {
+        self.slots[idx].as_mut()
+    }
+
+    pub fn remove(&mut self, idx: usize) -> Option<FileDesc> {
+        self.slots[idx].take()
+    }
+}
+
+lazy_static! {
+    static ref FD_SLOTS: Mutex<FdSlots> = {
+        let mut slots = FdSlots {
+            slots: [const { None }; MAX_FD],
+        };
+        slots.insert(
+            0,
+            FileDesc::new(FdKind::Stdio, open_kind_OpenKind_Pipe, 0, None, false),
+        );
+        slots.insert(
+            1,
+            FileDesc::new(FdKind::Stdio, open_kind_OpenKind_Pipe, 0, None, false),
+        );
+        slots.insert(
+            2,
+            FileDesc::new(FdKind::Stdio, open_kind_OpenKind_Pipe, 0, None, false),
+        );
+        Mutex::new(slots)
+    };
+}
+
 static HANDLE: OnceLock<Mutex<DynamicNamingHandle>> = OnceLock::new();
 
-fn get_fd_slots() -> &'static Mutex<StableVec<FdKind>> {
+fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
 
@@ -257,11 +407,43 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 }
 
 impl ReferenceRuntime {
-    pub fn open(
+    pub(crate) fn init_fds(&self) {
+        let loader_config = &get_comp_config().loader_config;
+
+        if loader_config.fd_spec.is_null() {
+            return;
+        }
+
+        let slice = unsafe {
+            core::slice::from_raw_parts::<binding_info>(
+                loader_config.fd_spec,
+                loader_config.fd_spec_len,
+            )
+        };
+
+        for bi in slice {
+            let Ok(kind) = OpenKind::try_from(bi.kind) else {
+                continue;
+            };
+            //twizzler_abi::klog_println!("binding fd {} as {:?}", bi.fd, kind);
+            let _ = self.open(
+                Some(bi.fd),
+                kind,
+                OperationOptions::from_bits_truncate(bi.flags),
+                bi.bind_data.as_ptr().cast(),
+                bi.bind_len,
+                false,
+            );
+        }
+    }
+
+    fn open_path(
         &self,
         path: &str,
         create_opt: CreateOptions,
         open_opt: OperationOptions,
+        bind_info: &[u8],
+        should_drop: bool,
     ) -> Result<RawFd> {
         let mut session = get_naming_handle().lock().unwrap();
 
@@ -326,24 +508,27 @@ impl ReferenceRuntime {
         let elem = match kind {
             NsNodeKind::Namespace => FdKind::Dir(obj_id),
             NsNodeKind::Object => {
-                if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-                    FdKind::File(Arc::new(Mutex::new(elem)))
-                } else {
-                    FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
-                }
+                //if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
+                //    FdKind::File(Arc::new(Mutex::new(elem)))
+                //} else {
+                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+                //}
             }
             NsNodeKind::SymLink => FdKind::SymLink,
         };
+        let elem = FileDesc::new(
+            elem,
+            open_kind_OpenKind_Path,
+            0,
+            Some(bind_info),
+            should_drop,
+        );
 
         let mut binding = get_fd_slots().lock().unwrap();
 
-        let fd = if binding.is_compact() {
-            binding.push(elem)
-        } else {
-            let fd = binding.first_empty_slot_from(0).unwrap();
-            binding.insert(fd, elem);
-            fd
-        };
+        let fd = binding
+            .insert_first_empty(elem)
+            .ok_or(ResourceError::OutOfNames)?;
 
         if did_create {
             session.put(path, obj_id)?;
@@ -382,49 +567,83 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub fn open_anon(
+    pub fn read_binds(&self, binds: &mut [binding_info]) -> usize {
+        let bindings = get_fd_slots().lock().unwrap();
+        let mut idx = 0;
+        for (fd, info) in bindings.slots.iter().enumerate() {
+            if idx >= binds.len() {
+                return idx;
+            }
+            if let Some(info) = info {
+                binds[idx] = **info.binding;
+                binds[idx].fd = fd.try_into().unwrap();
+                idx += 1;
+            }
+        }
+        return idx;
+    }
+
+    pub fn open(
         &self,
-        kind: OpenAnonKind,
+        existing_fd: Option<RawFd>,
+        kind: OpenKind,
         open_opt: OperationOptions,
-        bind_info: *mut c_void,
-        _bind_info_len: usize,
-        _prot: prot_kind,
+        bind_info: *const c_void,
+        bind_info_len: usize,
+        should_drop: bool,
     ) -> Result<RawFd> {
-        tracing::info!("open_anon: {:?}", kind);
+        let bind_info_bytes =
+            unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) };
         let elem = match kind {
-            OpenAnonKind::PtyServer => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::objid;
+            OpenKind::Path => {
+                let info = bind_info as *const twizzler_rt_abi::bindings::open_info;
+                let info = unsafe { &*info };
+                let name = &info.name[0..info.len];
+                let name = core::str::from_utf8(name)
+                    .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument)?;
+                return self.open_path(
+                    name,
+                    info.create.into(),
+                    info.flags.into(),
+                    bind_info_bytes,
+                    should_drop,
+                );
+            }
+            OpenKind::PtyServer => {
+                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
                 let id = unsafe { &*id };
                 let pty = PtyHandleKind::Server(PtyServerHandle::new(
-                    ObjID::new(*id),
+                    ObjID::new(id.id),
                     Some(pty_signal_handler),
                 )?);
-                tracing::info!("open pty: {}", *id);
                 FdKind::Pty(pty)
             }
-            OpenAnonKind::PtyClient => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::objid;
+            OpenKind::PtyClient => {
+                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
                 let id = unsafe { &*id };
-                let pty = PtyHandleKind::Client(PtyClientHandle::new(ObjID::new(*id))?);
-                tracing::info!("open pty: {}", *id);
+                let pty = PtyHandleKind::Client(PtyClientHandle::new(ObjID::new(id.id))?);
                 FdKind::Pty(pty)
             }
-            OpenAnonKind::Pipe => FdKind::Stdio, //TODO: make sure this is correct
-            OpenAnonKind::SocketConnect => {
-                let addr = bind_info as *const twizzler_rt_abi::fd::SocketAddress;
+            OpenKind::Pipe => FdKind::Stdio, //TODO
+            OpenKind::SocketConnect => {
+                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
                 let addr = unsafe { &*addr };
-                FdKind::Socket(SocketKind::connect(SocketAddr::from(*addr))?)
+                FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(
+                    addr.addr,
+                )))?)
             }
-            OpenAnonKind::SocketBind => {
-                let addr = bind_info as *const twizzler_rt_abi::fd::SocketAddress;
+            OpenKind::SocketBind => {
+                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
                 if addr.is_null() {
                     FdKind::Socket(SocketKind::None)
                 } else {
                     let addr = unsafe { &*addr };
-                    FdKind::Socket(SocketKind::bind(SocketAddr::from(*addr))?)
+                    FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(
+                        addr.addr,
+                    )))?)
                 }
             }
-            OpenAnonKind::SocketAccept => {
+            OpenKind::SocketAccept => {
                 let fd_ptr = bind_info as *const RawFd;
                 let fd = unsafe { *fd_ptr };
                 let binding = get_fd_slots().lock().unwrap();
@@ -432,7 +651,7 @@ impl ReferenceRuntime {
                     return Err(TwzError::INVALID_ARGUMENT);
                 };
 
-                let socket = match fd {
+                let socket = match &fd.kind {
                     FdKind::Socket(socket) => socket.clone(),
                     _ => return Err(TwzError::INVALID_ARGUMENT),
                 };
@@ -440,17 +659,27 @@ impl ReferenceRuntime {
 
                 FdKind::Socket(SocketKind::accept(&socket)?)
             }
+            _ => {
+                return Err(TwzError::NOT_SUPPORTED);
+            }
         };
+        let elem = FileDesc::new(
+            elem,
+            kind as u32,
+            open_opt.bits(),
+            Some(bind_info_bytes),
+            should_drop,
+        );
 
         let mut binding = get_fd_slots().lock().unwrap();
 
-        let fd = if binding.is_compact() {
-            binding.push(elem)
+        let fd = if let Some(fd) = existing_fd {
+            binding.insert(fd.try_into().unwrap(), elem);
+            Some(fd as usize)
         } else {
-            let fd = binding.first_empty_slot_from(0).unwrap();
-            binding.insert(fd, elem);
-            fd
-        };
+            binding.insert_first_empty(elem)
+        }
+        .ok_or(ResourceError::OutOfNames)?;
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
@@ -583,13 +812,9 @@ impl ReferenceRuntime {
         let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
 
         if cmd == FD_CMD_DUP {
-            let newfd = if binding.is_compact() {
-                binding.push(file_desc)
-            } else {
-                let newfd = binding.first_empty_slot_from(0).unwrap();
-                binding.insert(newfd, file_desc);
-                newfd
-            };
+            let newfd = binding
+                .insert_first_empty(file_desc)
+                .ok_or(ResourceError::OutOfNames)?;
             unsafe {
                 ret.cast::<RawFd>().write(newfd.try_into().unwrap());
             }
@@ -617,7 +842,7 @@ impl ReferenceRuntime {
             .unwrap()
             .remove(fd.try_into().unwrap())?;
 
-        match file_desc {
+        match &file_desc.kind {
             FdKind::Socket(socket_kind) => socket_kind.close().ok()?,
             _ => (),
         }

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ffi::CStr, ptr::null_mut};
+use std::{alloc::Layout, collections::HashSet, ffi::CStr, ptr::null_mut};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -10,8 +10,10 @@ use dynlink::{
 use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
 use smallstr::SmallString;
+use talc::{ErrOnOom, Talc};
 use tinyvec::TinyVec;
 use twizzler_rt_abi::{
+    bindings::binding_info,
     core::{CtorSet, RuntimeInfo},
     error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
@@ -110,11 +112,37 @@ impl LoadInfo {
         stack_object: StackObject,
         is_debugging: bool,
         controller: Option<ObjID>,
+        mut loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> Result<RunComp, DynlinkError> {
-        let comp_config =
-            CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
+        let mut comp_config = CompConfigObject::new(
+            handle,
+            SharedCompConfig::new(self.sctx_id, null_mut(), loader_config),
+        );
 
         let flags = if self.is_binary { COMP_IS_BINARY } else { 0 };
+
+        let mut alloc = Talc::new(ErrOnOom);
+        unsafe { alloc.claim(comp_config.alloc_span()).unwrap() };
+
+        if !loader_config.fd_spec.is_null() {
+            let fd_spec_layout = Layout::array::<binding_info>(loader_config.fd_spec_len).unwrap();
+            let fd_spec_ptr =
+                unsafe { alloc.malloc(fd_spec_layout).unwrap().cast::<binding_info>() };
+            let fd_spec_slice = unsafe {
+                core::slice::from_raw_parts_mut(fd_spec_ptr.as_ptr(), loader_config.fd_spec_len)
+            };
+            let src_fd_spec_slice = unsafe {
+                core::slice::from_raw_parts(loader_config.fd_spec, loader_config.fd_spec_len)
+            };
+            fd_spec_slice.copy_from_slice(src_fd_spec_slice);
+            loader_config.fd_spec = fd_spec_ptr.as_ptr();
+            comp_config.write_config(SharedCompConfig::new(
+                self.sctx_id,
+                null_mut(),
+                loader_config,
+            ));
+        }
+
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
@@ -128,6 +156,7 @@ impl LoadInfo {
             &self.ctor_info,
             is_debugging,
             controller,
+            alloc,
         ))
     }
 }
@@ -335,6 +364,7 @@ impl RunCompLoader {
         mondebug: bool,
         is_debugging: bool,
         controller: Option<ObjID>,
+        loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |ty, id| {
             if mondebug {
@@ -361,6 +391,7 @@ impl RunCompLoader {
             stack,
             is_debugging,
             controller,
+            loader_config,
         )?;
 
         let mut ids = vec![root_rc.instance];
@@ -382,7 +413,7 @@ impl RunCompLoader {
             .map(|extra| {
                 extra
                     .0
-                    .build_runcomp(extra.1 .0, extra.1 .1, false, controller)
+                    .build_runcomp(extra.1 .0, extra.1 .1, false, controller, loader_config)
             })
             .try_collect::<Vec<_>>()?;
 

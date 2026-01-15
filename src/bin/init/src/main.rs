@@ -302,7 +302,7 @@ fn main() {
             let thislen = server.write(&buf).unwrap();
             total += thislen;
         }
-        server.shutdown(Shutdown::Both);
+        server.shutdown(Shutdown::Both).unwrap();
         drop(server);
 
         println!("Doing net test");
@@ -359,15 +359,18 @@ fn main() {
         }
     }
 
-    println!("To run a program, type its name.");
-
-    twizzler_rt_abi::fd::twz_rt_fd_close(0);
     let pty =
         twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
+    twizzler_rt_abi::fd::twz_rt_fd_close(0);
     let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
-    let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
-
     assert_eq!(client_fd, 0);
+    twizzler_rt_abi::fd::twz_rt_fd_close(1);
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    assert_eq!(client_fd, 1);
+    twizzler_rt_abi::fd::twz_rt_fd_close(2);
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    assert_eq!(client_fd, 2);
+    let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
 
     std::thread::spawn(move || loop {
         let mut buf = [0; 1024];
@@ -398,6 +401,7 @@ fn main() {
         );
     });
 
+    println!("To run a program, type its name.");
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut history = [0; 1024];
@@ -439,12 +443,9 @@ fn main() {
 
         tracing::info!("got env: {:?}, cmd: {:?}", vars, cmd);
 
-        let config = CompartmentLoaderConfig {
-            controller: ControllerOption::Object(pty.id()),
-        };
         let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
             .args(&cmd)
-            .config(config)
+            .with_controller(ControllerOption::Object(pty.id()))
             .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
             .load();
         if let Ok(comp) = comp {

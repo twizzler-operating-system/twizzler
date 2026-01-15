@@ -159,9 +159,8 @@ impl RunComp {
         ctors: &[CtorSet],
         is_debugging: bool,
         controller: Option<ObjID>,
+        alloc: Talc<ErrOnOom>,
     ) -> Self {
-        let mut alloc = Talc::new(ErrOnOom);
-        unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
         Self {
             sctx,
             is_debugging,

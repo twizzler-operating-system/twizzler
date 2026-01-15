@@ -11,6 +11,7 @@ use std::{
     alloc::Layout,
     cell::UnsafeCell,
     marker::{PhantomData, Tuple},
+    mem::MaybeUninit,
     ptr::NonNull,
     sync::{
         atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
@@ -38,6 +39,7 @@ mod gates {
 
 pub use gates::*;
 use twizzler_rt_abi::{
+    bindings::binding_info,
     debug::{DlPhdrInfo, LinkMap, LoadedImageId},
     error::{ArgumentError, TwzError},
 };
@@ -54,6 +56,7 @@ pub struct SharedCompConfig {
     /// The root library ID for this compartment. May be None if no libraries have been loaded.
     pub root_library_id: Option<LoadedImageId>,
     pub posted_signals: AtomicU64,
+    pub loader_config: CompartmentLoaderConfig,
 }
 
 struct CompConfigFinder {
@@ -167,12 +170,17 @@ impl TlsTemplateInfo {
 }
 
 impl SharedCompConfig {
-    pub fn new(sctx: ObjID, tls_template: *mut TlsTemplateInfo) -> Self {
+    pub fn new(
+        sctx: ObjID,
+        tls_template: *mut TlsTemplateInfo,
+        loader_config: CompartmentLoaderConfig,
+    ) -> Self {
         Self {
             sctx,
             tls_template: AtomicPtr::new(tls_template),
             root_library_id: None,
             posted_signals: AtomicU64::new(0),
+            loader_config,
         }
     }
 
@@ -328,6 +336,22 @@ pub struct CompartmentLoader {
     env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
     config: CompartmentLoaderConfig,
+    _fd_spec: Vec<binding_info>,
+}
+
+fn load_fd_specs_from_runtime() -> Vec<binding_info> {
+    let mut v = vec![binding_info::default(); 8];
+    loop {
+        let len =
+            unsafe { twizzler_rt_abi::bindings::twz_rt_fd_read_binds(v.as_mut_ptr(), v.len()) };
+        if len == v.len() {
+            v.extend_from_slice(&[binding_info::default(); 8]);
+        } else {
+            v.truncate(len);
+            break;
+        }
+    }
+    v
 }
 
 impl CompartmentLoader {
@@ -337,18 +361,26 @@ impl CompartmentLoader {
         libname: impl ToString,
         flags: NewCompartmentFlags,
     ) -> Self {
+        let mut config = CompartmentLoaderConfig::default();
+        let fd_spec = load_fd_specs_from_runtime();
+        config.with_fd_spec(&fd_spec);
         Self {
             name: format!("{}::{}", compname.to_string(), libname.to_string()),
             flags,
             env: None,
             args: vec![],
-            config: CompartmentLoaderConfig::default(),
+            config,
+            _fd_spec: fd_spec,
         }
     }
 
-    /// Set configuration for compartment loading.
-    pub fn config(&mut self, config: CompartmentLoaderConfig) -> &mut Self {
-        self.config = config;
+    pub fn with_controller(&mut self, con: ControllerOption) -> &mut Self {
+        self.config.controller = con;
+        self
+    }
+
+    pub fn with_fd_specs<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
+        self.config.with_fd_spec(spec);
         self
     }
 

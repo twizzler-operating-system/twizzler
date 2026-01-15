@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use dynlink::context::NewCompartmentFlags;
 use secgate::{util::Descriptor, Crossing};
 use twizzler_rt_abi::{
+    bindings::{binding_info, descriptor, open_kind},
     debug::{DlPhdrInfo, LinkMap},
     error::{ArgumentError, ResourceError, TwzError},
     object::ObjID,
@@ -202,7 +203,7 @@ pub fn monitor_rt_lookup_compartment(
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Copy, Clone, Debug)]
 pub enum ControllerOption {
     #[default]
     Inherit,
@@ -211,9 +212,28 @@ pub enum ControllerOption {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct CompartmentLoaderConfig {
     pub controller: ControllerOption,
+    pub fd_spec: *const binding_info,
+    pub fd_spec_len: usize,
+}
+
+impl CompartmentLoaderConfig {
+    pub fn with_controller(&mut self, controller: ControllerOption) -> &mut Self {
+        self.controller = controller;
+        self
+    }
+
+    pub fn with_fd_spec<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
+        self.fd_spec = spec.as_ptr();
+        self.fd_spec_len = spec.len();
+        self
+    }
+
+    pub fn fd_spec(&self) -> &[binding_info] {
+        unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
+    }
 }
 
 // Safety: the broken part is just DlPhdrInfo. We ensure that any pointers in there are

@@ -125,7 +125,9 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 // alloc.h
 
-use twizzler_rt_abi::bindings::{ZERO_MEMORY, alloc_flags, io_ctx, release_flags};
+use twizzler_rt_abi::bindings::{
+    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, open_kind, open_kind_OpenKind_Path, release_flags,
+};
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
     sz: usize,
@@ -270,9 +272,22 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 // fd.h
 
 use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
-    let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
+pub unsafe extern "C-unwind" fn twz_rt_fd_open(
+    kind: open_kind,
+    flags: fd_flags,
+    bind_info: *mut c_void,
+    bind_len: usize,
+) -> open_result {
+    if kind != open_kind_OpenKind_Path {
+        return open_result {
+            fd: 0,
+            err: TwzError::INVALID_ARGUMENT.raw(),
+        };
+    }
+    let info = unsafe { bind_info.cast::<open_info>().as_ref().unwrap() };
+    let name = &info.name[0..info.len];
     let name = core::str::from_utf8(name)
         .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument);
     match name {
@@ -283,7 +298,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
         },
     }
 }
-check_ffi_type!(twz_rt_fd_open, _);
+check_ffi_type!(twz_rt_fd_open, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {

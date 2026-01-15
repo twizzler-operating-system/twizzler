@@ -80,7 +80,8 @@ use tracing::warn;
 use twizzler_abi::object::ObjID;
 // core.h
 use twizzler_rt_abi::bindings::{
-    endpoint, io_ctx, object_cmd, option_exit_code, prot_kind, release_flags, twz_error, u32_result,
+    binding_info, endpoint, io_ctx, object_cmd, option_exit_code, release_flags, twz_error,
+    u32_result,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
@@ -289,59 +290,50 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 
 // fd.h
 
-use twizzler_rt_abi::bindings::{descriptor, open_anon_kind, open_info, open_result};
+use twizzler_rt_abi::bindings::{descriptor, open_kind, open_result};
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_open_anon(
-    kind: open_anon_kind,
+pub unsafe extern "C-unwind" fn twz_rt_fd_open(
+    kind: open_kind,
     flags: u32,
     bind_info: *mut c_void,
     bind_info_len: usize,
-    prot: prot_kind,
 ) -> open_result {
     let Ok(kind) = kind.try_into() else {
         return Err(ArgumentError::InvalidArgument.into()).into();
     };
     OUR_RUNTIME
-        .open_anon(kind, flags.into(), bind_info, bind_info_len, prot)
+        .open(None, kind, flags.into(), bind_info, bind_info_len, true)
         .into()
 }
-check_ffi_type!(twz_rt_fd_open_anon, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_open, _, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_reopen_anon(
+pub unsafe extern "C-unwind" fn twz_rt_fd_reopen(
     fd: descriptor,
-    kind: open_anon_kind,
+    kind: open_kind,
     flags: u32,
     bind_info: *mut c_void,
     bind_info_len: usize,
-    prot: prot_kind,
 ) -> twz_error {
     let Ok(kind) = kind.try_into() else {
         return TwzError::INVALID_ARGUMENT.raw();
     };
-    match OUR_RUNTIME.reopen_anon(fd, kind, flags.into(), bind_info, bind_info_len, prot) {
+    match OUR_RUNTIME.open(Some(fd), kind, flags.into(), bind_info, bind_info_len, true) {
         Ok(_) => RawTwzError::success().raw(),
         Err(e) => e.raw(),
     }
 }
-check_ffi_type!(twz_rt_fd_reopen_anon, _, _, _, _, _, _);
+check_ffi_type!(twz_rt_fd_reopen, _, _, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
-    let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
-    let name = core::str::from_utf8(name)
-        .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument);
-    match name {
-        Ok(name) => OUR_RUNTIME
-            .open(name, info.create.into(), info.flags.into())
-            .into(),
-        Err(e) => open_result {
-            err: TwzError::from(e).raw(),
-            fd: 0,
-        },
-    }
+pub unsafe extern "C-unwind" fn twz_rt_fd_read_binds(
+    binds: *mut binding_info,
+    len: usize,
+) -> usize {
+    let binds = unsafe { core::slice::from_raw_parts_mut(binds, len) };
+    OUR_RUNTIME.read_binds(binds)
 }
-check_ffi_type!(twz_rt_fd_open, _);
+check_ffi_type!(twz_rt_fd_read_binds, _, _);
 
 use core::ffi::c_char;
 

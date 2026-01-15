@@ -14,6 +14,7 @@ use monitor_api::{
 };
 use secgate::util::HandleMgr;
 use space::Space;
+use talc::{ErrOnOom, Talc};
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
     syscall::{sys_thread_exit, sys_thread_send_message},
@@ -103,8 +104,11 @@ impl Monitor {
         let template: &'static TlsTemplateInfo = Box::leak(Box::new(super_tls.into()));
 
         // Set up the monitor's compartment.
-        let monitor_scc =
-            SharedCompConfig::new(MONITOR_INSTANCE_ID, template as *const _ as *mut _);
+        let monitor_scc = SharedCompConfig::new(
+            MONITOR_INSTANCE_ID,
+            template as *const _ as *mut _,
+            monitor_api::CompartmentLoaderConfig::default(),
+        );
         let cc_handle = Space::safe_create_and_map_runtime_object(
             &space,
             MONITOR_INSTANCE_ID,
@@ -117,13 +121,17 @@ impl Monitor {
             MapFlags::READ | MapFlags::WRITE,
         )
         .unwrap();
+
+        let comp_config = CompConfigObject::new(cc_handle, monitor_scc);
+        let mut alloc = Talc::new(ErrOnOom);
+        unsafe { alloc.claim(comp_config.alloc_span()).unwrap() };
         comp_mgr.insert(RunComp::new(
             MONITOR_INSTANCE_ID,
             MONITOR_INSTANCE_ID,
             "monitor".to_string(),
             MONITOR_COMPARTMENT_ID,
             vec![],
-            CompConfigObject::new(cc_handle, monitor_scc),
+            comp_config,
             (CompartmentFlags::READY | CompartmentFlags::STARTED).bits(),
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
@@ -131,6 +139,7 @@ impl Monitor {
             &[],
             false,
             None,
+            alloc,
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
