@@ -531,6 +531,13 @@ impl CompartmentHandle {
         })
     }
 
+    /// Lookup a compartment by ID.
+    pub fn lookup_id(name: ObjID) -> Result<Self, TwzError> {
+        Ok(Self {
+            desc: Some(gates::monitor_rt_lookup_compartment_id(name)?),
+        })
+    }
+
     /// Get an iterator over this compartment's dependencies.
     pub fn deps(&self) -> CompartmentDepsIter<'_> {
         CompartmentDepsIter::new(self)

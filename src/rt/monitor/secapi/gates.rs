@@ -202,6 +202,20 @@ pub fn monitor_rt_lookup_compartment(
     monitor.lookup_compartment(caller, info.thread_id(), name_len)
 }
 
+#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
+#[cfg_attr(
+    not(feature = "secgate-impl"),
+    secgate::secure_gate(options(info, api))
+)]
+pub fn monitor_rt_lookup_compartment_id(
+    info: &secgate::GateCallInfo,
+    id: ObjID,
+) -> Result<Descriptor, TwzError> {
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.lookup_compartment_id(caller, info.thread_id(), id)
+}
+
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
 pub enum ControllerOption {

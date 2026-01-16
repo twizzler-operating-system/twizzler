@@ -120,7 +120,7 @@ impl CompartmentMgr {
     pub fn set_controller(&mut self, target: ObjID, controller: ObjID) -> Result<(), TwzError> {
         let comp = self.get_mut(target)?;
         comp.controller = Some(controller);
-        tracing::info!(
+        tracing::debug!(
             "setting controller for compartment {}: {}",
             target,
             controller
@@ -348,6 +348,26 @@ impl super::Monitor {
                 } else {
                     compartment
                 },
+            },
+        )
+        .ok_or(ResourceError::OutOfResources.into())
+    }
+
+    /// Open a compartment handle for this caller compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn lookup_compartment_id(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        comp: ObjID,
+    ) -> Result<Descriptor, TwzError> {
+        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comps.get_mut(comp)?;
+        comp.inc_use_count();
+        ch.insert(
+            instance,
+            super::CompartmentHandle {
+                instance: comp.instance,
             },
         )
         .ok_or(ResourceError::OutOfResources.into())

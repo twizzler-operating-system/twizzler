@@ -22,6 +22,7 @@ use twizzler_abi::{
 };
 use twizzler_io::pty::DEFAULT_TERMIOS;
 use twizzler_queue::Queue;
+use twizzler_rt_abi::bindings::{OPEN_FLAG_READ, OPEN_FLAG_WRITE};
 
 struct TwzIo;
 
@@ -343,6 +344,22 @@ fn main() {
     }
 
     println!("Hi, welcome to the basic twizzler test console.");
+
+    let pipe =
+        twizzler_rt_abi::fd::twz_rt_fd_open_pipe(None, OPEN_FLAG_READ | OPEN_FLAG_WRITE).unwrap();
+    let pipe2 = twizzler_rt_abi::fd::twz_rt_fd_dup(pipe).unwrap();
+    twizzler_rt_abi::fd::twz_rt_fd_shutdown(pipe, true, false).unwrap();
+    twizzler_rt_abi::fd::twz_rt_fd_shutdown(pipe2, false, true).unwrap();
+
+    use twizzler_rt_abi::io::IoCtx;
+    let count =
+        twizzler_rt_abi::io::twz_rt_fd_pwrite(pipe, b"test string", &mut IoCtx::default()).unwrap();
+    println!("wrote {}", count);
+
+    let mut buf = [0; 1024];
+    let count =
+        twizzler_rt_abi::io::twz_rt_fd_pread(pipe, &mut buf, &mut IoCtx::default()).unwrap();
+    println!("read {}: {:?}", count, &buf[0..count]);
 
     if let Some(autostart) = autostart {
         println!("autostart: {}", autostart);

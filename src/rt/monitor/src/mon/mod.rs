@@ -422,7 +422,7 @@ impl Monitor {
         flags: PostSignalFlags,
     ) -> Result<(), TwzError> {
         let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
-            tracing::info!("posting signal {} to {}", sig, target);
+            tracing::debug!("posting signal {} to {}", sig, target);
             let comp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let comp = comp.get(target)?;
             let scc = comp.comp_config_ptr();
