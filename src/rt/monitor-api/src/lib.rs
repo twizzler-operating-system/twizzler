@@ -11,7 +11,6 @@ use std::{
     alloc::Layout,
     cell::UnsafeCell,
     marker::{PhantomData, Tuple},
-    mem::MaybeUninit,
     ptr::NonNull,
     sync::{
         atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},

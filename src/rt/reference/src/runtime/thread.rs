@@ -68,6 +68,7 @@ impl ReferenceRuntime {
     }
 
     pub fn set_name(&self, name: &std::ffi::CStr) {
+        twizzler_abi::klog_println!("set_name: {:?}", name);
         with_current_thread(|cur| {
             THREAD_MGR.with_internal(cur.id(), |th| th.set_name(name));
         })

@@ -345,6 +345,17 @@ fn main() {
 
     println!("Hi, welcome to the basic twizzler test console.");
 
+    println!("start command test");
+
+    let mut cmd = std::process::Command::new("ls");
+    println!("spawning");
+    let mut status = cmd.spawn().unwrap();
+    println!("waiting");
+    let es = status.wait();
+
+    println!("DONE: {:?}", es);
+    loop {}
+
     let pipe =
         twizzler_rt_abi::fd::twz_rt_fd_open_pipe(None, OPEN_FLAG_READ | OPEN_FLAG_WRITE).unwrap();
     let pipe2 = twizzler_rt_abi::fd::twz_rt_fd_dup(pipe).unwrap();

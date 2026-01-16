@@ -824,6 +824,16 @@ pub unsafe extern "C-unwind" fn twz_rt_get_sysinfo() -> system_info {
 }
 check_ffi_type!(twz_rt_get_sysinfo);
 
+// exec.h
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_exec_spawn(
+    args: *const twizzler_rt_abi::bindings::exec_spawn_args,
+) -> open_result {
+    OUR_RUNTIME.exec_spawn(args.as_ref().unwrap()).into()
+}
+check_ffi_type!(twz_rt_exec_spawn, _);
+
 // random.h
 
 use twizzler_rt_abi::bindings::get_random_flags;

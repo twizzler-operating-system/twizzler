@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 mod alloc;
 mod core;
 mod debug;
+mod exec;
 mod file;
 mod object;
 mod process;
