@@ -1,15 +1,6 @@
-use std::{
-    io::{stdin, Read, Write},
-    net::{Shutdown, TcpListener, TcpStream},
-    time::{Duration, Instant},
-};
+use std::process::Command;
 
-use embedded_io::ErrorType;
-use monitor_api::{
-    CompartmentFlags, CompartmentHandle, CompartmentLoader, CompartmentLoaderConfig,
-    ControllerOption, NewCompartmentFlags,
-};
-use threadpool::ThreadPool;
+use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
@@ -22,31 +13,6 @@ use twizzler_abi::{
 };
 use twizzler_io::pty::DEFAULT_TERMIOS;
 use twizzler_queue::Queue;
-use twizzler_rt_abi::bindings::{OPEN_FLAG_READ, OPEN_FLAG_WRITE};
-
-struct TwzIo;
-
-impl ErrorType for TwzIo {
-    type Error = std::io::Error;
-}
-
-impl embedded_io::Read for TwzIo {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let len = std::io::stdin().read(buf)?;
-
-        Ok(len)
-    }
-}
-
-impl embedded_io::Write for TwzIo {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        std::io::stdout().write(buf)
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        std::io::stdout().flush()
-    }
-}
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
@@ -262,130 +228,7 @@ fn main() {
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
-    if false {
-        println!("doing pty test");
-        twizzler_io::pty::more_tests::test_raw_input_processing();
-        twizzler_io::pty::more_tests::test_canon_input();
-        twizzler_io::pty::more_tests::test_output();
-
-        println!("Doing net test");
-        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-        let _listener_thread = std::thread::spawn(move || loop {
-            match listener.accept() {
-                Ok(mut client) => {
-                    tracing::info!("accepted connection from {}", client.1);
-                    let mut total = 0;
-                    let start = Instant::now();
-                    let mut buf = [0; 4096];
-                    while let Ok(len) = client.0.read(&mut buf) {
-                        //tracing::info!("got {}", len);
-                        total += len;
-                        if len == 0 {
-                            break;
-                        }
-                    }
-                    tracing::info!(
-                        "read {}MB over {} seconds",
-                        total / (1024 * 1024),
-                        start.elapsed().as_secs_f32()
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("error accepting connection: {}", e);
-                }
-            }
-        });
-        let mut server = TcpStream::connect("127.0.0.1:8080").unwrap();
-        let len = 1024 * 1024 * 8;
-        let buf = [1; 4096];
-        let mut total = 0;
-        while total < len {
-            let thislen = server.write(&buf).unwrap();
-            total += thislen;
-        }
-        server.shutdown(Shutdown::Both).unwrap();
-        drop(server);
-
-        println!("Doing net test");
-
-        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-        println!("Spawning listener");
-        let pool = ThreadPool::new(8);
-        let _listener_thread = std::thread::spawn(move || loop {
-            match listener.accept() {
-                Ok(mut client) => {
-                    pool.execute(move || {
-                        tracing::info!("accepted connection from {}", client.1);
-                        let mut buf = [0; 1024];
-                        let res = client.0.read(&mut buf);
-                        tracing::info!("got: {:?}", res);
-                        let s = str::from_utf8(&buf[0..res.unwrap_or(0)]).unwrap();
-                        tracing::info!("got: {}", s);
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("failed to accept connection: {}", e);
-                }
-            }
-        });
-        for _ in 0..2 {
-            for i in 0..480 {
-                println!("connecting...");
-                if let Ok(mut client) = TcpStream::connect("127.0.0.1:8080")
-                    .inspect_err(|e| tracing::error!("failed to connect on iter {i}"))
-                {
-                    println!("connected!");
-                    client.write(b"this is a test").unwrap();
-                    client.shutdown(Shutdown::Both).unwrap();
-                }
-            }
-            std::thread::sleep(Duration::from_millis(1000));
-        }
-    }
-
     println!("Hi, welcome to the basic twizzler test console.");
-
-    println!("start command test");
-
-    let mut cmd = std::process::Command::new("ls");
-    println!("spawning");
-    let mut status = cmd.spawn().unwrap();
-    println!("waiting");
-    let es = status.wait();
-
-    println!("DONE: {:?}", es);
-    loop {}
-
-    let pipe =
-        twizzler_rt_abi::fd::twz_rt_fd_open_pipe(None, OPEN_FLAG_READ | OPEN_FLAG_WRITE).unwrap();
-    let pipe2 = twizzler_rt_abi::fd::twz_rt_fd_dup(pipe).unwrap();
-    twizzler_rt_abi::fd::twz_rt_fd_shutdown(pipe, true, false).unwrap();
-    twizzler_rt_abi::fd::twz_rt_fd_shutdown(pipe2, false, true).unwrap();
-
-    use twizzler_rt_abi::io::IoCtx;
-    let count =
-        twizzler_rt_abi::io::twz_rt_fd_pwrite(pipe, b"test string", &mut IoCtx::default()).unwrap();
-    println!("wrote {}", count);
-
-    let mut buf = [0; 1024];
-    let count =
-        twizzler_rt_abi::io::twz_rt_fd_pread(pipe, &mut buf, &mut IoCtx::default()).unwrap();
-    println!("read {}: {:?}", count, &buf[0..count]);
-
-    if let Some(autostart) = autostart {
-        println!("autostart: {}", autostart);
-        let comp = CompartmentLoader::new(&autostart, &autostart, NewCompartmentFlags::empty())
-            .args(&[&autostart])
-            .load();
-        if let Ok(comp) = comp {
-            let mut flags = comp.info().flags;
-            while !flags.contains(CompartmentFlags::EXITED) {
-                flags = comp.wait(flags);
-            }
-        } else {
-            warn!("failed to start {}", autostart);
-        }
-    }
 
     let pty =
         twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
@@ -429,93 +272,30 @@ fn main() {
         );
     });
 
-    println!("To run a program, type its name.");
-    let mut io = TwzIo;
-    let mut buffer = [0; 1024];
-    let mut history = [0; 1024];
-    let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
-        .with_slice_history(&mut history)
-        .build_sync(&mut io)
-        .unwrap();
-    loop {
-        //let mstats = monitor_api::stats().unwrap();
-        //println!("{:?}", mstats);
-        //let line = editor.readline("twz> ", &mut io).unwrap();
-
-        println!("twz> ");
-        let mut s = String::new();
-        let _ = stdin().read_line(&mut s).unwrap();
-        let cmd = s.split_whitespace().collect::<Vec<_>>();
-        if cmd.len() == 0 {
-            continue;
-        }
-
-        let background = cmd.iter().any(|s| *s == "&");
-
-        // Find env vars
-        let cmd = cmd.into_iter().map(|s| as_env(s)).collect::<Vec<_>>();
-        let vars = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok((k, v)) => Some((k, v)),
-                Err(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let cmd = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok(_) => None,
-                Err(s) => Some(s),
-            })
-            .collect::<Vec<_>>();
-
-        tracing::info!("got env: {:?}, cmd: {:?}", vars, cmd);
-
-        let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
-            .args(&cmd)
-            .with_controller(ControllerOption::Object(pty.id()))
-            .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
+    if let Some(autostart) = autostart {
+        println!("autostart: {}", autostart);
+        let comp = CompartmentLoader::new(&autostart, &autostart, NewCompartmentFlags::empty())
+            .args(&[&autostart])
             .load();
         if let Ok(comp) = comp {
-            if background {
-                tracing::info!("continuing compartment {} in background", cmd[0]);
-            } else {
-                let mut flags = comp.info().flags;
-                while !flags.contains(CompartmentFlags::EXITED) {
-                    flags = comp.wait(flags);
-                }
+            let mut flags = comp.info().flags;
+            while !flags.contains(CompartmentFlags::EXITED) {
+                flags = comp.wait(flags);
             }
         } else {
-            warn!("failed to start {}", cmd[0]);
+            warn!("failed to start {}", autostart);
         }
     }
-}
 
-fn as_env<'a>(s: &'a str) -> Result<(&'a str, &'a str), &'a str> {
-    let mut split = s.split("=");
-    Ok((split.next().ok_or(s)?, split.next().ok_or(s)?))
-}
+    loop {
+        let mut shell = Command::new("shell");
 
-/*
-fn get_kernel_init_info() -> &'static KernelInitInfo {
-    unsafe {
-        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
-            as *const KernelInitInfo)
-            .as_ref()
-            .unwrap()
+        let mut status = shell.spawn().unwrap();
+        let result = status.wait().unwrap();
+
+        println!("shell exited ({:?}) -- restarting shell", result);
     }
 }
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
-}
-*/
 
 fn run_tests() {
     let comp = CompartmentLoader::new("unittest", "unittest", NewCompartmentFlags::empty())

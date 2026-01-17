@@ -3753,22 +3753,14 @@ dependencies = [
 name = "init"
 version = "0.1.0"
 dependencies = [
- "async-executor",
- "async-io",
- "embedded-io",
- "futures",
  "monitor-api",
  "naming-core",
- "noline",
- "polling",
  "secgate",
- "threadpool",
  "tracing",
  "tracing-subscriber",
  "twizzler",
  "twizzler-abi",
  "twizzler-display",
- "twizzler-futures",
  "twizzler-io",
  "twizzler-queue",
  "twizzler-rt-abi",
@@ -4773,15 +4765,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "num_cpus"
-version = "1.17.0"
-source = "git+https://github.com/twizzler-operating-system/num_cpus.git?branch=twizzler#411a8237968e36244f8c943b701c58446005ca05"
-dependencies = [
- "hermit-abi",
- "libc",
 ]
 
 [[package]]
@@ -6365,6 +6348,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "embedded-io",
+ "miette",
+ "naming-core",
+ "noline",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-abi",
+ "twizzler-queue",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "shell-escape"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6800,15 +6799,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if 1.0.4",
-]
-
-[[package]]
-name = "threadpool"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d050e60b33d41c19108b32cea32164033a9013fe3b46cbd4457559bfbf77afaa"
-dependencies = [
- "num_cpus",
 ]
 
 [[package]]
@@ -8860,6 +8850,11 @@ source = "git+https://github.com/dbittman/candle.git?branch=dbittman#4ac73f7cfa2
 name = "gemm-common"
 version = "0.18.2"
 source = "git+https://github.com/dbittman/gemm.git?branch=dbittman-fixes#2aed8d805f6a82c31e80a191a660bfc396bdcd5f"
+
+[[patch.unused]]
+name = "num_cpus"
+version = "1.17.0"
+source = "git+https://github.com/twizzler-operating-system/num_cpus.git?branch=twizzler#411a8237968e36244f8c943b701c58446005ca05"
 
 [[patch.unused]]
 name = "sqlite3-parser"

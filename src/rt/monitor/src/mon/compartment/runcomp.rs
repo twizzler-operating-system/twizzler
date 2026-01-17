@@ -284,7 +284,7 @@ impl RunComp {
             )),
             ThreadSync::new_sleep(ThreadSyncSleep::new(
                 ThreadSyncReference::Virtual(ps),
-                cur,
+                0,
                 ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
             )),

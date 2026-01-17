@@ -97,9 +97,10 @@ impl Pipe {
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         ));
+        let writers = self.writers();
         let writer_sync = ThreadSync::new_sleep(ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.pipe.base().readers),
-            readers,
+            ThreadSyncReference::Virtual(&self.pipe.base().writers),
+            writers,
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         ));

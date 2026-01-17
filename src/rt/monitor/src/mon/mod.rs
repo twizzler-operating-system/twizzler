@@ -416,11 +416,12 @@ impl Monitor {
 
     pub fn post_signal(
         &self,
-        _info: &secgate::GateCallInfo,
-        target: ObjID,
+        info: &secgate::GateCallInfo,
+        target: Option<ObjID>,
         signal: u64,
         flags: PostSignalFlags,
     ) -> Result<(), TwzError> {
+        let target = target.unwrap_or(info.source_context().unwrap_or(MONITOR_INSTANCE_ID));
         let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
             tracing::debug!("posting signal {} to {}", sig, target);
             let comp = self.comp_mgr.read(ThreadKey::get().unwrap());

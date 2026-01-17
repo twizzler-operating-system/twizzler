@@ -71,7 +71,7 @@ members = [
     "src/bin/sec",
 
     "src/bin/schedtest", "src/bin/gfxtest",
-    "src/bin/stdnet_test", "src/lib/twizzler-io",
+    "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
 ]
 
 exclude = [
@@ -101,6 +101,7 @@ initrd = [
     "crate:cache",
     "crate:trace",
     "crate:gfxtest",
+    "crate:shell",
 
     "crate:sec",
     "crate:ptest",

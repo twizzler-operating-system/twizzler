@@ -326,6 +326,11 @@ impl CompartmentHandle {
         let address = gates::monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
         Ok(DynamicSecGate::new(address))
     }
+
+    pub fn signal(&self, sig: u64) -> Result<(), TwzError> {
+        let target = self.info().id;
+        gates::monitor_rt_post_signal(Some(target), sig, PostSignalFlags::empty())
+    }
 }
 
 /// A builder-type for loading compartments.
@@ -828,6 +833,10 @@ pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
     gates::monitor_rt_set_nameroot(root)
 }
 
-pub fn post_signal(target: ObjID, signal: u64, flags: PostSignalFlags) -> Result<(), TwzError> {
+pub fn post_signal(
+    target: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
     gates::monitor_rt_post_signal(target, signal, flags)
 }

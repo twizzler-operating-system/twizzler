@@ -1,8 +1,7 @@
 [package]
-name = "init"
+name = "shell"
 version = "0.1.0"
-edition = "2021"
-authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
+edition = "2024"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
@@ -11,9 +10,7 @@ twizzler-runtime = { workspace = true }
 twizzler-queue = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-monitor-api = { workspace = true }
-twizzler = { workspace = true }
 naming-core = { workspace = true }
-twizzler-display = { workspace = true }
-secgate = { workspace = true }
-twizzler-io = { path = "../../lib/twizzler-io" }
+embedded-io = { workspace = true, features = ["std"] }
+noline = { workspace = true }
+miette = { workspace = true }

@@ -541,7 +541,7 @@ bitflags::bitflags! {
 )]
 pub fn monitor_rt_post_signal(
     info: &secgate::GateCallInfo,
-    comp: ObjID,
+    comp: Option<ObjID>,
     signal: u64,
     flags: PostSignalFlags,
 ) -> Result<(), TwzError> {

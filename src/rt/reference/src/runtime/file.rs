@@ -442,7 +442,7 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
         PtySignal::Status => libc::SIGINFO,
     } as u64;
     let _ = monitor_api::post_signal(
-        server.object().id(),
+        Some(server.object().id()),
         signal,
         monitor_api::PostSignalFlags::CONTROLLER,
     )
@@ -871,14 +871,24 @@ impl ReferenceRuntime {
     pub fn fd_get_config(
         &self,
         fd: RawFd,
-        _reg: u32,
+        reg: u32,
         val: *mut c_void,
         val_len: usize,
     ) -> Result<()> {
         let mut binding = get_fd_slots().lock().unwrap();
-        let Some(_fd) = binding.get_mut(fd.try_into().unwrap()) else {
+        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
+
+        match &mut fd.kind {
+            //FdKind::Socket(socket_kind) => todo!(),
+            //FdKind::Pty(pty_handle_kind) => todo!(),
+            //FdKind::Pipe(pipe) => todo!(),
+            FdKind::Compartment(compartment_file) => {
+                return compartment_file.get_config(reg, val, val_len);
+            }
+            _ => {}
+        }
 
         let buf = unsafe { core::slice::from_raw_parts_mut(val.cast::<u8>(), val_len) };
         buf.fill(0);
@@ -889,15 +899,25 @@ impl ReferenceRuntime {
     pub fn fd_set_config(
         &self,
         fd: RawFd,
-        _reg: u32,
-        _val: *const c_void,
-        _val_len: usize,
+        reg: u32,
+        val: *const c_void,
+        val_len: usize,
     ) -> Result<()> {
+        twizzler_abi::klog_println!("==> set_config {} {}", fd, reg);
         let mut binding = get_fd_slots().lock().unwrap();
-        let Some(_fd) = binding.get_mut(fd.try_into().unwrap()) else {
+        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
-        //fd.set_config(reg, val, val_len)
+
+        match &mut fd.kind {
+            //FdKind::Socket(socket_kind) => todo!(),
+            //FdKind::Pty(pty_handle_kind) => todo!(),
+            //FdKind::Pipe(pipe) => todo!(),
+            FdKind::Compartment(compartment_file) => {
+                return compartment_file.set_config(reg, val, val_len);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
