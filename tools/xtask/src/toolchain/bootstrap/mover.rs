@@ -30,7 +30,7 @@ pub fn move_all(host_triple: &str, target_triple: &str) -> anyhow::Result<()> {
         Ok(())
     };
 
-    println!("packaging toolchain: moving install");
+    println!("packaging toolchain: moving {} install", target_triple);
     // first we just move the install directory
     let old_install_dir = {
         let mut x = current_dir()?;
@@ -41,7 +41,7 @@ pub fn move_all(host_triple: &str, target_triple: &str) -> anyhow::Result<()> {
     let new_install_dir = get_toolchain_path()?;
     move_dir(old_install_dir.clone(), new_install_dir)?;
 
-    println!("packaging toolchain: moving components");
+    println!("packaging toolchain: moving {} components", target_triple);
     // llvm native runtime
     let old_llvm_rt = bootstrap::get_llvm_native_runtime(target_triple)?;
     let new_llvm_rt = pathfinding::get_llvm_native_runtime_install(target_triple)?;

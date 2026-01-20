@@ -6,7 +6,7 @@ use std::{
 
 use monitor_api::{CompartmentFlags, CompartmentHandle};
 use twizzler_rt_abi::{
-    bindings::{IO_REGISTER_SIGNAL, IO_REGISTER_STATUS, STATUS_FLAG_TERMINATED},
+    bindings::{IO_REGISTER_SIGNAL, IO_REGISTER_STATUS, STATUS_FLAG_READY, STATUS_FLAG_TERMINATED},
     error::TwzError,
 };
 
@@ -37,16 +37,20 @@ impl CompartmentFile {
         val: *mut c_void,
         val_len: usize,
     ) -> Result<(), TwzError> {
+        twizzler_abi::klog_println!("get_config {} : {}", reg, val_len);
         match reg {
             IO_REGISTER_STATUS => {
                 if val_len < std::mem::size_of::<u64>() {
                     Err(TwzError::INVALID_ARGUMENT)
                 } else {
                     let flags = self.inner.comp.info().flags;
-                    let status = if flags.contains(CompartmentFlags::EXITED) {
+                    let mut status = if flags.contains(CompartmentFlags::EXITED) {
                         STATUS_FLAG_TERMINATED
                     } else {
                         0 // TODO
+                    };
+                    if flags.contains(CompartmentFlags::READY) {
+                        status |= STATUS_FLAG_READY;
                     };
                     unsafe {
                         *(val as *mut u64) = status;
@@ -81,6 +85,7 @@ impl CompartmentFile {
 impl Read for CompartmentFile {
     fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
         let mut current_state = self.inner.comp.info().flags;
+        twizzler_abi::klog_println!("read comp: {:?}", current_state);
         if current_state.contains(CompartmentFlags::EXITED) {
             return Ok(0);
         }

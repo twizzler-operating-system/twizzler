@@ -9,7 +9,7 @@ use twizzler::{
 };
 use twizzler_abi::syscall::{
     ObjectCreate, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
-    sys_thread_sync,
+    ThreadSyncWake, sys_thread_sync,
 };
 
 use crate::buffer::VolatileBuffer;
@@ -54,6 +54,7 @@ impl Pipe {
             unsafe { Object::<PipeBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
         obj.base().readers.fetch_add(1, Ordering::SeqCst);
         obj.base().writers.fetch_add(1, Ordering::SeqCst);
+        twizzler_abi::klog_println!("open pipe");
         Ok(Self {
             pipe: obj,
             reader: true,
@@ -74,19 +75,46 @@ impl Pipe {
     }
 
     pub fn close_reader(&mut self) {
+        twizzler_abi::klog_println!("close reader: {} {}", self.reader, self.readers());
+        if !self.reader {
+            return;
+        }
         self.reader = false;
         if self.readers() == 0 {
             return;
         }
+
         self.pipe.base().readers.fetch_sub(1, Ordering::SeqCst);
+
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.pipe.base().readers),
+                usize::MAX,
+            ))],
+            None,
+        )
+        .inspect_err(|e| tracing::warn!("failed to wake on readers: {e}"));
     }
 
     pub fn close_writer(&mut self) {
+        twizzler_abi::klog_println!("close writer: {} {}", self.writer, self.writers());
+        if !self.writer {
+            return;
+        }
         self.writer = false;
         if self.writers() == 0 {
             return;
         }
         self.pipe.base().writers.fetch_sub(1, Ordering::SeqCst);
+
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.pipe.base().writers),
+                usize::MAX,
+            ))],
+            None,
+        )
+        .inspect_err(|e| tracing::warn!("failed to wake on writers: {e}"));
     }
 
     fn do_sleep(&self, sync: ThreadSyncSleep) -> std::io::Result<()> {
@@ -143,6 +171,7 @@ impl Write for Pipe {
 
 impl Clone for Pipe {
     fn clone(&self) -> Self {
+        twizzler_abi::klog_println!("cloning pipe {} {}", self.reader, self.writer);
         if self.reader {
             self.pipe.base().readers.fetch_add(1, Ordering::SeqCst);
         }
@@ -159,6 +188,7 @@ impl Clone for Pipe {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
+        twizzler_abi::klog_println!("drop pipe {} {}", self.reader, self.writer);
         if self.reader {
             self.close_reader();
         }

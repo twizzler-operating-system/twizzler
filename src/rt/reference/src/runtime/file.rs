@@ -32,8 +32,9 @@ use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, io_ctx, io_vec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, BIND_DATA_MAX, FD_CMD_DUP,
+        OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
-    error::{ArgumentError, GenericError, IoError, NamingError, ResourceError, TwzError},
+    error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, OpenKind, RawFd, SocketAddress},
     object::MapFlags,
     Result,
@@ -134,6 +135,7 @@ impl FdKind {
                         2 => std::net::Shutdown::Write,
                         _ => std::net::Shutdown::Both,
                     };
+                    tracing::debug!("Pipe shutdown requested: {:?}", shutdown);
                     if matches!(shutdown, Shutdown::Both) || matches!(shutdown, Shutdown::Read) {
                         pipe.close_reader();
                     }
@@ -160,9 +162,7 @@ impl Read for FdKind {
                     KernelConsoleSource::Console,
                     buf,
                     twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
-                )
-                //TODO
-                .map_err(|_| ErrorKind::Other)?;
+                )?;
                 Ok(len)
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
@@ -269,7 +269,7 @@ impl FileDesc {
             fd: 0,
             flags,
             bind_data: [0; _],
-            bind_len,
+            bind_len: bind_len as u32,
         };
         if let Some(bind_info) = bind_info {
             binding.bind_data[0..bind_len].copy_from_slice(&bind_info[0..bind_len])
@@ -289,6 +289,23 @@ impl FileDesc {
     }
 
     pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
+        if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
+            let val = unsafe { arg.cast::<u32>().read() };
+            let shutdown = match val {
+                0 => return Err(TwzError::INVALID_ARGUMENT),
+                1 => std::net::Shutdown::Read,
+                2 => std::net::Shutdown::Write,
+                _ => std::net::Shutdown::Both,
+            };
+            let mut b = **self.binding;
+            let flags = match shutdown {
+                Shutdown::Read => b.flags & !OPEN_FLAG_READ,
+                Shutdown::Write => b.flags & !OPEN_FLAG_WRITE,
+                Shutdown::Both => b.flags & !(OPEN_FLAG_READ | OPEN_FLAG_WRITE),
+            };
+            b.flags = flags;
+            self.binding = MaybeNoDrop::new(Arc::new(b), true);
+        }
         self.kind.fd_cmd(cmd, arg, ret)
     }
 }
@@ -384,6 +401,7 @@ lazy_static! {
 
 static HANDLE: OnceLock<Mutex<DynamicNamingHandle>> = OnceLock::new();
 
+#[track_caller]
 fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
@@ -456,6 +474,16 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 }
 
 impl ReferenceRuntime {
+    pub(crate) fn close_fds(&self) {
+        twizzler_abi::klog_println!("CLOSING FDS");
+        for (i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
+            if let Some(fd) = fd.take() {
+                twizzler_abi::klog_println!("closing {:?} in {}", i, get_comp_config().sctx);
+                drop(fd);
+            }
+        }
+    }
+
     pub(crate) fn init_fds(&self) {
         let loader_config = &get_comp_config().loader_config;
 
@@ -474,13 +502,15 @@ impl ReferenceRuntime {
             let Ok(kind) = OpenKind::try_from(bi.kind) else {
                 continue;
             };
-            //twizzler_abi::klog_println!("binding fd {} as {:?}", bi.fd, kind);
+            if bi.fd > 2 {
+                continue;
+            }
             let _ = self.open(
                 Some(bi.fd),
                 kind,
                 OperationOptions::from_bits_truncate(bi.flags),
                 bi.bind_data.as_ptr().cast(),
-                bi.bind_len,
+                bi.bind_len as usize,
                 false,
             );
         }
@@ -770,12 +800,25 @@ impl ReferenceRuntime {
         let mut binding = get_fd_slots().lock().unwrap();
 
         let fd = if let Some(fd) = existing_fd {
-            binding.insert(fd.try_into().unwrap(), elem);
+            binding.insert(fd.try_into().unwrap(), elem).inspect(|s| {
+                twizzler_abi::klog_println!(
+                    "replaced fd {} with {:?} (was {:?})",
+                    fd,
+                    kind,
+                    s.binding.kind
+                )
+            });
             Some(fd as usize)
         } else {
             binding.insert_first_empty(elem)
         }
         .ok_or(ResourceError::OutOfNames)?;
+        twizzler_abi::klog_println!(
+            "created fd {} with {:?} in {}",
+            fd,
+            kind,
+            get_comp_config().sctx
+        );
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
@@ -841,15 +884,16 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.read(buf).map_err(|_| IoError::Other.into())
+        let len = file_desc.read(buf)?;
+        Ok(len)
     }
 
     pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
-        self.read(fd, buf, ctx).map_err(|_| IoError::Other.into())
+        self.read(fd, buf, ctx)
     }
 
     pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
-        self.write(fd, buf, ctx).map_err(|_| IoError::Other.into())
+        self.write(fd, buf, ctx)
     }
 
     pub fn fd_pwritev(&self, _fd: RawFd, _buf: &[io_vec], _ctx: *mut io_ctx) -> Result<usize> {
@@ -903,7 +947,6 @@ impl ReferenceRuntime {
         val: *const c_void,
         val_len: usize,
     ) -> Result<()> {
-        twizzler_abi::klog_println!("==> set_config {} {}", fd, reg);
         let mut binding = get_fd_slots().lock().unwrap();
         let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
@@ -928,10 +971,18 @@ impl ReferenceRuntime {
         let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
 
         if cmd == FD_CMD_DUP {
-            let nfd = file_desc.clone();
+            let mut nfd = file_desc.clone();
+            let b = **nfd.binding;
+            nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
             let newfd = binding
                 .insert_first_empty(nfd)
                 .ok_or(ResourceError::OutOfNames)?;
+            twizzler_abi::klog_println!(
+                "created (dup) fd {} from {} in {}",
+                newfd,
+                fd,
+                get_comp_config().sctx
+            );
             unsafe {
                 ret.cast::<RawFd>().write(newfd.try_into().unwrap());
             }
@@ -948,14 +999,19 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.write(buf).map_err(|_| IoError::Other.into())
+        let len = file_desc.write(buf)?;
+        Ok(len)
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let file_desc = get_fd_slots()
+        twizzler_abi::klog_println!("closing fd {} ({})", fd, get_comp_config().sctx);
+        let Some(file_desc) = get_fd_slots()
             .lock()
             .unwrap()
-            .remove(fd.try_into().unwrap())?;
+            .remove(fd.try_into().unwrap())
+        else {
+            return Some(());
+        };
 
         match &file_desc.kind {
             FdKind::Socket(socket_kind) => socket_kind.close().ok()?,
@@ -973,7 +1029,7 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.seek(pos).map_err(|_| IoError::Other.into())
+        file_desc.seek(pos)
     }
 
     pub fn fd_enumerate(

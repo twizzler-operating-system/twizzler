@@ -313,7 +313,12 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
-        log::warn!("upcall: {}: {:?}", self.id(), info);
+        log::warn!(
+            "upcall: {}: {:?}, RIP = {:x}",
+            self.id(),
+            info,
+            self.read_ip()
+        );
         crate::panic::backtrace(false, None);
 
         let Some(upcall_target) = *self.upcall_target.lock() else {

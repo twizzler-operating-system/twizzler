@@ -63,7 +63,6 @@ impl InternalThread {
 
     pub fn set_name(&self, name: &CStr) {
         let name = name.to_owned();
-        twizzler_abi::klog_println!("set_name2 {:?}", name);
         *self.name.lock().unwrap() = Some(name);
     }
 }

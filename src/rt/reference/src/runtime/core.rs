@@ -41,6 +41,7 @@ impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
+            OUR_RUNTIME.close_fds();
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
@@ -168,6 +169,7 @@ impl ReferenceRuntime {
             None
         } else {
             unsafe { self.set_runtime_ready() };
+            OUR_RUNTIME.init_fds();
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
@@ -238,8 +240,6 @@ impl ReferenceRuntime {
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
-
-        OUR_RUNTIME.init_fds();
 
         if !unsafe { __mlibc_entry.is_null() } {
             let mlibc_entry = unsafe {

@@ -617,7 +617,15 @@ impl<W: Write, E: Write> InputPoster<W, E> {
             };
 
             let wcount = self.writer.write(&buf[0..count])?;
-            self.maybe_echo(&buf[0..wcount])?;
+            let mut ecount = 0;
+            while ecount < wcount {
+                let mut echobuf = [0; BUF_SZ];
+                let remaining = BUF_SZ.min(wcount - ecount);
+                echobuf[0..remaining].copy_from_slice(&buf[ecount..wcount]);
+                let c = input_map(&self.termios, &mut echobuf[0..remaining]);
+                self.maybe_echo(&echobuf[0..c])?;
+                ecount += c;
+            }
 
             total += wcount;
             buf = &buf[wcount..];
@@ -729,7 +737,7 @@ impl<R: Read> InputConverter<R> {
     fn refill_linebuf(&mut self) -> std::io::Result<()> {
         let linebuf = &mut self.linebuf[self.linebuf_count..];
         let count = self.reader.read(linebuf)?;
-        let count = Self::input_map(&self.termios, &mut linebuf[..count]);
+        let count = input_map(&self.termios, &mut linebuf[..count]);
 
         let verase = self.termios.c_cc[VERASE];
         let vwerase = self.termios.c_cc[VWERASE];
@@ -826,68 +834,6 @@ impl<R: Read> InputConverter<R> {
         self.linebuf_count
     }
 
-    fn input_map(termios: &libc::termios, mut buf: &mut [u8]) -> usize {
-        let nl_to_cr = termios.c_iflag & INLCR != 0;
-        let ignore_cr = termios.c_iflag & IGNCR != 0;
-        let cr_to_nl = termios.c_iflag & ICRNL != 0;
-
-        let search_ln = nl_to_cr;
-        let search_cr = ignore_cr || cr_to_nl;
-
-        if !search_cr && !search_ln {
-            return buf.len();
-        }
-
-        let mut total = 0;
-        while buf.len() > 0 {
-            let idx = if search_ln && search_cr {
-                memchr::memchr2(b'\r', b'\n', buf)
-            } else if search_cr {
-                memchr::memchr(b'\r', buf)
-            } else if search_ln {
-                memchr::memchr(b'\n', buf)
-            } else {
-                unreachable!()
-            };
-
-            if let Some(idx) = idx {
-                let len = match buf[idx] {
-                    b'\r' if ignore_cr => {
-                        buf.copy_within((idx + 1).., idx);
-                        let newend = buf.len() - 1;
-                        buf = &mut buf[idx..newend];
-                        idx
-                    }
-                    b'\r' if cr_to_nl => {
-                        buf[idx] = b'\n';
-                        buf = &mut buf[(idx + 1)..];
-                        idx + 1
-                    }
-                    b'\n' if nl_to_cr && ignore_cr => {
-                        buf.copy_within((idx + 1).., idx);
-                        let newend = buf.len() - 1;
-                        buf = &mut buf[idx..newend];
-                        idx
-                    }
-                    b'\n' if nl_to_cr => {
-                        buf[idx] = b'\r';
-                        buf = &mut buf[(idx + 1)..];
-                        idx + 1
-                    }
-                    _ => {
-                        panic!("unexpected character");
-                    }
-                };
-                total += len;
-            } else {
-                total += buf.len();
-                return total;
-            }
-        }
-
-        total
-    }
-
     pub fn read_raw(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
         let mut total = 0;
         while buf.len() > 0 {
@@ -898,13 +844,75 @@ impl<R: Read> InputConverter<R> {
             }
 
             // this might squash characters
-            let thisread = Self::input_map(&self.termios, &mut buf[0..thisread]);
+            let thisread = input_map(&self.termios, &mut buf[0..thisread]);
 
             total += thisread;
             buf = &mut buf[thisread..];
         }
         Ok(total)
     }
+}
+
+fn input_map(termios: &libc::termios, mut buf: &mut [u8]) -> usize {
+    let nl_to_cr = termios.c_iflag & INLCR != 0;
+    let ignore_cr = termios.c_iflag & IGNCR != 0;
+    let cr_to_nl = termios.c_iflag & ICRNL != 0;
+
+    let search_ln = nl_to_cr;
+    let search_cr = ignore_cr || cr_to_nl;
+
+    if !search_cr && !search_ln {
+        return buf.len();
+    }
+
+    let mut total = 0;
+    while buf.len() > 0 {
+        let idx = if search_ln && search_cr {
+            memchr::memchr2(b'\r', b'\n', buf)
+        } else if search_cr {
+            memchr::memchr(b'\r', buf)
+        } else if search_ln {
+            memchr::memchr(b'\n', buf)
+        } else {
+            unreachable!()
+        };
+
+        if let Some(idx) = idx {
+            let len = match buf[idx] {
+                b'\r' if ignore_cr => {
+                    buf.copy_within((idx + 1).., idx);
+                    let newend = buf.len() - 1;
+                    buf = &mut buf[idx..newend];
+                    idx
+                }
+                b'\r' if cr_to_nl => {
+                    buf[idx] = b'\n';
+                    buf = &mut buf[(idx + 1)..];
+                    idx + 1
+                }
+                b'\n' if nl_to_cr && ignore_cr => {
+                    buf.copy_within((idx + 1).., idx);
+                    let newend = buf.len() - 1;
+                    buf = &mut buf[idx..newend];
+                    idx
+                }
+                b'\n' if nl_to_cr => {
+                    buf[idx] = b'\r';
+                    buf = &mut buf[(idx + 1)..];
+                    idx + 1
+                }
+                _ => {
+                    panic!("unexpected character");
+                }
+            };
+            total += len;
+        } else {
+            total += buf.len();
+            return total;
+        }
+    }
+
+    total
 }
 
 impl<R: Read> Read for InputConverter<R> {

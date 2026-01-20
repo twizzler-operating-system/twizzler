@@ -1,10 +1,17 @@
 #![feature(iterator_try_collect)]
+#![feature(unix_send_signal)]
 
 use std::{
-    fs::{File, OpenOptions},
-    io::{self, PipeReader, Read, Write, stdin},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-    process::{Child, Command, Stdio},
+    collections::BTreeMap,
+    fmt::Debug,
+    fs::OpenOptions,
+    io::{Read, Write, stdin, stdout},
+    os::{
+        fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
+        twizzler::process::ChildExt,
+    },
+    process::{Child, Command, ExitStatus, Stdio},
+    time::Instant,
 };
 
 use embedded_io::ErrorType;
@@ -26,6 +33,12 @@ struct Redirect {
 
 impl Redirect {
     pub fn build_stdio(&self, ctx: &mut InvokeCtx) -> miette::Result<Stdio> {
+        let raw = self.build_rawfd(ctx)?;
+        let stdio = unsafe { Stdio::from_raw_fd(raw) };
+        Ok(stdio)
+    }
+
+    pub fn build_rawfd(&self, ctx: &mut InvokeCtx) -> miette::Result<RawFd> {
         let mut open = OpenOptions::new();
         let create = self.fd != 0;
         let file = open
@@ -37,7 +50,9 @@ impl Redirect {
             .open(&self.path)
             .into_diagnostic()?;
         let file: OwnedFd = file.into();
-        let stdio = unsafe { Stdio::from_raw_fd(file.as_raw_fd()) };
+        let child_file = file.try_clone().into_diagnostic()?;
+        let stdio = child_file.into_raw_fd();
+        twizzler_abi::klog_println!("adding fd {} to ctx", file.as_raw_fd());
         ctx.fds.push(file);
 
         Ok(stdio)
@@ -52,14 +67,99 @@ struct ShellInvoke {
     env: Vec<(String, String)>,
 }
 
+mod builtins {
+    use std::os::fd::RawFd;
+
+    pub struct BuiltinCtx {
+        pub stdin: RawFd,
+        pub stdout: RawFd,
+        pub stderr: RawFd,
+    }
+    pub fn jobs(ctx: &mut BuiltinCtx) {
+        println!("GOT JOBS");
+    }
+}
+
 impl ShellInvoke {
-    pub fn invoke(&self, ctx: &mut InvokeCtx) -> miette::Result<Child> {
+    fn invoke_builtin(
+        &self,
+        f: impl FnOnce(&mut builtins::BuiltinCtx),
+        ctx: &mut InvokeCtx,
+    ) -> miette::Result<Job> {
+        let mut bctx = builtins::BuiltinCtx {
+            stdin: 0,
+            stdout: 1,
+            stderr: 2,
+        };
+        if let Some(stdin) = ctx.pipe.as_ref() {
+            let child_pipe = stdin.try_clone().into_diagnostic()?;
+            bctx.stdin = child_pipe.into_raw_fd();
+        }
+
+        if let Some(r) = self.get_stdin_redir() {
+            bctx.stdin = r.build_rawfd(ctx)?;
+        }
+
+        if let Some(r) = self.get_stdout_redir() {
+            bctx.stdout = r.build_rawfd(ctx)?;
+        }
+
+        if let Some(r) = self.get_stderr_redir() {
+            bctx.stderr = r.build_rawfd(ctx)?;
+        }
+
+        let (wait, pipe) = match &self.next {
+            NextHop::Seq => (true, None),
+            NextHop::Background => (false, None),
+            NextHop::Pipe => {
+                let (reader, writer) = std::io::pipe().into_diagnostic()?;
+                let reader: OwnedFd = reader.into();
+                let writer: OwnedFd = writer.into();
+                let our_writer = writer.try_clone().into_diagnostic()?;
+
+                bctx.stdout = writer.into_raw_fd();
+                twizzler_abi::klog_println!("adding fd {} to ctx", our_writer.as_raw_fd());
+                ctx.fds.push(our_writer);
+
+                (false, Some(reader))
+            }
+        };
+        let mut job = Job::new(None, ctx.jobs.next_id(), &self.command[0], !wait);
+        f(&mut bctx);
+
+        if ctx.pipe.is_some() {
+            twizzler_abi::klog_println!(
+                "closing pipe fd {}",
+                ctx.pipe.as_ref().unwrap().as_raw_fd()
+            );
+        }
+        ctx.pipe = pipe;
+        twizzler_abi::klog_println!("closing fds: {:?}", ctx.fds);
+        ctx.fds.clear();
+        if wait {
+            job.wait()?;
+        }
+        Ok(job)
+    }
+
+    fn try_builtin(&self, ctx: &mut InvokeCtx) -> miette::Result<Option<Job>> {
+        match self.command[0].as_str() {
+            "jobs" => self.invoke_builtin(builtins::jobs, ctx).map(|j| Some(j)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn invoke(&self, ctx: &mut InvokeCtx) -> miette::Result<Job> {
+        twizzler_abi::klog_println!("call invoke on {}", &self.command[0]);
+        if let Some(job) = self.try_builtin(ctx)? {
+            return Ok(job);
+        }
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..]);
         cmd.envs(self.env.iter().map(|x| (&x.0, &x.1)));
 
-        if let Some(stdin) = ctx.pipe.as_ref() {
-            cmd.stdin(unsafe { Stdio::from_raw_fd(stdin.as_raw_fd()) });
+        if let Some(stdin) = ctx.pipe.take() {
+            cmd.stdin(unsafe { Stdio::from_raw_fd(stdin.into_raw_fd()) });
         }
 
         if let Some(r) = self.get_stdin_redir() {
@@ -81,23 +181,34 @@ impl ShellInvoke {
                 let (reader, writer) = std::io::pipe().into_diagnostic()?;
                 let reader: OwnedFd = reader.into();
                 let writer: OwnedFd = writer.into();
+                let our_writer = writer.try_clone().into_diagnostic()?;
 
-                cmd.stdout(unsafe { Stdio::from_raw_fd(writer.as_raw_fd()) });
-                ctx.fds.push(writer);
+                cmd.stdout(unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) });
+                twizzler_abi::klog_println!("adding fd {} to ctx", our_writer.as_raw_fd());
+                ctx.fds.push(our_writer);
 
                 (false, Some(reader))
             }
         };
 
-        let mut child = cmd.spawn().into_diagnostic()?;
+        twizzler_abi::klog_println!("starting {:?}", cmd);
+        let child = cmd.spawn().into_diagnostic()?;
+        let mut job = Job::new(Some(child), ctx.jobs.next_id(), &self.command[0], !wait);
+        twizzler_abi::klog_println!("wait ready");
+        job.child.as_mut().map(|c| c.wait_ready());
+        twizzler_abi::klog_println!("ready!");
 
+        twizzler_abi::klog_println!("setting pipe to {:?}", pipe);
         ctx.pipe = pipe;
+        twizzler_abi::klog_println!("closing fds: {:?}", ctx.fds);
         ctx.fds.clear();
         if wait {
-            child.wait().into_diagnostic()?;
+            drop(cmd);
+            job.wait()
+                .inspect_err(|e| twizzler_abi::klog_println!("??? {}", e))?;
         }
 
-        Ok(child)
+        Ok(job)
     }
 
     fn get_stdin_redir(&self) -> Option<&Redirect> {
@@ -118,14 +229,94 @@ struct ShellCommand {
     invokes: Vec<ShellInvoke>,
 }
 
-#[derive(Default)]
-struct InvokeCtx {
+struct InvokeCtx<'a> {
     pipe: Option<OwnedFd>,
     fds: Vec<OwnedFd>,
+    jobs: &'a mut Jobs,
+}
+
+impl<'a> InvokeCtx<'a> {
+    pub fn new(jobs: &'a mut Jobs) -> Self {
+        InvokeCtx {
+            pipe: None,
+            fds: Vec::new(),
+            jobs,
+        }
+    }
+}
+
+struct Job {
+    child: Option<Child>,
+    id: u64,
+    start_time: Instant,
+    name: String,
+    background: bool,
+}
+
+impl Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("start_time", &self.start_time)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl Job {
+    pub fn new(child: Option<Child>, id: u64, name: impl ToString, background: bool) -> Self {
+        Job {
+            child,
+            id,
+            start_time: Instant::now(),
+            name: name.to_string(),
+            background,
+        }
+    }
+
+    pub fn try_wait(&mut self) -> miette::Result<Option<ExitStatus>> {
+        match &mut self.child {
+            Some(child) => child.try_wait().into_diagnostic(),
+            None => Ok(Some(ExitStatus::default())),
+        }
+    }
+
+    pub fn wait(&mut self) -> miette::Result<ExitStatus> {
+        match &mut self.child {
+            Some(child) => child.wait().into_diagnostic(),
+            None => Ok(ExitStatus::default()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Jobs {
+    jobs: BTreeMap<u64, Job>,
+    next_job_id: u64,
+    id_stack: Vec<u64>,
+}
+
+impl Jobs {
+    pub fn next_id(&mut self) -> u64 {
+        if self.id_stack.is_empty() {
+            self.next_job_id += 1;
+            self.next_job_id
+        } else {
+            self.id_stack.pop().unwrap()
+        }
+    }
+
+    pub fn release_id(&mut self, id: u64) {
+        if self.next_job_id == id {
+            self.next_job_id -= 1;
+            return;
+        }
+        self.id_stack.push(id);
+    }
 }
 
 impl ShellCommand {
-    pub fn invoke(&self, ctx: &mut InvokeCtx) -> miette::Result<Vec<Child>> {
+    pub fn invoke(&self, ctx: &mut InvokeCtx) -> miette::Result<Vec<Job>> {
         self.invokes.iter().map(|i| i.invoke(ctx)).try_collect()
     }
 }
@@ -243,12 +434,14 @@ fn main() {
         .with_slice_history(&mut history)
         .build_sync(&mut io)
         .unwrap();
+    let mut jobs = Jobs::default();
     loop {
         //let mstats = monitor_api::stats().unwrap();
         //println!("{:?}", mstats);
         //let line = editor.readline("twz> ", &mut io).unwrap();
 
         print!("twz> ");
+        stdout().flush().unwrap();
         let mut s = String::new();
         let _ = stdin().read_line(&mut s).unwrap();
 
@@ -257,18 +450,33 @@ fn main() {
         }
 
         let cmd = ShellCommand::parse(&s).unwrap();
-        println!("==> {:?}", cmd);
+        //println!("==> {:?}", cmd);
 
-        let mut ctx = InvokeCtx::default();
+        let mut ctx = InvokeCtx::new(&mut jobs);
         let res = cmd.invoke(&mut ctx);
+        drop(ctx);
 
-        if let Ok(children) = res {
-            for mut child in children {
-                let _ = child
-                    .wait()
-                    .inspect_err(|e| tracing::warn!("failed to wait for child: {e}"));
+        if let Ok(new_jobs) = res {
+            for new_job in new_jobs {
+                if new_job.background {
+                    println!("job {} backgrounding", new_job.id);
+                    jobs.jobs.insert(new_job.id, new_job);
+                }
             }
+        } else {
+            twizzler_abi::klog_println!("err: {}", res.unwrap_err());
         }
+
+        let finished = jobs
+            .jobs
+            .extract_if(.., |_, j| j.try_wait().is_ok_and(|s| s.is_some()))
+            .collect::<Vec<_>>();
+        for (_, job) in finished {
+            println!("job {} finished", job.id);
+            jobs.jobs.remove(&job.id);
+            jobs.release_id(job.id);
+        }
+
         /*
         let cmd = s.split_whitespace().collect::<Vec<_>>();
         if cmd.len() == 0 {

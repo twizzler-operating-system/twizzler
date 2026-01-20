@@ -14,7 +14,7 @@ use registers::interfaces::Writeable;
 use twizzler_abi::{
     arch::ArchRegisters,
     thread::ExecutionState,
-    upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UPCALL_EXIT_CODE, UpcallFrame, UpcallInfo, UpcallTarget},
 };
 use twizzler_rt_abi::error::TwzError;
 
