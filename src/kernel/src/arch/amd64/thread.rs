@@ -29,23 +29,6 @@ pub enum Registers {
     Interrupt(*mut IsrContext, IsrContext),
 }
 
-#[derive(Debug)]
-struct Context {
-    registers: Registers,
-    xsave: AlignedXsaveRegion,
-}
-
-impl Context {
-    pub fn new(registers: Registers) -> Self {
-        Self {
-            registers,
-            // TODO: save
-            xsave: AlignedXsaveRegion([0; XSAVE_LEN]),
-        }
-    }
-}
-
-#[derive(Debug)]
 #[repr(align(64))]
 struct AlignedXsaveRegion([u8; XSAVE_LEN]);
 pub struct ArchThread {
@@ -53,7 +36,7 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    entry_registers: RefCell<Registers>,
+    entry_registers: Spinlock<Registers>,
     /// The frame of an upcall to restore. The restoration path only occurs on the first
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
@@ -135,7 +118,7 @@ impl ArchThread {
             rsp: core::cell::UnsafeCell::new(0),
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
-            entry_registers: RefCell::new(Registers::None),
+            entry_registers: Spinlock::new(Registers::None),
             upcall_restore_frame: Spinlock::new(None),
         }
     }
@@ -365,7 +348,7 @@ impl Thread {
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         let source_ctx = self.secctx.active_id();
-        let ok = match *self.arch.entry_registers.borrow() {
+        let ok = match *self.arch.entry_registers.lock() {
             Registers::None => {
                 panic!(
                     "tried to upcall {:?} to a thread that hasn't started yet",
@@ -385,7 +368,7 @@ impl Thread {
             logln!(
                 "while trying to generate upcall: {:?} from {:?}",
                 info,
-                self.arch.entry_registers.borrow()
+                &*self.arch.entry_registers.lock()
             );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
@@ -399,7 +382,7 @@ impl Thread {
     }
 
     pub fn set_entry_registers(&self, regs: Registers) {
-        (*self.arch.entry_registers.borrow_mut()) = regs;
+        (*self.arch.entry_registers.lock()) = regs;
     }
 
     pub fn set_tls(&self, tls: u64) {
@@ -500,7 +483,7 @@ impl Thread {
         use crate::syscall::SyscallContext;
         let frame = &self.arch.upcall_restore_frame.lock();
         if frame.is_none() {
-            return match *self.arch.entry_registers.borrow() {
+            return match *self.arch.entry_registers.lock() {
                 Registers::None => {
                     unreachable!()
                 }
@@ -518,7 +501,7 @@ impl Thread {
     }
 
     pub fn get_entry_registers(&self) -> Registers {
-        return *self.arch.entry_registers.borrow();
+        return *self.arch.entry_registers.lock();
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
@@ -529,7 +512,7 @@ impl Thread {
         }
         let frame = &self.arch.upcall_restore_frame.lock();
         if frame.is_none() {
-            let frame = match *self.arch.entry_registers.borrow() {
+            let frame = match *self.arch.entry_registers.lock() {
                 Registers::None => {
                     unreachable!()
                 }

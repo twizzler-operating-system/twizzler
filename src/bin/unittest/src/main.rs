@@ -103,7 +103,9 @@ fn main() {
             {
                 let mut flags = test_comp.info().flags;
                 while !flags.contains(monitor_api::CompartmentFlags::EXITED) {
+                    eprintln!("{}: Waiting for comp {:?}", line, flags);
                     flags = test_comp.wait(flags);
+                    eprintln!("{}: new flags {:?}", line, flags);
                 }
                 reports.push(TestResult {
                     name: line.clone(),

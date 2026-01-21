@@ -308,6 +308,7 @@ impl RunComp {
         {
             return None;
         }
+        self.notify_state_changed();
 
         tracing::debug!("starting main thread for compartment {}", self.name);
         debug_assert!(self.main.is_none());
