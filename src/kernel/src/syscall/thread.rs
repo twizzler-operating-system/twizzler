@@ -1,6 +1,6 @@
 use twizzler_abi::{
     arch::ArchRegisters,
-    object::ObjID,
+    object::{ObjID, MAX_SIZE},
     syscall::{ThreadControl, ThreadSpawnArgs},
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
@@ -8,9 +8,11 @@ use twizzler_abi::{
 use twizzler_rt_abi::{error::TwzError, Result};
 
 use crate::{
+    arch::{memory::pagetables::ArchTlbMgr, thread::UpcallAble, PhysAddr, VirtAddr},
+    memory::{context::UserContext, pagetables::MappingCursor},
     processor::sched::{lookup_thread_repr, schedule, SchedFlags},
     security::SwitchResult,
-    thread::current_thread_ref,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
@@ -27,9 +29,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
             *current_thread_ref().unwrap().upcall_target.lock() = Some(*data);
         }
         ThreadControl::ResumeFromUpcall => {
-            let Some(data) = (unsafe { (arg as usize as *const UpcallFrame).as_ref() }) else {
-                return [1, 1];
-            };
+            let data = unsafe { (arg as usize as *const UpcallFrame).read() };
             let flags = ResumeFlags::from_bits_truncate(arg2);
             // TODO: verify args, check perms.
 
@@ -60,6 +60,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
             let res = current_thread_ref().unwrap().secctx.switch_context(id);
+
             return match res {
                 SwitchResult::NotAttached => [1, 1],
                 _ => [0, 0],

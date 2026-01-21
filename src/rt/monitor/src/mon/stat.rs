@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use happylock::ThreadKey;
+use monitor_api::{DynlinkStats, HandleStats, MonitorStats};
 
 use super::Monitor;
-use crate::gates::{DynlinkStats, HandleStats, MonitorStats};
 
 impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]

@@ -6,15 +6,13 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
-use monitor_api::MONITOR_INSTANCE_ID;
+use monitor_api::{CompartmentInfoRaw, CompartmentMgrStats, ThreadInfo, MONITOR_INSTANCE_ID};
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
 };
-
-use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
 
 mod compconfig;
 mod compthread;
@@ -221,7 +219,7 @@ impl super::Monitor {
         instance: ObjID,
         thread: ObjID,
         desc: Option<Descriptor>,
-    ) -> Result<CompartmentInfo, TwzError> {
+    ) -> Result<CompartmentInfoRaw, TwzError> {
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -240,7 +238,7 @@ impl super::Monitor {
             .library_ids()
             .count();
 
-        Ok(CompartmentInfo {
+        Ok(CompartmentInfoRaw {
             name_len,
             id: comp_id,
             sctx: comp.sctx,
@@ -447,6 +445,20 @@ impl super::Monitor {
             })
             .collect::<Vec<_>>();
         tracing::debug!("ld preload extras: {:?}", extras);
+        let extras_sctx = env
+            .iter()
+            .filter_map(|item| {
+                let item = item.to_str().ok()?;
+                if item.starts_with("SCTX_PRELOAD=") {
+                    Some(UnloadedLibrary::new(
+                        item.trim_start_matches("SCTX_PRELOAD="),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        tracing::debug!("sctx preload extras: {:?}", extras);
 
         let mondebug = env
             .iter()
@@ -454,7 +466,15 @@ impl super::Monitor {
             .is_some();
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-            loader::RunCompLoader::new(*dynlink, compname, root, &extras, new_comp_flags, mondebug)
+            loader::RunCompLoader::new(
+                *dynlink,
+                compname,
+                root,
+                &extras,
+                &extras_sctx,
+                new_comp_flags,
+                mondebug,
+            )
         }
         .map_err(|_| GenericError::Internal)?;
 

@@ -60,11 +60,21 @@ impl Debug for Page {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PageRef {
     page: Arc<Page>,
     pn: usize,
     count: usize,
+}
+
+impl Clone for PageRef {
+    fn clone(&self) -> Self {
+        Self {
+            page: self.page.clone(),
+            pn: self.pn,
+            count: self.count,
+        }
+    }
 }
 
 impl Drop for Page {
@@ -334,18 +344,20 @@ impl Object {
 
                 //log::info!("{} ==> {} {}", self.id(), all_empty, page_number);
 
+                // TODO: this seems to be broken...
                 if !large_page_number.is_zero()
                     && page_number
                         < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
                     && all_empty
+                    && false
                 {
                     let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
                     if let Some(frame) = frame_allocator.try_allocate() {
-                        let page = Arc::new(Page::new(frame, 1));
+                        let page = Arc::new(Page::new(frame, pages_per_large));
                         assert_eq!(frame.size(), PHYS_LEVEL_LAYOUTS[1].size());
                         let page = PageRef::new(page, 0, pages_per_large);
                         let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
-                        log::trace!(
+                        log::info!(
                             "{}: mapping {} for {}: {:x}",
                             self.id(),
                             large_page_number,
@@ -358,8 +370,8 @@ impl Object {
                         {
                             log::warn!("failed to map large page {}", large_page_number);
                         }
+                        return page_tree;
                     }
-                    return page_tree;
                 }
 
                 let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);

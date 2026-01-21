@@ -18,6 +18,7 @@
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
 #![feature(ptr_as_ref_unchecked)]
+#![feature(new_zeroed_alloc)]
 
 #[macro_use]
 pub mod log;

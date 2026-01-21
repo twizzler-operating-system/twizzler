@@ -1,5 +1,6 @@
 use dynlink::library::LibraryId;
 use happylock::ThreadKey;
+use monitor_api::LibraryInfoRaw;
 use secgate::util::Descriptor;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
@@ -10,7 +11,6 @@ use twizzler_rt_abi::{
 };
 
 use super::Monitor;
-use crate::gates::LibraryInfo;
 
 /// A handle to a library.
 pub struct LibraryHandle {
@@ -26,7 +26,7 @@ impl Monitor {
         instance: ObjID,
         thread: ObjID,
         desc: Descriptor,
-    ) -> Result<LibraryInfo, TwzError> {
+    ) -> Result<LibraryInfoRaw, TwzError> {
         let (_, ref mut comps, ref dynlink, ref libhandles, _) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let handle = libhandles
@@ -40,7 +40,7 @@ impl Monitor {
         let pt = comps.get_mut(instance)?.get_per_thread(thread);
         let name_len = pt.write_bytes(lib.name.as_bytes());
         let dynamic_ptr = lib.dynamic_ptr();
-        Ok(LibraryInfo {
+        Ok(LibraryInfoRaw {
             name_len,
             compartment_id: handle.comp,
             objid: lib.full_obj.id(),

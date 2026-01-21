@@ -10,7 +10,10 @@ use twizzler_rt_abi::error::ArgumentError;
 use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
 use crate::{
     condvar::CondVar,
-    memory::{context::Context, VirtAddr},
+    memory::{
+        context::{Context, UserContext},
+        VirtAddr,
+    },
     processor::{mp::current_processor, sched::schedule_new_thread},
     security::{SecCtxMgr, SecurityContext},
     spinlock::Spinlock,
@@ -22,6 +25,11 @@ extern "C" fn user_new_start() {
     let (entry, stack_base, stack_size, arg) = {
         /* we need this scope to drop the current thread ref before jumping to user */
         let current = current_thread_ref().unwrap();
+        current
+            .memory_context
+            .as_ref()
+            .unwrap()
+            .switch_to(current.secctx.active_id());
         let args = current.spawn_args.as_ref().unwrap();
         current.set_tls(args.tls as u64);
         (args.entry, args.stack_base, args.stack_size, args.arg)
@@ -52,7 +60,12 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
         UpcallTargetSpawnOption::SetTo(ut) => *thread.upcall_target.lock() = Some(ut),
     }
     if let Some(cur) = current_thread_ref() {
-        thread.secctx = cur.secctx.clone();
+        //logln!("current thread");
+        //cur.secctx.list_all();
+        thread.secctx = SecCtxMgr::inherit(&cur.secctx, thread.id());
+
+        //logln!("new thread");
+        //thread.secctx.list_all();
         let _ = thread
             .set_trace_state(cur.get_trace_state().unwrap_or_default())
             .inspect_err(|e| log::warn!("failed to inherit tracing state: {}", e));
@@ -67,7 +80,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
 
 pub fn start_new_init() {
     let mut thread = Thread::new(Some(Arc::new(Context::new())), None, Priority::USER);
-    thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)));
+    thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)), thread.id());
     unsafe {
         thread.init(user_init);
     }

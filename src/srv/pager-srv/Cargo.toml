@@ -5,7 +5,7 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
@@ -25,6 +25,7 @@ rand = "*"
 heapless = "*"
 async-channel = "*"
 mayheap = "*"
+pager = { path = "../../lib/pager" }
 
 async-trait = "0.1.66"
 volatile = "0.6"

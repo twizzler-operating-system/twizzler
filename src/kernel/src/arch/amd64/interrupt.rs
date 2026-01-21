@@ -181,10 +181,15 @@ unsafe extern "C" fn common_handler_entry(
         x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
         let t = current_thread_ref().unwrap();
-        if (*ctx).get_ip() == 0 {
-            panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
-        }
         t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
+        if (*ctx).get_ip() == 0 {
+            panic!(
+                "tried to set IP to 0 for in {}! is currently: {:x} {:?}",
+                number,
+                t.read_ip(),
+                *ctx
+            );
+        }
     }
     generic_isr_handler(ctx, number, user);
 
@@ -497,8 +502,8 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
                     current_thread_ref().map(|ct| ct.read_ip()).unwrap_or(0)
                 );
                 unsafe {
-                    emerglogln!("==> {:x}", *(ctx.rbp as usize as *const u64));
-                    emerglogln!("==>+8 {:x}", *((ctx.rbp + 8) as usize as *const u64));
+                    //emerglogln!("==> {:x}", *(ctx.rbp as usize as *const u64));
+                    //emerglogln!("==>+8 {:x}", *((ctx.rbp + 8) as usize as *const u64));
                 }
             }
             let cr2 = unsafe { x86::controlregs::cr2() };

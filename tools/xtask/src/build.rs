@@ -311,6 +311,7 @@ fn maybe_build_tests_dynamic<'a>(
                 "test-tiny-http" => None,
                 "object-store" => None,
                 "montest-lib" => None,
+                "montest-srv" => None,
                 "naming" => None,
                 //"naming-core" => None,
                 "naming-srv" => None,

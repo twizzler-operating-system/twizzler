@@ -21,6 +21,7 @@ members = [
     "src/rt/monitor-api",
     "src/rt/monitor/tests/montest",
     "src/rt/monitor/tests/montest-lib",
+    "src/rt/monitor/tests/montest-srv",
     "src/rt",
     "src/rt/reference",
     "src/rt/minimal",
@@ -42,7 +43,6 @@ members = [
     "src/bin/cache",
     "src/srv/display-srv",
     "src/lib/twizzler-display",
-    "src/lib/twizzler-display/display-core",
 
     "src/ports/lwext4-rs",
     #"src/ports/rusqlite",
@@ -51,7 +51,7 @@ members = [
     #"src/ports/candle-test",
 
     "src/bin/sec",
-    
+
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
     #"src/bin/random_validation",
@@ -67,10 +67,10 @@ members = [
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/schedtest",  
+    "src/bin/schedtest",
     "src/bin/sec",
     "src/bin/gfxtest",
-
+    "src/lib/sgtest", "src/srv/sgtest-srv",
 ]
 
 exclude = [
@@ -89,11 +89,12 @@ initrd = [
     "crate:montest",
     "lib:naming-srv",
     "lib:twz-rt",
-    "lib:montest-lib",
+    "lib:montest-srv",
     "lib:logboi-srv",
     "lib:pager-srv",
     "lib:cache-srv",
     "lib:display-srv",
+    "lib:sgtest-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",

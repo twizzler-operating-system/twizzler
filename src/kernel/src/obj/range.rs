@@ -353,7 +353,7 @@ impl PageRangeTree {
                     BackingPages::Nothing => BackingPages::Nothing,
                     BackingPages::Single(page_ref) => {
                         let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
-                        let mut new_page = PageRef::new(new_page, 0, page_ref.nr_pages());
+                        let mut new_page = PageRef::new(new_page, 0, 1);
                         new_page.copy_from(&page_ref);
                         BackingPages::Single(new_page)
                     }
@@ -504,6 +504,9 @@ impl PageRangeTree {
             range.length += extra_len;
             let p = range.add_page(pn, page);
             let _kicked = self.tree.insert_replace(range.range(), range);
+            if !_kicked.is_empty() {
+                log::debug!("kicked (a): {:?}", _kicked);
+            }
             Some(p)
         } else {
             // Try to extend a previous range.
@@ -520,6 +523,9 @@ impl PageRangeTree {
                     prev_range.length += diff + nr_extra_pages;
                     let p = prev_range.add_page(pn, page);
                     let _kicked = self.tree.insert_replace(prev_range.range(), prev_range);
+                    if !_kicked.is_empty() {
+                        log::debug!("kicked (b): {:?}", _kicked);
+                    }
                     return Some(p);
                 }
             }
@@ -527,6 +533,9 @@ impl PageRangeTree {
             range.length = page.nr_pages();
             let p = range.add_page(pn, page);
             let _kicked = self.tree.insert_replace(range.range(), range);
+            if !_kicked.is_empty() {
+                log::debug!("kicked (c): {:?}", _kicked);
+            }
             Some(p)
         }
     }

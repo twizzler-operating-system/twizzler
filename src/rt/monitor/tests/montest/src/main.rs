@@ -3,17 +3,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-extern crate montest_lib;
-extern crate secgate;
-
 secgate::secgate_prelude!();
 
-#[link(name = "montest_lib", kind = "dylib", modifiers = "-as-needed")]
-extern "C" {}
-
-extern crate tracing;
-extern crate tracing_subscriber;
-extern crate twizzler_runtime;
+//#[link(name = "montest_lib", kind = "dylib", modifiers = "-as-needed")]
+//extern "C" {}
 
 fn main() {
     setup_logging();
@@ -43,11 +36,8 @@ mod tests {
 
     use monitor_api::CompartmentHandle;
 
-    use crate::montest_lib;
-    extern crate secgate;
-
     use super::setup_logging;
-    use crate::WAS_CTOR_RUN;
+    use crate::{montest_lib, WAS_CTOR_RUN};
 
     #[test]
     fn test_tl_count() {

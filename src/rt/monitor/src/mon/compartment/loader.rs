@@ -169,6 +169,7 @@ impl RunCompLoader {
         comp_name: &str,
         root_unlib: UnloadedLibrary,
         extras: &[UnloadedLibrary],
+        extras_sctx: &[UnloadedLibrary],
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
     ) -> miette::Result<Self> {
@@ -186,7 +187,34 @@ impl RunCompLoader {
         };
         let mut load_ctx = LoadCtx::default();
 
-        let extra_load_ids: Vec<_> = extras
+        let mut extra_sctx_load_ids: Vec<_> = extras_sctx
+            .into_iter()
+            .map(|extra| {
+                let comp_id = dynlink
+                    .add_compartment(extra.name.clone(), NewCompartmentFlags::EXPORT_GATES)?;
+                if mondebug {
+                    tracing::info!(
+                        "loading sctx preload library: {} -> {}",
+                        extra.name,
+                        comp_id
+                    );
+                } else {
+                    tracing::debug!(
+                        "loading sctx preload library: {} -> {}",
+                        extra.name,
+                        comp_id
+                    );
+                }
+                dynlink.load_library_in_compartment(
+                    comp_id,
+                    extra.clone(),
+                    AllowedGates::Public,
+                    &mut load_ctx,
+                )
+            })
+            .try_collect()?;
+
+        let mut extra_load_ids: Vec<_> = extras
             .into_iter()
             .map(|extra| {
                 if mondebug {
@@ -210,6 +238,8 @@ impl RunCompLoader {
             &mut load_ctx,
         )?);
 
+        extra_load_ids.append(&mut extra_sctx_load_ids);
+
         for extra in &extra_load_ids {
             for extra in extra {
                 loads.0.push(extra.clone());
@@ -221,6 +251,12 @@ impl RunCompLoader {
         // the information about the extra compartments.
         let mut cache = HashSet::new();
         let extra_compartments = loads.0.iter().filter_map(|load| {
+            tracing::trace!(
+                "extra? {} {} {}",
+                load.comp,
+                root_comp_id,
+                cache.contains(&load.comp)
+            );
             if load.comp != root_comp_id {
                 // This compartment was loaded in addition to the root comp as part of our
                 // initial load request. Check if we haven't seen it before.
@@ -254,6 +290,7 @@ impl RunCompLoader {
             },
             extra_compartments,
         )?;
+        tracing::trace!("extras: {:?}", extra_compartments);
 
         let root_id = loads.0[0].lib;
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id, &mut load_ctx)?;
@@ -353,7 +390,7 @@ impl RunCompLoader {
             DEFAULT_STACK_SIZE,
         )?;
 
-        let root_rc = self.root_comp.build_runcomp(
+        let mut root_rc = self.root_comp.build_runcomp(
             make_new_handle("comp-config", self.root_comp.sctx_id)?,
             stack,
             is_debugging,
@@ -380,6 +417,7 @@ impl RunCompLoader {
 
         for rc in extras.drain(..) {
             ids.push(rc.instance);
+            root_rc.deps.push(rc.instance);
             cmp.insert(rc);
         }
         cmp.insert(root_rc);

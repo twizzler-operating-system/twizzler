@@ -43,6 +43,7 @@ pub use fault::page_fault;
 
 /// A type that implements [super::Context] for virtual memory systems.
 pub struct VirtContext {
+    kernel_ctx: ArchContext,
     secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
     // We keep a cache of the actual switch targets so that we don't need to take the above mutex
     // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
@@ -178,6 +179,7 @@ impl PhysAddrProvider for ObjectPageProvider {
 impl VirtContext {
     fn __new(is_kernel: bool) -> Self {
         Self {
+            kernel_ctx: ArchContext::new_kernel(),
             regions: Mutex::new(RegionManager::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
@@ -189,19 +191,19 @@ impl VirtContext {
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
         let this = Self::__new(true);
-        this.register_sctx(KERNEL_SCTX, ArchContext::new_kernel());
         this
     }
 
     /// Construct a new context for userspace.
     pub fn new() -> Self {
         let this = Self::__new(false);
-        // TODO: remove this once we have full support for user security contexts
-        this.register_sctx(KERNEL_SCTX, ArchContext::new());
         this
     }
 
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
+        if sctx == KERNEL_SCTX {
+            return cb(&self.kernel_ctx);
+        }
         let secctx = self.secctx.lock();
         cb(secctx
             .get(&sctx)
@@ -216,6 +218,21 @@ impl VirtContext {
                 log!("{:?}, ", mapping.range);
             }
             logln!("");
+        }
+    }
+
+    pub fn reset_cache(&self) {
+        let secctx = self.secctx.lock();
+        // Rebuild the target cache. We have to do it this way because we cannot allocate
+        // memory while holding the target_cache lock (as it's a spinlock).
+        let mut new_target_cache = BTreeMap::new();
+        for value in secctx.iter() {
+            new_target_cache.insert(*value.0, value.1.target);
+        }
+        // Swap out the target caches, dropping the old one after the spinlock is released.
+        {
+            let mut target_cache = self.target_cache.lock();
+            core::mem::swap(&mut *target_cache, &mut new_target_cache);
         }
     }
 
@@ -301,6 +318,10 @@ impl UserContext for VirtContext {
     type MappingInfo = Slot;
 
     fn switch_to(&self, sctx: ObjID) {
+        if sctx == KERNEL_SCTX {
+            unsafe { ArchContext::switch_to_target(&self.kernel_ctx.target) };
+            return;
+        }
         let tc = self.target_cache.lock();
         let target = tc
             .get(&sctx)

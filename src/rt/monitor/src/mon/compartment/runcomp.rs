@@ -7,7 +7,9 @@ use std::{
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
-use monitor_api::{CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
+use monitor_api::{
+    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, ThreadInfo, TlsTemplateInfo,
+};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::{
@@ -24,13 +26,10 @@ use twizzler_rt_abi::{
 };
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
-use crate::{
-    gates::ThreadInfo,
-    mon::{
-        get_monitor,
-        space::{MapHandle, MapInfo, Space},
-        thread::ThreadMgr,
-    },
+use crate::mon::{
+    get_monitor,
+    space::{MapHandle, MapInfo, Space},
+    thread::ThreadMgr,
 };
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
@@ -309,6 +308,7 @@ impl RunComp {
         {
             return None;
         }
+        self.notify_state_changed();
 
         tracing::debug!("starting main thread for compartment {}", self.name);
         debug_assert!(self.main.is_none());

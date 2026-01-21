@@ -17,3 +17,5 @@ hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
 libc = "*"
 rand = "*"
 #rocksdb = "*"
+
+sgtest = { path = "../../lib/sgtest" }
