@@ -54,7 +54,6 @@ impl Pipe {
             unsafe { Object::<PipeBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
         obj.base().readers.fetch_add(1, Ordering::SeqCst);
         obj.base().writers.fetch_add(1, Ordering::SeqCst);
-        twizzler_abi::klog_println!("open pipe");
         Ok(Self {
             pipe: obj,
             reader: true,
@@ -75,7 +74,6 @@ impl Pipe {
     }
 
     pub fn close_reader(&mut self) {
-        twizzler_abi::klog_println!("close reader: {} {}", self.reader, self.readers());
         if !self.reader {
             return;
         }
@@ -97,7 +95,6 @@ impl Pipe {
     }
 
     pub fn close_writer(&mut self) {
-        twizzler_abi::klog_println!("close writer: {} {}", self.writer, self.writers());
         if !self.writer {
             return;
         }
@@ -171,7 +168,6 @@ impl Write for Pipe {
 
 impl Clone for Pipe {
     fn clone(&self) -> Self {
-        twizzler_abi::klog_println!("cloning pipe {} {}", self.reader, self.writer);
         if self.reader {
             self.pipe.base().readers.fetch_add(1, Ordering::SeqCst);
         }
@@ -188,7 +184,6 @@ impl Clone for Pipe {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        twizzler_abi::klog_println!("drop pipe {} {}", self.reader, self.writer);
         if self.reader {
             self.close_reader();
         }

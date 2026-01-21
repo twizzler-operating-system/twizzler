@@ -475,10 +475,8 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
-        twizzler_abi::klog_println!("CLOSING FDS");
         for (i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
-                twizzler_abi::klog_println!("closing {:?} in {}", i, get_comp_config().sctx);
                 drop(fd);
             }
         }
@@ -800,25 +798,12 @@ impl ReferenceRuntime {
         let mut binding = get_fd_slots().lock().unwrap();
 
         let fd = if let Some(fd) = existing_fd {
-            binding.insert(fd.try_into().unwrap(), elem).inspect(|s| {
-                twizzler_abi::klog_println!(
-                    "replaced fd {} with {:?} (was {:?})",
-                    fd,
-                    kind,
-                    s.binding.kind
-                )
-            });
+            binding.insert(fd.try_into().unwrap(), elem);
             Some(fd as usize)
         } else {
             binding.insert_first_empty(elem)
         }
         .ok_or(ResourceError::OutOfNames)?;
-        twizzler_abi::klog_println!(
-            "created fd {} with {:?} in {}",
-            fd,
-            kind,
-            get_comp_config().sctx
-        );
 
         drop(binding);
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
@@ -977,12 +962,6 @@ impl ReferenceRuntime {
             let newfd = binding
                 .insert_first_empty(nfd)
                 .ok_or(ResourceError::OutOfNames)?;
-            twizzler_abi::klog_println!(
-                "created (dup) fd {} from {} in {}",
-                newfd,
-                fd,
-                get_comp_config().sctx
-            );
             unsafe {
                 ret.cast::<RawFd>().write(newfd.try_into().unwrap());
             }
@@ -1004,7 +983,6 @@ impl ReferenceRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        twizzler_abi::klog_println!("closing fd {} ({})", fd, get_comp_config().sctx);
         let Some(file_desc) = get_fd_slots()
             .lock()
             .unwrap()

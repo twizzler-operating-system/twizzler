@@ -515,6 +515,7 @@ impl super::Monitor {
             .iter()
             .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
             .is_some();
+
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
             loader::RunCompLoader::new(*dynlink, compname, root, &extras, new_comp_flags, mondebug)

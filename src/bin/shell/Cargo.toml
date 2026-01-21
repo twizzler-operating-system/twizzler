@@ -14,3 +14,4 @@ naming-core = { workspace = true }
 embedded-io = { workspace = true, features = ["std"] }
 noline = { workspace = true }
 miette = { workspace = true }
+hhmmss = "0.1"
