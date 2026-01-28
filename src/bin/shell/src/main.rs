@@ -691,12 +691,9 @@ fn main() {
 
         let s = if true {
             // TODO: color seems to break noline
-            //let prompt = format!("{}@{} [{}]{} ", user, host, cd, "#".on_white().black());
             let prompt = format!("root@twizzler [/]# ");
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
                 .unwrap();
-            //print!("{}", prompt);
-            //stdout().flush().unwrap();
             let line = editor.readline(prompt.as_str(), &mut io).unwrap();
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS)
                 .unwrap();
