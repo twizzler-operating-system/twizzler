@@ -313,13 +313,15 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
-        log::warn!(
-            "upcall: {}: {:?}, RIP = {:x}",
-            self.id(),
-            info,
-            self.read_ip()
-        );
-        crate::panic::backtrace(false, None);
+        if info.number() != UpcallInfo::Mailbox(0).number() {
+            log::warn!(
+                "upcall: {}: {:?}, RIP = {:x}",
+                self.id(),
+                info,
+                self.read_ip()
+            );
+            crate::panic::backtrace(false, None);
+        }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
@@ -352,6 +354,12 @@ impl Thread {
 
     pub fn must_return_to_user(&self) -> bool {
         self.pending_message.load(Ordering::SeqCst) != 0
+            && self.secctx.active_id()
+                == self
+                    .upcall_target
+                    .lock()
+                    .map(|u| u.self_ctx)
+                    .unwrap_or(0.into())
     }
 
     pub fn set_trace_state(&self, events: u64) -> Result<(), TwzError> {

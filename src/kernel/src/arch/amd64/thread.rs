@@ -67,6 +67,10 @@ impl ArchThread {
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
         unsafe { self.upcall_restore_frame.get().as_mut().unwrap_unchecked() }.take()
     }
+
+    pub fn has_upcall_restore_frame(&self) -> bool {
+        unsafe { self.upcall_restore_frame.get().as_mut().unwrap_unchecked() }.is_some()
+    }
 }
 
 #[allow(named_asm_labels)]

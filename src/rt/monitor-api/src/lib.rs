@@ -336,6 +336,7 @@ impl CompartmentHandle {
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
     name: String,
+    root_object: ObjID,
     args: Vec<String>,
     env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
@@ -362,18 +363,20 @@ impl CompartmentLoader {
     /// Make a new compartment loader.
     pub fn new(
         compname: impl ToString,
-        libname: impl ToString,
+        exename: impl ToString,
+        root_object: ObjID,
         flags: NewCompartmentFlags,
     ) -> Self {
         let mut config = CompartmentLoaderConfig::default();
         let fd_spec = load_fd_specs_from_runtime();
         config.with_fd_spec(&fd_spec);
         Self {
-            name: format!("{}::{}", compname.to_string(), libname.to_string()),
+            name: format!("{}::{}", compname.to_string(), exename.to_string()),
             flags,
             env: None,
             args: vec![],
             config,
+            root_object,
             _fd_spec: fd_spec,
         }
     }
@@ -432,6 +435,7 @@ impl CompartmentLoader {
             return Err(ArgumentError::InvalidArgument.into());
         }
         let desc = gates::monitor_rt_load_compartment(
+            self.root_object,
             name_len as u64,
             args_len as u64,
             envs_len as u64,
@@ -827,10 +831,6 @@ impl RuntimeThreadControl {
         self.read_unlock();
         id
     }
-}
-
-pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
-    gates::monitor_rt_set_nameroot(root)
 }
 
 pub fn post_signal(

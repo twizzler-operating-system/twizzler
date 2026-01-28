@@ -4,6 +4,7 @@ use std::{
     mem::ManuallyDrop,
     net::{Shutdown, SocketAddr},
     ops::Deref,
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -18,7 +19,8 @@ use naming_core::{
 use raw_file::RawFile;
 use socket::SocketKind;
 use twizzler_abi::{
-    object::{ObjID, Protections},
+    aux::KernelInitInfo,
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, BackingType, KernelConsoleSource, LifetimeType, ObjectCreate,
         ObjectCreateFlags,
@@ -35,7 +37,7 @@ use twizzler_rt_abi::{
         OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
-    fd::{FdInfo, OpenKind, RawFd, SocketAddress},
+    fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
     object::MapFlags,
     Result,
 };
@@ -406,8 +408,19 @@ fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
 
-fn get_naming_handle() -> &'static Mutex<DynamicNamingHandle> {
-    HANDLE.get_or_init(|| Mutex::new(dynamic_naming_factory().unwrap()))
+pub fn get_naming_handle() -> Option<&'static Mutex<DynamicNamingHandle>> {
+    if let Some(h) = HANDLE.get() {
+        return Some(h);
+    }
+    if CompartmentHandle::lookup("naming").is_err() {
+        return None;
+    }
+    HANDLE
+        .get_or_try_init(|| {
+            let f = dynamic_naming_factory().ok_or(())?;
+            Ok::<_, ()>(Mutex::new(f))
+        })
+        .ok()
 }
 
 #[derive(Debug)]
@@ -475,7 +488,7 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
-        for (i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
+        for (_i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
                 drop(fd);
             }
@@ -522,7 +535,10 @@ impl ReferenceRuntime {
         bind_info: &[u8],
         should_drop: bool,
     ) -> Result<RawFd> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
 
         if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
             && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
@@ -619,22 +635,98 @@ impl ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
+    pub fn canon_name(
+        &self,
+        _resolver: twizzler_rt_abi::fd::NameResolver,
+        name: &[u8],
+        out_name: &mut [u8],
+    ) -> Result<usize> {
+        //let namer = get_naming_handle().unwrap().lock().unwrap();
+
+        let path = PathBuf::from(str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?);
+        let path = if !path.is_absolute() {
+            let mut cd = std::env::current_dir()?;
+            cd.push(path);
+            cd
+        } else {
+            path
+        };
+        /*
+        let mut out_path = PathBuf::new();
+        out_path.push("/");
+        for comp in path.components() {
+            let comp = comp.as_os_str().to_str().unwrap();
+
+        }
+        */
+
+        let npath = path.normalize_lexically().unwrap_or(path);
+        let path = npath.to_str().unwrap().as_bytes();
+
+        let len = out_name.len().min(path.len());
+        out_name[0..len].copy_from_slice(&path[0..len]);
+        Ok(len)
+    }
+
+    pub fn resolve_name(
+        &self,
+        _resolver: twizzler_rt_abi::fd::NameResolver,
+        name: &[u8],
+    ) -> Result<ObjID> {
+        let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+        let h = get_naming_handle();
+        if h.is_none() {
+            fn get_kernel_init_info() -> &'static KernelInitInfo {
+                unsafe {
+                    (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
+                        as *const KernelInitInfo)
+                        .as_ref()
+                        .unwrap()
+                }
+            }
+
+            fn find_init_name(name: &str) -> Option<(ObjID, String)> {
+                let init_info = get_kernel_init_info();
+                for n in init_info.names() {
+                    if n.name() == name {
+                        return Some((n.id(), name.to_string()));
+                    }
+                }
+                None
+            }
+            let id = find_init_name(name).ok_or(NamingError::NotFound)?;
+            return Ok(id.0);
+        }
+        let mut session = get_naming_handle().unwrap().lock().unwrap();
+        let res = session.get(name, GetFlags::FOLLOW_SYMLINK)?;
+        Ok(res.id)
+    }
+
     pub fn mkns(&self, name: &str) -> Result<()> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
 
         session.put_namespace(name, true)?;
         Ok(())
     }
 
     pub fn symlink(&self, name: &str, target: &str) -> Result<()> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
 
         session.symlink(name, target)?;
         Ok(())
     }
 
     pub fn readlink(&self, name: &str, target: &mut [u8], read_len: &mut u64) -> Result<()> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
         let node = session.get(name, GetFlags::empty())?;
 
         let link = node.readlink()?;
@@ -857,7 +949,10 @@ impl ReferenceRuntime {
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
         Ok(session.remove(path)?)
     }
 
@@ -939,7 +1034,9 @@ impl ReferenceRuntime {
 
         match &mut fd.kind {
             //FdKind::Socket(socket_kind) => todo!(),
-            //FdKind::Pty(pty_handle_kind) => todo!(),
+            FdKind::Pty(pty_handle_kind) => {
+                return pty_handle_kind.set_config(reg, val, val_len);
+            }
             //FdKind::Pipe(pipe) => todo!(),
             FdKind::Compartment(compartment_file) => {
                 return compartment_file.set_config(reg, val, val_len);
@@ -1010,6 +1107,36 @@ impl ReferenceRuntime {
         file_desc.seek(pos)
     }
 
+    pub fn set_nameroot(&self, root: NameRoot, slice: &[u8]) -> Result<()> {
+        let path = PathBuf::from(str::from_utf8(slice).unwrap());
+        let mut nr = self.nameroots.lock();
+        if let Some(namer) = get_naming_handle() {
+            namer.lock().unwrap().change_namespace(&path)?;
+        }
+        if path.is_absolute() {
+            let path = path.canonicalize()?;
+            nr.insert(root, path);
+            return Ok(());
+        }
+        let mut cur = nr.get(&root).cloned().unwrap_or_else(|| PathBuf::from("/"));
+        cur.push(path);
+        let cur = cur.canonicalize()?;
+        nr.insert(root, cur);
+
+        Ok(())
+    }
+
+    pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {
+        let nr = self.nameroots.lock();
+        let data = nr
+            .get(&root)
+            .map(|n| n.to_str().unwrap().as_bytes())
+            .unwrap_or(b"/");
+        let len = data.len().min(slice.len());
+        slice[0..len].copy_from_slice(&data[0..len]);
+        Ok(len)
+    }
+
     pub fn fd_enumerate(
         &self,
         fd: RawFd,
@@ -1017,7 +1144,10 @@ impl ReferenceRuntime {
         off: usize,
     ) -> Result<usize> {
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
         let names = session.enumerate_names_nsid(stat.id.into())?;
         if off >= names.len() {
             return Ok(0);

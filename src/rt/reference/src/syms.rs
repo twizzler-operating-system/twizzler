@@ -80,8 +80,8 @@ use tracing::warn;
 use twizzler_abi::object::ObjID;
 // core.h
 use twizzler_rt_abi::bindings::{
-    binding_info, endpoint, io_ctx, object_cmd, option_exit_code, release_flags, twz_error,
-    u32_result,
+    binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, option_exit_code,
+    release_flags, twz_error, u32_result,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
@@ -486,6 +486,31 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
 }
 check_ffi_type!(twz_rt_fd_readlink, _, _, _, _, _);
 
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_nameroot(
+    root: name_root,
+    path: *mut c_char,
+    len: usize,
+) -> io_result {
+    let slice = unsafe { core::slice::from_raw_parts_mut(path.cast::<u8>(), len) };
+    OUR_RUNTIME.get_nameroot(root.into(), slice).into()
+}
+check_ffi_type!(twz_rt_get_nameroot, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_set_nameroot(
+    root: name_root,
+    path: *const c_char,
+    len: usize,
+) -> twz_error {
+    let slice = unsafe { core::slice::from_raw_parts(path.cast::<u8>(), len) };
+    match OUR_RUNTIME.set_nameroot(root.into(), slice) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_set_nameroot, _, _, _);
+
 // io.h
 use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
 #[no_mangle]
@@ -618,6 +643,37 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
     }
 }
 check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_resolve_name(
+    resolver: name_resolver,
+    name: *const c_char,
+    name_len: usize,
+) -> objid_result {
+    let slice = unsafe { core::slice::from_raw_parts(name as *const u8, name_len) };
+    result_id_to_bindings(OUR_RUNTIME.resolve_name(resolver.into(), slice))
+}
+check_ffi_type!(twz_rt_resolve_name, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_canon_name(
+    resolver: name_resolver,
+    name: *const c_char,
+    name_len: usize,
+    out: *mut c_char,
+    out_len: *mut usize,
+) -> twz_error {
+    let slice = unsafe { core::slice::from_raw_parts(name as *const u8, name_len) };
+    let out_slice = unsafe { core::slice::from_raw_parts_mut(out as *mut u8, out_len.read()) };
+    match OUR_RUNTIME.canon_name(resolver.into(), slice, out_slice) {
+        Ok(len) => {
+            out_len.write(len);
+            RawTwzError::success().raw()
+        }
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_canon_name, _, _, _, _, _);
 
 // object.h
 

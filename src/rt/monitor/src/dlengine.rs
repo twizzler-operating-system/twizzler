@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::collections::BTreeMap;
 
 use dynlink::{
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
@@ -6,7 +6,7 @@ use dynlink::{
     library::UnloadedLibrary,
     DynlinkError, DynlinkErrorKind,
 };
-use naming_core::{GetFlags, NameStore, NsNodeKind};
+use smallstr::SmallString;
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -22,7 +22,36 @@ use crate::mon::{
     space::{MapInfo, Space},
 };
 
-pub struct Engine;
+pub struct Engine {
+    name_map: BTreeMap<String, ObjID>,
+}
+
+impl Engine {
+    pub fn new() -> Self {
+        let mut name_map = BTreeMap::new();
+        let init_info = get_kernel_init_info();
+        for n in init_info.names() {
+            name_map.insert(n.name().to_string(), n.id());
+        }
+        Self { name_map }
+    }
+
+    fn name_resolver(&self, mut name: &str) -> Result<(ObjID, String), DynlinkError> {
+        if name.starts_with("libstd") {
+            name = "libstd.so";
+        }
+        if name.starts_with("libtest") {
+            name = "libtest.so";
+        }
+
+        if let Some(id) = self.name_map.get(name) {
+            return Ok((*id, name.to_string()));
+        }
+        Err(DynlinkError::new(DynlinkErrorKind::NameNotFound {
+            name: SmallString::from_str(name),
+        }))
+    }
+}
 
 fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
     let sec_ctx = SecCtx::default();
@@ -98,7 +127,11 @@ impl ContextEngine for Engine {
     }
 
     fn load_object(&mut self, unlib: &UnloadedLibrary) -> Result<Backing, DynlinkError> {
-        let (id, full) = name_resolver(&unlib.name)?;
+        let (id, full) = if unlib.id.is_some() {
+            (unlib.id.unwrap(), unlib.name.clone())
+        } else {
+            self.name_resolver(&unlib.name)?
+        };
         let mapping = Space::map(
             &get_monitor().space,
             MapInfo {
@@ -126,49 +159,6 @@ impl ContextEngine for Engine {
     }
 }
 
-static NAMING: OnceLock<NameStore> = OnceLock::new();
-
-pub fn set_naming(root: ObjID) -> Result<(), TwzError> {
-    NAMING
-        .set(NameStore::new_with_root(root)?)
-        .map_err(|_| NamingError::AlreadyBound.into())
-}
-
-pub fn naming() -> Option<&'static NameStore> {
-    NAMING.get()
-}
-
-fn do_name_resolver(name: &str) -> Result<(ObjID, String), DynlinkError> {
-    if let Some(namer) = naming() {
-        let session = namer.root_session();
-        let node = session
-            .get(name, GetFlags::FOLLOW_SYMLINK)
-            .map_err(|_| DynlinkErrorKind::NameNotFound { name: name.into() })?;
-        return match node.kind {
-            NsNodeKind::Object => Ok((node.id, name.into())),
-            _ => Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into()),
-        };
-    }
-
-    find_init_name(name).ok_or(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
-}
-
-fn name_resolver(mut name: &str) -> Result<(ObjID, String), DynlinkError> {
-    if name.starts_with("libstd") {
-        name = "libstd.so";
-    }
-    if name.starts_with("libtest") {
-        name = "libtest.so";
-    }
-
-    if let Ok(r) = do_name_resolver(name) {
-        return Ok(r);
-    }
-
-    let initrdname = format!("/initrd/{}", name);
-    do_name_resolver(initrdname.as_str())
-}
-
 pub fn get_kernel_init_info() -> &'static KernelInitInfo {
     unsafe {
         (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
@@ -176,14 +166,4 @@ pub fn get_kernel_init_info() -> &'static KernelInitInfo {
             .as_ref()
             .unwrap()
     }
-}
-
-fn find_init_name(name: &str) -> Option<(ObjID, String)> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some((n.id(), name.to_string()));
-        }
-    }
-    None
 }

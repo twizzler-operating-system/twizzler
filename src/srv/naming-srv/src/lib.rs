@@ -156,11 +156,13 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> Result<Ob
                 .unwrap();
             namer.names.root_session().mkns("/initrd", false).unwrap();
             for n in get_kernel_init_info().names() {
-                namer
-                    .names
-                    .root_session()
-                    .put(&format!("/initrd/{}", n.name()), n.id())
-                    .unwrap();
+                if n.name() != ".." && n.name() != "." {
+                    namer
+                        .names
+                        .root_session()
+                        .put(&format!("/initrd/{}", n.name()), n.id())
+                        .unwrap();
+                }
             }
 
             namer

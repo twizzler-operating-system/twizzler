@@ -93,17 +93,29 @@ fn monitor_init() -> miette::Result<()> {
             .unwrap_or(MAX_NAMELEN - 1);
         let test_name = String::from_utf8_lossy(&test_name_slice[0..first_null]);
         debug!("monitor test binary: {}", test_name);
+        let Some(mt_id) = dlengine::get_kernel_init_info()
+            .names()
+            .iter()
+            .find(|iname| iname.name() == "montest")
+        else {
+            panic!("failed to find montest binary");
+        };
+
         if let Some(_ki_name) = dlengine::get_kernel_init_info()
             .names()
             .iter()
             .find(|iname| iname.name() == test_name)
         {
             // Load and wait for tests to complete
-            let comp: CompartmentHandle =
-                CompartmentLoader::new("montest", test_name, NewCompartmentFlags::empty())
-                    .args(&["montest", "--test-threads=1"])
-                    .load()
-                    .into_diagnostic()?;
+            let comp: CompartmentHandle = CompartmentLoader::new(
+                "montest",
+                test_name,
+                mt_id.id(),
+                NewCompartmentFlags::empty(),
+            )
+            .args(&["montest", "--test-threads=1"])
+            .load()
+            .into_diagnostic()?;
             let mut flags = comp.info().flags;
             while !flags.contains(CompartmentFlags::EXITED) {
                 flags = comp.wait(flags);
@@ -118,8 +130,15 @@ fn monitor_init() -> miette::Result<()> {
     for arg in std::env::args() {
         args.push(arg);
     }
+    let Some(init_id) = dlengine::get_kernel_init_info()
+        .names()
+        .iter()
+        .find(|iname| iname.name() == "init")
+    else {
+        panic!("failed to find init");
+    };
     let comp: CompartmentHandle =
-        CompartmentLoader::new("init", "init", NewCompartmentFlags::empty())
+        CompartmentLoader::new("init", "init", init_id.id(), NewCompartmentFlags::empty())
             .args(&args)
             .load()
             .into_diagnostic()?;

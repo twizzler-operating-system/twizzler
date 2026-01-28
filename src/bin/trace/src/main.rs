@@ -84,7 +84,10 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
             .into_diagnostic()?;
         rt_trace = Some(obj);
     }
-    let mut comp = CompartmentLoader::new(&compname, name, NewCompartmentFlags::DEBUG);
+
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), name).into_diagnostic()?;
+    let mut comp = CompartmentLoader::new(&compname, name, id, NewCompartmentFlags::DEBUG);
     comp.args(&cli.prog.cmdline);
 
     if let Some(ref rt_trace) = rt_trace {

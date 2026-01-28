@@ -23,9 +23,20 @@ pub fn exit_kernel() {
     if let Some(thread) = current_thread_ref() {
         thread.flags.fetch_and(!THREAD_IN_KERNEL, Ordering::SeqCst);
         thread.remove_donated_priority();
-        let pending_message = thread.pending_message.swap(0, Ordering::SeqCst);
-        if pending_message != 0 {
-            thread.send_upcall(UpcallInfo::Mailbox(pending_message));
+        if thread.arch.has_upcall_restore_frame() {
+            return;
+        }
+        if thread.secctx.active_id()
+            == thread
+                .upcall_target
+                .lock()
+                .map(|ut| ut.self_ctx)
+                .unwrap_or(0.into())
+        {
+            let pending_message = thread.pending_message.swap(0, Ordering::SeqCst);
+            if pending_message != 0 {
+                thread.send_upcall(UpcallInfo::Mailbox(pending_message));
+            }
         }
     }
 }

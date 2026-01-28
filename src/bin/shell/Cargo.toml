@@ -15,3 +15,7 @@ embedded-io = { workspace = true, features = ["std"] }
 noline = { workspace = true }
 miette = { workspace = true }
 hhmmss = "0.1"
+monitor-api = { workspace = true }
+libc = { workspace = true }
+colored = { workspace = true }
+twizzler-io = { path = "../../lib/twizzler-io" }

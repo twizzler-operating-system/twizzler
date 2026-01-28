@@ -6418,14 +6418,18 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "colored",
  "embedded-io",
  "hhmmss",
+ "libc",
  "miette",
+ "monitor-api",
  "naming-core",
  "noline",
  "tracing",
  "tracing-subscriber",
  "twizzler-abi",
+ "twizzler-io",
  "twizzler-queue",
  "twizzler-rt-abi",
  "twizzler-runtime",

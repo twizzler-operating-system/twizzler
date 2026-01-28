@@ -173,12 +173,18 @@ impl Monitor {
 
     /// Start a managed monitor thread.
     #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
-    pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, TwzError> {
+    pub fn start_thread(
+        &self,
+        instance: ObjID,
+        main: Box<dyn FnOnce()>,
+    ) -> Result<ManagedThread, TwzError> {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
 
         let monitor_dynlink_comp = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
-        locks.0.start_thread(monitor_dynlink_comp, main, None)
+        locks
+            .0
+            .start_thread(monitor_dynlink_comp, main, None, instance)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -190,19 +196,25 @@ impl Monitor {
         stack_ptr: usize,
         thread_ptr: usize,
     ) -> Result<ObjID, TwzError> {
-        let thread = self.start_thread(Box::new(move || {
-            let frame = UpcallFrame::new_entry_frame(
-                stack_ptr,
-                args.stack_size,
-                thread_ptr,
-                instance,
-                args.start,
-                args.arg,
-            );
-            unsafe {
-                twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, ResumeFlags::empty())
-            };
-        }))?;
+        let thread = self.start_thread(
+            instance,
+            Box::new(move || {
+                let frame = UpcallFrame::new_entry_frame(
+                    stack_ptr,
+                    args.stack_size,
+                    thread_ptr,
+                    instance,
+                    args.start,
+                    args.arg,
+                );
+                unsafe {
+                    twizzler_abi::syscall::sys_thread_resume_from_upcall(
+                        &frame,
+                        ResumeFlags::empty(),
+                    )
+                };
+            }),
+        )?;
         Ok(thread.id)
     }
 
@@ -407,11 +419,6 @@ impl Monitor {
                 }
             }
         }
-    }
-
-    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
-        crate::dlengine::set_naming(root)
     }
 
     pub fn post_signal(

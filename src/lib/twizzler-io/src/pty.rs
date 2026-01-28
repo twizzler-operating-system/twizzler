@@ -118,6 +118,10 @@ impl PtyClientHandle {
             self.termios_gen = termios_gen;
         }
     }
+
+    pub fn set_termios(&self, termios: libc::termios) {
+        self.output.writer.pty.base().update_termios(|_| termios);
+    }
 }
 
 #[derive(Clone)]
@@ -184,6 +188,10 @@ impl PtyServerHandle {
 
     pub fn object(&self) -> &Object<PtyBase> {
         &self.client_output.pty
+    }
+
+    pub fn set_termios(&self, termios: libc::termios) {
+        self.client_output.pty.base().update_termios(|_| termios);
     }
 }
 
@@ -301,6 +309,50 @@ pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
     c_oflag: OPOST | ONLCR | XTABS,
     c_cflag: CREAD | CS7 | PARENB | HUPCL,
     c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOKE | ECHOCTL,
+    c_cc: [
+        CINTR,
+        CQUIT,
+        CERASE,
+        CKILL,
+        CEOF,
+        CTIME,
+        CMIN,
+        _POSIX_VDISABLE,
+        CSTART,
+        CSTOP,
+        CSUSP,
+        CEOL,
+        CREPRINT,
+        CDISCARD,
+        CWERASE,
+        CLNEXT,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        CSTATUS,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+        _POSIX_VDISABLE,
+    ],
+    __c_ispeed: B9600,
+    __c_ospeed: B9600,
+    c_line: 0,
+};
+
+pub const DEFAULT_TERMIOS_RAW: libc::termios = libc::termios {
+    c_iflag: ISTRIP | ICRNL,
+    c_oflag: ONLCR | XTABS,
+    c_cflag: CREAD | CS7 | PARENB | HUPCL,
+    c_lflag: 0,
     c_cc: [
         CINTR,
         CQUIT,

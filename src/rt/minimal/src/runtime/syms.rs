@@ -271,7 +271,17 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 
 // fd.h
 
-use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
+use twizzler_rt_abi::bindings::{descriptor, name_root, open_info, open_result};
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_nameroot(
+    _root: name_root,
+    _path: *mut c_char,
+    _len: usize,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_get_nameroot, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(

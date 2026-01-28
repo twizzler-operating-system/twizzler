@@ -1,6 +1,10 @@
 //! Top level runtime module, managing the basic presentation of the runtime.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 mod alloc;
 mod core;
@@ -16,6 +20,7 @@ mod trace;
 pub(crate) mod upcall;
 
 use twizzler_abi::simple_mutex::Mutex;
+use twizzler_rt_abi::fd::NameRoot;
 pub use upcall::set_upcall_handler;
 
 use self::object::ObjectHandleManager;
@@ -24,6 +29,7 @@ use self::object::ObjectHandleManager;
 pub struct ReferenceRuntime {
     pub(crate) state: AtomicU32,
     pub(crate) object_manager: Mutex<ObjectHandleManager>,
+    pub(crate) nameroots: Mutex<BTreeMap<NameRoot, PathBuf>>,
 }
 
 impl std::fmt::Debug for ReferenceRuntime {
@@ -71,6 +77,7 @@ impl ReferenceRuntime {
 pub static OUR_RUNTIME: ReferenceRuntime = ReferenceRuntime {
     state: AtomicU32::new(0),
     object_manager: Mutex::new(ObjectHandleManager::new()),
+    nameroots: Mutex::new(BTreeMap::new()),
 };
 
 // These are exported by libunwind, but not re-exported by the standard library that pulls that in.

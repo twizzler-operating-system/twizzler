@@ -39,7 +39,7 @@ impl Context {
                                 }
                             })
                         })
-                        .map(|name| UnloadedLibrary { name: name.into() })
+                        .map(|name| UnloadedLibrary::new(name))
                 }),
                 _ => None,
             })

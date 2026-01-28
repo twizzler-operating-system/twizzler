@@ -89,7 +89,7 @@ impl CompartmentMgr {
         self.dynlink_map.insert(rc.compartment_id, rc.instance);
         self.remove_from_controllers(rc.instance);
         if let Some(controller) = rc.controller {
-            tracing::info!(
+            tracing::debug!(
                 "setting controller for new compartment {}: {}",
                 rc.instance,
                 controller
@@ -462,6 +462,7 @@ impl super::Monitor {
         &self,
         caller: ObjID,
         thread: ObjID,
+        root_object: ObjID,
         name_len: usize,
         args_len: usize,
         env_len: usize,
@@ -480,7 +481,7 @@ impl super::Monitor {
         let mut split = input.split("::");
         let compname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
         let libname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
-        let root = UnloadedLibrary::new(libname);
+        let root = UnloadedLibrary::new_object(libname, root_object);
 
         // parse args
         let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);

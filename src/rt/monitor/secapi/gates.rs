@@ -218,6 +218,7 @@ pub fn monitor_rt_lookup_compartment_id(
 
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
 pub enum ControllerOption {
     #[default]
     Inherit,
@@ -227,6 +228,7 @@ pub enum ControllerOption {
 
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
 pub struct CompartmentLoaderConfig {
     pub controller: ControllerOption,
     pub fd_spec: *const binding_info,
@@ -234,17 +236,20 @@ pub struct CompartmentLoaderConfig {
 }
 
 impl CompartmentLoaderConfig {
+    #[allow(dead_code)]
     pub fn with_controller(&mut self, controller: ControllerOption) -> &mut Self {
         self.controller = controller;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_fd_spec<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
         self.fd_spec = spec.as_ptr();
         self.fd_spec_len = spec.len();
         self
     }
 
+    #[allow(dead_code)]
     pub fn fd_spec(&self) -> &[binding_info] {
         unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
     }
@@ -261,6 +266,7 @@ unsafe impl Crossing for LibraryInfo {}
 )]
 pub fn monitor_rt_load_compartment(
     info: &secgate::GateCallInfo,
+    root_object: ObjID,
     name_len: u64,
     args_len: u64,
     env_len: u64,
@@ -272,6 +278,7 @@ pub fn monitor_rt_load_compartment(
     monitor.load_compartment(
         caller,
         info.thread_id(),
+        root_object,
         name_len as usize,
         args_len as usize,
         env_len as usize,
@@ -514,16 +521,6 @@ pub struct DynlinkStats {
 pub fn monitor_rt_stats(_info: &secgate::GateCallInfo) -> Result<MonitorStats, TwzError> {
     let monitor = crate::mon::get_monitor();
     Ok(monitor.stats())
-}
-
-#[cfg_attr(feature = "secgate-impl", secgate::secure_gate(options(info)))]
-#[cfg_attr(
-    not(feature = "secgate-impl"),
-    secgate::secure_gate(options(info, api))
-)]
-pub fn monitor_rt_set_nameroot(info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
-    let monitor = crate::mon::get_monitor();
-    monitor.set_nameroot(info, root)
 }
 
 bitflags::bitflags! {

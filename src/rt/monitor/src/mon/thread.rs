@@ -111,6 +111,7 @@ impl ThreadMgr {
         super_stack_start: usize,
         super_thread_pointer: usize,
         arg: usize,
+        self_ctx: ObjID,
     ) -> Result<ObjID, TwzError> {
         let mut upcall_target = UpcallTarget::new(
             None,
@@ -119,6 +120,7 @@ impl ThreadMgr {
             SUPER_UPCALL_STACK_SIZE,
             super_thread_pointer,
             MONITOR_INSTANCE_ID,
+            self_ctx,
             [UpcallOptions {
                 flags: UpcallFlags::empty(),
                 mode: UpcallMode::CallSuper,
@@ -146,6 +148,7 @@ impl ThreadMgr {
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
         main_thread_comp: Option<ObjID>,
+        instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
         let super_tls = monitor_dynlink_comp
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -165,6 +168,7 @@ impl ThreadMgr {
                 super_stack.as_ptr() as usize,
                 super_thread_pointer,
                 arg,
+                instance,
             )?
         };
         let repr = Space::map(
@@ -192,6 +196,7 @@ impl ThreadMgr {
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
         main_thread_comp: Option<ObjID>,
+        instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
@@ -208,6 +213,7 @@ impl ThreadMgr {
             managed_thread_entry,
             main_addr,
             main_thread_comp,
+            instance,
         );
         if let Ok(ref mt) = mt {
             if let Some(cleaner) = self.cleaner.get() {

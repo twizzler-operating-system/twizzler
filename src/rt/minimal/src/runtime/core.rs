@@ -105,6 +105,7 @@ impl MinimalRuntime {
             0,
             0,
             0.into(),
+            0.into(),
             [UpcallOptions {
                 flags: UpcallFlags::empty(),
                 mode: UpcallMode::CallSelf,

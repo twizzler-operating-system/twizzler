@@ -11,6 +11,8 @@
 #![feature(c_variadic)]
 #![feature(linkage)]
 #![feature(c_size_t)]
+#![feature(once_cell_try)]
+#![feature(normalize_lexically)]
 
 pub(crate) mod arch;
 

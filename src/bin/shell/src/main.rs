@@ -3,6 +3,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::c_void,
     fmt::Debug,
     fs::{File, OpenOptions},
     io::{Read, Write, stderr, stdin, stdout},
@@ -10,14 +11,21 @@ use std::{
         fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
         twizzler::process::ChildExt,
     },
+    path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{Arc, Mutex},
     time::Instant,
 };
 
+use colored::Colorize;
 use embedded_io::ErrorType;
 use miette::IntoDiagnostic;
-use twizzler_abi::syscall::sys_thread_exit;
+use twizzler_abi::{
+    syscall::sys_thread_exit,
+    upcall::{UpcallData, UpcallFrame},
+};
+use twizzler_io::pty::{DEFAULT_TERMIOS, DEFAULT_TERMIOS_RAW};
+use twizzler_rt_abi::bindings::{IO_REGISTER_TERMIOS, twz_rt_set_upcall_handler};
 
 #[derive(Debug, Clone, Copy)]
 enum NextHop {
@@ -76,15 +84,16 @@ mod builtins {
     use hhmmss::Hhmmss;
     use miette::IntoDiagnostic;
 
-    use crate::InvokeCtx;
+    use crate::{InvokeCtx, ShellInvoke, WaitChild};
 
-    pub struct BuiltinCtx {
+    pub struct BuiltinCtx<'a> {
         pub stdin: File,
         pub stdout: File,
         pub stderr: File,
+        pub cmd: &'a ShellInvoke,
     }
 
-    impl BuiltinCtx {
+    impl BuiltinCtx<'_> {
         fn _stdin(&self) -> BufReader<&File> {
             BufReader::new(&self.stdin)
         }
@@ -93,7 +102,7 @@ mod builtins {
             BufWriter::new(&self.stdout)
         }
 
-        fn _stderr(&self) -> &File {
+        fn stderr(&self) -> &File {
             &self.stderr
         }
     }
@@ -116,6 +125,117 @@ mod builtins {
                 job.name
             )
             .into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    pub fn kill(ctx: &mut BuiltinCtx, invoke: &InvokeCtx) -> miette::Result<()> {
+        if ctx.cmd.command.len() < 2 {
+            writeln!(ctx.stderr(), "usage: kill <job_id>").into_diagnostic()?;
+            return Ok(());
+        }
+        let Ok(job_id) = ctx.cmd.command[1].parse::<u64>() else {
+            writeln!(ctx.stderr(), "invalid job id `{}'", ctx.cmd.command[1]).into_diagnostic()?;
+            return Ok(());
+        };
+        let Some(job) = invoke.jobs.jobs.get(&job_id) else {
+            writeln!(ctx.stderr(), "job {} not found", job_id).into_diagnostic()?;
+            return Ok(());
+        };
+        let Ok(ch) = &mut *job.child.lock().unwrap() else {
+            writeln!(ctx.stderr(), "job {} not running", job_id).into_diagnostic()?;
+            return Ok(());
+        };
+        if let WaitChild::Child(ch) = ch {
+            if let Err(e) = ch.kill() {
+                writeln!(ctx.stderr(), "failed to kill job {}: {}", job_id, e).into_diagnostic()?;
+            }
+        } else {
+            writeln!(ctx.stderr(), "job {} not running", job_id).into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    pub fn wait(ctx: &mut BuiltinCtx, invoke: &InvokeCtx) -> miette::Result<()> {
+        if ctx.cmd.command.len() < 2 {
+            writeln!(ctx.stderr(), "usage: wait <job_id>").into_diagnostic()?;
+            return Ok(());
+        }
+        let Ok(job_id) = ctx.cmd.command[1].parse::<u64>() else {
+            writeln!(ctx.stderr(), "invalid job id `{}'", ctx.cmd.command[1]).into_diagnostic()?;
+            return Ok(());
+        };
+        let Some(job) = invoke.jobs.jobs.get(&job_id) else {
+            writeln!(ctx.stderr(), "job {} not found", job_id).into_diagnostic()?;
+            return Ok(());
+        };
+        let Ok(ch) = &mut *job.child.lock().unwrap() else {
+            writeln!(ctx.stderr(), "job {} not running", job_id).into_diagnostic()?;
+            return Ok(());
+        };
+        if let WaitChild::Child(ch) = ch {
+            if let Err(e) = ch.wait() {
+                writeln!(ctx.stderr(), "failed to wait for job {}: {}", job_id, e)
+                    .into_diagnostic()?;
+            }
+        } else {
+            writeln!(ctx.stderr(), "job {} not running", job_id).into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    pub fn cd(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        if ctx.cmd.command.len() != 2 {
+            writeln!(ctx.stderr(), "usage: cd <directory>").into_diagnostic()?;
+            return Ok(());
+        }
+        if let Err(e) = std::env::set_current_dir(&ctx.cmd.command[1]) {
+            writeln!(ctx.stderr(), "failed to change directory: {}", e).into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    pub fn pwd(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        let Ok(current) = std::env::current_dir() else {
+            writeln!(ctx.stderr(), "failed to get current directory").into_diagnostic()?;
+            return Ok(());
+        };
+        writeln!(ctx.stdout(), "{}", current.display()).into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn echo(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        for arg in &ctx.cmd.command[1..] {
+            write!(ctx.stdout(), "{} ", arg).into_diagnostic()?;
+        }
+        writeln!(ctx.stdout()).into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn set(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        if ctx.cmd.command.len() < 2 {
+            writeln!(ctx.stderr(), "usage: set VAR [val]").into_diagnostic()?;
+            return Ok(());
+        }
+        let var = &ctx.cmd.command[1];
+        let val = ctx.cmd.command.get(2).map(|s| s.as_str()).unwrap_or("");
+        unsafe { std::env::set_var(var, val) };
+        Ok(())
+    }
+
+    pub fn unset(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        if ctx.cmd.command.len() < 2 {
+            writeln!(ctx.stderr(), "usage: unset VAR").into_diagnostic()?;
+            return Ok(());
+        }
+        let var = &ctx.cmd.command[1];
+        unsafe { std::env::remove_var(var) };
+        Ok(())
+    }
+
+    pub fn env(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        for (key, value) in std::env::vars() {
+            writeln!(ctx.stdout(), "{}={}", key, value).into_diagnostic()?;
         }
         Ok(())
     }
@@ -150,6 +270,7 @@ impl ShellInvoke {
                         .into_diagnostic()?
                         .into_raw_fd(),
                 ),
+                cmd: self,
             }
         };
         if let Some(stdin) = ctx.pipe.take() {
@@ -199,6 +320,14 @@ impl ShellInvoke {
     fn try_builtin(&self, ctx: &mut InvokeCtx) -> miette::Result<Option<Job>> {
         match self.command[0].as_str() {
             "jobs" => self.invoke_builtin(builtins::jobs, ctx).map(|j| Some(j)),
+            "kill" => self.invoke_builtin(builtins::kill, ctx).map(|j| Some(j)),
+            "cd" => self.invoke_builtin(builtins::cd, ctx).map(|j| Some(j)),
+            "pwd" => self.invoke_builtin(builtins::pwd, ctx).map(|j| Some(j)),
+            "echo" => self.invoke_builtin(builtins::echo, ctx).map(|j| Some(j)),
+            "wait" => self.invoke_builtin(builtins::wait, ctx).map(|j| Some(j)),
+            "set" => self.invoke_builtin(builtins::set, ctx).map(|j| Some(j)),
+            "unset" => self.invoke_builtin(builtins::unset, ctx).map(|j| Some(j)),
+            "env" => self.invoke_builtin(builtins::env, ctx).map(|j| Some(j)),
             _ => Ok(None),
         }
     }
@@ -209,7 +338,9 @@ impl ShellInvoke {
         }
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..]);
+        cmd.envs(std::env::vars());
         cmd.envs(self.env.iter().map(|x| (&x.0, &x.1)));
+        cmd.current_dir(std::env::current_dir().into_diagnostic()?);
 
         if let Some(stdin) = ctx.pipe.take() {
             cmd.stdin(unsafe { Stdio::from_raw_fd(stdin.into_raw_fd()) });
@@ -512,37 +643,63 @@ impl embedded_io::Write for TwzIo {
     }
 }
 
-fn main() {
-    println!("Hello, world!");
+unsafe extern "C-unwind" fn upcall_handler(frame: *mut c_void, data: *const c_void) {
+    let data = unsafe { data.cast::<UpcallData>().as_ref().unwrap() };
+    let _frame = unsafe { frame.cast::<UpcallFrame>().as_ref().unwrap() };
+    match data.info {
+        twizzler_abi::upcall::UpcallInfo::Mailbox(val) => {
+            twizzler_abi::klog_println!("shell: signal {}", val);
+            if val == libc::SIGINFO as u64 {
+                let mstats = monitor_api::stats().unwrap();
+                twizzler_abi::klog_println!("{:?}", mstats);
+            }
+        }
+        _ => {
+            panic!("fatal error: {:?}", data);
+        }
+    }
+}
 
-    println!("To run a program, type its name.");
+fn main() {
+    unsafe { twz_rt_set_upcall_handler(Some(upcall_handler)) };
+
     let mut io = TwzIo;
     let mut buffer = [0; 1024];
     let mut history = [0; 1024];
-    let editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
+    let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
         .with_slice_history(&mut history)
         .build_sync(&mut io)
         .unwrap();
-    drop(editor);
+    colored::control::set_override(true);
     let mut jobs = Jobs::default();
     loop {
-        //let mstats = monitor_api::stats().unwrap();
-        //println!("{:?}", mstats);
-        //let line = editor.readline("twz> ", &mut io).unwrap();
-
         jobs.scan();
 
-        print!("twz> ");
-        stdout().flush().unwrap();
-        let mut s = String::new();
-        let _ = stdin().read_line(&mut s).unwrap();
+        let cd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let user = "root".red();
+        let host = "twizzler".bright_blue();
+        let cd = cd.to_str().unwrap().bright_cyan();
+
+        let s = if true {
+            twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
+                .unwrap();
+            let line = editor.readline("twz> ", &mut io).unwrap();
+            twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS)
+                .unwrap();
+            line.to_string()
+        } else {
+            print!("{}@{} [{}]> ", user, host, cd);
+            stdout().flush().unwrap();
+            let mut s = String::new();
+            let _ = stdin().read_line(&mut s).unwrap();
+            s
+        };
 
         if s.is_empty() {
             continue;
         }
 
         let cmd = ShellCommand::parse(&s).unwrap();
-        //println!("==> {:?}", cmd);
 
         let mut ctx = InvokeCtx::new(&mut jobs);
         let res = cmd.invoke(&mut ctx);
@@ -556,53 +713,7 @@ fn main() {
                 jobs.jobs.insert(new_job.id, new_job);
             }
         } else {
-            twizzler_abi::klog_println!("err: {}", res.unwrap_err());
+            eprintln!("shell: {}", res.unwrap_err());
         }
-
-        /*
-        let cmd = s.split_whitespace().collect::<Vec<_>>();
-        if cmd.len() == 0 {
-            continue;
-        }
-
-        let background = cmd.iter().any(|s| *s == "&");
-
-        // Find env vars
-        let cmd = cmd.into_iter().map(|s| as_env(s)).collect::<Vec<_>>();
-        let vars = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok((k, v)) => Some((k, v)),
-                Err(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let cmd = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok(_) => None,
-                Err(s) => Some(s),
-            })
-            .collect::<Vec<_>>();
-
-        tracing::info!("got env: {:?}, cmd: {:?}", vars, cmd);
-
-        let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
-            .args(&cmd)
-            .with_controller(ControllerOption::Object(pty.id()))
-            .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
-            .load();
-        if let Ok(comp) = comp {
-            if background {
-                tracing::info!("continuing compartment {} in background", cmd[0]);
-            } else {
-                let mut flags = comp.info().flags;
-                while !flags.contains(CompartmentFlags::EXITED) {
-                    flags = comp.wait(flags);
-                }
-            }
-        } else {
-            warn!("failed to start {}", cmd[0]);
-        }
-        */
     }
 }
