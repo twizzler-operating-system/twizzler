@@ -635,7 +635,9 @@ impl embedded_io::Read for TwzIo {
 
 impl embedded_io::Write for TwzIo {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        std::io::stdout().write(buf)
+        let len = std::io::stdout().write(buf)?;
+        std::io::stdout().flush()?;
+        Ok(len)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
