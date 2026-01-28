@@ -239,6 +239,12 @@ mod builtins {
         }
         Ok(())
     }
+
+    pub fn help(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        writeln!(ctx.stdout(), "Twizzler Shell 0.1").into_diagnostic()?;
+        writeln!(ctx.stdout(), "This shell has basic line-editing, env vars, pipes and I/O redirection, backgrounding and jobs, and system command execution.").into_diagnostic()?;
+        Ok(())
+    }
 }
 
 impl ShellInvoke {
@@ -328,6 +334,7 @@ impl ShellInvoke {
             "set" => self.invoke_builtin(builtins::set, ctx).map(|j| Some(j)),
             "unset" => self.invoke_builtin(builtins::unset, ctx).map(|j| Some(j)),
             "env" => self.invoke_builtin(builtins::env, ctx).map(|j| Some(j)),
+            "help" => self.invoke_builtin(builtins::help, ctx).map(|j| Some(j)),
             _ => Ok(None),
         }
     }
@@ -683,9 +690,14 @@ fn main() {
         let cd = cd.to_str().unwrap().bright_cyan();
 
         let s = if true {
+            // TODO: color seems to break noline
+            //let prompt = format!("{}@{} [{}]{} ", user, host, cd, "#".on_white().black());
+            let prompt = format!("root@twizzler [/]# ");
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
                 .unwrap();
-            let line = editor.readline("twz> ", &mut io).unwrap();
+            //print!("{}", prompt);
+            //stdout().flush().unwrap();
+            let line = editor.readline(prompt.as_str(), &mut io).unwrap();
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS)
                 .unwrap();
             line.to_string()

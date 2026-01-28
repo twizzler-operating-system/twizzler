@@ -8,9 +8,9 @@ use std::{
 };
 
 use libc::{
-    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, HUPCL,
-    ICANON, ICRNL, IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR, OPOST,
-    PARENB, VEOF, VERASE, VINTR, VKILL, VQUIT, VSTATUS, VWERASE, XTABS,
+    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL,
+    HUPCL, ICANON, ICRNL, IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR,
+    OPOST, PARENB, VEOF, VERASE, VINTR, VKILL, VQUIT, VSTATUS, VWERASE, XTABS,
 };
 use memchr::{memchr2, memchr3, memrchr, memrchr3};
 use twizzler::{
@@ -40,8 +40,7 @@ impl Read for PtyInputReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let count = self.pty.base().client_input.read_bytes(buf)?;
         if count == 0 && buf.len() > 0 {
-            do_sleep(self.pty.base().client_input.sync_for_pending_data())?;
-            return self.read(buf);
+            return Err(ErrorKind::WouldBlock.into());
         }
         Ok(count)
     }
@@ -349,9 +348,9 @@ pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
 };
 
 pub const DEFAULT_TERMIOS_RAW: libc::termios = libc::termios {
-    c_iflag: ISTRIP | ICRNL,
-    c_oflag: ONLCR | XTABS,
-    c_cflag: CREAD | CS7 | PARENB | HUPCL,
+    c_iflag: 0,
+    c_oflag: 0,
+    c_cflag: CREAD | CS8,
     c_lflag: 0,
     c_cc: [
         CINTR,
@@ -889,7 +888,17 @@ impl<R: Read> InputConverter<R> {
     pub fn read_raw(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
         let mut total = 0;
         while buf.len() > 0 {
-            let thisread = self.reader.read(buf)?;
+            let thisread = match self.reader.read(buf) {
+                Ok(l) => l,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if total > 0 {
+                        return Ok(total);
+                    } else {
+                        return Err(e);
+                    }
+                }
+                Err(e) => return Err(e),
+            };
 
             if thisread == 0 {
                 return Ok(total);
