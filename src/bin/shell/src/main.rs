@@ -687,11 +687,11 @@ fn main() {
         let cd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let user = "root".red();
         let host = "twizzler".bright_blue();
-        let cd = cd.to_str().unwrap().bright_cyan();
+        //let cd = cd.to_str().unwrap().bright_cyan();
 
         let s = if true {
             // TODO: color seems to break noline
-            let prompt = format!("root@twizzler [/]# ");
+            let prompt = format!("root@twizzler [{}]# ", cd.display());
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
                 .unwrap();
             let line = editor.readline(prompt.as_str(), &mut io).unwrap();
@@ -699,7 +699,7 @@ fn main() {
                 .unwrap();
             line.to_string()
         } else {
-            print!("{}@{} [{}]> ", user, host, cd);
+            print!("{}@{} [{}]> ", user, host, cd.display());
             stdout().flush().unwrap();
             let mut s = String::new();
             let _ = stdin().read_line(&mut s).unwrap();

@@ -84,6 +84,7 @@ fn main() {
             if !line.is_ascii() {
                 continue;
             }
+            let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
             cmd.args([line.as_str(), "--test"]);

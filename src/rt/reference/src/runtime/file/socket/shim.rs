@@ -624,6 +624,7 @@ impl Drop for TcpStreamInner {
 fn get_device_and_interface(
     notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
 ) -> (Interface, DeviceWrapper<TwizzlerTransport>) {
+    /*
     use virtio_net::get_device;
     let mut device = get_device(notifier);
 
@@ -649,6 +650,8 @@ fn get_device_and_interface(
         .add_default_ipv4_route(Ipv4Address::from_str(GATEWAY).unwrap())
         .unwrap();
     (iface, device)
+    */
+    todo!()
 }
 
 fn get_lo_device_and_interface(
