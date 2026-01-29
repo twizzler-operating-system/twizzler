@@ -336,14 +336,22 @@ impl Object {
 
                 let mut entries =
                     page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
-                let all_empty = entries.all(|e| e.1.is_empty());
+                //let all_empty = entries.all(|e| e.1.is_empty());
+                let all_empty = entries.count() == 0;
 
-                //log::info!("{} ==> {} {}", self.id(), all_empty, page_number);
+                log::trace!(
+                    "{} ==> {} {} {}",
+                    self.id(),
+                    all_empty,
+                    page_number,
+                    core::panic::Location::caller()
+                );
 
                 if !large_page_number.is_zero()
                     && page_number
                         < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
                     && all_empty
+                    && false
                 {
                     let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
                     if let Some(frame) = frame_allocator.try_allocate() {

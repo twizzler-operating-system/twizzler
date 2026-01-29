@@ -48,7 +48,7 @@ fn try_bench(path: &str) {
             }
             for (i, exe) in possibles.iter().enumerate() {
                 let mut cmd = std::process::Command::new(line);
-                cmd.args([exe.as_str(), "--bench"]);
+                cmd.args(["--bench"]);
                 if let Ok(mut test_comp) = cmd.spawn() {
                     test_comp.wait().unwrap();
                 } else {
@@ -87,7 +87,7 @@ fn main() {
             let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
-            cmd.args([line.as_str(), "--test"]);
+            cmd.args(["--test"]);
             if let Ok(mut test_comp) = cmd.spawn() {
                 test_comp.wait().unwrap();
                 reports.push(TestResult {

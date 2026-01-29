@@ -315,10 +315,11 @@ impl Thread {
 
         if info.number() != UpcallInfo::Mailbox(0).number() {
             log::warn!(
-                "upcall: {}: {:?}, RIP = {:x}",
+                "upcall: {}: {:?}, RIP = {:x}, regs = {:?}",
                 self.id(),
                 info,
-                self.read_ip()
+                self.read_ip(),
+                self.read_registers(),
             );
             crate::panic::backtrace(false, None);
         }
@@ -338,6 +339,10 @@ impl Thread {
                 self.suspend();
             }
             exit(UPCALL_EXIT_CODE);
+        }
+
+        if matches!(options.mode, UpcallMode::CallSuper) {
+            logln!("SUPER STACK: {}", upcall_target.super_stack);
         }
 
         self.arch_queue_upcall(

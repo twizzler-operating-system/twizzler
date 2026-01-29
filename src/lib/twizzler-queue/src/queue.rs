@@ -85,6 +85,14 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         &self.object
     }
 
+    pub fn com_hdr(&self) -> &RawQueueHdr {
+        self.completion.hdr()
+    }
+
+    pub fn sub_hdr(&self) -> &RawQueueHdr {
+        self.submission.hdr()
+    }
+
     /// Create a new Twizzler queue object.
     pub fn init(obj: &ObjectHandle, sub_queue_len: usize, com_queue_len: usize) {
         const HDR_LEN: usize = 0x1000;

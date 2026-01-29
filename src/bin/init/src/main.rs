@@ -28,6 +28,9 @@ fn initialize_pager() -> ObjID {
     };
     let queue = Queue::<RequestFromKernel, CompletionToKernel>::from(queue_obj.into_handle());
 
+    let hdr = queue.com_hdr();
+    eprintln!("==> {} {}", hdr.len(), hdr.len_bytes());
+
     sys_new_handle(
         queue.handle().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,

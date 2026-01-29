@@ -167,8 +167,12 @@ impl RawQueueHdr {
         }
     }
 
+    pub fn len_bytes(&self) -> usize {
+        self.len() * self.stride
+    }
+
     #[inline]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         1 << self.l2len
     }
 
@@ -449,7 +453,7 @@ impl<T: Copy> RawQueue<T> {
     }
 
     #[inline]
-    fn hdr(&self) -> &RawQueueHdr {
+    pub fn hdr(&self) -> &RawQueueHdr {
         unsafe { &*self.hdr }
     }
 

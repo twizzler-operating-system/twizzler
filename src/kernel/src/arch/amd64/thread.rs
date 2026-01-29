@@ -65,11 +65,14 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
-        self.upcall_restore_frame.borrow_mut().take()
+        self.upcall_restore_frame.try_borrow_mut().ok()?.take()
     }
 
     pub fn has_upcall_restore_frame(&self) -> bool {
-        unsafe { self.upcall_restore_frame.get().as_mut().unwrap_unchecked() }.is_some()
+        self.upcall_restore_frame
+            .try_borrow()
+            .ok()
+            .is_some_and(|x| x.is_some())
     }
 }
 
@@ -347,7 +350,10 @@ impl Thread {
         }
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
-            logln!("warning -- tried to restore thread to non-attached security context");
+            logln!(
+                "warning -- tried to restore thread to non-attached security context {}",
+                frame.prior_ctx
+            );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         // We restore this in the syscall return code path, since
@@ -511,7 +517,7 @@ impl Thread {
         if frame.is_none() {
             return match *self.arch.entry_registers.borrow() {
                 Registers::None => {
-                    unreachable!()
+                    return 0;
                 }
                 Registers::Interrupt(int, _) => {
                     let int = unsafe { &mut *int };
@@ -527,7 +533,9 @@ impl Thread {
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
-        if self.get_state() != ExecutionState::Suspended {
+        if self.get_state() != ExecutionState::Suspended
+            && self.id() != current_thread_ref().unwrap().id()
+        {
             return Err(TwzError::Generic(
                 twizzler_rt_abi::error::GenericError::AccessDenied,
             ));

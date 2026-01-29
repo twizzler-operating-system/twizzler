@@ -1,6 +1,6 @@
 use log::error;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::MapFlags,
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
@@ -8,18 +8,18 @@ use twizzler_abi::{
     },
 };
 
-use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
+use super::{ObjectPageProvider, PageFaultFlags, Slot, region::MapRegion};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
-        context::{kernel_context, ContextRef},
+        FAULT_STATS,
+        context::{ContextRef, kernel_context},
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{MappingCursor, PhysAddrProvider, SharedPageTable},
-        FAULT_STATS,
     },
     obj::PageNumber,
-    security::{AccessInfo, PermsInfo, KERNEL_SCTX},
+    security::{AccessInfo, KERNEL_SCTX, PermsInfo},
     thread::{current_memory_context, current_thread_ref},
 };
 
@@ -77,6 +77,9 @@ fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID) {
         assert!(!flags.contains(PageFaultFlags::USER));
         (kernel_context().clone(), KERNEL_SCTX)
     } else {
+        if user_ctx.is_none() {
+            logln!("NULL USER CTX: {:?} {:?}", addr, flags);
+        }
         (user_ctx.clone().unwrap(), sctx_id)
     }
 }
@@ -123,7 +126,7 @@ fn check_security(
             restrict: Protections::empty(),
         });
     }
-    let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch)?;
+    let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch, ip)?;
     let access_kind = match cause {
         MemoryAccessKind::Read => Protections::READ,
         MemoryAccessKind::Write => Protections::WRITE | Protections::READ,
@@ -286,13 +289,14 @@ fn get_map_region(
     addr: VirtAddr,
     ctx: &ContextRef,
     cause: MemoryAccessKind,
+    ip: VirtAddr,
 ) -> Result<MapRegion, UpcallInfo> {
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));
-    let slot: Slot = addr.try_into().map_err(|_| {
-        error!("error while trying into slot from addr");
-        upcall
-    })?;
+    let slot: Slot = addr.try_into().map_err(|_| upcall)?;
+    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+        logln!("CRIT PF: {:?} {:?} {:?}", addr, cause, ip);
+    }
     let mut slot_mgr = ctx.regions.lock();
     if let Some(region) = slot_mgr.lookup_region(slot.start_vaddr()) {
         return Ok(region.clone());
@@ -317,9 +321,7 @@ pub fn do_page_fault(
     check_violations(addr, cause, flags, ip)?;
 
     let (ctx, sctx_id) = get_context(addr, flags);
-
-    let info =
-        get_map_region(addr, &ctx, cause).inspect_err(|e| error!("map_region error: {e:?}"))?;
+    let info = get_map_region(addr, &ctx, cause, ip)?;
     page_fault_to_region(addr, cause, flags, ip, ctx, sctx_id, info)
 }
 

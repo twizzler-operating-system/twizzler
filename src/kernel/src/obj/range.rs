@@ -4,7 +4,7 @@ use core::fmt::{Debug, Display};
 use nonoverlapping_interval_tree::{IntervalValue, NonOverlappingIntervalTree};
 use twizzler_abi::object::ObjID;
 
-use super::{pages::PageRef, pagevec::PageVecRef, PageNumber};
+use super::{PageNumber, pages::PageRef, pagevec::PageVecRef};
 use crate::{
     condvar::CondVar,
     memory::{pagetables::MappingSettings, tracker::FrameAllocator},

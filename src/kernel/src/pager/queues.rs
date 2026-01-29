@@ -15,23 +15,22 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::{ObjectError, RawTwzError, TwzError};
 
 use super::{
-    inflight::NR_REQUESTS, inflight_mgr, provide_pager_memory, request::ReqKind,
-    DEFAULT_PAGER_OUTSTANDING_FRAMES,
+    DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, provide_pager_memory,
+    request::ReqKind,
 };
 use crate::{
-    arch::{memory::phys_to_virt, PhysAddr},
+    arch::{PhysAddr, memory::phys_to_virt},
     idcounter::{IdCounter, SimpleId},
     is_test_mode,
     memory::{
-        context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::start_reclaim_thread,
     },
     obj::{
-        lookup_object,
+        LookupFlags, Object, ObjectRef, PageNumber, lookup_object,
         pages::{Page, PageRef},
-        LookupFlags, Object, ObjectRef, PageNumber,
     },
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},

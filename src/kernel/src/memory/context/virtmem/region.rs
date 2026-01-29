@@ -4,9 +4,9 @@ use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
-    trace::{ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind, CONTEXT_FAULT},
+    trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
@@ -14,31 +14,31 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
 
-use super::{ObjectPageProvider, PageFaultFlags, MAX_OPP_VEC};
+use super::{MAX_OPP_VEC, ObjectPageProvider, PageFaultFlags};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
+        FAULT_STATS,
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
         },
         tracker::{FrameAllocFlags, FrameAllocator},
-        FAULT_STATS,
     },
     mutex::Mutex,
     obj::{
+        ObjectRef, PageNumber,
         copy::copy_range_to_shadow,
         pages::{Page, PageRef},
         range::{GetPageFlags, PageRangeTree, PageStatus},
-        ObjectRef, PageNumber,
     },
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -348,6 +348,7 @@ impl MapRegion {
                 && !addr.is_kernel()
                 && !addr.is_kernel_object_memory()
                 && page.nr_pages() + large_diff >= pages_per_large
+                && false
             {
                 FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
                 log::trace!(

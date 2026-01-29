@@ -194,9 +194,13 @@ impl Monitor {
         stack_ptr: usize,
         thread_ptr: usize,
     ) -> Result<ObjID, TwzError> {
+        eprintln!("==> {}", instance);
         let thread = self.start_thread(
             instance,
             Box::new(move || {
+                if instance.raw() != 0 {
+                    let _ = twizzler_abi::syscall::sys_sctx_attach(instance);
+                }
                 let frame = UpcallFrame::new_entry_frame(
                     stack_ptr,
                     args.stack_size,
