@@ -340,6 +340,9 @@ fn reset_thread_time(thread: &ThreadRef, processor: &Processor) {
 }
 
 fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: bool) {
+    if thread.is_exiting() {
+        return;
+    }
     let should_signal = processor.id != current_processor().id
         && (processor.rq.is_empty()
             || processor.rq.current_priority() <= thread.effective_priority());

@@ -9,7 +9,7 @@ use std::{alloc::GlobalAlloc, collections::BTreeMap, panic::catch_unwind, sync::
 
 use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
-use twizzler_abi::simple_mutex::Mutex;
+use twizzler_abi::{simple_mutex::Mutex, syscall::sys_thread_self_id};
 
 use crate::runtime::alloc::LOCAL_ALLOCATOR;
 

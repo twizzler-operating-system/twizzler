@@ -168,7 +168,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     arch::init_interrupts();
     #[cfg(target_arch = "x86_64")]
     arch::init_secondary();
+    ::log::set_max_level(LevelFilter::Off);
     initrd::init(boot_info.get_modules());
+    ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel::cpu] booting secondary CPUs");
     boot_all_secondaries(image::get_tls());
 

@@ -14,6 +14,7 @@ use crate::{
     BootInfo,
     initrd::BootModule,
     memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
+    processor::KERNEL_STACK_SIZE,
 };
 
 struct LimineBootInfo {
@@ -109,7 +110,6 @@ extern "C" fn limine_entry() -> ! {
             .get_response()
             .map(|r| r.address() as u64 /* TODO: MEGA HACK */),
     };
-    logln!("got addr: {:x}", boot_info.rsdp.unwrap());
 
     boot_info.maps = LIMINE_MEM
         .get_response()
@@ -146,7 +146,7 @@ static LIMINE_MEM: MemoryMapRequest = MemoryMapRequest::new();
 static LIMINE_KERNEL: ExecutableFileRequest = ExecutableFileRequest::new();
 static LIMINE_TABLE: RsdpRequest = RsdpRequest::new();
 static LIMINE_HHDM: HhdmRequest = HhdmRequest::new();
-const STACK_SIZE: usize = 0x100000;
+const STACK_SIZE: usize = KERNEL_STACK_SIZE;
 static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(STACK_SIZE as u64);
 
 #[unsafe(link_section = ".limine_reqs")]

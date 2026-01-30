@@ -1,5 +1,7 @@
+use core::fmt::Debug;
+
 use intrusive_collections::LinkedList;
-use twizzler_abi::trace::{TraceEntryFlags, TraceKind, CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN};
+use twizzler_abi::trace::{CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, TraceEntryFlags, TraceKind};
 
 use crate::{
     arch::{
@@ -8,7 +10,7 @@ use crate::{
     },
     memory::frame::{FrameAdapter, FrameRef},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -80,6 +82,12 @@ impl Consistency {
 pub struct DeferredUnmappingOps {
     pages: LinkedList<FrameAdapter>,
     shared: LinkedList<FrameAdapter>,
+}
+
+impl Debug for DeferredUnmappingOps {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DeferredUnmappingOps").finish()
+    }
 }
 
 impl Drop for DeferredUnmappingOps {

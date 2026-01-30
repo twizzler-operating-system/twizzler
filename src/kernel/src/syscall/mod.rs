@@ -28,6 +28,7 @@ use crate::{
     memory::VirtAddr,
     processor::mp::all_processors,
     random::getrandom,
+    thread::current_thread_ref,
     time::{TICK_SOURCES, Ticks},
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
@@ -333,11 +334,13 @@ fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
-                "null call {:x} {:x} {:x}",
+                "{}: null call {:x} {:x} {:x}",
+                current_thread_ref().unwrap().objid(),
                 context.arg0::<u64>(),
                 context.arg1::<u64>(),
                 context.arg2::<u64>(),
             );
+
             context.set_return_values(0u64, 0u64);
         }
         Syscall::KernelConsoleWrite => {

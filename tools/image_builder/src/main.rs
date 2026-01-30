@@ -128,7 +128,7 @@ verbose: yes
     );
     // create fat partition
     let fat_file_path = {
-        const MB: u64 = 1024 * 1024;
+        const MB: u64 = 1024 * 1024 * 2;
 
         let fat_path = disk_image_path.parent().unwrap().join("image.fat");
         let fat_file = fs::OpenOptions::new()

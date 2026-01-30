@@ -9,7 +9,9 @@ use dynlink::{compartment::Compartment, tls::TlsRegion};
 use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
+    syscall::{
+        sys_spawn, sys_thread_exit, sys_thread_self_id, ThreadSyncSleep, UpcallTargetSpawnOption,
+    },
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -171,6 +173,7 @@ impl ThreadMgr {
                 instance,
             )?
         };
+        twizzler_abi::klog_println!("spawned {}", id);
         let repr = Space::map(
             &get_monitor().space,
             MapInfo {

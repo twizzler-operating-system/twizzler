@@ -183,7 +183,26 @@ unsafe extern "C" fn common_handler_entry(
 
             let t = current_thread_ref().unwrap();
             if (*ctx).get_ip() == 0 {
-                panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+                let cr2 = x86::controlregs::cr2();
+                let err = (*ctx).err;
+                let cause = if err & (1 << 4) == 0 {
+                    if err & (1 << 1) == 0 {
+                        MemoryAccessKind::Read
+                    } else {
+                        MemoryAccessKind::Write
+                    }
+                } else {
+                    MemoryAccessKind::InstructionFetch
+                };
+                panic!(
+                    "tried to set IP to 0! is currently: {:x} {:?} {} {} {:x} {:?}",
+                    t.read_ip(),
+                    *ctx,
+                    user,
+                    number,
+                    cr2,
+                    cause,
+                );
             }
             t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
         }
@@ -529,9 +548,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             }
             if err & (1 << 3) != 0 {
                 flags.insert(PageFaultFlags::INVALID);
-            }
-            if !user {
-                logln!("KPF: {:x} {:x} {:?} {:?}", cr2, ctx.rip, flags, cause);
             }
             crate::thread::enter_kernel();
             crate::interrupt::set(true);

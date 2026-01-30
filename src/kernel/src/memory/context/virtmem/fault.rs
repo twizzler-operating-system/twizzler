@@ -77,9 +77,6 @@ fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID) {
         assert!(!flags.contains(PageFaultFlags::USER));
         (kernel_context().clone(), KERNEL_SCTX)
     } else {
-        if user_ctx.is_none() {
-            logln!("NULL USER CTX: {:?} {:?}", addr, flags);
-        }
         (user_ctx.clone().unwrap(), sctx_id)
     }
 }
@@ -294,9 +291,6 @@ fn get_map_region(
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));
     let slot: Slot = addr.try_into().map_err(|_| upcall)?;
-    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
-        logln!("CRIT PF: {:?} {:?} {:?}", addr, cause, ip);
-    }
     let mut slot_mgr = ctx.regions.lock();
     if let Some(region) = slot_mgr.lookup_region(slot.start_vaddr()) {
         return Ok(region.clone());

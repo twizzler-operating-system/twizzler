@@ -19,7 +19,7 @@ use crate::{
     obj::{LookupFlags, LookupResult, lookup_object},
     once::Once,
     spinlock::Spinlock,
-    thread::current_memory_context,
+    thread::{current_memory_context, current_thread_ref},
 };
 
 #[derive(Clone)]
@@ -309,7 +309,6 @@ impl SecCtxMgr {
 
     /// Attach a security context.
     pub fn attach(&self, sctx: SecurityContextRef) -> twizzler_rt_abi::Result<()> {
-        logln!("attach {}", sctx.id());
         let mut inner = self.inner.lock();
         if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
             return Err(NamingError::AlreadyBound.into());

@@ -194,7 +194,6 @@ impl Monitor {
         stack_ptr: usize,
         thread_ptr: usize,
     ) -> Result<ObjID, TwzError> {
-        eprintln!("==> {}", instance);
         let thread = self.start_thread(
             instance,
             Box::new(move || {

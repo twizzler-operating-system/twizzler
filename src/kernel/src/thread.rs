@@ -321,7 +321,7 @@ impl Thread {
                 self.read_ip(),
                 self.read_registers(),
             );
-            crate::panic::backtrace(false, None);
+            crate::panic::backtrace(true, None);
         }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {
@@ -350,6 +350,9 @@ impl Thread {
             info,
             matches!(options.mode, UpcallMode::CallSuper),
         );
+        if matches!(options.mode, UpcallMode::CallSuper) {
+            logln!("SUPER call");
+        }
 
         // Suspend afterwards to ensure that the upcall frame is queued up.
         if options.flags.contains(UpcallFlags::SUSPEND) {
@@ -464,7 +467,8 @@ pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();
-        log::trace!(
+        remove_thread(th.id());
+        log::info!(
             "thread {} ({}) exits with code {}",
             th.id(),
             th.objid(),
@@ -473,8 +477,9 @@ pub fn exit(code: u64) -> ! {
         th.set_state_and_code(ExecutionState::Exited, code);
         crate::interrupt::disable();
         th.set_is_exiting();
+        th.reset_sync_sleep();
+        th.reset_sync_sleep_done();
         crate::syscall::sync::remove_from_requeue(&th);
-        remove_thread(th.id());
     }
     schedule(SchedFlags::PREEMPT);
     unreachable!()
