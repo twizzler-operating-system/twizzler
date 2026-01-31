@@ -1,288 +1,32 @@
 use std::{
     io::{Error, ErrorKind},
     net::{Shutdown, SocketAddr, ToSocketAddrs},
-    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Condvar, Mutex,
+        Arc, Mutex,
     },
-    thread::JoinHandle,
 };
 
-use lazy_static::lazy_static;
 use smoltcp::{
-    iface::{Config, Interface, SocketHandle, SocketSet},
-    phy::{Device, Loopback, Medium},
+    iface::SocketHandle,
     socket::tcp::{Socket, State},
     storage::RingBuffer,
-    time::{Duration, Instant},
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address},
 };
-use virtio_net::{DeviceWrapper, TwizzlerTransport};
 
+mod engine;
 mod port;
 
-use port::PortAssigner;
+use engine::ENGINE;
+
+use crate::runtime::file::socket::shim::engine::PORTS;
+
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
-pub struct Engine {
-    core: Arc<Mutex<Core>>,
-    waiter: Arc<Condvar>,
-    channel: mpsc::Sender<Option<(SocketHandle, u16)>>,
-    _polling_thread: JoinHandle<()>,
-}
-
-struct Core {
-    socketset: SocketSet<'static>,
-    ifaceset: Vec<IfaceSet>,
-}
-
-enum SupportedDevices {
-    Lo(Loopback),
-    Twz(DeviceWrapper<TwizzlerTransport>),
-}
-
-struct IfaceSet {
-    ifaces: Vec<Interface>,
-    device: SupportedDevices,
-}
-
-impl IfaceSet {
-    fn new(device: SupportedDevices) -> Self {
-        let ifaces = Vec::new();
-        Self { ifaces, device }
-    }
-
-    fn insert_iface(&mut self, iface: Interface) {
-        self.ifaces.push(iface);
-    }
-
-    fn poll(&mut self, socketset: &mut SocketSet<'static>) -> bool {
-        let mut ready = false;
-        for iface in &mut self.ifaces {
-            match self.device {
-                SupportedDevices::Lo(ref mut lo) => {
-                    ready |= iface.poll(Instant::now(), lo, socketset);
-                }
-                SupportedDevices::Twz(ref mut twz) => {
-                    ready |= iface.poll(Instant::now(), twz, socketset);
-                }
-            }
-        }
-        ready
-    }
-
-    fn poll_time(&mut self, socketset: &mut SocketSet<'static>) -> Option<Duration> {
-        let mut min_delay = None;
-        for iface in &mut self.ifaces {
-            if let Some(delay) = iface.poll_delay(Instant::now(), socketset) {
-                min_delay = Some(min_delay.map_or(delay, |min: Duration| min.min(delay)));
-            }
-        }
-        min_delay
-    }
-
-    fn find_iface_for(&mut self, _addr: SocketAddr) -> Option<&mut Interface> {
-        // TODO
-        self.ifaces.get_mut(0)
-    }
-}
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
-const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
+const _GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
 const RX_BUF_SIZE: usize = 65536 * 2;
 const TX_BUF_SIZE: usize = 8192 * 2;
-
-lazy_static! {
-    static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
-    static ref PORTS: Arc<PortAssigner> = Arc::new(PortAssigner::new());
-}
-
-impl Engine {
-    fn new() -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel::<Option<(SocketHandle, u16)>>();
-        let (iface, device) = get_device_and_interface(sender.clone());
-        let (lo_iface, lo_device) = get_lo_device_and_interface(sender.clone());
-
-        let mut nic = IfaceSet::new(SupportedDevices::Twz(device));
-        nic.insert_iface(iface);
-
-        let mut lo = IfaceSet::new(SupportedDevices::Lo(lo_device));
-        lo.insert_iface(lo_iface);
-
-        let core = Arc::new(Mutex::new(Core::new(vec![lo])));
-        let waiter = Arc::new(Condvar::new());
-        let _inner = core.clone();
-        let _waiter = waiter.clone();
-
-        // Okay, here is our background polling thread. It polls the network interface with the
-        // SocketSet whenever it needs to, which is:
-        // 1. when smoltcp says to based on poll_time() (calls poll_delay internally)
-        // 2. when the state changes (eg a new socket is added)
-        // 3. when blocking threads need to poll (we get a message on the channel)
-        let thread = std::thread::spawn(move || {
-            let inner = _inner;
-            let waiter = _waiter;
-            let mut tracking = Vec::new();
-
-            fn check_tracking(tracking: &mut Vec<(SocketHandle, u16)>) {
-                let mut core = ENGINE.core.lock().unwrap();
-                let removed = tracking
-                    .extract_if(0.., |item: &mut (SocketHandle, u16)| {
-                        let socket = core.get_mutable_socket(item.0);
-                        if socket.state() == State::Closed {
-                            tracing::debug!("tracked tcp socket {} in closed state", item.0);
-                            core.release_socket(item.0);
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                drop(core);
-                for item in removed {
-                    if item.1 != 0 {
-                        PORTS.return_port(item.1);
-                    }
-                }
-            }
-
-            loop {
-                check_tracking(&mut tracking);
-                let time = {
-                    let mut inner = inner.lock().unwrap();
-                    inner.poll(&*waiter);
-                    let time = inner.poll_time();
-
-                    // We may need to poll immediately!
-                    if time.is_some_and(|time| time.total_micros() < 100) {
-                        inner.poll(&*waiter);
-                        continue;
-                    }
-                    time
-                };
-
-                // Wait until the designated timeout, or until we get a message on the channel.
-                let inner = match time {
-                    Some(dur) => receiver.recv_timeout(dur.into()).ok(),
-                    None => receiver.recv().ok(),
-                }
-                .flatten();
-                if let Some(inner) = inner {
-                    tracing::debug!("tracking socket {}, port {}", inner.0, inner.1);
-                    tracking.push(inner);
-                }
-            }
-        });
-        Self {
-            core,
-            waiter,
-            channel: sender,
-            _polling_thread: thread,
-        }
-    }
-
-    fn wake(&self) {
-        let _ = self.channel.send(None);
-    }
-
-    fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
-        self.core.lock().unwrap().add_socket(socket)
-    }
-
-    // Block until f returns Ok(R), and then return R. Note that f may be called multiple times,
-    // and it may be called spuriously. If f returns Err(e) with e.kind() anything other than
-    // NonBlock, return the error.
-    fn blocking<R>(
-        &self,
-        mut f: impl FnMut(&mut Core) -> std::io::Result<R>,
-    ) -> std::io::Result<R> {
-        let mut core = self.core.lock().unwrap();
-        if let Ok(r) = f(&mut *core) {
-            return Ok(r);
-        }
-        // Immediately poll, since we wait to have as up-to-date state as possible.
-        core.poll(&self.waiter);
-        // We'll need the polling thread to wake up and do work.
-        self.wake();
-        loop {
-            match f(&mut *core) {
-                Ok(r) => {
-                    // We have done work, so again, notify the polling thread.
-                    self.wake();
-                    drop(core);
-                    return Ok(r);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    self.wake();
-                    core = self.waiter.wait(core).unwrap();
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn track(&self, inner: &TcpStreamInner) {
-        let port = if inner.is_ephemeral_port {
-            inner.port
-        } else {
-            0
-        };
-        let _ = self.channel.send(Some((inner.socket_handle, port)));
-    }
-}
-
-impl Core {
-    fn new(ifaceset: Vec<IfaceSet>) -> Self {
-        let socketset = SocketSet::new(Vec::new());
-        Self {
-            socketset,
-            ifaceset,
-        }
-    }
-
-    fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
-        self.socketset.add(sock)
-    }
-
-    fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
-        self.socketset.get_mut(handle)
-    }
-
-    fn release_socket(&mut self, handle: SocketHandle) {
-        self.socketset.remove(handle);
-    }
-
-    fn poll(&mut self, waiter: &Condvar) -> bool {
-        let mut res = false;
-        for ifaceset in &mut self.ifaceset {
-            res |= ifaceset.poll(&mut self.socketset);
-        }
-        // When we poll, notify the CV so that other waiting threads can retry their blocking
-        // operations.
-        waiter.notify_all();
-        res
-    }
-
-    fn poll_time(&mut self) -> Option<Duration> {
-        let mut min_time = None;
-        for ifaceset in &mut self.ifaceset {
-            if let Some(time) = ifaceset.poll_time(&mut self.socketset) {
-                min_time = Some(min_time.map_or(time, |t: Duration| t.min(time)));
-            }
-        }
-        min_time
-    }
-
-    fn find_iface_for(&mut self, addr: SocketAddr) -> Option<&mut Interface> {
-        for ifaceset in &mut self.ifaceset {
-            if let Some(iface) = ifaceset.find_iface_for(addr) {
-                return Some(iface);
-            }
-        }
-        None
-    }
-}
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
@@ -512,14 +256,14 @@ impl SmolTcpStream {
     ) -> Result<(), Error> {
         let addrs = sock_addrs.to_socket_addrs()?;
         for addr in addrs {
-            let mut core = ENGINE.core.lock().unwrap();
-            if let Some(iface) = core.find_iface_for(addr) {
-                match s.connect(iface.context(), addr, port) {
+            if let Some(res) =
+                ENGINE.with_iface_for(addr, |iface| match s.connect(iface.context(), addr, port) {
                     Ok(_) => return Ok(()),
                     Err(_) => return Err(ErrorKind::AddrNotAvailable.into()),
-                }
+                })
+            {
+                return res;
             }
-            drop(core);
         }
         Err(ErrorKind::AddrNotAvailable.into()) // is that the correct thing to return?
     }
@@ -616,59 +360,4 @@ impl Drop for TcpStreamInner {
     fn drop(&mut self) {
         ENGINE.track(self);
     }
-}
-
-// implement impl std::fmt::Debug for SmolTcpStream
-// add `#[derive(Debug)]` to `SmolTcpStream` or manually `impl std::fmt::Debug for SmolTcpStream`
-
-fn get_device_and_interface(
-    notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
-) -> (Interface, DeviceWrapper<TwizzlerTransport>) {
-    /*
-    use virtio_net::get_device;
-    let mut device = get_device(notifier);
-
-    if device.capabilities().medium != Medium::Ethernet {
-        panic!("This implementation only supports virtio-net which is an ethernet device");
-    }
-
-    let hardware_addr = HardwareAddress::Ethernet(device.mac_address());
-
-    // Create interface
-    let mut config = Config::new(hardware_addr);
-    config.random_seed = 0x2333;
-
-    let mut iface = Interface::new(config, &mut device, Instant::now());
-    iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs
-            .push(IpCidr::new(IpAddress::from_str(IP).unwrap(), 24))
-            .unwrap();
-    });
-
-    iface
-        .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::from_str(GATEWAY).unwrap())
-        .unwrap();
-    (iface, device)
-    */
-    todo!()
-}
-
-fn get_lo_device_and_interface(
-    _notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
-) -> (Interface, Loopback) {
-    let mut device = Loopback::new(Medium::Ethernet);
-
-    // Create interface
-    let mut config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
-    config.random_seed = 0x2333;
-
-    let mut iface = Interface::new(config, &mut device, Instant::now());
-    iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs
-            .push(IpCidr::new(IpAddress::from_str("127.0.0.1").unwrap(), 8))
-            .unwrap();
-    });
-
-    (iface, device)
 }

@@ -7369,6 +7369,7 @@ dependencies = [
 name = "twizzler-io"
 version = "0.1.0"
 dependencies = [
+ "bitset-core",
  "libc",
  "memchr",
  "tracing",
@@ -7445,6 +7446,18 @@ dependencies = [
  "thiserror-no-std",
  "twizzler-abi",
  "twizzler-rt-abi",
+]
+
+[[package]]
+name = "twizzler-net"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "smoltcp",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-io",
+ "twizzler-queue",
 ]
 
 [[package]]
@@ -7535,6 +7548,7 @@ dependencies = [
  "tracing-subscriber",
  "twizzler-abi",
  "twizzler-io",
+ "twizzler-net",
  "twizzler-rt-abi",
  "virtio-net",
 ]

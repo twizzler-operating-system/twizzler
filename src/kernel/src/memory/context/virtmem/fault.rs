@@ -116,7 +116,7 @@ fn check_security(
     ip: VirtAddr,
     default_prot: Protections,
 ) -> Result<PermsInfo, UpcallInfo> {
-    if ip.is_kernel() {
+    if ip.is_kernel() || user_sctx.raw() == 0 {
         return Ok(PermsInfo {
             ctx: user_sctx,
             provide: Protections::all(),

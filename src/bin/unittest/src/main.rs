@@ -87,7 +87,7 @@ fn main() {
             let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
-            cmd.args(["--test", "--no-capture"]);
+            cmd.args(["--test", "--no-capture", "--show-output"]);
             if let Ok(mut test_comp) = cmd.spawn() {
                 test_comp.wait().unwrap();
                 reports.push(TestResult {

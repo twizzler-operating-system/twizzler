@@ -206,6 +206,7 @@ impl ReferenceRuntime {
     }
 
     pub fn sysinfo(&self) -> SystemInfo {
+        twizzler_abi::klog_println!("get sysinfo");
         let info = twizzler_abi::syscall::sys_info();
         SystemInfo {
             clock_monotonicity: Monotonicity::Weak.into(),

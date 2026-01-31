@@ -9,3 +9,4 @@ tracing = { workspace = true }
 libc = "0.2"
 twizzler-abi = { path = "../twizzler-abi" }
 memchr = "*"
+bitset-core = { workspace = true }

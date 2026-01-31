@@ -72,6 +72,7 @@ members = [
 
     "src/bin/schedtest", "src/bin/gfxtest",
     "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
+    "src/lib/sgtest", "src/srv/sgtest-srv", "src/lib/twizzler-net",
 ]
 
 exclude = [

@@ -1,10 +1,10 @@
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::panic::PanicInfo;
 
-use addr2line::{gimli::EndianSlice, Context};
-use object::{read::elf::ElfFile64, Object, ObjectSection};
+use addr2line::{Context, gimli::EndianSlice};
+use object::{Object, ObjectSection, read::elf::ElfFile64};
 
-use crate::{interrupt::disable, once::Once};
+use crate::{arch::VirtAddr, interrupt::disable, once::Once};
 
 type ElfSlice = addr2line::gimli::read::EndianSlice<'static, addr2line::gimli::RunTimeEndian>;
 
@@ -70,6 +70,12 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
         let ip = frame.ip();
+        if VirtAddr::new(ip.addr() as u64)
+            .ok()
+            .is_none_or(|x| !x.is_kernel())
+        {
+            return false;
+        }
 
         if !symbolize {
             emerglogln!("{:4} - {:18p}", frame_nr, ip);

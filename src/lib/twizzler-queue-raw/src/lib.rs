@@ -287,6 +287,13 @@ impl RawQueueHdr {
         }
     }
 
+    pub fn has_pending<T>(&self, raw_buf: *const QueueEntry<T>) -> bool {
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let b = self.bell.load(Ordering::SeqCst);
+        let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
+        !self.is_empty(b, t) && self.is_turn(t, item)
+    }
+
     #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
@@ -507,6 +514,10 @@ impl<T: Copy> RawQueue<T> {
         let item = unsafe { buf_item.read() };
         self.hdr().advance_tail(ring);
         Ok(item)
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.hdr().has_pending(unsafe { *self.buf.get() })
     }
 
     pub fn setup_sleep<'a>(

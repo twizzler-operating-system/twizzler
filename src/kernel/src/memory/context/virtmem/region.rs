@@ -84,6 +84,7 @@ fn check_settings(
         }
         MemoryAccessKind::Write => {
             if !settings.perms().contains(Protections::WRITE) {
+                logln!("no write perm");
                 return Err(upcall);
             }
         }
