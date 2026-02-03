@@ -181,6 +181,31 @@ fn initialize_display() {
     std::mem::forget(comp);
 }
 
+fn initialize_network() {
+    info!("starting network manager");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libnet_srv.so")
+        .expect("failed to find object");
+    let comp: CompartmentHandle = CompartmentLoader::new(
+        "net",
+        "libnet_srv.so",
+        id,
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["net-srv"])
+    .load()
+    .expect("failed to initialize network manager");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
+    let start_net = unsafe {
+        comp.dynamic_gate::<(), RawTwzError>("start_network")
+            .unwrap()
+    };
+    let _ = start_net();
+    std::mem::forget(comp);
+}
+
 fn initialize_sgtest() {
     info!("starting display manager");
     let comp: CompartmentHandle = CompartmentLoader::new(
@@ -242,6 +267,7 @@ fn main() {
     let _root_id = initialize_namer(bootstrap_id);
 
     initialize_cache();
+    initialize_network();
     initialize_display();
     initialize_sgtest();
 

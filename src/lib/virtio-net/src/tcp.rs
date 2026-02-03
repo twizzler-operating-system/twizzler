@@ -27,6 +27,14 @@ pub struct DeviceWrapper<T: Transport> {
     inner: Arc<Mutex<DeviceImpl<T>>>,
 }
 
+impl<T: Transport> Clone for DeviceWrapper<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T: Transport> DeviceWrapper<T> {
     fn new(dev: DeviceImpl<T>) -> Self {
         DeviceWrapper {

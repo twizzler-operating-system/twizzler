@@ -286,7 +286,7 @@ fn get_map_region(
     addr: VirtAddr,
     ctx: &ContextRef,
     cause: MemoryAccessKind,
-    ip: VirtAddr,
+    _ip: VirtAddr,
 ) -> Result<MapRegion, UpcallInfo> {
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));

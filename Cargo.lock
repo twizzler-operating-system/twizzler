@@ -4583,6 +4583,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-srv"
+version = "0.1.0"
+dependencies = [
+ "secgate",
+ "smoltcp",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-net",
+ "twizzler-queue",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+ "virtio-net",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

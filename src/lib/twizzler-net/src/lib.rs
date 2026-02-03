@@ -1,10 +1,13 @@
+use secgate::TwzError;
 pub use twizzler_io::packet;
 
 mod client;
 mod endpoint;
 mod server;
 
-pub use client::{NetClient, NetClientConfig, NetClientRxToken, NetClientTxToken};
+pub use client::{
+    NetClient, NetClientConfig, NetClientOpenInfo, NetClientRxToken, NetClientTxToken,
+};
 pub use server::{NetServer, NetServerRxToken, NetServerTxToken};
 
 pub type PacketNum = u32;
@@ -100,3 +103,12 @@ pub struct ClientRet {}
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct ServerRet {}
+
+#[secgate::gatecall]
+pub fn start_network() -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+fn twz_net_drop_client(handle: secgate::util::Descriptor) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo, TwzError> {}

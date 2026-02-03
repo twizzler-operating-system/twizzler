@@ -23,12 +23,12 @@ pub struct NetClient {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-struct NetClientOpenInfo {
-    tx_buf: ObjID,
-    rx_buf: ObjID,
-    tx_queue: ObjID,
-    rx_queue: ObjID,
-    handle: Descriptor,
+pub struct NetClientOpenInfo {
+    pub tx_buf: ObjID,
+    pub rx_buf: ObjID,
+    pub tx_queue: ObjID,
+    pub rx_queue: ObjID,
+    pub handle: Descriptor,
 }
 
 impl NetClient {
@@ -41,12 +41,6 @@ impl NetClient {
     }
 }
 
-#[secgate::gatecall]
-fn twz_net_drop_client(handle: Descriptor) -> Result<(), TwzError> {}
-
-#[secgate::gatecall]
-fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo, TwzError> {}
-
 impl secgate::util::Handle for NetClient {
     type OpenError = TwzError;
 
@@ -56,7 +50,7 @@ impl secgate::util::Handle for NetClient {
     where
         Self: Sized,
     {
-        let info = twz_net_open_client(info)?;
+        let info = super::twz_net_open_client(info)?;
         let tx_queue = Object::<QueueBase<ClientMsg, ServerRet>>::map(
             info.tx_queue,
             MapFlags::READ | MapFlags::WRITE,
@@ -83,7 +77,7 @@ impl secgate::util::Handle for NetClient {
     }
 
     fn release(&mut self) {
-        let _ = twz_net_drop_client(self.handle);
+        let _ = super::twz_net_drop_client(self.handle);
     }
 }
 
@@ -143,6 +137,7 @@ impl smoltcp::phy::Device for NetClient {
     }
 
     fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
+        self.tx.check_completions();
         let packet = self.tx.allocate_packet()?;
         Some(NetClientTxToken { nc: self, packet })
     }

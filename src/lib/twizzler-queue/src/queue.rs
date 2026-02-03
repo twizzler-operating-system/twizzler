@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{
-        sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake,
+        sys_object_create, sys_thread_sync, ObjectCreate, ThreadSync, ThreadSyncFlags,
+        ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
 };
 pub use twizzler_queue_raw::{QueueBase, QueueError, ReceiveFlags, SubmissionFlags};

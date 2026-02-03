@@ -910,6 +910,14 @@ check_ffi_type!(twz_rt_get_random, _, _, _);
 
 #[linkage = "weak"]
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_net_open_client() {}
+
+#[linkage = "weak"]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_net_drop_client() {}
+
+#[linkage = "weak"]
+#[no_mangle]
 pub unsafe extern "C-unwind" fn malloc(len: usize) -> *mut core::ffi::c_void {
     warn!("called c:malloc with len = {}: not yet implemented", len);
     core::ptr::null_mut()

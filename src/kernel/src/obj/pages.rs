@@ -334,9 +334,8 @@ impl Object {
                 let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
                 let large_page_number = page_number.align_down(pages_per_large);
 
-                let mut entries =
+                let entries =
                     page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
-                //let all_empty = entries.all(|e| e.1.is_empty());
                 let all_empty = entries.count() == 0;
 
                 log::trace!(

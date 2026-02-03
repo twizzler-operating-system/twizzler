@@ -25,6 +25,10 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.queue.setup_read_sub_sleep()
     }
 
+    pub fn comp_waiters(&self) -> ThreadSyncSleep {
+        self.queue.setup_read_com_sleep()
+    }
+
     pub fn has_pending_msg(&self) -> bool {
         self.queue.has_pending_submission()
     }

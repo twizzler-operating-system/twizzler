@@ -4,8 +4,7 @@ use bitset_core::BitSet;
 use twizzler::{
     BaseType, Invariant,
     error::TwzError,
-    object::{Object, ObjectBuilder, RawObject, TypedObject},
-    ptr::{Ref, RefSlice, RefSliceMut},
+    object::{ObjID, Object, ObjectBuilder, RawObject, TypedObject},
 };
 use twizzler_abi::{object::NULLPAGE_SIZE, syscall::ObjectCreate};
 
@@ -56,6 +55,10 @@ impl From<Object<PacketBufferBase>> for PacketObject {
 }
 
 impl PacketObject {
+    pub fn id(&self) -> ObjID {
+        self.obj.id()
+    }
+
     pub fn new(
         spec: ObjectCreate,
         nr_packets: usize,
@@ -105,44 +108,6 @@ impl PacketObject {
     pub fn release_packet(&self, id: u32) {
         if let Ok(id) = id.try_into() {
             self.obj.base().release_packet(id);
-        }
-    }
-}
-
-pub struct Packet<'a> {
-    base: Ref<'a, PacketBufferBase>,
-    packet_num: usize,
-    free_on_drop: bool,
-}
-
-impl<'a> Packet<'a> {
-    pub fn owned(&mut self) -> Self {
-        let owned = Self {
-            base: self.base.owned(),
-            packet_num: self.packet_num,
-            free_on_drop: self.free_on_drop,
-        };
-        self.free_on_drop = false;
-        owned
-    }
-
-    pub fn packet_slice_mut(&mut self) -> RefSliceMut<'a, u8> {
-        let offset = self.base.packet_mem_offset_from_base();
-        let packet_mem = unsafe { self.base.as_mut().byte_add(offset).cast::<u8>() };
-        unsafe { RefSliceMut::from_ref(packet_mem, MIN_PACKET_SIZE.max(self.base.packet_size)) }
-    }
-
-    pub fn packet_slice(&self) -> RefSlice<'a, u8> {
-        let offset = self.base.packet_mem_offset_from_base();
-        let packet_mem = unsafe { self.base.owned().byte_add(offset).cast::<u8>() };
-        unsafe { RefSlice::from_ref(packet_mem, MIN_PACKET_SIZE.max(self.base.packet_size)) }
-    }
-}
-
-impl<'a> Drop for Packet<'a> {
-    fn drop(&mut self) {
-        if self.free_on_drop {
-            self.base.release_packet(self.packet_num);
         }
     }
 }

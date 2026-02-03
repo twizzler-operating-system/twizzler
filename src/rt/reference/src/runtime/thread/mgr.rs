@@ -227,22 +227,26 @@ impl ReferenceRuntime {
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
+        twizzler_abi::klog_println!("join: {}", id);
         let repr = {
             let mut inner = THREAD_MGR.inner.lock();
             inner.scan_for_exited_except(id);
             inner
                 .all_threads
                 .get(&id)
-                .ok_or(TwzError::Argument(ArgumentError::BadHandle))?
+                .ok_or(TwzError::Argument(ArgumentError::BadHandle))
+                .inspect_err(|e| twizzler_abi::klog_println!("bad handle"))?
                 .repr_handle()
                 .clone()
         };
+        twizzler_abi::klog_println!("join: {}: found", id);
         let base =
             unsafe { (repr.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {
             let (state, _code) = base
                 .wait_until(ExecutionState::Exited, timeout)
-                .ok_or(TwzError::TIMED_OUT)?;
+                .ok_or(TwzError::TIMED_OUT)
+                .inspect_err(|e| twizzler_abi::klog_println!("TIMEOUT"))?;
             if state == ExecutionState::Exited {
                 let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);
