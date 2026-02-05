@@ -173,7 +173,6 @@ impl ThreadMgr {
                 instance,
             )?
         };
-        twizzler_abi::klog_println!("spawned {}", id);
         let repr = Space::map(
             &get_monitor().space,
             MapInfo {

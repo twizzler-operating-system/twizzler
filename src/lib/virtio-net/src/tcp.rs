@@ -74,7 +74,7 @@ impl<T: Transport> Device for DeviceWrapper<T> {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
-        caps.max_transmission_unit = 1536;
+        caps.max_transmission_unit = 1514;
         caps.max_burst_size = Some(1);
         caps.medium = Medium::Ethernet;
         caps

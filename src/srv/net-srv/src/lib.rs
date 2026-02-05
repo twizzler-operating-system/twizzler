@@ -18,7 +18,7 @@ use secgate::{
 use smoltcp::{
     iface::{Config, Interface, SocketHandle},
     time::Instant,
-    wire::{EthernetAddress, IpAddress, IpCidr},
+    wire::{EthernetAddress, EthernetFrame, IpAddress, IpCidr, PrettyPrinter},
 };
 use tracing::Level;
 use twizzler::object::RawObject;
@@ -97,7 +97,22 @@ pub fn start_network() -> Result<()> {
 }
 
 #[secgate::entry(lib = "twizzler-net")]
+fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
+    let mut handles = NETINFO
+        .get()
+        .ok_or(TwzError::NOT_SUPPORTED)?
+        .handles
+        .lock()
+        .unwrap();
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
+    handles.remove(caller, desc);
+    Ok(())
+}
+
+#[secgate::entry(lib = "twizzler-net")]
 pub fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo> {
+    twizzler_abi::klog_println!("open client: {:?}", config);
     let mut handles = NETINFO
         .get()
         .ok_or(TwzError::NOT_SUPPORTED)?
@@ -171,9 +186,11 @@ fn device_thread(
             _ => {
                 while let Some((rx, _tx)) = device.receive(Instant::now()) {
                     rx.consume(|buf| {
-                        eprintln!("device thread got {:?}...", &buf[0..64]);
+                        let f = EthernetFrame::new_unchecked(&mut *buf);
+                        let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
+                        eprintln!("device thread got {}", pp);
                         let handles = NETINFO.get().unwrap().handles.lock().unwrap();
-                        for (_, _, client) in handles.handles() {
+                        for (_, i, client) in handles.handles() {
                             let mut ep = client.ep.lock().unwrap();
                             let ctx = ep.transmit(Instant::now()).unwrap();
                             ctx.consume(buf.len(), |cbuf| cbuf.copy_from_slice(buf));
@@ -198,7 +215,9 @@ fn client_thread(client: Arc<Client>) {
         let mut ep = client.ep.lock().unwrap();
         while let Some((rx, _tx)) = ep.receive(Instant::now()) {
             rx.consume(|buf| {
-                eprintln!("client thread got {:?}...", &buf[0..64]);
+                let f = EthernetFrame::new_unchecked(&mut *buf);
+                let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
+                eprintln!("client thread got {}", pp);
                 if let Some(dtx) = device.transmit(Instant::now()) {
                     dtx.consume(buf.len(), |dbuf| dbuf.copy_from_slice(buf));
                 }
@@ -209,6 +228,7 @@ fn client_thread(client: Arc<Client>) {
         if ep.has_pending_msg_from_client() {
             continue;
         }
+        drop(ep);
 
         let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(rx_waiter)], None);
     }

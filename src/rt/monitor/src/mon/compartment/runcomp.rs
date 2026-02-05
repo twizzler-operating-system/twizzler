@@ -61,7 +61,7 @@ pub struct RunComp {
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
-    per_thread: HashMap<ObjID, PerThread>,
+    pub per_thread: HashMap<ObjID, PerThread>,
     init_info: Option<(StackObject, usize, Vec<CtorSet>)>,
     is_debugging: bool,
     pub(crate) use_count: u64,

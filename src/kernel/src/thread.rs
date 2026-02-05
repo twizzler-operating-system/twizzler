@@ -24,15 +24,18 @@ use self::{
 };
 use crate::{
     idcounter::{Id, IdCounter},
+    interrupt::Destination,
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{
         KERNEL_STACK_SIZE,
+        ipi::ipi_exec,
         mp::get_processor,
-        sched::{SchedFlags, remove_thread, schedule},
+        sched::{SchedFlags, remove_thread, schedule, schedule_resched},
     },
     security::SecCtxMgr,
     spinlock::Spinlock,
+    thread::flags::THREAD_MUST_EXIT,
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
@@ -371,6 +374,25 @@ impl Thread {
                     .unwrap_or(0.into())
     }
 
+    pub fn force_exit(self: &ThreadRef) {
+        self.flags.fetch_or(THREAD_MUST_EXIT, Ordering::SeqCst);
+        if self == current_thread_ref().unwrap() {
+            if !self.is_critical() {
+                // TODO
+                exit(101);
+            }
+        } else {
+            ipi_exec(Destination::AllButSelf, Box::new(|| schedule_resched()));
+        }
+    }
+
+    pub fn maybe_exit(self: &ThreadRef) {
+        if self.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 && !self.is_critical() {
+            // TODO
+            exit(101);
+        }
+    }
+
     pub fn set_trace_state(&self, events: u64) -> Result<(), TwzError> {
         if events & PERTHREAD_TRACE_GEN_SAMPLE == 0 {
             if self.sample_expire.lock().take().is_some() {
@@ -469,7 +491,7 @@ pub fn exit(code: u64) -> ! {
     {
         let th = current_thread_ref().unwrap();
         remove_thread(th.id());
-        log::info!(
+        log::debug!(
             "thread {} ({}) exits with code {}",
             th.id(),
             th.objid(),

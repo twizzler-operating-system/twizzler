@@ -124,6 +124,9 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                     ExecutionState::Suspended => {
                         thread.suspend();
                     }
+                    ExecutionState::Exited => {
+                        thread.force_exit();
+                    }
                     _ => {
                         return [1, TwzError::INVALID_ARGUMENT.raw()];
                     }

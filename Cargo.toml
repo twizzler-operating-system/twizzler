@@ -70,10 +70,11 @@ members = [
     "src/bin/debug",
     "src/bin/trace",
     "src/bin/sec",
-
-    "src/bin/schedtest", "src/bin/gfxtest",
+    "src/bin/schedtest",
+    #"src/bin/gfxtest",
     "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
-    "src/lib/sgtest", "src/srv/sgtest-srv", "src/lib/twizzler-net",
+    #"src/lib/sgtest", "src/srv/sgtest-srv",
+    "src/lib/twizzler-net",
 ]
 
 exclude = [
@@ -104,7 +105,7 @@ initrd = [
     "crate:debug",
     "crate:cache",
     "crate:trace",
-    "crate:gfxtest",
+    #"crate:gfxtest",
     "crate:shell",
 
     "crate:sec",

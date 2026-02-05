@@ -151,7 +151,6 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             };
             drop(comps);
         }
-
         // Check for notifications, and sleep.
         if data.notify.swap(0, Ordering::SeqCst) == 0 {
             // no notification, go to sleep. hold the lock over the sleep so that someone cannot

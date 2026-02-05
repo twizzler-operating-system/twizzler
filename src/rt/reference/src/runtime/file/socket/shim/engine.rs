@@ -9,6 +9,7 @@ use std::{
     thread::JoinHandle,
 };
 
+use monitor_api::CompartmentHandle;
 use secgate::util::Handle;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
@@ -154,9 +155,10 @@ impl Engine {
                     .ifaceset
                     .iter()
                     .any(|iface| iface.device.has_rx_pending());
+                drop(core);
 
-                if !any_ready && notify.swap(0, Ordering::SeqCst) != 0 {
-                    sys_thread_sync(&mut waiters, time.map(|t| t.into())).unwrap();
+                if !any_ready && notify.swap(0, Ordering::SeqCst) == 0 {
+                    let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
                 }
             }
         });
@@ -267,7 +269,9 @@ impl Core {
         }
         // When we poll, notify the CV so that other waiting threads can retry their blocking
         // operations.
-        waiter.notify_all();
+        if res {
+            waiter.notify_all();
+        }
         res
     }
 

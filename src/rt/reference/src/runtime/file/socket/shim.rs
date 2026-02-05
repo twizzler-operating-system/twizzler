@@ -102,10 +102,12 @@ impl SmolTcpListener {
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
 
+        eprintln!("binding...");
         for _ in 0..Self::BACKLOG {
             let listener = Self::bind_once(&addrs)?;
             listeners.push(listener);
         }
+        eprintln!("binding done");
 
         let smoltcplistener = SmolTcpListener {
             local_addr: listeners[0].local_addr,
@@ -200,11 +202,22 @@ impl SmolTcpStream {
         engine.blocking(|core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_recv() {
+                eprintln!("got: {}", socket.recv_queue());
                 Ok(socket.recv_slice(buf).unwrap())
-            } else if !socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst) {
+            } else if (!socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst))
+                && socket.state() != State::SynReceived
+                && socket.state() != State::SynSent
+            {
+                eprintln!(
+                    "b: {} {} {:?}",
+                    socket.may_recv(),
+                    self.inner.rx_shutdown.load(Ordering::SeqCst),
+                    socket.state()
+                );
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok(0)
             } else {
+                eprintln!("would block");
                 Err(ErrorKind::WouldBlock.into())
             }
         })

@@ -42,7 +42,10 @@ impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
-            OUR_RUNTIME.close_fds();
+            let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
+            if id == 0 {
+                OUR_RUNTIME.close_fds();
+            }
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
@@ -206,7 +209,6 @@ impl ReferenceRuntime {
     }
 
     pub fn sysinfo(&self) -> SystemInfo {
-        twizzler_abi::klog_println!("get sysinfo");
         let info = twizzler_abi::syscall::sys_info();
         SystemInfo {
             clock_monotonicity: Monotonicity::Weak.into(),

@@ -127,7 +127,7 @@ fn check_security(
     let access_kind = match cause {
         MemoryAccessKind::Read => Protections::READ,
         MemoryAccessKind::Write => Protections::WRITE | Protections::READ,
-        MemoryAccessKind::InstructionFetch => Protections::EXEC,
+        MemoryAccessKind::InstructionFetch => Protections::EXEC | Protections::READ,
     };
     let access_info = AccessInfo {
         target_id: id,
@@ -183,7 +183,8 @@ fn page_fault_to_region(
     }
 
     // Step 1: Check for address validity and check for security violations.
-    check_object_addr(page_number, id, cause, addr)?;
+    check_object_addr(page_number, id, cause, addr)
+        .inspect_err(|_| logln!("on check_object_addr"))?;
 
     let (id_ok, default_prot) = info.object.check_id();
 
@@ -199,12 +200,17 @@ fn page_fault_to_region(
         */
     }
 
-    let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
+    let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)
+        .inspect_err(|e| logln!("on check_security"))?;
 
     // Do we need to switch contexts?
     if perms.ctx != sctx_id && !addr.is_kernel() {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
         sctx_id = perms.ctx;
+    }
+
+    if sctx_id.raw() == 0 {
+        //logln!("perms: {:?} {:?} {:?} {:?}", addr, cause, ip, perms);
     }
 
     let shared_mapper = |addr: VirtAddr, spt: &SharedPageTable| {
@@ -315,7 +321,8 @@ pub fn do_page_fault(
     check_violations(addr, cause, flags, ip)?;
 
     let (ctx, sctx_id) = get_context(addr, flags);
-    let info = get_map_region(addr, &ctx, cause, ip)?;
+    let info =
+        get_map_region(addr, &ctx, cause, ip).inspect_err(|_| logln!("on get_map_region"))?;
     page_fault_to_region(addr, cause, flags, ip, ctx, sctx_id, info)
 }
 

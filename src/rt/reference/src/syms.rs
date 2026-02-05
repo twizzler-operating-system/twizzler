@@ -76,8 +76,11 @@ use std::{
     ffi::{c_void, CStr},
 };
 
+use monitor_api::CompartmentHandle;
+use secgate::DynamicSecGate;
 use tracing::warn;
 use twizzler_abi::object::ObjID;
+use twizzler_net::{NetClientConfig, NetClientOpenInfo};
 // core.h
 use twizzler_rt_abi::bindings::{
     binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, option_exit_code,
@@ -907,15 +910,6 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
 check_ffi_type!(twz_rt_get_random, _, _, _);
 
 // additional definitions for C
-
-#[linkage = "weak"]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn twz_net_open_client() {}
-
-#[linkage = "weak"]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn twz_net_drop_client() {}
-
 #[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn malloc(len: usize) -> *mut core::ffi::c_void {

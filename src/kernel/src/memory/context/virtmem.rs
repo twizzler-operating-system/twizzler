@@ -393,9 +393,9 @@ impl UserContext for VirtContext {
         let start = range.start.as_byte_offset();
         let len = range.end.as_byte_offset() - start;
         let mut slots = self.regions.lock();
-        let arches = self.secctx.lock();
-        for arch in arches.values() {
-            for info in slots.object_mappings(obj) {
+        for info in slots.object_mappings(obj) {
+            let arches = self.secctx.lock();
+            for arch in arches.values() {
                 match mode {
                     obj::InvalidateMode::Full => {
                         arch.unmap(info.mapping_cursor(start, len));

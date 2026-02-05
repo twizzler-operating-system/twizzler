@@ -8,7 +8,7 @@ use dynlink::{
 use happylock::ThreadKey;
 use monitor_api::{CompartmentInfoRaw, CompartmentMgrStats, ThreadInfo, MONITOR_INSTANCE_ID};
 use secgate::util::Descriptor;
-use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
+use twizzler_abi::syscall::{sys_thread_change_state, sys_thread_sync, ThreadControl, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
@@ -201,6 +201,11 @@ impl CompartmentMgr {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
+
+        for thread in rc.per_thread.keys() {
+            let _ = sys_thread_change_state(*thread, twizzler_abi::thread::ExecutionState::Exited);
+        }
+
         for dep in rc.deps.clone() {
             self.dec_use_count(dep);
         }

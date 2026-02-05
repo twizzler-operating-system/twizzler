@@ -108,6 +108,7 @@ impl<T> Mutex<T> {
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
+                            crate::panic::backtrace(false, None);
                             panic!("this mutex is not re-entrant");
                         }
                     }

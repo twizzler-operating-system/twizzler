@@ -1,3 +1,4 @@
+use monitor_api::CompartmentHandle;
 use secgate::{
     TwzError,
     util::{Descriptor, Handle},
@@ -41,6 +42,18 @@ impl NetClient {
     }
 }
 
+pub fn net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo, TwzError> {
+    let comp = CompartmentHandle::lookup("net")?;
+    let gate = unsafe { comp.dynamic_gate("twz_net_open_client") }?;
+    (gate)(config)
+}
+
+pub fn net_drop_client(desc: u32) -> Result<(), TwzError> {
+    let comp = CompartmentHandle::lookup("net")?;
+    let gate = unsafe { comp.dynamic_gate("twz_net_drop_client") }?;
+    (gate)(desc)
+}
+
 impl secgate::util::Handle for NetClient {
     type OpenError = TwzError;
 
@@ -50,7 +63,7 @@ impl secgate::util::Handle for NetClient {
     where
         Self: Sized,
     {
-        let info = super::twz_net_open_client(info)?;
+        let info = net_open_client(info)?;
         let tx_queue = Object::<QueueBase<ClientMsg, ServerRet>>::map(
             info.tx_queue,
             MapFlags::READ | MapFlags::WRITE,
@@ -77,7 +90,7 @@ impl secgate::util::Handle for NetClient {
     }
 
     fn release(&mut self) {
-        let _ = super::twz_net_drop_client(self.handle);
+        let _ = net_drop_client(self.handle);
     }
 }
 
@@ -144,10 +157,9 @@ impl smoltcp::phy::Device for NetClient {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut cap = DeviceCapabilities::default();
-        cap.medium = Medium::Ip;
-        cap.max_transmission_unit = 1500;
-        cap.max_burst_size = None;
-        cap.checksum = ChecksumCapabilities::ignored();
+        cap.medium = Medium::Ethernet;
+        cap.max_transmission_unit = 1514;
+        cap.max_burst_size = Some(1);
         cap
     }
 }
@@ -173,6 +185,7 @@ impl TxToken for NetClientTxToken<'_> {
         let mem = self.nc.tx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
 
+        twizzler_abi::klog_println!("client submitting packet {}", self.packet);
         self.nc
             .tx
             .send_packets(&[self.packet], |s| ClientMsg {

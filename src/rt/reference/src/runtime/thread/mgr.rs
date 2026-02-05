@@ -161,7 +161,13 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub(super) fn impl_spawn(&self, args: twizzler_rt_abi::thread::ThreadSpawnArgs) -> Result<u32> {
+    pub(super) fn impl_spawn(
+        &self,
+        mut args: twizzler_rt_abi::thread::ThreadSpawnArgs,
+    ) -> Result<u32> {
+        if args.stack_size < 1024 * 1024 * 8 {
+            args.stack_size = 1024 * 1024 * 8;
+        }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
@@ -227,26 +233,22 @@ impl ReferenceRuntime {
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
-        twizzler_abi::klog_println!("join: {}", id);
         let repr = {
             let mut inner = THREAD_MGR.inner.lock();
             inner.scan_for_exited_except(id);
             inner
                 .all_threads
                 .get(&id)
-                .ok_or(TwzError::Argument(ArgumentError::BadHandle))
-                .inspect_err(|e| twizzler_abi::klog_println!("bad handle"))?
+                .ok_or(TwzError::Argument(ArgumentError::BadHandle))?
                 .repr_handle()
                 .clone()
         };
-        twizzler_abi::klog_println!("join: {}: found", id);
         let base =
             unsafe { (repr.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {
             let (state, _code) = base
                 .wait_until(ExecutionState::Exited, timeout)
-                .ok_or(TwzError::TIMED_OUT)
-                .inspect_err(|e| twizzler_abi::klog_println!("TIMEOUT"))?;
+                .ok_or(TwzError::TIMED_OUT)?;
             if state == ExecutionState::Exited {
                 let mut inner = THREAD_MGR.inner.lock();
                 inner.prep_cleanup(id);

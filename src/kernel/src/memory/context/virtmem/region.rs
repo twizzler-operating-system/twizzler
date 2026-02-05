@@ -74,6 +74,9 @@ fn check_settings(
     if !settings.flags().contains(MappingFlags::USER) {
         return Ok(());
     }
+    if current_thread_ref().is_some_and(|ct| ct.secctx.active_id().raw() == 0) {
+        return Ok(());
+    }
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), kind));
     match kind {
