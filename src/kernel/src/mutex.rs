@@ -24,7 +24,7 @@ use crate::{
     idcounter::StableId,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
-    syscall::sync::{finish_blocking, remove_from_requeue},
+    syscall::sync::finish_blocking,
     thread::{Thread, ThreadRef, current_thread_ref, priority::Priority},
 };
 
@@ -155,7 +155,6 @@ impl<T> Mutex<T> {
                         }
                     }
                 }
-                remove_from_requeue(current_thread);
                 assert!(!current_thread.mutex_link.is_linked());
             }
         }

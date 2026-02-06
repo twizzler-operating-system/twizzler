@@ -19,7 +19,7 @@ use crate::{
     obj::{LookupFlags, LookupResult, lookup_object},
     once::Once,
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref},
+    thread::current_memory_context,
 };
 
 #[derive(Clone)]

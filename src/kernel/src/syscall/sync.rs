@@ -382,9 +382,6 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         }
     }
 
-    if ops.len() > 5 {
-        log::info!("many_sleep sleep");
-    }
     if ops.len() > 1024 {
         return Err(TwzError::INVALID_ARGUMENT);
     }
@@ -423,9 +420,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
             },
         }
     }
-    if ops.len() > 5 {
-        log::info!("many_sleep ready");
-    }
+
     let prep_done = Instant::now();
     let thread = current_thread_ref().unwrap();
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
@@ -461,9 +456,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         }
         timeout_key
     };
-    if ops.len() > 5 {
-        log::info!("many_sleep undo");
-    }
+
     let woke_up = Instant::now();
     for op in &unsleeps {
         undo_sleep(op);
@@ -472,9 +465,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     thread.reset_sync_sleep();
     remove_from_requeue(&thread);
     drop(unsleeps);
-    if ops.len() > 5 {
-        log::info!("many_sleep woke");
-    }
+
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let was_timedout = timeout_key.map(|tk| !tk.release()).unwrap_or(false);
     let done = Instant::now();
