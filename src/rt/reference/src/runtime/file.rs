@@ -34,7 +34,7 @@ use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, endpoint, io_ctx, io_vec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, prot_kind_ProtKind_Stream,
-        BIND_DATA_MAX, FD_CMD_DUP, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        socket_address, BIND_DATA_MAX, FD_CMD_DUP, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
@@ -709,10 +709,19 @@ impl ReferenceRuntime {
             let Ok(name) = str::from_utf8(name) else {
                 return Err(TwzError::INVALID_ARGUMENT);
             };
-            twizzler_abi::klog_println!("trying to resolve socket name {:?}", name);
-            let res = crate::runtime::file::socket::dns(name);
-            twizzler_abi::klog_println!("got dns: {:?}", res);
-            return Ok(0);
+            let out_slice: &mut [socket_address] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    out_name.as_mut_ptr().cast(),
+                    out_name.len() / size_of::<socket_address>(),
+                )
+            };
+
+            let res = crate::runtime::file::socket::dns(name)?;
+            for i in 0..res.len().min(out_slice.len()) {
+                let sa = SocketAddress::from(res[i]);
+                out_slice[i] = sa.0;
+            }
+            return Ok(res.len().min(out_slice.len()) * size_of::<socket_address>());
         }
         let path = PathBuf::from(str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?);
         let path = if !path.is_absolute() {

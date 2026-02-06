@@ -106,12 +106,10 @@ impl SmolTcpListener {
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
 
-        eprintln!("binding...");
         for _ in 0..Self::BACKLOG {
             let listener = Self::bind_once(&addrs)?;
             listeners.push(listener);
         }
-        eprintln!("binding done");
 
         let smoltcplistener = SmolTcpListener {
             local_addr: listeners[0].local_addr,
@@ -206,22 +204,14 @@ impl SmolTcpStream {
         engine.blocking(|core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_recv() {
-                eprintln!("got: {}", socket.recv_queue());
                 Ok(socket.recv_slice(buf).unwrap())
             } else if (!socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst))
                 && socket.state() != State::SynReceived
                 && socket.state() != State::SynSent
             {
-                eprintln!(
-                    "b: {} {} {:?}",
-                    socket.may_recv(),
-                    self.inner.rx_shutdown.load(Ordering::SeqCst),
-                    socket.state()
-                );
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok(0)
             } else {
-                eprintln!("would block");
                 Err(ErrorKind::WouldBlock.into())
             }
         })
@@ -536,14 +526,23 @@ impl Drop for UdpSocketInner {
 }
 
 pub fn dns(query: &str) -> Result<Vec<SocketAddr>, Error> {
-    let (name, port) = query.rsplit_once(":").unwrap();
-    let port = port.parse::<u16>().unwrap();
-    let mut socket = DnsSocket::new(&[IpAddress::from_str("8.8.8.8").unwrap()], vec![]);
+    let (name, port) = query.rsplit_once(":").ok_or(ErrorKind::InvalidInput)?;
+    let port = port.parse::<u16>().map_err(|_| ErrorKind::InvalidInput)?;
+    let mut q = vec![];
+    q.extend((0..16).map(|_| None));
+    let mut socket = DnsSocket::new(
+        &[IpAddress::from_str("8.8.8.8").map_err(|_| ErrorKind::InvalidInput)?],
+        q,
+    );
     let mut core = ENGINE.core.lock().unwrap();
-    let iface = core.iface_for_dns().unwrap();
-    let qh = socket
-        .start_query(iface.context(), name, smoltcp::wire::DnsQueryType::A)
-        .unwrap();
+    let iface = core.iface_for_dns().ok_or(ErrorKind::Unsupported)?;
+    let qh = match socket.start_query(iface.context(), name, smoltcp::wire::DnsQueryType::A) {
+        Ok(qh) => qh,
+        Err(e) => match e {
+            smoltcp::socket::dns::StartQueryError::NoFreeSlot => Err(ErrorKind::OutOfMemory),
+            _ => Err(ErrorKind::InvalidInput),
+        }?,
+    };
     let handle = core.add_dns_socket(socket);
     drop(core);
 
@@ -555,8 +554,10 @@ pub fn dns(query: &str) -> Result<Vec<SocketAddr>, Error> {
             Err(GetQueryResultError::Failed) => Err(ErrorKind::AddrNotAvailable.into()),
             Ok(v) => Ok(v),
         }
-    })?;
+    });
     let mut core = ENGINE.core.lock().unwrap();
     core.release_socket(handle);
+    drop(core);
+    let res = res?;
     Ok(res.into_iter().map(|a| (a, port).into()).collect())
 }

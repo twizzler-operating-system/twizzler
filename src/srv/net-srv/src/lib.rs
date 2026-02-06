@@ -2,7 +2,7 @@
 #![feature(lock_value_accessors)]
 
 use std::{
-    net::{IpAddr, ToSocketAddrs},
+    net::IpAddr,
     str::FromStr,
     sync::{mpsc::Receiver, Arc, Mutex, OnceLock},
     thread::JoinHandle,
@@ -95,7 +95,7 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
 }
 
 #[secgate::entry(lib = "twizzler-net")]
-pub fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo> {
+pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo> {
     let mut handles = NETINFO
         .get()
         .ok_or(TwzError::NOT_SUPPORTED)?
@@ -177,7 +177,7 @@ fn device_thread(
                         let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
                         eprintln!("device thread got {}", pp);
                         let handles = NETINFO.get().unwrap().handles.lock().unwrap();
-                        for (_, i, client) in handles.handles() {
+                        for (_, _, client) in handles.handles() {
                             let mut ep = client.ep.lock().unwrap();
                             let ctx = ep.transmit(Instant::now()).unwrap();
                             ctx.consume(buf.len(), |cbuf| cbuf.copy_from_slice(buf));
