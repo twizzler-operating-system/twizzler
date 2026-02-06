@@ -202,6 +202,7 @@ impl VirtContext {
     }
 
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
+        //let sctx = 0.into();
         let secctx = self.secctx.lock();
         cb(secctx
             .get(&sctx)
@@ -315,6 +316,7 @@ impl UserContext for VirtContext {
     type MappingInfo = Slot;
 
     fn switch_to(&self, sctx: ObjID) {
+        //let sctx = 0.into();
         let tc = self.target_cache.lock();
         let target = tc
             .get(&sctx)

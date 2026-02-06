@@ -155,7 +155,7 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
             .max(sub.raw.hdr().len_bytes())
             .max(size_of::<RawQueueHdr>());
         let num_bytes = NULLPAGE_SIZE + max_base + max_len;
-        logln!(
+        log::debug!(
             "pre-faulting {} bytes ({} {}) {:?}",
             num_bytes,
             max_base,
@@ -171,19 +171,6 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                 &mut _up,
             );
         }
-        let max_len = com
-            .raw
-            .hdr()
-            .len_bytes()
-            .max(sub.raw.hdr().len_bytes())
-            .max(size_of::<RawQueueHdr>());
-        let num_bytes = NULLPAGE_SIZE + max_base + max_len;
-        logln!(
-            "pre-faulting {} bytes ({} {})",
-            num_bytes,
-            max_base,
-            max_len
-        );
         Self {
             handle,
             submissions: sub,

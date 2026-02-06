@@ -111,7 +111,7 @@ fn pager_request_copy_user_phys(
 }
 
 fn pager_register_phys(phys: u64, len: u64) -> Result<(), TwzError> {
-    log::info!("register phys: {:x} - {:x}", phys, phys + len);
+    log::debug!("register phys: {:x} - {:x}", phys, phys + len);
     let paddr = PhysAddr::new(phys).map_err(|_| TwzError::INVALID_ARGUMENT)?;
     let vaddr = phys_to_virt(paddr);
     let cursor = MappingCursor::new(vaddr, len as usize);
@@ -135,7 +135,6 @@ pub(super) fn pager_request_handler_main() {
                 provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
-                log::info!("reclaim thread started");
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {

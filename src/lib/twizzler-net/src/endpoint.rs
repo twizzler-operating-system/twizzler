@@ -81,6 +81,7 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.buf.release_packet(id);
     }
 
+    #[allow(dead_code)]
     pub fn packet_mem(&self, id: PacketNum) -> &[u8] {
         self.buf.packet_mem(id)
     }
@@ -89,6 +90,7 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.buf.packet_mem_mut(id)
     }
 
+    #[allow(dead_code)]
     pub fn try_send_packets(
         &self,
         packets: &[PacketNum],

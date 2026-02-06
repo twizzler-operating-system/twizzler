@@ -5929,15 +5929,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sgtest-srv"
-version = "0.1.0"
-dependencies = [
- "secgate",
- "sgtest",
- "twizzler-rt-abi",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8497,33 +8488,3 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
-
-[[patch.unused]]
-name = "candle-core"
-version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#4ac73f7cfa2029ebfae279d9471f3e2221344326"
-
-[[patch.unused]]
-name = "candle-nn"
-version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#4ac73f7cfa2029ebfae279d9471f3e2221344326"
-
-[[patch.unused]]
-name = "candle-transformers"
-version = "0.9.1"
-source = "git+https://github.com/dbittman/candle.git?branch=dbittman#4ac73f7cfa2029ebfae279d9471f3e2221344326"
-
-[[patch.unused]]
-name = "gemm-common"
-version = "0.18.2"
-source = "git+https://github.com/dbittman/gemm.git?branch=dbittman-fixes#2aed8d805f6a82c31e80a191a660bfc396bdcd5f"
-
-[[patch.unused]]
-name = "num_cpus"
-version = "1.17.0"
-source = "git+https://github.com/twizzler-operating-system/num_cpus.git?branch=twizzler#411a8237968e36244f8c943b701c58446005ca05"
-
-[[patch.unused]]
-name = "sqlite3-parser"
-version = "0.14.0"
-source = "git+https://github.com/TheTadLands/lemon-rs.git?branch=portv014#dc4c781a1905bdc6745b06a897bb2e192f2a4368"

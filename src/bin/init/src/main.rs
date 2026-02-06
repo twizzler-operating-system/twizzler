@@ -28,9 +28,6 @@ fn initialize_pager() -> ObjID {
     };
     let queue = Queue::<RequestFromKernel, CompletionToKernel>::from(queue_obj.into_handle());
 
-    let hdr = queue.com_hdr();
-    eprintln!("==> {} {}", hdr.len(), hdr.len_bytes());
-
     sys_new_handle(
         queue.handle().id(),
         twizzler_abi::syscall::HandleType::PagerQueue,
@@ -206,8 +203,11 @@ fn initialize_network() {
     std::mem::forget(comp);
 }
 
-fn initialize_sgtest() {
-    info!("starting display manager");
+fn _initialize_sgtest() {
+    info!("starting sgtest");
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libsgtest_srv.so")
+            .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "sgtest",
         "libsgtest_srv.so",
@@ -269,7 +269,6 @@ fn main() {
     initialize_cache();
     initialize_network();
     initialize_display();
-    initialize_sgtest();
 
     if start_unittest {
         // Load and wait for tests to complete

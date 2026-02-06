@@ -1,4 +1,4 @@
-use core::arch::{global_asm, naked_asm};
+use core::arch::naked_asm;
 
 use twizzler_abi::object::Protections;
 
@@ -217,7 +217,7 @@ impl ArchContextInner {
         self.mapper.change(cursor, settings);
     }
 
-    fn unmap(&mut self, mut cursor: MappingCursor) -> DeferredUnmappingOps {
+    fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         if cursor.start().raw() == 0 {
             let Some(cursor) = cursor.advance(0x1000) else {
                 return Consistency::new_full_global().into_deferred();

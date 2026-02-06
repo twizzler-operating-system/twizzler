@@ -47,13 +47,13 @@ fn try_bench(path: &str) {
                 }
             }
             for (i, exe) in possibles.iter().enumerate() {
-                let mut cmd = std::process::Command::new(line);
+                let mut cmd = std::process::Command::new(exe);
                 cmd.args(["--bench"]);
                 if let Ok(mut test_comp) = cmd.spawn() {
                     test_comp.wait().unwrap();
                 } else {
                     if i == possibles.len() - 1 {
-                        eprintln!("failed to start {}", line);
+                        eprintln!("failed to start {}", exe);
                     }
                 }
             }
@@ -87,7 +87,7 @@ fn main() {
             let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
-            cmd.args(["--test", "--no-capture", "--show-output"]);
+            cmd.args(["--test"]);
             if let Ok(mut test_comp) = cmd.spawn() {
                 test_comp.wait().unwrap();
                 reports.push(TestResult {

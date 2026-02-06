@@ -99,7 +99,7 @@ initrd = [
     "lib:cache-srv",
     "lib:display-srv",
     "lib:net-srv",
-    "lib:sgtest-srv",
+    #"lib:sgtest-srv",
     "crate:unittest",
     "crate:uuhelper",
     "crate:debug",
@@ -114,7 +114,7 @@ initrd = [
     #"crate:persistent-hashmap-test",
 
     #"crate:twzcandle",
-    "crate:st",
+    #"crate:st",
     "crate:stdnet_test",
 
     #"third-party:hello-world-rs"
@@ -353,10 +353,14 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #lock_api = { path = "src/ports/parking_lot/lock_api" }
 #blocking = { path = "src/ports/blocking" }
 
-num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
+#num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
 
 
-candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+#candle-core = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+#candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+#candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
+#gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
+
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }
@@ -369,14 +373,11 @@ memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 rusqlite = { path = "src/ports/rusqlite" }
 libsqlite3-sys = { path = "src/ports/rusqlite/libsqlite3-sys" }
-sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
+#sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
 ferroc = { path = "src/ports/ferroc" }
-candle-transformers = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
-candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
-gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }

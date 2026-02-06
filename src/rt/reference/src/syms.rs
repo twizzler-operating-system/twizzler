@@ -76,11 +76,8 @@ use std::{
     ffi::{c_void, CStr},
 };
 
-use monitor_api::CompartmentHandle;
-use secgate::DynamicSecGate;
 use tracing::warn;
 use twizzler_abi::object::ObjID;
-use twizzler_net::{NetClientConfig, NetClientOpenInfo};
 // core.h
 use twizzler_rt_abi::bindings::{
     binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, option_exit_code,

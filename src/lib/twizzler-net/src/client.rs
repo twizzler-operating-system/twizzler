@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 use monitor_api::CompartmentHandle;
 use secgate::{
@@ -6,7 +6,7 @@ use secgate::{
     util::{Descriptor, Handle},
 };
 use smoltcp::{
-    phy::{ChecksumCapabilities, DeviceCapabilities, Medium, RxToken, TxToken},
+    phy::{DeviceCapabilities, Medium, RxToken, TxToken},
     wire::EthernetAddress,
 };
 use twizzler::object::{MapFlags, ObjID, Object, RawObject};
@@ -196,7 +196,6 @@ impl TxToken for NetClientTxToken<'_> {
         let mem = self.nc.tx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
 
-        twizzler_abi::klog_println!("client submitting packet {}", self.packet);
         self.nc
             .tx
             .send_packets(&[self.packet], |s| ClientMsg {

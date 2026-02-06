@@ -4,7 +4,11 @@
 use std::{
     net::IpAddr,
     str::FromStr,
-    sync::{mpsc::Receiver, Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+        Arc, Mutex, OnceLock,
+    },
     thread::JoinHandle,
 };
 
@@ -31,6 +35,7 @@ static NETINFO: OnceLock<NetworkInfo> = OnceLock::new();
 struct Client {
     ep: Mutex<NetServer>,
     jh: OnceLock<JoinHandle<()>>,
+    active: AtomicBool,
 }
 
 impl Client {
@@ -38,6 +43,7 @@ impl Client {
         let client = Arc::new(Client {
             ep: Mutex::new(ep),
             jh: OnceLock::new(),
+            active: AtomicBool::new(true),
         });
         let _client = client.clone();
         let jh = std::thread::spawn(move || client_thread(_client));
@@ -70,7 +76,7 @@ pub fn start_network() -> Result<()> {
     let (device, recv) = get_virtio_net_device_and_interface();
     let _device = device.clone();
     std::thread::spawn(move || device_thread(_device, recv));
-    tracing::info!("network ready");
+    tracing::info!("network ready: IP = {}, gateway = {}", IP, GATEWAY);
 
     let _ = NETINFO.set(NetworkInfo {
         handles: Mutex::new(HandleMgr::new(None)),
@@ -90,7 +96,9 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
         .unwrap();
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
-    handles.remove(caller, desc);
+    if let Some(client) = handles.remove(caller, desc) {
+        client.active.store(false, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -162,20 +170,17 @@ fn device_thread(
     mut device: DeviceWrapper<TwizzlerTransport>,
     recv: Receiver<Option<(SocketHandle, u16)>>,
 ) {
-    eprintln!(
-        "device thread started: {:?} {:?}",
-        device.mac_address(),
-        device.capabilities()
-    );
     loop {
         match recv.recv() {
             Err(_) => break,
             _ => {
                 while let Some((rx, _tx)) = device.receive(Instant::now()) {
                     rx.consume(|buf| {
-                        let f = EthernetFrame::new_unchecked(&mut *buf);
-                        let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
-                        eprintln!("device thread got {}", pp);
+                        if false {
+                            let f = EthernetFrame::new_unchecked(&mut *buf);
+                            let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
+                            eprintln!("device thread got {}", pp);
+                        }
                         let handles = NETINFO.get().unwrap().handles.lock().unwrap();
                         for (_, _, client) in handles.handles() {
                             let mut ep = client.ep.lock().unwrap();
@@ -202,9 +207,11 @@ fn client_thread(client: Arc<Client>) {
         let mut ep = client.ep.lock().unwrap();
         while let Some((rx, _tx)) = ep.receive(Instant::now()) {
             rx.consume(|buf| {
-                let f = EthernetFrame::new_unchecked(&mut *buf);
-                let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
-                eprintln!("client thread got {}", pp);
+                if false {
+                    let f = EthernetFrame::new_unchecked(&mut *buf);
+                    let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
+                    eprintln!("client thread got {}", pp);
+                }
                 if let Some(dtx) = device.transmit(Instant::now()) {
                     dtx.consume(buf.len(), |dbuf| dbuf.copy_from_slice(buf));
                 }

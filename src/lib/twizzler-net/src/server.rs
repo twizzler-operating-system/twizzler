@@ -1,5 +1,5 @@
 use secgate::TwzError;
-use smoltcp::phy::{ChecksumCapabilities, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::phy::{DeviceCapabilities, Medium, RxToken, TxToken};
 use twizzler::object::{MapFlags, Object, RawObject};
 use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_io::packet::PacketObject;
@@ -141,7 +141,6 @@ impl TxToken for NetServerTxToken<'_> {
         let mem = self.ns.client_rx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
 
-        twizzler_abi::klog_println!("server submitting packet {}", self.packet);
         self.ns
             .client_rx
             .send_packets(&[self.packet], |s| ServerMsg {
