@@ -97,6 +97,10 @@ impl Read for CompartmentFile {
                 drop(ls);
                 current_state = self.inner.comp.wait(current_state);
             }
+
+            if current_state.contains(CompartmentFlags::EXITED) {
+                return Ok(0);
+            }
         }
     }
 }

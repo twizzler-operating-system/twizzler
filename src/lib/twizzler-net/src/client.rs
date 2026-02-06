@@ -1,9 +1,14 @@
+use std::net::{IpAddr, SocketAddr};
+
 use monitor_api::CompartmentHandle;
 use secgate::{
     TwzError,
     util::{Descriptor, Handle},
 };
-use smoltcp::phy::{ChecksumCapabilities, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::{
+    phy::{ChecksumCapabilities, DeviceCapabilities, Medium, RxToken, TxToken},
+    wire::EthernetAddress,
+};
 use twizzler::object::{MapFlags, ObjID, Object, RawObject};
 use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_io::packet::PacketObject;
@@ -20,6 +25,7 @@ pub struct NetClient {
     handle: Descriptor,
     pending_rx: PacketSet,
     pending_id: Option<u32>,
+    pub info: NetClientOpenInfo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +36,10 @@ pub struct NetClientOpenInfo {
     pub tx_queue: ObjID,
     pub rx_queue: ObjID,
     pub handle: Descriptor,
+    pub addr: IpAddr,
+    pub addr_prefix_len: u8,
+    pub gateway: IpAddr,
+    pub hwaddr: EthernetAddress,
 }
 
 impl NetClient {
@@ -86,6 +96,7 @@ impl secgate::util::Handle for NetClient {
             handle: info.handle,
             pending_id: None,
             pending_rx: PacketSet::new(),
+            info,
         })
     }
 

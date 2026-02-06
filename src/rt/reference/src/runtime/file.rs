@@ -32,9 +32,9 @@ use twizzler_io::{
 };
 use twizzler_rt_abi::{
     bindings::{
-        binding_info, create_options, io_ctx, io_vec, object_bind_info, open_kind,
-        open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, BIND_DATA_MAX, FD_CMD_DUP,
-        OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        binding_info, create_options, endpoint, io_ctx, io_vec, object_bind_info, open_kind,
+        open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, prot_kind_ProtKind_Stream,
+        BIND_DATA_MAX, FD_CMD_DUP, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
@@ -152,10 +152,33 @@ impl FdKind {
             _ => Err(TwzError::NOT_SUPPORTED),
         }
     }
-}
 
-impl Read for FdKind {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub fn read_from(
+        &mut self,
+        buf: &mut [u8],
+        ep: &mut twizzler_rt_abi::io::Endpoint,
+    ) -> std::io::Result<usize> {
+        match self {
+            //FdKind::File(arc) => arc.lock().unwrap().read(buf),
+            FdKind::RawFile(arc) => arc.lock().unwrap().read(buf),
+            FdKind::KernelConsole => {
+                let len = twizzler_abi::syscall::sys_kernel_console_read(
+                    KernelConsoleSource::Console,
+                    buf,
+                    twizzler_abi::syscall::KernelConsoleReadFlags::empty(),
+                )?;
+                Ok(len)
+            }
+            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
+            FdKind::Socket(socket) => socket.read_from(buf, ep),
+            FdKind::Pty(pty) => pty.read(buf),
+            FdKind::Pipe(pipe) => pipe.read(buf),
+            FdKind::Compartment(comp) => comp.read(buf),
+        }
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().read(buf),
             FdKind::RawFile(arc) => arc.lock().unwrap().read(buf),
@@ -173,6 +196,31 @@ impl Read for FdKind {
             FdKind::Pty(pty) => pty.read(buf),
             FdKind::Pipe(pipe) => pipe.read(buf),
             FdKind::Compartment(comp) => comp.read(buf),
+        }
+    }
+
+    pub fn write_to(
+        &mut self,
+        buf: &[u8],
+        ep: &twizzler_rt_abi::io::Endpoint,
+    ) -> std::io::Result<usize> {
+        match self {
+            //FdKind::File(arc) => arc.lock().unwrap().read(buf),
+            FdKind::RawFile(arc) => arc.lock().unwrap().write(buf),
+            FdKind::KernelConsole => {
+                twizzler_abi::syscall::sys_kernel_console_write(
+                    KernelConsoleSource::Console,
+                    buf,
+                    twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+                );
+                Ok(buf.len())
+            }
+            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
+            FdKind::Socket(socket) => socket.write_to(buf, ep),
+            FdKind::Pty(pty) => pty.write(buf),
+            FdKind::Pipe(pipe) => pipe.write(buf),
+            FdKind::Compartment(comp) => comp.write(buf),
         }
     }
 }
@@ -309,6 +357,22 @@ impl FileDesc {
             self.binding = MaybeNoDrop::new(Arc::new(b), true);
         }
         self.kind.fd_cmd(cmd, arg, ret)
+    }
+
+    fn write_to(
+        &mut self,
+        buf: &[u8],
+        ep: &twizzler_rt_abi::io::Endpoint,
+    ) -> std::io::Result<usize> {
+        self.kind.write_to(buf, ep)
+    }
+
+    fn read_from(
+        &mut self,
+        buf: &mut [u8],
+        ep: &mut twizzler_rt_abi::io::Endpoint,
+    ) -> std::io::Result<usize> {
+        self.kind.read_from(buf, ep)
     }
 }
 
@@ -637,12 +701,19 @@ impl ReferenceRuntime {
 
     pub fn canon_name(
         &self,
-        _resolver: twizzler_rt_abi::fd::NameResolver,
+        resolver: twizzler_rt_abi::fd::NameResolver,
         name: &[u8],
         out_name: &mut [u8],
     ) -> Result<usize> {
-        //let namer = get_naming_handle().unwrap().lock().unwrap();
-
+        if matches!(resolver, twizzler_rt_abi::fd::NameResolver::Socket) {
+            let Ok(name) = str::from_utf8(name) else {
+                return Err(TwzError::INVALID_ARGUMENT);
+            };
+            twizzler_abi::klog_println!("trying to resolve socket name {:?}", name);
+            let res = crate::runtime::file::socket::dns(name);
+            twizzler_abi::klog_println!("got dns: {:?}", res);
+            return Ok(0);
+        }
         let path = PathBuf::from(str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?);
         let path = if !path.is_absolute() {
             let mut cd = std::env::current_dir()?;
@@ -651,14 +722,6 @@ impl ReferenceRuntime {
         } else {
             path
         };
-        /*
-        let mut out_path = PathBuf::new();
-        out_path.push("/");
-        for comp in path.components() {
-            let comp = comp.as_os_str().to_str().unwrap();
-
-        }
-        */
 
         let npath = path.normalize_lexically().unwrap_or(path);
         let path = npath.to_str().unwrap().as_bytes();
@@ -813,9 +876,25 @@ impl ReferenceRuntime {
             OpenKind::SocketConnect => {
                 let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
                 let addr = unsafe { &*addr };
-                FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(
-                    addr.addr,
-                )))?)
+                if addr.prot == prot_kind_ProtKind_Stream {
+                    FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(
+                        addr.addr,
+                    )))?)
+                } else {
+                    let binding = get_fd_slots().lock().unwrap();
+                    let Some(fd) = binding.get(existing_fd.unwrap() as usize) else {
+                        return Err(TwzError::INVALID_ARGUMENT);
+                    };
+
+                    match &fd.kind {
+                        FdKind::Socket(socket) => {
+                            socket.udp_connect(SocketAddr::from(SocketAddress(addr.addr)))?
+                        }
+                        _ => return Err(TwzError::INVALID_ARGUMENT),
+                    };
+                    drop(binding);
+                    return Ok(existing_fd.unwrap());
+                }
             }
             OpenKind::SocketBind => {
                 let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
@@ -823,9 +902,15 @@ impl ReferenceRuntime {
                     FdKind::Socket(SocketKind::None)
                 } else {
                     let addr = unsafe { &*addr };
-                    FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(
-                        addr.addr,
-                    )))?)
+                    if addr.prot == prot_kind_ProtKind_Stream {
+                        FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(
+                            addr.addr,
+                        )))?)
+                    } else {
+                        FdKind::Socket(SocketKind::udp_bind(SocketAddr::from(SocketAddress(
+                            addr.addr,
+                        )))?)
+                    }
                 }
             }
             OpenKind::SocketAccept => {
@@ -965,6 +1050,44 @@ impl ReferenceRuntime {
         drop(binding);
 
         let len = file_desc.read(buf)?;
+        Ok(len)
+    }
+
+    pub fn fd_pread_from(
+        &self,
+        fd: RawFd,
+        buf: &mut [u8],
+        _ctx: *mut io_ctx,
+        ep: *mut endpoint,
+    ) -> Result<usize> {
+        let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_mut().unwrap() };
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+
+        let len = file_desc.read_from(buf, ep)?;
+        Ok(len)
+    }
+
+    pub fn fd_pwrite_to(
+        &self,
+        fd: RawFd,
+        buf: &[u8],
+        _ctx: *mut io_ctx,
+        ep: *const endpoint,
+    ) -> Result<usize> {
+        let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_ref().unwrap() };
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+
+        let len = file_desc.write_to(buf, ep)?;
         Ok(len)
     }
 

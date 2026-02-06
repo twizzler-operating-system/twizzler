@@ -2,47 +2,31 @@
 #![feature(lock_value_accessors)]
 
 use std::{
+    net::{IpAddr, ToSocketAddrs},
     str::FromStr,
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Arc, Mutex, OnceLock, RwLock,
-    },
+    sync::{mpsc::Receiver, Arc, Mutex, OnceLock},
     thread::JoinHandle,
-    time::Duration,
 };
 
-use secgate::{
-    util::{Descriptor, HandleMgr},
-    ResourceError,
-};
+use secgate::{util::HandleMgr, ResourceError};
 use smoltcp::{
-    iface::{Config, Interface, SocketHandle},
+    iface::SocketHandle,
     time::Instant,
-    wire::{EthernetAddress, EthernetFrame, IpAddress, IpCidr, PrettyPrinter},
+    wire::{EthernetAddress, EthernetFrame, PrettyPrinter},
 };
 use tracing::Level;
 use twizzler::object::RawObject;
-use twizzler_abi::{
-    object::ObjID,
-    syscall::{sys_thread_sync, ObjectCreate, ThreadSync},
-};
+use twizzler_abi::syscall::{sys_thread_sync, ObjectCreate, ThreadSync};
 use twizzler_net::{
-    packet::PacketObject, ClientMsg, ClientRet, NetClient, NetClientConfig, NetClientOpenInfo,
-    NetServer, ServerMsg, ServerRet,
+    packet::PacketObject, ClientMsg, ClientRet, NetClientConfig, NetClientOpenInfo, NetServer,
+    ServerMsg, ServerRet,
 };
-use twizzler_queue::Queue;
 use twizzler_rt_abi::{error::TwzError, Result};
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
-const _GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
+const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
-const RX_BUF_SIZE: usize = 65536 * 2;
-const TX_BUF_SIZE: usize = 8192 * 2;
 static NETINFO: OnceLock<NetworkInfo> = OnceLock::new();
-
-enum Work {
-    Exit,
-}
 
 struct Client {
     ep: Mutex<NetServer>,
@@ -112,7 +96,6 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
 
 #[secgate::entry(lib = "twizzler-net")]
 pub fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo> {
-    twizzler_abi::klog_println!("open client: {:?}", config);
     let mut handles = NETINFO
         .get()
         .ok_or(TwzError::NOT_SUPPORTED)?
@@ -147,6 +130,10 @@ pub fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo>
         tx_queue: tx_queue_obj.id(),
         rx_queue: rx_queue_obj.id(),
         handle: 0,
+        addr: IpAddr::from_str(IP).unwrap(),
+        gateway: IpAddr::from_str(GATEWAY).unwrap(),
+        hwaddr: EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+        addr_prefix_len: 8,
     };
 
     let ep = NetServer::open(&ncinfo)?;

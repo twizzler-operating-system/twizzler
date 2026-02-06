@@ -194,7 +194,7 @@ impl CompartmentMgr {
     }
 
     pub fn main_thread_exited(&mut self, instance: ObjID) {
-        tracing::debug!("main thread for compartment {} exited", instance);
+        tracing::info!("main thread for compartment {} exited", instance);
         while !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED)) {}
 
         let Ok(rc) = self.get(instance) else {

@@ -1,6 +1,7 @@
 use std::{
     io::{Error, ErrorKind},
     net::{Shutdown, SocketAddr, ToSocketAddrs},
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -9,24 +10,27 @@ use std::{
 
 use smoltcp::{
     iface::SocketHandle,
-    socket::tcp::{Socket, State},
-    storage::RingBuffer,
+    socket::{
+        dns::GetQueryResultError,
+        tcp::{Socket, State},
+        udp::{Socket as SmolUdpSocket, UdpMetadata},
+    },
+    storage::{PacketBuffer, PacketMetadata, RingBuffer},
+    wire::{IpAddress, IpEndpoint},
 };
 
 mod engine;
 mod port;
 
 use engine::ENGINE;
+use smoltcp::socket::dns::Socket as DnsSocket;
 
 use crate::runtime::file::socket::shim::engine::PORTS;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
-const IP: &str = "10.0.2.15"; // QEMU user networking default IP
-const _GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
-
-const RX_BUF_SIZE: usize = 65536 * 2;
-const TX_BUF_SIZE: usize = 8192 * 2;
+const RX_BUF_SIZE: usize = 65536;
+const TX_BUF_SIZE: usize = 8192;
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
@@ -371,6 +375,188 @@ impl SmolTcpStream {
 
 impl Drop for TcpStreamInner {
     fn drop(&mut self) {
-        ENGINE.track(self);
+        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
     }
+}
+
+struct UdpSocketInner {
+    socket_handle: SocketHandle,
+    port: u16,
+    is_ephemeral_port: bool,
+    rx_shutdown: AtomicBool,
+    connect_addr: Mutex<Option<IpEndpoint>>,
+}
+
+pub struct UdpSocket {
+    inner: Arc<UdpSocketInner>,
+}
+
+impl core::fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmolTcpStream")
+            .field("socket_handle", &self.inner.socket_handle)
+            .field("port", &self.inner.port)
+            .finish_non_exhaustive()
+    }
+}
+
+impl UdpSocket {
+    pub fn read_from(&self, buf: &mut [u8]) -> Result<(usize, Option<UdpMetadata>), Error> {
+        let engine = &ENGINE;
+        engine.blocking(|core| {
+            let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
+            if socket.can_recv() {
+                Ok(socket.recv_slice(buf).map(|x| (x.0, Some(x.1))).unwrap())
+            } else if !socket.is_open() || self.inner.rx_shutdown.load(Ordering::SeqCst) {
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
+                Ok((0, None))
+            } else {
+                Err(ErrorKind::WouldBlock.into())
+            }
+        })
+    }
+
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.read_from(buf).map(|x| x.0)
+    }
+}
+
+impl UdpSocket {
+    /* write():
+     * parameters - reference to data to be written (represented as an array of u8)
+     * result - number of bytes written upon success; error upon error.
+     * writes given data to the connected socket.
+     */
+    pub fn write_to(&self, buf: &[u8], meta: UdpMetadata) -> Result<(), Error> {
+        ENGINE.blocking(|core| {
+            let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
+            if socket.can_send() {
+                Ok(socket.send_slice(buf, meta).unwrap())
+            } else if !socket.is_open() {
+                Err(ErrorKind::ConnectionReset.into())
+            } else {
+                Err(ErrorKind::WouldBlock.into())
+            }
+        })
+    }
+
+    pub fn write(&self, buf: &[u8]) -> Result<(), Error> {
+        let target = *self.inner.connect_addr.lock().unwrap();
+        let meta = match target {
+            Some(addr) => UdpMetadata::from(addr),
+            None => return Err(ErrorKind::NotConnected.into()),
+        };
+        self.write_to(buf, meta)
+    }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl UdpSocket {
+    pub fn connect<A: ToSocketAddrs>(&self, addr: A) -> Result<(), Error> {
+        *self.inner.connect_addr.lock().unwrap() =
+            Some(addr.to_socket_addrs()?.next().unwrap().into());
+        Ok(())
+    }
+
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self, Error> {
+        let mut sock = {
+            SmolUdpSocket::new(
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; RX_BUF_SIZE]),
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; TX_BUF_SIZE]),
+            )
+        };
+        let mut ephem = false;
+        for addr in addr.to_socket_addrs()? {
+            let (addr, mut port) = (addr.ip(), addr.port());
+            ephem = port == 0;
+            if ephem {
+                port = PORTS.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
+            }
+            if sock.bind((addr, port)).is_ok() {
+                break;
+            }
+            if ephem {
+                PORTS.return_port(port);
+            }
+        }
+        if !sock.endpoint().is_specified() {
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                "address not available",
+            ));
+        }
+        let port = sock.endpoint().port;
+        let socket_handle = ENGINE.add_udp_socket(sock);
+        Ok(Self {
+            inner: Arc::new(UdpSocketInner {
+                socket_handle,
+                port,
+                is_ephemeral_port: ephem,
+                rx_shutdown: AtomicBool::new(false),
+                connect_addr: Mutex::new(None),
+            }),
+        })
+    }
+
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
+        // specifies shutdown of read, write, or both with enum Shutdown
+        let engine = &ENGINE;
+        let mut core = engine.core.lock().unwrap(); // acquire mutex
+        let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
+        tracing::debug!("socket {} shutdown: {:?}", self.inner.socket_handle, how,);
+        if !socket.is_open() {
+            // if already closed, exit early
+            return Ok(());
+        }
+        match how {
+            Shutdown::Read => {
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
+                return Ok(());
+            }
+            Shutdown::Write => {
+                socket.close();
+                return Ok(());
+            }
+            Shutdown::Both => {
+                socket.close();
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
+                return Ok(());
+            }
+        }
+    }
+}
+
+impl Drop for UdpSocketInner {
+    fn drop(&mut self) {
+        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
+    }
+}
+
+pub fn dns(query: &str) -> Result<Vec<SocketAddr>, Error> {
+    let (name, port) = query.rsplit_once(":").unwrap();
+    let port = port.parse::<u16>().unwrap();
+    let mut socket = DnsSocket::new(&[IpAddress::from_str("8.8.8.8").unwrap()], vec![]);
+    let mut core = ENGINE.core.lock().unwrap();
+    let iface = core.iface_for_dns().unwrap();
+    let qh = socket
+        .start_query(iface.context(), name, smoltcp::wire::DnsQueryType::A)
+        .unwrap();
+    let handle = core.add_dns_socket(socket);
+    drop(core);
+
+    let res = ENGINE.blocking(|core| {
+        let socket = core.get_mutable_dns_socket(handle);
+        let res = socket.get_query_result(qh);
+        match res {
+            Err(GetQueryResultError::Pending) => Err(ErrorKind::WouldBlock.into()),
+            Err(GetQueryResultError::Failed) => Err(ErrorKind::AddrNotAvailable.into()),
+            Ok(v) => Ok(v),
+        }
+    })?;
+    let mut core = ENGINE.core.lock().unwrap();
+    core.release_socket(handle);
+    Ok(res.into_iter().map(|a| (a, port).into()).collect())
 }

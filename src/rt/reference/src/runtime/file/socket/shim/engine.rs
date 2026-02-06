@@ -1,7 +1,6 @@
 use std::{
     io::ErrorKind,
     net::SocketAddr,
-    str::FromStr,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -9,13 +8,16 @@ use std::{
     thread::JoinHandle,
 };
 
-use monitor_api::CompartmentHandle;
 use secgate::util::Handle;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
-    socket::tcp::{Socket, State},
+    socket::{
+        dns::Socket as DnsSocket,
+        tcp::{Socket, State},
+        udp::Socket as SmolUdpSocket,
+    },
     time::{Duration, Instant},
-    wire::{EthernetAddress, IpAddress, IpCidr},
+    wire::{IpAddress, IpCidr, Ipv4Address, Ipv6Address},
 };
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
@@ -23,7 +25,7 @@ use twizzler_abi::syscall::{
 };
 use twizzler_net::{NetClient, NetClientConfig};
 
-use crate::runtime::file::socket::shim::{port::PortAssigner, TcpStreamInner, IP};
+use crate::runtime::file::socket::shim::port::PortAssigner;
 
 pub struct Engine {
     pub(super) core: Arc<Mutex<Core>>,
@@ -72,6 +74,10 @@ impl IfaceSet {
     }
 
     fn find_iface_for(&mut self, _addr: SocketAddr) -> Option<&mut Interface> {
+        // TODO
+        self.ifaces.get_mut(0)
+    }
+    fn find_iface_for_dns(&mut self) -> Option<&mut Interface> {
         // TODO
         self.ifaces.get_mut(0)
     }
@@ -186,6 +192,10 @@ impl Engine {
         self.core.lock().unwrap().add_socket(socket)
     }
 
+    pub fn add_udp_socket(&self, socket: SmolUdpSocket<'static>) -> SocketHandle {
+        self.core.lock().unwrap().add_udp_socket(socket)
+    }
+
     // Block until f returns Ok(R), and then return R. Note that f may be called multiple times,
     // and it may be called spuriously. If f returns Err(e) with e.kind() anything other than
     // NonBlock, return the error.
@@ -218,17 +228,9 @@ impl Engine {
         }
     }
 
-    pub fn track(&self, inner: &TcpStreamInner) {
-        let port = if inner.is_ephemeral_port {
-            inner.port
-        } else {
-            0
-        };
-        self.core
-            .lock()
-            .unwrap()
-            .tracking
-            .push((inner.socket_handle, port))
+    pub fn track(&self, handle: SocketHandle, port: u16, is_ephem: bool) {
+        let port = if is_ephem { port } else { 0 };
+        self.core.lock().unwrap().tracking.push((handle, port))
     }
 
     pub fn with_iface_for<R>(
@@ -250,6 +252,14 @@ impl Core {
         }
     }
 
+    pub fn add_dns_socket(&mut self, sock: DnsSocket<'static>) -> SocketHandle {
+        self.socketset.add(sock)
+    }
+
+    pub fn add_udp_socket(&mut self, sock: SmolUdpSocket<'static>) -> SocketHandle {
+        self.socketset.add(sock)
+    }
+
     pub fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
         self.socketset.add(sock)
     }
@@ -258,7 +268,15 @@ impl Core {
         self.socketset.get_mut(handle)
     }
 
-    fn release_socket(&mut self, handle: SocketHandle) {
+    pub fn get_mutable_udp_socket(&mut self, handle: SocketHandle) -> &mut SmolUdpSocket<'static> {
+        self.socketset.get_mut(handle)
+    }
+
+    pub fn get_mutable_dns_socket(&mut self, handle: SocketHandle) -> &mut DnsSocket<'static> {
+        self.socketset.get_mut(handle)
+    }
+
+    pub fn release_socket(&mut self, handle: SocketHandle) {
         self.socketset.remove(handle);
     }
 
@@ -293,21 +311,43 @@ impl Core {
         }
         None
     }
+
+    pub fn iface_for_dns(&mut self) -> Option<&mut Interface> {
+        for ifaceset in &mut self.ifaceset {
+            if let Some(iface) = ifaceset.find_iface_for_dns() {
+                return Some(iface);
+            }
+        }
+        None
+    }
 }
 
 fn get_twznet_device_and_interface() -> (Interface, NetClient) {
     let mut device = NetClient::open(NetClientConfig {}).unwrap();
 
     // Create interface
-    let mut config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
-    config.random_seed = 0x2333;
+    let mut config = Config::new(device.info.hwaddr.into());
+    config.random_seed = std::random::random(..);
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs
-            .push(IpCidr::new(IpAddress::from_str(IP).unwrap(), 8))
+            .push(IpCidr::new(
+                IpAddress::from(device.info.addr),
+                device.info.addr_prefix_len,
+            ))
             .unwrap();
     });
+    match device.info.gateway {
+        std::net::IpAddr::V4(ipv4_addr) => iface
+            .routes_mut()
+            .add_default_ipv4_route(Ipv4Address::from(ipv4_addr))
+            .unwrap(),
+        std::net::IpAddr::V6(ipv6_addr) => iface
+            .routes_mut()
+            .add_default_ipv6_route(Ipv6Address::from(ipv6_addr))
+            .unwrap(),
+    };
 
     (iface, device)
 }

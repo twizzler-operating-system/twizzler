@@ -3,31 +3,31 @@ use core::{
     time::Duration,
 };
 
-use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
+use intrusive_collections::{KeyAdapter, RBTree, intrusive_adapter};
 use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TimeSpan},
     thread::ExecutionState,
-    trace::{ThreadBlocked, ThreadResumed, TraceEntryFlags, TraceKind, MAX_BLOCK_NAME},
+    trace::{MAX_BLOCK_NAME, ThreadBlocked, ThreadResumed, TraceEntryFlags, TraceKind},
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, GenericError, TwzError},
     Result,
+    error::{ArgumentError, GenericError, TwzError},
 };
 
 use crate::{
     instant::Instant,
     memory::{
-        context::{kernel_context, UserContext},
         VirtAddr,
+        context::{UserContext, kernel_context},
     },
     obj::{LookupFlags, ObjectRef},
     once::Once,
-    processor::sched::{schedule, SchedFlags},
+    processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref, CriticalGuard, Thread, ThreadRef},
+    thread::{CriticalGuard, Thread, ThreadRef, current_memory_context, current_thread_ref},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -272,6 +272,7 @@ pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
 }
 
 fn thread_sync_cb_timeout(thread: ThreadRef) {
+    //log::info!("thread sync timeout");
     if thread.reset_sync_sleep() {
         add_to_requeue(thread);
     }
@@ -381,6 +382,9 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         }
     }
 
+    if ops.len() > 5 {
+        log::info!("many_sleep sleep");
+    }
     if ops.len() > 1024 {
         return Err(TwzError::INVALID_ARGUMENT);
     }
@@ -392,7 +396,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     let mut unsleeps = heapless::Vec::<_, 1024>::new();
     let mut num_sleepers = 0;
 
-    for op in ops {
+    for op in &mut *ops {
         match op {
             ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
                 Ok(se) => {
@@ -418,6 +422,9 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
                 }
             },
         }
+    }
+    if ops.len() > 5 {
+        log::info!("many_sleep ready");
     }
     let prep_done = Instant::now();
     let thread = current_thread_ref().unwrap();
@@ -454,6 +461,9 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         }
         timeout_key
     };
+    if ops.len() > 5 {
+        log::info!("many_sleep undo");
+    }
     let woke_up = Instant::now();
     for op in &unsleeps {
         undo_sleep(op);
@@ -462,6 +472,9 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     thread.reset_sync_sleep();
     remove_from_requeue(&thread);
     drop(unsleeps);
+    if ops.len() > 5 {
+        log::info!("many_sleep woke");
+    }
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let was_timedout = timeout_key.map(|tk| !tk.release()).unwrap_or(false);
     let done = Instant::now();

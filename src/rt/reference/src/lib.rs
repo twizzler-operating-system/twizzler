@@ -13,6 +13,7 @@
 #![feature(c_size_t)]
 #![feature(once_cell_try)]
 #![feature(normalize_lexically)]
+#![feature(random)]
 
 pub(crate) mod arch;
 

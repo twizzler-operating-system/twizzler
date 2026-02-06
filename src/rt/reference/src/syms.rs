@@ -548,7 +548,8 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite_to(
     ctx: *mut io_ctx,
     ep: *const endpoint,
 ) -> io_result {
-    todo!()
+    let slice = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), len) };
+    OUR_RUNTIME.fd_pwrite_to(fd, slice, ctx, ep).into()
 }
 check_ffi_type!(twz_rt_fd_pwrite_to, _, _, _, _, _);
 
@@ -560,7 +561,8 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pread_from(
     ctx: *mut io_ctx,
     ep: *mut endpoint,
 ) -> io_result {
-    todo!()
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
+    OUR_RUNTIME.fd_pread_from(fd, slice, ctx, ep).into()
 }
 check_ffi_type!(twz_rt_fd_pread_from, _, _, _, _, _);
 

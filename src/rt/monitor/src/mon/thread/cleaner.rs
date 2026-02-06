@@ -7,8 +7,10 @@ use std::{
         mpsc::{Receiver, Sender},
         Arc,
     },
+    time::Duration,
 };
 
+use secgate::TwzError;
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
@@ -131,7 +133,7 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
 
         // Remove any exited threads from the thread manager.
         for (_, th) in cleanups.drain(..) {
-            tracing::debug!("cleaning thread: {}", th.id);
+            tracing::info!("cleaning thread: {}", th.id);
             let monitor = get_monitor();
             {
                 let key = happylock::ThreadKey::get().unwrap();
@@ -155,9 +157,13 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         if data.notify.swap(0, Ordering::SeqCst) == 0 {
             // no notification, go to sleep. hold the lock over the sleep so that someone cannot
             // modify waits.threads on us while we're asleep.
-            if let Err(e) = sys_thread_sync(&mut ops, None) {
-                tracing::warn!("thread sync error: {}", e);
+            twizzler_abi::klog_println!("cleaning thread sleeping");
+            if let Err(e) = sys_thread_sync(&mut ops, Some(Duration::from_secs(8))) {
+                if e != TwzError::TIMED_OUT {
+                    tracing::warn!("thread sync error: {}", e);
+                }
             }
+            twizzler_abi::klog_println!("cleaning thread woke");
         }
     }
 }
