@@ -47,6 +47,8 @@ impl VirtAddr {
     /// The start of the kernel object mapping.
     const KOBJ_START: Self = Self(0xFFFF_F000_0000_0000);
 
+    pub const PHYS_START: Self = Self(0); // TODO
+
     // TTBR0_EL1 points to a page table root for addresses ranging from
     // 0x0 to 0x0000_FFFF_FFFF_FFFF. Generally this is used to cover
     // user accessible memory (EL0).
@@ -264,6 +266,10 @@ impl PhysAddr {
 
     pub fn kernel_vaddr(&self) -> VirtAddr {
         phys_to_virt(*self)
+    }
+
+    pub fn phys_mem_map_len() -> usize {
+        todo!()
     }
 
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {

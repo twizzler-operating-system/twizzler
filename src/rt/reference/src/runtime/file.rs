@@ -833,8 +833,11 @@ impl ReferenceRuntime {
         bind_info_len: usize,
         should_drop: bool,
     ) -> Result<RawFd> {
-        let bind_info_bytes =
-            unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) };
+        let bind_info_bytes = if bind_info.is_null() {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) }
+        };
         let mut elem = match kind {
             OpenKind::Path => {
                 let info = bind_info as *const twizzler_rt_abi::bindings::open_info;

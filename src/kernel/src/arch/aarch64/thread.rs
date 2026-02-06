@@ -73,6 +73,13 @@ impl ArchThread {
             upcall_restore_frame: RefCell::new(None),
         }
     }
+
+    pub fn has_upcall_restore_frame(&self) -> bool {
+        self.upcall_restore_frame
+            .try_borrow()
+            .ok()
+            .is_some_and(|x| x.is_some())
+    }
 }
 
 impl Default for ArchThread {

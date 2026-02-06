@@ -345,18 +345,11 @@ impl Thread {
             exit(UPCALL_EXIT_CODE);
         }
 
-        if matches!(options.mode, UpcallMode::CallSuper) {
-            logln!("SUPER STACK: {}", upcall_target.super_stack);
-        }
-
         self.arch_queue_upcall(
             upcall_target,
             info,
             matches!(options.mode, UpcallMode::CallSuper),
         );
-        if matches!(options.mode, UpcallMode::CallSuper) {
-            logln!("SUPER call");
-        }
 
         // Suspend afterwards to ensure that the upcall frame is queued up.
         if options.flags.contains(UpcallFlags::SUSPEND) {

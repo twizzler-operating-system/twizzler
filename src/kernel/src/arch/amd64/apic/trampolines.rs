@@ -204,7 +204,6 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
         assert!(*pagetables >> 32 == 0);
         core::arch::asm!("mfence");
 
-        logln!("sending to cpu {}", cpu);
         get_lapic().clear_err();
 
         raw_send_ipi(
