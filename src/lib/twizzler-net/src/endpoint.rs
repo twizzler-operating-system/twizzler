@@ -74,7 +74,9 @@ impl<S: Copy, C: Copy> Pair<S, C> {
     }
 
     pub fn allocate_packet(&self) -> Option<PacketNum> {
-        self.buf.allocate_packet()
+        self.check_completions();
+        let r = self.buf.allocate_packet();
+        r
     }
 
     pub fn release_packet(&self, id: PacketNum) {

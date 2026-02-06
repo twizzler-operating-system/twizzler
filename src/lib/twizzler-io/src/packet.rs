@@ -40,6 +40,7 @@ impl PacketBufferBase {
 
     fn release_packet(&self, packet: usize) {
         let bm = self.get_bitmap_mut();
+        assert!(bm.bit_test(packet));
         bm.bit_reset(packet);
     }
 }

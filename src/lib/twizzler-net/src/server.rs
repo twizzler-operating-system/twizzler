@@ -28,6 +28,11 @@ impl NetServer {
 
     pub fn has_pending_msg_from_client(&self) -> bool {
         self.client_tx.has_pending_msg()
+            || self
+                .pending_client_tx
+                .0
+                .iter()
+                .any(|p| *p != INVALID_PACKET)
     }
 
     pub fn open(info: &NetClientOpenInfo) -> Result<Self, TwzError> {
@@ -79,6 +84,8 @@ impl smoltcp::phy::Device for NetServer {
         if let Some(idx) = idx {
             let next = self.pending_client_tx.0[idx];
             self.pending_client_tx.0[idx] = INVALID_PACKET;
+            self.client_rx.check_completions();
+
             return Some((
                 NetServerRxToken {
                     ns: self,
@@ -87,6 +94,7 @@ impl smoltcp::phy::Device for NetServer {
                 NetServerTxToken {
                     ns: self,
                     packet: self.client_rx.allocate_packet().unwrap(),
+                    consumed: false,
                 },
             ));
         }
@@ -108,7 +116,11 @@ impl smoltcp::phy::Device for NetServer {
     fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         self.client_rx.check_completions();
         let packet = self.client_rx.allocate_packet()?;
-        Some(NetServerTxToken { ns: self, packet })
+        Some(NetServerTxToken {
+            ns: self,
+            packet,
+            consumed: false,
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -123,6 +135,7 @@ impl smoltcp::phy::Device for NetServer {
 pub struct NetServerTxToken<'a> {
     ns: &'a NetServer,
     packet: PacketNum,
+    consumed: bool,
 }
 
 pub struct NetServerRxToken<'a> {
@@ -131,7 +144,7 @@ pub struct NetServerRxToken<'a> {
 }
 
 impl TxToken for NetServerTxToken<'_> {
-    fn consume<R, F>(self, len: usize, f: F) -> R
+    fn consume<R, F>(mut self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
@@ -140,6 +153,7 @@ impl TxToken for NetServerTxToken<'_> {
         }
         let mem = self.ns.client_rx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
+        self.consumed = true;
 
         self.ns
             .client_rx
@@ -159,5 +173,13 @@ impl RxToken for NetServerRxToken<'_> {
     {
         let mem = self.ns.client_tx.packet_mem_mut(self.packet);
         f(mem)
+    }
+}
+
+impl Drop for NetServerTxToken<'_> {
+    fn drop(&mut self) {
+        if !self.consumed {
+            self.ns.client_rx.release_packet(self.packet);
+        }
     }
 }

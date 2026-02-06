@@ -1,41 +1,49 @@
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream, ToSocketAddrs},
+    time::Instant,
 };
 
-const BIG_FILE: &str = "/twizzler-operating-system/twizzler/releases/download/toolchain_13150dd-dea8f77-980d399/toolchain_x86_64_Linux_13150dd-dea8f77-980d399.tar.zst";
-
 fn main() {
-    let lookup = "github.com:80".to_socket_addrs().unwrap();
-    let first = lookup.into_iter().next();
-    println!("got {:?}", first);
-    let first = first.unwrap();
-
     {
+        let lookup = "ash-speed.hetzner.com:80".to_socket_addrs().unwrap();
+        let first = lookup.into_iter().next();
+        println!("got {:?}", first);
+        let first = first.unwrap();
+        const BIG_FILE: &str = "/100MB.bin";
         let mut sock = TcpStream::connect(first).unwrap();
         let req = format!(
-            "GET {} HTTP/1.1\r\nHost: github.com\r\nUser-Agent: curl/7.1.0\r\nAccept: */*\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: ash-speed.hetzner.com\r\nUser-Agent: curl/7.1.0\r\nAccept: */*\r\n\r\n",
             BIG_FILE
         );
         sock.write(req.as_bytes()).unwrap();
-        sock.shutdown(std::net::Shutdown::Write).unwrap();
 
         let mut total = 0;
+        let start = Instant::now();
         loop {
             let mut buf = [0; 4096];
             let count = sock.read(&mut buf).unwrap();
-            let s = str::from_utf8(&buf[0..count]);
-            println!("{} bytes: {:?}", count, s);
+            if total == 0 {
+                let s = str::from_utf8(&buf[0..count.min(256)]);
+                println!("{} bytes: {:?}", count, s);
+            } else {
+                let speed = (total as f64 / start.elapsed().as_millis() as f64) * 1000.0;
+                println!(
+                    "{} bytes ({} / {}): {:.2}KB/s",
+                    count,
+                    total,
+                    104857600,
+                    speed / 1024.0
+                );
+            }
             total += count;
-            if count == 0 {
+            if count == 0 || total == 104857600 {
                 break;
             }
         }
+        sock.shutdown(std::net::Shutdown::Write).unwrap();
 
-        println!("read {} bytes total", total);
-        //let mut v = vec![];
-        //sock.read_to_end(&mut v).unwrap();
-        //println!("got: {:?}", str::from_utf8(&v));
+        println!("read {} bytes total ({}MB)", total, total / (1024 * 1024));
     }
 
     let listener = TcpListener::bind("0.0.0.0:5555").expect("bind failed");
