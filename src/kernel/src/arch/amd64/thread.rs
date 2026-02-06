@@ -1,5 +1,5 @@
 use core::{
-    cell::{RefCell, UnsafeCell},
+    cell::RefCell,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 

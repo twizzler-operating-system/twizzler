@@ -1,7 +1,7 @@
 use dynlink::context::NewCompartmentFlags;
 use monitor_api::{
-    CompartmentInfoRaw, LibraryInfoRaw, MonitorCompControlCmd, MonitorStats, ThreadInfo,
-    MONITOR_INSTANCE_ID,
+    CompartmentInfoRaw, LibraryInfoRaw, MonitorCompControlCmd, MonitorStats, PostSignalFlags,
+    ThreadInfo, MONITOR_INSTANCE_ID,
 };
 use secgate::util::Descriptor;
 use twizzler_rt_abi::{
@@ -126,10 +126,12 @@ pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzE
 
 #[secgate::entry(lib = "monitor-api")]
 pub fn monitor_rt_load_compartment(
+    root_obj: ObjID,
     name_len: u64,
     args_len: u64,
     env_len: u64,
     flags: u32,
+    config: u64,
 ) -> Result<Descriptor, TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
@@ -137,10 +139,12 @@ pub fn monitor_rt_load_compartment(
     monitor.load_compartment(
         caller,
         info.thread_id(),
+        root_obj,
         name_len as usize,
         args_len as usize,
         env_len as usize,
         NewCompartmentFlags::from_bits(flags).ok_or(ArgumentError::InvalidArgument)?,
+        config as usize as *const _,
     )
 }
 
@@ -281,8 +285,32 @@ pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {
 }
 
 #[secgate::entry(lib = "monitor-api")]
-pub fn monitor_rt_set_nameroot(root: ObjID) -> Result<(), TwzError> {
+pub fn monitor_rt_post_signal(
+    comp: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
-    monitor.set_nameroot(&info, root)
+    monitor.post_signal(&info, comp, signal, flags)
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_set_controller(comp: ObjID, controller: ObjID) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let comp = if comp.raw() == 0 {
+        info.source_context().unwrap_or(MONITOR_INSTANCE_ID)
+    } else {
+        comp
+    };
+    monitor.set_controller(&info, comp, controller)
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_lookup_compartment_id(id: ObjID) -> Result<Descriptor, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.lookup_compartment_id(caller, info.thread_id(), id)
 }

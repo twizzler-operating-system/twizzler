@@ -215,6 +215,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
 
+            let int_frame: IsrContext = up_frame.into();
             if int_frame.get_ip() == 0 {
                 panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
             }

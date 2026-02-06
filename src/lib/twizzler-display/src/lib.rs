@@ -231,13 +231,13 @@ impl<'a> BufferMut<'a> {
 }
 
 impl DisplayBuffer {
-    unsafe fn buffer_mut(&self) -> RefSliceMut<u32> {
+    unsafe fn buffer_mut(&self) -> RefSliceMut<'_, u32> {
         let ptr = self.ptr.resolve().as_mut();
         let slice = RefSliceMut::from_ref(ptr, self.byte_len as usize);
         slice
     }
 
-    unsafe fn buffer(&self) -> RefSlice<u32> {
+    unsafe fn buffer(&self) -> RefSlice<'_, u32> {
         let ptr = self.ptr.resolve();
         let slice = RefSlice::from_ref(ptr, self.byte_len as usize);
         slice

@@ -206,7 +206,20 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
 
         logln!("sending to cpu {}", cpu);
         get_lapic().clear_err();
-        for _ in 0..1 {
+
+        raw_send_ipi(
+            Destination::Single(cpu),
+            LAPIC_ICRLO_INIT | LAPIC_ICRLO_ASSERT | LAPIC_ICRLO_LEVEL,
+        );
+        pit::wait_ns(100000);
+
+        raw_send_ipi(
+            Destination::Single(cpu),
+            LAPIC_ICRLO_INIT | LAPIC_ICRLO_LEVEL,
+        );
+        pit::wait_ns(100000);
+
+        for _ in 0..3 {
             raw_send_ipi(
                 Destination::Single(cpu),
                 LAPIC_ICRLO_STARTUP | ((TRAMPOLINE_ENTRY16 >> 12) & 0xff) | LAPIC_ICRLO_ASSERT,

@@ -6,11 +6,10 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
 twizzler-abi = {path = "../../lib/twizzler-abi"}
-twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
 twizzler-security = { workspace = true, features = ["user", "log"] }
 twizzler = { workspace = true }
 twizzler-rt-abi = "0.99"
-clap = { workspace = true }
 getrandom = { workspace = true }
 colog = { workspace = true }
 log = { workspace = true }
+heapless = { workspace = true }

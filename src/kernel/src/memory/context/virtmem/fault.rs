@@ -1,4 +1,3 @@
-use log::error;
 use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     syscall::MapFlags,

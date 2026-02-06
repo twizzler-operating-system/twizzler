@@ -176,7 +176,6 @@ darling = "0.23"
 date = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 devmgr = { path = "src/lib/devmgr" }
 digest = "0.10.7"
-display-core = { path = "src/lib/twizzler-display/display-core" }
 display-srv = { path = "src/srv/display-srv" }
 dynlink = { path = "src/lib/dynlink" }
 echo = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }

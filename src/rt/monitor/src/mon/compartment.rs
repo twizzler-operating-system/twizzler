@@ -6,7 +6,10 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
-use monitor_api::{CompartmentInfoRaw, CompartmentMgrStats, ThreadInfo, MONITOR_INSTANCE_ID};
+use monitor_api::{
+    CompartmentInfoRaw, CompartmentLoaderConfig, CompartmentMgrStats, ControllerOption, ThreadInfo,
+    MONITOR_INSTANCE_ID,
+};
 use secgate::util::Descriptor;
 use twizzler_abi::syscall::{sys_thread_change_state, sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{

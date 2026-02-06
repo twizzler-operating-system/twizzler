@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(thread_local)]
 #![feature(linkage)]
 

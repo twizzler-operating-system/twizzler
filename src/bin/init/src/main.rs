@@ -203,27 +203,6 @@ fn initialize_network() {
     std::mem::forget(comp);
 }
 
-fn _initialize_sgtest() {
-    info!("starting sgtest");
-    let id =
-        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libsgtest_srv.so")
-            .expect("failed to find object");
-    let comp: CompartmentHandle = CompartmentLoader::new(
-        "sgtest",
-        "libsgtest_srv.so",
-        NewCompartmentFlags::EXPORT_GATES,
-    )
-    .args(&["display-srv"])
-    .load()
-    .expect("failed to initialize sgtest");
-    let mut flags = comp.info().flags;
-    while !flags.contains(CompartmentFlags::READY) {
-        flags = comp.wait(flags);
-    }
-    tracing::info!("sgtest ready");
-    std::mem::forget(comp);
-}
-
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()

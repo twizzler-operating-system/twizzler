@@ -34,7 +34,7 @@ pub struct TwizzlerTransport {
 unsafe impl Send for TwizzlerTransport {}
 
 fn get_device() -> Option<Device> {
-    let devices = devmgr::get_devices(devmgr::DriverSpec {
+    let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(2, 0, 0),
     })
     .ok()?;

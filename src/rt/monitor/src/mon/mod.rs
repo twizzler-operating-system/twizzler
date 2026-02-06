@@ -10,8 +10,8 @@ use compartment::{
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{
-    CompartmentFlags, MonitorCompControlCmd, RuntimeThreadControl, SharedCompConfig,
-    TlsTemplateInfo, MONITOR_INSTANCE_ID,
+    CompartmentFlags, MonitorCompControlCmd, PostSignalFlags, RuntimeThreadControl,
+    SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
 };
 use secgate::util::HandleMgr;
 use space::Space;

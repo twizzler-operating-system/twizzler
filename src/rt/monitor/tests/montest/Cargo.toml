@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-montest-lib = { path = "../montest-lib" }
 twizzler-runtime = { workspace = true }
 secgate = { workspace = true }
 montest-lib = { workspace = true }

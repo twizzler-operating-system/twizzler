@@ -11,10 +11,7 @@ use twizzler_abi::{
     aux::KernelInitInfo,
     object::{MAX_SIZE, NULLPAGE_SIZE},
 };
-use twizzler_rt_abi::{
-    error::{NamingError, TwzError},
-    object::{MapFlags, ObjID},
-};
+use twizzler_rt_abi::object::{MapFlags, ObjID};
 use twizzler_security::SecCtx;
 
 use crate::mon::{

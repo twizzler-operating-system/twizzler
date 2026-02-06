@@ -26,7 +26,10 @@ use secgate::{
     util::{Descriptor, Handle},
     Crossing, DynamicSecGate,
 };
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_thread_sync, ThreadSync, ThreadSyncReference, ThreadSyncWake},
+};
 use twizzler_rt_abi::{
     bindings::binding_info,
     debug::{DlPhdrInfo, LinkMap, LoadedImageId},
@@ -89,10 +92,12 @@ pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzE
 
 #[secgate::gatecall]
 pub fn monitor_rt_load_compartment(
+    root_object: ObjID,
     name_len: u64,
     args_len: u64,
     env_len: u64,
     flags: u32,
+    config: u64,
 ) -> Result<Descriptor, TwzError> {
 }
 
@@ -143,7 +148,19 @@ pub fn monitor_rt_comp_ctrl(cmd: MonitorCompControlCmd) -> Result<Option<i32>, T
 pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {}
 #[secgate::gatecall]
 pub fn monitor_rt_set_nameroot(root: ObjID) -> Result<(), TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_post_signal(
+    comp: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
+}
 
+#[secgate::gatecall]
+pub fn monitor_rt_set_controller(comp: ObjID, controller: ObjID) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_compartment_id(id: ObjID) -> Result<Descriptor, TwzError> {}
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
 #[repr(C)]
@@ -428,7 +445,7 @@ impl CompartmentHandle {
 
     pub fn signal(&self, sig: u64) -> Result<(), TwzError> {
         let target = self.info().id;
-        gates::monitor_rt_post_signal(Some(target), sig, PostSignalFlags::empty())
+        monitor_rt_post_signal(Some(target), sig, PostSignalFlags::empty())
     }
 }
 
@@ -534,6 +551,7 @@ impl CompartmentLoader {
             return Err(ArgumentError::InvalidArgument.into());
         }
         let desc = monitor_rt_load_compartment(
+            self.root_object,
             name_len as u64,
             args_len as u64,
             envs_len as u64,
@@ -640,7 +658,7 @@ impl CompartmentHandle {
     /// Lookup a compartment by ID.
     pub fn lookup_id(name: ObjID) -> Result<Self, TwzError> {
         Ok(Self {
-            desc: Some(gates::monitor_rt_lookup_compartment_id(name)?),
+            desc: Some(monitor_rt_lookup_compartment_id(name)?),
         })
     }
 
@@ -931,8 +949,12 @@ impl RuntimeThreadControl {
     }
 }
 
-pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
-    monitor_rt_set_nameroot(root)
+pub fn post_signal(
+    target: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
+    monitor_rt_post_signal(target, signal, flags)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1019,3 +1041,50 @@ pub struct ThreadInfo {
 
 /// Reserved instance ID for the security monitor.
 pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct PostSignalFlags : u32 {
+        const GROUP = 1;
+        const CONTROLLER = 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
+pub enum ControllerOption {
+    #[default]
+    Inherit,
+    NoController,
+    Object(ObjID),
+}
+
+#[repr(C)]
+#[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
+pub struct CompartmentLoaderConfig {
+    pub controller: ControllerOption,
+    pub fd_spec: *const binding_info,
+    pub fd_spec_len: usize,
+}
+
+impl CompartmentLoaderConfig {
+    #[allow(dead_code)]
+    pub fn with_controller(&mut self, controller: ControllerOption) -> &mut Self {
+        self.controller = controller;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_fd_spec<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
+        self.fd_spec = spec.as_ptr();
+        self.fd_spec_len = spec.len();
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn fd_spec(&self) -> &[binding_info] {
+        unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
+    }
+}
