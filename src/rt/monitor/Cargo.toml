@@ -23,6 +23,7 @@ parking_lot = "*"
 naming-core = { path = "../../lib/naming/naming-core/" }
 tinyvec = { version = "*", features = ["alloc"] }
 smallstr = "*"
+twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
 
 [features]
 secgate-impl = []

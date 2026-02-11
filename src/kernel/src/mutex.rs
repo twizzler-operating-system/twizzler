@@ -92,9 +92,7 @@ impl<T> Mutex<T> {
             if i == 1000 {
                 log::debug!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
             }
-            let guard = current_thread.as_ref().map(|ct| {
-                ct.enter_critical()
-            });
+            let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {
                 let mut queue = self.queue.lock();
                 if !queue.owned {

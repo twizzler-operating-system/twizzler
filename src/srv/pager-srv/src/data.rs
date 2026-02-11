@@ -586,19 +586,8 @@ impl PagerData {
         );
         // TODO: remove this restriction
         assert_eq!(obj_range.len(), 0x1000);
-        let phys_range = {
-            let page = match self.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    tracing::warn!("out of memory -- task waiting");
-                    mw.await
-                }
-            };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            phys_range
-        };
-        page_in(ctx, id, obj_range, phys_range).await?;
-        tracing::debug!("memory page allocated successfully: {:?}", phys_range);
+
+        let phys_range = page_in(ctx, id, obj_range).await?;
 
         {
             let mut inner = self.inner.lock().unwrap();

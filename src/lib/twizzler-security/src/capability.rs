@@ -5,7 +5,7 @@ use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
     flags::{CapFlags, HashingAlgo},
-    Gates, Revoc, SecurityError, Signature, SigningKey, VerifyingKey,
+    Gate, Revoc, SecurityError, Signature, SigningKey, VerifyingKey,
 };
 
 /// A capability that represents authorization for a [Security Context](`crate::sec_ctx::SecCtx`) to
@@ -34,7 +34,7 @@ use crate::{
 /// // Example of creating and using a capability
 /// todo
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Cap {
     /// Object ID this capability grants access to
     pub target: ObjID,
@@ -49,7 +49,7 @@ pub struct Cap {
     flags: CapFlags,
 
     /// Additional constraints on when this capability can be used
-    gates: Gates,
+    gate: Gate,
 
     /// Specifies when this capability is invalid, i.e. expiration.
     pub revocation: Revoc,
@@ -68,7 +68,7 @@ impl Cap {
         prots: Protections,
         target_priv_key: &SigningKey,
         revocation: Revoc,
-        gates: Gates,
+        gates: Gate,
         hashing_algo: HashingAlgo,
     ) -> Result<Self, SecurityError> {
         let flags: CapFlags = hashing_algo.clone().into();
@@ -101,7 +101,7 @@ impl Cap {
             protections: prots,
             flags,
             revocation,
-            gates,
+            gate: gates,
             sig,
         })
     }
@@ -115,7 +115,7 @@ impl Cap {
             self.protections,
             self.flags,
             self.revocation,
-            self.gates,
+            self.gate,
         );
 
         let hash_algo: HashingAlgo = self.flags.try_into()?;
@@ -153,17 +153,17 @@ impl Cap {
         // `align` to 1.
 
         // the pointer is less than the actual offset
-        if ptr_offset < self.gates.offset {
+        if ptr_offset < self.gate.offset {
             return Err(SecurityError::GateDenied);
         }
 
         // the access is beyond the "end" of the gate
-        if self.gates.offset + self.gates.length < ptr_offset {
+        if self.gate.offset + self.gate.length < ptr_offset {
             return Err(SecurityError::GateDenied);
         }
 
         //NOTE: not completely sure this is how you check alignment.
-        if self.gates.align != align {
+        if self.gate.align != align {
             return Err(SecurityError::GateDenied);
         }
 
@@ -177,7 +177,7 @@ impl Cap {
         prots: Protections,
         flags: CapFlags,
         revocation: Revoc,
-        gates: Gates,
+        gates: Gate,
     ) -> [u8; CAP_SERIALIZED_LEN] {
         let mut hash_arr: [u8; CAP_SERIALIZED_LEN] = [0; CAP_SERIALIZED_LEN];
         hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
@@ -192,6 +192,7 @@ impl Cap {
     }
 }
 
+#[cfg(test)]
 #[cfg(feature = "user")]
 #[allow(unused_imports)]
 mod tests {
@@ -202,6 +203,7 @@ mod tests {
 
     use twizzler::object::TypedObject;
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
+    /// Create a default capability
     fn default_capability(s_key: &SigningKey) -> Cap {
         Cap::new(
             0x123.into(),
@@ -209,7 +211,7 @@ mod tests {
             Protections::all(),
             s_key,
             Revoc::default(),
-            Gates::default(),
+            Gate::default(),
             HashingAlgo::Sha256,
         )
         .expect("Capability should have been created.")
@@ -237,7 +239,7 @@ mod tests {
     fn test_capability_gates() {
         struct Input {
             /// gates that the capability will hold
-            capability_gates: Gates,
+            capability_gates: Gate,
             /// values you test
             ptr_offset: u64,
             align: u64,
@@ -256,7 +258,7 @@ mod tests {
         let table: [(Input, Expected); 7] = [
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 1),
+                    capability_gates: Gate::new(0, 100, 1),
                     ptr_offset: 3,
                     align: 1,
                 },
@@ -264,7 +266,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 1),
+                    capability_gates: Gate::new(0, 100, 1),
                     ptr_offset: 100,
                     align: 1,
                 },
@@ -272,7 +274,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 10_000, 1),
+                    capability_gates: Gate::new(0, 10_000, 1),
                     ptr_offset: 5_000,
                     align: 1,
                 },
@@ -280,7 +282,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 1),
+                    capability_gates: Gate::new(0, 100, 1),
                     ptr_offset: 50,
                     align: 1,
                 },
@@ -288,7 +290,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(5, 10000, 1),
+                    capability_gates: Gate::new(5, 10000, 1),
                     ptr_offset: 0, // ptr_offset too small
                     align: 1,
                 },
@@ -296,7 +298,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 1),
+                    capability_gates: Gate::new(0, 100, 1),
                     ptr_offset: 105, // ptr_offset too large
                     align: 1,
                 },
@@ -304,7 +306,7 @@ mod tests {
             ),
             (
                 Input {
-                    capability_gates: Gates::new(0, 100, 1),
+                    capability_gates: Gate::new(0, 100, 1),
                     ptr_offset: 66,
                     align: 4, // bad alignment
                 },

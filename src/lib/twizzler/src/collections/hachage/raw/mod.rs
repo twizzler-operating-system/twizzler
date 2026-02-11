@@ -5,6 +5,7 @@ use std::{
 };
 
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_derive::Invariant;
 
 use super::DefaultHashBuilder;
 use crate::{
@@ -241,6 +242,7 @@ impl CtxMut for CarryCtxMut<'_> {
     }
 }
 
+#[derive(Invariant)]
 pub struct RawTable<T: Invariant, S = DefaultHashBuilder, A: Allocator = HashTableAlloc> {
     table: RawTableInner,
     // I have to keep the hasher state otherwise the hashes won't be the same upon reload

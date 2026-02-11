@@ -11,19 +11,24 @@ use p256::{
 #[cfg(feature = "user")]
 use twizzler::marker::BaseType;
 
-use super::{Signature, SigningKey, MAX_KEY_SIZE};
+use super::{KeyBuffer, Signature, SigningKey};
 use crate::{SecurityError, SigningScheme};
 
 // making our own struct for verifying key since we need to be able to support keys with different
 // schemes, (meaning they could also be different lengths)
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// An Objects `SigningKey`, used to create an Object.
+/// Is also reffered to as an Objects' `kuid`. The kernel uses this key to verify any `Cap`s or
+/// `Del`s. Is agnostic over SigningSchemes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifyingKey {
-    key: [u8; MAX_KEY_SIZE],
-    len: usize,
+    /// The buffer that stores the raw key bytes.
+    key: KeyBuffer,
+    /// The signing scheme of this key
     pub scheme: SigningScheme,
 }
 
 impl VerifyingKey {
+    /// Create a VerifyingKey via a `SigningKey`, and `SigningScheme`.
     pub fn new(
         scheme: &SigningScheme,
         target_private_key: &SigningKey,
@@ -39,19 +44,20 @@ impl VerifyingKey {
                 let point = vkey.to_encoded_point(false);
                 let bytes = point.as_bytes();
 
-                let mut buf = [0; MAX_KEY_SIZE];
-                buf[0..bytes.len()].copy_from_slice(bytes);
+                let key = KeyBuffer::from_slice(bytes).expect(
+                    "A ECDSA Verifying Key cannot fit within the currently configured MAX_KEY_SIZE",
+                );
 
                 Ok(VerifyingKey {
-                    key: buf,
-                    len: bytes.len(),
+                    key,
                     scheme: SigningScheme::Ecdsa,
                 })
             }
         }
     }
 
-    pub fn from_slice(slice: &[u8], scheme: &SigningScheme) -> Result<Self, SecurityError> {
+    /// Parse a VerifyingKey out of a slice and a `SigningScheme`
+    pub fn from_slice(slice: &[u8], scheme: SigningScheme) -> Result<Self, SecurityError> {
         match scheme {
             SigningScheme::Ecdsa => {
                 let point: EncodedPoint<NistP256> = EncodedPoint::<NistP256>::from_bytes(slice)
@@ -66,7 +72,7 @@ impl VerifyingKey {
                     })?;
 
                 // we create key here to ensure its valid
-                let _key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|_e| {
+                let key = EcdsaVerifyingKey::from_encoded_point(&point).map_err(|_e| {
                     #[cfg(feature = "log")]
                     error!(
                         "Unable to create an EcdsaVerifyingKey from encoded point, due to :{:?}",
@@ -76,28 +82,22 @@ impl VerifyingKey {
                     SecurityError::InvalidKey
                 })?;
 
-                let mut buf = [0; MAX_KEY_SIZE];
-                buf[0..slice.len()].copy_from_slice(slice);
-                Ok(VerifyingKey {
-                    key: buf,
-                    len: slice.len(),
-                    scheme: SigningScheme::Ecdsa,
-                })
+                Ok(key.into())
             }
         }
     }
 
-    // so we can easily extract out the key without worrying about len and the buffer
+    /// A byte-slice representation of this VerifyingKey.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.key[0..self.len]
+        &self.key
     }
 
-    /// Checks whether the `sig` can be verified.
-    pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), SecurityError> {
+    /// Checks whether or not the `signature` is valid.
+    pub fn verify(&self, msg: &[u8], signature: &Signature) -> Result<(), SecurityError> {
         match self.scheme {
             SigningScheme::Ecdsa => {
                 let key: EcdsaVerifyingKey = self.try_into()?;
-                let ecdsa_sig: EcdsaSignature = sig.try_into()?;
+                let ecdsa_sig: EcdsaSignature = signature.try_into()?;
                 key.verify(msg, &ecdsa_sig).map_err(|_e| {
                     #[cfg(feature = "log")]
                     error!("Failed verification of signature due to: {:#?}", _e);
@@ -141,15 +141,12 @@ impl From<EcdsaVerifyingKey> for VerifyingKey {
     fn from(value: EcdsaVerifyingKey) -> Self {
         let point = value.to_encoded_point(false);
 
-        let bytes = point.as_bytes();
-
-        let mut buf = [0; MAX_KEY_SIZE];
-
-        buf[0..bytes.len()].copy_from_slice(bytes);
+        let key = KeyBuffer::from_slice(point.as_bytes()).expect(
+            "A ECDSA Verifying Key cannot fit within the currently configured MAX_KEY_SIZE",
+        );
 
         VerifyingKey {
-            key: buf,
-            len: bytes.len(),
+            key,
             scheme: SigningScheme::Ecdsa,
         }
     }

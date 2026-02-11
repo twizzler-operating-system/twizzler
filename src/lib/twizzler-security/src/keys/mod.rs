@@ -5,10 +5,14 @@ pub use sig::*;
 pub use sign::*;
 pub use verify::*;
 
-const MAX_KEY_SIZE: usize = 128;
+/// The maximum key size the security system supports
+/// NOTE: can be increased while preserving backwards compatibility.
+pub const MAX_KEY_SIZE: usize = 128;
+type KeyBuffer = heapless::Vec<u8, MAX_KEY_SIZE>;
 
 // currently these tests can only run in user space, would have to write their own
 // tests written inside kernel to run.
+#[cfg(test)]
 #[cfg(feature = "user")]
 #[allow(unused_imports)]
 mod tests {
@@ -37,6 +41,7 @@ mod tests {
             .expect("keys should be generated properly");
     }
 
+    /// Create default key pair
     fn create_default_key_pair() -> (Object<SigningKey>, Object<VerifyingKey>) {
         let object_create_spec = ObjectCreate::new(
             Default::default(),

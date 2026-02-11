@@ -1,6 +1,7 @@
 //! Virtio network device driver.
 //!
 //! Provides smoltcp types for use with the virtio network device.
+mod gpu;
 mod hal;
 mod tcp;
 mod transport;
