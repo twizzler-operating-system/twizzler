@@ -1,10 +1,11 @@
 //! Wasmtime WebAssembly runtime for Twizzler.
 //!
 //! Usage:
-//!   wasmrun              — run built-in wasmtime demos + WASI tests
-//!   wasmrun mandelbrot   — run Mandelbrot set renderer (WASI demo)
-//!   wasmrun test         — run comprehensive WASI P2 test suite
-//!   wasmrun <path.wasm>  — run a WASI P2 component from file
+//!   wasmrun                — run built-in wasmtime demos + WASI tests
+//!   wasmrun mandelbrot     — run interactive Mandelbrot (ANSI terminal)
+//!   wasmrun mandelbrot-gfx — run graphical Mandelbrot auto-zoom (WASI-GFX)
+//!   wasmrun test           — run comprehensive WASI P2 test suite
+//!   wasmrun <path.wasm>    — run a WASI P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
 mod platform;
@@ -19,8 +20,11 @@ const HELLO_WASI: &[u8] = include_bytes!("../hello.wasm");
 /// Embedded comprehensive WASI P2 test suite.
 const WASI_TESTS: &[u8] = include_bytes!("../wasi_tests.wasm");
 
-/// Embedded Mandelbrot set renderer (ANSI 256-color).
+/// Embedded Mandelbrot set renderer (ANSI 256-color, terminal).
 const MANDELBROT: &[u8] = include_bytes!("../mandelbrot.wasm");
+
+/// Embedded graphical Mandelbrot auto-zoom (WASI-GFX, display).
+const MANDELBROT_GFX: &[u8] = include_bytes!("../mandelbrot_gfx.wasm");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -29,6 +33,12 @@ fn main() {
     match cmd {
         Some("mandelbrot") => {
             match wasi::run_wasi_component(MANDELBROT) {
+                Ok(()) => {}
+                Err(e) => eprintln!("Error: {e:?}"),
+            }
+        }
+        Some("mandelbrot-gfx") => {
+            match wasi::run_wasi_component(MANDELBROT_GFX) {
                 Ok(()) => {}
                 Err(e) => eprintln!("Error: {e:?}"),
             }

@@ -8787,7 +8787,9 @@ name = "wasmrun"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "secgate",
  "twizzler-abi",
+ "twizzler-display",
  "twizzler-rt-abi",
  "wasmtime",
 ]

@@ -14,3 +14,5 @@ wasmtime = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "19
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-display = { path = "../../lib/twizzler-display" }
+secgate = { path = "../../lib/secgate" }

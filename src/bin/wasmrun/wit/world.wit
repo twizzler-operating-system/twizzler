@@ -1,6 +1,13 @@
-// We actually don't use this; it's just to let bindgen! find the corresponding world in wit/deps.
+// Extended world: standard WASI CLI command + WASI-GFX graphics interfaces.
 package wasmtime:wasi;
 
-world bindings {
-  include wasi:cli/imports@0.2.6;
+world command {
+  include wasi:cli/command@0.2.6;
+
+  // WASI-GFX proposal interfaces (https://github.com/WebAssembly/wasi-gfx)
+  import wasi:graphics-context/graphics-context@0.0.1;
+  import wasi:frame-buffer/frame-buffer@0.0.1;
+
+  // Simplified Twizzler surface (no wasi:io dependency)
+  import twizzler:gfx/surface@0.0.1;
 }

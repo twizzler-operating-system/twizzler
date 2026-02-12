@@ -1,6 +1,7 @@
 //! WASI Preview 2 (component model) for Twizzler — synchronous implementation.
 //!
-//! Implements wasi:io, wasi:clocks, wasi:cli, wasi:random, and wasi:filesystem
+//! Implements wasi:io, wasi:clocks, wasi:cli, wasi:random, wasi:filesystem,
+//! and the WASI-GFX interfaces (wasi:graphics-context, wasi:frame-buffer)
 //! backed by Twizzler runtime APIs. Network sockets are not supported; components
 //! that import socket interfaces will fail at instantiation time.
 
@@ -60,11 +61,30 @@ pub struct DirEntryStream {
     buffer_idx: usize,
 }
 
+// ── WASI-GFX resource backing types ─────────────────────────────────
+
+/// Backing type for wasi:graphics-context/context.
+pub struct GfxContext {
+    /// Index into WasiCtx.display_pixels for the current frame buffer.
+    has_surface: bool,
+}
+
+/// Backing type for wasi:graphics-context/abstract-buffer (opaque token).
+pub struct AbstractBuffer;
+
+/// Backing type for wasi:frame-buffer/device.
+pub struct FrameBufferDevice;
+
+/// Backing type for wasi:frame-buffer/buffer.
+pub struct FrameBuffer {
+    data: Vec<u8>,
+}
+
 // ── Bindgen ─────────────────────────────────────────────────────────
 
 wasmtime::component::bindgen!({
     path: "wit",
-    world: "wasi:cli/command",
+    world: "wasmtime:wasi/command",
     imports: { default: trappable },
     with: {
         "wasi:io/error/error": IoError,
@@ -75,6 +95,10 @@ wasmtime::component::bindgen!({
         "wasi:cli/terminal-output/terminal-output": TerminalOutput,
         "wasi:filesystem/types/descriptor": DescriptorEntry,
         "wasi:filesystem/types/directory-entry-stream": DirEntryStream,
+        "wasi:graphics-context/graphics-context/context": GfxContext,
+        "wasi:graphics-context/graphics-context/abstract-buffer": AbstractBuffer,
+        "wasi:frame-buffer/frame-buffer/device": FrameBufferDevice,
+        "wasi:frame-buffer/frame-buffer/buffer": FrameBuffer,
     },
 });
 
@@ -82,6 +106,11 @@ wasmtime::component::bindgen!({
 
 pub struct WasiCtx {
     table: ResourceTable,
+    // Display state for WASI-GFX
+    display_window: Option<twizzler_display::WindowHandle>,
+    display_width: u32,
+    display_height: u32,
+    display_pixels: Vec<u8>,
 }
 
 // ── wasi:io/error ───────────────────────────────────────────────────
@@ -1551,6 +1580,150 @@ fn fd_info_to_stat(info: &fd::FdInfo) -> wasi::filesystem::types::DescriptorStat
     }
 }
 
+// ── wasi:graphics-context ───────────────────────────────────────────
+
+impl wasi::graphics_context::graphics_context::Host for WasiCtx {}
+
+impl wasi::graphics_context::graphics_context::HostContext for WasiCtx {
+    fn new(&mut self) -> Result<Resource<GfxContext>> {
+        let ctx = GfxContext { has_surface: false };
+        Ok(self.table.push(ctx)?)
+    }
+
+    fn get_current_buffer(
+        &mut self,
+        _self_: Resource<GfxContext>,
+    ) -> Result<Resource<AbstractBuffer>> {
+        Ok(self.table.push(AbstractBuffer)?)
+    }
+
+    fn present(&mut self, self_: Resource<GfxContext>) -> Result<()> {
+        let ctx = self.table.get(&self_)?;
+        if !ctx.has_surface {
+            bail!("no surface connected to graphics context");
+        }
+        if let Some(window) = &self.display_window {
+            let pixels = &self.display_pixels;
+            let w = self.display_width;
+            let h = self.display_height;
+            window.window_buffer.update_buffer(|mut buf, _bw, _bh| {
+                let num_pixels = (w * h) as usize;
+                for i in 0..num_pixels.min(buf.len()) {
+                    let base = i * 4;
+                    if base + 3 < pixels.len() {
+                        let r = pixels[base] as u32;
+                        let g = pixels[base + 1] as u32;
+                        let b = pixels[base + 2] as u32;
+                        buf[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    }
+                }
+                buf.damage(twizzler_display::Rect::full());
+            });
+            window.window_buffer.flip();
+        }
+        Ok(())
+    }
+
+    fn drop(&mut self, rep: Resource<GfxContext>) -> Result<()> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}
+
+impl wasi::graphics_context::graphics_context::HostAbstractBuffer for WasiCtx {
+    fn drop(&mut self, rep: Resource<AbstractBuffer>) -> Result<()> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}
+
+// ── wasi:frame-buffer ──────────────────────────────────────────────
+
+impl wasi::frame_buffer::frame_buffer::Host for WasiCtx {}
+
+impl wasi::frame_buffer::frame_buffer::HostDevice for WasiCtx {
+    fn new(&mut self) -> Result<Resource<FrameBufferDevice>> {
+        Ok(self.table.push(FrameBufferDevice)?)
+    }
+
+    fn connect_graphics_context(
+        &mut self,
+        _self_: Resource<FrameBufferDevice>,
+        _context: Resource<GfxContext>,
+    ) -> Result<()> {
+        // In our simplified implementation, the device is always connected
+        // to the single global display context.
+        Ok(())
+    }
+
+    fn drop(&mut self, rep: Resource<FrameBufferDevice>) -> Result<()> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}
+
+impl wasi::frame_buffer::frame_buffer::HostBuffer for WasiCtx {
+    fn from_graphics_buffer(
+        &mut self,
+        buffer: Resource<AbstractBuffer>,
+    ) -> Result<Resource<FrameBuffer>> {
+        self.table.delete(buffer)?;
+        let fb = FrameBuffer {
+            data: Vec::new(),
+        };
+        Ok(self.table.push(fb)?)
+    }
+
+    fn get(&mut self, self_: Resource<FrameBuffer>) -> Result<Vec<u8>> {
+        let fb = self.table.get(&self_)?;
+        Ok(fb.data.clone())
+    }
+
+    fn set(&mut self, self_: Resource<FrameBuffer>, val: Vec<u8>) -> Result<()> {
+        let fb = self.table.get_mut(&self_)?;
+        fb.data = val.clone();
+        // Also copy to the shared display pixel buffer for present().
+        self.display_pixels = val;
+        Ok(())
+    }
+
+    fn drop(&mut self, rep: Resource<FrameBuffer>) -> Result<()> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}
+
+// ── twizzler:gfx/surface ───────────────────────────────────────────
+
+impl twizzler::gfx::surface::Host for WasiCtx {
+    fn create(
+        &mut self,
+        context: Resource<GfxContext>,
+        width: u32,
+        height: u32,
+    ) -> Result<Result<(), String>> {
+        use secgate::util::Handle;
+        let ctx = self.table.get_mut(&context)?;
+        match twizzler_display::WindowHandle::open(twizzler_display::WindowConfig {
+            w: width,
+            h: height,
+            x: 0,
+            y: 0,
+            z: 0,
+        }) {
+            Ok(window) => {
+                self.display_window = Some(window);
+                self.display_width = width;
+                self.display_height = height;
+                self.display_pixels = vec![0u8; (width * height * 4) as usize];
+                ctx.has_surface = true;
+                Ok(Ok(()))
+            }
+            Err(e) => Ok(Err(format!("failed to open window: {e:?}"))),
+        }
+    }
+}
+
 // ── Linker setup ────────────────────────────────────────────────────
 
 fn add_wasi_to_linker(linker: &mut Linker<WasiCtx>) -> Result<()> {
@@ -1582,6 +1755,10 @@ fn add_wasi_to_linker(linker: &mut Linker<WasiCtx>) -> Result<()> {
     wasi::sockets::udp::add_to_linker::<_, D>(linker, |t| t)?;
     wasi::sockets::udp_create_socket::add_to_linker::<_, D>(linker, |t| t)?;
     wasi::sockets::ip_name_lookup::add_to_linker::<_, D>(linker, |t| t)?;
+    // WASI-GFX interfaces
+    wasi::graphics_context::graphics_context::add_to_linker::<_, D>(linker, |t| t)?;
+    wasi::frame_buffer::frame_buffer::add_to_linker::<_, D>(linker, |t| t)?;
+    twizzler::gfx::surface::add_to_linker::<_, D>(linker, |t| t)?;
     Ok(())
 }
 
@@ -1604,6 +1781,10 @@ pub fn run_wasi_component(component_bytes: &[u8]) -> Result<()> {
 
     let ctx = WasiCtx {
         table: ResourceTable::new(),
+        display_window: None,
+        display_width: 0,
+        display_height: 0,
+        display_pixels: Vec::new(),
     };
     let mut store = Store::new(&engine, ctx);
 

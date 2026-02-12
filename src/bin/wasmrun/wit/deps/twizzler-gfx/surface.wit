@@ -1,0 +1,14 @@
+/// Simplified surface/windowing interface for Twizzler.
+///
+/// This is a minimal window-creation interface inspired by wasi:surface but
+/// without the wasi:io/poll dependency. When wasi:surface@0.0.1 matures, this
+/// can be replaced with the standard interface.
+package twizzler:gfx@0.0.1;
+
+interface surface {
+  use wasi:graphics-context/graphics-context@0.0.1.{context};
+
+  /// Create a display surface with the given dimensions and connect it
+  /// to the given graphics context. Only one surface may be active at a time.
+  create: func(context: borrow<context>, width: u32, height: u32) -> result<_, string>;
+}
