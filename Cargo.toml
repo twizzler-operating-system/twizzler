@@ -70,8 +70,6 @@ members = [
     "src/bin/schedtest",
     "src/bin/sec",
     "src/bin/gfxtest",
-    "src/bin/twasm",
-    "src/bin/wasmtest",
     "src/bin/wasmrun",
 
 ]
@@ -122,8 +120,6 @@ initrd = [
     #"crate:ls",
     #"crate:gadget",
     #"crate:serialecho",
-    #"crate:twasm",
-    "crate:wasmtest",
     "crate:wasmrun",
 ]
 

@@ -5,11 +5,12 @@
 //!   wasmrun mandelbrot     — run interactive Mandelbrot (ANSI terminal)
 //!   wasmrun mandelbrot-gfx — run graphical Mandelbrot auto-zoom (WASI-GFX)
 //!   wasmrun test           — run comprehensive WASI P2 test suite
-//!   wasmrun <path.wasm>    — run a WASI P2 component from file
+//!   wasmrun <path.wasm>    — run a WASI P1 module or P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
 mod platform;
 mod wasi;
+mod wasi_p1;
 
 use anyhow::Result;
 use wasmtime::{Config, Engine, Instance, Linker, Module, Store};
@@ -52,14 +53,23 @@ fn main() {
             }
         }
         Some(path) => {
-            // Run a WASI component from a file path.
+            // Run a WASI module/component from a file path (auto-detect P1 vs P2).
             println!("=== Wasmtime WASI on Twizzler ===");
-            println!("Loading component: {path}");
+            println!("Loading: {path}");
             match std::fs::read(path) {
-                Ok(bytes) => match wasi::run_wasi_component(&bytes) {
-                    Ok(()) => println!("Component exited successfully."),
-                    Err(e) => eprintln!("Error: {e:?}"),
-                },
+                Ok(bytes) => {
+                    let result = if wasi_p1::is_component(&bytes) {
+                        println!("Detected: WASI P2 component");
+                        wasi::run_wasi_component(&bytes)
+                    } else {
+                        println!("Detected: WASI P1 module");
+                        wasi_p1::run_wasi_p1_module(&bytes)
+                    };
+                    match result {
+                        Ok(()) => println!("Module exited successfully."),
+                        Err(e) => eprintln!("Error: {e:?}"),
+                    }
+                }
                 Err(e) => eprintln!("Failed to read {path}: {e}"),
             }
         }

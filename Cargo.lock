@@ -7607,17 +7607,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
-name = "twasm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "twizzler-abi",
- "twizzler-rt-abi",
- "twizzler-runtime",
- "wasmtime",
-]
-
-[[package]]
 name = "twizzler"
 version = "0.99.0"
 dependencies = [
@@ -8791,15 +8780,6 @@ dependencies = [
  "twizzler-abi",
  "twizzler-display",
  "twizzler-rt-abi",
- "wasmtime",
-]
-
-[[package]]
-name = "wasmtest"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "twasm",
  "wasmtime",
 ]
 
