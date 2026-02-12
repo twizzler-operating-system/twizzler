@@ -1,0 +1,16 @@
+[package]
+name = "wasmrun"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmtime = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "192f2fc", default-features = false, features = [
+    "runtime",
+    "cranelift",
+    "wat",
+    "custom-virtual-memory",
+    "component-model",
+] }
+anyhow = { version = "1.0", default-features = false, features = ["std"] }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }

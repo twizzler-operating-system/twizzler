@@ -72,6 +72,7 @@ members = [
     "src/bin/gfxtest",
     "src/bin/twasm",
     "src/bin/wasmtest",
+    "src/bin/wasmrun",
 
 ]
 
@@ -123,6 +124,7 @@ initrd = [
     #"crate:serialecho",
     #"crate:twasm",
     "crate:wasmtest",
+    "crate:wasmrun",
 ]
 
 [workspace.metadata.third-party]

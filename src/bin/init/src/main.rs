@@ -193,14 +193,19 @@ fn main() {
     )
     .unwrap();
 
-    let mut autostart = None;
+    let mut autostart_parts: Vec<String> = Vec::new();
     let mut start_unittest = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--tests" | "--bench" | "--benches" => start_unittest = true,
-            _ => autostart = Some(arg),
+            _ => autostart_parts.push(arg),
         }
     }
+    let autostart = if autostart_parts.is_empty() {
+        None
+    } else {
+        Some(autostart_parts)
+    };
 
     tracing::info!("starting logger");
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
@@ -252,9 +257,11 @@ fn main() {
     println!("Hi, welcome to the basic twizzler test console.");
 
     if let Some(autostart) = autostart {
-        println!("autostart: {}", autostart);
-        let comp = CompartmentLoader::new(&autostart, &autostart, NewCompartmentFlags::empty())
-            .args(&[&autostart])
+        let prog = &autostart[0];
+        let parts_refs: Vec<&str> = autostart.iter().map(|s| s.as_str()).collect();
+        println!("autostart: {}", parts_refs.join(" "));
+        let comp = CompartmentLoader::new(prog, prog, NewCompartmentFlags::empty())
+            .args(&parts_refs)
             .load();
         if let Ok(comp) = comp {
             let mut flags = comp.info().flags;
@@ -262,7 +269,7 @@ fn main() {
                 flags = comp.wait(flags);
             }
         } else {
-            warn!("failed to start {}", autostart);
+            warn!("failed to start {}", prog);
         }
     }
 
