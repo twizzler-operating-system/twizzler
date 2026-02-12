@@ -16,3 +16,9 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-display = { path = "../../lib/twizzler-display" }
 secgate = { path = "../../lib/secgate" }
+smoltcp = { version = "0.11.0", default-features = false, features = [
+    "alloc", "log", "medium-ethernet", "proto-ipv4",
+    "socket-raw", "socket-icmp", "socket-udp", "socket-tcp",
+] }
+virtio-net = { path = "../../lib/virtio-net" }
+lazy_static = "1.5.0"

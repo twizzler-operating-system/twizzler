@@ -8,6 +8,7 @@
 //!   wasmrun <path.wasm>    — run a WASI P1 module or P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
+mod net;
 mod platform;
 mod wasi;
 mod wasi_p1;

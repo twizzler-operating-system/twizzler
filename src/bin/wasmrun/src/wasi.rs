@@ -1,9 +1,9 @@
 //! WASI Preview 2 (component model) for Twizzler — synchronous implementation.
 //!
 //! Implements wasi:io, wasi:clocks, wasi:cli, wasi:random, wasi:filesystem,
-//! and the WASI-GFX interfaces (wasi:graphics-context, wasi:frame-buffer)
-//! backed by Twizzler runtime APIs. Network sockets are not supported; components
-//! that import socket interfaces will fail at instantiation time.
+//! wasi:sockets (TCP), and the WASI-GFX interfaces (wasi:graphics-context,
+//! wasi:frame-buffer) backed by Twizzler runtime APIs and userspace smoltcp
+//! networking. UDP sockets and DNS are not yet supported.
 
 use anyhow::{bail, Result};
 use core::mem::MaybeUninit;
@@ -19,6 +19,8 @@ use twizzler_rt_abi::io::{IoCtx, IoFlags};
 use wasmtime::component::{Component, Linker, Resource, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 
+use crate::net;
+
 // ── Resource backing types ──────────────────────────────────────────
 
 pub struct IoError(String);
@@ -29,6 +31,7 @@ pub struct PollableEntry;
 pub enum InputStreamKind {
     Console,
     File { fd: RawFd, position: u64 },
+    TcpSocket { socket: net::NetSocket },
 }
 
 pub enum OutputStreamKind {
@@ -38,6 +41,7 @@ pub enum OutputStreamKind {
         position: u64,
         append: bool,
     },
+    TcpSocket { socket: net::NetSocket },
 }
 
 pub struct TerminalInput;
@@ -80,6 +84,30 @@ pub struct FrameBuffer {
     data: Vec<u8>,
 }
 
+// ── Socket resource backing types ────────────────────────────────────
+
+/// Backing type for wasi:sockets/network/network.
+pub struct NetworkEntry;
+
+/// TCP socket state machine.
+pub enum TcpSocketState {
+    Unbound,
+    Bound { addr: net::NetAddr },
+    Listening { listener: net::NetListener },
+    Connected { socket: net::NetSocket },
+    Closed,
+}
+
+/// Backing type for wasi:sockets/tcp/tcp-socket.
+pub struct TcpSocketEntry {
+    state: TcpSocketState,
+    family: wasi::sockets::network::IpAddressFamily,
+    keep_alive_enabled: bool,
+    hop_limit: u8,
+    receive_buffer_size: u64,
+    send_buffer_size: u64,
+}
+
 // ── Bindgen ─────────────────────────────────────────────────────────
 
 wasmtime::component::bindgen!({
@@ -99,6 +127,8 @@ wasmtime::component::bindgen!({
         "wasi:graphics-context/graphics-context/abstract-buffer": AbstractBuffer,
         "wasi:frame-buffer/frame-buffer/device": FrameBufferDevice,
         "wasi:frame-buffer/frame-buffer/buffer": FrameBuffer,
+        "wasi:sockets/network/network": NetworkEntry,
+        "wasi:sockets/tcp/tcp-socket": TcpSocketEntry,
     },
 });
 
@@ -165,16 +195,22 @@ impl wasi::io::streams::HostInputStream for WasiCtx {
         len: u64,
     ) -> Result<Result<Vec<u8>, StreamError>> {
         // Extract info to avoid holding a borrow across table mutations.
-        let file_info = {
+        enum ReadKind {
+            Console,
+            File(RawFd, u64),
+            TcpSocket,
+        }
+        let kind = {
             let s = self.table.get(&self_)?;
             match s {
-                InputStreamKind::Console => None,
-                InputStreamKind::File { fd, position } => Some((*fd, *position)),
+                InputStreamKind::Console => ReadKind::Console,
+                InputStreamKind::File { fd, position } => ReadKind::File(*fd, *position),
+                InputStreamKind::TcpSocket { .. } => ReadKind::TcpSocket,
             }
         };
 
-        match file_info {
-            None => {
+        match kind {
+            ReadKind::Console => {
                 let mut buf = vec![0u8; (len as usize).min(4096)];
                 match sys_kernel_console_read(
                     KernelConsoleSource::Console,
@@ -188,7 +224,7 @@ impl wasi::io::streams::HostInputStream for WasiCtx {
                     _ => Ok(Ok(Vec::new())),
                 }
             }
-            Some((fd, pos)) => {
+            ReadKind::File(fd, pos) => {
                 let mut buf = vec![0u8; (len as usize).min(65536)];
                 let mut ctx = IoCtx::new(Some(pos), IoFlags::empty(), None);
                 match twizzler_rt_abi::io::twz_rt_fd_pread(fd, &mut buf, &mut ctx) {
@@ -204,6 +240,28 @@ impl wasi::io::streams::HostInputStream for WasiCtx {
                     }
                     Err(e) => {
                         let err = self.table.push(IoError(format!("{e}")))?;
+                        Ok(Err(StreamError::LastOperationFailed(err)))
+                    }
+                }
+            }
+            ReadKind::TcpSocket => {
+                // Clone the socket Arc to avoid holding a table borrow across blocking I/O.
+                let socket = {
+                    let s = self.table.get(&self_)?;
+                    match s {
+                        InputStreamKind::TcpSocket { socket } => socket.clone_socket(),
+                        _ => unreachable!(),
+                    }
+                };
+                let mut buf = vec![0u8; (len as usize).min(65536)];
+                match socket.read(&mut buf) {
+                    Ok(0) => Ok(Err(StreamError::Closed)),
+                    Ok(n) => {
+                        buf.truncate(n);
+                        Ok(Ok(buf))
+                    }
+                    Err(e) => {
+                        let err = self.table.push(IoError(format!("{e:?}")))?;
                         Ok(Err(StreamError::LastOperationFailed(err)))
                     }
                 }
@@ -282,20 +340,26 @@ impl wasi::io::streams::HostOutputStream for WasiCtx {
         self_: Resource<OutputStreamKind>,
         contents: Vec<u8>,
     ) -> Result<Result<(), StreamError>> {
-        let file_info = {
+        enum WriteKind {
+            Console,
+            File(RawFd, u64, bool),
+            TcpSocket,
+        }
+        let kind = {
             let s = self.table.get(&self_)?;
             match s {
-                OutputStreamKind::Console => None,
+                OutputStreamKind::Console => WriteKind::Console,
                 OutputStreamKind::File {
                     fd,
                     position,
                     append,
-                } => Some((*fd, *position, *append)),
+                } => WriteKind::File(*fd, *position, *append),
+                OutputStreamKind::TcpSocket { .. } => WriteKind::TcpSocket,
             }
         };
 
-        match file_info {
-            None => {
+        match kind {
+            WriteKind::Console => {
                 sys_kernel_console_write(
                     KernelConsoleSource::Console,
                     &contents,
@@ -303,7 +367,27 @@ impl wasi::io::streams::HostOutputStream for WasiCtx {
                 );
                 Ok(Ok(()))
             }
-            Some((fd, pos, is_append)) => {
+            WriteKind::TcpSocket => {
+                let socket = {
+                    let s = self.table.get(&self_)?;
+                    match s {
+                        OutputStreamKind::TcpSocket { socket } => socket.clone_socket(),
+                        _ => unreachable!(),
+                    }
+                };
+                let mut written = 0;
+                while written < contents.len() {
+                    match socket.write(&contents[written..]) {
+                        Ok(n) => written += n,
+                        Err(e) => {
+                            let err = self.table.push(IoError(format!("{e:?}")))?;
+                            return Ok(Err(StreamError::LastOperationFailed(err)));
+                        }
+                    }
+                }
+                Ok(Ok(()))
+            }
+            WriteKind::File(fd, pos, is_append) => {
                 let offset = if is_append { None } else { Some(pos) };
                 let mut ctx = IoCtx::new(offset, IoFlags::empty(), None);
                 match twizzler_rt_abi::io::twz_rt_fd_pwrite(fd, &contents, &mut ctx) {
@@ -1076,7 +1160,7 @@ impl wasi::sockets::instance_network::Host for WasiCtx {
     fn instance_network(
         &mut self,
     ) -> Result<Resource<wasi::sockets::network::Network>> {
-        bail!("networking not supported on Twizzler")
+        Ok(self.table.push(NetworkEntry)?)
     }
 }
 
@@ -1092,19 +1176,31 @@ impl wasi::sockets::network::Host for WasiCtx {
 impl wasi::sockets::network::HostNetwork for WasiCtx {
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::network::Network>,
+        rep: Resource<wasi::sockets::network::Network>,
     ) -> Result<()> {
-        bail!("unreachable: network not created")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 
 impl wasi::sockets::tcp_create_socket::Host for WasiCtx {
     fn create_tcp_socket(
         &mut self,
-        _address_family: wasi::sockets::network::IpAddressFamily,
+        address_family: wasi::sockets::network::IpAddressFamily,
     ) -> Result<Result<Resource<wasi::sockets::tcp::TcpSocket>, wasi::sockets::network::ErrorCode>>
     {
-        Ok(Err(wasi::sockets::network::ErrorCode::NotSupported))
+        if matches!(address_family, wasi::sockets::network::IpAddressFamily::Ipv6) {
+            return Ok(Err(wasi::sockets::network::ErrorCode::NotSupported));
+        }
+        let entry = TcpSocketEntry {
+            state: TcpSocketState::Unbound,
+            family: address_family,
+            keep_alive_enabled: false,
+            hop_limit: 64,
+            receive_buffer_size: 65536,
+            send_buffer_size: 8192,
+        };
+        Ok(Ok(self.table.push(entry)?))
     }
 }
 
@@ -1113,52 +1209,108 @@ impl wasi::sockets::tcp::Host for WasiCtx {}
 impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
     fn start_bind(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
-        _local_address: wasi::sockets::network::IpSocketAddress,
+        local_address: wasi::sockets::network::IpSocketAddress,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get_mut(&self_)?;
+        if !matches!(entry.state, TcpSocketState::Unbound) {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState));
+        }
+        let addr = match wasi_addr_to_net(&local_address) {
+            Ok(a) => a,
+            Err(e) => return Ok(Err(e)),
+        };
+        entry.state = TcpSocketState::Bound { addr };
+        Ok(Ok(()))
     }
     fn finish_bind(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        if matches!(entry.state, TcpSocketState::Bound { .. }) {
+            Ok(Ok(()))
+        } else {
+            Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
+        }
     }
     fn start_connect(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
-        _remote_address: wasi::sockets::network::IpSocketAddress,
+        remote_address: wasi::sockets::network::IpSocketAddress,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get_mut(&self_)?;
+        match entry.state {
+            TcpSocketState::Unbound | TcpSocketState::Bound { .. } => {}
+            _ => return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        }
+        let addr = match wasi_addr_to_net(&remote_address) {
+            Ok(a) => a,
+            Err(e) => return Ok(Err(e)),
+        };
+        let socket = match net::NetSocket::connect(addr) {
+            Ok(s) => s,
+            Err(e) => return Ok(Err(net_err_to_wasi(e))),
+        };
+        entry.state = TcpSocketState::Connected { socket };
+        Ok(Ok(()))
     }
     fn finish_connect(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<
         Result<
             (Resource<InputStreamKind>, Resource<OutputStreamKind>),
             wasi::sockets::network::ErrorCode,
         >,
     > {
-        bail!("unreachable: tcp socket not created")
+        let socket = {
+            let entry = self.table.get(&self_)?;
+            match &entry.state {
+                TcpSocketState::Connected { socket } => socket.clone_socket(),
+                _ => return Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress)),
+            }
+        };
+        let in_stream = self.table.push(InputStreamKind::TcpSocket {
+            socket: socket.clone_socket(),
+        })?;
+        let out_stream = self.table.push(OutputStreamKind::TcpSocket {
+            socket,
+        })?;
+        Ok(Ok((in_stream, out_stream)))
     }
     fn start_listen(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get_mut(&self_)?;
+        let addr = match &entry.state {
+            TcpSocketState::Bound { addr } => *addr,
+            _ => return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        };
+        let listener = match net::NetListener::bind(addr) {
+            Ok(l) => l,
+            Err(e) => return Ok(Err(net_err_to_wasi(e))),
+        };
+        entry.state = TcpSocketState::Listening { listener };
+        Ok(Ok(()))
     }
     fn finish_listen(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        if matches!(entry.state, TcpSocketState::Listening { .. }) {
+            Ok(Ok(()))
+        } else {
+            Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
+        }
     }
     fn accept(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<
         Result<
             (
@@ -1169,152 +1321,226 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             wasi::sockets::network::ErrorCode,
         >,
     > {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        let listener = match &entry.state {
+            TcpSocketState::Listening { listener } => listener as *const net::NetListener,
+            _ => return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        };
+        let family = entry.family;
+        // SAFETY: listener lives in the resource table; synchronous host call.
+        let (socket, _remote) = match unsafe { &*listener }.accept() {
+            Ok(r) => r,
+            Err(e) => return Ok(Err(net_err_to_wasi(e))),
+        };
+        let in_stream = self.table.push(InputStreamKind::TcpSocket {
+            socket: socket.clone_socket(),
+        })?;
+        let out_stream = self.table.push(OutputStreamKind::TcpSocket {
+            socket: socket.clone_socket(),
+        })?;
+        let accepted = TcpSocketEntry {
+            state: TcpSocketState::Connected { socket },
+            family,
+            keep_alive_enabled: false,
+            hop_limit: 64,
+            receive_buffer_size: 65536,
+            send_buffer_size: 8192,
+        };
+        let tcp_res = self.table.push(accepted)?;
+        Ok(Ok((tcp_res, in_stream, out_stream)))
     }
     fn local_address(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        match &entry.state {
+            TcpSocketState::Bound { addr } => Ok(Ok(net_addr_to_wasi(addr))),
+            TcpSocketState::Connected { socket } => match socket.local_addr() {
+                Ok(a) => Ok(Ok(net_addr_to_wasi(&a))),
+                Err(e) => Ok(Err(net_err_to_wasi(e))),
+            },
+            TcpSocketState::Listening { listener } => match listener.local_addr() {
+                Ok(a) => Ok(Ok(net_addr_to_wasi(&a))),
+                Err(e) => Ok(Err(net_err_to_wasi(e))),
+            },
+            _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        }
     }
     fn remote_address(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        match &entry.state {
+            TcpSocketState::Connected { socket } => match socket.peer_addr() {
+                Ok(a) => Ok(Ok(net_addr_to_wasi(&a))),
+                Err(e) => Ok(Err(net_err_to_wasi(e))),
+            },
+            _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        }
     }
     fn is_listening(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<bool> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        Ok(matches!(entry.state, TcpSocketState::Listening { .. }))
     }
     fn address_family(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<wasi::sockets::network::IpAddressFamily> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        Ok(entry.family)
     }
     fn set_listen_backlog_size(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(())) // smoltcp uses fixed backlog
     }
     fn keep_alive_enabled(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<bool, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(self.table.get(&self_)?.keep_alive_enabled))
     }
     fn set_keep_alive_enabled(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
-        _value: bool,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        value: bool,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        self.table.get_mut(&self_)?.keep_alive_enabled = value;
+        Ok(Ok(()))
     }
     fn keep_alive_idle_time(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::clocks::monotonic_clock::Duration, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(7_200_000_000_000)) // 2 hours in ns
     }
     fn set_keep_alive_idle_time(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: wasi::clocks::monotonic_clock::Duration,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(()))
     }
     fn keep_alive_interval(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::clocks::monotonic_clock::Duration, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(75_000_000_000)) // 75s in ns
     }
     fn set_keep_alive_interval(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: wasi::clocks::monotonic_clock::Duration,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(()))
     }
     fn keep_alive_count(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u32, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(9))
     }
     fn set_keep_alive_count(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: u32,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(()))
     }
     fn hop_limit(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u8, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(self.table.get(&self_)?.hop_limit))
     }
     fn set_hop_limit(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
-        _value: u8,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        value: u8,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.hop_limit = value;
+        Ok(Ok(()))
     }
     fn receive_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(self.table.get(&self_)?.receive_buffer_size))
     }
     fn set_receive_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
-        _value: u64,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.receive_buffer_size = value;
+        Ok(Ok(()))
     }
     fn send_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(Ok(self.table.get(&self_)?.send_buffer_size))
     }
     fn set_send_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
-        _value: u64,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.send_buffer_size = value;
+        Ok(Ok(()))
     }
     fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Resource<PollableEntry>> {
-        bail!("unreachable: tcp socket not created")
+        Ok(self.table.push(PollableEntry)?)
     }
     fn shutdown(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
-        _shutdown_type: wasi::sockets::tcp::ShutdownType,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        shutdown_type: wasi::sockets::tcp::ShutdownType,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: tcp socket not created")
+        let entry = self.table.get(&self_)?;
+        let socket = match &entry.state {
+            TcpSocketState::Connected { socket } => socket,
+            _ => return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        };
+        let how = match shutdown_type {
+            wasi::sockets::tcp::ShutdownType::Receive => net::NetShutdown::Read,
+            wasi::sockets::tcp::ShutdownType::Send => net::NetShutdown::Write,
+            wasi::sockets::tcp::ShutdownType::Both => net::NetShutdown::Both,
+        };
+        match socket.shutdown(how) {
+            Ok(()) => Ok(Ok(())),
+            Err(e) => Ok(Err(net_err_to_wasi(e))),
+        }
     }
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::tcp::TcpSocket>,
+        rep: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<()> {
-        bail!("unreachable: tcp socket not created")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 
@@ -1577,6 +1803,54 @@ fn fd_info_to_stat(info: &fd::FdInfo) -> wasi::filesystem::types::DescriptorStat
             seconds: info.created.as_secs(),
             nanoseconds: info.created.subsec_nanos(),
         }),
+    }
+}
+
+// ── Socket address conversion helpers ────────────────────────────────
+
+fn wasi_addr_to_net(
+    addr: &wasi::sockets::network::IpSocketAddress,
+) -> Result<net::NetAddr, wasi::sockets::network::ErrorCode> {
+    match addr {
+        wasi::sockets::network::IpSocketAddress::Ipv4(a) => {
+            let (a0, a1, a2, a3) = a.address;
+            Ok(net::NetAddr {
+                ip: smoltcp::wire::Ipv4Address::new(a0, a1, a2, a3).into(),
+                port: a.port,
+            })
+        }
+        wasi::sockets::network::IpSocketAddress::Ipv6(_) => {
+            Err(wasi::sockets::network::ErrorCode::NotSupported)
+        }
+    }
+}
+
+fn net_addr_to_wasi(addr: &net::NetAddr) -> wasi::sockets::network::IpSocketAddress {
+    match addr.ip {
+        smoltcp::wire::IpAddress::Ipv4(v4) => {
+            wasi::sockets::network::IpSocketAddress::Ipv4(
+                wasi::sockets::network::Ipv4SocketAddress {
+                    port: addr.port,
+                    address: (v4.0[0], v4.0[1], v4.0[2], v4.0[3]),
+                },
+            )
+        }
+        _ => unreachable!("IPv6 not supported"),
+    }
+}
+
+fn net_err_to_wasi(e: net::NetError) -> wasi::sockets::network::ErrorCode {
+    match e {
+        net::NetError::WouldBlock => wasi::sockets::network::ErrorCode::WouldBlock,
+        net::NetError::ConnectionRefused => wasi::sockets::network::ErrorCode::ConnectionRefused,
+        net::NetError::ConnectionReset => wasi::sockets::network::ErrorCode::ConnectionReset,
+        net::NetError::NotConnected => wasi::sockets::network::ErrorCode::InvalidState,
+        net::NetError::AddrInUse => wasi::sockets::network::ErrorCode::AddressInUse,
+        net::NetError::AddrNotAvailable => wasi::sockets::network::ErrorCode::AddressNotBindable,
+        net::NetError::InvalidArgument => wasi::sockets::network::ErrorCode::InvalidArgument,
+        net::NetError::NotSupported => wasi::sockets::network::ErrorCode::NotSupported,
+        net::NetError::PortExhaustion => wasi::sockets::network::ErrorCode::AddressInUse,
+        net::NetError::Other(_) => wasi::sockets::network::ErrorCode::Unknown,
     }
 }
 
