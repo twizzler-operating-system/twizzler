@@ -359,6 +359,11 @@ impl ReferenceRuntime {
         Ok(fd.try_into().unwrap())
     }
 
+    pub fn rename(&self, old: &str, new: &str) -> Result<()> {
+        let mut session = get_naming_handle().lock().unwrap();
+        Ok(session.rename(old, new)?)
+    }
+
     pub fn remove(&self, path: &str) -> Result<()> {
         let mut session = get_naming_handle().lock().unwrap();
         Ok(session.remove(path)?)

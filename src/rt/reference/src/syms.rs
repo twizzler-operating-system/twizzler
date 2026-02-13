@@ -430,6 +430,29 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
 check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
+    old_name: *const c_char,
+    old_len: usize,
+    new_name: *const c_char,
+    new_len: usize,
+) -> twz_error {
+    let old = unsafe { core::slice::from_raw_parts(old_name.cast(), old_len) };
+    let old = core::str::from_utf8(old).map_err(|_| TwzError::INVALID_ARGUMENT.raw());
+    let new = unsafe { core::slice::from_raw_parts(new_name.cast(), new_len) };
+    let Ok(new) = core::str::from_utf8(new).map_err(|_| TwzError::INVALID_ARGUMENT.raw()) else {
+        return TwzError::INVALID_ARGUMENT.into();
+    };
+    match old {
+        Ok(old) => match OUR_RUNTIME.rename(old, new) {
+            Ok(_) => RawTwzError::success().raw(),
+            Err(e) => e.raw(),
+        },
+        Err(e) => e,
+    }
+}
+check_ffi_type!(twz_rt_fd_rename, _, _, _, _);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
     name: *const c_char,
     len: usize,
