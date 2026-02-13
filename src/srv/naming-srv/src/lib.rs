@@ -273,6 +273,25 @@ pub fn get(
 }
 
 #[secure_gate(options(info))]
+pub fn rename(
+    info: &secgate::GateCallInfo,
+    desc: Descriptor,
+    old_len: usize,
+    new_len: usize,
+) -> Result<()> {
+    let service = NAMINGSERVICE.get().unwrap();
+    let mut binding = service.handles.lock().unwrap();
+    let client = binding
+        .lookup_mut(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ErrorKind::Other)?;
+
+    let old_path = client.read_buffer(old_len)?;
+    let new_path = client.read_buffer_at(new_len, old_len)?;
+
+    client.session.rename(old_path, new_path)
+}
+
+#[secure_gate(options(info))]
 pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor, name_len: usize) -> Result<()> {
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();

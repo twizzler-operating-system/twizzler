@@ -17,6 +17,7 @@ pub struct DynamicNamerAPI {
     enumerate_names: DynamicSecGate<'static, (Descriptor, usize), usize>,
     enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
     remove: DynamicSecGate<'static, (Descriptor, usize), ()>,
+    rename: DynamicSecGate<'static, (Descriptor, usize, usize), ()>,
     change_namespace: DynamicSecGate<'static, (Descriptor, usize), ()>,
 }
 
@@ -48,6 +49,10 @@ impl NamerAPI for DynamicNamerAPI {
 
     fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {
         (self.remove)(desc, name_len)
+    }
+
+    fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
+        (self.rename)(desc, old_len, new_len)
     }
 
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
@@ -116,6 +121,11 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
                 handle
                     .dynamic_gate("remove")
                     .expect("failed to find remove gate call")
+            },
+            rename: unsafe {
+                handle
+                    .dynamic_gate("rename")
+                    .expect("failed to find rename gate call")
             },
             change_namespace: unsafe {
                 handle

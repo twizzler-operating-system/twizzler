@@ -37,6 +37,10 @@ impl NamerAPI for StaticNamingAPI {
         naming_srv::remove(desc, name_len)
     }
 
+    fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
+        naming_srv::rename(desc, old_len, new_len)
+    }
+
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
         naming_srv::change_namespace(desc, name_len)
     }
