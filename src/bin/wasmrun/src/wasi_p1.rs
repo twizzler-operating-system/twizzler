@@ -1652,17 +1652,73 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
                 Some(m) => m,
                 None => return ERRNO_IO,
             };
-            // All subscriptions are immediately ready (synchronous mode).
             // Subscription: 48 bytes (userdata(8) + u(40))
+            //   u: tag(1) + 7pad + union payload
+            //   clock: clock_id(4) + 4pad + timeout(8) + precision(8) + flags(2)
             // Event: 32 bytes (userdata(8) + error(2) + type(1) + pad(5) + fd_readwrite(16))
+
+            // First pass: find the minimum clock sleep duration.
+            let mut min_sleep_ns: Option<u64> = None;
+
             for i in 0..nsubs {
                 let sub_offset = (in_ptr + i * 48) as usize;
-                let mut userdata = [0u8; 8];
-                if mem.read(&caller, sub_offset, &mut userdata).is_err() {
+                let mut sub = [0u8; 48];
+                if mem.read(&caller, sub_offset, &mut sub).is_err() {
+                    return ERRNO_FAULT;
+                }
+                let tag = sub[8]; // 0=clock, 1=fd_read, 2=fd_write
+                if tag == 0 {
+                    let clock_id =
+                        u32::from_le_bytes([sub[16], sub[17], sub[18], sub[19]]);
+                    let timeout_ns = u64::from_le_bytes([
+                        sub[24], sub[25], sub[26], sub[27], sub[28], sub[29],
+                        sub[30], sub[31],
+                    ]);
+                    let flags =
+                        u16::from_le_bytes([sub[40], sub[41]]);
+                    let is_abstime = flags & 1 != 0;
+
+                    let sleep_ns = if is_abstime {
+                        let now_ns = match clock_id as i32 {
+                            CLOCKID_REALTIME => {
+                                twizzler_rt_abi::time::twz_rt_get_system_time()
+                                    .as_nanos() as u64
+                            }
+                            _ => {
+                                twizzler_rt_abi::time::twz_rt_get_monotonic_time()
+                                    .as_nanos() as u64
+                            }
+                        };
+                        timeout_ns.saturating_sub(now_ns)
+                    } else {
+                        timeout_ns
+                    };
+
+                    min_sleep_ns = Some(match min_sleep_ns {
+                        Some(current) => current.min(sleep_ns),
+                        None => sleep_ns,
+                    });
+                }
+            }
+
+            // Sleep for the minimum clock duration if any.
+            if let Some(ns) = min_sleep_ns {
+                if ns > 0 {
+                    std::thread::sleep(std::time::Duration::from_nanos(ns));
+                }
+            }
+
+            // Second pass: report all subscriptions as ready events.
+            for i in 0..nsubs {
+                let sub_offset = (in_ptr + i * 48) as usize;
+                let mut sub_header = [0u8; 9];
+                if mem.read(&caller, sub_offset, &mut sub_header).is_err() {
                     return ERRNO_FAULT;
                 }
                 let mut event = [0u8; 32];
-                event[0..8].copy_from_slice(&userdata);
+                event[0..8].copy_from_slice(&sub_header[0..8]); // userdata
+                // error = 0 (success)
+                event[10] = sub_header[8]; // type = subscription tag
                 let evt_offset = (out_ptr + i * 32) as usize;
                 if mem.write(&mut caller, evt_offset, &event).is_err() {
                     return ERRNO_FAULT;

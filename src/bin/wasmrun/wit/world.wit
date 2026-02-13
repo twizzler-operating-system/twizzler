@@ -10,4 +10,7 @@ world command {
 
   // Simplified Twizzler surface (no wasi:io dependency)
   import twizzler:gfx/surface@0.0.1;
+
+  // Raw input events (keyboard, mouse) from virtio-input
+  import twizzler:input/input@0.0.1;
 }

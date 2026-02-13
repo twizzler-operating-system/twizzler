@@ -1,0 +1,24 @@
+/// Raw input event interface for Twizzler.
+///
+/// Provides access to keyboard and other input device events via the
+/// virtio-input driver. Events follow the Linux evdev convention:
+///   event-type 1 (EV_KEY): keyboard key press/release
+///     code = key scancode, value = 0 (release) / 1 (press) / 2 (repeat)
+///   event-type 2 (EV_REL): relative axis movement (mouse)
+///     code = axis, value = delta
+///   event-type 3 (EV_ABS): absolute axis (touchscreen/tablet)
+///     code = axis, value = position
+package twizzler:input@0.0.1;
+
+interface input {
+    record input-event {
+        event-type: u16,
+        code: u16,
+        value: u32,
+    }
+
+    /// Poll for pending input events. Returns all events that have been
+    /// queued since the last call. Returns an empty list if no events
+    /// are pending or no input device is available.
+    poll-events: func() -> list<input-event>;
+}

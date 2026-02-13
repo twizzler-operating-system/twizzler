@@ -10,6 +10,8 @@
 //!   wasmrun <path.wasm>    — run a WASI P1 module or P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
+mod fiber_stack;
+mod input;
 mod net;
 mod platform;
 mod wasi;
@@ -116,14 +118,22 @@ fn run_all() -> Result<()> {
     Ok(())
 }
 
-/// Build a wasmtime Config suitable for Twizzler.
-fn wasmtime_config() -> Config {
+/// Build a base wasmtime Config suitable for Twizzler (sync, for core module demos).
+fn wasmtime_sync_config() -> Config {
     let mut config = Config::new();
     config.memory_init_cow(false);
     config.memory_reservation(0);
     config.memory_guard_size(0);
     config.memory_reservation_for_growth(0);
     config.signals_based_traps(false);
+    config
+}
+
+/// Build an async wasmtime Config with fiber stack support (for WASI components).
+pub fn wasmtime_config() -> Config {
+    let mut config = wasmtime_sync_config();
+    config.async_support(true);
+    config.with_host_stack(fiber_stack::twizzler_stack_creator());
     config
 }
 
@@ -138,7 +148,7 @@ fn run_demos() -> Result<()> {
 fn demo_smoke() -> Result<()> {
     println!("[1/3] Smoke test: instantiating empty module...");
 
-    let engine = Engine::new(&wasmtime_config())?;
+    let engine = Engine::new(&wasmtime_sync_config())?;
     let module = Module::new(&engine, "(module)")?;
     let mut store = Store::new(&engine, ());
     Instance::new(&mut store, &module, &[])?;
@@ -151,7 +161,7 @@ fn demo_smoke() -> Result<()> {
 fn demo_add() -> Result<()> {
     println!("[2/3] Simple add: compiling and calling exported WASM function...");
 
-    let engine = Engine::new(&wasmtime_config())?;
+    let engine = Engine::new(&wasmtime_sync_config())?;
     let module = Module::new(
         &engine,
         r#"
@@ -184,7 +194,7 @@ fn demo_add() -> Result<()> {
 fn demo_host_fn() -> Result<()> {
     println!("[3/3] Host function: WASM calling back into host code...");
 
-    let engine = Engine::new(&wasmtime_config())?;
+    let engine = Engine::new(&wasmtime_sync_config())?;
     let module = Module::new(
         &engine,
         r#"

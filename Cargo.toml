@@ -58,6 +58,7 @@ members = [
     #"src/bin/randtest",
     #"src/bin/stdfs_demo",
     "src/lib/virtio-gpu",
+    "src/lib/virtio-input",
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
@@ -131,6 +132,9 @@ debug = true
 
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
+
+[patch.'https://github.com/bytecodealliance/wasmtime.git']
+wasmtime-internal-fiber = { path = "src/ports/wasmtime-fiber" }
 
 [patch.crates-io]
 #ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }

@@ -1,4 +1,4 @@
-//! WASI Preview 2 (component model) for Twizzler — synchronous implementation.
+//! WASI Preview 2 (component model) for Twizzler — async with fiber stacks.
 //!
 //! Implements wasi:io, wasi:clocks, wasi:cli, wasi:random, wasi:filesystem,
 //! wasi:sockets (TCP, UDP, DNS), and the WASI-GFX interfaces (wasi:graphics-context,
@@ -17,7 +17,7 @@ use twizzler_rt_abi::fd::{self, FdFlags, FdKind, NameEntry, RawFd};
 use twizzler_rt_abi::io::{IoCtx, IoFlags};
 
 use wasmtime::component::{Component, Linker, Resource, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 
 use crate::net;
 
@@ -25,8 +25,58 @@ use crate::net;
 
 pub struct IoError(String);
 
-/// All pollables resolve immediately in synchronous mode.
-pub struct PollableEntry;
+/// Typed pollable entry for real async I/O multiplexing.
+pub enum PollableEntry {
+    /// Console, file, or DNS — always immediately ready.
+    AlwaysReady,
+    /// Monotonic clock timer — ready when deadline is reached.
+    MonotonicTimer { deadline_ns: u64 },
+    /// TCP socket readable (data available or peer closed).
+    TcpReadable { socket: net::NetSocket },
+    /// TCP socket writable (send buffer has space).
+    TcpWritable { socket: net::NetSocket },
+    /// TCP listener has a connection ready to accept.
+    TcpAcceptable { listener: net::NetListener },
+    /// UDP socket has incoming datagrams.
+    UdpReadable { socket: net::NetUdpSocket },
+    /// UDP socket can send datagrams.
+    UdpWritable { socket: net::NetUdpSocket },
+}
+
+impl PollableEntry {
+    fn is_ready(&self) -> bool {
+        match self {
+            PollableEntry::AlwaysReady => true,
+            PollableEntry::MonotonicTimer { deadline_ns } => {
+                let now = twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+                now >= *deadline_ns
+            }
+            PollableEntry::TcpReadable { socket } => socket.can_read(),
+            PollableEntry::TcpWritable { socket } => socket.can_write(),
+            PollableEntry::TcpAcceptable { listener } => listener.can_accept(),
+            PollableEntry::UdpReadable { socket } => socket.can_recv(),
+            PollableEntry::UdpWritable { socket } => socket.can_send(),
+        }
+    }
+
+    fn is_network(&self) -> bool {
+        matches!(
+            self,
+            PollableEntry::TcpReadable { .. }
+                | PollableEntry::TcpWritable { .. }
+                | PollableEntry::TcpAcceptable { .. }
+                | PollableEntry::UdpReadable { .. }
+                | PollableEntry::UdpWritable { .. }
+        )
+    }
+
+    fn deadline_ns(&self) -> Option<u64> {
+        match self {
+            PollableEntry::MonotonicTimer { deadline_ns } => Some(*deadline_ns),
+            _ => None,
+        }
+    }
+}
 
 pub enum InputStreamKind {
     Console,
@@ -147,7 +197,8 @@ pub struct ResolveAddressStreamEntry {
 wasmtime::component::bindgen!({
     path: "wit",
     world: "wasmtime:wasi/command",
-    imports: { default: trappable },
+    imports: { default: trappable | async },
+    exports: { default: async },
     with: {
         "wasi:io/error/error": IoError,
         "wasi:io/poll/pollable": PollableEntry,
@@ -186,11 +237,11 @@ pub struct WasiCtx {
 impl wasi::io::error::Host for WasiCtx {}
 
 impl wasi::io::error::HostError for WasiCtx {
-    fn to_debug_string(&mut self, self_: Resource<IoError>) -> Result<String> {
+    async fn to_debug_string(&mut self, self_: Resource<IoError>) -> Result<String> {
         Ok(self.table.get(&self_)?.0.clone())
     }
 
-    fn drop(&mut self, rep: Resource<IoError>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<IoError>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -199,22 +250,93 @@ impl wasi::io::error::HostError for WasiCtx {
 // ── wasi:io/poll ────────────────────────────────────────────────────
 
 impl wasi::io::poll::Host for WasiCtx {
-    fn poll(&mut self, in_: Vec<Resource<PollableEntry>>) -> Result<Vec<u32>> {
-        // All pollables are always ready in synchronous mode.
-        Ok((0..in_.len() as u32).collect())
+    async fn poll(&mut self, in_: Vec<Resource<PollableEntry>>) -> Result<Vec<u32>> {
+        loop {
+            // Check if any network pollables are present.
+            let has_network = in_
+                .iter()
+                .any(|r| self.table.get(r).map_or(false, |e| e.is_network()));
+
+            if has_network {
+                net::trigger_poll();
+            }
+
+            // Collect ready indices.
+            let ready: Vec<u32> = in_
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    self.table
+                        .get(r)
+                        .ok()
+                        .filter(|e| e.is_ready())
+                        .map(|_| i as u32)
+                })
+                .collect();
+
+            if !ready.is_empty() {
+                return Ok(ready);
+            }
+
+            // Compute earliest timer deadline.
+            let earliest_deadline = in_
+                .iter()
+                .filter_map(|r| self.table.get(r).ok().and_then(|e| e.deadline_ns()))
+                .min();
+
+            let now =
+                twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+
+            if has_network {
+                let timeout = earliest_deadline
+                    .map(|d| std::time::Duration::from_nanos(d.saturating_sub(now)));
+                net::wait_for_network_event(timeout);
+            } else if let Some(deadline) = earliest_deadline {
+                let remaining = deadline.saturating_sub(now);
+                if remaining > 0 {
+                    std::thread::sleep(std::time::Duration::from_nanos(remaining));
+                }
+            } else {
+                // No network, no timers — avoid spinning.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
     }
 }
 
 impl wasi::io::poll::HostPollable for WasiCtx {
-    fn ready(&mut self, _self_: Resource<PollableEntry>) -> Result<bool> {
-        Ok(true)
+    async fn ready(&mut self, self_: Resource<PollableEntry>) -> Result<bool> {
+        Ok(self.table.get(&self_)?.is_ready())
     }
 
-    fn block(&mut self, _self_: Resource<PollableEntry>) -> Result<()> {
-        Ok(())
+    async fn block(&mut self, self_: Resource<PollableEntry>) -> Result<()> {
+        loop {
+            let entry = self.table.get(&self_)?;
+            if entry.is_ready() {
+                return Ok(());
+            }
+
+            let is_network = entry.is_network();
+            let deadline = entry.deadline_ns();
+
+            let now =
+                twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+
+            if is_network {
+                net::trigger_poll();
+                let timeout =
+                    deadline.map(|d| std::time::Duration::from_nanos(d.saturating_sub(now)));
+                net::wait_for_network_event(timeout);
+            } else if let Some(dl) = deadline {
+                let remaining = dl.saturating_sub(now);
+                if remaining > 0 {
+                    std::thread::sleep(std::time::Duration::from_nanos(remaining));
+                }
+            }
+        }
     }
 
-    fn drop(&mut self, rep: Resource<PollableEntry>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<PollableEntry>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -227,7 +349,7 @@ use wasi::io::streams::StreamError;
 impl wasi::io::streams::Host for WasiCtx {}
 
 impl wasi::io::streams::HostInputStream for WasiCtx {
-    fn read(
+    async fn read(
         &mut self,
         self_: Resource<InputStreamKind>,
         len: u64,
@@ -307,7 +429,7 @@ impl wasi::io::streams::HostInputStream for WasiCtx {
         }
     }
 
-    fn blocking_read(
+    async fn blocking_read(
         &mut self,
         self_: Resource<InputStreamKind>,
         len: u64,
@@ -329,51 +451,57 @@ impl wasi::io::streams::HostInputStream for WasiCtx {
                 _ => Ok(Ok(Vec::new())),
             }
         } else {
-            self.read(self_, len)
+            self.read(self_, len).await
         }
     }
 
-    fn skip(
+    async fn skip(
         &mut self,
         self_: Resource<InputStreamKind>,
         len: u64,
     ) -> Result<Result<u64, StreamError>> {
-        match self.read(self_, len)? {
+        match self.read(self_, len).await? {
             Ok(data) => Ok(Ok(data.len() as u64)),
             Err(e) => Ok(Err(e)),
         }
     }
 
-    fn blocking_skip(
+    async fn blocking_skip(
         &mut self,
         self_: Resource<InputStreamKind>,
         len: u64,
     ) -> Result<Result<u64, StreamError>> {
-        self.skip(self_, len)
+        self.skip(self_, len).await
     }
 
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<InputStreamKind>,
+        self_: Resource<InputStreamKind>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let entry = match self.table.get(&self_)? {
+            InputStreamKind::Console | InputStreamKind::File { .. } => PollableEntry::AlwaysReady,
+            InputStreamKind::TcpSocket { socket } => PollableEntry::TcpReadable {
+                socket: socket.clone_socket(),
+            },
+        };
+        Ok(self.table.push(entry)?)
     }
 
-    fn drop(&mut self, rep: Resource<InputStreamKind>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<InputStreamKind>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
 }
 
 impl wasi::io::streams::HostOutputStream for WasiCtx {
-    fn check_write(
+    async fn check_write(
         &mut self,
         _self_: Resource<OutputStreamKind>,
     ) -> Result<Result<u64, StreamError>> {
         Ok(Ok(usize::MAX as u64))
     }
 
-    fn write(
+    async fn write(
         &mut self,
         self_: Resource<OutputStreamKind>,
         contents: Vec<u8>,
@@ -448,53 +576,59 @@ impl wasi::io::streams::HostOutputStream for WasiCtx {
         }
     }
 
-    fn blocking_write_and_flush(
+    async fn blocking_write_and_flush(
         &mut self,
         self_: Resource<OutputStreamKind>,
         contents: Vec<u8>,
     ) -> Result<Result<(), StreamError>> {
-        self.write(self_, contents)
+        self.write(self_, contents).await
     }
 
-    fn flush(
+    async fn flush(
         &mut self,
         _self_: Resource<OutputStreamKind>,
     ) -> Result<Result<(), StreamError>> {
         Ok(Ok(()))
     }
 
-    fn blocking_flush(
+    async fn blocking_flush(
         &mut self,
         _self_: Resource<OutputStreamKind>,
     ) -> Result<Result<(), StreamError>> {
         Ok(Ok(()))
     }
 
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<OutputStreamKind>,
+        self_: Resource<OutputStreamKind>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let entry = match self.table.get(&self_)? {
+            OutputStreamKind::Console | OutputStreamKind::File { .. } => PollableEntry::AlwaysReady,
+            OutputStreamKind::TcpSocket { socket } => PollableEntry::TcpWritable {
+                socket: socket.clone_socket(),
+            },
+        };
+        Ok(self.table.push(entry)?)
     }
 
-    fn write_zeroes(
+    async fn write_zeroes(
         &mut self,
         self_: Resource<OutputStreamKind>,
         len: u64,
     ) -> Result<Result<(), StreamError>> {
         let zeros = vec![0u8; (len as usize).min(65536)];
-        self.write(self_, zeros)
+        self.write(self_, zeros).await
     }
 
-    fn blocking_write_zeroes_and_flush(
+    async fn blocking_write_zeroes_and_flush(
         &mut self,
         self_: Resource<OutputStreamKind>,
         len: u64,
     ) -> Result<Result<(), StreamError>> {
-        self.write_zeroes(self_, len)
+        self.write_zeroes(self_, len).await
     }
 
-    fn splice(
+    async fn splice(
         &mut self,
         _self_: Resource<OutputStreamKind>,
         _src: Resource<InputStreamKind>,
@@ -506,16 +640,16 @@ impl wasi::io::streams::HostOutputStream for WasiCtx {
         Ok(Err(StreamError::LastOperationFailed(err)))
     }
 
-    fn blocking_splice(
+    async fn blocking_splice(
         &mut self,
         self_: Resource<OutputStreamKind>,
         src: Resource<InputStreamKind>,
         len: u64,
     ) -> Result<Result<u64, StreamError>> {
-        self.splice(self_, src, len)
+        self.splice(self_, src, len).await
     }
 
-    fn drop(&mut self, rep: Resource<OutputStreamKind>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<OutputStreamKind>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -524,31 +658,40 @@ impl wasi::io::streams::HostOutputStream for WasiCtx {
 // ── wasi:clocks ─────────────────────────────────────────────────────
 
 impl wasi::clocks::monotonic_clock::Host for WasiCtx {
-    fn now(&mut self) -> Result<wasi::clocks::monotonic_clock::Instant> {
+    async fn now(&mut self) -> Result<wasi::clocks::monotonic_clock::Instant> {
         Ok(twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64)
     }
 
-    fn resolution(&mut self) -> Result<wasi::clocks::monotonic_clock::Duration> {
+    async fn resolution(&mut self) -> Result<wasi::clocks::monotonic_clock::Duration> {
         Ok(1)
     }
 
-    fn subscribe_duration(
+    async fn subscribe_duration(
         &mut self,
-        _duration: wasi::clocks::monotonic_clock::Duration,
+        duration: wasi::clocks::monotonic_clock::Duration,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let now = twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+        Ok(self
+            .table
+            .push(PollableEntry::MonotonicTimer {
+                deadline_ns: now + duration,
+            })?)
     }
 
-    fn subscribe_instant(
+    async fn subscribe_instant(
         &mut self,
-        _deadline: wasi::clocks::monotonic_clock::Instant,
+        deadline: wasi::clocks::monotonic_clock::Instant,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        Ok(self
+            .table
+            .push(PollableEntry::MonotonicTimer {
+                deadline_ns: deadline,
+            })?)
     }
 }
 
 impl wasi::clocks::wall_clock::Host for WasiCtx {
-    fn now(&mut self) -> Result<wasi::clocks::wall_clock::Datetime> {
+    async fn now(&mut self) -> Result<wasi::clocks::wall_clock::Datetime> {
         let t = twizzler_rt_abi::time::twz_rt_get_system_time();
         Ok(wasi::clocks::wall_clock::Datetime {
             seconds: t.as_secs(),
@@ -556,7 +699,7 @@ impl wasi::clocks::wall_clock::Host for WasiCtx {
         })
     }
 
-    fn resolution(&mut self) -> Result<wasi::clocks::wall_clock::Datetime> {
+    async fn resolution(&mut self) -> Result<wasi::clocks::wall_clock::Datetime> {
         Ok(wasi::clocks::wall_clock::Datetime {
             seconds: 0,
             nanoseconds: 1,
@@ -567,21 +710,21 @@ impl wasi::clocks::wall_clock::Host for WasiCtx {
 // ── wasi:cli ────────────────────────────────────────────────────────
 
 impl wasi::cli::environment::Host for WasiCtx {
-    fn get_arguments(&mut self) -> Result<Vec<String>> {
+    async fn get_arguments(&mut self) -> Result<Vec<String>> {
         Ok(std::env::args().collect())
     }
 
-    fn get_environment(&mut self) -> Result<Vec<(String, String)>> {
+    async fn get_environment(&mut self) -> Result<Vec<(String, String)>> {
         Ok(std::env::vars().collect())
     }
 
-    fn initial_cwd(&mut self) -> Result<Option<String>> {
+    async fn initial_cwd(&mut self) -> Result<Option<String>> {
         Ok(Some("/".to_string()))
     }
 }
 
 impl wasi::cli::exit::Host for WasiCtx {
-    fn exit(&mut self, code: core::result::Result<(), ()>) -> Result<()> {
+    async fn exit(&mut self, code: core::result::Result<(), ()>) -> Result<()> {
         if code.is_ok() {
             bail!("wasi exit success")
         } else {
@@ -589,32 +732,32 @@ impl wasi::cli::exit::Host for WasiCtx {
         }
     }
 
-    fn exit_with_code(&mut self, code: u8) -> Result<()> {
+    async fn exit_with_code(&mut self, code: u8) -> Result<()> {
         bail!("wasi exit with code {code}")
     }
 }
 
 impl wasi::cli::stdin::Host for WasiCtx {
-    fn get_stdin(&mut self) -> Result<Resource<InputStreamKind>> {
+    async fn get_stdin(&mut self) -> Result<Resource<InputStreamKind>> {
         Ok(self.table.push(InputStreamKind::Console)?)
     }
 }
 
 impl wasi::cli::stdout::Host for WasiCtx {
-    fn get_stdout(&mut self) -> Result<Resource<OutputStreamKind>> {
+    async fn get_stdout(&mut self) -> Result<Resource<OutputStreamKind>> {
         Ok(self.table.push(OutputStreamKind::Console)?)
     }
 }
 
 impl wasi::cli::stderr::Host for WasiCtx {
-    fn get_stderr(&mut self) -> Result<Resource<OutputStreamKind>> {
+    async fn get_stderr(&mut self) -> Result<Resource<OutputStreamKind>> {
         Ok(self.table.push(OutputStreamKind::Console)?)
     }
 }
 
 impl wasi::cli::terminal_input::Host for WasiCtx {}
 impl wasi::cli::terminal_input::HostTerminalInput for WasiCtx {
-    fn drop(&mut self, rep: Resource<TerminalInput>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<TerminalInput>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -622,14 +765,14 @@ impl wasi::cli::terminal_input::HostTerminalInput for WasiCtx {
 
 impl wasi::cli::terminal_output::Host for WasiCtx {}
 impl wasi::cli::terminal_output::HostTerminalOutput for WasiCtx {
-    fn drop(&mut self, rep: Resource<TerminalOutput>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<TerminalOutput>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
 }
 
 impl wasi::cli::terminal_stdin::Host for WasiCtx {
-    fn get_terminal_stdin(&mut self) -> Result<Option<Resource<TerminalInput>>> {
+    async fn get_terminal_stdin(&mut self) -> Result<Option<Resource<TerminalInput>>> {
         if let Ok(info) = fd::twz_rt_fd_get_info(0) {
             if info.flags.contains(FdFlags::IS_TERMINAL) {
                 return Ok(Some(self.table.push(TerminalInput)?));
@@ -640,7 +783,7 @@ impl wasi::cli::terminal_stdin::Host for WasiCtx {
 }
 
 impl wasi::cli::terminal_stdout::Host for WasiCtx {
-    fn get_terminal_stdout(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
+    async fn get_terminal_stdout(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
         if let Ok(info) = fd::twz_rt_fd_get_info(1) {
             if info.flags.contains(FdFlags::IS_TERMINAL) {
                 return Ok(Some(self.table.push(TerminalOutput)?));
@@ -651,7 +794,7 @@ impl wasi::cli::terminal_stdout::Host for WasiCtx {
 }
 
 impl wasi::cli::terminal_stderr::Host for WasiCtx {
-    fn get_terminal_stderr(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
+    async fn get_terminal_stderr(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
         if let Ok(info) = fd::twz_rt_fd_get_info(2) {
             if info.flags.contains(FdFlags::IS_TERMINAL) {
                 return Ok(Some(self.table.push(TerminalOutput)?));
@@ -682,27 +825,27 @@ fn random_u64() -> Result<u64> {
 }
 
 impl wasi::random::random::Host for WasiCtx {
-    fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+    async fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
         random_bytes(len)
     }
 
-    fn get_random_u64(&mut self) -> Result<u64> {
+    async fn get_random_u64(&mut self) -> Result<u64> {
         random_u64()
     }
 }
 
 impl wasi::random::insecure::Host for WasiCtx {
-    fn get_insecure_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+    async fn get_insecure_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
         random_bytes(len)
     }
 
-    fn get_insecure_random_u64(&mut self) -> Result<u64> {
+    async fn get_insecure_random_u64(&mut self) -> Result<u64> {
         random_u64()
     }
 }
 
 impl wasi::random::insecure_seed::Host for WasiCtx {
-    fn insecure_seed(&mut self) -> Result<(u64, u64)> {
+    async fn insecure_seed(&mut self) -> Result<(u64, u64)> {
         Ok((random_u64()?, random_u64()?))
     }
 }
@@ -710,7 +853,7 @@ impl wasi::random::insecure_seed::Host for WasiCtx {
 // ── wasi:filesystem/preopens ────────────────────────────────────────
 
 impl wasi::filesystem::preopens::Host for WasiCtx {
-    fn get_directories(
+    async fn get_directories(
         &mut self,
     ) -> Result<Vec<(Resource<DescriptorEntry>, String)>> {
         let create = twizzler_rt_abi::bindings::create_options {
@@ -736,7 +879,7 @@ impl wasi::filesystem::preopens::Host for WasiCtx {
 use wasi::filesystem::types::ErrorCode;
 
 impl wasi::filesystem::types::Host for WasiCtx {
-    fn filesystem_error_code(
+    async fn filesystem_error_code(
         &mut self,
         _err: Resource<IoError>,
     ) -> Result<Option<ErrorCode>> {
@@ -745,7 +888,7 @@ impl wasi::filesystem::types::Host for WasiCtx {
 }
 
 impl wasi::filesystem::types::HostDescriptor for WasiCtx {
-    fn read_via_stream(
+    async fn read_via_stream(
         &mut self,
         desc: Resource<DescriptorEntry>,
         offset: u64,
@@ -758,7 +901,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(self.table.push(stream)?))
     }
 
-    fn write_via_stream(
+    async fn write_via_stream(
         &mut self,
         desc: Resource<DescriptorEntry>,
         offset: u64,
@@ -772,7 +915,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(self.table.push(stream)?))
     }
 
-    fn append_via_stream(
+    async fn append_via_stream(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<Resource<OutputStreamKind>, ErrorCode>> {
@@ -785,7 +928,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(self.table.push(stream)?))
     }
 
-    fn advise(
+    async fn advise(
         &mut self,
         _desc: Resource<DescriptorEntry>,
         _offset: u64,
@@ -795,7 +938,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(())) // Advisory only.
     }
 
-    fn sync_data(
+    async fn sync_data(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<(), ErrorCode>> {
@@ -804,7 +947,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(()))
     }
 
-    fn get_flags(
+    async fn get_flags(
         &mut self,
         _desc: Resource<DescriptorEntry>,
     ) -> Result<Result<wasi::filesystem::types::DescriptorFlags, ErrorCode>> {
@@ -814,7 +957,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         ))
     }
 
-    fn get_type(
+    async fn get_type(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<wasi::filesystem::types::DescriptorType, ErrorCode>> {
@@ -825,7 +968,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn set_size(
+    async fn set_size(
         &mut self,
         desc: Resource<DescriptorEntry>,
         size: u64,
@@ -837,7 +980,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn set_times(
+    async fn set_times(
         &mut self,
         _desc: Resource<DescriptorEntry>,
         _data_access: wasi::filesystem::types::NewTimestamp,
@@ -846,7 +989,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Err(ErrorCode::Unsupported))
     }
 
-    fn read(
+    async fn read(
         &mut self,
         desc: Resource<DescriptorEntry>,
         length: u64,
@@ -865,7 +1008,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn write(
+    async fn write(
         &mut self,
         desc: Resource<DescriptorEntry>,
         buffer: Vec<u8>,
@@ -879,7 +1022,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn read_directory(
+    async fn read_directory(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<Resource<DirEntryStream>, ErrorCode>> {
@@ -893,7 +1036,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(self.table.push(stream)?))
     }
 
-    fn sync(
+    async fn sync(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<(), ErrorCode>> {
@@ -902,7 +1045,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Ok(()))
     }
 
-    fn create_directory_at(
+    async fn create_directory_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         path: String,
@@ -915,7 +1058,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn stat(
+    async fn stat(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<wasi::filesystem::types::DescriptorStat, ErrorCode>> {
@@ -926,7 +1069,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn stat_at(
+    async fn stat_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         _path_flags: wasi::filesystem::types::PathFlags,
@@ -951,7 +1094,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn set_times_at(
+    async fn set_times_at(
         &mut self,
         _desc: Resource<DescriptorEntry>,
         _path_flags: wasi::filesystem::types::PathFlags,
@@ -962,7 +1105,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Err(ErrorCode::Unsupported))
     }
 
-    fn link_at(
+    async fn link_at(
         &mut self,
         _desc: Resource<DescriptorEntry>,
         _old_path_flags: wasi::filesystem::types::PathFlags,
@@ -973,7 +1116,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(Err(ErrorCode::Unsupported))
     }
 
-    fn open_at(
+    async fn open_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         _path_flags: wasi::filesystem::types::PathFlags,
@@ -1033,7 +1176,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn readlink_at(
+    async fn readlink_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         path: String,
@@ -1050,7 +1193,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn remove_directory_at(
+    async fn remove_directory_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         path: String,
@@ -1063,7 +1206,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn rename_at(
+    async fn rename_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         old_path: String,
@@ -1080,7 +1223,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn symlink_at(
+    async fn symlink_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         old_path: String,
@@ -1094,7 +1237,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn unlink_file_at(
+    async fn unlink_file_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         path: String,
@@ -1107,7 +1250,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn is_same_object(
+    async fn is_same_object(
         &mut self,
         a: Resource<DescriptorEntry>,
         b: Resource<DescriptorEntry>,
@@ -1117,7 +1260,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         Ok(a_entry.path == b_entry.path)
     }
 
-    fn metadata_hash(
+    async fn metadata_hash(
         &mut self,
         desc: Resource<DescriptorEntry>,
     ) -> Result<Result<wasi::filesystem::types::MetadataHashValue, ErrorCode>> {
@@ -1134,7 +1277,7 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn metadata_hash_at(
+    async fn metadata_hash_at(
         &mut self,
         desc: Resource<DescriptorEntry>,
         _path_flags: wasi::filesystem::types::PathFlags,
@@ -1165,14 +1308,14 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
         }
     }
 
-    fn drop(&mut self, desc: Resource<DescriptorEntry>) -> Result<()> {
+    async fn drop(&mut self, desc: Resource<DescriptorEntry>) -> Result<()> {
         self.table.delete(desc)?;
         Ok(())
     }
 }
 
 impl wasi::filesystem::types::HostDirectoryEntryStream for WasiCtx {
-    fn read_directory_entry(
+    async fn read_directory_entry(
         &mut self,
         stream: Resource<DirEntryStream>,
     ) -> Result<Result<Option<wasi::filesystem::types::DirectoryEntry>, ErrorCode>> {
@@ -1205,7 +1348,7 @@ impl wasi::filesystem::types::HostDirectoryEntryStream for WasiCtx {
         })))
     }
 
-    fn drop(&mut self, stream: Resource<DirEntryStream>) -> Result<()> {
+    async fn drop(&mut self, stream: Resource<DirEntryStream>) -> Result<()> {
         self.table.delete(stream)?;
         Ok(())
     }
@@ -1217,7 +1360,7 @@ impl wasi::filesystem::types::HostDirectoryEntryStream for WasiCtx {
 // Resource methods bail since no sockets are ever created.
 
 impl wasi::sockets::instance_network::Host for WasiCtx {
-    fn instance_network(
+    async fn instance_network(
         &mut self,
     ) -> Result<Resource<wasi::sockets::network::Network>> {
         Ok(self.table.push(NetworkEntry)?)
@@ -1225,7 +1368,7 @@ impl wasi::sockets::instance_network::Host for WasiCtx {
 }
 
 impl wasi::sockets::network::Host for WasiCtx {
-    fn network_error_code(
+    async fn network_error_code(
         &mut self,
         _err: Resource<IoError>,
     ) -> Result<Option<wasi::sockets::network::ErrorCode>> {
@@ -1234,7 +1377,7 @@ impl wasi::sockets::network::Host for WasiCtx {
 }
 
 impl wasi::sockets::network::HostNetwork for WasiCtx {
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::network::Network>,
     ) -> Result<()> {
@@ -1244,7 +1387,7 @@ impl wasi::sockets::network::HostNetwork for WasiCtx {
 }
 
 impl wasi::sockets::tcp_create_socket::Host for WasiCtx {
-    fn create_tcp_socket(
+    async fn create_tcp_socket(
         &mut self,
         address_family: wasi::sockets::network::IpAddressFamily,
     ) -> Result<Result<Resource<wasi::sockets::tcp::TcpSocket>, wasi::sockets::network::ErrorCode>>
@@ -1267,7 +1410,7 @@ impl wasi::sockets::tcp_create_socket::Host for WasiCtx {
 impl wasi::sockets::tcp::Host for WasiCtx {}
 
 impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
-    fn start_bind(
+    async fn start_bind(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
@@ -1284,7 +1427,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         entry.state = TcpSocketState::Bound { addr };
         Ok(Ok(()))
     }
-    fn finish_bind(
+    async fn finish_bind(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
@@ -1295,7 +1438,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
         }
     }
-    fn start_connect(
+    async fn start_connect(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
@@ -1317,7 +1460,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         entry.state = TcpSocketState::Connected { socket };
         Ok(Ok(()))
     }
-    fn finish_connect(
+    async fn finish_connect(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<
@@ -1341,7 +1484,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         })?;
         Ok(Ok((in_stream, out_stream)))
     }
-    fn start_listen(
+    async fn start_listen(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
@@ -1357,7 +1500,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         entry.state = TcpSocketState::Listening { listener };
         Ok(Ok(()))
     }
-    fn finish_listen(
+    async fn finish_listen(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
@@ -1368,7 +1511,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
         }
     }
-    fn accept(
+    async fn accept(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<
@@ -1409,7 +1552,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         let tcp_res = self.table.push(accepted)?;
         Ok(Ok((tcp_res, in_stream, out_stream)))
     }
-    fn local_address(
+    async fn local_address(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
@@ -1428,7 +1571,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
         }
     }
-    fn remote_address(
+    async fn remote_address(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
@@ -1442,34 +1585,34 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
         }
     }
-    fn is_listening(
+    async fn is_listening(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<bool> {
         let entry = self.table.get(&self_)?;
         Ok(matches!(entry.state, TcpSocketState::Listening { .. }))
     }
-    fn address_family(
+    async fn address_family(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<wasi::sockets::network::IpAddressFamily> {
         let entry = self.table.get(&self_)?;
         Ok(entry.family)
     }
-    fn set_listen_backlog_size(
+    async fn set_listen_backlog_size(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
         Ok(Ok(())) // smoltcp uses fixed backlog
     }
-    fn keep_alive_enabled(
+    async fn keep_alive_enabled(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<bool, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.keep_alive_enabled))
     }
-    fn set_keep_alive_enabled(
+    async fn set_keep_alive_enabled(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         value: bool,
@@ -1477,54 +1620,54 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         self.table.get_mut(&self_)?.keep_alive_enabled = value;
         Ok(Ok(()))
     }
-    fn keep_alive_idle_time(
+    async fn keep_alive_idle_time(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::clocks::monotonic_clock::Duration, wasi::sockets::network::ErrorCode>>
     {
         Ok(Ok(7_200_000_000_000)) // 2 hours in ns
     }
-    fn set_keep_alive_idle_time(
+    async fn set_keep_alive_idle_time(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: wasi::clocks::monotonic_clock::Duration,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
         Ok(Ok(()))
     }
-    fn keep_alive_interval(
+    async fn keep_alive_interval(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<wasi::clocks::monotonic_clock::Duration, wasi::sockets::network::ErrorCode>>
     {
         Ok(Ok(75_000_000_000)) // 75s in ns
     }
-    fn set_keep_alive_interval(
+    async fn set_keep_alive_interval(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: wasi::clocks::monotonic_clock::Duration,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
         Ok(Ok(()))
     }
-    fn keep_alive_count(
+    async fn keep_alive_count(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u32, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(9))
     }
-    fn set_keep_alive_count(
+    async fn set_keep_alive_count(
         &mut self,
         _self_: Resource<wasi::sockets::tcp::TcpSocket>,
         _value: u32,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
         Ok(Ok(()))
     }
-    fn hop_limit(
+    async fn hop_limit(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u8, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.hop_limit))
     }
-    fn set_hop_limit(
+    async fn set_hop_limit(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         value: u8,
@@ -1535,13 +1678,13 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         self.table.get_mut(&self_)?.hop_limit = value;
         Ok(Ok(()))
     }
-    fn receive_buffer_size(
+    async fn receive_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.receive_buffer_size))
     }
-    fn set_receive_buffer_size(
+    async fn set_receive_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         value: u64,
@@ -1552,13 +1695,13 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         self.table.get_mut(&self_)?.receive_buffer_size = value;
         Ok(Ok(()))
     }
-    fn send_buffer_size(
+    async fn send_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.send_buffer_size))
     }
-    fn set_send_buffer_size(
+    async fn set_send_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         value: u64,
@@ -1569,13 +1712,22 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
         self.table.get_mut(&self_)?.send_buffer_size = value;
         Ok(Ok(()))
     }
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<wasi::sockets::tcp::TcpSocket>,
+        self_: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let entry = match &self.table.get(&self_)?.state {
+            TcpSocketState::Connected { socket } => PollableEntry::TcpWritable {
+                socket: socket.clone_socket(),
+            },
+            TcpSocketState::Listening { listener } => PollableEntry::TcpAcceptable {
+                listener: listener.clone_listener(),
+            },
+            _ => PollableEntry::AlwaysReady,
+        };
+        Ok(self.table.push(entry)?)
     }
-    fn shutdown(
+    async fn shutdown(
         &mut self,
         self_: Resource<wasi::sockets::tcp::TcpSocket>,
         shutdown_type: wasi::sockets::tcp::ShutdownType,
@@ -1595,7 +1747,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
             Err(e) => Ok(Err(net_err_to_wasi(e))),
         }
     }
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::tcp::TcpSocket>,
     ) -> Result<()> {
@@ -1605,7 +1757,7 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
 }
 
 impl wasi::sockets::udp_create_socket::Host for WasiCtx {
-    fn create_udp_socket(
+    async fn create_udp_socket(
         &mut self,
         address_family: wasi::sockets::network::IpAddressFamily,
     ) -> Result<Result<Resource<wasi::sockets::udp::UdpSocket>, wasi::sockets::network::ErrorCode>>
@@ -1628,7 +1780,7 @@ impl wasi::sockets::udp_create_socket::Host for WasiCtx {
 impl wasi::sockets::udp::Host for WasiCtx {}
 
 impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
-    fn start_bind(
+    async fn start_bind(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
@@ -1649,7 +1801,7 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
         entry.state = UdpSocketState::Bound { socket };
         Ok(Ok(()))
     }
-    fn finish_bind(
+    async fn finish_bind(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
@@ -1660,7 +1812,7 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
             Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
         }
     }
-    fn stream(
+    async fn stream(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
         remote_address: Option<wasi::sockets::network::IpSocketAddress>,
@@ -1702,7 +1854,7 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
         })?;
         Ok(Ok((in_stream, out_stream)))
     }
-    fn local_address(
+    async fn local_address(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
@@ -1716,7 +1868,7 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
             _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
         }
     }
-    fn remote_address(
+    async fn remote_address(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
@@ -1727,20 +1879,20 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
             None => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
         }
     }
-    fn address_family(
+    async fn address_family(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<wasi::sockets::network::IpAddressFamily> {
         let entry = self.table.get(&self_)?;
         Ok(entry.family)
     }
-    fn unicast_hop_limit(
+    async fn unicast_hop_limit(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u8, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.hop_limit))
     }
-    fn set_unicast_hop_limit(
+    async fn set_unicast_hop_limit(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
         value: u8,
@@ -1751,13 +1903,13 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
         self.table.get_mut(&self_)?.hop_limit = value;
         Ok(Ok(()))
     }
-    fn receive_buffer_size(
+    async fn receive_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.receive_buffer_size))
     }
-    fn set_receive_buffer_size(
+    async fn set_receive_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
         value: u64,
@@ -1768,13 +1920,13 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
         self.table.get_mut(&self_)?.receive_buffer_size = value;
         Ok(Ok(()))
     }
-    fn send_buffer_size(
+    async fn send_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(self.table.get(&self_)?.send_buffer_size))
     }
-    fn set_send_buffer_size(
+    async fn set_send_buffer_size(
         &mut self,
         self_: Resource<wasi::sockets::udp::UdpSocket>,
         value: u64,
@@ -1785,13 +1937,19 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
         self.table.get_mut(&self_)?.send_buffer_size = value;
         Ok(Ok(()))
     }
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let entry = match &self.table.get(&self_)?.state {
+            UdpSocketState::Bound { socket } => PollableEntry::UdpWritable {
+                socket: socket.clone_socket(),
+            },
+            _ => PollableEntry::AlwaysReady,
+        };
+        Ok(self.table.push(entry)?)
     }
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<()> {
@@ -1801,7 +1959,7 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
 }
 
 impl wasi::sockets::udp::HostIncomingDatagramStream for WasiCtx {
-    fn receive(
+    async fn receive(
         &mut self,
         self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
         max_results: u64,
@@ -1837,13 +1995,14 @@ impl wasi::sockets::udp::HostIncomingDatagramStream for WasiCtx {
             Err(e) => Ok(Err(net_err_to_wasi(e))),
         }
     }
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
+        self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let socket = self.table.get(&self_)?.socket.clone_socket();
+        Ok(self.table.push(PollableEntry::UdpReadable { socket })?)
     }
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::udp::IncomingDatagramStream>,
     ) -> Result<()> {
@@ -1853,13 +2012,13 @@ impl wasi::sockets::udp::HostIncomingDatagramStream for WasiCtx {
 }
 
 impl wasi::sockets::udp::HostOutgoingDatagramStream for WasiCtx {
-    fn check_send(
+    async fn check_send(
         &mut self,
         _self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
         Ok(Ok(64)) // Always ready.
     }
-    fn send(
+    async fn send(
         &mut self,
         self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
         datagrams: Vec<wasi::sockets::udp::OutgoingDatagram>,
@@ -1907,13 +2066,14 @@ impl wasi::sockets::udp::HostOutgoingDatagramStream for WasiCtx {
         }
         Ok(Ok(sent))
     }
-    fn subscribe(
+    async fn subscribe(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
+        self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        let socket = self.table.get(&self_)?.socket.clone_socket();
+        Ok(self.table.push(PollableEntry::UdpWritable { socket })?)
     }
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<()> {
@@ -1923,7 +2083,7 @@ impl wasi::sockets::udp::HostOutgoingDatagramStream for WasiCtx {
 }
 
 impl wasi::sockets::ip_name_lookup::Host for WasiCtx {
-    fn resolve_addresses(
+    async fn resolve_addresses(
         &mut self,
         _network: Resource<wasi::sockets::network::Network>,
         name: String,
@@ -1955,7 +2115,7 @@ impl wasi::sockets::ip_name_lookup::Host for WasiCtx {
 }
 
 impl wasi::sockets::ip_name_lookup::HostResolveAddressStream for WasiCtx {
-    fn resolve_next_address(
+    async fn resolve_next_address(
         &mut self,
         self_: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<
@@ -1979,13 +2139,13 @@ impl wasi::sockets::ip_name_lookup::HostResolveAddressStream for WasiCtx {
             }
         }
     }
-    fn subscribe(
+    async fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<Resource<PollableEntry>> {
-        Ok(self.table.push(PollableEntry)?)
+        Ok(self.table.push(PollableEntry::AlwaysReady)?)
     }
-    fn drop(
+    async fn drop(
         &mut self,
         rep: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<()> {
@@ -2104,19 +2264,19 @@ fn net_err_to_wasi(e: net::NetError) -> wasi::sockets::network::ErrorCode {
 impl wasi::graphics_context::graphics_context::Host for WasiCtx {}
 
 impl wasi::graphics_context::graphics_context::HostContext for WasiCtx {
-    fn new(&mut self) -> Result<Resource<GfxContext>> {
+    async fn new(&mut self) -> Result<Resource<GfxContext>> {
         let ctx = GfxContext { has_surface: false };
         Ok(self.table.push(ctx)?)
     }
 
-    fn get_current_buffer(
+    async fn get_current_buffer(
         &mut self,
         _self_: Resource<GfxContext>,
     ) -> Result<Resource<AbstractBuffer>> {
         Ok(self.table.push(AbstractBuffer)?)
     }
 
-    fn present(&mut self, self_: Resource<GfxContext>) -> Result<()> {
+    async fn present(&mut self, self_: Resource<GfxContext>) -> Result<()> {
         let ctx = self.table.get(&self_)?;
         if !ctx.has_surface {
             bail!("no surface connected to graphics context");
@@ -2143,14 +2303,14 @@ impl wasi::graphics_context::graphics_context::HostContext for WasiCtx {
         Ok(())
     }
 
-    fn drop(&mut self, rep: Resource<GfxContext>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<GfxContext>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
 }
 
 impl wasi::graphics_context::graphics_context::HostAbstractBuffer for WasiCtx {
-    fn drop(&mut self, rep: Resource<AbstractBuffer>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<AbstractBuffer>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -2161,11 +2321,11 @@ impl wasi::graphics_context::graphics_context::HostAbstractBuffer for WasiCtx {
 impl wasi::frame_buffer::frame_buffer::Host for WasiCtx {}
 
 impl wasi::frame_buffer::frame_buffer::HostDevice for WasiCtx {
-    fn new(&mut self) -> Result<Resource<FrameBufferDevice>> {
+    async fn new(&mut self) -> Result<Resource<FrameBufferDevice>> {
         Ok(self.table.push(FrameBufferDevice)?)
     }
 
-    fn connect_graphics_context(
+    async fn connect_graphics_context(
         &mut self,
         _self_: Resource<FrameBufferDevice>,
         _context: Resource<GfxContext>,
@@ -2175,14 +2335,14 @@ impl wasi::frame_buffer::frame_buffer::HostDevice for WasiCtx {
         Ok(())
     }
 
-    fn drop(&mut self, rep: Resource<FrameBufferDevice>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<FrameBufferDevice>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
 }
 
 impl wasi::frame_buffer::frame_buffer::HostBuffer for WasiCtx {
-    fn from_graphics_buffer(
+    async fn from_graphics_buffer(
         &mut self,
         buffer: Resource<AbstractBuffer>,
     ) -> Result<Resource<FrameBuffer>> {
@@ -2193,12 +2353,12 @@ impl wasi::frame_buffer::frame_buffer::HostBuffer for WasiCtx {
         Ok(self.table.push(fb)?)
     }
 
-    fn get(&mut self, self_: Resource<FrameBuffer>) -> Result<Vec<u8>> {
+    async fn get(&mut self, self_: Resource<FrameBuffer>) -> Result<Vec<u8>> {
         let fb = self.table.get(&self_)?;
         Ok(fb.data.clone())
     }
 
-    fn set(&mut self, self_: Resource<FrameBuffer>, val: Vec<u8>) -> Result<()> {
+    async fn set(&mut self, self_: Resource<FrameBuffer>, val: Vec<u8>) -> Result<()> {
         let fb = self.table.get_mut(&self_)?;
         fb.data = val.clone();
         // Also copy to the shared display pixel buffer for present().
@@ -2206,7 +2366,7 @@ impl wasi::frame_buffer::frame_buffer::HostBuffer for WasiCtx {
         Ok(())
     }
 
-    fn drop(&mut self, rep: Resource<FrameBuffer>) -> Result<()> {
+    async fn drop(&mut self, rep: Resource<FrameBuffer>) -> Result<()> {
         self.table.delete(rep)?;
         Ok(())
     }
@@ -2215,7 +2375,7 @@ impl wasi::frame_buffer::frame_buffer::HostBuffer for WasiCtx {
 // ── twizzler:gfx/surface ───────────────────────────────────────────
 
 impl twizzler::gfx::surface::Host for WasiCtx {
-    fn create(
+    async fn create(
         &mut self,
         context: Resource<GfxContext>,
         width: u32,
@@ -2240,6 +2400,22 @@ impl twizzler::gfx::surface::Host for WasiCtx {
             }
             Err(e) => Ok(Err(format!("failed to open window: {e:?}"))),
         }
+    }
+}
+
+// ── twizzler:input/input ────────────────────────────────────────────
+
+impl twizzler::input::input::Host for WasiCtx {
+    async fn poll_events(&mut self) -> Result<Vec<twizzler::input::input::InputEvent>> {
+        let events = crate::input::poll_events();
+        Ok(events
+            .into_iter()
+            .map(|e| twizzler::input::input::InputEvent {
+                event_type: e.event_type,
+                code: e.code,
+                value: e.value,
+            })
+            .collect())
     }
 }
 
@@ -2278,20 +2454,52 @@ fn add_wasi_to_linker(linker: &mut Linker<WasiCtx>) -> Result<()> {
     wasi::graphics_context::graphics_context::add_to_linker::<_, D>(linker, |t| t)?;
     wasi::frame_buffer::frame_buffer::add_to_linker::<_, D>(linker, |t| t)?;
     twizzler::gfx::surface::add_to_linker::<_, D>(linker, |t| t)?;
+    // Input events
+    twizzler::input::input::add_to_linker::<_, D>(linker, |t| t)?;
     Ok(())
+}
+
+// ── Minimal executor ────────────────────────────────────────────────
+
+/// Minimal single-threaded executor for driving wasmtime async futures.
+///
+/// Wasmtime's fiber support handles the actual suspension/resumption —
+/// this just polls the top-level future until completion.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn raw_waker() -> RawWaker {
+        fn no_op(_: *const ()) {}
+        fn clone(_: *const ()) -> RawWaker {
+            raw_waker()
+        }
+        let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
+        RawWaker::new(std::ptr::null(), vtable)
+    }
+
+    let waker = unsafe { Waker::from_raw(raw_waker()) };
+    let mut cx = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
 }
 
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Run a WASI P2 component (wasi:cli/command world).
+///
+/// Uses wasmtime's async support with Twizzler fiber stacks, enabling
+/// host functions to yield the fiber during I/O waits.
 pub fn run_wasi_component(component_bytes: &[u8]) -> Result<()> {
-    let mut config = Config::new();
-    config.memory_init_cow(false);
-    config.memory_reservation(0);
-    config.memory_guard_size(0);
-    config.memory_reservation_for_growth(0);
-    config.signals_based_traps(false);
+    // Try to initialize input device (non-fatal if not present).
+    crate::input::init();
 
+    let config = crate::wasmtime_config();
     let engine = Engine::new(&config)?;
     let component = Component::new(&engine, component_bytes)?;
 
@@ -2307,9 +2515,11 @@ pub fn run_wasi_component(component_bytes: &[u8]) -> Result<()> {
     };
     let mut store = Store::new(&engine, ctx);
 
-    let command = Command::instantiate(&mut store, &component, &linker)?;
-    match command.wasi_cli_run().call_run(&mut store)? {
-        Ok(()) => Ok(()),
-        Err(()) => bail!("WASI component returned error"),
-    }
+    block_on(async {
+        let command = Command::instantiate_async(&mut store, &component, &linker).await?;
+        match command.wasi_cli_run().call_run(&mut store).await? {
+            Ok(()) => Ok(()),
+            Err(()) => bail!("WASI component returned error"),
+        }
+    })
 }

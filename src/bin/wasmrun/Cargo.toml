@@ -10,6 +10,7 @@ wasmtime = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "19
     "wat",
     "custom-virtual-memory",
     "component-model",
+    "async",
 ] }
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
@@ -22,4 +23,5 @@ smoltcp = { version = "0.11.0", default-features = false, features = [
     "socket-dns", "proto-dns",
 ] }
 virtio-net = { path = "../../lib/virtio-net" }
+virtio-input = { path = "../../lib/virtio-input" }
 lazy_static = "1.5.0"

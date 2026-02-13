@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::cell::Cell;
 use std::sync::Mutex;
 
 use twizzler_abi::object::Protections;
@@ -159,17 +159,19 @@ pub unsafe extern "C-unwind" fn wasmtime_memory_image_map_at(
 pub unsafe extern "C-unwind" fn wasmtime_memory_image_free(_image: *mut c_void) {}
 
 // ---------------------------------------------------------------------------
-// Thread-local storage
+// Thread-local storage (per-thread for correct multi-thread support)
 // ---------------------------------------------------------------------------
 
-static WASMTIME_TLS: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+thread_local! {
+    static WASMTIME_TLS: Cell<*mut u8> = const { Cell::new(core::ptr::null_mut()) };
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn wasmtime_tls_get() -> *mut u8 {
-    WASMTIME_TLS.load(Ordering::Acquire)
+    WASMTIME_TLS.with(|c| c.get())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn wasmtime_tls_set(ptr: *mut u8) {
-    WASMTIME_TLS.store(ptr, Ordering::Release);
+    WASMTIME_TLS.with(|c| c.set(ptr));
 }

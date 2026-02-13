@@ -196,6 +196,35 @@ impl Core {
         self.socketset.remove(handle);
     }
 
+    // Non-blocking readiness checks (immutable access).
+
+    fn tcp_readable(&self, handle: SocketHandle, rx_shutdown: bool) -> bool {
+        let socket: &Socket = self.socketset.get(handle);
+        socket.can_recv() || !socket.may_recv() || rx_shutdown
+    }
+
+    fn tcp_writable(&self, handle: SocketHandle) -> bool {
+        let socket: &Socket = self.socketset.get(handle);
+        socket.can_send()
+    }
+
+    fn tcp_acceptable(&self, handles: &[SocketHandle]) -> bool {
+        handles.iter().any(|&h| {
+            let socket: &Socket = self.socketset.get(h);
+            socket.is_active()
+        })
+    }
+
+    fn udp_readable(&self, handle: SocketHandle) -> bool {
+        let socket: &smoltcp::socket::udp::Socket = self.socketset.get(handle);
+        socket.can_recv()
+    }
+
+    fn udp_writable(&self, handle: SocketHandle) -> bool {
+        let socket: &smoltcp::socket::udp::Socket = self.socketset.get(handle);
+        socket.can_send()
+    }
+
     fn poll(&mut self, waiter: &Condvar) -> bool {
         let res = self
             .iface
@@ -474,15 +503,34 @@ impl NetSocket {
             inner: self.inner.clone(),
         }
     }
+
+    /// Non-blocking check: can data be read (or has the peer closed)?
+    pub fn can_read(&self) -> bool {
+        let core = ENGINE.core.lock().unwrap();
+        core.tcp_readable(
+            self.inner.socket_handle,
+            self.inner.rx_shutdown.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Non-blocking check: can data be written?
+    pub fn can_write(&self) -> bool {
+        let core = ENGINE.core.lock().unwrap();
+        core.tcp_writable(self.inner.socket_handle)
+    }
 }
 
 // ── NetListener ──────────────────────────────────────────────────────
 
-/// A TCP listener backed by smoltcp.
-pub struct NetListener {
+struct NetListenerInner {
     listeners: Mutex<Vec<SocketHandle>>,
     local_addr: NetAddr,
     port: u16,
+}
+
+/// A TCP listener backed by smoltcp.
+pub struct NetListener {
+    inner: Arc<NetListenerInner>,
 }
 
 impl NetListener {
@@ -506,9 +554,11 @@ impl NetListener {
         }
 
         Ok(NetListener {
-            listeners: Mutex::new(listeners),
-            local_addr: local,
-            port,
+            inner: Arc::new(NetListenerInner {
+                listeners: Mutex::new(listeners),
+                local_addr: local,
+                port,
+            }),
         })
     }
 
@@ -520,7 +570,7 @@ impl NetListener {
             .blocking(|core| {
                 loop {
                     let result = {
-                        let listeners = self.listeners.lock().unwrap();
+                        let listeners = self.inner.listeners.lock().unwrap();
                         let handle = listeners[i];
                         let sock = core.get_mutable_socket(handle);
                         if sock.is_active() {
@@ -544,19 +594,19 @@ impl NetListener {
                             let tx_buffer = SocketBuffer::new(vec![0; TX_BUF_SIZE]);
                             Socket::new(rx_buffer, tx_buffer)
                         };
-                        if new_sock.listen(self.port).is_err() {
+                        if new_sock.listen(self.inner.port).is_err() {
                             return Err(std::io::Error::other("listen error on replacement"));
                         }
                         let new_handle = core.add_socket(new_sock);
 
                         // Swap handle in the listeners list
-                        let mut listeners = self.listeners.lock().unwrap();
+                        let mut listeners = self.inner.listeners.lock().unwrap();
                         listeners[i] = new_handle;
 
                         let stream = NetSocket {
                             inner: Arc::new(NetSocketInner {
                                 socket_handle: handle,
-                                port: self.port,
+                                port: self.inner.port,
                                 is_ephemeral_port: false,
                                 rx_shutdown: AtomicBool::new(false),
                             }),
@@ -576,7 +626,21 @@ impl NetListener {
 
     /// Get the local address.
     pub fn local_addr(&self) -> Result<NetAddr, NetError> {
-        Ok(self.local_addr)
+        Ok(self.inner.local_addr)
+    }
+
+    /// Clone the listener (shares the same underlying backlog).
+    pub fn clone_listener(&self) -> NetListener {
+        NetListener {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Check if any backlog socket has an active connection ready to accept.
+    pub fn can_accept(&self) -> bool {
+        let core = ENGINE.core.lock().unwrap();
+        let listeners = self.inner.listeners.lock().unwrap();
+        core.tcp_acceptable(&listeners)
     }
 }
 
@@ -721,6 +785,18 @@ impl NetUdpSocket {
             inner: self.inner.clone(),
         }
     }
+
+    /// Non-blocking check: is there data available to receive?
+    pub fn can_recv(&self) -> bool {
+        let core = ENGINE.core.lock().unwrap();
+        core.udp_readable(self.inner.socket_handle)
+    }
+
+    /// Non-blocking check: can data be sent?
+    pub fn can_send(&self) -> bool {
+        let core = ENGINE.core.lock().unwrap();
+        core.udp_writable(self.inner.socket_handle)
+    }
 }
 
 // ── DNS Resolution ──────────────────────────────────────────────
@@ -787,6 +863,31 @@ fn get_device_and_interface(
         .unwrap();
 
     (iface, device)
+}
+
+// ── Polling helpers for WASI async I/O ──────────────────────────────
+
+/// Wake the network polling thread so it processes pending data.
+pub fn trigger_poll() {
+    ENGINE.wake();
+}
+
+/// Block the calling thread until the network engine polls or `timeout` elapses.
+/// Returns `true` if woken by a network event, `false` on timeout.
+pub fn wait_for_network_event(timeout: Option<std::time::Duration>) -> bool {
+    let engine = &ENGINE;
+    engine.wake();
+    let core = engine.core.lock().unwrap();
+    match timeout {
+        Some(dur) => {
+            let (_core, result) = engine.waiter.wait_timeout(core, dur).unwrap();
+            !result.timed_out()
+        }
+        None => {
+            drop(engine.waiter.wait(core).unwrap());
+            true
+        }
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
