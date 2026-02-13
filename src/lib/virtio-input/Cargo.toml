@@ -1,0 +1,13 @@
+[package]
+name = "virtio-input"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-driver = { path = "../../lib/twizzler-driver" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+devmgr = { path = "../../lib/devmgr" }
+virtio-drivers = "0.12"
+volatile = { version = "0.5", features = ["unstable"] }
+tracing = "*"
+zerocopy = "*"

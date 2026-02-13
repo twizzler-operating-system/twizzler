@@ -58,6 +58,7 @@ members = [
     #"src/bin/randtest",
     #"src/bin/stdfs_demo",
     "src/lib/virtio-gpu",
+    "src/lib/virtio-input",
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
