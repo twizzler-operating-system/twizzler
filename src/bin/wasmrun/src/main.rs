@@ -6,6 +6,7 @@
 //!   wasmrun mandelbrot-gfx — run graphical Mandelbrot auto-zoom (WASI-GFX)
 //!   wasmrun test           — run comprehensive WASI P2 test suite
 //!   wasmrun test-net       — test UDP sockets and DNS resolution
+//!   wasmrun test-rename    — test file/namespace rename operations
 //!   wasmrun <path.wasm>    — run a WASI P1 module or P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
@@ -60,6 +61,14 @@ fn main() {
             match test_net() {
                 Ok(()) => println!("\nAll network tests passed!"),
                 Err(e) => eprintln!("\nNetwork test FAILED: {e:?}"),
+            }
+        }
+        Some("test-rename") => {
+            println!("=== Rename Tests ===");
+            println!();
+            match test_rename() {
+                Ok(()) => println!("\nAll rename tests passed!"),
+                Err(e) => eprintln!("\nRename test FAILED: {e:?}"),
             }
         }
         Some(path) => {
@@ -219,6 +228,152 @@ fn demo_wasi() -> Result<()> {
     println!("[4/4] WASI component: running embedded hello-world...");
     wasi::run_wasi_component(HELLO_WASI)?;
     println!("      OK");
+    Ok(())
+}
+
+/// Test file/namespace rename operations via the runtime ABI.
+fn test_rename() -> Result<()> {
+    use twizzler_rt_abi::fd;
+
+    // Use a unique namespace to avoid collisions with other data.
+    let ns = "/test_rename";
+    fd::twz_rt_fd_mkns(ns).map_err(|e| anyhow::anyhow!("mkns {ns}: {e:?}"))?;
+
+    // Test 1: Basic rename of a file
+    println!("[1/7] Basic rename: create file, rename, verify...");
+    let old = &format!("{ns}/alpha");
+    let new = &format!("{ns}/beta");
+    // Create a file at old path by opening with CREATE_KIND_NEW.
+    let create = twizzler_rt_abi::bindings::create_options {
+        id: Default::default(),
+        kind: twizzler_rt_abi::bindings::CREATE_KIND_NEW,
+    };
+    let rw = twizzler_rt_abi::bindings::OPEN_FLAG_READ | twizzler_rt_abi::bindings::OPEN_FLAG_WRITE;
+    let f = fd::twz_rt_fd_open(old, create, rw)
+        .map_err(|e| anyhow::anyhow!("create {old}: {e:?}"))?;
+    fd::twz_rt_fd_close(f);
+
+    fd::twz_rt_fd_rename(old, new).map_err(|e| anyhow::anyhow!("rename {old} -> {new}: {e:?}"))?;
+    // Old name should be gone.
+    let create_exist = twizzler_rt_abi::bindings::create_options {
+        id: Default::default(),
+        kind: twizzler_rt_abi::bindings::CREATE_KIND_EXISTING,
+    };
+    assert!(
+        fd::twz_rt_fd_open(old, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ).is_err(),
+        "old name should not exist after rename"
+    );
+    // New name should exist.
+    let f2 = fd::twz_rt_fd_open(new, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        .map_err(|e| anyhow::anyhow!("open {new} after rename: {e:?}"))?;
+    fd::twz_rt_fd_close(f2);
+    println!("      OK");
+
+    // Test 2: Rename to already-existing name should fail
+    println!("[2/7] Rename conflict: rename to existing name should fail...");
+    let other = &format!("{ns}/gamma");
+    let f3 = fd::twz_rt_fd_open(other, create, rw)
+        .map_err(|e| anyhow::anyhow!("create {other}: {e:?}"))?;
+    fd::twz_rt_fd_close(f3);
+    assert!(
+        fd::twz_rt_fd_rename(new, other).is_err(),
+        "rename to existing name should fail"
+    );
+    println!("      OK");
+
+    // Test 3: Rename non-existent source should fail
+    println!("[3/7] Rename missing: rename non-existent source should fail...");
+    assert!(
+        fd::twz_rt_fd_rename(&format!("{ns}/nonexistent"), &format!("{ns}/whatever")).is_err(),
+        "rename of non-existent source should fail"
+    );
+    println!("      OK");
+
+    // Test 4: Rename a symlink (moves the link, not the target)
+    println!("[4/7] Rename symlink: rename moves the link itself...");
+    let link_old = &format!("{ns}/link_old");
+    let link_new = &format!("{ns}/link_new");
+    fd::twz_rt_fd_symlink(link_old, "/some/target")
+        .map_err(|e| anyhow::anyhow!("symlink: {e:?}"))?;
+    fd::twz_rt_fd_rename(link_old, link_new)
+        .map_err(|e| anyhow::anyhow!("rename symlink: {e:?}"))?;
+    // Old symlink name should be gone.
+    assert!(
+        fd::twz_rt_fd_readlink(link_old, &mut [0u8; 256]).is_err(),
+        "old symlink name should not exist"
+    );
+    // New name should be a symlink pointing to the original target.
+    let mut buf = [0u8; 256];
+    let n =
+        fd::twz_rt_fd_readlink(link_new, &mut buf).map_err(|e| anyhow::anyhow!("readlink: {e:?}"))?;
+    let target = std::str::from_utf8(&buf[..n]).unwrap();
+    assert_eq!(target, "/some/target", "symlink target should be preserved");
+    println!("      target preserved: {target}");
+    println!("      OK");
+
+    // Test 5: Rename a namespace (directory)
+    println!("[5/7] Rename namespace: rename a directory entry...");
+    let dir_old = &format!("{ns}/dir_old");
+    let dir_new = &format!("{ns}/dir_new");
+    fd::twz_rt_fd_mkns(dir_old).map_err(|e| anyhow::anyhow!("mkns: {e:?}"))?;
+    fd::twz_rt_fd_rename(dir_old, dir_new)
+        .map_err(|e| anyhow::anyhow!("rename dir: {e:?}"))?;
+    // Creating a file inside the new name should work (the namespace still exists).
+    let child = &format!("{dir_new}/child");
+    let f4 = fd::twz_rt_fd_open(child, create, rw)
+        .map_err(|e| anyhow::anyhow!("create child in renamed dir: {e:?}"))?;
+    fd::twz_rt_fd_close(f4);
+    println!("      OK");
+
+    // Test 6: Rename across namespaces
+    println!("[6/7] Cross-namespace rename: move file between directories...");
+    let src_dir = &format!("{ns}/src_dir");
+    let dst_dir = &format!("{ns}/dst_dir");
+    fd::twz_rt_fd_mkns(src_dir).map_err(|e| anyhow::anyhow!("mkns src: {e:?}"))?;
+    fd::twz_rt_fd_mkns(dst_dir).map_err(|e| anyhow::anyhow!("mkns dst: {e:?}"))?;
+    let src_file = &format!("{src_dir}/moveme");
+    let dst_file = &format!("{dst_dir}/moved");
+    let f5 = fd::twz_rt_fd_open(src_file, create, rw)
+        .map_err(|e| anyhow::anyhow!("create src: {e:?}"))?;
+    fd::twz_rt_fd_close(f5);
+    fd::twz_rt_fd_rename(src_file, dst_file)
+        .map_err(|e| anyhow::anyhow!("cross-ns rename: {e:?}"))?;
+    assert!(
+        fd::twz_rt_fd_open(src_file, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+            .is_err(),
+        "source should not exist after cross-ns rename"
+    );
+    let f6 = fd::twz_rt_fd_open(dst_file, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        .map_err(|e| anyhow::anyhow!("open dst after cross-ns rename: {e:?}"))?;
+    fd::twz_rt_fd_close(f6);
+    println!("      OK");
+
+    // Test 7: Rename then rename back (round-trip)
+    println!("[7/7] Round-trip rename: rename A->B then B->A...");
+    let a = &format!("{ns}/round_a");
+    let b = &format!("{ns}/round_b");
+    let f7 = fd::twz_rt_fd_open(a, create, rw)
+        .map_err(|e| anyhow::anyhow!("create round_a: {e:?}"))?;
+    fd::twz_rt_fd_close(f7);
+    fd::twz_rt_fd_rename(a, b).map_err(|e| anyhow::anyhow!("rename a->b: {e:?}"))?;
+    fd::twz_rt_fd_rename(b, a).map_err(|e| anyhow::anyhow!("rename b->a: {e:?}"))?;
+    let f8 = fd::twz_rt_fd_open(a, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        .map_err(|e| anyhow::anyhow!("open round_a after round-trip: {e:?}"))?;
+    fd::twz_rt_fd_close(f8);
+    assert!(
+        fd::twz_rt_fd_open(b, create_exist, twizzler_rt_abi::bindings::OPEN_FLAG_READ).is_err(),
+        "round_b should not exist after round-trip rename"
+    );
+    println!("      OK");
+
+    // Cleanup
+    fd::twz_rt_fd_remove(new).ok();
+    fd::twz_rt_fd_remove(other).ok();
+    fd::twz_rt_fd_remove(link_new).ok();
+    fd::twz_rt_fd_remove(child).ok();
+    fd::twz_rt_fd_remove(dst_file).ok();
+    fd::twz_rt_fd_remove(a).ok();
+
     Ok(())
 }
 

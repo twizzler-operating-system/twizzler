@@ -13,7 +13,7 @@ use twizzler_abi::syscall::{
     KernelConsoleReadFlags, KernelConsoleSource, KernelConsoleWriteFlags,
 };
 use twizzler_rt_abi::error::TwzError;
-use twizzler_rt_abi::fd::{self, FdKind, NameEntry, RawFd};
+use twizzler_rt_abi::fd::{self, FdFlags, FdKind, NameEntry, RawFd};
 use twizzler_rt_abi::io::{IoCtx, IoFlags};
 
 use wasmtime::component::{Component, Linker, Resource, ResourceTable};
@@ -630,18 +630,33 @@ impl wasi::cli::terminal_output::HostTerminalOutput for WasiCtx {
 
 impl wasi::cli::terminal_stdin::Host for WasiCtx {
     fn get_terminal_stdin(&mut self) -> Result<Option<Resource<TerminalInput>>> {
-        Ok(None) // Not a real terminal.
+        if let Ok(info) = fd::twz_rt_fd_get_info(0) {
+            if info.flags.contains(FdFlags::IS_TERMINAL) {
+                return Ok(Some(self.table.push(TerminalInput)?));
+            }
+        }
+        Ok(None)
     }
 }
 
 impl wasi::cli::terminal_stdout::Host for WasiCtx {
     fn get_terminal_stdout(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
+        if let Ok(info) = fd::twz_rt_fd_get_info(1) {
+            if info.flags.contains(FdFlags::IS_TERMINAL) {
+                return Ok(Some(self.table.push(TerminalOutput)?));
+            }
+        }
         Ok(None)
     }
 }
 
 impl wasi::cli::terminal_stderr::Host for WasiCtx {
     fn get_terminal_stderr(&mut self) -> Result<Option<Resource<TerminalOutput>>> {
+        if let Ok(info) = fd::twz_rt_fd_get_info(2) {
+            if info.flags.contains(FdFlags::IS_TERMINAL) {
+                return Ok(Some(self.table.push(TerminalOutput)?));
+            }
+        }
         Ok(None)
     }
 }
@@ -1050,12 +1065,19 @@ impl wasi::filesystem::types::HostDescriptor for WasiCtx {
 
     fn rename_at(
         &mut self,
-        _desc: Resource<DescriptorEntry>,
-        _old_path: String,
-        _new_desc: Resource<DescriptorEntry>,
-        _new_path: String,
+        desc: Resource<DescriptorEntry>,
+        old_path: String,
+        new_desc: Resource<DescriptorEntry>,
+        new_path: String,
     ) -> Result<Result<(), ErrorCode>> {
-        Ok(Err(ErrorCode::Unsupported))
+        let old_entry = self.table.get(&desc)?;
+        let old_full = join_path(&old_entry.path, &old_path);
+        let new_entry = self.table.get(&new_desc)?;
+        let new_full = join_path(&new_entry.path, &new_path);
+        match fd::twz_rt_fd_rename(&old_full, &new_full) {
+            Ok(()) => Ok(Ok(())),
+            Err(e) => Ok(Err(twz_err_to_wasi(e))),
+        }
     }
 
     fn symlink_at(

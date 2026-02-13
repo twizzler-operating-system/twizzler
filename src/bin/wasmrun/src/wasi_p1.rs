@@ -1599,14 +1599,42 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
     linker.func_wrap(
         ns,
         "path_rename",
-        |_: Caller<'_, WasiP1Ctx>,
-         _fd: i32,
-         _opp: i32,
-         _opl: i32,
-         _nfd: i32,
-         _npp: i32,
-         _npl: i32|
-         -> i32 { ERRNO_NOTSUP },
+        |mut caller: Caller<'_, WasiP1Ctx>,
+         old_fd: i32,
+         old_path_ptr: i32,
+         old_path_len: i32,
+         new_fd: i32,
+         new_path_ptr: i32,
+         new_path_len: i32|
+         -> i32 {
+            let mem = match get_mem(&mut caller) {
+                Some(m) => m,
+                None => return ERRNO_IO,
+            };
+            let old_base = match caller.data().get_fd(old_fd) {
+                Some(P1Fd::Dir { path, .. }) => path.clone(),
+                _ => return ERRNO_BADF,
+            };
+            let new_base = match caller.data().get_fd(new_fd) {
+                Some(P1Fd::Dir { path, .. }) => path.clone(),
+                _ => return ERRNO_BADF,
+            };
+            let old_rel = match guest_string(&mem, &mut caller, old_path_ptr, old_path_len) {
+                Some(s) => s,
+                None => return ERRNO_FAULT,
+            };
+            let new_rel = match guest_string(&mem, &mut caller, new_path_ptr, new_path_len) {
+                Some(s) => s,
+                None => return ERRNO_FAULT,
+            };
+            match fd::twz_rt_fd_rename(
+                &join_path(&old_base, &old_rel),
+                &join_path(&new_base, &new_rel),
+            ) {
+                Ok(()) => ERRNO_SUCCESS,
+                Err(e) => twz_err_to_errno(e),
+            }
+        },
     )?;
 
     // ── poll_oneoff ─────────────────────────────────────────────
