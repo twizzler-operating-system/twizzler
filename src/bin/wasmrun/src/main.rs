@@ -5,6 +5,7 @@
 //!   wasmrun mandelbrot     — run interactive Mandelbrot (ANSI terminal)
 //!   wasmrun mandelbrot-gfx — run graphical Mandelbrot auto-zoom (WASI-GFX)
 //!   wasmrun test           — run comprehensive WASI P2 test suite
+//!   wasmrun test-net       — test UDP sockets and DNS resolution
 //!   wasmrun <path.wasm>    — run a WASI P1 module or P2 component from file
 
 // Pull in the platform callbacks so they are linked into the binary.
@@ -51,6 +52,14 @@ fn main() {
             match wasi::run_wasi_component(WASI_TESTS) {
                 Ok(()) => {}
                 Err(e) => eprintln!("Error: {e:?}"),
+            }
+        }
+        Some("test-net") => {
+            println!("=== Network Tests (UDP + DNS) ===");
+            println!();
+            match test_net() {
+                Ok(()) => println!("\nAll network tests passed!"),
+                Err(e) => eprintln!("\nNetwork test FAILED: {e:?}"),
             }
         }
         Some(path) => {
@@ -210,5 +219,60 @@ fn demo_wasi() -> Result<()> {
     println!("[4/4] WASI component: running embedded hello-world...");
     wasi::run_wasi_component(HELLO_WASI)?;
     println!("      OK");
+    Ok(())
+}
+
+/// Test UDP sockets and DNS resolution via the net module.
+fn test_net() -> Result<()> {
+    use smoltcp::wire::IpAddress;
+    use std::str::FromStr;
+
+    let map_err = |e: net::NetError| anyhow::anyhow!("{e:?}");
+
+    // Test 1: UDP socket bind
+    println!("[1/4] UDP bind: binding socket to ephemeral port...");
+    let addr = net::NetAddr {
+        ip: IpAddress::from_str("0.0.0.0").unwrap(),
+        port: 0,
+    };
+    let sock = net::NetUdpSocket::bind(addr).map_err(map_err)?;
+    let local = sock.local_addr().map_err(map_err)?;
+    println!("      bound to port {}", local.port);
+    assert!(local.port >= 49152, "expected ephemeral port, got {}", local.port);
+    println!("      OK");
+
+    // Test 2: UDP send (fire-and-forget to DNS server port 53)
+    println!("[2/4] UDP send: sending packet to 10.0.2.3:53...");
+    let remote = net::NetAddr {
+        ip: IpAddress::from_str("10.0.2.3").unwrap(),
+        port: 53,
+    };
+    let payload = b"hello-udp-test";
+    let n = sock.send_to(payload, remote).map_err(map_err)?;
+    assert_eq!(n, payload.len(), "expected to send {} bytes, sent {}", payload.len(), n);
+    println!("      sent {} bytes", n);
+    println!("      OK");
+
+    // Test 3: Second UDP socket (bind to specific port)
+    println!("[3/4] UDP bind: binding socket to specific port 9999...");
+    let addr2 = net::NetAddr {
+        ip: IpAddress::from_str("10.0.2.15").unwrap(),
+        port: 9999,
+    };
+    let sock2 = net::NetUdpSocket::bind(addr2).map_err(map_err)?;
+    let local2 = sock2.local_addr().map_err(map_err)?;
+    assert_eq!(local2.port, 9999, "expected port 9999, got {}", local2.port);
+    println!("      bound to 10.0.2.15:{}", local2.port);
+    println!("      OK");
+    drop(sock2);
+    drop(sock);
+
+    // Test 4: DNS resolution
+    println!("[4/4] DNS resolve: resolving 'google.com' via 10.0.2.3...");
+    let addrs = net::resolve_dns("google.com").map_err(map_err)?;
+    println!("      resolved to: {:?}", addrs);
+    assert!(!addrs.is_empty(), "expected at least one address");
+    println!("      OK");
+
     Ok(())
 }

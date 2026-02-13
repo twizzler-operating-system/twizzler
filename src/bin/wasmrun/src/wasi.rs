@@ -1,9 +1,9 @@
 //! WASI Preview 2 (component model) for Twizzler — synchronous implementation.
 //!
 //! Implements wasi:io, wasi:clocks, wasi:cli, wasi:random, wasi:filesystem,
-//! wasi:sockets (TCP), and the WASI-GFX interfaces (wasi:graphics-context,
+//! wasi:sockets (TCP, UDP, DNS), and the WASI-GFX interfaces (wasi:graphics-context,
 //! wasi:frame-buffer) backed by Twizzler runtime APIs and userspace smoltcp
-//! networking. UDP sockets and DNS are not yet supported.
+//! networking.
 
 use anyhow::{bail, Result};
 use core::mem::MaybeUninit;
@@ -108,6 +108,40 @@ pub struct TcpSocketEntry {
     send_buffer_size: u64,
 }
 
+/// UDP socket state machine.
+pub enum UdpSocketState {
+    Unbound,
+    Bound { socket: net::NetUdpSocket },
+}
+
+/// Backing type for wasi:sockets/udp/udp-socket.
+pub struct UdpSocketEntry {
+    state: UdpSocketState,
+    family: wasi::sockets::network::IpAddressFamily,
+    remote_address: Option<net::NetAddr>,
+    hop_limit: u8,
+    receive_buffer_size: u64,
+    send_buffer_size: u64,
+}
+
+/// Backing type for wasi:sockets/udp/incoming-datagram-stream.
+pub struct IncomingDatagramStreamEntry {
+    socket: net::NetUdpSocket,
+    remote_address: Option<net::NetAddr>,
+}
+
+/// Backing type for wasi:sockets/udp/outgoing-datagram-stream.
+pub struct OutgoingDatagramStreamEntry {
+    socket: net::NetUdpSocket,
+    remote_address: Option<net::NetAddr>,
+}
+
+/// Backing type for wasi:sockets/ip-name-lookup/resolve-address-stream.
+pub struct ResolveAddressStreamEntry {
+    addresses: Vec<smoltcp::wire::IpAddress>,
+    index: usize,
+}
+
 // ── Bindgen ─────────────────────────────────────────────────────────
 
 wasmtime::component::bindgen!({
@@ -129,6 +163,10 @@ wasmtime::component::bindgen!({
         "wasi:frame-buffer/frame-buffer/buffer": FrameBuffer,
         "wasi:sockets/network/network": NetworkEntry,
         "wasi:sockets/tcp/tcp-socket": TcpSocketEntry,
+        "wasi:sockets/udp/udp-socket": UdpSocketEntry,
+        "wasi:sockets/udp/incoming-datagram-stream": IncomingDatagramStreamEntry,
+        "wasi:sockets/udp/outgoing-datagram-stream": OutgoingDatagramStreamEntry,
+        "wasi:sockets/ip-name-lookup/resolve-address-stream": ResolveAddressStreamEntry,
     },
 });
 
@@ -1547,10 +1585,21 @@ impl wasi::sockets::tcp::HostTcpSocket for WasiCtx {
 impl wasi::sockets::udp_create_socket::Host for WasiCtx {
     fn create_udp_socket(
         &mut self,
-        _address_family: wasi::sockets::network::IpAddressFamily,
+        address_family: wasi::sockets::network::IpAddressFamily,
     ) -> Result<Result<Resource<wasi::sockets::udp::UdpSocket>, wasi::sockets::network::ErrorCode>>
     {
-        Ok(Err(wasi::sockets::network::ErrorCode::NotSupported))
+        if matches!(address_family, wasi::sockets::network::IpAddressFamily::Ipv6) {
+            return Ok(Err(wasi::sockets::network::ErrorCode::NotSupported));
+        }
+        let entry = UdpSocketEntry {
+            state: UdpSocketState::Unbound,
+            family: address_family,
+            remote_address: None,
+            hop_limit: 64,
+            receive_buffer_size: 65536,
+            send_buffer_size: 65536,
+        };
+        Ok(Ok(self.table.push(entry)?))
     }
 }
 
@@ -1559,22 +1608,40 @@ impl wasi::sockets::udp::Host for WasiCtx {}
 impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
     fn start_bind(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
         _network: Resource<wasi::sockets::network::Network>,
-        _local_address: wasi::sockets::network::IpSocketAddress,
+        local_address: wasi::sockets::network::IpSocketAddress,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        let entry = self.table.get_mut(&self_)?;
+        if !matches!(entry.state, UdpSocketState::Unbound) {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState));
+        }
+        let addr = match wasi_addr_to_net(&local_address) {
+            Ok(a) => a,
+            Err(e) => return Ok(Err(e)),
+        };
+        let socket = match net::NetUdpSocket::bind(addr) {
+            Ok(s) => s,
+            Err(e) => return Ok(Err(net_err_to_wasi(e))),
+        };
+        entry.state = UdpSocketState::Bound { socket };
+        Ok(Ok(()))
     }
     fn finish_bind(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        let entry = self.table.get(&self_)?;
+        if matches!(entry.state, UdpSocketState::Bound { .. }) {
+            Ok(Ok(()))
+        } else {
+            Ok(Err(wasi::sockets::network::ErrorCode::NotInProgress))
+        }
     }
     fn stream(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
-        _remote_address: Option<wasi::sockets::network::IpSocketAddress>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
+        remote_address: Option<wasi::sockets::network::IpSocketAddress>,
     ) -> Result<
         Result<
             (
@@ -1584,102 +1651,182 @@ impl wasi::sockets::udp::HostUdpSocket for WasiCtx {
             wasi::sockets::network::ErrorCode,
         >,
     > {
-        bail!("unreachable: udp socket not created")
+        let remote = match remote_address {
+            Some(ref addr) => match wasi_addr_to_net(addr) {
+                Ok(a) => Some(a),
+                Err(e) => return Ok(Err(e)),
+            },
+            None => None,
+        };
+
+        let socket = {
+            let entry = self.table.get_mut(&self_)?;
+            match &entry.state {
+                UdpSocketState::Bound { socket } => {
+                    entry.remote_address = remote;
+                    socket.clone_socket()
+                }
+                _ => return Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+            }
+        };
+
+        let in_stream = self.table.push(IncomingDatagramStreamEntry {
+            socket: socket.clone_socket(),
+            remote_address: remote,
+        })?;
+        let out_stream = self.table.push(OutgoingDatagramStreamEntry {
+            socket,
+            remote_address: remote,
+        })?;
+        Ok(Ok((in_stream, out_stream)))
     }
     fn local_address(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: udp socket not created")
+        let entry = self.table.get(&self_)?;
+        match &entry.state {
+            UdpSocketState::Bound { socket } => match socket.local_addr() {
+                Ok(a) => Ok(Ok(net_addr_to_wasi(&a))),
+                Err(e) => Ok(Err(net_err_to_wasi(e))),
+            },
+            _ => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        }
     }
     fn remote_address(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<wasi::sockets::network::IpSocketAddress, wasi::sockets::network::ErrorCode>>
     {
-        bail!("unreachable: udp socket not created")
+        let entry = self.table.get(&self_)?;
+        match entry.remote_address {
+            Some(ref addr) => Ok(Ok(net_addr_to_wasi(addr))),
+            None => Ok(Err(wasi::sockets::network::ErrorCode::InvalidState)),
+        }
     }
     fn address_family(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<wasi::sockets::network::IpAddressFamily> {
-        bail!("unreachable: udp socket not created")
+        let entry = self.table.get(&self_)?;
+        Ok(entry.family)
     }
     fn unicast_hop_limit(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u8, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        Ok(Ok(self.table.get(&self_)?.hop_limit))
     }
     fn set_unicast_hop_limit(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
-        _value: u8,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
+        value: u8,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.hop_limit = value;
+        Ok(Ok(()))
     }
     fn receive_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        Ok(Ok(self.table.get(&self_)?.receive_buffer_size))
     }
     fn set_receive_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
-        _value: u64,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
+        value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.receive_buffer_size = value;
+        Ok(Ok(()))
     }
     fn send_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        Ok(Ok(self.table.get(&self_)?.send_buffer_size))
     }
     fn set_send_buffer_size(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::UdpSocket>,
-        _value: u64,
+        self_: Resource<wasi::sockets::udp::UdpSocket>,
+        value: u64,
     ) -> Result<Result<(), wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        if value == 0 {
+            return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+        }
+        self.table.get_mut(&self_)?.send_buffer_size = value;
+        Ok(Ok(()))
     }
     fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<Resource<PollableEntry>> {
-        bail!("unreachable: udp socket not created")
+        Ok(self.table.push(PollableEntry)?)
     }
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::udp::UdpSocket>,
+        rep: Resource<wasi::sockets::udp::UdpSocket>,
     ) -> Result<()> {
-        bail!("unreachable: udp socket not created")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 
 impl wasi::sockets::udp::HostIncomingDatagramStream for WasiCtx {
     fn receive(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
-        _max_results: u64,
+        self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
+        max_results: u64,
     ) -> Result<
         Result<Vec<wasi::sockets::udp::IncomingDatagram>, wasi::sockets::network::ErrorCode>,
     > {
-        bail!("unreachable: udp socket not created")
+        if max_results == 0 {
+            return Ok(Ok(Vec::new()));
+        }
+
+        // Clone socket to avoid holding table borrow across blocking I/O.
+        let (socket, remote_filter) = {
+            let entry = self.table.get(&self_)?;
+            (entry.socket.clone_socket(), entry.remote_address)
+        };
+
+        // Do a blocking receive for the first datagram.
+        let mut buf = vec![0u8; 65536];
+        match socket.recv_from(&mut buf) {
+            Ok((len, remote)) => {
+                // If in connected mode, verify the source matches.
+                if let Some(filter) = remote_filter {
+                    if remote.ip != filter.ip || remote.port != filter.port {
+                        return Ok(Ok(Vec::new()));
+                    }
+                }
+                buf.truncate(len);
+                Ok(Ok(vec![wasi::sockets::udp::IncomingDatagram {
+                    data: buf,
+                    remote_address: net_addr_to_wasi(&remote),
+                }]))
+            }
+            Err(e) => Ok(Err(net_err_to_wasi(e))),
+        }
     }
     fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::udp::IncomingDatagramStream>,
     ) -> Result<Resource<PollableEntry>> {
-        bail!("unreachable: udp socket not created")
+        Ok(self.table.push(PollableEntry)?)
     }
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::udp::IncomingDatagramStream>,
+        rep: Resource<wasi::sockets::udp::IncomingDatagramStream>,
     ) -> Result<()> {
-        bail!("unreachable: udp socket not created")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 
@@ -1688,26 +1835,68 @@ impl wasi::sockets::udp::HostOutgoingDatagramStream for WasiCtx {
         &mut self,
         _self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        Ok(Ok(64)) // Always ready.
     }
     fn send(
         &mut self,
-        _self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
-        _datagrams: Vec<wasi::sockets::udp::OutgoingDatagram>,
+        self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
+        datagrams: Vec<wasi::sockets::udp::OutgoingDatagram>,
     ) -> Result<Result<u64, wasi::sockets::network::ErrorCode>> {
-        bail!("unreachable: udp socket not created")
+        if datagrams.is_empty() {
+            return Ok(Ok(0));
+        }
+
+        let (socket, default_remote) = {
+            let entry = self.table.get(&self_)?;
+            (entry.socket.clone_socket(), entry.remote_address)
+        };
+
+        let mut sent = 0u64;
+        for dg in &datagrams {
+            let remote = match &dg.remote_address {
+                Some(addr) => match wasi_addr_to_net(addr) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        if sent > 0 {
+                            return Ok(Ok(sent));
+                        }
+                        return Ok(Err(e));
+                    }
+                },
+                None => match default_remote {
+                    Some(r) => r,
+                    None => {
+                        if sent > 0 {
+                            return Ok(Ok(sent));
+                        }
+                        return Ok(Err(wasi::sockets::network::ErrorCode::InvalidArgument));
+                    }
+                },
+            };
+            match socket.send_to(&dg.data, remote) {
+                Ok(_) => sent += 1,
+                Err(e) => {
+                    if sent > 0 {
+                        return Ok(Ok(sent));
+                    }
+                    return Ok(Err(net_err_to_wasi(e)));
+                }
+            }
+        }
+        Ok(Ok(sent))
     }
     fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<Resource<PollableEntry>> {
-        bail!("unreachable: udp socket not created")
+        Ok(self.table.push(PollableEntry)?)
     }
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
+        rep: Resource<wasi::sockets::udp::OutgoingDatagramStream>,
     ) -> Result<()> {
-        bail!("unreachable: udp socket not created")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 
@@ -1715,37 +1904,71 @@ impl wasi::sockets::ip_name_lookup::Host for WasiCtx {
     fn resolve_addresses(
         &mut self,
         _network: Resource<wasi::sockets::network::Network>,
-        _name: String,
+        name: String,
     ) -> Result<
         Result<
             Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
             wasi::sockets::network::ErrorCode,
         >,
     > {
-        Ok(Err(wasi::sockets::network::ErrorCode::NotSupported))
+        use std::str::FromStr;
+
+        // If the name is already an IP address, just parse it.
+        let addresses = if let Ok(ip) = smoltcp::wire::Ipv4Address::from_str(&name) {
+            vec![smoltcp::wire::IpAddress::Ipv4(ip)]
+        } else {
+            // Perform DNS resolution (blocking).
+            match net::resolve_dns(&name) {
+                Ok(addrs) => addrs,
+                Err(e) => return Ok(Err(net_err_to_wasi(e))),
+            }
+        };
+
+        let entry = ResolveAddressStreamEntry {
+            addresses,
+            index: 0,
+        };
+        Ok(Ok(self.table.push(entry)?))
     }
 }
 
 impl wasi::sockets::ip_name_lookup::HostResolveAddressStream for WasiCtx {
     fn resolve_next_address(
         &mut self,
-        _self_: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
+        self_: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<
         Result<Option<wasi::sockets::network::IpAddress>, wasi::sockets::network::ErrorCode>,
     > {
-        bail!("unreachable: resolve not started")
+        let entry = self.table.get_mut(&self_)?;
+        if entry.index >= entry.addresses.len() {
+            return Ok(Ok(None));
+        }
+        let addr = entry.addresses[entry.index];
+        entry.index += 1;
+        match addr {
+            smoltcp::wire::IpAddress::Ipv4(v4) => {
+                Ok(Ok(Some(wasi::sockets::network::IpAddress::Ipv4((
+                    v4.0[0], v4.0[1], v4.0[2], v4.0[3],
+                )))))
+            }
+            _ => {
+                // Skip IPv6 addresses (not supported).
+                Ok(Ok(None))
+            }
+        }
     }
     fn subscribe(
         &mut self,
         _self_: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<Resource<PollableEntry>> {
-        bail!("unreachable: resolve not started")
+        Ok(self.table.push(PollableEntry)?)
     }
     fn drop(
         &mut self,
-        _rep: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
+        rep: Resource<wasi::sockets::ip_name_lookup::ResolveAddressStream>,
     ) -> Result<()> {
-        bail!("unreachable: resolve not started")
+        self.table.delete(rep)?;
+        Ok(())
     }
 }
 

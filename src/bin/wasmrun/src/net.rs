@@ -15,7 +15,7 @@ use smoltcp::phy::{Device, Medium};
 use smoltcp::socket::tcp::{ConnectError, Socket, State};
 use smoltcp::storage::RingBuffer;
 use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint, Ipv4Address};
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -27,6 +27,10 @@ const TX_BUF_SIZE: usize = 8192;
 const BACKLOG: usize = 8;
 const EPHEMERAL_START: u16 = 49152;
 const EPHEMERAL_END: u16 = 65535;
+const UDP_RX_SLOTS: usize = 16;
+const UDP_TX_SLOTS: usize = 16;
+const UDP_PAYLOAD_SIZE: usize = 2048;
+const DNS_SERVER: &str = "10.0.2.3";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -128,16 +132,28 @@ struct Core {
     socketset: SocketSet<'static>,
     iface: Interface,
     device: DeviceWrapper<TwizzlerTransport>,
+    dns_handle: SocketHandle,
 }
 
 type SocketBuffer<'a> = RingBuffer<'a, u8>;
+type UdpPacketBuffer<'a> =
+    smoltcp::storage::PacketBuffer<'a, smoltcp::socket::udp::UdpMetadata>;
 
 impl Core {
     fn new(iface: Interface, device: DeviceWrapper<TwizzlerTransport>) -> Self {
+        use std::str::FromStr;
+        let mut socketset = SocketSet::new(Vec::new());
+
+        // Create a persistent DNS socket with 1 query slot.
+        let dns_servers = &[IpAddress::from_str(DNS_SERVER).unwrap()];
+        let dns_socket = smoltcp::socket::dns::Socket::new(dns_servers, vec![]);
+        let dns_handle = socketset.add(dns_socket);
+
         Self {
-            socketset: SocketSet::new(Vec::new()),
+            socketset,
             device,
             iface,
+            dns_handle,
         }
     }
 
@@ -145,8 +161,35 @@ impl Core {
         self.socketset.add(sock)
     }
 
+    fn add_udp_socket(&mut self, sock: smoltcp::socket::udp::Socket<'static>) -> SocketHandle {
+        self.socketset.add(sock)
+    }
+
     fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
+    }
+
+    fn get_mutable_udp_socket(
+        &mut self,
+        handle: SocketHandle,
+    ) -> &mut smoltcp::socket::udp::Socket<'static> {
+        self.socketset.get_mut(handle)
+    }
+
+    fn get_mutable_dns_socket(
+        &mut self,
+    ) -> &mut smoltcp::socket::dns::Socket<'static> {
+        self.socketset.get_mut(self.dns_handle)
+    }
+
+    fn start_dns_query(
+        &mut self,
+        name: &str,
+        query_type: smoltcp::wire::DnsQueryType,
+    ) -> Result<smoltcp::socket::dns::QueryHandle, smoltcp::socket::dns::StartQueryError> {
+        let cx = self.iface.context();
+        let dns: &mut smoltcp::socket::dns::Socket = self.socketset.get_mut(self.dns_handle);
+        dns.start_query(cx, name, query_type)
     }
 
     fn release_socket(&mut self, handle: SocketHandle) {
@@ -535,6 +578,183 @@ impl NetListener {
     pub fn local_addr(&self) -> Result<NetAddr, NetError> {
         Ok(self.local_addr)
     }
+}
+
+// ── NetUdpSocket ─────────────────────────────────────────────────
+
+struct NetUdpInner {
+    socket_handle: SocketHandle,
+    local_addr: NetAddr,
+    port: u16,
+    is_ephemeral_port: bool,
+}
+
+impl Drop for NetUdpInner {
+    fn drop(&mut self) {
+        let engine = &ENGINE;
+        let mut core = engine.core.lock().unwrap();
+        core.release_socket(self.socket_handle);
+        if self.is_ephemeral_port {
+            PORTS.return_port(self.port);
+        }
+    }
+}
+
+/// A UDP socket backed by smoltcp.
+pub struct NetUdpSocket {
+    inner: Arc<NetUdpInner>,
+}
+
+impl NetUdpSocket {
+    /// Bind a UDP socket to the given local address.
+    pub fn bind(local: NetAddr) -> Result<NetUdpSocket, NetError> {
+        let engine = &ENGINE;
+        let ports = &PORTS;
+
+        let (port, is_ephemeral) = if local.port == 0 {
+            let p = ports
+                .get_ephemeral_port()
+                .ok_or(NetError::PortExhaustion)?;
+            (p, true)
+        } else {
+            (local.port, false)
+        };
+
+        let rx_buffer = UdpPacketBuffer::new(
+            vec![smoltcp::socket::udp::PacketMetadata::EMPTY; UDP_RX_SLOTS],
+            vec![0; UDP_RX_SLOTS * UDP_PAYLOAD_SIZE],
+        );
+        let tx_buffer = UdpPacketBuffer::new(
+            vec![smoltcp::socket::udp::PacketMetadata::EMPTY; UDP_TX_SLOTS],
+            vec![0; UDP_TX_SLOTS * UDP_PAYLOAD_SIZE],
+        );
+        let mut sock = smoltcp::socket::udp::Socket::new(rx_buffer, tx_buffer);
+
+        let endpoint = IpListenEndpoint {
+            addr: if local.ip == IpAddress::from(Ipv4Address::UNSPECIFIED) {
+                None
+            } else {
+                Some(local.ip)
+            },
+            port,
+        };
+
+        if sock.bind(endpoint).is_err() {
+            if is_ephemeral {
+                ports.return_port(port);
+            }
+            return Err(NetError::AddrInUse);
+        }
+
+        let handle = engine.core.lock().unwrap().add_udp_socket(sock);
+        engine.wake();
+
+        Ok(NetUdpSocket {
+            inner: Arc::new(NetUdpInner {
+                socket_handle: handle,
+                local_addr: NetAddr { ip: local.ip, port },
+                port,
+                is_ephemeral_port: is_ephemeral,
+            }),
+        })
+    }
+
+    /// Send data to a remote endpoint (blocking).
+    pub fn send_to(&self, buf: &[u8], remote: NetAddr) -> Result<usize, NetError> {
+        let engine = &ENGINE;
+        let endpoint = IpEndpoint::new(remote.ip, remote.port);
+        engine
+            .blocking(|core| {
+                let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
+                if socket.can_send() {
+                    match socket.send_slice(buf, endpoint) {
+                        Ok(()) => Ok(buf.len()),
+                        Err(smoltcp::socket::udp::SendError::Unaddressable) => {
+                            Err(std::io::Error::new(
+                                ErrorKind::AddrNotAvailable,
+                                "unaddressable",
+                            ))
+                        }
+                        Err(smoltcp::socket::udp::SendError::BufferFull) => {
+                            Err(ErrorKind::WouldBlock.into())
+                        }
+                    }
+                } else {
+                    Err(ErrorKind::WouldBlock.into())
+                }
+            })
+            .map_err(io_err_to_net)
+    }
+
+    /// Receive data from the socket (blocking). Returns (bytes_read, remote_addr).
+    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, NetAddr), NetError> {
+        let engine = &ENGINE;
+        engine
+            .blocking(|core| {
+                let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
+                if socket.can_recv() {
+                    match socket.recv_slice(buf) {
+                        Ok((len, meta)) => Ok((
+                            len,
+                            NetAddr {
+                                ip: meta.endpoint.addr,
+                                port: meta.endpoint.port,
+                            },
+                        )),
+                        Err(_) => Err(ErrorKind::WouldBlock.into()),
+                    }
+                } else {
+                    Err(ErrorKind::WouldBlock.into())
+                }
+            })
+            .map_err(io_err_to_net)
+    }
+
+    /// Get the local address.
+    pub fn local_addr(&self) -> Result<NetAddr, NetError> {
+        Ok(self.inner.local_addr)
+    }
+
+    /// Clone the socket (shares the same underlying connection).
+    pub fn clone_socket(&self) -> NetUdpSocket {
+        NetUdpSocket {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+// ── DNS Resolution ──────────────────────────────────────────────
+
+/// Resolve a hostname to a list of IP addresses using smoltcp's DNS socket.
+pub fn resolve_dns(name: &str) -> Result<Vec<IpAddress>, NetError> {
+    use smoltcp::socket::dns::GetQueryResultError;
+    use smoltcp::wire::DnsQueryType;
+
+    let engine = &ENGINE;
+
+    // Start the query.
+    // We need iface context and dns socket from the same Core, so use a helper.
+    let query_handle = {
+        let mut core = engine.core.lock().unwrap();
+        core.start_dns_query(name, DnsQueryType::A)
+            .map_err(|e| NetError::Other(format!("DNS start_query failed: {e:?}")))?
+    };
+
+    // Poll until the query completes
+    engine
+        .blocking(|core| {
+            core.poll(&engine.waiter);
+            let dns = core.get_mutable_dns_socket();
+            match dns.get_query_result(query_handle) {
+                Ok(addrs) => Ok(addrs.into_iter().collect()),
+                Err(GetQueryResultError::Pending) => Err(ErrorKind::WouldBlock.into()),
+                Err(GetQueryResultError::Failed) => Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "DNS resolution failed",
+                )),
+            }
+        })
+        .map_err(io_err_to_net)
 }
 
 // ── Device Initialization ────────────────────────────────────────────

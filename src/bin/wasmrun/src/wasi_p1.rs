@@ -45,6 +45,7 @@ const FILETYPE_UNKNOWN: u8 = 0;
 const FILETYPE_CHARACTER_DEVICE: u8 = 2;
 const FILETYPE_DIRECTORY: u8 = 3;
 const FILETYPE_REGULAR_FILE: u8 = 4;
+const FILETYPE_SOCKET_DGRAM: u8 = 5;
 const FILETYPE_SOCKET_STREAM: u8 = 6;
 const FILETYPE_SYMBOLIC_LINK: u8 = 7;
 
@@ -80,6 +81,8 @@ enum P1Fd {
     TcpBound { addr: net::NetAddr },
     TcpSocket { socket: net::NetSocket },
     TcpListener { listener: net::NetListener },
+    UdpUnbound,
+    UdpBound { socket: net::NetUdpSocket },
 }
 
 impl P1Fd {
@@ -90,6 +93,7 @@ impl P1Fd {
             P1Fd::File { .. } => FILETYPE_REGULAR_FILE,
             P1Fd::TcpUnbound | P1Fd::TcpBound { .. } | P1Fd::TcpSocket { .. }
             | P1Fd::TcpListener { .. } => FILETYPE_SOCKET_STREAM,
+            P1Fd::UdpUnbound | P1Fd::UdpBound { .. } => FILETYPE_SOCKET_DGRAM,
         }
     }
 
@@ -670,6 +674,9 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
                 Some(P1Fd::File { twz_fd, .. }) => (FILETYPE_REGULAR_FILE, Some(*twz_fd)),
                 Some(P1Fd::TcpUnbound | P1Fd::TcpBound { .. } | P1Fd::TcpSocket { .. } | P1Fd::TcpListener { .. }) => {
                     (FILETYPE_SOCKET_STREAM, None)
+                }
+                Some(P1Fd::UdpUnbound | P1Fd::UdpBound { .. }) => {
+                    (FILETYPE_SOCKET_DGRAM, None)
                 }
                 None => return ERRNO_BADF,
             };
@@ -1856,11 +1863,16 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
                 Some(m) => m,
                 None => return ERRNO_IO,
             };
-            // AF_INET = 2, SOCK_STREAM = 1
-            if af != 2 || socktype != 1 {
+            // AF_INET = 2, SOCK_STREAM = 1, SOCK_DGRAM = 2
+            if af != 2 {
                 return ERRNO_NOTSUP;
             }
-            let fd_num = caller.data_mut().alloc_fd(P1Fd::TcpUnbound);
+            let entry = match socktype {
+                1 => P1Fd::TcpUnbound,
+                2 => P1Fd::UdpUnbound,
+                _ => return ERRNO_NOTSUP,
+            };
+            let fd_num = caller.data_mut().alloc_fd(entry);
             if mem
                 .write(
                     &mut caller,
@@ -1911,16 +1923,27 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
                 Some(m) => m,
                 None => return ERRNO_IO,
             };
-            match caller.data().get_fd(fd) {
-                Some(P1Fd::TcpUnbound) => {}
+            let is_udp = match caller.data().get_fd(fd) {
+                Some(P1Fd::TcpUnbound) => false,
+                Some(P1Fd::UdpUnbound) => true,
                 _ => return ERRNO_BADF,
-            }
+            };
             let addr = match read_sockaddr(&mem, &mut caller, addr_ptr, addr_len) {
                 Some(a) => a,
                 None => return ERRNO_INVAL,
             };
-            if let Some(slot) = caller.data_mut().fds.get_mut(fd as usize) {
-                *slot = Some(P1Fd::TcpBound { addr });
+            if is_udp {
+                let socket = match net::NetUdpSocket::bind(addr) {
+                    Ok(s) => s,
+                    Err(e) => return net_err_to_errno(e),
+                };
+                if let Some(slot) = caller.data_mut().fds.get_mut(fd as usize) {
+                    *slot = Some(P1Fd::UdpBound { socket });
+                }
+            } else {
+                if let Some(slot) = caller.data_mut().fds.get_mut(fd as usize) {
+                    *slot = Some(P1Fd::TcpBound { addr });
+                }
             }
             ERRNO_SUCCESS
         },
@@ -1988,6 +2011,99 @@ fn add_wasi_p1_to_linker(linker: &mut Linker<WasiP1Ctx>) -> Result<()> {
                 _ => return ERRNO_BADF,
             };
             if !write_sockaddr(&mem, &mut caller, addr_ptr, len_ptr, &addr) {
+                return ERRNO_FAULT;
+            }
+            ERRNO_SUCCESS
+        },
+    )?;
+
+    linker.func_wrap(
+        ns,
+        "sock_sendto",
+        |mut caller: Caller<'_, WasiP1Ctx>,
+         fd: i32,
+         buf_ptr: i32,
+         buf_len: i32,
+         _flags: i32,
+         addr_ptr: i32,
+         addr_len: i32,
+         nwritten_ptr: i32|
+         -> i32 {
+            let mem = match get_mem(&mut caller) {
+                Some(m) => m,
+                None => return ERRNO_IO,
+            };
+            let socket_ptr = match caller.data().get_fd(fd) {
+                Some(P1Fd::UdpBound { socket }) => socket as *const net::NetUdpSocket,
+                _ => return ERRNO_BADF,
+            };
+            let addr = match read_sockaddr(&mem, &mut caller, addr_ptr, addr_len) {
+                Some(a) => a,
+                None => return ERRNO_INVAL,
+            };
+            let mut data = vec![0u8; buf_len as usize];
+            if mem.read(&caller, buf_ptr as usize, &mut data).is_err() {
+                return ERRNO_FAULT;
+            }
+            // SAFETY: synchronous host call, no concurrent access.
+            let n = match unsafe { &*socket_ptr }.send_to(&data, addr) {
+                Ok(n) => n,
+                Err(e) => return net_err_to_errno(e),
+            };
+            if mem
+                .write(
+                    &mut caller,
+                    nwritten_ptr as usize,
+                    &(n as u32).to_le_bytes(),
+                )
+                .is_err()
+            {
+                return ERRNO_FAULT;
+            }
+            ERRNO_SUCCESS
+        },
+    )?;
+
+    linker.func_wrap(
+        ns,
+        "sock_recvfrom",
+        |mut caller: Caller<'_, WasiP1Ctx>,
+         fd: i32,
+         buf_ptr: i32,
+         buf_len: i32,
+         _flags: i32,
+         addr_ptr: i32,
+         addr_len_ptr: i32,
+         nread_ptr: i32|
+         -> i32 {
+            let mem = match get_mem(&mut caller) {
+                Some(m) => m,
+                None => return ERRNO_IO,
+            };
+            let socket_ptr = match caller.data().get_fd(fd) {
+                Some(P1Fd::UdpBound { socket }) => socket as *const net::NetUdpSocket,
+                _ => return ERRNO_BADF,
+            };
+            let mut buf = vec![0u8; buf_len as usize];
+            // SAFETY: synchronous host call, no concurrent access.
+            let (n, remote) = match unsafe { &*socket_ptr }.recv_from(&mut buf) {
+                Ok(r) => r,
+                Err(e) => return net_err_to_errno(e),
+            };
+            if mem.write(&mut caller, buf_ptr as usize, &buf[..n]).is_err() {
+                return ERRNO_FAULT;
+            }
+            if !write_sockaddr(&mem, &mut caller, addr_ptr, addr_len_ptr, &remote) {
+                return ERRNO_FAULT;
+            }
+            if mem
+                .write(
+                    &mut caller,
+                    nread_ptr as usize,
+                    &(n as u32).to_le_bytes(),
+                )
+                .is_err()
+            {
                 return ERRNO_FAULT;
             }
             ERRNO_SUCCESS
