@@ -105,17 +105,21 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
-fn generate_data_folder(comp: &TwizzlerCompilation) -> PathBuf {
+fn generate_data_folder(comp: &TwizzlerCompilation, data_override: Option<&Path>) -> PathBuf {
     let mut destination = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
     destination.push("data/");
 
-    let source = PathBuf::from("./src/data/");
-    let _ = Command::new("rsync")
-        .arg("-a")
-        .arg("--delete")
-        .arg(&source)
-        .arg(&destination)
-        .status();
+    let source = data_override
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("./src/data/"));
+    if source.exists() {
+        let _ = Command::new("rsync")
+            .arg("-a")
+            .arg("--delete")
+            .arg(format!("{}/", source.display()))
+            .arg(&destination)
+            .status();
+    }
 
     destination
 }
@@ -276,7 +280,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let comp = crate::build::do_build(cli.clone().into())?;
 
     let initrd_files = build_initrd(&cli, &comp)?;
-    let data_files = generate_data_folder(&comp);
+    let data_files = generate_data_folder(&comp, cli.data.as_deref());
     let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
 
     let debug_sysroot = PathBuf::from("target/dynamic/")
