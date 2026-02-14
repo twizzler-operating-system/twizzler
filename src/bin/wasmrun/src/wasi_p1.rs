@@ -145,6 +145,18 @@ impl WasiP1Ctx {
             ctx.preopen_fds.push((3, "/".to_string()));
         }
 
+        // Also preopen /host if available (host-shared directory)
+        if let Ok(raw_fd) =
+            fd::twz_rt_fd_open("/host", create, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        {
+            let fd_num = ctx.fds.len() as i32;
+            ctx.fds.push(Some(P1Fd::Dir {
+                twz_fd: raw_fd,
+                path: "/host".to_string(),
+            }));
+            ctx.preopen_fds.push((fd_num, "/host".to_string()));
+        }
+
         ctx
     }
 

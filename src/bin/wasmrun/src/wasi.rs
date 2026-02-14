@@ -860,17 +860,31 @@ impl wasi::filesystem::preopens::Host for WasiCtx {
             id: Default::default(),
             kind: twizzler_rt_abi::bindings::CREATE_KIND_EXISTING,
         };
-        match fd::twz_rt_fd_open("/", create, twizzler_rt_abi::bindings::OPEN_FLAG_READ) {
-            Ok(raw_fd) => {
-                let entry = DescriptorEntry {
-                    fd: raw_fd,
-                    path: "/".to_string(),
-                };
-                let desc = self.table.push(entry)?;
-                Ok(vec![(desc, "/".to_string())])
-            }
-            Err(_) => Ok(Vec::new()),
+        let mut dirs = Vec::new();
+
+        // Always preopen /
+        if let Ok(raw_fd) =
+            fd::twz_rt_fd_open("/", create, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        {
+            let entry = DescriptorEntry {
+                fd: raw_fd,
+                path: "/".to_string(),
+            };
+            dirs.push((self.table.push(entry)?, "/".to_string()));
         }
+
+        // Also preopen /host if available (host-shared directory)
+        if let Ok(raw_fd) =
+            fd::twz_rt_fd_open("/host", create, twizzler_rt_abi::bindings::OPEN_FLAG_READ)
+        {
+            let entry = DescriptorEntry {
+                fd: raw_fd,
+                path: "/host".to_string(),
+            };
+            dirs.push((self.table.push(entry)?, "/host".to_string()));
+        }
+
+        Ok(dirs)
     }
 }
 
