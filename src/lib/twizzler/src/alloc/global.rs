@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use twizzler_abi::object::ObjID;
+use twizzler_rt_abi::object::ObjID;
 
 use super::Allocator;
 use crate::{

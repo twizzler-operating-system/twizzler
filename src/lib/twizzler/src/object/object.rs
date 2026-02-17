@@ -1,8 +1,7 @@
 use std::marker::PhantomData;
 
-use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{
-    object::{MapFlags, ObjectHandle},
+    object::{MapFlags, ObjID, ObjectHandle},
     Result,
 };
 
@@ -139,6 +138,28 @@ impl<Base> Object<Base> {
     pub unsafe fn map_unchecked(id: ObjID, flags: MapFlags) -> Result<Self> {
         let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
         unsafe { Ok(Self::from_handle_unchecked(handle)) }
+    }
+
+    /// Open a new object from its name without checking the underlying fingerprint.
+    ///
+    /// # Safety
+    /// This function is unsafe because it does not check the underlying fingerprint
+    /// of the base type against the stored value. Use with caution.
+    pub unsafe fn open_unchecked(name: impl AsRef<str>, flags: MapFlags) -> Result<Self> {
+        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
+            twizzler_rt_abi::fd::NameResolver::Default,
+            name,
+        )?;
+        unsafe { Self::map_unchecked(id, flags) }
+    }
+
+    /// Open a new object from its name.
+    pub fn open(name: impl AsRef<str>, flags: MapFlags) -> Result<Self> {
+        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
+            twizzler_rt_abi::fd::NameResolver::Default,
+            name,
+        )?;
+        Self::map(id, flags)
     }
 
     /// Return the ID of the object.

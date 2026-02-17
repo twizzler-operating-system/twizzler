@@ -3,10 +3,9 @@ use std::{
     mem::MaybeUninit,
 };
 
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
     error::ResourceError,
-    object::{MapFlags, ObjectHandle},
+    object::{MapFlags, ObjID, ObjectHandle, MAX_SIZE, NULLPAGE_SIZE},
 };
 
 use super::{Allocator, OwnedGlobalPtr, SingleObjectAllocator};

@@ -6,22 +6,23 @@ use std::{
 use fotcache::FotCache;
 use handlecache::HandleCache;
 use tracing::warn;
-use twizzler_abi::{
-    meta::{FotEntry, FotFlags},
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_read_map, CreateTieFlags,
-        CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate,
-    },
+use twizzler_abi::syscall::{
+    sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_read_map, CreateTieFlags,
+    CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate,
 };
 use twizzler_rt_abi::{
-    bindings::{object_cmd, object_handle, release_flags, RELEASE_NO_CACHE},
+    bindings::{
+        object_cmd, object_handle, object_source, object_tie, release_flags, RELEASE_NO_CACHE,
+    },
     error::{ObjectError, ResourceError, TwzError},
-    object::{MapFlags, ObjID, ObjectCmd, ObjectHandle},
+    object::{
+        FotEntry, FotFlags, MapFlags, ObjID, ObjectCmd, ObjectHandle, MAX_SIZE, NULLPAGE_SIZE,
+    },
     Result,
 };
 
 use super::ReferenceRuntime;
+use crate::runtime::file::get_naming_handle;
 
 mod fotcache;
 mod handlecache;
@@ -75,7 +76,7 @@ impl ReferenceRuntime {
         sys_object_create(
             ObjectCreate::default(),
             &[],
-            &[CreateTieSpec::new(tie_id, CreateTieFlags::empty())],
+            &[CreateTieSpec::new(tie_id, CreateTieFlags::empty()).into()],
         )
     }
 
@@ -100,7 +101,12 @@ impl ReferenceRuntime {
         }
     }
 
-    pub fn object_cmd(&self, handle: *mut object_handle, cmd: object_cmd, _arg: u64) -> Result<()> {
+    pub fn object_cmd(
+        &self,
+        handle: *mut object_handle,
+        cmd: object_cmd,
+        arg: *mut c_void,
+    ) -> Result<()> {
         let cmd: ObjectCmd = cmd.try_into()?;
         let handle = unsafe { &*handle };
         match cmd {
@@ -114,7 +120,34 @@ impl ReferenceRuntime {
                     .store(true, Ordering::Release);
                 Ok(())
             }
+            ObjectCmd::Sync => sys_map_ctrl(
+                handle.start.cast(),
+                MAX_SIZE,
+                MapControlCmd::Sync(arg.cast()),
+                0,
+            ),
+            ObjectCmd::Update => {
+                sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0)
+            }
         }
+    }
+
+    pub fn create_object(
+        &self,
+        spec: &ObjectCreate,
+        src: &[object_source],
+        ties: &[object_tie],
+        name: Option<&str>,
+    ) -> Result<ObjID> {
+        let id = sys_object_create(*spec, src, ties)?;
+        if let Some(name) = name {
+            if let Some(nh) = get_naming_handle() {
+                nh.lock().unwrap().put(name, id)?;
+            } else {
+                tracing::warn!("tried to bind object name {} before naming is setup", name);
+            }
+        }
+        Ok(id)
     }
 
     pub fn get_object_handle_from_ptr(&self, ptr: *const u8) -> Result<object_handle> {

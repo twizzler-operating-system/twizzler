@@ -10,10 +10,11 @@ use twizzler_abi::{
     syscall::{
         sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap, BackingType,
         CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType, ObjectControlCmd, ObjectCreate,
-        ObjectCreateFlags, ObjectSource, UnmapFlags,
+        ObjectCreateFlags, UnmapFlags,
     },
 };
 use twizzler_rt_abi::{
+    bindings::{object_source, object_tie},
     error::{ResourceError, TwzError},
     object::{MapFlags, ObjID},
 };
@@ -209,11 +210,11 @@ impl Space {
     }
 
     /// Utility function for creating an object and mapping it, deleting it if the mapping fails.
-    pub(crate) fn safe_create_and_map_object(
+    pub fn safe_create_and_map_object(
         this: &Mutex<Self>,
         spec: ObjectCreate,
-        sources: &[ObjectSource],
-        ties: &[CreateTieSpec],
+        sources: &[object_source],
+        ties: &[object_tie],
         map_flags: MapFlags,
     ) -> miette::Result<MapHandle> {
         let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
@@ -237,7 +238,7 @@ impl Space {
         .into_diagnostic()
     }
 
-    pub(crate) fn safe_create_and_map_runtime_object(
+    pub fn safe_create_and_map_runtime_object(
         this: &Mutex<Self>,
         instance: ObjID,
         map_flags: MapFlags,
@@ -252,7 +253,7 @@ impl Space {
                 Protections::all(),
             ),
             &[],
-            &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
             map_flags,
         )
     }

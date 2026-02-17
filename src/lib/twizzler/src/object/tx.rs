@@ -1,7 +1,6 @@
 use std::{alloc::Layout, mem::MaybeUninit};
 
-use twizzler_abi::object::NULLPAGE_SIZE;
-use twizzler_rt_abi::object::ObjectHandle;
+use twizzler_rt_abi::object::{ObjectHandle, NULLPAGE_SIZE};
 
 use crate::{
     marker::BaseType,

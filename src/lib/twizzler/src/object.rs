@@ -1,6 +1,6 @@
 //! Traits and types for working with objects.
 
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_rt_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use crate::{marker::BaseType, ptr::Ref};
 

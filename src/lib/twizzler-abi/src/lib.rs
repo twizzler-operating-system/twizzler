@@ -14,6 +14,7 @@
 #![feature(thread_local)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
+#![allow(unexpected_cfgs)]
 #![allow(internal_features)]
 #![feature(rustc_attrs)]
 #![feature(linkage)]
@@ -30,7 +31,6 @@ pub mod aux;
 pub mod device;
 pub mod klog;
 pub mod kso;
-pub mod marker;
 pub mod meta;
 pub mod object;
 pub mod pager;
@@ -41,6 +41,9 @@ pub mod syscall;
 pub mod thread;
 pub mod trace;
 pub mod upcall;
+
+#[cfg(all(not(target_os = "twizzler"), not(feature = "kernel")))]
+static _NO: () = panic!("cannot compile for non-twizzler OS");
 
 #[inline]
 unsafe fn internal_abort() -> ! {

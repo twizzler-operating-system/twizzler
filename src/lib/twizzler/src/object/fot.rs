@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicU32;
 
-pub use twizzler_abi::meta::{FotEntry, FotFlags};
+pub use twizzler_rt_abi::object::{FotEntry, FotFlags};
 
 use crate::ptr::GlobalPtr;
 

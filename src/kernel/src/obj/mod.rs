@@ -16,9 +16,9 @@ use twizzler_abi::{
     device::{CacheType, NUM_DEVICE_INTERRUPTS},
     meta::{MetaFlags, MetaInfo},
     object::{MAX_SIZE, ObjID, Protections},
-    syscall::{BackingType, CreateTieSpec, LifetimeType, ObjectInfo},
+    syscall::{BackingType, LifetimeType, ObjectInfo},
 };
-use twizzler_rt_abi::object::Nonce;
+use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
 
 use self::{pages::Page, thread_sync::SleepInfo};
 use crate::{
@@ -55,7 +55,7 @@ pub struct Object {
     pin_info: Mutex<PinInfo>,
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
-    ties: Vec<CreateTieSpec>,
+    ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
     dirty_set: DirtySet,
 }
@@ -288,7 +288,7 @@ impl Object {
         Some((v, token))
     }
 
-    pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[CreateTieSpec]) -> Self {
+    pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
         Self {
             id,
             flags: AtomicU32::new(0),
@@ -563,7 +563,7 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
 }
 
 pub fn register_object(obj: Arc<Object>) {
-    ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id));
+    ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id.into()));
     obj_manager().register_object(obj);
 }
 

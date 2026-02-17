@@ -1,17 +1,17 @@
-use std::{marker::PhantomData, mem::MaybeUninit};
+use std::{ffi::c_char, marker::PhantomData, mem::MaybeUninit};
 
-use twizzler_abi::{
-    object::{ObjID, Protections},
-    syscall::{
-        BackingType, CreateTieSpec, LifetimeType, ObjectCreate, ObjectCreateFlags, ObjectSource,
+use twizzler_rt_abi::{
+    bindings::{object_source, object_tie},
+    error::RawTwzError,
+    object::{
+        BackingType, CreateTieSpec, LifetimeType, MapFlags, ObjectCreate, ObjectCreateFlags,
+        ObjectSource, Protections,
     },
 };
-use twizzler_rt_abi::{bindings::CREATE_KIND_NEW, object::MapFlags};
 
 use super::{Object, TxObject};
 use crate::{
     marker::{BaseType, StoreCopy},
-    object::RawObject,
     Result,
 };
 
@@ -19,8 +19,8 @@ use crate::{
 #[derive(Clone)]
 pub struct ObjectBuilder<Base: BaseType> {
     spec: ObjectCreate,
-    src_objs: Vec<ObjectSource>,
-    ties: Vec<CreateTieSpec>,
+    src_objs: Vec<object_source>,
+    ties: Vec<object_tie>,
     name: Option<String>,
     _pd: PhantomData<Base>,
 }
@@ -54,13 +54,13 @@ impl<Base: BaseType> ObjectBuilder<Base> {
 
     /// Add a Source Object that this new object will copy from.
     pub fn add_src(mut self, obj_src: ObjectSource) -> Self {
-        self.src_objs.push(obj_src);
+        self.src_objs.push(obj_src.into());
         self
     }
 
     /// Add a tie specification for this object creation.
     pub fn add_tie(mut self, tie: CreateTieSpec) -> Self {
-        self.ties.push(tie);
+        self.ties.push(tie.into());
         self
     }
 
@@ -70,23 +70,8 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     }
 }
 
-fn bind_name(id: ObjID, name: &str) -> Result<()> {
-    let create = twizzler_rt_abi::bindings::create_options {
-        id: id.raw(),
-        kind: CREATE_KIND_NEW,
-    };
-    let fd = twizzler_rt_abi::fd::twz_rt_fd_open(name, create, 0)?;
-    twizzler_rt_abi::fd::twz_rt_fd_close(fd);
-    Ok(())
-}
-
 impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
-    /// Build an object using the provided base value.
-    ///
-    /// # Panics
-    /// This function may panic if the default permissions dont contain READ and WRITE.
-    /// If your usecase requires that the default permissions for an object can't
-    /// contain those flags, please look at the `twizzler_security::SecureBuilderExt` trait.
+    /// Build an object using the provided base vale.
     /// # Example
     /// ```
     /// # use twizzler::object::ObjectBuilder;
@@ -94,19 +79,6 @@ impl<Base: BaseType + StoreCopy> ObjectBuilder<Base> {
     /// let obj = builder.build(42u32).unwrap();
     /// ```
     pub fn build(&self, base: Base) -> Result<Object<Base>> {
-        if !self
-            .spec
-            .def_prot
-            .contains(Protections::READ | Protections::WRITE)
-        {
-            // this panic is more helpful than a memory protection fault
-            panic!(
-                "Unable to build object! Default permissions must contain READ | WRITE...\n
-                If you would like to build an object without those permissions, look at the
-                `twizzler_security::SecureBuilderExt` trait
-                "
-            )
-        }
         self.build_inplace(|tx| tx.write(base))
     }
 }
@@ -126,19 +98,28 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
-        tracing::trace!("object spec{:#?}", self.spec);
-
-        let id = twizzler_abi::syscall::sys_object_create(
-            self.spec,
-            self.src_objs.as_slice(),
-            self.ties.as_slice(),
-        )?;
+        let id = unsafe {
+            twizzler_rt_abi::bindings::twz_rt_create_object(
+                &self.spec.into(),
+                self.src_objs.as_slice().as_ptr(),
+                self.src_objs.len(),
+                self.ties.as_slice().as_ptr(),
+                self.ties.len(),
+                self.name
+                    .as_ref()
+                    .map(|s| s.as_ptr().cast::<c_char>())
+                    .unwrap_or(core::ptr::null())
+                    .cast(),
+                self.name.as_ref().map(|s| s.len()).unwrap_or(0),
+            )
+        };
+        if id.err != 0 {
+            return Err(RawTwzError::new(id.err).error());
+        }
+        let id = id.val.into();
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);
-            if let Some(ref name) = self.name {
-                bind_name(id, name)?;
-            }
         } else {
             if let Some(ref name) = self.name {
                 tracing::warn!(
@@ -148,15 +129,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
                 );
             }
         }
-
-        tracing::trace!("Creating object with id: {id:?}");
         let mu_object = unsafe { Object::<MaybeUninit<Base>>::map_unchecked(id, flags) }?;
-        let metadata = mu_object.meta_ptr();
-
-        unsafe {
-            tracing::trace!("metadata:{:#?}", *metadata);
-        }
-
         let object = ctor(mu_object.into_tx()?)?;
         object.into_object()
     }

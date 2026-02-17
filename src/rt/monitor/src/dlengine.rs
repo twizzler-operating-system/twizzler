@@ -9,10 +9,11 @@ use dynlink::{
 use smallstr::SmallString;
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{MAX_SIZE, NULLPAGE_SIZE},
+    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::ObjectCreate,
 };
 use twizzler_rt_abi::object::{MapFlags, ObjID};
-use twizzler_security::SecCtx;
+use twizzler_security::{SecCtxBase, SecCtxFlags};
 
 use crate::mon::{
     get_monitor,
@@ -51,8 +52,20 @@ impl Engine {
 }
 
 fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
-    let sec_ctx = SecCtx::default();
-    sec_ctx.id()
+    let sec_ctx = SecCtxBase::new(Protections::all(), SecCtxFlags::empty());
+
+    let handle = crate::mon::space::Space::safe_create_and_map_object(
+        get_monitor().space,
+        ObjectCreate::default(),
+        &[],
+        &[],
+        MapFlags::READ | MapFlags::WRITE,
+    )
+    .unwrap();
+
+    let base = handle.monitor_data_base().cast::<SecCtxBase>();
+    unsafe { base.write(sec_ctx) };
+    handle.id()
 }
 
 impl ContextEngine for Engine {

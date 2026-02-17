@@ -69,6 +69,15 @@ macro_rules! check_ffi_type {
             }
         }
     };
+    ($f1:ident, _, _, _, _, _, _, _) => {
+        paste::paste! {
+            #[allow(dead_code, unused_variables, unused_assignments)]
+            fn [<__tc_ffi_ $f1>]() {
+                let mut x: unsafe extern "C-unwind" fn(_, _, _, _, _, _, _) -> _ = $f1;
+                x = twizzler_rt_abi::bindings::$f1;
+            }
+        }
+    };
 }
 
 use std::{
@@ -77,11 +86,11 @@ use std::{
 };
 
 use tracing::warn;
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
 // core.h
 use twizzler_rt_abi::bindings::{
-    binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, option_exit_code,
-    release_flags, twz_error, u32_result,
+    binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, object_create,
+    object_source, object_tie, option_exit_code, release_flags, twz_error, u32_result,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
@@ -704,6 +713,37 @@ pub unsafe extern "C-unwind" fn twz_rt_create_rtobj() -> objid_result {
 }
 check_ffi_type!(twz_rt_create_rtobj);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_create_object(
+    spec: *const object_create,
+    src: *const object_source,
+    src_len: usize,
+    ties: *const object_tie,
+    tie_len: usize,
+    name: *const c_char,
+    namelen: usize,
+) -> objid_result {
+    let spec = spec.as_ref().unwrap();
+    let src = if !src.is_null() {
+        core::slice::from_raw_parts(src, src_len)
+    } else {
+        &[]
+    };
+    let ties = if !ties.is_null() {
+        core::slice::from_raw_parts(ties, tie_len)
+    } else {
+        &[]
+    };
+    let name_slice = if !name.is_null() {
+        Some(core::slice::from_raw_parts(name.cast(), namelen))
+    } else {
+        None
+    };
+    let name = name_slice.and_then(|name_slice| str::from_utf8(name_slice).ok());
+    result_id_to_bindings(OUR_RUNTIME.create_object(&ObjectCreate::from(*spec), src, ties, name))
+}
+check_ffi_type!(twz_rt_create_object, _, _, _, _, _, _, _);
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME
@@ -725,7 +765,7 @@ check_ffi_type!(twz_rt_release_handle, _, _);
 pub unsafe extern "C-unwind" fn twz_rt_object_cmd(
     handle: *mut object_handle,
     cmd: object_cmd,
-    arg: u64,
+    arg: *mut c_void,
 ) -> twz_error {
     match OUR_RUNTIME.object_cmd(handle, cmd, arg) {
         Ok(_) => 0,

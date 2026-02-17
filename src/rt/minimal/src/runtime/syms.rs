@@ -69,6 +69,24 @@ macro_rules! check_ffi_type {
             }
         }
     };
+    ($f1:ident, _, _, _, _, _, _, _) => {
+        paste::paste! {
+            #[allow(dead_code, unused_variables, unused_assignments)]
+            fn [<__tc_ffi_ $f1>]() {
+                let mut x: unsafe extern "C-unwind" fn(_, _, _, _, _, _, _) -> _ = $f1;
+                x = twizzler_rt_abi::bindings::$f1;
+            }
+        }
+    };
+    ($f1:ident, _, _, _, _, _, _, _, _) => {
+        paste::paste! {
+            #[allow(dead_code, unused_variables, unused_assignments)]
+            fn [<__tc_ffi_ $f1>]() {
+                let mut x: unsafe extern "C-unwind" fn(_, _, _, _, _, _, _, _) -> _ = $f1;
+                x = twizzler_rt_abi::bindings::$f1;
+            }
+        }
+    };
 }
 
 use twizzler_rt_abi::error::{ArgumentError, TwzError};
@@ -126,7 +144,8 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, open_kind, open_kind_OpenKind_Path, release_flags,
+    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, object_create, object_source, object_tie,
+    objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -420,6 +439,21 @@ use twizzler_rt_abi::{
     bindings::{map_flags, map_result, object_handle, objid},
     object::MapFlags,
 };
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_create_object(
+    spec: *const object_create,
+    src: *const object_source,
+    src_len: usize,
+    ties: *const object_tie,
+    tie_len: usize,
+    name: *const c_char,
+    namelen: usize,
+) -> objid_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_create_object, _, _, _, _, _, _, _);
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME

@@ -6,14 +6,7 @@ use std::collections::HashMap;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use test::Bencher;
-use twizzler_abi::{
-    object::Protections,
-    syscall::{
-        sys_object_ctrl, BackingType, CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType,
-        ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
-    },
-};
-use twizzler_rt_abi::object::ObjectCmd;
+use twizzler_rt_abi::object::{ObjectCmd, Protections};
 
 use crate::{
     collections::hachage::PersistentHashMap,

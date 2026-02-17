@@ -1,74 +1,17 @@
-use core::sync::atomic::{AtomicU64, Ordering};
-
 use twizzler_rt_abi::{
-    error::{ArgumentError, RawTwzError, ResourceError, TwzError},
+    bindings::sync_info,
+    error::{ArgumentError, TwzError},
     Result,
 };
 
 use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::arch::syscall::raw_syscall;
 
-bitflags::bitflags! {
-    /// Flags for a sync command.
-    #[derive(Debug, Clone, Copy)]
-    pub struct SyncFlags: u32 {
-        /// Sync updates to durable storage
-        const DURABLE = 1 << 0;
-        /// Write release before triggering durable writeback
-        const ASYNC_DURABLE = 1 << 0;
-    }
-}
-
-/// Parameters for the kernel for syncing a mapping.
-#[derive(Debug, Clone, Copy)]
-pub struct SyncInfo {
-    /// Pointer to the wait word for transaction completion.
-    pub release: *const AtomicU64,
-    /// Value to compare against the wait word.
-    pub release_compare: u64,
-    /// Value to set if the wait word matches the compare value.
-    pub release_set: u64,
-    /// Pointer to wait word for durability return value.
-    pub durable: *const AtomicU64,
-    /// Flags for this sync command.
-    pub flags: SyncFlags,
-}
-
-unsafe impl Send for SyncInfo {}
-unsafe impl Sync for SyncInfo {}
-
-impl SyncInfo {
-    pub unsafe fn try_release(&self) -> Result<()> {
-        self.release
-            .as_ref()
-            .unwrap()
-            .compare_exchange(
-                self.release_compare,
-                self.release_set,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .map_err(|_| TwzError::Resource(ResourceError::Refused))
-            .map(|_| ())
-    }
-
-    pub unsafe fn set_durable(&self, err: impl Into<RawTwzError>) {
-        if self.durable.is_null() {
-            return;
-        }
-
-        self.durable
-            .as_ref()
-            .unwrap()
-            .store(err.into().raw(), Ordering::SeqCst);
-    }
-}
-
 /// Possible map control commands for [sys_map_ctrl].
 #[derive(Clone, Copy, Debug)]
 pub enum MapControlCmd {
     /// Sync an entire mapping
-    Sync(*const SyncInfo),
+    Sync(*const sync_info),
     /// Discard a mapping
     Discard,
     /// Invalidate a mapping
@@ -92,7 +35,7 @@ impl TryFrom<(u64, u64)> for MapControlCmd {
     type Error = TwzError;
     fn try_from(value: (u64, u64)) -> Result<Self> {
         Ok(match value.0 {
-            0 => MapControlCmd::Sync((value.1 as usize) as *const SyncInfo),
+            0 => MapControlCmd::Sync((value.1 as usize) as *const sync_info),
             1 => MapControlCmd::Discard,
             2 => MapControlCmd::Invalidate,
             3 => MapControlCmd::Update,

@@ -5,14 +5,17 @@ use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
     object::{MAX_SIZE, ObjID, Protections},
-    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
+    syscall::{MapControlCmd, MapFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
     trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
     },
 };
-use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
+use twizzler_rt_abi::{
+    bindings::{SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
+    error::{IoError, RawTwzError, TwzError},
+};
 
 use super::{MAX_OPP_VEC, ObjectPageProvider, PageFaultFlags};
 use crate::{
@@ -440,7 +443,7 @@ impl MapRegion {
                 let sync_info = unsafe { sync_info_ptr.read() };
                 let version = sync_info.release_compare;
 
-                if sync_info.flags.contains(SyncFlags::DURABLE) {
+                if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
@@ -452,10 +455,10 @@ impl MapRegion {
                     }
                 }
 
-                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
+                if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
                     unsafe { sync_info.try_release() }?;
                     let wake = ThreadSyncWake::new(
-                        ThreadSyncReference::Virtual(sync_info.release),
+                        ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
                         usize::MAX,
                     );
                     wakeup(&wake)?;

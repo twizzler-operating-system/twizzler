@@ -4,8 +4,8 @@ use std::{
     ptr::NonNull,
 };
 
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_derive::Invariant;
+use twizzler_rt_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 
 use super::DefaultHashBuilder;
 use crate::{

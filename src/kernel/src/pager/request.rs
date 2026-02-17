@@ -1,25 +1,26 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use intrusive_collections::{intrusive_adapter, KeyAdapter, LinkedList, RBTreeAtomicLink};
+use intrusive_collections::{KeyAdapter, LinkedList, RBTreeAtomicLink, intrusive_adapter};
 use twizzler_abi::{
     object::ObjID,
     pager::{
         KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectRange, PagerFlags, PhysRange,
         RequestFromKernel,
     },
-    syscall::{ObjectCreate, SyncInfo},
+    syscall::ObjectCreate,
 };
+use twizzler_rt_abi::bindings::sync_info;
 
 use crate::{
     arch::PhysAddr,
     condvar::CondVarLinkAdapter,
     instant::Instant,
     memory::context::virtmem::region::Shadow,
-    obj::{range::GetPageFlags, ObjectRef, PageNumber},
+    obj::{ObjectRef, PageNumber, range::GetPageFlags},
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{current_thread_ref, CriticalGuard, ThreadRef},
+    thread::{CriticalGuard, ThreadRef, current_thread_ref},
 };
 
 #[derive(Debug, Clone)]
@@ -28,7 +29,7 @@ pub struct SyncRegionInfo {
     shadow: Option<Arc<Shadow>>,
     pub id: ObjID,
     pub unique_id: ObjID,
-    pub sync_info: SyncInfo,
+    pub sync_info: sync_info,
 }
 
 impl PartialEq for SyncRegionInfo {
@@ -146,7 +147,7 @@ impl ReqKind {
         object: &ObjectRef,
         shadow: Option<Shadow>,
         dirty_set: &[(PageNumber, usize)],
-        sync_info: SyncInfo,
+        sync_info: sync_info,
         version: u64,
     ) -> Self {
         let mut page_tree = object.lock_page_tree();
