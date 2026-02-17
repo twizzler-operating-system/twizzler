@@ -23,9 +23,7 @@ use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep,
     ThreadSyncWake,
 };
-use twizzler_net::{NetClient, NetClientConfig};
-
-use crate::runtime::file::socket::shim::port::PortAssigner;
+use twizzler_net::{net_alloc_port, net_release_port, NetClient, NetClientConfig};
 
 pub struct Engine {
     pub(super) core: Arc<Mutex<Core>>,
@@ -49,6 +47,14 @@ impl IfaceSet {
     fn new(device: NetClient) -> Self {
         let ifaces = Vec::new();
         Self { ifaces, device }
+    }
+
+    fn allocate_port(&self, port: Option<u16>) -> Option<u16> {
+        net_alloc_port(self.device.info.handle, port).ok()
+    }
+
+    fn return_port(&self, port: u16) {
+        let _ = net_release_port(self.device.info.handle, port);
     }
 
     fn insert_iface(&mut self, iface: Interface) {
@@ -85,7 +91,6 @@ impl IfaceSet {
 
 lazy_static::lazy_static! {
     pub(crate) static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
-    pub(crate) static ref PORTS: Arc<PortAssigner> = Arc::new(PortAssigner::new());
 }
 
 impl Engine {
@@ -121,8 +126,8 @@ impl Engine {
                         tracing::debug!("tracked tcp socket {} in closed state", item.0);
                         core.release_socket(item.0);
                         core.tracking.remove(idx);
+                        core.ifaceset[0].return_port(item.1);
                         drop(core);
-                        PORTS.return_port(item.1);
                         return true;
                     }
                 }
@@ -174,6 +179,18 @@ impl Engine {
             notify,
             _polling_thread: thread,
         }
+    }
+
+    pub fn allocate_port(&self, port: u16) -> Option<u16> {
+        self.core.lock().unwrap().ifaceset[0].allocate_port(Some(port))
+    }
+
+    pub fn get_ephemeral_port(&self) -> Option<u16> {
+        self.core.lock().unwrap().ifaceset[0].allocate_port(None)
+    }
+
+    pub fn return_port(&self, port: u16) {
+        self.core.lock().unwrap().ifaceset[0].return_port(port);
     }
 
     fn wake(&self) {

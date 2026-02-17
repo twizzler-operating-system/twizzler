@@ -2,6 +2,7 @@
 #![feature(lock_value_accessors)]
 
 use std::{
+    collections::HashSet,
     net::IpAddr,
     str::FromStr,
     sync::{
@@ -27,15 +28,20 @@ use twizzler_net::{
 };
 use twizzler_rt_abi::{error::TwzError, Result};
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
+
+mod port;
+
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
 static NETINFO: OnceLock<NetworkInfo> = OnceLock::new();
+static PORTS: OnceLock<PortAssigner> = OnceLock::new();
 
 struct Client {
     ep: Mutex<NetServer>,
     jh: OnceLock<JoinHandle<()>>,
     active: AtomicBool,
+    ports: Mutex<HashSet<u16>>,
 }
 
 impl Client {
@@ -44,6 +50,7 @@ impl Client {
             ep: Mutex::new(ep),
             jh: OnceLock::new(),
             active: AtomicBool::new(true),
+            ports: Mutex::new(HashSet::new()),
         });
         let _client = client.clone();
         let jh = std::thread::spawn(move || client_thread(_client));
@@ -78,12 +85,67 @@ pub fn start_network() -> Result<()> {
     std::thread::spawn(move || device_thread(_device, recv));
     tracing::info!("network ready: IP = {}, gateway = {}", IP, GATEWAY);
 
+    let _ = PORTS.set(PortAssigner::new());
+
     let _ = NETINFO.set(NetworkInfo {
         handles: Mutex::new(HandleMgr::new(None)),
         device,
     });
 
     Ok(())
+}
+
+#[secgate::entry(lib = "twizzler-net")]
+fn twz_net_alloc_port(desc: secgate::util::Descriptor, port: Option<u16>) -> Result<u16> {
+    let handles = NETINFO
+        .get()
+        .ok_or(TwzError::NOT_SUPPORTED)?
+        .handles
+        .lock()
+        .unwrap();
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let client = handles
+        .lookup(caller, desc)
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+
+    let port = if let Some(port) = port {
+        if PORTS.get().unwrap().allocate_port(port) {
+            Some(port)
+        } else {
+            None
+        }
+    } else {
+        PORTS.get().unwrap().get_ephemeral_port()
+    };
+    let Some(port) = port else {
+        return Err(ResourceError::OutOfResources.into());
+    };
+
+    client.ports.lock().unwrap().insert(port);
+    Ok(port)
+}
+
+#[secgate::entry(lib = "twizzler-net")]
+fn twz_net_release_port(desc: secgate::util::Descriptor, port: u16) -> Result<()> {
+    let handles = NETINFO
+        .get()
+        .ok_or(TwzError::NOT_SUPPORTED)?
+        .handles
+        .lock()
+        .unwrap();
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let client = handles
+        .lookup(caller, desc)
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+
+    if client.ports.lock().unwrap().remove(&port) {
+        PORTS.get().unwrap().return_port(port);
+        Ok(())
+    } else {
+        Err(TwzError::INVALID_ARGUMENT)
+    }
 }
 
 #[secgate::entry(lib = "twizzler-net")]
@@ -165,6 +227,8 @@ fn get_virtio_net_device_and_interface() -> (
 }
 
 use smoltcp::phy::{Device, RxToken, TxToken};
+
+use crate::port::PortAssigner;
 
 fn device_thread(
     mut device: DeviceWrapper<TwizzlerTransport>,

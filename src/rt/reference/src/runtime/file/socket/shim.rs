@@ -20,12 +20,9 @@ use smoltcp::{
 };
 
 mod engine;
-mod port;
 
 use engine::ENGINE;
 use smoltcp::socket::dns::Socket as DnsSocket;
-
-use crate::runtime::file::socket::shim::engine::PORTS;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
@@ -59,9 +56,11 @@ impl SmolTcpListener {
         let addrs = sock_addrs.to_socket_addrs()?;
         for addr in addrs {
             tracing::debug!("each_addr: {:?}", addr);
-            match s.listen(addr.port()) {
-                Ok(_) => return Ok((addr.port(), addr)),
-                Err(_) => {}
+            if let Some(port) = ENGINE.allocate_port(addr.port()) {
+                match s.listen(port) {
+                    Ok(_) => return Ok((port, addr)),
+                    Err(_) => {}
+                }
             }
         }
         Err(Error::new(
@@ -285,12 +284,12 @@ impl SmolTcpStream {
             let tx_buffer = SocketBuffer::new(vec![0; TX_BUF_SIZE]);
             Socket::new(rx_buffer, tx_buffer)
         };
-        let Some(port) = PORTS.get_ephemeral_port() else {
+        let Some(port) = ENGINE.get_ephemeral_port() else {
             return Err(Error::other("dynamic port overflow!"));
         };
         tracing::debug!("connect: {}", port);
         if let Err(e) = Self::each_addr(addr, &mut sock, port) {
-            PORTS.return_port(port);
+            ENGINE.return_port(port);
             return Err(e);
         };
         let handle = ENGINE.add_socket(sock);
@@ -463,13 +462,15 @@ impl UdpSocket {
             let (addr, mut port) = (addr.ip(), addr.port());
             ephem = port == 0;
             if ephem {
-                port = PORTS.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
+                port = ENGINE.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
+            } else {
+                port = ENGINE.allocate_port(port).ok_or(ErrorKind::ResourceBusy)?;
             }
             if sock.bind((addr, port)).is_ok() {
                 break;
             }
             if ephem {
-                PORTS.return_port(port);
+                ENGINE.return_port(port);
             }
         }
         if !sock.endpoint().is_specified() {

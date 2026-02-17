@@ -7,6 +7,7 @@ mod server;
 
 pub use client::{
     NetClient, NetClientConfig, NetClientOpenInfo, NetClientRxToken, NetClientTxToken,
+    net_alloc_port, net_release_port,
 };
 pub use server::{NetServer, NetServerRxToken, NetServerTxToken};
 
@@ -112,3 +113,13 @@ fn twz_net_drop_client(handle: secgate::util::Descriptor) -> Result<(), TwzError
 
 #[secgate::gatecall]
 fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo, TwzError> {}
+
+#[secgate::gatecall]
+fn twz_net_alloc_port(
+    handle: secgate::util::Descriptor,
+    port: Option<u16>,
+) -> Result<u16, TwzError> {
+}
+
+#[secgate::gatecall]
+fn twz_net_release_port(handle: secgate::util::Descriptor, port: u16) -> Result<(), TwzError> {}

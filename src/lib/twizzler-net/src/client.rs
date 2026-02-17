@@ -64,6 +64,18 @@ pub fn net_drop_client(desc: u32) -> Result<(), TwzError> {
     (gate)(desc)
 }
 
+pub fn net_alloc_port(desc: Descriptor, port: Option<u16>) -> Result<u16, TwzError> {
+    let comp = CompartmentHandle::lookup("net")?;
+    let gate = unsafe { comp.dynamic_gate("twz_net_alloc_port") }?;
+    (gate)(desc, port)
+}
+
+pub fn net_release_port(desc: Descriptor, port: u16) -> Result<(), TwzError> {
+    let comp = CompartmentHandle::lookup("net")?;
+    let gate = unsafe { comp.dynamic_gate("twz_net_release_port") }?;
+    (gate)(desc, port)
+}
+
 impl secgate::util::Handle for NetClient {
     type OpenError = TwzError;
 
