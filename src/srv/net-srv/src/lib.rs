@@ -160,6 +160,9 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
     let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
     if let Some(client) = handles.remove(caller, desc) {
         client.active.store(false, Ordering::SeqCst);
+        for port in client.ports.lock().unwrap().drain() {
+            PORTS.get().unwrap().return_port(port);
+        }
     }
     Ok(())
 }

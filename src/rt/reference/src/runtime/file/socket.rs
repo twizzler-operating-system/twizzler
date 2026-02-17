@@ -1,13 +1,14 @@
-mod shim;
+mod engine;
+mod smoltcp;
 
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
 };
 
-pub use shim::{dns, SmolTcpListener, SmolTcpStream};
+pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
 
-use crate::runtime::file::socket::shim::UdpSocket;
+use crate::runtime::file::socket::smoltcp::UdpSocket;
 
 #[derive(Clone)]
 pub enum SocketKind {
