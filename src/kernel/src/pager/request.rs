@@ -29,7 +29,7 @@ pub struct SyncRegionInfo {
     shadow: Option<Arc<Shadow>>,
     pub id: ObjID,
     pub unique_id: ObjID,
-    pub sync_info: sync_info,
+    pub sync_info: Option<sync_info>,
 }
 
 impl PartialEq for SyncRegionInfo {
@@ -147,7 +147,7 @@ impl ReqKind {
         object: &ObjectRef,
         shadow: Option<Shadow>,
         dirty_set: &[(PageNumber, usize)],
-        sync_info: sync_info,
+        sync_info: Option<sync_info>,
         version: u64,
     ) -> Self {
         let mut page_tree = object.lock_page_tree();

@@ -439,11 +439,7 @@ impl MapRegion {
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
         match cmd {
             MapControlCmd::Sync(sync_info_ptr) => {
-                // TODO: validation
-                let sync_info = unsafe { sync_info_ptr.read() };
-                let version = sync_info.release_compare;
-
-                if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
+                if sync_info_ptr.is_null() {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
@@ -451,17 +447,37 @@ impl MapRegion {
                         dirty_pages
                     );
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages.as_slice(), sync_info, version);
+                        crate::pager::sync_region(self, dirty_pages.as_slice(), None, 0);
                     }
-                }
+                } else {
+                    let sync_info = unsafe { sync_info_ptr.read() };
+                    let version = sync_info.release_compare;
 
-                if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
-                    unsafe { sync_info.try_release() }?;
-                    let wake = ThreadSyncWake::new(
-                        ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
-                        usize::MAX,
-                    );
-                    wakeup(&wake)?;
+                    if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
+                        let dirty_pages = self.object().dirty_set().drain_all();
+                        log::trace!(
+                            "sync region {:?} with dirty pages {:?}",
+                            self.range,
+                            dirty_pages
+                        );
+                        if self.object().use_pager() && !dirty_pages.is_empty() {
+                            crate::pager::sync_region(
+                                self,
+                                dirty_pages.as_slice(),
+                                Some(sync_info),
+                                version,
+                            );
+                        }
+                    }
+
+                    if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
+                        unsafe { sync_info.try_release() }?;
+                        let wake = ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
+                            usize::MAX,
+                        );
+                        wakeup(&wake)?;
+                    }
                 }
 
                 Ok(0)

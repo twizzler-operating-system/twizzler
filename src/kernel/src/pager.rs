@@ -155,7 +155,7 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 pub fn sync_region(
     region: &MapRegion,
     dirty_set: &[(PageNumber, usize)],
-    sync_info: sync_info,
+    sync_info: Option<sync_info>,
     version: u64,
 ) {
     // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.

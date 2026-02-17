@@ -1,9 +1,3 @@
-use std::{ptr::addr_of, sync::atomic::AtomicU64};
-
-use twizzler_abi::{
-    object::MAX_SIZE,
-    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags, SyncInfo},
-};
 use twizzler_rt_abi::object::MapFlags;
 
 use crate::object::{Object, ObjectBuilder, RawObject};
@@ -26,33 +20,20 @@ fn test_stable_read() {
         assert_eq!(value, 128);
     }
 
-    let release = AtomicU64::new(0);
-    let release_ptr = addr_of!(release);
-
-    let sync_info = SyncInfo {
-        release: release_ptr,
-        release_compare: 0,
-        release_set: 1,
-        durable: core::ptr::null(),
-        flags: SyncFlags::DURABLE,
-    };
-
-    let sync_info_ptr = addr_of!(sync_info);
-
-    sys_map_ctrl(
-        map_write.base_ptr::<u8>(),
-        MAX_SIZE,
-        MapControlCmd::Sync(sync_info_ptr),
-        0,
-    )
-    .unwrap();
-    sys_map_ctrl(
-        map_stable.base_ptr::<u8>(),
-        MAX_SIZE,
-        MapControlCmd::Update,
-        0,
-    )
-    .unwrap();
+    map_write
+        .handle()
+        .cmd(
+            twizzler_rt_abi::object::ObjectCmd::Sync,
+            core::ptr::null_mut::<()>(),
+        )
+        .unwrap();
+    map_stable
+        .handle()
+        .cmd(
+            twizzler_rt_abi::object::ObjectCmd::Update,
+            core::ptr::null_mut::<()>(),
+        )
+        .unwrap();
 
     unsafe {
         let value = map_stable.base_ptr::<u64>().read_volatile();
