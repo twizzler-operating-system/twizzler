@@ -45,6 +45,7 @@ impl PacketBufferBase {
     }
 }
 
+#[derive(Clone)]
 pub struct PacketObject {
     obj: Object<PacketBufferBase>,
 }

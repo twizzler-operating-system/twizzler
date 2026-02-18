@@ -25,7 +25,7 @@ pub struct DmaRegion<T: DeviceSync> {
     backing: Option<(Vec<PhysInfo>, u32)>,
     len: usize,
     access: Access,
-    //dma: Option<&'a DmaObject>,
+    dma: Option<DmaObject>,
     pool: Option<(Arc<AllocatableDmaObject>, SplitPageRange)>,
     options: DmaOptions,
     offset: usize,
@@ -77,6 +77,28 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
             pool,
             offset,
             _pd: PhantomData,
+            dma: None,
+        }
+    }
+
+    pub(super) fn new_with_virt(
+        len: usize,
+        access: Access,
+        options: DmaOptions,
+        offset: usize,
+        virt: *mut u8,
+        dma: DmaObject,
+    ) -> Self {
+        Self {
+            virt,
+            len,
+            access,
+            options,
+            backing: None,
+            pool: None,
+            offset,
+            _pd: PhantomData,
+            dma: Some(dma),
         }
     }
 
@@ -89,6 +111,9 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
     }
 
     fn dma_object(&self) -> &DmaObject {
+        if let Some(dma) = self.dma.as_ref() {
+            return dma;
+        }
         self.pool.as_ref().unwrap().0.dma_object()
     }
 
@@ -240,6 +265,21 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
     ) -> Self {
         Self {
             region: DmaRegion::new(nrbytes, access, options, offset, pool),
+            len,
+        }
+    }
+
+    pub(super) fn new_with_virt(
+        nrbytes: usize,
+        access: Access,
+        options: DmaOptions,
+        offset: usize,
+        len: usize,
+        virt: *mut u8,
+        dma: DmaObject,
+    ) -> Self {
+        Self {
+            region: DmaRegion::new_with_virt(nrbytes, access, options, offset, virt, dma),
             len,
         }
     }

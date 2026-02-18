@@ -378,5 +378,6 @@ hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
 errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
 ferroc = { path = "src/ports/ferroc" }
+virtio-drivers = { path = "src/ports/virtio-drivers" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }

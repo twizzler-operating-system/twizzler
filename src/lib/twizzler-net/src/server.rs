@@ -18,6 +18,10 @@ pub struct NetServer {
 }
 
 impl NetServer {
+    pub fn client_tx_packet_object(&self) -> &PacketObject {
+        self.client_tx.packet_object()
+    }
+
     pub fn rx_waiter(&self) -> ThreadSyncSleep {
         self.client_tx.rx_waiter()
     }
@@ -134,13 +138,13 @@ impl smoltcp::phy::Device for NetServer {
 
 pub struct NetServerTxToken<'a> {
     ns: &'a NetServer,
-    packet: PacketNum,
+    pub packet: PacketNum,
     consumed: bool,
 }
 
 pub struct NetServerRxToken<'a> {
     ns: &'a NetServer,
-    packet: PacketNum,
+    pub packet: PacketNum,
 }
 
 impl TxToken for NetServerTxToken<'_> {
@@ -149,7 +153,11 @@ impl TxToken for NetServerTxToken<'_> {
         F: FnOnce(&mut [u8]) -> R,
     {
         if len > self.ns.client_rx.packet_size() {
-            panic!("packet size exceeded");
+            panic!(
+                "packet size exceeded ({} {})",
+                len,
+                self.ns.client_rx.packet_size()
+            );
         }
         let mem = self.ns.client_rx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);

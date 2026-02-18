@@ -32,6 +32,10 @@ impl<S: Copy, C: Copy> Pair<S, C> {
     pub fn has_pending_msg(&self) -> bool {
         self.queue.has_pending_submission()
     }
+
+    pub fn packet_object(&self) -> &PacketObject {
+        &self.buf
+    }
 }
 
 #[derive(Default)]

@@ -7818,8 +7818,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "virtio-drivers"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7a6012590bf8cc11f57abb1b5a8470e2366353bf352386b48650a87b5538204"
 dependencies = [
  "bitflags 2.9.1",
  "embedded-io",
@@ -7827,6 +7825,7 @@ dependencies = [
  "log",
  "safe-mmio",
  "thiserror",
+ "twizzler-net",
  "zerocopy",
 ]
 
@@ -7852,8 +7851,11 @@ dependencies = [
  "once_cell",
  "smoltcp",
  "tracing",
+ "twizzler",
  "twizzler-abi",
  "twizzler-driver",
+ "twizzler-net",
+ "twizzler-rt-abi",
  "virtio-drivers",
  "volatile 0.5.4",
  "zerocopy",

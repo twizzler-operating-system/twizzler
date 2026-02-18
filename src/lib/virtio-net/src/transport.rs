@@ -1,10 +1,9 @@
 use core::{mem::size_of, ptr::NonNull};
 use std::sync::Arc;
 
-use smoltcp::iface::SocketHandle;
 use twizzler_abi::{
     device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags},
-    syscall::{sys_thread_sync, ThreadSync},
+    syscall::ThreadSync,
 };
 use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
 use virtio_drivers::{
@@ -58,15 +57,12 @@ fn get_device() -> Option<Device> {
 }
 
 impl TwizzlerTransport {
-    pub fn new(
-        notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
-    ) -> Result<Self, VirtioPciError> {
+    pub fn new() -> Result<Self, VirtioPciError> {
         let device = Arc::new(get_device().expect("failed to find virtio-net device"));
         let int = device.allocate_interrupt(0).unwrap();
         device
             .repr_mut()
             .register_interrupt(int.1 as usize, int.0, DeviceInterruptFlags::empty());
-        let int_device = device.clone();
 
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
         if info.get_data().vendor_id != 0x1AF4 {
@@ -161,17 +157,6 @@ impl TwizzlerTransport {
         let notify_region = notify_region.ok_or(VirtioPciError::MissingNotifyConfig)?;
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
-        let _thread = std::thread::spawn(move || loop {
-            if int_device.repr().check_for_interrupt(0).is_some() {
-                let _ = notifier.send(None);
-            }
-
-            if int_device.repr().check_for_interrupt(0).is_none() {
-                let int_sleep = int_device.repr().setup_interrupt_sleep(0);
-                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
-            }
-        });
-
         Ok(Self {
             device,
             common_cfg,
@@ -180,6 +165,18 @@ impl TwizzlerTransport {
             isr_status,
             config_space,
         })
+    }
+
+    pub fn has_work(&self) -> bool {
+        self.device.repr().check_for_interrupt(0).is_some()
+    }
+
+    pub fn get_sleep(&self) -> ThreadSync {
+        ThreadSync::new_sleep(self.device.repr().setup_interrupt_sleep(0))
+    }
+
+    pub fn device(&self) -> Arc<Device> {
+        self.device.clone()
     }
 }
 

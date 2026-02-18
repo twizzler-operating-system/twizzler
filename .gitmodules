@@ -49,4 +49,7 @@
 	branch = twizzler
 [submodule "src/ports/ferroc"]
 	path = src/ports/ferroc
-	url = git@github.com:dbittman/ferroc
+	url = ../../dbittman/ferroc
+[submodule "src/ports/virtio-drivers"]
+	path = src/ports/virtio-drivers
+	url = ../../twizzler-operating-system/virtio-drivers.git
