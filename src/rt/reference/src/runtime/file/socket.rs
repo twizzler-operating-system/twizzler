@@ -3,10 +3,12 @@ mod smoltcp;
 
 use std::{
     net::{SocketAddr, ToSocketAddrs},
-    sync::Arc,
+    sync::{atomic::AtomicU64, Arc},
 };
 
+use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
+use twizzler_rt_abi::{bindings::wait_kind, io::IoFlags};
 
 use crate::runtime::file::socket::smoltcp::UdpSocket;
 
@@ -19,6 +21,15 @@ pub enum SocketKind {
 }
 
 impl SocketKind {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+        match self {
+            SocketKind::None => Err(TwzError::NOT_SUPPORTED),
+            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.waitpoint(kind),
+            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.waitpoint(kind),
+            SocketKind::UdpSocket(udp_socket) => udp_socket.waitpoint(kind),
+        }
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self, std::io::Error> {
         SmolTcpListener::bind(addr).map(|listener| SocketKind::TcpListener(Arc::new(listener)))
     }
@@ -30,7 +41,7 @@ impl SocketKind {
     pub fn accept(&self) -> Result<Self, std::io::Error> {
         match self {
             SocketKind::TcpListener(listener) => listener
-                .accept()
+                .accept(IoFlags::empty())
                 .map(|stream| SocketKind::TcpStream(Arc::new(stream.0))),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -47,7 +58,8 @@ impl SocketKind {
     }
 
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self, std::io::Error> {
-        SmolTcpStream::connect(addr).map(|stream| SocketKind::TcpStream(Arc::new(stream)))
+        SmolTcpStream::connect(IoFlags::empty(), addr)
+            .map(|stream| SocketKind::TcpStream(Arc::new(stream)))
     }
 
     pub fn close(&self) -> Result<(), std::io::Error> {
@@ -74,10 +86,10 @@ impl SocketKind {
 }
 
 impl SocketKind {
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+    pub fn read(&self, buf: &mut [u8], flags: IoFlags) -> Result<usize, std::io::Error> {
         match self {
-            SocketKind::TcpStream(stream) => stream.read(buf),
-            SocketKind::UdpSocket(stream) => stream.read(buf),
+            SocketKind::TcpStream(stream) => stream.read(buf, flags),
+            SocketKind::UdpSocket(stream) => stream.read(buf, flags),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Invalid socket kind",
@@ -89,10 +101,11 @@ impl SocketKind {
         &self,
         buf: &mut [u8],
         ep: &mut twizzler_rt_abi::io::Endpoint,
+        flags: IoFlags,
     ) -> Result<usize, std::io::Error> {
         match self {
             SocketKind::UdpSocket(stream) => {
-                let val = stream.read_from(buf)?;
+                let val = stream.read_from(buf, flags)?;
                 if let Some(addr) = val.1.map(|x| x.endpoint) {
                     let sa = SocketAddr::from((addr.addr, addr.port));
                     let sa = twizzler_rt_abi::fd::SocketAddress::from(sa);
@@ -111,12 +124,13 @@ impl SocketKind {
         &self,
         buf: &[u8],
         ep: &twizzler_rt_abi::io::Endpoint,
+        flags: IoFlags,
     ) -> Result<usize, std::io::Error> {
         let sa = twizzler_rt_abi::fd::SocketAddress::try_from(*ep)?;
         let sa = SocketAddr::from(sa);
         match self {
             SocketKind::UdpSocket(stream) => {
-                stream.write_to(buf, sa.into())?;
+                stream.write_to(buf, sa.into(), flags)?;
                 Ok(buf.len())
             }
             _ => Err(std::io::Error::new(
@@ -128,10 +142,10 @@ impl SocketKind {
 }
 
 impl SocketKind {
-    pub fn write(&self, buf: &[u8]) -> Result<usize, std::io::Error> {
+    pub fn write(&self, buf: &[u8], flags: IoFlags) -> Result<usize, std::io::Error> {
         match self {
-            SocketKind::TcpStream(stream) => stream.write(buf),
-            SocketKind::UdpSocket(stream) => stream.write(buf).map(|_| buf.len()),
+            SocketKind::TcpStream(stream) => stream.write(buf, flags),
+            SocketKind::UdpSocket(stream) => stream.write(buf, flags).map(|_| buf.len()),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Invalid socket kind",

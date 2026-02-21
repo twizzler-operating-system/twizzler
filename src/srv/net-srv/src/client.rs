@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use smoltcp::{
-    phy::{Device, RxToken, TxToken},
+    phy::{Device, RxToken},
     time::Instant,
     wire::{EthernetFrame, PrettyPrinter},
 };
@@ -22,7 +22,7 @@ pub struct Client {
     pub ep: Mutex<NetServer>,
     jh: OnceLock<JoinHandle<()>>,
     pub active: AtomicBool,
-    pub ports: Mutex<HashSet<u16>>,
+    pub ports: Mutex<HashMap<u16, usize>>,
 }
 
 impl Client {
@@ -31,7 +31,7 @@ impl Client {
             ep: Mutex::new(ep),
             jh: OnceLock::new(),
             active: AtomicBool::new(true),
-            ports: Mutex::new(HashSet::new()),
+            ports: Mutex::new(HashMap::new()),
         });
         let _client = client.clone();
         let jh = std::thread::spawn(move || client_thread(_client));
@@ -59,6 +59,7 @@ fn client_thread(client: Arc<Client>) {
                 }
                 let tx = TxBuffer::from_packet(tx_po.clone(), buf.len(), packet, false);
                 device.transmit(tx);
+
                 //if let Some(dtx) = device.transmit(Instant::now()) {
                 //    dtx.consume(buf.len(), |dbuf| dbuf.copy_from_slice(buf));
                 //  }

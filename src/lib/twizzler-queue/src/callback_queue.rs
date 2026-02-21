@@ -44,11 +44,11 @@ impl<S: Copy, C: Copy> AsyncDuplexSetup for CallbackQueueReceiverInner<S, C> {
 }
 */
 
-impl<S: Copy + Send + Sync, C: Copy + Send + Sync> CallbackQueueReceiver<S, C> {
+impl<S: Copy + Send + Sync + 'static, C: Copy + Send + Sync + 'static> CallbackQueueReceiver<S, C> {
     /// Create a new CallbackQueueReceiver from a [Queue].
     pub fn new(queue: Queue<S, C>) -> Self {
         Self {
-            inner: Async::new(CallbackQueueReceiverInner { queue }).unwrap(),
+            inner: Async::new_pin(CallbackQueueReceiverInner { queue }).unwrap(),
         }
     }
 

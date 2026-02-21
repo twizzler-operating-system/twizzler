@@ -173,11 +173,11 @@ impl DeviceEventStream {
     pub(crate) fn new(device: Arc<Device>) -> Self {
         let asyncs = (0..NUM_DEVICE_INTERRUPTS)
             .into_iter()
-            .map(|i| Async::new(IntInner::new(device.clone(), i)).unwrap())
+            .map(|i| Async::new_pin(IntInner::new(device.clone(), i)).unwrap())
             .collect();
         let async_mb = (0..(MailboxPriority::Num as usize))
             .into_iter()
-            .map(|i| Async::new(MailboxInner::new(device.clone(), i)).unwrap())
+            .map(|i| Async::new_pin(MailboxInner::new(device.clone(), i)).unwrap())
             .collect();
         Self {
             inner: Mutex::new(DeviceEventStreamInner::new()),

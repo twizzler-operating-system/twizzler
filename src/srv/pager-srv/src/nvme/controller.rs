@@ -7,7 +7,6 @@ use std::{
     time::Instant,
 };
 
-use async_io::Async;
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
@@ -456,69 +455,6 @@ impl NvmeController {
         Some((inflight, ident))
     }
 
-    pub async fn identify_controller(&self) -> std::io::Result<IdentifyControllerDataStructure> {
-        // TODO: queue full
-        let (inflight, ident_dma) = self.send_identify_controller().unwrap();
-        let asif = Async::new(inflight)?;
-        let cc = asif
-            .read_with(|inflight| {
-                while let Some(_) = inflight.req.get_completion() {}
-                inflight.poll()
-            })
-            .await?;
-        if cc.status().is_error() {
-            return Err(ErrorKind::Other.into());
-        }
-        Ok(ident_dma.dma_region().with(|ident| ident.clone()))
-    }
-
-    pub async fn identify_namespace(
-        &self,
-        nsid: NamespaceId,
-    ) -> std::io::Result<IdentifyNamespaceDataStructure> {
-        // TODO: queue full
-        let (inflight, ident_dma) = self.send_identify_namespace(nsid).unwrap();
-        let asif = Async::new(inflight)?;
-        let cc = asif
-            .read_with(|inflight| {
-                while let Some(_) = inflight.req.get_completion() {}
-                inflight.poll()
-            })
-            .await?;
-        if cc.status().is_error() {
-            return Err(ErrorKind::Other.into());
-        }
-        Ok(ident_dma.dma_region().with(|ident| ident.clone()))
-    }
-
-    pub async fn flash_len(&self) -> usize {
-        if let Some(sz) = self.capacity.get() {
-            *sz
-        } else {
-            let ns = self
-                .identify_namespace(NamespaceId::new(1u32))
-                .await
-                .unwrap();
-            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
-            let _ = self.capacity.set(block_size * ns.capacity as usize);
-            block_size * ns.capacity as usize
-        }
-    }
-
-    pub async fn get_lba_size(&self) -> usize {
-        if let Some(sz) = self.block_size.get() {
-            *sz
-        } else {
-            let ns = self
-                .identify_namespace(NamespaceId::new(1u32))
-                .await
-                .unwrap();
-            let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
-            let _ = self.block_size.set(block_size);
-            block_size
-        }
-    }
-
     pub fn blocking_get_lba_size(&self) -> usize {
         if let Some(sz) = self.block_size.get() {
             *sz
@@ -534,6 +470,25 @@ impl NvmeController {
             let block_size = ns.lba_formats()[ns.formatted_lba_size.index()].data_size();
             let _ = self.block_size.set(block_size);
             block_size
+        }
+    }
+
+    pub fn blocking_get_flash_size(&self) -> usize {
+        if let Some(sz) = self.capacity.get() {
+            *sz
+        } else {
+            let (inflight, dma) = self
+                .send_identify_namespace(NamespaceId::new(1u32))
+                .unwrap();
+            let cc = inflight.wait().unwrap();
+            if cc.status().is_error() {
+                panic!("error on ident ns")
+            }
+            let ns = dma.dma_region().with(|ident| ident.clone());
+            let _ = self
+                .capacity
+                .set(ns.capacity as usize * self.blocking_get_lba_size());
+            ns.capacity as usize * self.blocking_get_lba_size()
         }
     }
 

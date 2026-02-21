@@ -1,5 +1,5 @@
 use smoltcp::{
-    phy::{Device, RxToken, TxToken},
+    phy::{Device, TxToken},
     time::Instant,
     wire::{EthernetFrame, PrettyPrinter},
 };

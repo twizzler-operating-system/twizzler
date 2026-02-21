@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::ErrorKind,
     net::SocketAddr,
     sync::{
@@ -6,9 +7,13 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread::JoinHandle,
+    usize,
 };
 
-use secgate::util::Handle;
+use secgate::{
+    util::{Descriptor, Handle},
+    TwzError,
+};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     socket::{
@@ -24,12 +29,14 @@ use twizzler_abi::syscall::{
     ThreadSyncWake,
 };
 use twizzler_net::{net_alloc_port, net_release_port, NetClient, NetClientConfig};
+use twizzler_rt_abi::bindings::{wait_kind, WAIT_READ, WAIT_WRITE};
 
 pub struct Engine {
     pub(super) core: Arc<Mutex<Core>>,
     waiter: Arc<Condvar>,
     notify: Arc<AtomicU64>,
     _polling_thread: JoinHandle<()>,
+    nc_handle: Descriptor,
 }
 
 pub(super) struct Core {
@@ -47,14 +54,6 @@ impl IfaceSet {
     fn new(device: NetClient) -> Self {
         let ifaces = Vec::new();
         Self { ifaces, device }
-    }
-
-    fn allocate_port(&self, port: Option<u16>) -> Option<u16> {
-        net_alloc_port(self.device.info.handle, port).ok()
-    }
-
-    fn return_port(&self, port: u16) {
-        let _ = net_release_port(self.device.info.handle, port);
     }
 
     fn insert_iface(&mut self, iface: Interface) {
@@ -91,12 +90,107 @@ impl IfaceSet {
 
 lazy_static::lazy_static! {
     pub(crate) static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
+    pub(crate) static ref WAITERS: Arc<Waiters> = Arc::new(Waiters::default());
+}
+
+struct Wait {
+    read: Box<AtomicU64>,
+    write: Box<AtomicU64>,
+}
+
+impl Wait {
+    pub fn new() -> Self {
+        Self {
+            read: Box::new(AtomicU64::new(1)),
+            write: Box::new(AtomicU64::new(1)),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Waiters {
+    map: Mutex<HashMap<SocketHandle, Wait>>,
+}
+
+impl Waiters {
+    pub fn waitpoint(
+        &self,
+        handle: SocketHandle,
+        kind: wait_kind,
+    ) -> Result<(*const AtomicU64, u64), TwzError> {
+        let mut map = self.map.lock().unwrap();
+        let entry = map.entry(handle).or_insert_with(|| Wait::new());
+        let ptr = match kind {
+            x if x == WAIT_READ => &*entry.read as *const _,
+            x if x == WAIT_WRITE => &*entry.write as *const _,
+            _ => return Err(TwzError::INVALID_ARGUMENT),
+        };
+        Ok((ptr, 0))
+    }
+
+    fn mark_waiter(&self, handle: SocketHandle, read: bool, write: bool) {
+        if let Some(wait) = self.map.lock().unwrap().get(&handle) {
+            let rwake = if read {
+                wait.read.swap(1, Ordering::SeqCst) == 0
+            } else {
+                wait.read.store(0, Ordering::SeqCst);
+                false
+            };
+            let wwake = if write {
+                wait.write.swap(1, Ordering::SeqCst) == 0
+            } else {
+                wait.write.store(0, Ordering::SeqCst);
+                false
+            };
+
+            let _ = if rwake && wwake {
+                sys_thread_sync(
+                    &mut [
+                        ThreadSync::new_wake(ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(&*wait.read),
+                            usize::MAX,
+                        )),
+                        ThreadSync::new_wake(ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(&*wait.write),
+                            usize::MAX,
+                        )),
+                    ],
+                    None,
+                )
+            } else if rwake {
+                sys_thread_sync(
+                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(&*wait.read),
+                        usize::MAX,
+                    ))],
+                    None,
+                )
+            } else {
+                sys_thread_sync(
+                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(&*wait.write),
+                        usize::MAX,
+                    ))],
+                    None,
+                )
+            };
+        }
+    }
+
+    fn init_waiter(&self, handle: SocketHandle) {
+        self.map.lock().unwrap().insert(handle, Wait::new());
+    }
+
+    fn remove_waiter(&self, handle: SocketHandle) {
+        self.map.lock().unwrap().remove(&handle);
+    }
 }
 
 impl Engine {
     fn new() -> Self {
         let (iface, device) = get_twznet_device_and_interface();
 
+        let nc_handle = device.info.handle;
         let mut nic = IfaceSet::new(device);
         nic.insert_iface(iface);
 
@@ -126,8 +220,8 @@ impl Engine {
                         tracing::debug!("tracked tcp socket {} in closed state", item.0);
                         core.release_socket(item.0);
                         core.tracking.remove(idx);
-                        core.ifaceset[0].return_port(item.1);
                         drop(core);
+                        ENGINE.return_port(item.1);
                         return true;
                     }
                 }
@@ -178,19 +272,21 @@ impl Engine {
             waiter,
             notify,
             _polling_thread: thread,
+            nc_handle,
         }
     }
 
-    pub fn allocate_port(&self, port: u16) -> Option<u16> {
-        self.core.lock().unwrap().ifaceset[0].allocate_port(Some(port))
-    }
-
-    pub fn get_ephemeral_port(&self) -> Option<u16> {
-        self.core.lock().unwrap().ifaceset[0].allocate_port(None)
+    pub fn allocate_port(&self, port: Option<u16>) -> Option<u16> {
+        let r = net_alloc_port(self.nc_handle, port);
+        r.ok()
     }
 
     pub fn return_port(&self, port: u16) {
-        self.core.lock().unwrap().ifaceset[0].return_port(port);
+        let _ = net_release_port(self.nc_handle, port);
+    }
+
+    pub fn get_ephemeral_port(&self) -> Option<u16> {
+        self.allocate_port(None)
     }
 
     fn wake(&self) {
@@ -218,6 +314,7 @@ impl Engine {
     // NonBlock, return the error.
     pub fn blocking<R>(
         &self,
+        non_block: bool,
         mut f: impl FnMut(&mut Core) -> std::io::Result<R>,
     ) -> std::io::Result<R> {
         let mut core = self.core.lock().unwrap();
@@ -237,6 +334,9 @@ impl Engine {
                     return Ok(r);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if non_block {
+                        return Err(e);
+                    }
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
                 }
@@ -274,11 +374,15 @@ impl Core {
     }
 
     pub fn add_udp_socket(&mut self, sock: SmolUdpSocket<'static>) -> SocketHandle {
-        self.socketset.add(sock)
+        let handle = self.socketset.add(sock);
+        WAITERS.init_waiter(handle);
+        handle
     }
 
     pub fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
-        self.socketset.add(sock)
+        let handle = self.socketset.add(sock);
+        WAITERS.init_waiter(handle);
+        handle
     }
 
     pub fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
@@ -294,6 +398,7 @@ impl Core {
     }
 
     pub fn release_socket(&mut self, handle: SocketHandle) {
+        WAITERS.remove_waiter(handle);
         self.socketset.remove(handle);
     }
 
@@ -301,6 +406,27 @@ impl Core {
         let mut res = false;
         for ifaceset in &mut self.ifaceset {
             res |= ifaceset.poll(&mut self.socketset);
+        }
+        if res {
+            for sock in self.socketset.iter_mut() {
+                match sock.1 {
+                    smoltcp::socket::Socket::Udp(socket) => {
+                        let ready_read = socket.can_recv();
+                        let ready_write = socket.can_send();
+                        if socket.can_recv() {
+                            WAITERS.mark_waiter(sock.0, ready_read, ready_write);
+                        }
+                    }
+                    smoltcp::socket::Socket::Tcp(socket) => {
+                        let ready_read = socket.can_recv();
+                        let ready_write = socket.can_send();
+                        if socket.can_recv() {
+                            WAITERS.mark_waiter(sock.0, ready_read, ready_write);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         // When we poll, notify the CV so that other waiting threads can retry their blocking
         // operations.

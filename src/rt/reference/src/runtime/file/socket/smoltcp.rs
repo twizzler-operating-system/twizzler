@@ -3,11 +3,12 @@ use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
 
+use secgate::TwzError;
 use smoltcp::{
     iface::SocketHandle,
     socket::{
@@ -18,8 +19,10 @@ use smoltcp::{
     storage::{PacketBuffer, PacketMetadata, RingBuffer},
     wire::{IpAddress, IpEndpoint},
 };
+use twizzler_rt_abi::{bindings::wait_kind, io::IoFlags};
 
 use super::engine::ENGINE;
+use crate::runtime::file::socket::engine::WAITERS;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
@@ -39,7 +42,22 @@ struct Listener {
     port: u16,
 }
 
+impl Drop for Listener {
+    fn drop(&mut self) {
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .get_mutable_socket(self.socket_handle)
+            .abort();
+        ENGINE.track(self.socket_handle, self.port, false);
+    }
+}
+
 impl SmolTcpListener {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+        WAITERS.waitpoint(self.listeners.lock().unwrap()[0].socket_handle, kind)
+    }
     /* each_addr():
      * parameters:
      * helper function for bind()
@@ -52,8 +70,7 @@ impl SmolTcpListener {
     ) -> Result<(u16, SocketAddr), Error> {
         let addrs = sock_addrs.to_socket_addrs()?;
         for addr in addrs {
-            tracing::debug!("each_addr: {:?}", addr);
-            if let Some(port) = ENGINE.allocate_port(addr.port()) {
+            if let Some(port) = ENGINE.allocate_port(Some(addr.port())) {
                 match s.listen(port) {
                     Ok(_) => return Ok((port, addr)),
                     Err(_) => {}
@@ -98,7 +115,7 @@ impl SmolTcpListener {
         SocketAddr::from(([127, 0, 0, 1], 443))
         let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
     */
-    const BACKLOG: usize = 64;
+    const BACKLOG: usize = 8;
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
 
@@ -127,9 +144,9 @@ impl SmolTcpListener {
      * machine)
      */
     // to think about: each socket must be pulled from the engine and checked for activeness.
-    pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
+    pub fn accept(&self, _flags: IoFlags) -> Result<(SmolTcpStream, SocketAddr), Error> {
         tracing::debug!("accept: {}", self.local_addr);
-        ENGINE.blocking(|core| {
+        ENGINE.blocking(false, |core| {
             let mut listeners = self.listeners.lock().unwrap();
 
             for listener in &mut *listeners {
@@ -189,15 +206,18 @@ impl core::fmt::Debug for SmolTcpStream {
 }
 
 impl SmolTcpStream {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+        WAITERS.waitpoint(self.inner.socket_handle, kind)
+    }
     /* read():
      * parameters - reference to where the data should be placed upon reading
      * return - number of bytes read upon success; error upon error
      * loads the data read into the buffer given
      * if shutdown(Shutdown::Read) has been called, all reads will return Ok(0)
      */
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+    pub fn read(&self, buf: &mut [u8], flags: IoFlags) -> Result<usize, Error> {
         let engine = &ENGINE;
-        engine.blocking(|core| {
+        engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_recv() {
                 Ok(socket.recv_slice(buf).unwrap())
@@ -220,9 +240,9 @@ impl SmolTcpStream {
      * result - number of bytes written upon success; error upon error.
      * writes given data to the connected socket.
      */
-    pub fn write(&self, buf: &[u8]) -> Result<usize, Error> {
+    pub fn write(&self, buf: &[u8], flags: IoFlags) -> Result<usize, Error> {
         let engine = &ENGINE;
-        engine.blocking(|core| {
+        engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
                 Ok(socket.send_slice(buf).unwrap())
@@ -274,7 +294,7 @@ impl SmolTcpStream {
      * parameters: address(es) a list of addresses may be given. must take a REMOTE HOST'S
      * address return: a smoltcpstream that is connected to the remote server.
      */
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
+    pub fn connect<A: ToSocketAddrs>(_flags: IoFlags, addr: A) -> Result<SmolTcpStream, Error> {
         let mut sock = {
             // create new socket
             let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
@@ -291,7 +311,7 @@ impl SmolTcpStream {
         };
         let handle = ENGINE.add_socket(sock);
 
-        ENGINE.blocking(|core| {
+        ENGINE.blocking(false, |core| {
             let socket = core.get_mutable_socket(handle);
             if socket.may_send() || socket.may_recv() {
                 Ok(())
@@ -387,9 +407,17 @@ impl core::fmt::Debug for UdpSocket {
 }
 
 impl UdpSocket {
-    pub fn read_from(&self, buf: &mut [u8]) -> Result<(usize, Option<UdpMetadata>), Error> {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+        WAITERS.waitpoint(self.inner.socket_handle, kind)
+    }
+
+    pub fn read_from(
+        &self,
+        buf: &mut [u8],
+        flags: IoFlags,
+    ) -> Result<(usize, Option<UdpMetadata>), Error> {
         let engine = &ENGINE;
-        engine.blocking(|core| {
+        engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_recv() {
                 Ok(socket.recv_slice(buf).map(|x| (x.0, Some(x.1))).unwrap())
@@ -402,8 +430,8 @@ impl UdpSocket {
         })
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.read_from(buf).map(|x| x.0)
+    pub fn read(&self, buf: &mut [u8], flags: IoFlags) -> Result<usize, Error> {
+        self.read_from(buf, flags).map(|x| x.0)
     }
 }
 
@@ -413,8 +441,8 @@ impl UdpSocket {
      * result - number of bytes written upon success; error upon error.
      * writes given data to the connected socket.
      */
-    pub fn write_to(&self, buf: &[u8], meta: UdpMetadata) -> Result<(), Error> {
-        ENGINE.blocking(|core| {
+    pub fn write_to(&self, buf: &[u8], meta: UdpMetadata, flags: IoFlags) -> Result<(), Error> {
+        ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_send() {
                 Ok(socket.send_slice(buf, meta).unwrap())
@@ -426,13 +454,13 @@ impl UdpSocket {
         })
     }
 
-    pub fn write(&self, buf: &[u8]) -> Result<(), Error> {
+    pub fn write(&self, buf: &[u8], flags: IoFlags) -> Result<(), Error> {
         let target = *self.inner.connect_addr.lock().unwrap();
         let meta = match target {
             Some(addr) => UdpMetadata::from(addr),
             None => return Err(ErrorKind::NotConnected.into()),
         };
-        self.write_to(buf, meta)
+        self.write_to(buf, meta, flags)
     }
 
     pub fn flush(&self) -> Result<(), Error> {
@@ -461,7 +489,9 @@ impl UdpSocket {
             if ephem {
                 port = ENGINE.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
             } else {
-                port = ENGINE.allocate_port(port).ok_or(ErrorKind::ResourceBusy)?;
+                port = ENGINE
+                    .allocate_port(Some(port))
+                    .ok_or(ErrorKind::ResourceBusy)?;
             }
             if sock.bind((addr, port)).is_ok() {
                 break;
@@ -544,7 +574,7 @@ pub fn dns(query: &str) -> Result<Vec<SocketAddr>, Error> {
     let handle = core.add_dns_socket(socket);
     drop(core);
 
-    let res = ENGINE.blocking(|core| {
+    let res = ENGINE.blocking(false, |core| {
         let socket = core.get_mutable_dns_socket(handle);
         let res = socket.get_query_result(qh);
         match res {

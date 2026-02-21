@@ -90,7 +90,7 @@ use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
 // core.h
 use twizzler_rt_abi::bindings::{
     binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, object_create,
-    object_source, object_tie, option_exit_code, release_flags, twz_error, u32_result,
+    object_source, object_tie, option_exit_code, release_flags, twz_error, u32_result, wait_kind,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
 
@@ -394,6 +394,24 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
     }
 }
 check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
+    fd: descriptor,
+    kind: wait_kind,
+    point: *mut *mut u64,
+    val: *mut u64,
+) -> twz_error {
+    match OUR_RUNTIME.fd_waitpoint(fd, kind) {
+        Ok((pt, v)) => {
+            point.write(pt.cast::<u64>() as *mut _);
+            val.write(v);
+            RawTwzError::success().raw()
+        }
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(

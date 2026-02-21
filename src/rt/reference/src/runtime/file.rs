@@ -5,7 +5,7 @@ use std::{
     net::{Shutdown, SocketAddr},
     ops::Deref,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{atomic::AtomicU64, Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -34,10 +34,12 @@ use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, endpoint, io_ctx, io_vec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, prot_kind_ProtKind_Stream,
-        socket_address, BIND_DATA_MAX, FD_CMD_DUP, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ,
+        OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
+    io::IoFlags,
     object::MapFlags,
     Result,
 };
@@ -157,6 +159,7 @@ impl FdKind {
         &mut self,
         buf: &mut [u8],
         ep: &mut twizzler_rt_abi::io::Endpoint,
+        flags: IoFlags,
     ) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().read(buf),
@@ -171,14 +174,14 @@ impl FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
-            FdKind::Socket(socket) => socket.read_from(buf, ep),
+            FdKind::Socket(socket) => socket.read_from(buf, ep, flags),
             FdKind::Pty(pty) => pty.read(buf),
             FdKind::Pipe(pipe) => pipe.read(buf),
             FdKind::Compartment(comp) => comp.read(buf),
         }
     }
 
-    pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub fn read(&mut self, buf: &mut [u8], flags: IoFlags) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().read(buf),
             FdKind::RawFile(arc) => arc.lock().unwrap().read(buf),
@@ -192,7 +195,7 @@ impl FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
-            FdKind::Socket(socket) => socket.read(buf),
+            FdKind::Socket(socket) => socket.read(buf, flags),
             FdKind::Pty(pty) => pty.read(buf),
             FdKind::Pipe(pipe) => pipe.read(buf),
             FdKind::Compartment(comp) => comp.read(buf),
@@ -203,6 +206,7 @@ impl FdKind {
         &mut self,
         buf: &[u8],
         ep: &twizzler_rt_abi::io::Endpoint,
+        flags: IoFlags,
     ) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().read(buf),
@@ -217,7 +221,7 @@ impl FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
-            FdKind::Socket(socket) => socket.write_to(buf, ep),
+            FdKind::Socket(socket) => socket.write_to(buf, ep, flags),
             FdKind::Pty(pty) => pty.write(buf),
             FdKind::Pipe(pipe) => pipe.write(buf),
             FdKind::Compartment(comp) => comp.write(buf),
@@ -225,8 +229,8 @@ impl FdKind {
     }
 }
 
-impl Write for FdKind {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl FdKind {
+    fn write(&mut self, buf: &[u8], flags: IoFlags) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().write(buf),
             FdKind::RawFile(arc) => arc.lock().unwrap().write(buf),
@@ -240,7 +244,7 @@ impl Write for FdKind {
             }
             FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
-            FdKind::Socket(socket) => socket.write(buf),
+            FdKind::Socket(socket) => socket.write(buf, flags),
             FdKind::Pty(pty) => pty.write(buf),
             FdKind::Pipe(pipe) => pipe.write(buf),
             FdKind::Compartment(comp) => comp.write(buf),
@@ -303,6 +307,7 @@ impl<T> Drop for MaybeNoDrop<T> {
 struct FileDesc {
     kind: FdKind,
     binding: MaybeNoDrop<Arc<binding_info>>,
+    flags: IoFlags,
 }
 
 impl FileDesc {
@@ -327,6 +332,7 @@ impl FileDesc {
         FileDesc {
             kind,
             binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
+            flags: IoFlags::empty(),
         }
     }
 
@@ -364,7 +370,7 @@ impl FileDesc {
         buf: &[u8],
         ep: &twizzler_rt_abi::io::Endpoint,
     ) -> std::io::Result<usize> {
-        self.kind.write_to(buf, ep)
+        self.kind.write_to(buf, ep, self.flags)
     }
 
     fn read_from(
@@ -372,19 +378,19 @@ impl FileDesc {
         buf: &mut [u8],
         ep: &mut twizzler_rt_abi::io::Endpoint,
     ) -> std::io::Result<usize> {
-        self.kind.read_from(buf, ep)
+        self.kind.read_from(buf, ep, self.flags)
     }
 }
 
 impl Read for FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.kind.read(buf)
+        self.kind.read(buf, self.flags)
     }
 }
 
 impl Write for FileDesc {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.kind.write(buf)
+        self.kind.write(buf, self.flags)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -1139,6 +1145,14 @@ impl ReferenceRuntime {
             return Err(TwzError::INVALID_ARGUMENT);
         };
 
+        if reg == IO_REGISTER_IO_FLAGS {
+            if val_len != size_of::<u32>() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            unsafe { val.cast::<u32>().write(fd.flags.bits()) };
+            return Ok(());
+        }
+
         match &mut fd.kind {
             //FdKind::Socket(socket_kind) => todo!(),
             //FdKind::Pty(pty_handle_kind) => todo!(),
@@ -1166,6 +1180,15 @@ impl ReferenceRuntime {
         let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
+
+        if reg == IO_REGISTER_IO_FLAGS {
+            if val_len != size_of::<u32>() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            let val = unsafe { val.cast::<u32>().read() };
+            fd.flags = IoFlags::from_bits_truncate(val);
+            return Ok(());
+        }
 
         match &mut fd.kind {
             //FdKind::Socket(socket_kind) => todo!(),
@@ -1259,6 +1282,20 @@ impl ReferenceRuntime {
         nr.insert(root, cur);
 
         Ok(())
+    }
+
+    pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<(*const AtomicU64, u64)> {
+        let binding = get_fd_slots().lock().unwrap();
+        let file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+
+        match &file_desc.kind {
+            FdKind::Socket(socket_kind) => socket_kind.waitpoint(kind),
+            _ => Err(TwzError::NOT_SUPPORTED),
+        }
     }
 
     pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {

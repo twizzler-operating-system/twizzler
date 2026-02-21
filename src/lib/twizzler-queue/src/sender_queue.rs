@@ -29,7 +29,9 @@ struct WaitPointFuture<'a, S: Copy + Send + Sync, C: Copy + Send + Sync> {
     sender: &'a QueueSender<S, C>,
 }
 
-impl<'a, S: Copy + Send + Sync, C: Copy + Send + Sync> Future for WaitPointFuture<'a, S, C> {
+impl<'a, S: Copy + Send + Sync + 'static, C: Copy + Send + Sync + 'static> Future
+    for WaitPointFuture<'a, S, C>
+{
     type Output = Result<(u32, C), QueueError>;
 
     fn poll(
@@ -71,13 +73,13 @@ impl<S: Copy, C: Copy> twizzler_futures::TwizzlerWaitable for QueueSenderInner<S
     }
 }
 
-impl<S: Copy + Sync + Send, C: Copy + Send + Sync> QueueSender<S, C> {
+impl<S: Copy + Sync + Send + 'static, C: Copy + Send + Sync + 'static> QueueSender<S, C> {
     /// Build a new QueueSender from a [Queue].
     pub fn new(queue: Queue<S, C>) -> Self {
         Self {
             counter: AtomicU32::new(0),
             reuse: Mutex::new(vec![]),
-            inner: Async::new(QueueSenderInner { queue }).unwrap(),
+            inner: Async::new_pin(QueueSenderInner { queue }).unwrap(),
             calls: Mutex::new(BTreeMap::new()),
         }
     }

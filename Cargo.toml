@@ -74,7 +74,7 @@ members = [
     #"src/bin/gfxtest",
     "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
     #"src/lib/sgtest", "src/srv/sgtest-srv",
-    "src/lib/twizzler-net",
+    "src/lib/twizzler-net", "src/bin/sshd",
 ]
 
 exclude = [
@@ -107,6 +107,7 @@ initrd = [
     "crate:trace",
     #"crate:gfxtest",
     "crate:shell",
+    "crate:sshd",
 
     "crate:sec",
     "crate:ptest",
@@ -339,12 +340,12 @@ getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twiz
 # Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
 getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
 
-polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
-#polling = { path = "src/ports/polling" }
-async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
-#async-io = { path = "src/ports/async-io" }
-async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
-#async-executor = { path = "src/ports/async-executor" }
+#polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
+polling = { path = "src/ports/polling" }
+#async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
+async-io = { path = "src/ports/async-io" }
+#async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
+async-executor = { path = "src/ports/async-executor" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 #parking_lot = { path = "src/ports/parking_lot" }
 # lock_api comes from the parking_lot repo

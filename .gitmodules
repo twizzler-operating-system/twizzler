@@ -53,3 +53,15 @@
 [submodule "src/ports/virtio-drivers"]
 	path = src/ports/virtio-drivers
 	url = ../../twizzler-operating-system/virtio-drivers.git
+[submodule "src/ports/polling"]
+	path = src/ports/polling
+	url = ../../twizzler-operating-system/polling.git
+[submodule "src/ports/async-io"]
+	path = src/ports/async-io
+	url = ../../twizzler-operating-system/async-io
+[submodule "src/ports/async-executor"]
+	path = src/ports/async-executor
+	url = ../../twizzler-operating-system/async-executor
+[submodule "src/ports/async-net"]
+	path = src/ports/async-net
+	url = ../../twizzler-operating-system/async-net

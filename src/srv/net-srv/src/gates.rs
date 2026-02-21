@@ -65,11 +65,16 @@ fn twz_net_alloc_port(desc: secgate::util::Descriptor, port: Option<u16>) -> Res
         .lookup(caller, desc)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
 
+    let mut ports = client.ports.lock().unwrap();
     let port = if let Some(port) = port {
-        if PORTS.get().unwrap().allocate_port(port) {
-            Some(port)
+        if !ports.contains_key(&port) {
+            if PORTS.get().unwrap().allocate_port(port) {
+                Some(port)
+            } else {
+                None
+            }
         } else {
-            None
+            Some(port)
         }
     } else {
         PORTS.get().unwrap().get_ephemeral_port()
@@ -78,7 +83,7 @@ fn twz_net_alloc_port(desc: secgate::util::Descriptor, port: Option<u16>) -> Res
         return Err(ResourceError::OutOfResources.into());
     };
 
-    client.ports.lock().unwrap().insert(port);
+    *ports.entry(port).or_default() += 1;
     Ok(port)
 }
 
@@ -95,9 +100,12 @@ fn twz_net_release_port(desc: secgate::util::Descriptor, port: u16) -> Result<()
     let client = handles
         .lookup(caller, desc)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
-
-    if client.ports.lock().unwrap().remove(&port) {
+    let mut ports = client.ports.lock().unwrap();
+    let entry = ports.entry(port).or_default();
+    *entry -= 1;
+    if *entry == 0 {
         PORTS.get().unwrap().return_port(port);
+        ports.remove(&port);
         Ok(())
     } else {
         Err(TwzError::INVALID_ARGUMENT)
@@ -117,7 +125,7 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
     if let Some(client) = handles.remove(caller, desc) {
         client.active.store(false, Ordering::SeqCst);
         for port in client.ports.lock().unwrap().drain() {
-            PORTS.get().unwrap().return_port(port);
+            PORTS.get().unwrap().return_port(port.0);
         }
     }
     Ok(())
