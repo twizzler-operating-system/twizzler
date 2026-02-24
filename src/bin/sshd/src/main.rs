@@ -2,7 +2,6 @@ use std::{
     future::pending,
     os::fd::FromRawFd,
     process::{Command, Stdio},
-    time::Duration,
 };
 
 use async_executor::Executor;
@@ -11,9 +10,9 @@ use embedded_io_async::{ErrorType, Read, Write};
 use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
 use miette::IntoDiagnostic;
 use sunset::{ChanHandle, SignKey};
-use sunset_async::{ChanInOut, ChanOut, ProgressHolder, SSHServer};
+use sunset_async::{ProgressHolder, SSHServer};
 use tracing::Level;
-use twizzler::object::{Object, TypedObject};
+use twizzler::object::Object;
 use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle};
 use twizzler_rt_abi::{
     fd::{RawFd, twz_rt_fd_close},
@@ -34,24 +33,26 @@ fn main() {
         async_io::block_on(EXECUTOR.run(pending::<()>()));
     });
 
-    let accept = async {
-        let listener = TcpListener::bind("0.0.0.0:5555").await.unwrap();
-        tracing::info!("waiting for incoming");
-        while let Ok(conn) = listener.accept().await {
-            tracing::info!("incoming connection from {}", conn.1);
+    let listener = async_io::block_on(async { TcpListener::bind("0.0.0.0:5555").await.unwrap() });
 
-            match sunset_server(conn.0).await {
-                Ok(_) => {
-                    tracing::info!("closed connection to {}", conn.1);
-                }
-                Err(e) => {
-                    tracing::error!("error in connection to {}: {}", conn.1, e);
-                }
+    tracing::info!("ready for incomming connections");
+    for _ in 0..4 {
+        async_io::block_on(EXECUTOR.run(async { accept(&listener).await }));
+    }
+}
+
+async fn accept(listener: &TcpListener) {
+    while let Ok(conn) = listener.accept().await {
+        tracing::info!("accepting connection from {}", conn.1);
+        match sunset_server(conn.0).await {
+            Ok(_) => {
+                tracing::info!("closed connection to {}", conn.1);
+            }
+            Err(e) => {
+                tracing::error!("error in connection to {}: {}", conn.1, e);
             }
         }
-    };
-
-    async_io::block_on(EXECUTOR.run(accept));
+    }
 }
 
 struct Reader {
