@@ -4,14 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zssh = "*"
 twizzler-io = { path = "../../lib/twizzler-io" }
 twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 tracing = "*"
 tracing-subscriber = "*"
 rand = { version = "*" }
 embedded-io-async = "*"
+embedded-io = "*"
 async-io = "*"
 async-executor = "*"
 async-net = "*"
-futures-lite = "*"
+futures = "*"
+sunset = { version = "*", features = ["std"] }
+sunset-async = "*"
+miette = "*"
+critical-section = { version = "1.1", features = ["std"]}
+async-channel = "*"
+blocking = "*"

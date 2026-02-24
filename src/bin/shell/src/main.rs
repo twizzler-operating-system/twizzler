@@ -694,7 +694,10 @@ fn main() {
             let prompt = format!("root@twizzler [{}]# ", cd.display());
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
                 .unwrap();
-            let line = editor.readline(prompt.as_str(), &mut io).unwrap();
+            let line = match editor.readline(prompt.as_str(), &mut io) {
+                Ok(line) => line,
+                Err(_) => break,
+            };
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS)
                 .unwrap();
             line.to_string()
