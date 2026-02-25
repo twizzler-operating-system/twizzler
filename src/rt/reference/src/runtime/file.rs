@@ -1154,7 +1154,9 @@ impl ReferenceRuntime {
         }
 
         match &mut fd.kind {
-            //FdKind::Socket(socket_kind) => todo!(),
+            FdKind::Socket(socket_kind) => {
+                return socket_kind.get_config(reg, val, val_len);
+            }
             //FdKind::Pty(pty_handle_kind) => todo!(),
             //FdKind::Pipe(pipe) => todo!(),
             FdKind::Compartment(compartment_file) => {

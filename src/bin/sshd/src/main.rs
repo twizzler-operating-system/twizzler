@@ -12,7 +12,7 @@ use miette::IntoDiagnostic;
 use sunset::{ChanHandle, SignKey};
 use sunset_async::{ProgressHolder, SSHServer};
 use tracing::Level;
-use twizzler::object::Object;
+use twizzler::object::{Object, RawObject};
 use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle};
 use twizzler_rt_abi::{
     fd::{RawFd, twz_rt_fd_close},
@@ -24,7 +24,7 @@ static EXECUTOR: Executor = Executor::new();
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::DEBUG)
+            .with_max_level(Level::INFO)
             .finish(),
     )
     .unwrap();
@@ -120,26 +120,33 @@ fn setup_pty() -> (RawFd, Object<PtyBase>) {
     let pty =
         twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
     let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
-    //let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
 
     (client_fd, pty)
 }
 
+struct SessionCtx {
+    chan_handle: ChanHandle,
+    command: Option<String>,
+    username: Option<String>,
+    env: Vec<(String, String)>,
+}
+
 async fn shell(
     serv: &SSHServer<'_>,
-    ch_ch: async_channel::Receiver<(ChanHandle, Option<String>)>,
+    ch_ch: async_channel::Receiver<SessionCtx>,
 ) -> miette::Result<()> {
-    let (ch, command) = ch_ch.recv().await.into_diagnostic()?;
-    let (stdio, _stderr) = serv.stdio_stderr(ch).await.into_diagnostic()?;
+    let ctx = ch_ch.recv().await.into_diagnostic()?;
+    let (stdio, _stderr) = serv.stdio_stderr(ctx.chan_handle).await.into_diagnostic()?;
     let (mut stdin, mut stdout) = stdio.split();
 
-    let mut cmd = if let Some(command) = command {
-        Command::new(command)
-    } else {
-        Command::new("/initrd/shell")
-    };
+    let mut cmd = Command::new("/initrd/shell");
 
-    //cmd.env_clear();
+    if let Some(command) = ctx.command.as_ref() {
+        cmd.arg("-c");
+        cmd.arg(command);
+    }
+
+    cmd.envs(ctx.env.into_iter());
 
     let (client_fd, pty) = setup_pty();
 
@@ -186,7 +193,12 @@ async fn shell(
     }
     .fuse();
 
-    tracing::debug!("spawning {}", cmd.get_program().display());
+    tracing::debug!(
+        "spawning {} {:?} for {:?}",
+        cmd.get_program().display(),
+        cmd.get_args(),
+        ctx.username
+    );
     let mut handle = cmd.spawn().into_diagnostic()?;
 
     twz_rt_fd_close(client_fd);
@@ -205,14 +217,23 @@ async fn shell(
         _ = handle => (),
     };
 
+    pty.handle()
+        .cmd(
+            twizzler_rt_abi::object::ObjectCmd::Delete,
+            core::ptr::null_mut::<()>(),
+        )
+        .unwrap();
+
     Ok(())
 }
 
 async fn session(
     serv: &SSHServer<'_>,
-    sender: async_channel::Sender<(ChanHandle, Option<String>)>,
+    sender: async_channel::Sender<SessionCtx>,
 ) -> miette::Result<()> {
     let mut chan_handle = None;
+    let mut username = None;
+    let mut env = Vec::new();
     loop {
         let mut ph = ProgressHolder::new();
         let event = serv.progress(&mut ph).await.into_diagnostic()?;
@@ -224,6 +245,7 @@ async fn session(
             sunset::ServEvent::FirstAuth(serv_first_auth) => {
                 let name = serv_first_auth.username().into_diagnostic()?;
                 tracing::debug!("logging in as {}", name);
+                username = Some(name.to_string());
                 serv_first_auth.allow().into_diagnostic()?;
             }
             //sunset::ServEvent::PasswordAuth(serv_password_auth) => todo!(),
@@ -243,7 +265,15 @@ async fn session(
                 tracing::debug!("shell start on channel {}", serv_shell_request.channel());
                 if let Some(ch) = chan_handle.take() {
                     serv_shell_request.succeed().into_diagnostic()?;
-                    sender.send((ch, None)).await.into_diagnostic()?;
+                    sender
+                        .send(SessionCtx {
+                            chan_handle: ch,
+                            command: None,
+                            username: username.clone(),
+                            env: env.clone(),
+                        })
+                        .await
+                        .into_diagnostic()?;
                 } else {
                     serv_shell_request.fail().into_diagnostic()?;
                 }
@@ -257,7 +287,15 @@ async fn session(
                 if let Some(ch) = chan_handle.take() {
                     let command = serv_exec_request.command().into_diagnostic()?.to_string();
                     serv_exec_request.succeed().into_diagnostic()?;
-                    sender.send((ch, Some(command))).await.into_diagnostic()?;
+                    sender
+                        .send(SessionCtx {
+                            chan_handle: ch,
+                            command: Some(command),
+                            username: username.clone(),
+                            env: env.clone(),
+                        })
+                        .await
+                        .into_diagnostic()?;
                 } else {
                     serv_exec_request.fail().into_diagnostic()?;
                 }
@@ -272,6 +310,7 @@ async fn session(
                 let value = serv_environment_request.value().into_diagnostic()?;
                 let ch = serv_environment_request.channel();
                 tracing::debug!("env request on channel {}: {}={}", ch, name, value);
+                env.push((name.to_string(), value.to_string()));
                 serv_environment_request.succeed().into_diagnostic()?;
             }
             sunset::ServEvent::PollAgain => {}

@@ -1,6 +1,6 @@
 use std::{
     io::{Error, ErrorKind},
-    net::{Shutdown, SocketAddr, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, ToSocketAddrs},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,7 +19,7 @@ use smoltcp::{
     storage::{PacketBuffer, PacketMetadata, RingBuffer},
     wire::{IpAddress, IpEndpoint},
 };
-use twizzler_rt_abi::{bindings::wait_kind, io::IoFlags};
+use twizzler_rt_abi::{bindings::wait_kind, fd::SocketAddress, io::IoFlags};
 
 use super::engine::ENGINE;
 use crate::runtime::file::socket::engine::WAITERS;
@@ -55,6 +55,16 @@ impl Drop for Listener {
 }
 
 impl SmolTcpListener {
+    pub fn addr(&self, peer: bool) -> SocketAddress {
+        if peer {
+            SocketAddress::default()
+        } else {
+            let mut addr = self.local_addr;
+            addr.set_port(self.port);
+            addr.into()
+        }
+    }
+
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         WAITERS.waitpoint(self.listeners.lock().unwrap()[0].socket_handle, kind)
     }
@@ -206,6 +216,24 @@ impl core::fmt::Debug for SmolTcpStream {
 }
 
 impl SmolTcpStream {
+    pub fn addr(&self, peer: bool) -> SocketAddress {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_socket(self.inner.socket_handle);
+        let ep = if peer {
+            sock.remote_endpoint()
+        } else {
+            sock.local_endpoint()
+        };
+        let addr: Option<SocketAddr> = ep.map(|e| {
+            let sock: SocketAddr = match e.addr {
+                IpAddress::Ipv4(address) => (Ipv4Addr::from_octets(address.0), e.port).into(),
+                IpAddress::Ipv6(address) => (Ipv6Addr::from_octets(address.0), e.port).into(),
+            };
+            sock
+        });
+        addr.map(|a| a.into()).unwrap_or_default()
+    }
+
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
     }
@@ -407,6 +435,21 @@ impl core::fmt::Debug for UdpSocket {
 }
 
 impl UdpSocket {
+    pub fn addr(&self, peer: bool) -> SocketAddress {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
+        let ep = if peer { None } else { Some(sock.endpoint()) };
+        let addr: Option<SocketAddress> = ep.map(|e| {
+            let sock: SocketAddr = match e.addr {
+                Some(IpAddress::Ipv4(address)) => (Ipv4Addr::from_octets(address.0), e.port).into(),
+                Some(IpAddress::Ipv6(address)) => (Ipv6Addr::from_octets(address.0), e.port).into(),
+                None => return SocketAddress::default(),
+            };
+            sock.into()
+        });
+        addr.unwrap_or_default()
+    }
+
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
     }

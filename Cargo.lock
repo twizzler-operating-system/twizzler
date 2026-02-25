@@ -6193,6 +6193,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "colored",
  "embedded-io",
  "hhmmss",

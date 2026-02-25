@@ -17,6 +17,7 @@ use std::{
     time::Instant,
 };
 
+use clap::Parser;
 use colored::Colorize;
 use embedded_io::ErrorType;
 use miette::IntoDiagnostic;
@@ -669,6 +670,12 @@ unsafe extern "C-unwind" fn upcall_handler(frame: *mut c_void, data: *const c_vo
     }
 }
 
+#[derive(Debug, Clone, clap::Parser)]
+struct Args {
+    #[clap(short)]
+    cmd: Option<String>,
+}
+
 fn main() {
     unsafe { twz_rt_set_upcall_handler(Some(upcall_handler)) };
 
@@ -681,6 +688,14 @@ fn main() {
         .unwrap();
     colored::control::set_override(true);
     let mut jobs = Jobs::default();
+
+    let args = Args::parse();
+
+    if let Some(cmd) = args.cmd.as_ref() {
+        run_cmd(jobs, cmd);
+        return;
+    }
+
     loop {
         jobs.scan();
 
@@ -728,6 +743,17 @@ fn main() {
             }
         } else {
             eprintln!("shell: {}", res.unwrap_err());
+        }
+    }
+}
+
+fn run_cmd(mut jobs: Jobs, cmd: &str) {
+    if !cmd.is_empty() {
+        let cmd = ShellCommand::parse(cmd).unwrap();
+        let mut ctx = InvokeCtx::new(&mut jobs);
+        let res = cmd.invoke(&mut ctx);
+        if let Err(e) = res {
+            eprintln!("shell: {}", e);
         }
     }
 }

@@ -3,12 +3,17 @@ mod smoltcp;
 
 use std::{
     net::{SocketAddr, ToSocketAddrs},
+    os::raw::c_void,
     sync::{atomic::AtomicU64, Arc},
 };
 
 use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
-use twizzler_rt_abi::{bindings::wait_kind, io::IoFlags};
+use twizzler_rt_abi::{
+    bindings::{wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER},
+    fd::SocketAddress,
+    io::IoFlags,
+};
 
 use crate::runtime::file::socket::smoltcp::UdpSocket;
 
@@ -21,6 +26,34 @@ pub enum SocketKind {
 }
 
 impl SocketKind {
+    fn get_endpoint_addr(&self, peer: bool) -> Result<SocketAddress, TwzError> {
+        match self {
+            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
+            SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.addr(peer)),
+            SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.addr(peer)),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.addr(peer)),
+        }
+    }
+
+    pub fn get_config(&self, reg: u32, val: *mut c_void, val_len: usize) -> Result<(), TwzError> {
+        let bytes = unsafe { std::slice::from_raw_parts_mut(val as *mut u8, val_len) };
+        bytes.fill(0);
+
+        fn write_data<T>(data: T, ptr: *mut c_void, val_len: usize) -> Result<(), TwzError> {
+            if val_len < size_of::<T>() || ptr.is_null() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            Ok(unsafe { ptr.cast::<T>().write(data) })
+        }
+
+        match reg {
+            x if x == IO_REGISTER_ADDR => write_data(self.get_endpoint_addr(false)?, val, val_len),
+            x if x == IO_REGISTER_PEER => write_data(self.get_endpoint_addr(true)?, val, val_len),
+
+            _ => Ok(()),
+        }
+    }
+
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         match self {
             SocketKind::None => Err(TwzError::NOT_SUPPORTED),
