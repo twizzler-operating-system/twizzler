@@ -216,6 +216,10 @@ impl Monitor {
                 };
             }),
         )?;
+        let mon = get_monitor();
+        let mut comps = mon.comp_mgr.write(ThreadKey::get().unwrap());
+        // This creates a per-thread structure in the compartment.
+        let _pt = comps.get_mut(instance)?.get_per_thread(thread.id);
         Ok(thread.id)
     }
 

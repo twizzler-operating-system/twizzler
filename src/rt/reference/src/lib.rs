@@ -14,6 +14,7 @@
 #![feature(once_cell_try)]
 #![feature(normalize_lexically)]
 #![feature(random)]
+#![feature(io_error_inprogress)]
 
 pub(crate) mod arch;
 

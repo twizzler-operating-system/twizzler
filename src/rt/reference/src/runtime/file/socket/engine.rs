@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     net::SocketAddr,
     sync::{
@@ -43,6 +43,7 @@ pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
     tracking: Vec<(SocketHandle, u16)>,
+    listeners: HashSet<SocketHandle>,
 }
 
 struct IfaceSet {
@@ -182,7 +183,7 @@ impl Waiters {
     }
 
     fn remove_waiter(&self, handle: SocketHandle) {
-        self.map.lock().unwrap().remove(&handle);
+        self.mark_waiter(handle, false, false);
     }
 }
 
@@ -261,8 +262,8 @@ impl Engine {
                     .iter()
                     .any(|iface| iface.device.has_rx_pending());
                 drop(core);
-
-                if !any_ready && notify.swap(0, Ordering::SeqCst) == 0 {
+                let n = notify.swap(0, Ordering::SeqCst);
+                if !any_ready && n == 0 {
                     let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
                 }
             }
@@ -301,8 +302,8 @@ impl Engine {
         .unwrap();
     }
 
-    pub fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
-        self.core.lock().unwrap().add_socket(socket)
+    pub fn add_socket(&self, socket: Socket<'static>, is_listening: bool) -> SocketHandle {
+        self.core.lock().unwrap().add_socket(socket, is_listening)
     }
 
     pub fn add_udp_socket(&self, socket: SmolUdpSocket<'static>) -> SocketHandle {
@@ -366,6 +367,7 @@ impl Core {
             socketset,
             ifaceset,
             tracking: Vec::new(),
+            listeners: HashSet::new(),
         }
     }
 
@@ -379,9 +381,12 @@ impl Core {
         handle
     }
 
-    pub fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
+    pub fn add_socket(&mut self, sock: Socket<'static>, is_listening: bool) -> SocketHandle {
         let handle = self.socketset.add(sock);
         WAITERS.init_waiter(handle);
+        if is_listening {
+            self.listeners.insert(handle);
+        }
         handle
     }
 
@@ -418,9 +423,19 @@ impl Core {
                         }
                     }
                     smoltcp::socket::Socket::Tcp(socket) => {
-                        let ready_read = socket.can_recv();
-                        let ready_write = socket.can_send();
-                        if socket.can_recv() {
+                        if self.listeners.contains(&sock.0) {
+                            if socket.is_active()
+                                || !socket.is_open()
+                                || !socket.is_listening()
+                                || socket.may_recv()
+                                || socket.may_send()
+                            {
+                                self.listeners.remove(&sock.0);
+                                WAITERS.mark_waiter(sock.0, true, true);
+                            }
+                        } else {
+                            let ready_read = socket.can_recv();
+                            let ready_write = socket.can_send();
                             WAITERS.mark_waiter(sock.0, ready_read, ready_write);
                         }
                     }

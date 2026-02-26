@@ -25,6 +25,8 @@ fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
+            .without_time()
+            .compact()
             .finish(),
     )
     .unwrap();

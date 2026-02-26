@@ -203,6 +203,22 @@ fn initialize_network() {
     std::mem::forget(comp);
 }
 
+fn initialize_sshd() {
+    info!("starting ssh server");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/sshd")
+        .expect("failed to find object");
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("sshd", "sshd", id, NewCompartmentFlags::empty())
+            .args(&["sshd"])
+            .load()
+            .expect("failed to initialize ssh server");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
+    std::mem::forget(comp);
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -249,6 +265,10 @@ fn main() {
     initialize_network();
     initialize_display();
 
+    std::env::set_var("PATH", "/initrd");
+
+    initialize_sshd();
+
     if start_unittest {
         // Load and wait for tests to complete
         run_tests();
@@ -268,8 +288,6 @@ fn main() {
     }
 
     println!("Hi, welcome to the basic twizzler test console.");
-
-    std::env::set_var("PATH", "/initrd");
 
     let pty =
         twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();

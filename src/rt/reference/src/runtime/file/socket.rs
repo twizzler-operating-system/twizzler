@@ -10,7 +10,7 @@ use std::{
 use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
 use twizzler_rt_abi::{
-    bindings::{wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER},
+    bindings::{wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER, IO_REGISTER_SOCKET_FLAGS},
     fd::SocketAddress,
     io::IoFlags,
 };
@@ -35,6 +35,39 @@ impl SocketKind {
         }
     }
 
+    fn get_socket_flags(&self) -> Result<u32, TwzError> {
+        match self {
+            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
+            SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.flags()),
+            SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.flags()),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.flags()),
+        }
+    }
+
+    fn set_socket_flags(&self, flags: u32) -> Result<(), TwzError> {
+        match self {
+            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
+            SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.set_flags(flags)),
+            SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.set_flags(flags)),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.set_flags(flags)),
+        }
+    }
+
+    pub fn set_config(&self, reg: u32, val: *const c_void, val_len: usize) -> Result<(), TwzError> {
+        fn read_data<T>(ptr: *const c_void, val_len: usize) -> Result<T, TwzError> {
+            if val_len < size_of::<T>() || ptr.is_null() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            Ok(unsafe { ptr.cast::<T>().read() })
+        }
+
+        match reg {
+            x if x == IO_REGISTER_SOCKET_FLAGS => self.set_socket_flags(read_data(val, val_len)?),
+
+            _ => Err(TwzError::INVALID_ARGUMENT),
+        }
+    }
+
     pub fn get_config(&self, reg: u32, val: *mut c_void, val_len: usize) -> Result<(), TwzError> {
         let bytes = unsafe { std::slice::from_raw_parts_mut(val as *mut u8, val_len) };
         bytes.fill(0);
@@ -49,6 +82,7 @@ impl SocketKind {
         match reg {
             x if x == IO_REGISTER_ADDR => write_data(self.get_endpoint_addr(false)?, val, val_len),
             x if x == IO_REGISTER_PEER => write_data(self.get_endpoint_addr(true)?, val, val_len),
+            x if x == IO_REGISTER_SOCKET_FLAGS => write_data(self.get_socket_flags(), val, val_len),
 
             _ => Ok(()),
         }

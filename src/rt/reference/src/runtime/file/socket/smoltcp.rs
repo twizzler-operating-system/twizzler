@@ -19,7 +19,11 @@ use smoltcp::{
     storage::{PacketBuffer, PacketMetadata, RingBuffer},
     wire::{IpAddress, IpEndpoint},
 };
-use twizzler_rt_abi::{bindings::wait_kind, fd::SocketAddress, io::IoFlags};
+use twizzler_rt_abi::{
+    bindings::{wait_kind, SOCKET_FLAGS_NODELAY},
+    fd::SocketAddress,
+    io::IoFlags,
+};
 
 use super::engine::ENGINE;
 use crate::runtime::file::socket::engine::WAITERS;
@@ -55,6 +59,12 @@ impl Drop for Listener {
 }
 
 impl SmolTcpListener {
+    pub fn flags(&self) -> u32 {
+        0
+    }
+
+    pub fn set_flags(&self, _flags: u32) {}
+
     pub fn addr(&self, peer: bool) -> SocketAddress {
         if peer {
             SocketAddress::default()
@@ -105,8 +115,8 @@ impl SmolTcpListener {
 
     fn bind_once<A: ToSocketAddrs>(addrs: A) -> Result<Listener, Error> {
         let (sock, port, local_address) =
-            Self::do_bind(addrs).inspect_err(|e| tracing::warn!("do_bind: {e}"))?;
-        let handle = ENGINE.add_socket(sock);
+            Self::do_bind(addrs).inspect_err(|e| tracing::debug!("do_bind: {e}"))?;
+        let handle = ENGINE.add_socket(sock, true);
         let tcp_listener = Listener {
             socket_handle: handle,
             port,
@@ -154,9 +164,9 @@ impl SmolTcpListener {
      * machine)
      */
     // to think about: each socket must be pulled from the engine and checked for activeness.
-    pub fn accept(&self, _flags: IoFlags) -> Result<(SmolTcpStream, SocketAddr), Error> {
+    pub fn accept(&self, flags: IoFlags) -> Result<(SmolTcpStream, SocketAddr), Error> {
         tracing::debug!("accept: {}", self.local_addr);
-        ENGINE.blocking(false, |core| {
+        ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let mut listeners = self.listeners.lock().unwrap();
 
             for listener in &mut *listeners {
@@ -168,7 +178,7 @@ impl SmolTcpListener {
                     let sock = Self::do_bind(self.local_addr).inspect_err(|e| {
                         tracing::warn!("failed to rebind new socket after accept: {e}")
                     })?;
-                    let newhandle = core.add_socket(sock.0);
+                    let newhandle = core.add_socket(sock.0, true);
 
                     let stream = SmolTcpStream {
                         inner: Arc::new(TcpStreamInner {
@@ -185,7 +195,7 @@ impl SmolTcpListener {
                     if let Ok(sock) = Self::do_bind(self.local_addr).inspect_err(|e| {
                         tracing::warn!("failed to rebind socket after detecting reset: {e}")
                     }) {
-                        let newhandle = core.add_socket(sock.0);
+                        let newhandle = core.add_socket(sock.0, true);
                         listener.socket_handle = newhandle;
                     }
                 }
@@ -216,6 +226,24 @@ impl core::fmt::Debug for SmolTcpStream {
 }
 
 impl SmolTcpStream {
+    pub fn flags(&self) -> u32 {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_socket(self.inner.socket_handle);
+        let mut flags = 0;
+        if !sock.nagle_enabled() {
+            flags |= SOCKET_FLAGS_NODELAY;
+        }
+        flags
+    }
+
+    pub fn set_flags(&self, flags: u32) {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_socket(self.inner.socket_handle);
+        if flags & SOCKET_FLAGS_NODELAY != 0 {
+            sock.set_nagle_enabled(false);
+        }
+    }
+
     pub fn addr(&self, peer: bool) -> SocketAddress {
         let mut core = ENGINE.core.lock().unwrap();
         let sock = core.get_mutable_socket(self.inner.socket_handle);
@@ -322,7 +350,7 @@ impl SmolTcpStream {
      * parameters: address(es) a list of addresses may be given. must take a REMOTE HOST'S
      * address return: a smoltcpstream that is connected to the remote server.
      */
-    pub fn connect<A: ToSocketAddrs>(_flags: IoFlags, addr: A) -> Result<SmolTcpStream, Error> {
+    pub fn connect<A: ToSocketAddrs>(flags: IoFlags, addr: A) -> Result<SmolTcpStream, Error> {
         let mut sock = {
             // create new socket
             let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
@@ -337,17 +365,21 @@ impl SmolTcpStream {
             ENGINE.return_port(port);
             return Err(e);
         };
-        let handle = ENGINE.add_socket(sock);
+        let handle = ENGINE.add_socket(sock, true);
 
-        ENGINE.blocking(false, |core| {
+        ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(handle);
             if socket.may_send() || socket.may_recv() {
                 Ok(())
             } else if !socket.is_active() {
-                tracing::error!("connection reset! ({:?})", socket.state());
+                tracing::debug!("connection reset! ({:?})", socket.state());
                 return Err(ErrorKind::ConnectionReset.into());
             } else {
-                Err(ErrorKind::WouldBlock.into())
+                if flags.contains(IoFlags::NONBLOCKING) {
+                    Err(ErrorKind::InProgress.into())
+                } else {
+                    Err(ErrorKind::WouldBlock.into())
+                }
             }
         })?;
 
@@ -435,6 +467,12 @@ impl core::fmt::Debug for UdpSocket {
 }
 
 impl UdpSocket {
+    pub fn flags(&self) -> u32 {
+        0
+    }
+
+    pub fn set_flags(&self, _flags: u32) {}
+
     pub fn addr(&self, peer: bool) -> SocketAddress {
         let mut core = ENGINE.core.lock().unwrap();
         let sock = core.get_mutable_udp_socket(self.inner.socket_handle);

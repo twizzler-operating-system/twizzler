@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-io = { workspace = true }
+async-net = "*"
+async-executor = { workspace = true }
+futures-lite = "*"

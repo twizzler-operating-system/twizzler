@@ -430,6 +430,7 @@ impl RunCompLoader {
             controller,
             loader_config,
         )?;
+        tracing::trace!("starting {} as {}", self.root_comp.name, root_rc.instance);
 
         let mut ids = vec![root_rc.instance];
         // Make all the handles first, for easier cleanup.
