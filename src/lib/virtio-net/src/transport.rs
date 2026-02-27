@@ -1,5 +1,5 @@
 use core::{
-    mem::{align_of, size_of},
+    mem::size_of,
     ptr::NonNull,
 };
 use std::sync::Arc;
@@ -11,9 +11,10 @@ use twizzler_abi::{
 };
 use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
 use virtio_drivers::{
-    transport::{pci::VirtioPciError, DeviceStatus, DeviceType, Transport},
+    transport::{pci::VirtioPciError, DeviceStatus, DeviceType, InterruptStatus, Transport},
     Error,
 };
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 use virtio_pcie::{VirtioIsrStatus, VirtioPciNotifyCap};
 use volatile::{map_field, VolatilePtr};
 
@@ -38,7 +39,7 @@ unsafe impl Send for TwizzlerTransport {}
 fn get_device() -> Option<Device> {
     let devices = devmgr::get_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(2, 0, 0),
-    })?;
+    }).ok()?;
 
     for device in &devices {
         let device = Device::new(device.id).ok();
@@ -335,35 +336,44 @@ impl Transport for TwizzlerTransport {
         map_field!(ptr.queue_enable).read() == 1
     }
 
-    fn ack_interrupt(&mut self) -> bool {
+    fn ack_interrupt(&mut self) -> InterruptStatus {
         let bar = self.device.find_mmio_bar(self.isr_status.bar).unwrap();
         let mut reference =
             unsafe { bar.get_mmio_offset_mut::<VirtioIsrStatus>(self.isr_status.offset) };
         let ptr = reference.as_mut_ptr();
 
         let status = ptr.read();
-        status & 0x3 != 0
+        InterruptStatus::from_bits_truncate(status as u32)
     }
 
-    //Taken from the provided virtio drivers pci transport
-    fn config_space<T: 'static>(&self) -> virtio_drivers::Result<NonNull<T>> {
-        if let Some(config_space) = self.config_space {
-            if size_of::<T>() > config_space.len() * size_of::<u32>() {
-                Err(Error::ConfigSpaceTooSmall)
-            } else if align_of::<T>() > 4 {
-                // Panic as this should only happen if the driver is written incorrectly.
-                panic!(
-                    "Driver expected config space alignment of {} bytes, but VirtIO only guarantees 4 byte alignment.",
-                    align_of::<T>()
-                );
-            } else {
-                // TODO: Use NonNull::as_non_null_ptr once it is stable.
-                let config_space_ptr = NonNull::new(config_space.as_ptr() as *mut u32).unwrap();
-                Ok(config_space_ptr.cast())
-            }
-        } else {
-            Err(Error::ConfigSpaceMissing)
+    fn read_config_generation(&self) -> u32 {
+        let bar = self.device.find_mmio_bar(self.common_cfg.bar).unwrap();
+        let mut reference =
+            unsafe { bar.get_mmio_offset_mut::<VirtioCommonCfg>(self.common_cfg.offset) };
+        let ptr = reference.as_mut_ptr();
+        map_field!(ptr.config_generation).read() as u32
+    }
+
+    fn read_config_space<T: FromBytes + IntoBytes>(&self, offset: usize) -> virtio_drivers::Result<T> {
+        let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
+        let config_len = config_space.len() * size_of::<u32>();
+        if offset + size_of::<T>() > config_len {
+            return Err(Error::ConfigSpaceTooSmall);
         }
+        let ptr = config_space.as_ptr() as *const u8;
+        let src = unsafe { core::slice::from_raw_parts(ptr.add(offset), size_of::<T>()) };
+        T::read_from_bytes(src).map_err(|_| Error::ConfigSpaceTooSmall)
+    }
+
+    fn write_config_space<T: IntoBytes + Immutable>(&mut self, offset: usize, value: T) -> virtio_drivers::Result<()> {
+        let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
+        let config_len = config_space.len() * size_of::<u32>();
+        if offset + size_of::<T>() > config_len {
+            return Err(Error::ConfigSpaceTooSmall);
+        }
+        let ptr = config_space.as_ptr() as *mut u8;
+        let dst = unsafe { core::slice::from_raw_parts_mut(ptr.add(offset), size_of::<T>()) };
+        value.write_to(dst).map_err(|_| Error::ConfigSpaceTooSmall)
     }
 }
 
@@ -398,7 +408,9 @@ fn device_type(pci_device_id: u16) -> DeviceType {
         TRANSITIONAL_SCSI_HOST => DeviceType::ScsiHost,
         TRANSITIONAL_ENTROPY_SOURCE => DeviceType::EntropySource,
         TRANSITIONAL_9P_TRANSPORT => DeviceType::_9P,
-        id if id >= PCI_DEVICE_ID_OFFSET => DeviceType::from(id - PCI_DEVICE_ID_OFFSET),
-        _ => DeviceType::Invalid,
+        id if id >= PCI_DEVICE_ID_OFFSET => {
+            DeviceType::try_from(id - PCI_DEVICE_ID_OFFSET).unwrap_or(DeviceType::Network)
+        }
+        _ => DeviceType::Network, // fallback; shouldn't be reached for our use case
     }
 }
