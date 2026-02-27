@@ -438,6 +438,37 @@ impl NameSession<'_> {
             .ok_or(NamingError::NotFound.into())
     }
 
+    pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
+        // Look up the old entry (don't follow symlinks — we're moving the entry itself)
+        let (old_node, old_container) =
+            self.namei_exist(None, &old, Self::MAX_SYMLINK_DEREF, false)?;
+
+        // Check that the new path doesn't already exist
+        let (new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
+        let Err(new_name) = new_node else {
+            return Err(NamingError::AlreadyExists.into());
+        };
+
+        // Create new entry preserving the old node's type and data
+        let new_entry = if old_node.kind == NsNodeKind::SymLink {
+            NsNode::new(
+                NsNodeKind::SymLink,
+                old_node.id,
+                &new_name,
+                Some(old_node.readlink()?),
+            )?
+        } else {
+            NsNode::new::<_, &str>(old_node.kind, old_node.id, &new_name, None)?
+        };
+
+        // Insert at new location, then remove from old location
+        new_container.insert(new_entry);
+        old_container
+            .remove(old_node.name()?)
+            .map(|_| ())
+            .ok_or(NamingError::NotFound.into())
+    }
+
     pub fn link<P: AsRef<Path>, L: AsRef<Path>>(&self, name: P, link: L) -> Result<()> {
         let (node, container) = self.namei(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         let Err(name) = node else {

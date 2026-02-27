@@ -116,6 +116,12 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         self.api.mkns(self.desc, name_len, persist)
     }
 
+    pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&mut self, old: P, new: Q) -> Result<()> {
+        let old_len = self.write_buffer(old)?;
+        let new_len = self.write_buffer_at(new, old_len)?;
+        self.api.rename(self.desc, old_len, new_len)
+    }
+
     pub fn symlink<P: AsRef<Path>, L: AsRef<Path>>(&mut self, path: P, link: L) -> Result<()> {
         let name_len = self.write_buffer(path)?;
         let link_len = self.write_buffer_at(link, name_len)?;
