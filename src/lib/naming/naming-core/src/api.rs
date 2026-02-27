@@ -14,5 +14,6 @@ pub trait NamerAPI {
     fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> Result<usize>;
     fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> Result<usize>;
     fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()>;
+    fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()>;
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()>;
 }
