@@ -1008,47 +1008,11 @@ impl ReferenceRuntime {
     }
 
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
-        let mut session = get_naming_handle().lock().unwrap();
+        let mut session = get_naming_handle()
+            .ok_or(TwzError::NOT_SUPPORTED)?
+            .lock()
+            .unwrap();
         Ok(session.rename(old, new)?)
-    }
-
-    pub fn reopen_anon(
-        &self,
-        fd: RawFd,
-        kind: OpenAnonKind,
-        _open_opt: OperationOptions,
-        bind_info: *mut c_void,
-        _bind_info_len: usize,
-        _prot: prot_kind,
-    ) -> Result<()> {
-        tracing::debug!("reopen_anon: {:?}", kind);
-        let elem = match kind {
-            OpenAnonKind::SocketConnect => {
-                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_address;
-                let addr = unsafe { &*addr };
-                FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(*addr)))?)
-            }
-            OpenAnonKind::SocketBind => {
-                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_address;
-                if addr.is_null() {
-                    FdKind::Socket(SocketKind::None)
-                } else {
-                    let addr = unsafe { &*addr };
-                    FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(*addr)))?)
-                }
-            }
-            _ => {
-                return Err(TwzError::INVALID_ARGUMENT);
-            }
-        };
-
-        let mut binding = get_fd_slots().lock().unwrap();
-        let _ = binding
-            .insert(fd.try_into().unwrap(), elem)
-            .ok_or(ArgumentError::BadHandle)?;
-        drop(binding);
-
-        Ok(())
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {

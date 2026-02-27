@@ -369,34 +369,6 @@ impl Transport for TwizzlerTransport {
         let dst = unsafe { core::slice::from_raw_parts_mut(ptr.add(offset), size_of::<T>()) };
         value.write_to(dst).map_err(|_| Error::ConfigSpaceTooSmall)
     }
-
-    fn write_config_space<T: IntoBytes + Immutable>(
-        &mut self,
-        offset: usize,
-        value: T,
-    ) -> virtio_drivers::Result<()> {
-        if let Some(config_space) = self.config_space {
-            if offset > config_space.len() * size_of::<u32>() {
-                Err(Error::ConfigSpaceTooSmall)
-            } else {
-                // TODO: Use NonNull::as_non_null_ptr once it is stable.
-                unsafe {
-                    config_space
-                        .as_ptr()
-                        .cast::<T>()
-                        .byte_add(offset)
-                        .write_volatile(value)
-                };
-                Ok(())
-            }
-        } else {
-            Err(Error::ConfigSpaceMissing)
-        }
-    }
-
-    fn read_config_generation(&self) -> u32 {
-        0
-    }
 }
 
 impl Drop for TwizzlerTransport {

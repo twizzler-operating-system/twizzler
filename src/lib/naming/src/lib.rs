@@ -18,6 +18,8 @@ fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {}
 #[secgate::gatecall]
 fn enumerate_names_nsid(desc: Descriptor, id: ObjID) -> Result<usize> {}
 #[secgate::gatecall]
+fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {}
+#[secgate::gatecall]
 fn remove(desc: Descriptor, name_len: usize) -> Result<()> {}
 #[secgate::gatecall]
 fn change_namespace(desc: Descriptor, name_len: usize) -> Result<()> {}
@@ -59,7 +61,7 @@ impl NamerAPI for StaticNamingAPI {
     }
 
     fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
-        naming_srv::rename(desc, old_len, new_len)
+        rename(desc, old_len, new_len)
     }
 
     fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
