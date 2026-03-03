@@ -411,12 +411,6 @@ impl SmolTcpStream {
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap(); // acquire mutex
         let socket = core.get_mutable_socket(self.inner.socket_handle);
-        tracing::debug!(
-            "socket {} shutdown: {:?}, state = {:?}",
-            self.inner.socket_handle,
-            how,
-            socket.state()
-        );
         if socket.state() == State::Closed {
             // if already closed, exit early
             return Ok(());

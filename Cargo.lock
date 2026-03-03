@@ -6450,6 +6450,7 @@ dependencies = [
  "sunset",
  "sunset-async",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "twizzler",
  "twizzler-io",

@@ -64,7 +64,6 @@ unsafe impl Hal for TwzHal {
     // Required methods
     fn dma_alloc(pages: usize, direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         assert!(pages == 1, "Only 1 page supported");
-        twizzler_abi::klog_println!("dma_alloc");
 
         let mut twzhal = get_twz_hal().lock().unwrap();
         let mut dma_slice = if let Some(buffer) = twzhal.available.pop() {

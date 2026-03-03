@@ -1,14 +1,13 @@
 use std::{
-    future::pending,
     os::fd::FromRawFd,
     process::{Command, Stdio},
 };
 
-use async_executor::Executor;
+use async_executor::LocalExecutor;
 use async_net::{TcpListener, TcpStream};
 use embedded_io_async::{ErrorType, Read, Write};
 use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
-use miette::IntoDiagnostic;
+use miette::{Context, IntoDiagnostic};
 use sunset::{ChanHandle, SignKey};
 use sunset_async::{ProgressHolder, SSHServer};
 use tracing::Level;
@@ -19,8 +18,6 @@ use twizzler_rt_abi::{
     object::ObjectCreate,
 };
 
-static EXECUTOR: Executor = Executor::new();
-
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -30,17 +27,20 @@ fn main() {
             .finish(),
     )
     .unwrap();
-
-    std::thread::spawn(|| {
-        async_io::block_on(EXECUTOR.run(pending::<()>()));
-    });
+    //tracing_log::LogTracer::init().unwrap();
 
     let listener = async_io::block_on(async { TcpListener::bind("0.0.0.0:5555").await.unwrap() });
 
     tracing::info!("ready for incomming connections");
     for _ in 0..4 {
-        async_io::block_on(EXECUTOR.run(async { accept(&listener).await }));
+        let listener = listener.clone();
+        std::thread::spawn(move || {
+            let ex = LocalExecutor::new();
+            async_io::block_on(ex.run(async { accept(&listener).await }));
+        });
     }
+    let ex = LocalExecutor::new();
+    async_io::block_on(ex.run(async { accept(&listener).await }));
 }
 
 async fn accept(listener: &TcpListener) {
@@ -97,25 +97,38 @@ async fn sunset_server(conn: TcpStream) -> miette::Result<()> {
     let mut rsock = Reader { sock: conn.clone() };
     let mut wsock = Writer { sock: conn.clone() };
 
-    let (send, recv) = async_channel::bounded(1);
+    let out = {
+        let (send, recv) = async_channel::bounded(1);
 
-    let runner = async { serv.run(&mut rsock, &mut wsock).await.into_diagnostic() }.fuse();
-    futures::pin_mut!(runner);
-    let session = session(&serv, send).fuse();
-    futures::pin_mut!(session);
-    let shell = shell(&serv, recv).fuse();
-    futures::pin_mut!(shell);
+        let runner = async {
+            serv.run(&mut rsock, &mut wsock)
+                .await
+                .into_diagnostic()
+                .with_context(|| "server-run")
+        }
+        .fuse();
+        futures::pin_mut!(runner);
+        let session = session(&serv, send).fuse();
+        futures::pin_mut!(session);
+        let shell = shell(&serv, recv).fuse();
+        futures::pin_mut!(shell);
 
-    let out = futures::select! {
-        out = runner => out,
-        out = session => out,
-        out = shell => out,
+        let out = futures::select! {
+            out = runner => out,
+            out = session => out,
+            out = shell => out,
+        }?;
+        conn.shutdown(std::net::Shutdown::Read)
+            .into_diagnostic()
+            .with_context(|| "from shutdown")?;
+
+        runner.await?;
+        out
     };
-    conn.shutdown(std::net::Shutdown::Read).into_diagnostic()?;
+    drop(wsock);
+    drop(rsock);
 
-    runner.await?;
-
-    out
+    Ok(out)
 }
 
 fn setup_pty() -> (RawFd, Object<PtyBase>) {
@@ -196,12 +209,15 @@ async fn shell(
     .fuse();
 
     tracing::debug!(
-        "spawning {} {:?} for {:?}",
+        "spawning {} {:?} for {:?} (cfd = {})",
         cmd.get_program().display(),
         cmd.get_args(),
-        ctx.username
+        ctx.username,
+        client_fd
     );
-    let mut handle = cmd.spawn().into_diagnostic()?;
+    let mut handle = blocking::unblock(move || cmd.spawn())
+        .await
+        .into_diagnostic()?;
 
     twz_rt_fd_close(client_fd);
     let handle = blocking::unblock(move || {
@@ -219,6 +235,7 @@ async fn shell(
         _ = handle => (),
     };
 
+    tracing::debug!("shell exited");
     pty.handle()
         .cmd(
             twizzler_rt_abi::object::ObjectCmd::Delete,
@@ -317,6 +334,7 @@ async fn session(
             }
             sunset::ServEvent::PollAgain => {}
             sunset::ServEvent::Defunct => {
+                tracing::debug!("server defunct");
                 return Ok(());
             }
             _ => {
