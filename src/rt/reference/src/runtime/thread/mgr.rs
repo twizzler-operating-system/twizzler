@@ -85,10 +85,9 @@ impl ThreadManagerInner {
     }
 
     fn scan_for_exited_except(&mut self, id: u32) {
-        for (_, th) in self
-            .all_threads
-            .extract_if(|_, th| th.id != id && th.repr().get_state() == ExecutionState::Exited)
-        {
+        for (_, th) in self.all_threads.extract_if(.., |_, th| {
+            th.id != id && th.repr().get_state() == ExecutionState::Exited
+        }) {
             trace!("found orphaned thread {}", th.id);
             self.to_cleanup.push(th);
         }
@@ -162,7 +161,13 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub(super) fn impl_spawn(&self, args: twizzler_rt_abi::thread::ThreadSpawnArgs) -> Result<u32> {
+    pub(super) fn impl_spawn(
+        &self,
+        mut args: twizzler_rt_abi::thread::ThreadSpawnArgs,
+    ) -> Result<u32> {
+        if args.stack_size < 1024 * 1024 * 8 {
+            args.stack_size = 1024 * 1024 * 8;
+        }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
         let tls = TLS_GEN_MGR
@@ -191,13 +196,13 @@ impl ReferenceRuntime {
             "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
             id.id,
             stack_raw,
-            trampoline as usize,
+            trampoline as *const () as usize,
             tls,
         );
 
         let new_args = ThreadSpawnArgs {
             stack_size,
-            start: trampoline as usize,
+            start: trampoline as *const () as usize,
             arg: arg_raw,
         };
 

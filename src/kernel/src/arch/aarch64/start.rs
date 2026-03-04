@@ -1,12 +1,13 @@
+#![allow(static_mut_refs)]
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
 
 use limine::{request::*, *};
 
 use crate::{
+    BootInfo,
     initrd::BootModule,
     memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
-    BootInfo,
 };
 
 pub enum BootInfoSystemTable {
@@ -54,11 +55,11 @@ impl BootInfo for Armv8BootInfo {
         )
     }
 
-    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
+    fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr {
         match table {
             BootInfoSystemTable::Dtb => match DTB_REQ.get_response() {
-                Some(resp) => VirtAddr::from_ptr(resp.dtb_ptr()),
-                None => VirtAddr::new(0).unwrap(),
+                Some(resp) => PhysAddr::new(resp.dtb_ptr() as usize as u64).unwrap(),
+                None => PhysAddr::new(0).unwrap(),
             },
             BootInfoSystemTable::Efi => todo!("get EFI system table"),
         }
@@ -85,31 +86,31 @@ impl From<EntryType> for MemoryRegionKind {
 }
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static ENTRY_POINT: EntryPointRequest = EntryPointRequest::new().with_entry_point(limine_entry);
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static MEMORY_MAP: MemoryMapRequest = MemoryMapRequest::new();
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static KERNEL_ELF: KernelFileRequest = KernelFileRequest::new();
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static USER_MODULES: ModuleRequest = ModuleRequest::new();
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static DTB_REQ: DeviceTreeBlobRequest = DeviceTreeBlobRequest::new();
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 
 // the kernel's entry point function from the limine bootloader

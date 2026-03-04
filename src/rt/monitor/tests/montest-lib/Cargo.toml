@@ -5,11 +5,8 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [dependencies]
-secgate = { path = "../../../../lib/secgate" }
-twizzler-runtime = { path = "../../.." }
+secgate = { workspace = true }
+twizzler-runtime = { workspace = true }
 twizzler-rt-abi = { path = "../../../../abi/rt-abi/" }
 twizzler-abi = { path = "../../../../lib/twizzler-abi" }

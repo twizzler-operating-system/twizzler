@@ -7,3 +7,4 @@ edition = "2021"
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler = { path = "../../lib/twizzler" }
 monitor-api = { path = "../../rt/monitor-api" }
+secgate = { path = "../../lib/secgate" }

@@ -2,19 +2,18 @@
 //! symbols so that we can just call into the monitor without having to have it as an explicit
 //! dependency.
 
-#![feature(naked_functions)]
 #![feature(linkage)]
-#![feature(result_flattening)]
 #![feature(thread_local)]
 #![feature(pointer_is_aligned_to)]
 #![feature(tuple_trait)]
+#![allow(unexpected_cfgs)]
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
     marker::{PhantomData, Tuple},
     ptr::NonNull,
     sync::{
-        atomic::{AtomicPtr, AtomicU32, Ordering},
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
         OnceLock,
     },
 };
@@ -27,19 +26,141 @@ use secgate::{
     util::{Descriptor, Handle},
     Crossing, DynamicSecGate,
 };
-use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
-
-#[allow(unused_imports, unused_variables, unexpected_cfgs)]
-mod gates {
-    include! {"../../monitor/secapi/gates.rs"}
-}
-
-pub use gates::*;
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{sys_thread_sync, ThreadSync, ThreadSyncReference, ThreadSyncWake},
+};
 use twizzler_rt_abi::{
+    bindings::binding_info,
     debug::{DlPhdrInfo, LinkMap, LoadedImageId},
     error::{ArgumentError, TwzError},
+    thread::ThreadSpawnArgs,
 };
 
+#[secgate::gatecall]
+pub fn monitor_rt_get_library_info(desc: Descriptor) -> Result<LibraryInfoRaw, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_spawn_thread(
+    args: ThreadSpawnArgs,
+    thread_pointer: usize,
+    stack_pointer: usize,
+) -> Result<ObjID, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_comp_config() -> Result<usize, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_get_library_handle(
+    compartment: Option<Descriptor>,
+    lib_n: usize,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_handle(compartment: ObjID) -> Result<Descriptor, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_info(
+    desc: Option<Descriptor>,
+) -> Result<CompartmentInfoRaw, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_compartment_dynamic_gate(
+    desc: Option<Descriptor>,
+    name_len: usize,
+) -> Result<usize, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_deps(
+    desc: Option<Descriptor>,
+    dep_n: usize,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_thread(
+    desc: Option<Descriptor>,
+    dep_n: usize,
+) -> Result<ThreadInfo, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_load_compartment(
+    root_object: ObjID,
+    name_len: u64,
+    args_len: u64,
+    env_len: u64,
+    flags: u32,
+    config: u64,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_compartment_wait(desc: Option<Descriptor>, flags: u64) -> Result<u64, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_drop_compartment_handle(desc: Descriptor) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_load_library(
+    compartment: Option<Descriptor>,
+    id: ObjID,
+) -> Result<Descriptor, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_drop_library_handle(desc: Descriptor) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_map(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+) -> Result<crate::MappedObjectAddrs, TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_pair_map(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+    id2: ObjID,
+    flags2: twizzler_rt_abi::object::MapFlags,
+) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_object_unmap(
+    id: ObjID,
+    flags: twizzler_rt_abi::object::MapFlags,
+) -> Result<(), TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_thread_simple_buffer() -> Result<ObjID, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_comp_ctrl(cmd: MonitorCompControlCmd) -> Result<Option<i32>, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_set_nameroot(root: ObjID) -> Result<(), TwzError> {}
+#[secgate::gatecall]
+pub fn monitor_rt_post_signal(
+    comp: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_set_controller(comp: ObjID, controller: ObjID) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_compartment_id(id: ObjID) -> Result<Descriptor, TwzError> {}
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
 #[repr(C)]
@@ -51,6 +172,8 @@ pub struct SharedCompConfig {
     tls_template: AtomicPtr<TlsTemplateInfo>,
     /// The root library ID for this compartment. May be None if no libraries have been loaded.
     pub root_library_id: Option<LoadedImageId>,
+    pub posted_signals: AtomicU64,
+    pub loader_config: CompartmentLoaderConfig,
 }
 
 struct CompConfigFinder {
@@ -164,11 +287,17 @@ impl TlsTemplateInfo {
 }
 
 impl SharedCompConfig {
-    pub fn new(sctx: ObjID, tls_template: *mut TlsTemplateInfo) -> Self {
+    pub fn new(
+        sctx: ObjID,
+        tls_template: *mut TlsTemplateInfo,
+        loader_config: CompartmentLoaderConfig,
+    ) -> Self {
         Self {
             sctx,
             tls_template: AtomicPtr::new(tls_template),
             root_library_id: None,
+            posted_signals: AtomicU64::new(0),
+            loader_config,
         }
     }
 
@@ -181,9 +310,26 @@ impl SharedCompConfig {
     pub fn get_tls_template(&self) -> *const TlsTemplateInfo {
         self.tls_template.load(Ordering::SeqCst)
     }
-}
 
-pub use gates::LibraryInfo as LibraryInfoRaw;
+    pub fn read_posted_signals(&self) -> u64 {
+        self.posted_signals.swap(0, Ordering::SeqCst)
+    }
+
+    pub fn peek_posted_signals(&self) -> u64 {
+        self.posted_signals.load(Ordering::SeqCst)
+    }
+
+    pub fn post_signal(&self, signal: u64) {
+        self.posted_signals.fetch_or(1 << signal, Ordering::SeqCst);
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.posted_signals),
+                usize::MAX,
+            ))],
+            None,
+        );
+    }
+}
 
 /// Contains information about a library loaded into the address space.
 #[derive(Debug)]
@@ -237,7 +383,7 @@ pub struct LibraryHandle {
 impl LibraryHandle {
     /// Get the library info.
     pub fn info(&self) -> LibraryInfo<'_> {
-        LibraryInfo::from_raw(gates::monitor_rt_get_library_info(self.desc).unwrap())
+        LibraryInfo::from_raw(monitor_rt_get_library_info(self.desc).unwrap())
     }
 
     /// Get the descriptor for this handle.
@@ -267,7 +413,7 @@ impl<'a> LibraryLoader<'a> {
     /// Load the library.
     pub fn load(&self) -> Result<LibraryHandle, TwzError> {
         let desc: Descriptor =
-            gates::monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)?;
+            monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)?;
         Ok(LibraryHandle { desc })
     }
 }
@@ -280,7 +426,7 @@ pub struct CompartmentHandle {
 impl CompartmentHandle {
     /// Get the compartment info.
     pub fn info(&self) -> CompartmentInfo<'_> {
-        CompartmentInfo::from_raw(gates::monitor_rt_get_compartment_info(self.desc).unwrap())
+        CompartmentInfo::from_raw(monitor_rt_get_compartment_info(self.desc).unwrap())
     }
 
     /// Get the descriptor for this handle, or None if the handle refers to the current compartment.
@@ -293,32 +439,72 @@ impl CompartmentHandle {
         name: &str,
     ) -> Result<DynamicSecGate<'_, A, R>, TwzError> {
         let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
-        let address = gates::monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
+        let address = monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
         Ok(DynamicSecGate::new(address))
+    }
+
+    pub fn signal(&self, sig: u64) -> Result<(), TwzError> {
+        let target = self.info().id;
+        monitor_rt_post_signal(Some(target), sig, PostSignalFlags::empty())
     }
 }
 
 /// A builder-type for loading compartments.
 pub struct CompartmentLoader {
     name: String,
+    root_object: ObjID,
     args: Vec<String>,
     env: Option<Vec<String>>,
     flags: NewCompartmentFlags,
+    config: CompartmentLoaderConfig,
+    _fd_spec: Vec<binding_info>,
+}
+
+fn load_fd_specs_from_runtime() -> Vec<binding_info> {
+    let mut v = vec![binding_info::default(); 8];
+    loop {
+        let len =
+            unsafe { twizzler_rt_abi::bindings::twz_rt_fd_read_binds(v.as_mut_ptr(), v.len()) };
+        if len == v.len() {
+            v.extend_from_slice(&[binding_info::default(); 8]);
+        } else {
+            v.truncate(len);
+            break;
+        }
+    }
+    v
 }
 
 impl CompartmentLoader {
     /// Make a new compartment loader.
     pub fn new(
         compname: impl ToString,
-        libname: impl ToString,
+        exename: impl ToString,
+        root_object: ObjID,
         flags: NewCompartmentFlags,
     ) -> Self {
+        let mut config = CompartmentLoaderConfig::default();
+        let fd_spec = load_fd_specs_from_runtime();
+        config.with_fd_spec(&fd_spec);
         Self {
-            name: format!("{}::{}", compname.to_string(), libname.to_string()),
+            name: format!("{}::{}", compname.to_string(), exename.to_string()),
             flags,
             env: None,
             args: vec![],
+            config,
+            root_object,
+            _fd_spec: fd_spec,
         }
+    }
+
+    pub fn with_controller(&mut self, con: ControllerOption) -> &mut Self {
+        self.config.controller = con;
+        self
+    }
+
+    pub fn with_fd_specs<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
+        self.config.with_fd_spec(spec);
+        self
     }
 
     /// Append args to this compartment.
@@ -364,11 +550,13 @@ impl CompartmentLoader {
         if len < envs_len + args_len + name_len {
             return Err(ArgumentError::InvalidArgument.into());
         }
-        let desc = gates::monitor_rt_load_compartment(
+        let desc = monitor_rt_load_compartment(
+            self.root_object,
             name_len as u64,
             args_len as u64,
             envs_len as u64,
             self.flags.bits(),
+            (&self.config as *const _) as usize as u64,
         )?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
@@ -383,13 +571,13 @@ impl Handle for CompartmentHandle {
     where
         Self: Sized,
     {
-        let desc = gates::monitor_rt_get_compartment_handle(info)?;
+        let desc = monitor_rt_get_compartment_handle(info)?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
 
     fn release(&mut self) {
         if let Some(desc) = self.desc {
-            let _ = gates::monitor_rt_drop_compartment_handle(desc);
+            let _ = monitor_rt_drop_compartment_handle(desc);
         }
     }
 }
@@ -409,12 +597,12 @@ impl Handle for LibraryHandle {
     where
         Self: Sized,
     {
-        let desc = gates::monitor_rt_get_library_handle(info.0, info.1)?;
+        let desc = monitor_rt_get_library_handle(info.0, info.1)?;
         Ok(LibraryHandle { desc })
     }
 
     fn release(&mut self) {
-        let _ = gates::monitor_rt_drop_library_handle(self.desc);
+        let _ = monitor_rt_drop_library_handle(self.desc);
     }
 }
 
@@ -441,7 +629,7 @@ pub struct CompartmentInfo<'a> {
 }
 
 impl<'a> CompartmentInfo<'a> {
-    fn from_raw(raw: gates::CompartmentInfo) -> Self {
+    fn from_raw(raw: CompartmentInfoRaw) -> Self {
         Self {
             name: lazy_sb::read_string_from_sb(raw.name_len),
             id: raw.id,
@@ -463,12 +651,19 @@ impl CompartmentHandle {
     pub fn lookup(name: impl AsRef<str>) -> Result<Self, TwzError> {
         let name_len = lazy_sb::write_bytes_to_sb(name.as_ref().as_bytes());
         Ok(Self {
-            desc: Some(gates::monitor_rt_lookup_compartment(name_len)?),
+            desc: Some(monitor_rt_lookup_compartment(name_len)?),
+        })
+    }
+
+    /// Lookup a compartment by ID.
+    pub fn lookup_id(name: ObjID) -> Result<Self, TwzError> {
+        Ok(Self {
+            desc: Some(monitor_rt_lookup_compartment_id(name)?),
         })
     }
 
     /// Get an iterator over this compartment's dependencies.
-    pub fn deps(&self) -> CompartmentDepsIter {
+    pub fn deps(&self) -> CompartmentDepsIter<'_> {
         CompartmentDepsIter::new(self)
     }
 
@@ -489,7 +684,7 @@ impl CompartmentHandle {
 
     pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
         CompartmentFlags::from_bits_truncate(
-            gates::monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
+            monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
         )
     }
 }
@@ -534,7 +729,7 @@ impl<'a> Iterator for CompartmentDepsIter<'a> {
     type Item = CompartmentHandle;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let desc = gates::monitor_rt_get_compartment_deps(self.comp.desc, self.n).ok()?;
+        let desc = monitor_rt_get_compartment_deps(self.comp.desc, self.n).ok()?;
         self.n += 1;
         Some(CompartmentHandle { desc: Some(desc) })
     }
@@ -561,7 +756,7 @@ impl<'a> Iterator for CompartmentThreadsIter<'a> {
     type Item = ThreadInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let info = gates::monitor_rt_get_compartment_thread(self.comp.desc, self.n).ok()?;
+        let info = monitor_rt_get_compartment_thread(self.comp.desc, self.n).ok()?;
         self.n += 1;
         Some(info)
     }
@@ -610,8 +805,8 @@ impl MappedObjectAddrs {
 }
 
 /// Get stats from the monitor
-pub fn stats() -> Option<gates::MonitorStats> {
-    gates::monitor_rt_stats().ok()
+pub fn stats() -> Option<MonitorStats> {
+    monitor_rt_stats().ok()
 }
 
 mod lazy_sb {
@@ -635,7 +830,7 @@ mod lazy_sb {
         }
 
         fn init() -> SimpleBuffer {
-            let id = super::gates::monitor_rt_get_thread_simple_buffer()
+            let id = super::monitor_rt_get_thread_simple_buffer()
                 .expect("failed to get per-thread monitor simple buffer");
             let oh =
                 twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
@@ -754,6 +949,142 @@ impl RuntimeThreadControl {
     }
 }
 
-pub fn set_nameroot(root: ObjID) -> Result<(), TwzError> {
-    gates::monitor_rt_set_nameroot(root)
+pub fn post_signal(
+    target: Option<ObjID>,
+    signal: u64,
+    flags: PostSignalFlags,
+) -> Result<(), TwzError> {
+    monitor_rt_post_signal(target, signal, flags)
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct MonitorStats {
+    pub space: SpaceStats,
+    pub thread_mgr: ThreadMgrStats,
+    pub comp_mgr: CompartmentMgrStats,
+    pub handles: HandleStats,
+    pub dynlink: DynlinkStats,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct SpaceStats {
+    pub mapped: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct ThreadMgrStats {
+    pub nr_threads: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct CompartmentMgrStats {
+    pub nr_compartments: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct HandleStats {
+    pub nr_comp_handles: usize,
+    pub nr_lib_handles: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct DynlinkStats {
+    pub nr_libs: usize,
+    pub nr_comps: usize,
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[allow(dead_code)]
+pub enum MonitorCompControlCmd {
+    RuntimeReady,
+    RuntimePostMain,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LibraryInfoRaw {
+    pub name_len: usize,
+    pub compartment_id: ObjID,
+    pub objid: ObjID,
+    pub slot: usize,
+    pub start: *const u8,
+    pub len: usize,
+    pub dl_info: DlPhdrInfo,
+    pub link_map: LinkMap,
+    pub desc: Descriptor,
+}
+
+unsafe impl Crossing for LibraryInfoRaw {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompartmentInfoRaw {
+    pub name_len: usize,
+    pub id: ObjID,
+    pub sctx: ObjID,
+    pub flags: u64,
+    pub nr_libs: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Copy)]
+#[repr(C)]
+pub struct ThreadInfo {
+    pub repr_id: ObjID,
+}
+
+/// Reserved instance ID for the security monitor.
+pub const MONITOR_INSTANCE_ID: ObjID = ObjID::new(0);
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct PostSignalFlags : u32 {
+        const GROUP = 1;
+        const CONTROLLER = 2;
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
+pub enum ControllerOption {
+    #[default]
+    Inherit,
+    NoController,
+    Object(ObjID),
+}
+
+#[repr(C)]
+#[derive(Default, Copy, Clone, Debug)]
+#[allow(dead_code)]
+pub struct CompartmentLoaderConfig {
+    pub controller: ControllerOption,
+    pub fd_spec: *const binding_info,
+    pub fd_spec_len: usize,
+}
+
+impl CompartmentLoaderConfig {
+    #[allow(dead_code)]
+    pub fn with_controller(&mut self, controller: ControllerOption) -> &mut Self {
+        self.controller = controller;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_fd_spec<'a>(&'a mut self, spec: &'a [binding_info]) -> &'a mut Self {
+        self.fd_spec = spec.as_ptr();
+        self.fd_spec_len = spec.len();
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn fd_spec(&self) -> &[binding_info] {
+        unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
+    }
 }

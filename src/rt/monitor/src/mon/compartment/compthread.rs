@@ -12,7 +12,7 @@ use crate::mon::{
 };
 
 #[allow(dead_code)]
-pub(super) struct CompThread {
+pub struct CompThread {
     pub(crate) stack_object: StackObject,
     pub(crate) thread: ManagedThread,
 }
@@ -43,7 +43,7 @@ impl CompThread {
         };
         let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         let mt = tmgr
-            .start_thread(mon, Box::new(start), main_thread_comp)
+            .start_thread(mon, Box::new(start), main_thread_comp, instance)
             .into_diagnostic()?;
         Ok(Self {
             stack_object: stack,

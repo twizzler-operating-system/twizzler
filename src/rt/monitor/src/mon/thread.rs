@@ -6,7 +6,7 @@ use std::{
 };
 
 use dynlink::{compartment::Compartment, tls::TlsRegion};
-use monitor_api::{RuntimeThreadControl, MONITOR_INSTANCE_ID};
+use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
@@ -22,7 +22,7 @@ use super::{
     get_monitor,
     space::{MapHandle, MapInfo},
 };
-use crate::{gates::ThreadMgrStats, mon::space::Space};
+use crate::mon::space::Space;
 
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
@@ -111,19 +111,24 @@ impl ThreadMgr {
         super_stack_start: usize,
         super_thread_pointer: usize,
         arg: usize,
+        self_ctx: ObjID,
     ) -> Result<ObjID, TwzError> {
-        let upcall_target = UpcallTarget::new(
+        let mut upcall_target = UpcallTarget::new(
             None,
             Some(twizzler_rt_abi::arch::__twz_rt_upcall_entry),
             super_stack_start,
             SUPER_UPCALL_STACK_SIZE,
             super_thread_pointer,
             MONITOR_INSTANCE_ID,
+            self_ctx,
             [UpcallOptions {
                 flags: UpcallFlags::empty(),
                 mode: UpcallMode::CallSuper,
             }; UpcallInfo::NR_UPCALLS],
         );
+
+        let mb = &mut upcall_target.options[UpcallInfo::Mailbox(0).number()];
+        mb.mode = UpcallMode::CallSelf;
 
         sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
             entry: start,
@@ -143,6 +148,7 @@ impl ThreadMgr {
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
         main_thread_comp: Option<ObjID>,
+        instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
         let super_tls = monitor_dynlink_comp
             .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
@@ -162,6 +168,7 @@ impl ThreadMgr {
                 super_stack.as_ptr() as usize,
                 super_thread_pointer,
                 arg,
+                instance,
             )?
         };
         let repr = Space::map(
@@ -189,6 +196,7 @@ impl ThreadMgr {
         monitor_dynlink_comp: &mut Compartment,
         main: Box<dyn FnOnce()>,
         main_thread_comp: Option<ObjID>,
+        instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
         let main_addr = Box::into_raw(Box::new(main)) as usize;
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
@@ -205,6 +213,7 @@ impl ThreadMgr {
             managed_thread_entry,
             main_addr,
             main_thread_comp,
+            instance,
         );
         if let Ok(ref mt) = mt {
             if let Some(cleaner) = self.cleaner.get() {

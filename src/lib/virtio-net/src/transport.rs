@@ -1,22 +1,18 @@
-use core::{
-    mem::size_of,
-    ptr::NonNull,
-};
+use core::{mem::size_of, ptr::NonNull};
 use std::sync::Arc;
 
-use smoltcp::iface::SocketHandle;
 use twizzler_abi::{
     device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags},
-    syscall::{sys_thread_sync, ThreadSync},
+    syscall::ThreadSync,
 };
 use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
 use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, InterruptStatus, Transport},
     Error,
 };
-use zerocopy::{FromBytes, Immutable, IntoBytes};
 use virtio_pcie::{VirtioIsrStatus, VirtioPciNotifyCap};
 use volatile::{map_field, VolatilePtr};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 pub mod virtio_pcie;
 use self::virtio_pcie::{CfgLocation, VirtioCfgType, VirtioCommonCfg, VirtioPciCap};
@@ -37,9 +33,10 @@ pub struct TwizzlerTransport {
 unsafe impl Send for TwizzlerTransport {}
 
 fn get_device() -> Option<Device> {
-    let devices = devmgr::get_devices(devmgr::DriverSpec {
+    let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(2, 0, 0),
-    }).ok()?;
+    })
+    .ok()?;
 
     for device in &devices {
         let device = Device::new(device.id).ok();
@@ -60,15 +57,12 @@ fn get_device() -> Option<Device> {
 }
 
 impl TwizzlerTransport {
-    pub fn new(
-        notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
-    ) -> Result<Self, VirtioPciError> {
+    pub fn new() -> Result<Self, VirtioPciError> {
         let device = Arc::new(get_device().expect("failed to find virtio-net device"));
         let int = device.allocate_interrupt(0).unwrap();
         device
             .repr_mut()
             .register_interrupt(int.1 as usize, int.0, DeviceInterruptFlags::empty());
-        let int_device = device.clone();
 
         let info = unsafe { device.get_info::<PcieDeviceInfo>(0).unwrap() };
         if info.get_data().vendor_id != 0x1AF4 {
@@ -163,25 +157,6 @@ impl TwizzlerTransport {
         let notify_region = notify_region.ok_or(VirtioPciError::MissingNotifyConfig)?;
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
-        let _thread = std::thread::spawn(move || loop {
-            //for _ in 0..10 {
-            //    for _ in 0..100 {
-            if int_device.repr().check_for_interrupt(0).is_some() {
-                //tracing::info!("virtio int");
-                let _ = notifier.send(None);
-            }
-            //      core::hint::spin_loop();
-            //  }
-            // twizzler_abi::syscall::sys_thread_yield();
-            // }
-
-            if int_device.repr().check_for_interrupt(0).is_none() {
-                let int_sleep = int_device.repr().setup_interrupt_sleep(0);
-                //tracing::info!("virtio int: sleep");
-                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
-            }
-        });
-
         Ok(Self {
             device,
             common_cfg,
@@ -190,6 +165,18 @@ impl TwizzlerTransport {
             isr_status,
             config_space,
         })
+    }
+
+    pub fn has_work(&self) -> bool {
+        self.device.repr().check_for_interrupt(0).is_some()
+    }
+
+    pub fn get_sleep(&self) -> ThreadSync {
+        ThreadSync::new_sleep(self.device.repr().setup_interrupt_sleep(0))
+    }
+
+    pub fn device(&self) -> Arc<Device> {
+        self.device.clone()
     }
 }
 
@@ -354,7 +341,10 @@ impl Transport for TwizzlerTransport {
         map_field!(ptr.config_generation).read() as u32
     }
 
-    fn read_config_space<T: FromBytes + IntoBytes>(&self, offset: usize) -> virtio_drivers::Result<T> {
+    fn read_config_space<T: FromBytes + IntoBytes>(
+        &self,
+        offset: usize,
+    ) -> virtio_drivers::Result<T> {
         let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
         let config_len = config_space.len() * size_of::<u32>();
         if offset + size_of::<T>() > config_len {
@@ -365,7 +355,11 @@ impl Transport for TwizzlerTransport {
         T::read_from_bytes(src).map_err(|_| Error::ConfigSpaceTooSmall)
     }
 
-    fn write_config_space<T: IntoBytes + Immutable>(&mut self, offset: usize, value: T) -> virtio_drivers::Result<()> {
+    fn write_config_space<T: IntoBytes + Immutable>(
+        &mut self,
+        offset: usize,
+        value: T,
+    ) -> virtio_drivers::Result<()> {
         let config_space = self.config_space.ok_or(Error::ConfigSpaceMissing)?;
         let config_len = config_space.len() * size_of::<u32>();
         if offset + size_of::<T>() > config_len {

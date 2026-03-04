@@ -86,14 +86,14 @@ tsort = { optional = true, version = "0.0.30", package = "uu_tsort", git = "http
 unexpand = { optional = true, version = "0.0.30", package = "uu_unexpand", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 uniq = { optional = true, version = "0.0.30", package = "uu_uniq", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
 yes = { optional = true, version = "0.0.30", package = "uu_yes", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-uucore = { version = "0.0.30", package = "uucore", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-clap = "4.5.27"
-clap_complete = "4.5.44"
-phf = { version = "0.11.1", default-features = false }
-phf_codegen = "0.11.1"
-textwrap = "0.16.1"
-clap_mangen = "0.2.26"
+uucore = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+phf = { workspace = true }
+phf_codegen = { workspace = true }
+textwrap = { workspace = true }
+clap_mangen = { workspace = true }
 
 [build-dependencies]
-phf = { version = "0.11.1", default-features = false }
-phf_codegen = "0.11.1"
+phf = { workspace = true }
+phf_codegen = { workspace = true }

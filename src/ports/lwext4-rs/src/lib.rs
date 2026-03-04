@@ -405,7 +405,7 @@ impl Ext4Fs {
         Ok(Self { bd, mnt_name })
     }
 
-    pub fn dirents(&mut self, inode: &mut Ext4InodeRef) -> Result<DirIter> {
+    pub fn dirents(&mut self, inode: &mut Ext4InodeRef) -> Result<DirIter<'_>> {
         let mut this = DirIter {
             it: unsafe { MaybeUninit::zeroed().assume_init() },
             done: false,

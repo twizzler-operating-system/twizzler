@@ -5,10 +5,11 @@ use inflight::InflightManager;
 use itertools::Itertools;
 use request::ReqKind;
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE},
+    object::{MAX_SIZE, ObjID},
     pager::{PagerFlags, PhysRange},
-    syscall::{ObjectCreate, SyncInfo},
+    syscall::ObjectCreate,
 };
+use twizzler_rt_abi::bindings::sync_info;
 
 use crate::{
     memory::{
@@ -17,9 +18,9 @@ use crate::{
         tracker::FrameAllocFlags,
     },
     mutex::{LockGuard, Mutex},
-    obj::{range::PageRangeTree, LookupFlags, ObjectRef, PageNumber},
+    obj::{LookupFlags, ObjectRef, PageNumber, range::PageRangeTree},
     once::Once,
-    processor::sched::{schedule, SchedFlags},
+    processor::sched::{SchedFlags, schedule},
     syscall::sync::{finish_blocking, sys_thread_sync},
     thread::current_thread_ref,
 };
@@ -154,7 +155,7 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 pub fn sync_region(
     region: &MapRegion,
     dirty_set: &[(PageNumber, usize)],
-    sync_info: SyncInfo,
+    sync_info: Option<sync_info>,
     version: u64,
 ) {
     // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.

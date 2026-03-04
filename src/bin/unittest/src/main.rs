@@ -47,21 +47,13 @@ fn try_bench(path: &str) {
                 }
             }
             for (i, exe) in possibles.iter().enumerate() {
-                if let Ok(test_comp) = monitor_api::CompartmentLoader::new(
-                    &exe,
-                    &exe,
-                    monitor_api::NewCompartmentFlags::empty(),
-                )
-                .args(&[exe.as_str(), "--bench"])
-                .load()
-                {
-                    let mut flags = test_comp.info().flags;
-                    while !flags.contains(monitor_api::CompartmentFlags::EXITED) {
-                        flags = test_comp.wait(flags);
-                    }
+                let mut cmd = std::process::Command::new(exe);
+                cmd.args(["--bench"]);
+                if let Ok(mut test_comp) = cmd.spawn() {
+                    test_comp.wait().unwrap();
                 } else {
                     if i == possibles.len() - 1 {
-                        eprintln!("failed to start {}", line);
+                        eprintln!("failed to start {}", exe);
                     }
                 }
             }
@@ -92,19 +84,12 @@ fn main() {
             if !line.is_ascii() {
                 continue;
             }
+            let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
-            if let Ok(test_comp) = monitor_api::CompartmentLoader::new(
-                line,
-                line,
-                monitor_api::NewCompartmentFlags::empty(),
-            )
-            .args(&[line.as_str(), "--test"])
-            .load()
-            {
-                let mut flags = test_comp.info().flags;
-                while !flags.contains(monitor_api::CompartmentFlags::EXITED) {
-                    flags = test_comp.wait(flags);
-                }
+            let mut cmd = std::process::Command::new(line);
+            cmd.args(["--test"]);
+            if let Ok(mut test_comp) = cmd.spawn() {
+                test_comp.wait().unwrap();
                 reports.push(TestResult {
                     name: line.clone(),
                     passed: true,

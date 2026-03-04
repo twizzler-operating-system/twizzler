@@ -6,18 +6,11 @@ use std::collections::HashMap;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use test::Bencher;
-use twizzler_abi::{
-    object::Protections,
-    syscall::{
-        sys_object_ctrl, BackingType, CreateTieFlags, CreateTieSpec, DeleteFlags, LifetimeType,
-        ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
-    },
-};
-use twizzler_rt_abi::object::ObjectCmd;
+use twizzler_rt_abi::object::{ObjectCmd, Protections};
 
 use crate::{
     collections::hachage::PersistentHashMap,
-    object::{Object, ObjectBuilder},
+    object::{Object, ObjectBuilder, RawObject},
 };
 
 #[bench]
@@ -35,7 +28,7 @@ fn random_insert_1k_volatile(b: &mut Bencher) {
 
     phm.into_object()
         .into_handle()
-        .cmd(ObjectCmd::Delete, 0)
+        .cmd(ObjectCmd::Delete, core::ptr::null_mut::<()>())
         .unwrap();
 }
 
@@ -69,7 +62,7 @@ fn random_insert_1k_volatile_batch(b: &mut Bencher) {
 
     phm.into_object()
         .into_handle()
-        .cmd(ObjectCmd::Delete, 0)
+        .cmd(ObjectCmd::Delete, core::ptr::null_mut::<()>())
         .unwrap();
 }
 
@@ -92,7 +85,7 @@ fn random_lookup_1k_volatile(b: &mut Bencher) {
 
     phm.into_object()
         .into_handle()
-        .cmd(ObjectCmd::Delete, 0)
+        .cmd(ObjectCmd::Delete, core::ptr::null_mut::<()>())
         .unwrap();
 }
 
@@ -141,7 +134,10 @@ fn random_insert_500_persistent_batch(b: &mut Bencher) {
         for i in 0..100 {
             sesh.insert(rng.random::<u32>(), i).unwrap();
         }
-        sys_object_ctrl(phm.object().id(), ObjectControlCmd::Sync).unwrap();
+        phm.object()
+            .handle()
+            .cmd(ObjectCmd::Sync, core::ptr::null_mut::<()>())
+            .unwrap();
     });
 }
 
@@ -154,6 +150,9 @@ fn random_insert_1_persistent(b: &mut Bencher) {
         let mut sesh = phm.write_session().unwrap();
         sesh.insert(rng.random::<u32>(), 0).unwrap();
 
-        sys_object_ctrl(phm.object().id(), ObjectControlCmd::Sync).unwrap();
+        phm.object()
+            .handle()
+            .cmd(ObjectCmd::Sync, core::ptr::null_mut::<()>())
+            .unwrap();
     });
 }

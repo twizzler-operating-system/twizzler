@@ -10,13 +10,15 @@ use compartment::{
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{
-    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
+    CompartmentFlags, MonitorCompControlCmd, PostSignalFlags, RuntimeThreadControl,
+    SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
 };
 use secgate::util::HandleMgr;
 use space::Space;
+use talc::{ErrOnOom, Talc};
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
-    syscall::sys_thread_exit,
+    syscall::{sys_thread_exit, sys_thread_send_message},
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
 };
 use twizzler_rt_abi::{
@@ -30,7 +32,7 @@ use self::{
     space::{MapHandle, MapInfo, Unmapper},
     thread::{ManagedThread, ThreadCleaner},
 };
-use crate::{gates::MonitorCompControlCmd, init::InitDynlinkContext};
+use crate::init::InitDynlinkContext;
 
 pub(crate) mod compartment;
 pub mod library;
@@ -100,8 +102,11 @@ impl Monitor {
         let template: &'static TlsTemplateInfo = Box::leak(Box::new(super_tls.into()));
 
         // Set up the monitor's compartment.
-        let monitor_scc =
-            SharedCompConfig::new(MONITOR_INSTANCE_ID, template as *const _ as *mut _);
+        let monitor_scc = SharedCompConfig::new(
+            MONITOR_INSTANCE_ID,
+            template as *const _ as *mut _,
+            monitor_api::CompartmentLoaderConfig::default(),
+        );
         let cc_handle = Space::safe_create_and_map_runtime_object(
             &space,
             MONITOR_INSTANCE_ID,
@@ -114,19 +119,25 @@ impl Monitor {
             MapFlags::READ | MapFlags::WRITE,
         )
         .unwrap();
+
+        let comp_config = CompConfigObject::new(cc_handle, monitor_scc);
+        let mut alloc = Talc::new(ErrOnOom);
+        unsafe { alloc.claim(comp_config.alloc_span()).unwrap() };
         comp_mgr.insert(RunComp::new(
             MONITOR_INSTANCE_ID,
             MONITOR_INSTANCE_ID,
             "monitor".to_string(),
             MONITOR_COMPARTMENT_ID,
             vec![],
-            CompConfigObject::new(cc_handle, monitor_scc),
+            comp_config,
             (CompartmentFlags::READY | CompartmentFlags::STARTED).bits(),
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
             &[],
             false,
+            None,
+            alloc,
         ));
 
         // Allocate and leak all the locks (they are global and eternal, so we can do this to safely
@@ -160,12 +171,18 @@ impl Monitor {
 
     /// Start a managed monitor thread.
     #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
-    pub fn start_thread(&self, main: Box<dyn FnOnce()>) -> Result<ManagedThread, TwzError> {
+    pub fn start_thread(
+        &self,
+        instance: ObjID,
+        main: Box<dyn FnOnce()>,
+    ) -> Result<ManagedThread, TwzError> {
         let key = ThreadKey::get().unwrap();
         let locks = &mut *self.locks.lock(key);
 
         let monitor_dynlink_comp = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
-        locks.0.start_thread(monitor_dynlink_comp, main, None)
+        locks
+            .0
+            .start_thread(monitor_dynlink_comp, main, None, instance)
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -177,19 +194,32 @@ impl Monitor {
         stack_ptr: usize,
         thread_ptr: usize,
     ) -> Result<ObjID, TwzError> {
-        let thread = self.start_thread(Box::new(move || {
-            let frame = UpcallFrame::new_entry_frame(
-                stack_ptr,
-                args.stack_size,
-                thread_ptr,
-                instance,
-                args.start,
-                args.arg,
-            );
-            unsafe {
-                twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, ResumeFlags::empty())
-            };
-        }))?;
+        let thread = self.start_thread(
+            instance,
+            Box::new(move || {
+                if instance.raw() != 0 {
+                    let _ = twizzler_abi::syscall::sys_sctx_attach(instance);
+                }
+                let frame = UpcallFrame::new_entry_frame(
+                    stack_ptr,
+                    args.stack_size,
+                    thread_ptr,
+                    instance,
+                    args.start,
+                    args.arg,
+                );
+                unsafe {
+                    twizzler_abi::syscall::sys_thread_resume_from_upcall(
+                        &frame,
+                        ResumeFlags::empty(),
+                    )
+                };
+            }),
+        )?;
+        let mon = get_monitor();
+        let mut comps = mon.comp_mgr.write(ThreadKey::get().unwrap());
+        // This creates a per-thread structure in the compartment.
+        let _pt = comps.get_mut(instance)?.get_per_thread(thread.id);
         Ok(thread.id)
     }
 
@@ -396,9 +426,59 @@ impl Monitor {
         }
     }
 
-    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn set_nameroot(&self, _info: &secgate::GateCallInfo, root: ObjID) -> Result<(), TwzError> {
-        crate::dlengine::set_naming(root)
+    pub fn post_signal(
+        &self,
+        info: &secgate::GateCallInfo,
+        target: Option<ObjID>,
+        signal: u64,
+        flags: PostSignalFlags,
+    ) -> Result<(), TwzError> {
+        let target = target.unwrap_or(info.source_context().unwrap_or(MONITOR_INSTANCE_ID));
+        let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
+            tracing::debug!("posting signal {} to {}", sig, target);
+            let comp = self.comp_mgr.read(ThreadKey::get().unwrap());
+            let comp = comp.get(target)?;
+            let scc = comp.comp_config_ptr();
+            let scc = unsafe { &*scc };
+            scc.post_signal(signal);
+            if let Some(thread) = comp.main_thread() {
+                sys_thread_send_message(thread.thread.id, signal, 0)?;
+            }
+            Ok(())
+        };
+        if flags.contains(PostSignalFlags::GROUP) {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+        if flags.contains(PostSignalFlags::CONTROLLER) {
+            let targets = self
+                .comp_mgr
+                .read(ThreadKey::get().unwrap())
+                .find_controller_targets(target);
+            for t in targets {
+                let _ = post_signal(t, signal).inspect_err(|e| {
+                    tracing::warn!(
+                        "failed to raise signal via controller {} to target {}: {}",
+                        target,
+                        t,
+                        e
+                    )
+                });
+            }
+        } else {
+            post_signal(target, signal)?;
+        }
+        return Ok(());
+    }
+
+    pub fn set_controller(
+        &self,
+        _info: &secgate::GateCallInfo,
+        target: ObjID,
+        controller: ObjID,
+    ) -> Result<(), TwzError> {
+        let mut cm = self.comp_mgr.write(ThreadKey::get().unwrap());
+        cm.set_controller(target, controller)?;
+        return Ok(());
     }
 }
 

@@ -1,0 +1,13 @@
+[package]
+name = "twizzler-net"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler = { path = "../twizzler" }
+twizzler-io = { path = "../twizzler-io" }
+twizzler-queue = { path = "../twizzler-queue" }
+secgate = { path = "../secgate" }
+smoltcp = "0.11"
+twizzler-abi = { path = "../twizzler-abi" }
+monitor-api = { path = "../../rt/monitor-api" }

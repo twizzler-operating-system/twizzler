@@ -14,7 +14,7 @@ use twizzler_abi::simple_mutex::Mutex;
 use crate::runtime::alloc::LOCAL_ALLOCATOR;
 
 /// Run a closure using the current thread's control struct as the argument.
-pub(super) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
+pub(crate) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
     let tp: &mut Tcb<RuntimeThreadControl> = unsafe {
         dynlink::tls::get_current_thread_control_block()
             .as_mut()

@@ -1,14 +1,14 @@
 use core::{
-    cell::{RefCell, UnsafeCell},
-    sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+    cell::RefCell,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use twizzler_abi::{
     arch::{ArchRegisters, XSAVE_LEN},
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
     thread::ExecutionState,
     upcall::{
-        UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE,
+        UPCALL_EXIT_CODE, UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget,
     },
 };
 use twizzler_rt_abi::error::TwzError;
@@ -18,7 +18,7 @@ use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
     processor::KERNEL_STACK_SIZE,
-    thread::{current_thread_ref, Thread},
+    thread::{Thread, current_thread_ref},
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -57,7 +57,7 @@ pub struct ArchThread {
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
     /// frame and returns to user using this frame.
-    upcall_restore_frame: UnsafeCell<Option<UpcallFrame>>,
+    upcall_restore_frame: RefCell<Option<UpcallFrame>>,
     //user_gs: u64,
 }
 unsafe impl Sync for ArchThread {}
@@ -65,13 +65,20 @@ unsafe impl Send for ArchThread {}
 
 impl ArchThread {
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
-        unsafe { self.upcall_restore_frame.get().as_mut().unwrap_unchecked() }.take()
+        self.upcall_restore_frame.try_borrow_mut().ok()?.take()
+    }
+
+    pub fn has_upcall_restore_frame(&self) -> bool {
+        self.upcall_restore_frame
+            .try_borrow()
+            .ok()
+            .is_some_and(|x| x.is_some())
     }
 }
 
 #[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
 unsafe extern "C" fn __do_switch(
     newsp: *const u64,       //rdi
     oldsp: *mut u64,         //rsi
@@ -135,7 +142,7 @@ impl ArchThread {
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
             entry_registers: RefCell::new(Registers::None),
-            upcall_restore_frame: UnsafeCell::new(None),
+            upcall_restore_frame: RefCell::new(None),
         }
     }
 }
@@ -266,7 +273,7 @@ where
     let frame_ptr = frame_start as usize as *mut UpcallFrame;
     let mut frame: UpcallFrame = (*regs).into();
     frame.prior_ctx = upcall_data.source_ctx;
-    log::info!("upcall frame: {:?}", frame);
+    log::debug!("upcall frame: {:?}", frame);
 
     // Step 3a: we need to fill out some extra stuff in the upcall frame, like the thread pointer
     // and fpu state.
@@ -343,33 +350,23 @@ impl Thread {
         }
         let res = self.secctx.switch_context(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
-            logln!("warning -- tried to restore thread to non-attached security context");
+            logln!(
+                "warning -- tried to restore thread to non-attached security context {}",
+                frame.prior_ctx
+            );
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         // We restore this in the syscall return code path, since
         // we know that's where we are coming from, and we actually need
         // to use the ISR return mechanism (see the syscall code).
-        *unsafe {
-            self.arch
-                .upcall_restore_frame
-                .get()
-                .as_mut()
-                .unwrap_unchecked()
-        } = Some(*frame);
+        self.arch.upcall_restore_frame.borrow_mut().replace(*frame);
     }
 
     /// Queue up an upcall on this thread. The sup argument denotes if this upcall
     /// is requesting a supervisor context switch. Once this is done, the thread's kernel
     /// entry frame will be setup to enter the upcall handler on return-to-userspace.
     pub fn arch_queue_upcall(&self, target: UpcallTarget, info: UpcallInfo, sup: bool) {
-        if unsafe {
-            self.arch
-                .upcall_restore_frame
-                .get()
-                .as_ref()
-                .unwrap_unchecked()
-                .is_some()
-        } {
+        if self.arch.upcall_restore_frame.borrow().is_some() {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
@@ -474,8 +471,12 @@ impl Thread {
         assert!(old_thread.switch_lock.load(Ordering::SeqCst) != 0);
         let new_sp = unsafe { new_stack_save.read() } as usize as *const u64;
         let new_rip = unsafe { new_sp.add(7).read() };
-        if new_rip == 0 {
-            log::warn!("tried to switch to a zero RIP task");
+        if false && new_rip == 0 {
+            log::warn!(
+                "tried to switch to a zero RIP task ({} -> {})",
+                old_thread.id(),
+                self.id()
+            );
         }
         unsafe {
             __do_switch(
@@ -490,62 +491,58 @@ impl Thread {
     pub unsafe fn init_va(&mut self, jmptarget: u64) {
         let stack = self.kernel_stack.as_ptr() as *mut u64;
         assert!(jmptarget != 0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
-        stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
-        stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
-        stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
-        self.arch.rsp = core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+        unsafe {
+            stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
+            stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
+            stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
+            stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
+            self.arch.rsp =
+                core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+        }
     }
 
     pub unsafe fn init(&mut self, f: extern "C" fn()) {
-        self.init_va(f as usize as u64);
+        unsafe {
+            self.init_va(f as usize as u64);
+        }
     }
 
     pub fn read_ip(&self) -> u64 {
-        let mut frame = *unsafe {
-            self.arch
-                .upcall_restore_frame
-                .get()
-                .as_ref()
-                .unwrap_unchecked()
-        };
+        use crate::syscall::SyscallContext;
+        let frame = &self.arch.upcall_restore_frame.borrow();
         if frame.is_none() {
-            frame = Some(match *self.arch.entry_registers.borrow() {
+            return match *self.arch.entry_registers.borrow() {
                 Registers::None => {
-                    unreachable!()
+                    return 0;
                 }
                 Registers::Interrupt(int, _) => {
                     let int = unsafe { &mut *int };
-                    (*int).into()
+                    (*int).get_ip()
                 }
                 Registers::Syscall(sys, _) => {
                     let sys = unsafe { &mut *sys };
-                    (*sys).into()
+                    (*sys).pc().raw()
                 }
-            });
+            };
         }
         frame.unwrap().rip
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
-        if self.get_state() != ExecutionState::Suspended {
+        if self.get_state() != ExecutionState::Suspended
+            && self.id() != current_thread_ref().unwrap().id()
+        {
             return Err(TwzError::Generic(
                 twizzler_rt_abi::error::GenericError::AccessDenied,
             ));
         }
-        let mut frame = *unsafe {
-            self.arch
-                .upcall_restore_frame
-                .get()
-                .as_ref()
-                .unwrap_unchecked()
-        };
+        let frame = &self.arch.upcall_restore_frame.borrow();
         if frame.is_none() {
-            frame = Some(match *self.arch.entry_registers.borrow() {
+            let frame = match *self.arch.entry_registers.borrow() {
                 Registers::None => {
                     unreachable!()
                 }
@@ -557,6 +554,15 @@ impl Thread {
                     let sys = unsafe { &mut *sys };
                     (*sys).into()
                 }
+            };
+            return Ok(ArchRegisters {
+                frame,
+                fs: 0,
+                gs: 0,
+                es: 0,
+                ds: 0,
+                ss: 0,
+                cs: 0,
             });
         }
         Ok(ArchRegisters {

@@ -72,7 +72,7 @@ impl MinimalRuntime {
     pub fn open(&self, path: &str) -> Result<RawFd> {
         let obj_id = ObjID::new(
             path.parse::<u128>()
-                .map_err(|_err| (ArgumentError::InvalidArgument))?,
+                .map_err(|_err| ArgumentError::InvalidArgument)?,
         );
         let flags = MapFlags::READ | MapFlags::WRITE;
 

@@ -5,7 +5,7 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
     let dir = curdir
         .join("toolchain/src/rust/build")
         .join(host_triple)
-        .join("stage2-std")
+        .join("stage1-std")
         .join(target_triple)
         .join("release");
     Ok(dir)
@@ -27,7 +27,7 @@ pub fn get_llvm_native_runtime_install(target_triple: &str) -> anyhow::Result<Pa
     let curdir = std::env::current_dir().unwrap();
     let archive_name = "libclang_rt.builtins.a";
     let dir = curdir
-        .join("toolchain/install/lib/clang/20/lib")
+        .join("toolchain/install/lib/clang/21/lib")
         .join(target_triple)
         .join(archive_name);
     Ok(dir)

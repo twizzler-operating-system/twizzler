@@ -12,7 +12,7 @@ impl InitDynlinkContext {
         // Safety: the engine is the only thing that can't cross API boundary coming from bootstrap.
         // Replace it, and we're good to go.
         unsafe {
-            (*ctx).replace_engine(Box::new(crate::dlengine::Engine));
+            (*ctx).replace_engine(Box::new(crate::dlengine::Engine::new()));
             &mut (*ctx)
         }
     }

@@ -7,11 +7,11 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../twizzler-abi" }
-futures = "0.3.21"
-async-trait = "0.1.56"
+futures = { workspace = true }
+async-trait = { workspace = true }
 bitflags = "2.4.1"
-volatile = { version = "0.6", features = ["unstable"] }
-async-io = "*"
-twizzler-futures = { path = "../twizzler-futures" }
-twizzler = { path = "../twizzler" }
+volatile = { workspace = true, features = ["unstable"] }
+async-io = { workspace = true }
+twizzler-futures = { workspace = true }
+twizzler = { workspace = true }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }

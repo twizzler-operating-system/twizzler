@@ -167,8 +167,12 @@ impl RawQueueHdr {
         }
     }
 
+    pub fn len_bytes(&self) -> usize {
+        self.len() * self.stride
+    }
+
     #[inline]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         1 << self.l2len
     }
 
@@ -281,6 +285,13 @@ impl RawQueueHdr {
         if self.consumer_waiting() {
             ring(&self.bell)
         }
+    }
+
+    pub fn has_pending<T>(&self, raw_buf: *const QueueEntry<T>) -> bool {
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let b = self.bell.load(Ordering::SeqCst);
+        let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
+        !self.is_empty(b, t) && self.is_turn(t, item)
     }
 
     #[inline]
@@ -449,7 +460,7 @@ impl<T: Copy> RawQueue<T> {
     }
 
     #[inline]
-    fn hdr(&self) -> &RawQueueHdr {
+    pub fn hdr(&self) -> &RawQueueHdr {
         unsafe { &*self.hdr }
     }
 
@@ -503,6 +514,10 @@ impl<T: Copy> RawQueue<T> {
         let item = unsafe { buf_item.read() };
         self.hdr().advance_tail(ring);
         Ok(item)
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.hdr().has_pending(unsafe { *self.buf.get() })
     }
 
     pub fn setup_sleep<'a>(

@@ -1,6 +1,5 @@
-use log::error;
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::MapFlags,
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
@@ -8,18 +7,18 @@ use twizzler_abi::{
     },
 };
 
-use super::{region::MapRegion, ObjectPageProvider, PageFaultFlags, Slot};
+use super::{ObjectPageProvider, PageFaultFlags, Slot, region::MapRegion};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
-        context::{kernel_context, ContextRef},
+        FAULT_STATS,
+        context::{ContextRef, kernel_context},
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{MappingCursor, PhysAddrProvider, SharedPageTable},
-        FAULT_STATS,
     },
     obj::PageNumber,
-    security::{AccessInfo, PermsInfo, KERNEL_SCTX},
+    security::{AccessInfo, KERNEL_SCTX, PermsInfo},
     thread::{current_memory_context, current_thread_ref},
 };
 
@@ -116,18 +115,18 @@ fn check_security(
     ip: VirtAddr,
     default_prot: Protections,
 ) -> Result<PermsInfo, UpcallInfo> {
-    if ip.is_kernel() {
+    if ip.is_kernel() || user_sctx.raw() == 0 {
         return Ok(PermsInfo {
             ctx: user_sctx,
             provide: Protections::all(),
             restrict: Protections::empty(),
         });
     }
-    let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch)?;
+    let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch, ip)?;
     let access_kind = match cause {
         MemoryAccessKind::Read => Protections::READ,
         MemoryAccessKind::Write => Protections::WRITE | Protections::READ,
-        MemoryAccessKind::InstructionFetch => Protections::EXEC,
+        MemoryAccessKind::InstructionFetch => Protections::EXEC | Protections::READ,
     };
     let access_info = AccessInfo {
         target_id: id,
@@ -205,6 +204,10 @@ fn page_fault_to_region(
     if perms.ctx != sctx_id && !addr.is_kernel() {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
         sctx_id = perms.ctx;
+    }
+
+    if sctx_id.raw() == 0 {
+        //logln!("perms: {:?} {:?} {:?} {:?}", addr, cause, ip, perms);
     }
 
     let shared_mapper = |addr: VirtAddr, spt: &SharedPageTable| {
@@ -286,13 +289,11 @@ fn get_map_region(
     addr: VirtAddr,
     ctx: &ContextRef,
     cause: MemoryAccessKind,
+    _ip: VirtAddr,
 ) -> Result<MapRegion, UpcallInfo> {
     let upcall =
         UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));
-    let slot: Slot = addr.try_into().map_err(|_| {
-        error!("error while trying into slot from addr");
-        upcall
-    })?;
+    let slot: Slot = addr.try_into().map_err(|_| upcall)?;
     let mut slot_mgr = ctx.regions.lock();
     if let Some(region) = slot_mgr.lookup_region(slot.start_vaddr()) {
         return Ok(region.clone());
@@ -317,9 +318,7 @@ pub fn do_page_fault(
     check_violations(addr, cause, flags, ip)?;
 
     let (ctx, sctx_id) = get_context(addr, flags);
-
-    let info =
-        get_map_region(addr, &ctx, cause).inspect_err(|e| error!("map_region error: {e:?}"))?;
+    let info = get_map_region(addr, &ctx, cause, ip)?;
     page_fault_to_region(addr, cause, flags, ip, ctx, sctx_id, info)
 }
 

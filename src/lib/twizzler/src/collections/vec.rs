@@ -4,8 +4,10 @@ use std::{
     ops::RangeBounds,
 };
 
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
-use twizzler_rt_abi::error::{ArgumentError, ResourceError};
+use twizzler_rt_abi::{
+    error::{ArgumentError, ResourceError},
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+};
 
 use crate::{
     alloc::{Allocator, SingleObjectAllocator},

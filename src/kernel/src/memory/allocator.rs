@@ -16,7 +16,7 @@ use crate::{
     spinlock::Spinlock,
     thread::current_thread_ref,
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -128,10 +128,12 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
                     Err(AllocationError::OutOfMemory) => {
                         if layout.size() <= ZoneAllocator::MAX_BASE_ALLOC_SIZE {
                             let new_page = inner.allocate_page();
-                            inner
-                                .zone
-                                .refill(layout, new_page)
-                                .expect("failed to refill zone allocator");
+                            unsafe {
+                                inner
+                                    .zone
+                                    .refill(layout, new_page)
+                                    .expect("failed to refill zone allocator");
+                            }
                             inner
                                 .zone
                                 .allocate(layout)
@@ -139,10 +141,12 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
                                 .as_ptr()
                         } else {
                             let new_page = inner.allocate_large_page();
-                            inner
-                                .zone
-                                .refill_large(layout, new_page)
-                                .expect("failed to refill zone allocator");
+                            unsafe {
+                                inner
+                                    .zone
+                                    .refill_large(layout, new_page)
+                                    .expect("failed to refill zone allocator");
+                            }
                             inner
                                 .zone
                                 .allocate(layout)
@@ -189,9 +193,11 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
                         .deallocate(nn, layout)
                         .expect("failed to deallocate memory");
                 }
-                _ => inner
-                    .ctx
-                    .deallocate_chunk(layout, NonNull::new(ptr).unwrap()),
+                _ => unsafe {
+                    inner
+                        .ctx
+                        .deallocate_chunk(layout, NonNull::new(ptr).unwrap())
+                },
             };
         }
         trace_kalloc(layout, Instant::zero() - start, false);

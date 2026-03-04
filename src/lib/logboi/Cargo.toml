@@ -7,7 +7,6 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
-secgate = { path = "../../lib/secgate" }
-twizzler-runtime = { path = "../../rt" }
+secgate = { workspace = true }
+twizzler-runtime = { workspace = true }
 twizzler-rt-abi = "0.99"
-logboi-srv = { path = "../../srv/logboi-srv" }

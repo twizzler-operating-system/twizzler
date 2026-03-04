@@ -5,7 +5,7 @@ use crate::toolchain::{get_toolchain_path, pathfinding};
 
 pub fn move_all(host_triple: &str, target_triple: &str) -> anyhow::Result<()> {
     let move_dir = |prev: PathBuf, next: PathBuf| -> anyhow::Result<()> {
-        println!("Moving {} to {}", prev.display(), next.display());
+        //println!("Moving {} to {}", prev.display(), next.display());
 
         // remove dest if it exists
         if next.exists() {
@@ -16,19 +16,21 @@ pub fn move_all(host_triple: &str, target_triple: &str) -> anyhow::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
 
-        let status = Command::new("cp").arg("-r").arg(&prev).arg(&next).status(); // Use status() instead of spawn() to wait for completion
+        let status = Command::new("cp")
+            .arg("-R")
+            .arg(&prev)
+            .arg(&next)
+            .status()
+            .unwrap(); // Use status() instead of spawn() to wait for completion
 
-        //NOTE: copy will fail if there are recursive symlinks, in this case we force move
-        if status.is_err() {
-            let status = Command::new("mv").arg(&prev).arg(&next).status()?; // Use status() instead of
-            if !status.success() {
-                anyhow::bail!("mv command failed with status: {}", status);
-            }
+        if !status.success() {
+            anyhow::bail!("cp command failed with status: {}", status);
         }
 
         Ok(())
     };
 
+    println!("packaging toolchain: moving {} install", target_triple);
     // first we just move the install directory
     let old_install_dir = {
         let mut x = current_dir()?;
@@ -39,6 +41,7 @@ pub fn move_all(host_triple: &str, target_triple: &str) -> anyhow::Result<()> {
     let new_install_dir = get_toolchain_path()?;
     move_dir(old_install_dir.clone(), new_install_dir)?;
 
+    println!("packaging toolchain: moving {} components", target_triple);
     // llvm native runtime
     let old_llvm_rt = bootstrap::get_llvm_native_runtime(target_triple)?;
     let new_llvm_rt = pathfinding::get_llvm_native_runtime_install(target_triple)?;

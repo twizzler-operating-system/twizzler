@@ -2,12 +2,14 @@ use std::{
     alloc::Layout,
     collections::HashMap,
     ffi::{CStr, CString},
-    ptr::NonNull,
+    ptr::{addr_of, NonNull},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
-use monitor_api::{CompartmentFlags, RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo};
+use monitor_api::{
+    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, ThreadInfo, TlsTemplateInfo,
+};
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::{
@@ -24,13 +26,10 @@ use twizzler_rt_abi::{
 };
 
 use super::{compconfig::CompConfigObject, compthread::CompThread, StackObject};
-use crate::{
-    gates::ThreadInfo,
-    mon::{
-        get_monitor,
-        space::{MapHandle, MapInfo, Space},
-        thread::ThreadMgr,
-    },
+use crate::mon::{
+    get_monitor,
+    space::{MapHandle, MapInfo, Space},
+    thread::ThreadMgr,
 };
 
 /// Compartment is ready (loaded, reloacated, runtime started and ctors run).
@@ -62,10 +61,11 @@ pub struct RunComp {
     alloc: Talc<ErrOnOom>,
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
-    per_thread: HashMap<ObjID, PerThread>,
+    pub per_thread: HashMap<ObjID, PerThread>,
     init_info: Option<(StackObject, usize, Vec<CtorSet>)>,
     is_debugging: bool,
     pub(crate) use_count: u64,
+    pub controller: Option<ObjID>,
 }
 
 impl Drop for RunComp {
@@ -157,9 +157,9 @@ impl RunComp {
         entry: usize,
         ctors: &[CtorSet],
         is_debugging: bool,
+        controller: Option<ObjID>,
+        alloc: Talc<ErrOnOom>,
     ) -> Self {
-        let mut alloc = Talc::new(ErrOnOom);
-        unsafe { alloc.claim(comp_config_object.alloc_span()).unwrap() };
         Self {
             sctx,
             is_debugging,
@@ -175,6 +175,7 @@ impl RunComp {
             per_thread: HashMap::new(),
             init_info: Some((main_stack, entry, ctors.to_vec())),
             use_count: 0,
+            controller,
         }
     }
 
@@ -270,13 +271,23 @@ impl RunComp {
 
     /// Setup a [ThreadSyncSleep] for waiting until the flag is set. Returns None if the flag is
     /// already set.
-    pub fn until_change(&self, cur: u64) -> ThreadSyncSleep {
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&*self.flags),
-            cur,
-            ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        )
+    pub fn until_change(&self, cur: u64) -> [ThreadSync; 2] {
+        let ccp = self.comp_config_ptr();
+        let ps = unsafe { addr_of!((*ccp).posted_signals) };
+        [
+            ThreadSync::new_sleep(ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&*self.flags),
+                cur,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            )),
+            ThreadSync::new_sleep(ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(ps),
+                0,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            )),
+        ]
     }
 
     /// Get the raw flags bits for this RC.
@@ -435,6 +446,10 @@ impl RunComp {
             .filter(|t| **t != main.thread.id)
             .nth(n - 1)
             .map(|id| ThreadInfo { repr_id: *id })
+    }
+
+    pub fn main_thread(&self) -> &Option<CompThread> {
+        &self.main
     }
 
     pub fn upcall_handle(

@@ -45,14 +45,16 @@ impl SerialPort {
     /// # Safety
     /// Must be a valid register in the serial port register space.
     pub unsafe fn write_reg(&self, reg: u16, val: u8) {
-        x86::io::outb(self.port + reg, val);
+        unsafe {
+            x86::io::outb(self.port + reg, val);
+        }
     }
 
     /// Read register.
     /// # Safety
     /// Must be a valid register in the serial port register space.
     pub unsafe fn read_reg(&self, reg: u16) -> u8 {
-        x86::io::inb(self.port + reg)
+        unsafe { x86::io::inb(self.port + reg) }
     }
 
     pub fn init(&mut self) {

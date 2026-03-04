@@ -61,9 +61,13 @@ pub fn create_disk_images(
         kernel_binary_path,
         initrd_path,
         cmdline,
-        efi_binary,
+        efi_binary.clone(),
     ) {
-        panic!("failed to create disk image: {:?}", e);
+        panic!(
+            "failed to create disk image: {:?} (efi = {})",
+            e,
+            efi_binary.as_str()
+        );
     }
     if !disk_image_path.exists() {
         panic!(
@@ -124,7 +128,7 @@ verbose: yes
     );
     // create fat partition
     let fat_file_path = {
-        const MB: u64 = 1024 * 1024;
+        const MB: u64 = 1024 * 1024 * 2;
 
         let fat_path = disk_image_path.parent().unwrap().join("image.fat");
         let fat_file = fs::OpenOptions::new()

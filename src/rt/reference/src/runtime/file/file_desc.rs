@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     cmp::{max, min},
     io::{ErrorKind, Read, SeekFrom, Write},

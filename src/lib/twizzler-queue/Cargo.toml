@@ -8,8 +8,8 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 
 [dependencies]
 twizzler-queue-raw = { path = "../twizzler-queue-raw" }
-twizzler-futures = { path = "../twizzler-futures" }
+twizzler-futures = { workspace = true }
 twizzler-abi = { path = "../twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
-async-io = "*"
-futures = "*"
+async-io = { workspace = true }
+futures = { workspace = true }

@@ -9,13 +9,13 @@ use twizzler_abi::{
         KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall, TimeSpan,
     },
     trace::{
-        SyscallEntryEvent, SyscallExitEvent, TraceEntryFlags, TraceKind, THREAD_SYSCALL_ENTRY,
-        THREAD_SYSCALL_EXIT,
+        SyscallEntryEvent, SyscallExitEvent, THREAD_SYSCALL_ENTRY, THREAD_SYSCALL_EXIT,
+        TraceEntryFlags, TraceKind,
     },
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, ResourceError, TwzError},
     Result,
+    error::{ArgumentError, ResourceError, TwzError},
 };
 
 use self::{
@@ -28,9 +28,10 @@ use crate::{
     memory::VirtAddr,
     processor::mp::all_processors,
     random::getrandom,
-    time::{Ticks, TICK_SOURCES},
+    thread::current_thread_ref,
+    time::{TICK_SOURCES, Ticks},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -63,15 +64,15 @@ pub trait SyscallContext {
 
 pub unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> Option<&'a mut [T]> {
     /* TODO: verify pointers */
-    Some(core::slice::from_raw_parts_mut(ptr as *mut T, len as usize))
+    unsafe { Some(core::slice::from_raw_parts_mut(ptr as *mut T, len as usize)) }
 }
 
 unsafe fn create_user_ptr<'a, T>(ptr: u64) -> Option<&'a mut T> {
-    (ptr as *mut T).as_mut()
+    unsafe { (ptr as *mut T).as_mut() }
 }
 
 unsafe fn create_user_nullable_ptr<'a, T>(ptr: u64) -> Option<Option<&'a mut T>> {
-    Some((ptr as *mut T).as_mut())
+    unsafe { Some((ptr as *mut T).as_mut()) }
 }
 
 fn sys_kernel_console_write(
@@ -333,11 +334,13 @@ fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
-                "null call {:x} {:x} {:x}",
+                "{}: null call {:x} {:x} {:x}",
+                current_thread_ref().unwrap().objid(),
                 context.arg0::<u64>(),
                 context.arg1::<u64>(),
                 context.arg2::<u64>(),
             );
+
             context.set_return_values(0u64, 0u64);
         }
         Syscall::KernelConsoleWrite => {

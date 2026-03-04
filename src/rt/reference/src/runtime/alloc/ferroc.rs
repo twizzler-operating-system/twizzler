@@ -29,7 +29,7 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
         layout: std::alloc::Layout,
         _commit: bool,
     ) -> Result<ferroc::base::Chunk<Self>, Self::Error> {
-        let ptr = unsafe { self.local_alloc.alloc_zeroed(layout) };
+        let ptr = unsafe { self.local_alloc.alloc(layout) };
         Ok(unsafe {
             Chunk::new(
                 NonNull::new(ptr).ok_or(AllocError)?,

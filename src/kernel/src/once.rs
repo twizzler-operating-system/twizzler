@@ -66,7 +66,7 @@ impl<T> Once<T> {
     }
 
     unsafe fn force_get(&self) -> &T {
-        &*(*self.data.get()).as_ptr()
+        unsafe { &*(*self.data.get()).as_ptr() }
     }
 
     /// If the data is not ready, then return None, or return Some if the data is ready. If this
@@ -161,7 +161,7 @@ impl<T> OnceWait<T> {
     }
 
     unsafe fn force_get(&self) -> &T {
-        &*(*self.data.get()).as_ptr()
+        unsafe { &*(*self.data.get()).as_ptr() }
     }
 
     /// If the data is not ready, then return None, or return Some if the data is ready.

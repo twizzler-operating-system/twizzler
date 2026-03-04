@@ -1,19 +1,20 @@
 use alloc::vec::Vec;
 
 use limine::{
+    BaseRevision,
     file::File,
     memory_map::EntryType,
     request::{
-        BootloaderInfoRequest, EntryPointRequest, FramebufferRequest, HhdmRequest,
-        KernelFileRequest, MemoryMapRequest, ModuleRequest, RsdpRequest,
+        BootloaderInfoRequest, EntryPointRequest, ExecutableFileRequest, FramebufferRequest,
+        HhdmRequest, MemoryMapRequest, ModuleRequest, RsdpRequest, StackSizeRequest,
     },
-    BaseRevision,
 };
 
 use crate::{
+    BootInfo,
     initrd::BootModule,
     memory::{MemoryRegion, MemoryRegionKind, PhysAddr, VirtAddr},
-    BootInfo,
+    processor::KERNEL_STACK_SIZE,
 };
 
 struct LimineBootInfo {
@@ -47,16 +48,16 @@ impl BootInfo for LimineBootInfo {
         )
     }
 
-    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr {
+    fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr {
         match table {
-            BootInfoSystemTable::Rsdp => VirtAddr::new(self.rsdp.unwrap()).unwrap(),
+            BootInfoSystemTable::Rsdp => PhysAddr::new(self.rsdp.unwrap()).unwrap(),
             BootInfoSystemTable::Efi => todo!(),
         }
     }
 
     fn get_cmd_line(&self) -> &'static str {
-        if !self.kernel.cmdline().is_empty() {
-            core::str::from_utf8(self.kernel.cmdline()).unwrap()
+        if !self.kernel.string().is_empty() {
+            core::str::from_utf8(self.kernel.string().to_bytes()).unwrap()
         } else {
             ""
         }
@@ -67,13 +68,12 @@ impl From<EntryType> for MemoryRegionKind {
     fn from(st: EntryType) -> Self {
         match st {
             EntryType::USABLE => MemoryRegionKind::UsableRam,
-            EntryType::KERNEL_AND_MODULES => MemoryRegionKind::BootloaderReserved,
+            EntryType::EXECUTABLE_AND_MODULES => MemoryRegionKind::BootloaderReserved,
             _ => MemoryRegionKind::Reserved,
         }
     }
 }
 
-const STACK_SIZE: usize = 4096 * 16;
 #[repr(C, align(4096))]
 struct P2Align12<T>(T);
 static STACK: P2Align12<[u8; STACK_SIZE]> = P2Align12([0; STACK_SIZE]);
@@ -106,9 +106,9 @@ extern "C" fn limine_entry() -> ! {
             .file(),
         maps: alloc::vec![],
         modules: alloc::vec![],
-        rsdp: LIMINE_TABLE.get_response().map(
-            |r| r.address() as u64 - 0xffff800000000000, /* TODO: MEGA HACK */
-        ),
+        rsdp: LIMINE_TABLE
+            .get_response()
+            .map(|r| r.address() as u64 /* TODO: MEGA HACK */),
     };
 
     boot_info.maps = LIMINE_MEM
@@ -136,41 +136,46 @@ extern "C" fn limine_entry() -> ! {
 }
 
 #[used]
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 static LIMINE_REVISION: BaseRevision = BaseRevision::new();
 static LIMINE_BOOTINFO: BootloaderInfoRequest = BootloaderInfoRequest::new();
 static LIMINE_ENTRY: EntryPointRequest = EntryPointRequest::new().with_entry_point(limine_entry);
 static LIMINE_FB: FramebufferRequest = FramebufferRequest::new();
 static LIMINE_MOD: ModuleRequest = ModuleRequest::new();
 static LIMINE_MEM: MemoryMapRequest = MemoryMapRequest::new();
-static LIMINE_KERNEL: KernelFileRequest = KernelFileRequest::new();
+static LIMINE_KERNEL: ExecutableFileRequest = ExecutableFileRequest::new();
 static LIMINE_TABLE: RsdpRequest = RsdpRequest::new();
 static LIMINE_HHDM: HhdmRequest = HhdmRequest::new();
+const STACK_SIZE: usize = KERNEL_STACK_SIZE;
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(STACK_SIZE as u64);
 
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F1: &'static BootloaderInfoRequest = &LIMINE_BOOTINFO;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F2: &'static EntryPointRequest = &LIMINE_ENTRY;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F3: &'static ModuleRequest = &LIMINE_MOD;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F4: &'static MemoryMapRequest = &LIMINE_MEM;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
-static F5: &'static KernelFileRequest = &LIMINE_KERNEL;
-#[link_section = ".limine_reqs"]
+static F5: &'static ExecutableFileRequest = &LIMINE_KERNEL;
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F6: &'static FramebufferRequest = &LIMINE_FB;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F7: &'static RsdpRequest = &LIMINE_TABLE;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static F8: &'static HhdmRequest = &LIMINE_HHDM;
-#[link_section = ".limine_reqs"]
+#[unsafe(link_section = ".limine_reqs")]
+#[used]
+static F9: &'static StackSizeRequest = &STACK_SIZE_REQUEST;
+#[unsafe(link_section = ".limine_reqs")]
 #[used]
 static FEND: u64 = 0;

@@ -6,13 +6,13 @@ use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 use region::{MapRegion, RegionManager, Shadow};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::MapFlags,
 };
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use super::{
-    kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, UserContext,
+    KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, UserContext, kernel_context,
 };
 use crate::{
     arch::{
@@ -21,15 +21,15 @@ use crate::{
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
+        PhysAddr,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
         },
         tracker::FrameAllocFlags,
-        PhysAddr,
     },
     mutex::Mutex,
-    obj::{self, pages::PageRef, ObjectRef, PageNumber},
+    obj::{self, ObjectRef, PageNumber, pages::PageRef},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -202,6 +202,7 @@ impl VirtContext {
     }
 
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
+        //let sctx = 0.into();
         let secctx = self.secctx.lock();
         cb(secctx
             .get(&sctx)
@@ -286,6 +287,20 @@ impl VirtContext {
         );
 
         self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+
+        let cursor = MappingCursor::new(VirtAddr::PHYS_START, PhysAddr::phys_mem_map_len());
+        let settings = MappingSettings::new(
+            Protections::READ | Protections::WRITE | Protections::EXEC,
+            CacheType::WriteBack,
+            MappingFlags::empty(),
+        );
+        let mut phys = ContiguousProvider::new(
+            PhysAddr::new(0).unwrap(),
+            PhysAddr::phys_mem_map_len(),
+            settings,
+        );
+
+        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
     }
 
     pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {
@@ -301,6 +316,7 @@ impl UserContext for VirtContext {
     type MappingInfo = Slot;
 
     fn switch_to(&self, sctx: ObjID) {
+        //let sctx = 0.into();
         let tc = self.target_cache.lock();
         let target = tc
             .get(&sctx)
@@ -379,9 +395,9 @@ impl UserContext for VirtContext {
         let start = range.start.as_byte_offset();
         let len = range.end.as_byte_offset() - start;
         let mut slots = self.regions.lock();
-        let arches = self.secctx.lock();
-        for arch in arches.values() {
-            for info in slots.object_mappings(obj) {
+        for info in slots.object_mappings(obj) {
+            let arches = self.secctx.lock();
+            for arch in arches.values() {
                 match mode {
                     obj::InvalidateMode::Full => {
                         arch.unmap(info.mapping_cursor(start, len));
@@ -513,7 +529,9 @@ impl KernelMemoryContext for VirtContext {
 
     unsafe fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: NonNull<u8>) {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
-        glb.alloc.deallocate(ptr, layout);
+        unsafe {
+            glb.alloc.deallocate(ptr, layout);
+        }
     }
 
     fn init_allocator(&self) {

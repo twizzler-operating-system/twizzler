@@ -7,8 +7,10 @@ use std::{
         mpsc::{Receiver, Sender},
         Arc,
     },
+    time::Duration,
 };
 
+use secgate::TwzError;
 use twizzler_abi::syscall::{
     sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
     ThreadSyncSleep, ThreadSyncWake,
@@ -91,8 +93,10 @@ impl ThreadCleanerData {
 }
 
 impl Waits {
-    fn process_queue(&mut self, recv: &mut Receiver<WaitOp>) {
+    fn process_queue(&mut self, recv: &mut Receiver<WaitOp>) -> bool {
+        let mut did_work = false;
         while let Ok(wo) = recv.try_recv() {
+            did_work = true;
             match wo {
                 WaitOp::Add(th) => {
                     self.threads.insert(th.id, th);
@@ -102,6 +106,7 @@ impl Waits {
                 }
             }
         }
+        did_work
     }
 }
 
@@ -113,7 +118,7 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
     loop {
         ops.truncate(0);
         // Apply any waiting operations.
-        waits.process_queue(&mut recv);
+        let mut did_work = waits.process_queue(&mut recv);
 
         // Add the notify sleep op.
         ops.push(ThreadSync::new_sleep(ThreadSyncSleep::new(
@@ -125,10 +130,10 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
 
         // Add all sleep ops for threads.
         cleanups.extend(waits.threads.extract_if(|_, th| th.has_exited()));
-        for th in waits.threads.values() {
-            ops.push(ThreadSync::new_sleep(th.waitable_until_exit()));
-        }
 
+        if !cleanups.is_empty() {
+            did_work = true;
+        }
         // Remove any exited threads from the thread manager.
         for (_, th) in cleanups.drain(..) {
             tracing::debug!("cleaning thread: {}", th.id);
@@ -152,12 +157,19 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             drop(comps);
         }
 
+        for th in waits.threads.values() {
+            ops.push(ThreadSync::new_sleep(th.waitable_until_exit()));
+        }
+        did_work |= waits.threads.values().any(|v| v.has_exited());
+
         // Check for notifications, and sleep.
-        if data.notify.swap(0, Ordering::SeqCst) == 0 {
+        if !did_work && data.notify.swap(0, Ordering::SeqCst) == 0 {
             // no notification, go to sleep. hold the lock over the sleep so that someone cannot
             // modify waits.threads on us while we're asleep.
-            if let Err(e) = sys_thread_sync(&mut ops, None) {
-                tracing::warn!("thread sync error: {}", e);
+            if let Err(e) = sys_thread_sync(&mut ops, Some(Duration::from_secs(8))) {
+                if e != TwzError::TIMED_OUT {
+                    tracing::warn!("thread sync error: {}", e);
+                }
             }
         }
     }

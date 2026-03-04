@@ -6,15 +6,16 @@ use dynlink::{
     library::UnloadedLibrary,
 };
 use happylock::ThreadKey;
-use monitor_api::MONITOR_INSTANCE_ID;
+use monitor_api::{
+    CompartmentInfoRaw, CompartmentLoaderConfig, CompartmentMgrStats, ControllerOption, ThreadInfo,
+    MONITOR_INSTANCE_ID,
+};
 use secgate::util::Descriptor;
-use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep};
+use twizzler_abi::syscall::{sys_thread_change_state, sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
 };
-
-use crate::gates::{CompartmentInfo, CompartmentMgrStats, ThreadInfo};
 
 mod compconfig;
 mod compthread;
@@ -30,6 +31,7 @@ pub use runcomp::*;
 pub struct CompartmentMgr {
     names: HashMap<String, ObjID>,
     instances: HashMap<ObjID, RunComp>,
+    controllers: HashMap<ObjID, Vec<ObjID>>,
     dynlink_map: HashMap<CompartmentId, ObjID>,
     cleanup_queue: Vec<RunComp>,
 }
@@ -86,7 +88,25 @@ impl CompartmentMgr {
         }
         self.names.insert(rc.name.clone(), rc.instance);
         self.dynlink_map.insert(rc.compartment_id, rc.instance);
+        self.remove_from_controllers(rc.instance);
+        if let Some(controller) = rc.controller {
+            tracing::debug!(
+                "setting controller for new compartment {}: {}",
+                rc.instance,
+                controller
+            );
+            self.controllers
+                .entry(controller)
+                .or_default()
+                .push(rc.instance);
+        }
         self.instances.insert(rc.instance, rc);
+    }
+
+    fn remove_from_controllers(&mut self, id: ObjID) {
+        for c in self.controllers.iter_mut() {
+            c.1.retain(|t| *t != id);
+        }
     }
 
     /// Remove a [RunComp].
@@ -94,7 +114,28 @@ impl CompartmentMgr {
         let rc = self.instances.remove(&id)?;
         self.names.remove(&rc.name);
         self.dynlink_map.remove(&rc.compartment_id);
+        self.remove_from_controllers(id);
         Some(rc)
+    }
+
+    pub fn set_controller(&mut self, target: ObjID, controller: ObjID) -> Result<(), TwzError> {
+        let comp = self.get_mut(target)?;
+        comp.controller = Some(controller);
+        tracing::debug!(
+            "setting controller for compartment {}: {}",
+            target,
+            controller
+        );
+        self.remove_from_controllers(target);
+        self.controllers.entry(controller).or_default().push(target);
+        Ok(())
+    }
+
+    pub fn find_controller_targets(&self, controller: ObjID) -> Vec<ObjID> {
+        self.controllers
+            .get(&controller)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get the [RunComp] for the monitor.
@@ -150,7 +191,7 @@ impl CompartmentMgr {
         &self,
         instance: ObjID,
         state: u64,
-    ) -> Result<ThreadSyncSleep, TwzError> {
+    ) -> Result<[ThreadSync; 2], TwzError> {
         let rc = self.get(instance)?;
         Ok(rc.until_change(state))
     }
@@ -163,6 +204,11 @@ impl CompartmentMgr {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
+
+        for thread in rc.per_thread.keys() {
+            let _ = sys_thread_change_state(*thread, twizzler_abi::thread::ExecutionState::Exited);
+        }
+
         for dep in rc.deps.clone() {
             self.dec_use_count(dep);
         }
@@ -221,7 +267,7 @@ impl super::Monitor {
         instance: ObjID,
         thread: ObjID,
         desc: Option<Descriptor>,
-    ) -> Result<CompartmentInfo, TwzError> {
+    ) -> Result<CompartmentInfoRaw, TwzError> {
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -240,7 +286,7 @@ impl super::Monitor {
             .library_ids()
             .count();
 
-        Ok(CompartmentInfo {
+        Ok(CompartmentInfoRaw {
             name_len,
             id: comp_id,
             sctx: comp.sctx,
@@ -308,6 +354,26 @@ impl super::Monitor {
                 } else {
                     compartment
                 },
+            },
+        )
+        .ok_or(ResourceError::OutOfResources.into())
+    }
+
+    /// Open a compartment handle for this caller compartment.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn lookup_compartment_id(
+        &self,
+        instance: ObjID,
+        thread: ObjID,
+        comp: ObjID,
+    ) -> Result<Descriptor, TwzError> {
+        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let comp = comps.get_mut(comp)?;
+        comp.inc_use_count();
+        ch.insert(
+            instance,
+            super::CompartmentHandle {
+                instance: comp.instance,
             },
         )
         .ok_or(ResourceError::OutOfResources.into())
@@ -402,11 +468,15 @@ impl super::Monitor {
         &self,
         caller: ObjID,
         thread: ObjID,
+        root_object: ObjID,
         name_len: usize,
         args_len: usize,
         env_len: usize,
         new_comp_flags: NewCompartmentFlags,
+        config: *const CompartmentLoaderConfig,
     ) -> Result<Descriptor, TwzError> {
+        // TODO: verify config pointer
+        let config = unsafe { config.read() };
         let total_bytes = name_len + args_len + env_len;
         let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
         let name_bytes = &str_bytes[0..name_len];
@@ -417,7 +487,7 @@ impl super::Monitor {
         let mut split = input.split("::");
         let compname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
         let libname = split.next().ok_or(TwzError::INVALID_ARGUMENT)?;
-        let root = UnloadedLibrary::new(libname);
+        let root = UnloadedLibrary::new_object(libname, root_object);
 
         // parse args
         let args_bytes = arg_bytes.split_inclusive(|b| *b == 0);
@@ -447,20 +517,49 @@ impl super::Monitor {
             })
             .collect::<Vec<_>>();
         tracing::debug!("ld preload extras: {:?}", extras);
+        let extras_sctx = env
+            .iter()
+            .filter_map(|item| {
+                let item = item.to_str().ok()?;
+                if item.starts_with("SCTX_PRELOAD=") {
+                    Some(UnloadedLibrary::new(
+                        item.trim_start_matches("SCTX_PRELOAD="),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        tracing::debug!("sctx preload extras: {:?}", extras);
 
         let mondebug = env
             .iter()
             .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
             .is_some();
+
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
-            loader::RunCompLoader::new(*dynlink, compname, root, &extras, new_comp_flags, mondebug)
+            loader::RunCompLoader::new(
+                *dynlink,
+                compname,
+                root,
+                &extras,
+                &extras_sctx,
+                new_comp_flags,
+                mondebug,
+            )
         }
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
             let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *self.locks.lock(ThreadKey::get().unwrap());
+
+            let controller = match config.controller {
+                ControllerOption::Inherit => cmp.get(caller)?.controller,
+                ControllerOption::NoController => None,
+                ControllerOption::Object(id) => Some(id),
+            };
             // TODO: dynlink err map
             loader
                 .build_rcs(
@@ -468,6 +567,8 @@ impl super::Monitor {
                     &mut *dynlink,
                     mondebug,
                     new_comp_flags.contains(NewCompartmentFlags::DEBUG),
+                    controller,
+                    config,
                 )
                 .map_err(|_| GenericError::Internal)?
         };
@@ -521,20 +622,20 @@ impl super::Monitor {
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
-        let sl = {
+        let mut sl = {
             let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
             let Ok(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };
 
-            if sl.ready() {
+            if sl.iter().any(|sl| sl.ready()) {
                 return;
             }
             drop(cmp);
             sl
         };
 
-        let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sl)], None);
+        let _ = sys_thread_sync(&mut sl, None);
     }
 }
 

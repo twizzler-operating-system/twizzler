@@ -402,7 +402,7 @@ impl NameSession<'_> {
             Some(ParentInfo::new(container, node.name()?)),
         )?;
         let items = ns.items();
-        tracing::trace!("collected: {:?}", items);
+        tracing::info!("collected: {:?}", items);
         Ok(items)
     }
 
@@ -415,7 +415,7 @@ impl NameSession<'_> {
     }
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
-        tracing::debug!("change_ns: {:?}", name.as_ref());
+        tracing::trace!("change_ns: {:?}", name.as_ref());
         let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         match node.kind {
             NsNodeKind::Namespace => {

@@ -24,7 +24,6 @@ impl Unmapper {
                 .spawn(move || loop {
                     match receiver.recv() {
                         Ok(info) => {
-                            tracing::debug!("unmapper command {:?}", info);
                             if catch_unwind(|| {
                                 let monitor = get_monitor();
                                 match info {
@@ -41,6 +40,7 @@ impl Unmapper {
                                 );
                                 break;
                             }
+                            tracing::debug!("unmapper command {:?}", info);
                         }
                         Err(_) => {
                             // If receive fails, we can't recover, but this probably doesn't happen

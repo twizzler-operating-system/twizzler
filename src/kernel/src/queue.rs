@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use twizzler_abi::{
     device::CacheType,
-    object::Protections,
+    object::{NULLPAGE_SIZE, Protections},
     syscall::{
         MapFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
         ThreadSyncWake,
@@ -16,10 +16,10 @@ use twizzler_queue_raw::{
 use crate::{
     condvar::CondVar,
     memory::context::{
-        kernel_context, Context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+        Context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
     },
     mutex::Mutex,
-    obj::ObjectRef,
+    obj::{ObjectRef, PageNumber},
     processor::spin_wait_until,
     spinlock::Spinlock,
     syscall::sync::sys_thread_sync,
@@ -37,7 +37,7 @@ unsafe impl<T: Copy> Sync for Queue<T> {}
 impl<T: Copy> Queue<T> {
     unsafe fn new(hdr: *const RawQueueHdr, buf: *mut QueueEntry<T>) -> Self {
         Self {
-            raw: RawQueue::new(hdr, buf),
+            raw: unsafe { RawQueue::new(hdr, buf) },
             cv: CondVar::new(),
             lock: Spinlock::new(()),
         }
@@ -119,12 +119,19 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
     pub fn from_object(obj: ObjectRef) -> Self {
         let handle =
             kernel_context().insert_kernel_object::<QueueBase<S, C>>(ObjectContextInfo::new(
-                obj,
+                obj.clone(),
                 Protections::READ | Protections::WRITE,
                 CacheType::WriteBack,
                 MapFlags::empty(),
             ));
         let base = handle.base();
+
+        let max_base = base
+            .sub_buf
+            .max(base.sub_hdr)
+            .max(base.com_buf)
+            .max(base.com_hdr);
+
         let sub = unsafe {
             Queue::new(
                 handle.lea_raw(base.sub_hdr as *const RawQueueHdr).unwrap(),
@@ -141,6 +148,29 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                     .unwrap(),
             )
         };
+        let max_len = com
+            .raw
+            .hdr()
+            .len_bytes()
+            .max(sub.raw.hdr().len_bytes())
+            .max(size_of::<RawQueueHdr>());
+        let num_bytes = NULLPAGE_SIZE + max_base + max_len;
+        log::debug!(
+            "pre-faulting {} bytes ({} {}) {:?}",
+            num_bytes,
+            max_base,
+            max_len,
+            obj.id()
+        );
+        let mut pt = obj.lock_page_tree();
+        for pg in 0..(num_bytes / PageNumber::PAGE_SIZE) {
+            let mut _up = false;
+            pt = obj.ensure_in_core(
+                pt,
+                PageNumber::from_offset(pg * PageNumber::PAGE_SIZE),
+                &mut _up,
+            );
+        }
         Self {
             handle,
             submissions: sub,

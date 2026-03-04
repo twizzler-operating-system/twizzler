@@ -4,6 +4,7 @@ use core::mem::MaybeUninit;
 use std::{
     collections::BTreeMap,
     ffi::{c_char, c_void, CStr, CString},
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
@@ -28,6 +29,7 @@ use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::RuntimeState,
+    OUR_RUNTIME,
 };
 
 #[derive(Copy, Clone)]
@@ -40,6 +42,10 @@ impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
+            let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
+            if id == 0 {
+                OUR_RUNTIME.close_fds();
+            }
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
@@ -155,6 +161,7 @@ impl ReferenceRuntime {
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
+        use twizzler_rt_abi::fd::NameRoot;
         // TODO: control this with env vars
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
@@ -167,6 +174,25 @@ impl ReferenceRuntime {
             None
         } else {
             unsafe { self.set_runtime_ready() };
+            OUR_RUNTIME.init_fds();
+
+            let mut nr = self.nameroots.lock();
+            //twizzler_abi::klog_println!("got: {:?}", std::env::var("TWZ_RT_INITIAL_DIR"));
+
+            let current_dir = std::env::var("TWZ_RT_INITIAL_DIR").unwrap_or("/".to_string());
+
+            // TODO
+            nr.insert(NameRoot::Home, PathBuf::from("/"));
+            nr.insert(NameRoot::Root, PathBuf::from("/"));
+            nr.insert(NameRoot::Exe, PathBuf::from("/"));
+            nr.insert(NameRoot::Temp, PathBuf::from("/tmp"));
+            nr.insert(NameRoot::Current, PathBuf::from("/"));
+            if let Some(namer) = crate::runtime::file::get_naming_handle() {
+                if namer.lock().unwrap().change_namespace(&current_dir).is_ok() {
+                    nr.insert(NameRoot::Current, Path::new(&current_dir).to_path_buf());
+                }
+            }
+
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
@@ -210,12 +236,13 @@ impl ReferenceRuntime {
             0,
             0,
             0.into(),
+            0.into(),
             [UpcallOptions {
                 flags: UpcallFlags::empty(),
                 mode: UpcallMode::CallSelf,
             }; UpcallInfo::NR_UPCALLS],
         );
-        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target).unwrap();
         self.set_is_monitor();
         self.init_allocator(init_info);
         self.init_tls(init_info);
@@ -236,6 +263,7 @@ impl ReferenceRuntime {
         let mut tg = TLS_GEN_MGR.lock();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
 
         if !unsafe { __mlibc_entry.is_null() } {
             let mlibc_entry = unsafe {

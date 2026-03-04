@@ -12,11 +12,11 @@ use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingK
 
 use crate::{
     memory::context::{
-        kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo,
-        UserContext,
+        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
+        kernel_context,
     },
     mutex::Mutex,
-    obj::{lookup_object, LookupFlags, LookupResult},
+    obj::{LookupFlags, LookupResult, lookup_object},
     once::Once,
     spinlock::Spinlock,
     thread::current_memory_context,

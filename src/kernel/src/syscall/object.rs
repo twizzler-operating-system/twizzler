@@ -5,28 +5,29 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     pager::PagerFlags,
     syscall::{
-        CreateTieSpec, DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
-        ObjectCreate, ObjectCreateFlags, ObjectInfo, ObjectSource,
+        DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
+        ObjectCreateFlags, ObjectInfo,
     },
 };
 use twizzler_rt_abi::{
+    Result,
+    bindings::{object_source, object_tie},
     error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
     object::Nonce,
-    Result,
 };
 
 use crate::{
     arch::context::ArchContext,
     memory::{
-        context::{virtmem::Slot, Context, ContextRef, UserContext},
+        context::{Context, ContextRef, UserContext, virtmem::Slot},
         frame::PHYS_LEVEL_LAYOUTS,
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
     once::Once,
     random::getrandom,
     security::get_sctx,
@@ -45,8 +46,8 @@ fn new_nonce() -> Result<u128> {
 
 pub fn sys_object_create(
     create: &ObjectCreate,
-    srcs: &[ObjectSource],
-    ties: &[CreateTieSpec],
+    srcs: &[object_source],
+    ties: &[object_tie],
 ) -> Result<ObjID> {
     let nonce = if create.flags.contains(ObjectCreateFlags::NO_NONCE) {
         0
@@ -63,10 +64,10 @@ pub fn sys_object_create(
         return Ok(obj.id());
     }
     for src in srcs {
-        if src.id.raw() == 0 {
-            crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len)
+        if src.id == 0 {
+            crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len as usize)
         } else {
-            let so = crate::obj::lookup_object(src.id, LookupFlags::empty())
+            let so = crate::obj::lookup_object(src.id.into(), LookupFlags::empty())
                 .ok_or(ObjectError::NoSuchObject)?;
             let mut fa = FrameAllocator::new(
                 FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
@@ -77,7 +78,7 @@ pub fn sys_object_create(
                 src.src_start as usize,
                 &obj,
                 src.dest_start as usize,
-                src.len,
+                src.len as usize,
                 &mut fa,
             )
         }

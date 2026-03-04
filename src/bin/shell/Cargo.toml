@@ -1,0 +1,22 @@
+[package]
+name = "shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"
+twizzler-runtime = { workspace = true }
+twizzler-queue = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+naming-core = { workspace = true }
+embedded-io = { workspace = true, features = ["std"] }
+noline = { workspace = true }
+miette = { workspace = true }
+hhmmss = "0.1"
+monitor-api = { workspace = true }
+libc = { workspace = true }
+colored = { workspace = true }
+twizzler-io = { path = "../../lib/twizzler-io" }
+clap = { workspace = true }

@@ -3,7 +3,6 @@
 #![allow(internal_features)]
 #![feature(alloc_error_handler)]
 #![feature(thread_local)]
-#![feature(naked_functions)]
 #![allow(dead_code)]
 #![feature(core_intrinsics)]
 #![feature(optimize_attribute)]
@@ -13,8 +12,6 @@
 #![test_runner(crate::test_runner)]
 #![feature(stmt_expr_attributes)]
 #![feature(int_roundings)]
-#![feature(let_chains)]
-#![feature(btree_extract_if)]
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
 #![feature(ptr_as_ref_unchecked)]
@@ -64,12 +61,12 @@ use memory::{MemoryRegion, VirtAddr};
 use once::Once;
 use processor::{
     mp::{boot_all_secondaries, init_cpu},
-    sched::{schedule, SchedFlags},
+    sched::{SchedFlags, schedule},
 };
 use random::start_entropy_contribution_thread;
 use syscall::sync::requeue_all;
 
-use crate::{processor::mp::current_processor, thread::entry::start_new_init};
+use crate::{arch::PhysAddr, processor::mp::current_processor, thread::entry::start_new_init};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -78,7 +75,7 @@ pub trait BootInfo {
     /// Return the address and length of the whole kernel image.
     fn kernel_image_info(&self) -> (VirtAddr, usize);
     /// Get a system table, the kinds available depend on the platform and architecture.
-    fn get_system_table(&self, table: BootInfoSystemTable) -> VirtAddr;
+    fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr;
     /// Get a static array of the modules loaded by the bootloader
     fn get_modules(&self) -> &'static [BootModule];
     /// Get a pointer to the kernel command line.
@@ -131,7 +128,7 @@ static LOGGER: Logger = Logger {};
 
 fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
-    arch::init(boot_info);
+    arch::init();
     ::log::set_logger(&LOGGER).unwrap();
     ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
@@ -154,6 +151,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     }
     logln!("[kernel::mm] initializing memory management");
     memory::init(boot_info);
+    arch::init_post_memory(boot_info);
 
     logln!("[kernel::debug] parsing kernel debug image");
     let (kernel_image_start, kernel_image_length) = boot_info.kernel_image_info();
@@ -170,7 +168,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     arch::init_interrupts();
     #[cfg(target_arch = "x86_64")]
     arch::init_secondary();
+    ::log::set_max_level(LevelFilter::Off);
     initrd::init(boot_info.get_modules());
+    ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel::cpu] booting secondary CPUs");
     boot_all_secondaries(image::get_tls());
 

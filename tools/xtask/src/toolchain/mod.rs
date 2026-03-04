@@ -1,14 +1,12 @@
 use std::{
     fs::remove_dir_all,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use bootstrap::do_bootstrap;
 use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
-use reqwest::Client;
 
 use crate::triple::{Arch, Triple};
 
@@ -175,67 +173,6 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
     }
 }
 
-fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
-    let objname = format!("{}.o", name);
-    let srcname = format!("{}.rs", name);
-    let sourcepath = Path::new("toolchain/src/").join(srcname);
-    let objpath = format!(
-        "toolchain/install/lib/rustlib/{}/lib/self-contained/{}",
-        build_info, objname
-    );
-    let objpath = Path::new(&objpath);
-    println!("building {:?} => {:?}", sourcepath, objpath);
-    let status = Command::new("toolchain/install/bin/rustc")
-        .arg("--emit")
-        .arg("obj")
-        .arg("-o")
-        .arg(objpath)
-        .arg(sourcepath)
-        .arg("--crate-type")
-        .arg("staticlib")
-        .arg("-C")
-        .arg("panic=abort")
-        .arg("--target")
-        .arg(build_info.to_string())
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to compile {}::{}", name, build_info.to_string());
-    }
-
-    Ok(())
-}
-
-async fn download_efi_files(client: &Client) -> anyhow::Result<()> {
-    // efi binaries for x86 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/OVMF.fd",
-        "toolchain/install/OVMF.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTX64.EFI",
-        "toolchain/install/BOOTX64.EFI",
-    )
-    .await?;
-    // efi binaries for aarch64 machines
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/QEMU_EFI.fd",
-        "toolchain/install/OVMF-AA64.fd",
-    )
-    .await?;
-    download_file(
-        client,
-        "http://twizzler.io/dist/bootfiles/BOOTAA64.EFI",
-        "toolchain/install/BOOTAA64.EFI",
-    )
-    .await?;
-
-    Ok(())
-}
-
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     let sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
@@ -246,7 +183,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     } else {
         ""
     };
-    let args = format!("{} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", extra_rustflags, sysroot_path.display(), sysroot_path.display());
+    let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", extra_rustflags, sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
@@ -254,12 +191,17 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn set_static() {
+pub fn set_static(target: &Triple) {
+    let sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
     std::env::set_var(
         "RUSTFLAGS",
-        "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static",
+        &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {}",  sysroot_path.display(), sysroot_path.display()),
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/static");
+    std::env::set_var(
+        "TWIZZLER_ABI_SYSROOTS",
+        sysroot_path.canonicalize().unwrap(),
+    );
 }
 
 pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
@@ -341,6 +283,18 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
         clang_path.canonicalize().unwrap()
     };
 
+    let ranlib_path = {
+        let mut path = toolchain_path.clone();
+        path.push("bin/llvm-ranlib");
+        path.canonicalize().unwrap()
+    };
+
+    let ar_path = {
+        let mut path = toolchain_path.clone();
+        path.push("bin/llvm-ar");
+        path.canonicalize().unwrap()
+    };
+
     // When compiling crates that compile C code (e.g. alloca), we need to use our clang.
     // let clang_path = Path::new(format!("{}/bin/clang", toolchain_path).as_str())
     //     .canonicalize()
@@ -348,6 +302,12 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
     std::env::set_var("CC", &clang_path);
     std::env::set_var("LD", &clang_path);
     std::env::set_var("CXX", &clang_path);
+
+    std::env::set_var("AR", &ar_path);
+    std::env::set_var("RANLIB", &ranlib_path);
+
+    std::env::set_var("CMAKE_AR", &ar_path);
+    std::env::set_var("CMAKE_RANLIB", &ranlib_path);
 
     // We don't have any real system-include files, but we can provide these extremely simple ones.
     let sysroot_path = Path::new(&format!(

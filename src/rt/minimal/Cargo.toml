@@ -9,20 +9,20 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 bitflags = "2.4.1"
-talc = { version = "4.4", default-features = false }
-bitset-core = { version = "0.1", default-features = false }
-cfg-if = "1.0"
-num_enum = { version = "0.7", default-features = false }
+talc = { workspace = true }
+bitset-core = { workspace = true }
+cfg-if = { workspace = true }
+num_enum = { workspace = true }
 thiserror = { package = "thiserror-no-std", version = "2.0", default-features = false }
-stable-vec = "0.4.1"
-lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
-lru = "0.13.0"
+stable-vec = { workspace = true }
+lazy_static = { workspace = true, features = ["spin_no_std"] }
+lru = { workspace = true }
 twizzler-rt-abi = "0.99"
 twizzler-abi = { path = "../../lib/twizzler-abi" }
-static_assertions = "1"
+static_assertions = { workspace = true }
 paste = "1"
-printf-compat = { version = "0.1", default-features = false }
-spin = "0.10"
+printf-compat = { workspace = true }
+spin = { workspace = true }
 
 [package.metadata]
 twizzler-build = "static"

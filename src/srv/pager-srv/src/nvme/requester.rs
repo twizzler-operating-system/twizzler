@@ -48,7 +48,7 @@ pub struct InflightRequest<'a> {
 }
 
 impl<'a> InflightRequest<'a> {
-    pub fn poll(&self) -> std::io::Result<CommonCompletion> {
+    pub fn _poll(&self) -> std::io::Result<CommonCompletion> {
         self.req.poll(self)
     }
 

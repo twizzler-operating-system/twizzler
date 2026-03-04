@@ -1,13 +1,13 @@
 use core::{cell::RefCell, mem::size_of};
 
 use x86::{
+    Ring,
     current::task::TaskStateSegment,
     dtables::DescriptorTablePointer,
     segmentation::{
         BuildDescriptor, CodeSegmentType, DataSegmentType, Descriptor, DescriptorBuilder,
         SegmentDescriptorBuilder, SegmentSelector,
     },
-    Ring,
 };
 
 use crate::{memory::VirtAddr, once::Once};
@@ -94,7 +94,9 @@ impl GlobalDescriptorTable {
 
     unsafe fn load(&self) {
         let p = DescriptorTablePointer::new_from_slice(&self.entries[0..self.len]);
-        x86::dtables::lgdt(&p);
+        unsafe {
+            x86::dtables::lgdt(&p);
+        }
     }
 }
 
@@ -171,6 +173,8 @@ pub unsafe fn set_kernel_stack(stack: VirtAddr) {
         .as_mut()
         .unwrap()
         .set_rsp(Ring::Ring0, stack.into());
-    core::arch::asm!("mov gs:0, rax", in("rax") stack.raw());
-    core::arch::asm!("mfence");
+    unsafe {
+        core::arch::asm!("mov gs:0, rax", in("rax") stack.raw());
+        core::arch::asm!("mfence");
+    }
 }

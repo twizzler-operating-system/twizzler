@@ -94,7 +94,7 @@ fn build_third_party<'a>(
     if !other_options.build_twizzler {
         return Ok(vec![]);
     }
-    crate::toolchain::set_static();
+    crate::toolchain::set_static(&build_config.twz_triple());
     crate::toolchain::set_cc(&build_config.twz_triple())?;
     let config = user_workspace.gctx();
     let smap = SourceConfigMap::new(config)?;
@@ -189,7 +189,7 @@ fn build_static<'a>(
     if !other_options.build_twizzler {
         return Ok(None);
     }
-    crate::toolchain::set_static();
+    crate::toolchain::set_static(&build_config.twz_triple());
     crate::toolchain::set_cc(&build_config.twz_triple())?;
     crate::print_status_line("collection: userspace-static", Some(build_config));
     // the currently supported build target triples
@@ -514,7 +514,7 @@ fn compile(
     let mut config = GlobalContext::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
-    crate::toolchain::set_static();
+    crate::toolchain::set_static(&bc.twz_triple());
     let mut static_config = GlobalContext::default()?;
     static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 

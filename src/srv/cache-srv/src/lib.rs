@@ -1,5 +1,3 @@
-#![feature(naked_functions)]
-
 use std::{collections::BTreeMap, sync::Mutex, time::Instant};
 
 use twizzler_abi::{
@@ -50,43 +48,46 @@ impl CacheState {
 
 static STATE: Mutex<CacheState> = Mutex::new(CacheState::new());
 
-#[secgate::secure_gate]
-pub fn hold(id: ObjID, flags: MapFlags) -> Result<bool> {
-    let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
-    let mut state = STATE.lock().unwrap();
-    Ok(state
-        .map
-        .insert((id, flags), HeldObject::new(handle))
-        .is_some())
-}
+mod gates {
+    use super::*;
+    #[secgate::entry(lib = "")]
+    pub fn hold(id: ObjID, flags: MapFlags) -> Result<bool> {
+        let handle = twizzler_rt_abi::object::twz_rt_map_object(id, flags)?;
+        let mut state = STATE.lock().unwrap();
+        Ok(state
+            .map
+            .insert((id, flags), HeldObject::new(handle))
+            .is_some())
+    }
 
-#[secgate::secure_gate]
-pub fn drop(id: ObjID, flags: MapFlags) -> Result<bool> {
-    let mut state = STATE.lock().unwrap();
-    Ok(state.map.remove(&(id, flags)).is_some())
-}
+    #[secgate::entry(lib = "")]
+    pub fn drop(id: ObjID, flags: MapFlags) -> Result<bool> {
+        let mut state = STATE.lock().unwrap();
+        Ok(state.map.remove(&(id, flags)).is_some())
+    }
 
-#[secgate::secure_gate]
-pub fn preload(id: ObjID) -> Result<()> {
-    sys_object_ctrl(id, ObjectControlCmd::Preload)
-}
+    #[secgate::entry(lib = "")]
+    pub fn preload(id: ObjID) -> Result<()> {
+        sys_object_ctrl(id, ObjectControlCmd::Preload)
+    }
 
-#[secgate::secure_gate]
-pub fn stat(_id: ObjID) -> Result<()> {
-    Ok(())
-}
+    #[secgate::entry(lib = "")]
+    pub fn stat(_id: ObjID) -> Result<()> {
+        Ok(())
+    }
 
-#[secgate::secure_gate]
-pub fn list_nth(nth: u64) -> Result<Option<CachedStats>> {
-    let state = STATE.lock().unwrap();
-    if let Some(v) = state.map.values().nth(nth as usize) {
-        Ok(Some(CachedStats {
-            id: v.handle.id(),
-            flags: v.handle.map_flags(),
-            start: v.start,
-            addr: v.handle.start().addr() as u64,
-        }))
-    } else {
-        Ok(None)
+    #[secgate::entry(lib = "")]
+    pub fn list_nth(nth: u64) -> Result<Option<CachedStats>> {
+        let state = STATE.lock().unwrap();
+        if let Some(v) = state.map.values().nth(nth as usize) {
+            Ok(Some(CachedStats {
+                id: v.handle.id(),
+                flags: v.handle.map_flags(),
+                start: v.start,
+                addr: v.handle.start().addr() as u64,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }

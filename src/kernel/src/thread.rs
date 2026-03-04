@@ -7,14 +7,14 @@ use core::{
     u32,
 };
 
-use intrusive_collections::{linked_list::AtomicLink, offset_of, RBTreeAtomicLink};
-use time::{ThreadSched, ThreadStats, SAMPLE_PERIOD_TICKS};
+use intrusive_collections::{RBTreeAtomicLink, linked_list::AtomicLink, offset_of};
+use time::{SAMPLE_PERIOD_TICKS, ThreadSched, ThreadStats};
 use twizzler_abi::{
-    object::{ObjID, NULLPAGE_SIZE},
-    syscall::{ThreadSpawnArgs, PERTHREAD_TRACE_GEN_SAMPLE},
+    object::{NULLPAGE_SIZE, ObjID},
+    syscall::{PERTHREAD_TRACE_GEN_SAMPLE, ThreadSpawnArgs},
     thread::{ExecutionState, ThreadRepr},
     trace::{ThreadSamplingEvent, TraceEntryFlags, TraceKind},
-    upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UPCALL_EXIT_CODE, UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget},
 };
 use twizzler_rt_abi::error::TwzError;
 
@@ -24,17 +24,20 @@ use self::{
 };
 use crate::{
     idcounter::{Id, IdCounter},
+    interrupt::Destination,
     memory::context::{ContextRef, UserContext},
     obj::control::ControlObjectCacher,
     processor::{
-        mp::get_processor,
-        sched::{remove_thread, schedule, SchedFlags},
         KERNEL_STACK_SIZE,
+        ipi::ipi_exec,
+        mp::get_processor,
+        sched::{SchedFlags, remove_thread, schedule, schedule_resched},
     },
     security::SecCtxMgr,
     spinlock::Spinlock,
+    thread::flags::THREAD_MUST_EXIT,
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -74,6 +77,7 @@ pub struct Thread {
     pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
+    pub pending_message: AtomicU64,
 }
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
@@ -106,8 +110,10 @@ pub fn current_thread_ref() -> Option<&'static ThreadRef> {
 
 pub unsafe fn set_current_thread(thread: &ThreadRef) {
     let ptr = CURRENT_THREAD.get();
-    let r = thread.self_reference.get().as_ref().unwrap_unchecked();
-    ptr.write(*r);
+    unsafe {
+        let r = thread.self_reference.get().as_ref().unwrap_unchecked();
+        ptr.write(*r);
+    }
     core::sync::atomic::fence(Ordering::Release);
 }
 
@@ -155,6 +161,7 @@ impl Thread {
             sample_expire: Spinlock::new(None),
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
+            pending_message: AtomicU64::new(0),
         }
     }
 
@@ -194,18 +201,22 @@ impl Thread {
         self.critical_counter.load(Ordering::SeqCst) > 0
     }
 
-    #[inline]
+    #[track_caller]
     pub fn exit_critical(&self, loc: &'static core::panic::Location) {
         let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
         if res == 0 {
-            panic!("critical underflow, critical from {}", loc);
+            panic!(
+                "critical underflow, critical from {}, exit_critical called from {}",
+                loc,
+                core::panic::Location::caller()
+            );
         }
         assert!(res > 0);
     }
 
     //#[inline]
     #[track_caller]
-    pub fn enter_critical(&self) -> CriticalGuard {
+    pub fn enter_critical(&self) -> CriticalGuard<'_> {
         self.critical_counter.fetch_add(1, Ordering::SeqCst);
         CriticalGuard {
             thread: self,
@@ -305,8 +316,17 @@ impl Thread {
             panic!("tried to signal upcall in critical section");
         }
 
-        log::info!("upcall: {}: {:?}", self.id(), info);
-        crate::panic::backtrace(false, None);
+        if info.number() != UpcallInfo::Mailbox(0).number() {
+            log::warn!(
+                "upcall: {}: {:?}, RIP = {:x}, regs = {:?} ctx = {}",
+                self.id(),
+                info,
+                self.read_ip(),
+                self.read_registers(),
+                self.secctx.active_id(),
+            );
+            //crate::panic::backtrace(true, None);
+        }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {
             exit(UPCALL_EXIT_CODE);
@@ -334,6 +354,35 @@ impl Thread {
         // Suspend afterwards to ensure that the upcall frame is queued up.
         if options.flags.contains(UpcallFlags::SUSPEND) {
             self.suspend();
+        }
+    }
+
+    pub fn must_return_to_user(&self) -> bool {
+        self.pending_message.load(Ordering::SeqCst) != 0
+            && self.secctx.active_id()
+                == self
+                    .upcall_target
+                    .lock()
+                    .map(|u| u.self_ctx)
+                    .unwrap_or(0.into())
+    }
+
+    pub fn force_exit(self: &ThreadRef) {
+        self.flags.fetch_or(THREAD_MUST_EXIT, Ordering::SeqCst);
+        if self == current_thread_ref().unwrap() {
+            if !self.is_critical() {
+                // TODO
+                exit(101);
+            }
+        } else {
+            ipi_exec(Destination::AllButSelf, Box::new(|| schedule_resched()));
+        }
+    }
+
+    pub fn maybe_exit(self: &ThreadRef) {
+        if self.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 && !self.is_critical() {
+            // TODO
+            exit(101);
         }
     }
 
@@ -434,7 +483,8 @@ pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     {
         let th = current_thread_ref().unwrap();
-        log::trace!(
+        remove_thread(th.id());
+        log::debug!(
             "thread {} ({}) exits with code {}",
             th.id(),
             th.objid(),
@@ -443,8 +493,9 @@ pub fn exit(code: u64) -> ! {
         th.set_state_and_code(ExecutionState::Exited, code);
         crate::interrupt::disable();
         th.set_is_exiting();
+        th.reset_sync_sleep();
+        th.reset_sync_sleep_done();
         crate::syscall::sync::remove_from_requeue(&th);
-        remove_thread(th.id());
     }
     schedule(SchedFlags::PREEMPT);
     unreachable!()

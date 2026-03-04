@@ -14,7 +14,7 @@ use registers::interfaces::Writeable;
 use twizzler_abi::{
     arch::ArchRegisters,
     thread::ExecutionState,
-    upcall::{UpcallFrame, UpcallInfo, UpcallTarget, UPCALL_EXIT_CODE},
+    upcall::{UPCALL_EXIT_CODE, UpcallFrame, UpcallInfo, UpcallTarget},
 };
 use twizzler_rt_abi::error::TwzError;
 
@@ -72,6 +72,13 @@ impl ArchThread {
             entry_registers: RefCell::new(core::ptr::null_mut()),
             upcall_restore_frame: RefCell::new(None),
         }
+    }
+
+    pub fn has_upcall_restore_frame(&self) -> bool {
+        self.upcall_restore_frame
+            .try_borrow()
+            .ok()
+            .is_some_and(|x| x.is_some())
     }
 }
 

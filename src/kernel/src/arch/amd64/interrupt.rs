@@ -15,7 +15,7 @@ use super::{
 use crate::{
     arch::amd64::apic::try_get_lapic,
     interrupt::{Destination, DynamicInterrupt},
-    memory::{context::virtmem::PageFaultFlags, VirtAddr},
+    memory::{VirtAddr, context::virtmem::PageFaultFlags},
     once::Once,
     processor::mp::current_processor,
     thread::current_thread_ref,
@@ -161,7 +161,7 @@ impl IsrContext {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn common_handler_entry(
     ctx: *mut IsrContext,
     number: u64,
@@ -169,44 +169,67 @@ unsafe extern "C" fn common_handler_entry(
     kernel_fs: u64,
 ) {
     let user = user != 0;
-    if user {
-        if kernel_fs == 0 {
-            panic!(
-                "tried to set kernel fs to 0 during interrupt ctx: {:?} number: {} user: {}",
-                ctx.as_ref().unwrap(),
-                number,
-                user
-            );
-        }
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+    unsafe {
+        if user {
+            if kernel_fs == 0 {
+                panic!(
+                    "tried to set kernel fs to 0 during interrupt ctx: {:?} number: {} user: {}",
+                    ctx.as_ref().unwrap(),
+                    number,
+                    user
+                );
+            }
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
-        let t = current_thread_ref().unwrap();
-        if (*ctx).get_ip() == 0 {
-            panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+            let t = current_thread_ref().unwrap();
+            if (*ctx).get_ip() == 0 {
+                let cr2 = x86::controlregs::cr2();
+                let err = (*ctx).err;
+                let cause = if err & (1 << 4) == 0 {
+                    if err & (1 << 1) == 0 {
+                        MemoryAccessKind::Read
+                    } else {
+                        MemoryAccessKind::Write
+                    }
+                } else {
+                    MemoryAccessKind::InstructionFetch
+                };
+                panic!(
+                    "tried to set IP to 0! is currently: {:x} {:?} {} {} {:x} {:?}",
+                    t.read_ip(),
+                    *ctx,
+                    user,
+                    number,
+                    cr2,
+                    cause,
+                );
+            }
+            t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
         }
-        t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
     }
     generic_isr_handler(ctx, number, user);
 
-    if user {
-        let t = current_thread_ref().unwrap();
-        let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
+    unsafe {
+        if user {
+            let t = current_thread_ref().unwrap();
+            let user_fs = t.arch.user_fs.load(Ordering::SeqCst);
 
-        if (*ctx).get_ip() == 0 {
-            panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
-        }
-        t.set_entry_registers(Registers::None);
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
-    } else {
-        if (*ctx).get_ip() == 0 {
-            panic!("tried to set IP to 0!");
+            if (*ctx).get_ip() == 0 {
+                panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
+            }
+            t.set_entry_registers(Registers::None);
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        } else {
+            if (*ctx).get_ip() == 0 {
+                panic!("tried to set IP to 0!");
+            }
         }
     }
 }
 
 #[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
 pub unsafe extern "C" fn kernel_interrupt() {
     core::arch::naked_asm!("mov qword ptr [rsp - 8], 0", "sub rsp, 8", "xor rdx, rdx",
         "xor rcx, rcx",
@@ -216,8 +239,8 @@ pub unsafe extern "C" fn kernel_interrupt() {
 
 #[allow(clippy::missing_safety_doc)]
 #[allow(named_asm_labels)]
-#[no_mangle]
-#[naked]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
 pub unsafe extern "C" fn user_interrupt() {
     core::arch::naked_asm!(
         "swapgs",
@@ -234,8 +257,8 @@ pub unsafe extern "C" fn user_interrupt() {
 }
 
 #[allow(clippy::missing_safety_doc)]
-#[no_mangle]
-#[naked]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
 pub unsafe extern "C" fn return_from_interrupt() -> ! {
     core::arch::naked_asm!(
         "cli",
@@ -262,15 +285,17 @@ pub unsafe extern "C" fn return_from_interrupt() -> ! {
 pub(super) unsafe fn return_with_frame_to_user(frame: IsrContext) -> ! {
     // We can just use the existing return code, given that we have an Isr frame. But
     // remember to swapgs first, since we are returning to user.
-    core::arch::asm!("mov rsp, rax",
+    unsafe {
+        core::arch::asm!("mov rsp, rax",
     "swapgs",
     "jmp return_from_interrupt",
     in("rax") &frame, options(noreturn));
+    }
 }
 
 macro_rules! interrupt {
     ($name:ident, $num:expr) => {
-        #[naked]
+        #[unsafe(naked)]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
             core::arch::naked_asm!(
@@ -303,7 +328,7 @@ macro_rules! interrupt {
 }
 macro_rules! interrupt_err {
     ($name:ident, $num:expr) => {
-        #[naked]
+        #[unsafe(naked)]
         #[allow(named_asm_labels)]
         unsafe extern "C" fn $name() {
             core::arch::naked_asm!(
@@ -410,7 +435,9 @@ impl InterruptDescriptorTable {
             base: ptr as u64,
         };
 
-        core::arch::asm!("lidt [{}]", in(reg) &idtp, options(readonly, nostack, preserves_flags));
+        unsafe {
+            core::arch::asm!("lidt [{}]", in(reg) &idtp, options(readonly, nostack, preserves_flags));
+        }
     }
 }
 
@@ -496,10 +523,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
                     number,
                     current_thread_ref().map(|ct| ct.read_ip()).unwrap_or(0)
                 );
-                unsafe {
-                    emerglogln!("==> {:x}", *(ctx.rbp as usize as *const u64));
-                    emerglogln!("==>+8 {:x}", *((ctx.rbp + 8) as usize as *const u64));
-                }
             }
             let cr2 = unsafe { x86::controlregs::cr2() };
             let err = ctx.err;

@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(linkage)]
 #![feature(io_error_more)]
 #[warn(unused_variables)]
@@ -9,11 +8,11 @@ use lazy_init::LazyTransform;
 use lazy_static::lazy_static;
 use naming_core::{GetFlags, NameSession, NameStore, NsNode, Result, PATH_MAX};
 use secgate::{
-    secure_gate,
     util::{Descriptor, HandleMgr, SimpleBuffer},
+    TwzError,
 };
 use tracing::Level;
-use twizzler::object::ObjectHandle;
+use twizzler::{error::SecurityError, object::ObjectHandle};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -140,8 +139,8 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 }
 
 // How would this work if I changed the root while handles were open?
-#[secure_gate(options(info))]
-pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> Result<ObjID> {
+#[secgate::entry(lib = "naming")]
+pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
@@ -157,11 +156,13 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> Result<Ob
                 .unwrap();
             namer.names.root_session().mkns("/initrd", false).unwrap();
             for n in get_kernel_init_info().names() {
-                namer
-                    .names
-                    .root_session()
-                    .put(&format!("/initrd/{}", n.name()), n.id())
-                    .unwrap();
+                if n.name() != ".." && n.name() != "." {
+                    namer
+                        .names
+                        .root_session()
+                        .put(&format!("/initrd/{}", n.name()), n.id())
+                        .unwrap();
+                }
             }
 
             namer
@@ -170,8 +171,9 @@ pub fn namer_start(_info: &secgate::GateCallInfo, bootstrap: ObjID) -> Result<Ob
         .id())
 }
 
-#[secure_gate(options(info))]
-pub fn open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID)> {
+#[secgate::entry(lib = "naming")]
+pub fn open_handle() -> Result<(Descriptor, ObjID)> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().ok_or(ResourceError::Unavailable)?;
     let mut binding = service.handles.lock().unwrap();
 
@@ -186,8 +188,9 @@ pub fn open_handle(info: &secgate::GateCallInfo) -> Result<(Descriptor, ObjID)> 
     Ok((desc, id))
 }
 
-#[secure_gate(options(info))]
-pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn close_handle(desc: Descriptor) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
 
     let mut binding = service.handles.lock().unwrap();
@@ -199,13 +202,9 @@ pub fn close_handle(info: &secgate::GateCallInfo, desc: Descriptor) -> Result<()
     Ok(())
 }
 
-#[secure_gate(options(info))]
-pub fn put(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-    id: ObjID,
-) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn put(desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -217,13 +216,9 @@ pub fn put(
     client.session.put(path, id)
 }
 
-#[secure_gate(options(info))]
-pub fn mkns(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-    persist: bool,
-) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn mkns(desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -235,13 +230,9 @@ pub fn mkns(
     client.session.mkns(path, persist)
 }
 
-#[secure_gate(options(info))]
-pub fn link(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-    link_len: usize,
-) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn link(desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -254,13 +245,9 @@ pub fn link(
     client.session.link(path, link)
 }
 
-#[secure_gate(options(info))]
-pub fn get(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-    flags: GetFlags,
-) -> Result<NsNode> {
+#[secgate::entry(lib = "naming")]
+pub fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -272,13 +259,9 @@ pub fn get(
     client.session.get(path, flags)
 }
 
-#[secure_gate(options(info))]
-pub fn rename(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    old_len: usize,
-    new_len: usize,
-) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -291,8 +274,9 @@ pub fn rename(
     client.session.rename(old_path, new_path)
 }
 
-#[secure_gate(options(info))]
-pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor, name_len: usize) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn remove(desc: Descriptor, name_len: usize) -> Result<()> {
+    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -306,12 +290,9 @@ pub fn remove(info: &secgate::GateCallInfo, desc: Descriptor, name_len: usize) -
     Ok(())
 }
 
-#[secure_gate(options(info))]
-pub fn enumerate_names(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-) -> Result<usize> {
+#[secgate::entry(lib = "naming")]
+pub fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -336,12 +317,9 @@ pub fn enumerate_names(
     Ok(len)
 }
 
-#[secure_gate(options(info))]
-pub fn enumerate_names_nsid(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    id: ObjID,
-) -> Result<usize> {
+#[secgate::entry(lib = "naming")]
+pub fn enumerate_names_nsid(desc: Descriptor, id: ObjID) -> Result<usize> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding
@@ -364,12 +342,9 @@ pub fn enumerate_names_nsid(
     Ok(len)
 }
 
-#[secure_gate(options(info))]
-pub fn change_namespace(
-    info: &secgate::GateCallInfo,
-    desc: Descriptor,
-    name_len: usize,
-) -> Result<()> {
+#[secgate::entry(lib = "naming")]
+pub fn change_namespace(desc: Descriptor, name_len: usize) -> Result<()> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
     let client = binding

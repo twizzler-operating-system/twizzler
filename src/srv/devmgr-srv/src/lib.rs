@@ -1,5 +1,3 @@
-#![feature(naked_functions)]
-
 use devmgr::{DriverSpec, OwnedDevice};
 use pci_types::device_type::DeviceType;
 use twizzler::{
@@ -78,7 +76,7 @@ fn start_pcie(seg: Device) {
     }
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "devmgr")]
 pub fn devmgr_start() -> Result<(), TwzError> {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -97,7 +95,7 @@ pub fn devmgr_start() -> Result<(), TwzError> {
     Ok(())
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "devmgr")]
 pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
     match spec.supported {
         devmgr::Supported::PcieClass(class, subclass, progif) => {
@@ -131,11 +129,14 @@ pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
             for device in device_root.children() {
                 if device.is_bus() && device.bus_type() == BusType::Pcie {
                     for child in device.children() {
-                        let info = unsafe { child.get_info::<PcieDeviceInfo>(0).unwrap() };
+                        unsafe {
+
+                        let Some(info) =  child.get_info::<PcieDeviceInfo>(0)  else {continue;};
                         if info.get_data().device_id == device_code
                             && info.get_data().vendor_id == vendor_code
                         {
                             ids.push(child.id());
+                        }
                         }
                     }
                 }

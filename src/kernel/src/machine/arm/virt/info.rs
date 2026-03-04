@@ -1,7 +1,7 @@
 use fdt::Fdt;
 use twizzler_abi::device::{CacheType, MmioInfo};
 
-use crate::{arch::BootInfoSystemTable, once::Once, BootInfo};
+use crate::{BootInfo, arch::BootInfoSystemTable, once::Once};
 
 // We use device tree to describe the hardware on this machine
 static FDT: Once<Fdt<'static>> = Once::new();
@@ -14,10 +14,11 @@ pub fn init<B: BootInfo + ?Sized>(boot_info: &B) {
             // otherwise use a static address
             if bootloader_dtb_addr.raw() == 0 {
                 // in the case of QEMU's virt platform, we can use 0x4000_0000
-                super::memory::DTB_ADDR.kernel_vaddr()
+                super::memory::DTB_ADDR
             } else {
                 bootloader_dtb_addr
             }
+            .kernel_vaddr()
         };
         // should not fail, but it might ...
         unsafe { Fdt::from_ptr(dtb.as_ptr()).expect("invalid DTB file, cannot boot") }

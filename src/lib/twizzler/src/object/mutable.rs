@@ -1,12 +1,9 @@
-use std::{marker::PhantomData, ptr::addr_of, sync::atomic::AtomicU64};
+use std::{marker::PhantomData, ptr::addr_of_mut, sync::atomic::AtomicU64};
 
-use twizzler_abi::{
-    object::{ObjID, MAX_SIZE},
-    syscall::{sys_map_ctrl, MapControlCmd, SyncFlags, SyncInfo},
-};
 use twizzler_rt_abi::{
+    bindings::{sync_info, SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
     error::TwzError,
-    object::{MapFlags, ObjectHandle},
+    object::{MapFlags, ObjID, ObjectHandle},
 };
 
 use super::{Object, RawObject, TypedObject};
@@ -73,7 +70,10 @@ impl<Base> MutObject<Base> {
     }
 
     pub fn update(&mut self) -> crate::Result<()> {
-        sys_map_ctrl(self.handle.start(), MAX_SIZE, MapControlCmd::Update, 0)
+        self.handle.cmd(
+            twizzler_rt_abi::object::ObjectCmd::Sync,
+            core::ptr::null_mut::<()>(),
+        )
     }
 
     pub fn base_mut(&mut self) -> RefMut<'_, Base> {
@@ -84,22 +84,19 @@ impl<Base> MutObject<Base> {
         let flags = self.handle.map_flags();
         tracing::debug!("sync on {:?} with flags {:?}", self.id(), flags);
         if flags.contains(MapFlags::PERSIST) {
-            let release = AtomicU64::new(0);
-            let release_ptr = addr_of!(release);
-            let sync_info = SyncInfo {
-                release: release_ptr,
+            let mut release = AtomicU64::new(0);
+            let release_ptr = addr_of_mut!(release);
+            let mut sync_info = sync_info {
+                release_ptr: release_ptr.cast(),
                 release_compare: 0,
                 release_set: 1,
-                durable: core::ptr::null(),
-                flags: SyncFlags::DURABLE | SyncFlags::ASYNC_DURABLE,
+                durable_ptr: core::ptr::null_mut(),
+                flags: SYNC_FLAG_DURABLE | SYNC_FLAG_ASYNC_DURABLE,
+                __resv: 0,
             };
-            let sync_info_ptr = addr_of!(sync_info);
-            sys_map_ctrl(
-                self.handle.start(),
-                MAX_SIZE,
-                MapControlCmd::Sync(sync_info_ptr),
-                0,
-            )?;
+            let sync_info_ptr = addr_of_mut!(sync_info);
+            self.handle
+                .cmd(twizzler_rt_abi::object::ObjectCmd::Sync, sync_info_ptr)?;
         }
         Ok(())
     }

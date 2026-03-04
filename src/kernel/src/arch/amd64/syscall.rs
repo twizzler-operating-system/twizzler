@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use twizzler_abi::{arch::XSAVE_LEN, upcall::UpcallFrame};
 
 use super::{
-    interrupt::{return_with_frame_to_user, IsrContext},
+    interrupt::{IsrContext, return_with_frame_to_user},
     thread::{Registers, UpcallAble},
 };
 use crate::{
@@ -139,7 +139,8 @@ impl SyscallContext for X86SyscallContext {
 
 #[allow(named_asm_labels)]
 pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
-    core::arch::asm!(
+    unsafe {
+        core::arch::asm!(
         "cli",
         "mov rax, [r11 + 0x00]",
         "mov rdi, [r11 + 0x08]",
@@ -163,37 +164,39 @@ pub unsafe fn return_to_user(context: *const X86SyscallContext) -> ! {
         "lfence",
         "sysretq",
         in("r11") context, options(noreturn))
+    }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs: u64) -> ! {
-    if kernel_fs == 0 {
-        panic!(
-            "tried to set kernel fs to 0 in syscall from {:?}",
-            context.as_ref().unwrap(),
-        );
-    }
-    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+    unsafe {
+        if kernel_fs == 0 {
+            panic!(
+                "tried to set kernel fs to 0 in syscall from {:?}",
+                context.as_ref().unwrap(),
+            );
+        }
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
 
-    //let start = Instant::now();
-    let t = current_thread_ref().unwrap();
-    t.set_entry_registers(Registers::Syscall(context, *context));
+        //let start = Instant::now();
+        let t = current_thread_ref().unwrap();
+        t.set_entry_registers(Registers::Syscall(context, *context));
 
-    crate::thread::enter_kernel();
-    //let init_done = Instant::now();
-    crate::interrupt::set(true);
+        crate::thread::enter_kernel();
+        //let init_done = Instant::now();
+        crate::interrupt::set(true);
 
-    crate::syscall::syscall_entry(context.as_mut().unwrap());
-    crate::interrupt::set(false);
-    //let syscall_done = Instant::now();
-    crate::thread::exit_kernel();
+        crate::syscall::syscall_entry(context.as_mut().unwrap());
+        crate::interrupt::set(false);
+        //let syscall_done = Instant::now();
+        crate::thread::exit_kernel();
 
-    let user_fs = {
         let cur_th = current_thread_ref().unwrap();
         let user_fs = cur_th.arch.user_fs.load(Ordering::SeqCst);
-        // Okay, now check if we are restoring an upcall frame, and if so, do that. Unfortunately,
-        // we can't use the sysret/exit instruction for this, since it clobbers registers. Instead,
-        // we'll use the ISR return path, which doesn't.
+        // Okay, now check if we are restoring an upcall frame, and if so, do that.
+        // Unfortunately, we can't use the sysret/exit instruction for this, since
+        // it clobbers registers. Instead, we'll use the ISR return path, which
+        // doesn't.
         let rf = cur_th.arch.take_upcall_restore_frame();
         if let Some(up_frame) = rf {
             // Restore the sse registers. These don't get restored by the isr return path, so we
@@ -205,16 +208,14 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());
             }
 
-            // Restore the thread pointer (it might have changed, and we also allow for it to change
-            // inside the upcall frame during the upcall)
+            // Restore the thread pointer (it might have changed, and we also allow for it to
+            // change inside the upcall frame during the upcall)
             cur_th
                 .arch
                 .user_fs
                 .store(up_frame.thread_ptr, Ordering::SeqCst);
-            cur_th.set_entry_registers(Registers::None);
 
-            let int_frame = IsrContext::from(up_frame);
-
+            let int_frame: IsrContext = up_frame.into();
             if int_frame.get_ip() == 0 {
                 panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
             }
@@ -223,28 +224,18 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
             return_with_frame_to_user(int_frame);
         }
         cur_th.set_entry_registers(Registers::None);
-        user_fs
-    };
-    /*
-    let finished = Instant::now();
-    log::trace!(
-        "==> {:?} {:?} {:?}",
-        init_done - start,
-        syscall_done - init_done,
-        finished - syscall_done
-    );
-    */
 
-    /* TODO: check that rcx is canonical */
-    if (*context).pc().raw() == 0 || (*context).pc().is_kernel() {
-        panic!("tried to set IP to 0 or kernel! {}", (*context).pc().raw());
+        /* TODO: check that rcx is canonical */
+        if (*context).pc().raw() == 0 || (*context).pc().is_kernel() {
+            panic!("tried to set IP to 0 or kernel! {}", (*context).pc().raw());
+        }
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        return_to_user(context);
     }
-    x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
-    return_to_user(context);
 }
 
 #[allow(named_asm_labels)]
-#[naked]
+#[unsafe(naked)]
 pub unsafe extern "C" fn syscall_entry() -> ! {
     core::arch::naked_asm!(
         /* syscall can only come from userspace, so we can safely blindly swapgs */

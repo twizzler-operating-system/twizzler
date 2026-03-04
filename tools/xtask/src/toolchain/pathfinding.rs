@@ -80,7 +80,7 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
     let dir = get_toolchain_path()?
         .join("rust/build")
         .join(host_triple)
-        .join("stage2-std")
+        .join("stage1-std")
         .join(target_triple)
         .join("release");
 
@@ -90,14 +90,14 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
 pub fn get_llvm_native_runtime_install(target_triple: &str) -> anyhow::Result<PathBuf> {
     let archive_name = "libclang_rt.builtins.a";
     let dir = get_toolchain_path()?
-        .join("lib/clang/20/lib")
+        .join("lib/clang/21/lib")
         .join(target_triple)
         .join(archive_name);
     Ok(dir)
 }
 
 pub fn get_builtin_headers() -> anyhow::Result<PathBuf> {
-    let headers = get_toolchain_path()?.join("lib/clang/20/include/");
+    let headers = get_toolchain_path()?.join("lib/clang/21/include/");
 
     Ok(headers)
 }

@@ -1,13 +1,17 @@
+use core::arch::naked_asm;
+
+use twizzler_abi::object::Protections;
+
 use crate::{
     arch::memory::pagetables::{Entry, EntryFlags},
     memory::{
+        VirtAddr,
         frame::get_frame,
         pagetables::{
-            Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
-            PhysAddrProvider, SharedPageTable,
+            Consistency, ContiguousProvider, DeferredUnmappingOps, MapReader, Mapper,
+            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
         },
-        tracker::{alloc_frame, free_frame, FrameAllocFlags},
-        VirtAddr,
+        tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
     mutex::Mutex,
     once::Once,
@@ -132,6 +136,28 @@ impl ArchContext {
     }
 }
 
+#[unsafe(naked)]
+#[allow(named_asm_labels)]
+unsafe extern "C" fn trampoline_trap() {
+    naked_asm!(
+        "push rbp",
+        "mov rbp, rsp",
+        "xor rdi, rdi",
+        "xor rsi, rsi",
+        "xor rax, rax",
+        "syscall",
+        "__here:",
+        "jmp __here",
+        "pop rbp",
+        "ret"
+    );
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn trap_entry() {
+    panic!("hit trap entry");
+}
+
 impl ArchContextInner {
     fn new() -> Self {
         let mut mapper = Mapper::new(
@@ -144,6 +170,30 @@ impl ArchContextInner {
         for idx in 256..512 {
             mapper.set_top_level_table(idx, km.get_top_level_table(idx));
         }
+        let frame = alloc_frame(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
+        );
+        let mut z = ContiguousProvider::new(
+            frame.start_address(),
+            0x1000,
+            MappingSettings::new(
+                Protections::READ | Protections::EXEC,
+                twizzler_abi::device::CacheType::WriteBack,
+                MappingFlags::GLOBAL | MappingFlags::USER,
+            ),
+        );
+        mapper
+            .map(
+                MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000),
+                &mut z,
+                Consistency::new_full_global(),
+            )
+            .unwrap();
+        let start = trampoline_trap as *const u8;
+        let len = 0x100;
+        #[allow(invalid_null_arguments)]
+        let dest = frame.start_address().kernel_vaddr().as_mut_ptr::<u8>();
+        unsafe { dest.copy_from(start, len) };
         Self { mapper }
     }
 
@@ -153,6 +203,13 @@ impl ArchContextInner {
         phys: &mut impl PhysAddrProvider,
     ) -> Result<(), DeferredUnmappingOps> {
         let consist = Consistency::new(self.mapper.root_address());
+        if cursor.start().raw() == 0 {
+            let Some(cursor) = cursor.advance(0x1000) else {
+                return Ok(());
+            };
+            phys.consume(0x1000);
+            return self.mapper.map(cursor, phys, consist);
+        }
         self.mapper.map(cursor, phys, consist)
     }
 
@@ -161,6 +218,12 @@ impl ArchContextInner {
     }
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
+        if cursor.start().raw() == 0 {
+            let Some(cursor) = cursor.advance(0x1000) else {
+                return Consistency::new_full_global().into_deferred();
+            };
+            return self.mapper.unmap(cursor);
+        }
         self.mapper.unmap(cursor)
     }
 

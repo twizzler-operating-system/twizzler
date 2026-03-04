@@ -1,6 +1,6 @@
 use alloc::{
     boxed::Box,
-    collections::{btree_map::Entry, btree_set::BTreeSet, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -15,20 +15,20 @@ use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
     device::{CacheType, NUM_DEVICE_INTERRUPTS},
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE},
-    syscall::{BackingType, CreateTieSpec, LifetimeType, ObjectInfo},
+    object::{MAX_SIZE, ObjID, Protections},
+    syscall::{BackingType, LifetimeType, ObjectInfo},
 };
-use twizzler_rt_abi::object::Nonce;
+use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
 
 use self::{pages::Page, thread_sync::SleepInfo};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
-        context::{kernel_context, Context, ContextRef, UserContext},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::{alloc_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
+        context::{Context, ContextRef, UserContext, kernel_context},
+        frame::PHYS_LEVEL_LAYOUTS,
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame},
     },
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
@@ -55,7 +55,7 @@ pub struct Object {
     pin_info: Mutex<PinInfo>,
     contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
-    ties: Vec<CreateTieSpec>,
+    ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
     dirty_set: DirtySet,
 }
@@ -288,7 +288,7 @@ impl Object {
         Some((v, token))
     }
 
-    pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[CreateTieSpec]) -> Self {
+    pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
         Self {
             id,
             flags: AtomicU32::new(0),
@@ -535,7 +535,7 @@ impl ObjectManager {
 pub fn scan_deleted() {
     let dobjs = {
         let mut om = obj_manager().map.lock();
-        om.extract_if(|_, obj| {
+        om.extract_if(.., |_, obj| {
             if obj.is_pending_delete() {
                 let ctx = obj.contexts.lock();
                 let pin = obj.pin_info.lock();
@@ -563,7 +563,7 @@ pub fn lookup_object(id: ObjID, flags: LookupFlags) -> LookupResult {
 }
 
 pub fn register_object(obj: Arc<Object>) {
-    ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id));
+    ties::TIE_MGR.create_object_ties(obj.id(), obj.ties.iter().map(|tie| tie.id.into()));
     obj_manager().register_object(obj);
 }
 

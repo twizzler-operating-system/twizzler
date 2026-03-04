@@ -3,10 +3,13 @@
 use core::fmt::Debug;
 
 use bitflags::bitflags;
-use twizzler_rt_abi::error::RawTwzError;
+use twizzler_rt_abi::error::{RawTwzError, TwzError};
 
 pub use crate::arch::upcall::UpcallFrame;
-use crate::object::ObjID;
+use crate::{
+    object::ObjID,
+    syscall::{sys_thread_get_upcall, sys_thread_set_upcall},
+};
 
 /// Information about an exception.
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -121,11 +124,12 @@ pub enum UpcallInfo {
     ObjectMemoryFault(ObjectMemoryFaultInfo),
     MemoryContextViolation(MemoryContextViolationInfo),
     SecurityViolation(SecurityViolationInfo),
+    Mailbox(u64),
 }
 
 impl UpcallInfo {
     /// The number of upcall info variants
-    pub const NR_UPCALLS: usize = 3;
+    pub const NR_UPCALLS: usize = 5;
     /// Get the number associated with this variant
     pub fn number(&self) -> usize {
         match self {
@@ -133,6 +137,7 @@ impl UpcallInfo {
             UpcallInfo::ObjectMemoryFault(_) => 1,
             UpcallInfo::MemoryContextViolation(_) => 2,
             UpcallInfo::SecurityViolation(_) => 3,
+            UpcallInfo::Mailbox(_) => 4,
         }
     }
 }
@@ -169,6 +174,8 @@ pub struct UpcallTarget {
     pub super_thread_ptr: usize,
     /// Supervisor context to use, when switching to supervisor context.
     pub super_ctx: ObjID,
+    /// Self context to use, when handling upcalls to self.
+    pub self_ctx: ObjID,
     /// Per-upcall options.
     pub options: [UpcallOptions; UpcallInfo::NR_UPCALLS],
 }
@@ -186,6 +193,7 @@ impl UpcallTarget {
         super_stack_size: usize,
         super_thread_ptr: usize,
         super_ctx: ObjID,
+        self_ctx: ObjID,
         options: [UpcallOptions; UpcallInfo::NR_UPCALLS],
     ) -> Self {
         Self {
@@ -194,6 +202,7 @@ impl UpcallTarget {
             super_stack,
             super_thread_ptr,
             super_ctx,
+            self_ctx,
             options,
             super_stack_size,
         }
@@ -256,4 +265,13 @@ bitflags! {
         /// Suspend the thread during resume.
         const SUSPEND = 1;
     }
+}
+
+pub fn set_self_upcall_ptr(
+    target: unsafe extern "C-unwind" fn(*mut UpcallFrame, *const UpcallData) -> !,
+) -> Result<(), TwzError> {
+    let mut upcall = sys_thread_get_upcall()?;
+    upcall.self_address = target as usize;
+    sys_thread_set_upcall(upcall)?;
+    Ok(())
 }

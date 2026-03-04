@@ -1,4 +1,3 @@
-#![feature(vec_into_raw_parts)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 use device::DeviceChildrenIterator;

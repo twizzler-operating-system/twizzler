@@ -4,16 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-twizzler = { path = "../../lib/twizzler" }
+twizzler = { workspace = true }
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
-twizzler-runtime = { path = "../../rt" }
-naming = { path = "../../lib/naming" }
-clap = { version = "*", features = ["derive"] }
-miette = "*"
-tracing = "*"
-tracing-subscriber = "*"
-hwlocality = { version = "1.0.0-alpha.8", features = ["vendored"] }
-libc = "*"
+twizzler-runtime = { workspace = true }
+naming = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+miette = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hwlocality = { workspace = true, features = ["vendored"] }
+libc = { workspace = true }
 rand = "*"
 #rocksdb = "*"
+
+sgtest = { path = "../../lib/sgtest" }

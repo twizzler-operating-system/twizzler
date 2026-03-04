@@ -7,22 +7,22 @@
 /// We currently do not handle nested exceptions.
 use core::fmt::{Display, Formatter, Result};
 
-use arm64::registers::{ESR_EL1, TPIDRRO_EL0, TPIDR_EL0, VBAR_EL1};
+use arm64::registers::{ESR_EL1, TPIDR_EL0, TPIDRRO_EL0, VBAR_EL1};
 use registers::{
     interfaces::{Readable, Writeable},
     registers::InMemoryRegister,
 };
 use twizzler_abi::{
     arch::syscall::SYSCALL_MAGIC,
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
     upcall::{
-        MemoryAccessKind, UpcallData, UpcallFrame, UpcallHandlerFlags, UpcallInfo, UpcallTarget,
-        UPCALL_EXIT_CODE,
+        MemoryAccessKind, UPCALL_EXIT_CODE, UpcallData, UpcallFrame, UpcallHandlerFlags,
+        UpcallInfo, UpcallTarget,
     },
 };
 
 use crate::{
-    memory::{context::virtmem::PageFaultFlags, VirtAddr},
+    memory::{VirtAddr, context::virtmem::PageFaultFlags},
     thread::current_thread_ref,
 };
 
@@ -419,8 +419,8 @@ impl From<ExceptionContext> for UpcallFrame {
 /// and calls the specified handler
 macro_rules! exception_handler {
     ($name:ident, $handler:ident, $is_kernel:tt) => {
-        #[naked]
-        #[no_mangle]
+        #[unsafe(naked)]
+        #[unsafe(no_mangle)]
         pub(super) unsafe extern "C" fn $name() {
             core::arch::naked_asm!(
                 // save all general purpose registers (x0-x30)
@@ -787,7 +787,7 @@ fn handle_inst_abort(
 /// Initializes the exception vector table by writing the address of
 /// the table to the Vector Base Address Register (VBAR).
 pub fn init() {
-    extern "C" {
+    unsafe extern "C" {
         // MaybeUninit<T> is guaranteed to have the same size/alignment as T
         static __exception_vector_table: core::mem::MaybeUninit<u64>;
     }

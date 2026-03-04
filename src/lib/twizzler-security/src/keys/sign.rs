@@ -41,6 +41,7 @@ impl SigningKey {
     ) -> Result<(Object<Self>, Object<VerifyingKey>), TwzError> {
         use alloc::borrow::ToOwned;
 
+        #[cfg(feature = "user")]
         use getrandom::getrandom;
 
         #[cfg(feature = "log")]

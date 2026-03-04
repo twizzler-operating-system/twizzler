@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use x86::msr::{rdmsr, wrmsr, APIC_BASE};
+use x86::msr::{APIC_BASE, rdmsr, wrmsr};
 
 use crate::{
     arch::{amd64::tsc::Tsc, interrupt::TIMER_VECTOR, memory::phys_to_virt},
@@ -89,12 +89,14 @@ impl Lapic {
     /// # Safety
     /// Caller must ensure that reg is a valid register in the APIC register space.
     pub unsafe fn read(&self, reg: u32) -> u32 {
-        asm!("mfence;");
-        match self.version {
-            ApicVersion::XApic => {
-                core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
+        unsafe {
+            asm!("mfence;");
+            match self.version {
+                ApicVersion::XApic => {
+                    core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
+                }
+                ApicVersion::X2Apic => rdmsr(get_x2_msr_addr(reg)) as u32,
             }
-            ApicVersion::X2Apic => rdmsr(get_x2_msr_addr(reg)) as u32,
         }
     }
 
@@ -104,27 +106,31 @@ impl Lapic {
     /// Caller must ensure that reg is a valid register in the APIC register space.
     // Note: this does not need to take &mut self because the APIC is per-CPU.
     pub unsafe fn write(&self, reg: u32, val: u32) {
-        asm!("mfence;");
-        match self.version {
-            ApicVersion::XApic => {
-                core::ptr::write_volatile(
-                    self.base.offset(reg as usize).unwrap().as_mut_ptr(),
-                    val,
-                );
-                self.read(LAPIC_ID);
+        unsafe {
+            asm!("mfence;");
+            match self.version {
+                ApicVersion::XApic => {
+                    core::ptr::write_volatile(
+                        self.base.offset(reg as usize).unwrap().as_mut_ptr(),
+                        val,
+                    );
+                    self.read(LAPIC_ID);
+                }
+                ApicVersion::X2Apic => wrmsr(get_x2_msr_addr(reg), val.into()),
             }
-            ApicVersion::X2Apic => wrmsr(get_x2_msr_addr(reg), val.into()),
         }
     }
 
     unsafe fn local_enable_set(&self, enable: bool) {
-        if enable {
-            self.write(
-                LAPIC_SVR,
-                LAPIC_SVR_SOFT_ENABLE | LAPIC_SPURIOUS_VECTOR as u32,
-            )
-        } else {
-            self.write(LAPIC_SVR, LAPIC_SPURIOUS_VECTOR as u32)
+        unsafe {
+            if enable {
+                self.write(
+                    LAPIC_SVR,
+                    LAPIC_SVR_SOFT_ENABLE | LAPIC_SPURIOUS_VECTOR as u32,
+                )
+            } else {
+                self.write(LAPIC_SVR, LAPIC_SPURIOUS_VECTOR as u32)
+            }
         }
     }
 

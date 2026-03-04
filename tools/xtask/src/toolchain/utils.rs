@@ -94,6 +94,8 @@ pub fn prune_bins() -> anyhow::Result<()> {
         "rustc",
         "rustdoc",
         "set-xcode-analyzer",
+        "llvm-ar",
+        "llvm-ranlib",
     ];
 
     let bin_path = get_bin_path()?;

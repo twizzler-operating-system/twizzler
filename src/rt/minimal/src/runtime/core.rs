@@ -105,12 +105,13 @@ impl MinimalRuntime {
             0,
             0,
             0.into(),
+            0.into(),
             [UpcallOptions {
                 flags: UpcallFlags::empty(),
                 mode: UpcallMode::CallSelf,
             }; UpcallInfo::NR_UPCALLS],
         );
-        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target);
+        twizzler_abi::syscall::sys_thread_set_upcall(upcall_target).unwrap();
 
         unsafe {
             // Run preinit array

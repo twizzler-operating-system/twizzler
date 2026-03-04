@@ -17,15 +17,15 @@
 
 use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
 
-use intrusive_collections::{intrusive_adapter, LinkedList};
+use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     idcounter::StableId,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
-    syscall::sync::{finish_blocking, remove_from_requeue},
-    thread::{current_thread_ref, priority::Priority, Thread, ThreadRef},
+    syscall::sync::finish_blocking,
+    thread::{Thread, ThreadRef, current_thread_ref, priority::Priority},
 };
 
 #[repr(align(64))]
@@ -82,7 +82,6 @@ impl<T> Mutex<T> {
             }
             assert!(!current_thread.is_critical());
             assert!(!current_thread.mutex_link.is_linked());
-            assert!(!current_thread.reset_sync_sleep_done());
         }
 
         let int_state = crate::interrupt::disable();
@@ -109,6 +108,7 @@ impl<T> Mutex<T> {
                 } else if let Some(ref cur_owner) = queue.owner {
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
+                            crate::panic::backtrace(false, None);
                             panic!("this mutex is not re-entrant");
                         }
                     }
@@ -155,7 +155,6 @@ impl<T> Mutex<T> {
                         }
                     }
                 }
-                remove_from_requeue(current_thread);
                 assert!(!current_thread.mutex_link.is_linked());
             }
         }

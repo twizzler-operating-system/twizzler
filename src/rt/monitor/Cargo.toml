@@ -8,22 +8,23 @@ edition = "2021"
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }
 twizzler-rt-abi = "0.99"
-dynlink = { path = "../../lib/dynlink" }
-tracing = { version = "0.1" }
-tracing-subscriber = { version = "0.3" }
-twizzler-runtime = { path = "../" }
-miette = "7.5"
-secgate = { path = "../../lib/secgate" }
-monitor-api = { path = "../monitor-api" }
-static_assertions = "1.1"
-lazy_static = "1.4"
-talc = "4.4"
-happylock = "0.5.0"
-parking_lot = "*"
-naming-core = { path = "../../lib/naming/naming-core/" }
-tinyvec = { version = "*", features = ["alloc"] }
-smallstr = "*"
+dynlink = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+twizzler-runtime = { workspace = true }
+miette = { workspace = true }
+secgate = { workspace = true }
+monitor-api = { workspace = true }
+static_assertions = { workspace = true }
+lazy_static = { workspace = true }
+talc = { workspace = true }
+happylock = { workspace = true }
+parking_lot = { workspace = true }
+naming-core = { workspace = true }
+tinyvec = { workspace = true, features = ["alloc"] }
+smallstr = { workspace = true }
 twizzler-security = {path = "../../lib/twizzler-security", features = ["user"]}
+bitflags = "2"
 
 [features]
 secgate-impl = []

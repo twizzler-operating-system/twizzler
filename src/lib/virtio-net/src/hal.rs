@@ -1,11 +1,11 @@
 use core::ptr::NonNull;
 use std::{
     collections::HashMap,
-    ptr::copy_nonoverlapping,
     sync::{Mutex, OnceLock},
 };
 
-use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, SyncMode, DMA_PAGE_SIZE};
+use twizzler::object::Object;
+use twizzler_driver::dma::{Access, DmaObject, DmaOptions, DmaPool, DmaSliceRegion, DMA_PAGE_SIZE};
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
 struct TwzHalStatic {
@@ -13,6 +13,7 @@ struct TwzHalStatic {
     device_to_host: DmaPool,
     bidirectional: DmaPool,
 
+    dma_slices: HashMap<usize, DmaSliceRegion<u8>>,
     available: Vec<DmaSliceRegion<u8>>,
     shared: HashMap<PhysAddr, DmaSliceRegion<u8>>,
 }
@@ -46,6 +47,7 @@ impl TwzHalStatic {
             ),
             available: Vec::new(),
             shared: HashMap::new(),
+            dma_slices: HashMap::new(),
         }
     }
 
@@ -92,35 +94,41 @@ unsafe impl Hal for TwzHal {
         panic!("Should never be called as we have our own transport implementation");
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr {
-        //tracing::info!("SHARE: {:p}", buffer);
+    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let buf_len = buffer.len();
+        //tracing::info!("SHARE: {:p} {} {:?}", buffer, buf_len, direction);
         assert!(buf_len <= DMA_PAGE_SIZE, "Hal::Share(): Buffer too large");
-        let (phys, virt) = TwzHal::dma_alloc(1, direction);
 
-        let buf_casted = buffer.cast::<u8>();
-        let buf = buf_casted.as_ptr();
-        let dma_buf = virt.as_ptr();
-        // Copy the buffer to the DMA buffer
-        copy_nonoverlapping(buf, dma_buf, buf_len);
+        let addr: usize = buffer.addr().into();
+        let page_align_addr = addr & !(DMA_PAGE_SIZE - 1);
+        let page_offset = addr - page_align_addr;
 
-        let twzhal = get_twz_hal().lock().unwrap();
-        if let Some(dma_slice) = twzhal.shared.get(&phys) {
-            match direction {
-                BufferDirection::DriverToDevice => {
-                    dma_slice.sync(0..buf_len, SyncMode::PostCpuToDevice);
-                }
-                BufferDirection::DeviceToDriver => {
-                    dma_slice.sync(0..buf_len, SyncMode::PreDeviceToCpu);
-                }
-                _ => {}
-            }
-        }
-        phys as PhysAddr
+        let mut twzhal = TWZHAL.get().unwrap().lock().unwrap();
+        let entry = twzhal.dma_slices.entry(page_align_addr).or_insert_with(|| {
+            tracing::debug!("setting up DMA for object, ptr = {:p}", buffer);
+            let handle =
+                twizzler_rt_abi::object::twz_rt_get_object_handle(buffer.as_ptr().cast::<u8>())
+                    .unwrap();
+            let offset = page_align_addr - handle.start().addr();
+            let obj = DmaObject::new(Object::<()>::from_handle(handle).unwrap());
+            obj.slice_region(
+                offset,
+                DMA_PAGE_SIZE,
+                Access::BiDirectional,
+                DmaOptions::empty(),
+            )
+        });
+
+        let pin = entry.pin().unwrap();
+        let phys = pin.backing[0].addr();
+
+        (phys.0 + page_offset as u64) as PhysAddr
     }
-    unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
-        //tracing::info!("UNSHARE: {:?} {:p}", paddr, buffer);
+
+    unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
+        //tracing::info!("UNSHARE: {:?} {:p} {:?}", paddr, buffer, direction);
         // Gets DMA buffer and unallocates it
+        /*
         let mut twzhal = get_twz_hal().lock().unwrap();
         if let Some(mut dma_slice) = twzhal.shared.remove(&paddr) {
             match direction {
@@ -139,5 +147,6 @@ unsafe impl Hal for TwzHal {
             copy_nonoverlapping(dma_buf, buf, buf_len);
             twzhal.available.push(dma_slice);
         }
+        */
     }
 }

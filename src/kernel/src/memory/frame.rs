@@ -44,7 +44,7 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use intrusive_collections::{intrusive_adapter, LinkedList, LinkedListLink};
+use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
 
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
@@ -160,7 +160,7 @@ impl AllocationRegion {
     /// # Safety
     /// pa must be a new frame
     unsafe fn get_frame_mut(&mut self, pa: PhysAddr) -> Option<FrameMutRef> {
-        self.indexer.get_frame_mut(pa)
+        unsafe { self.indexer.get_frame_mut(pa) }
     }
 
     fn free(&mut self, frame: FrameRef) {
@@ -383,8 +383,10 @@ impl Frame {
         self.flags.store(init_flags.bits(), Ordering::SeqCst);
         self.level.store(level, Ordering::SeqCst);
         let pa_ptr = &mut self.pa as *mut _;
-        *pa_ptr = pa;
-        self.link.force_unlink();
+        unsafe {
+            *pa_ptr = pa;
+            self.link.force_unlink();
+        }
         // This store acts as a release for pa as well, which synchronizes with a load in lock (or
         // unlock), which is always called at least once during allocation, so any thread
         // that accesses a frame syncs-with this write.
@@ -759,7 +761,7 @@ mod tests {
     use twizzler_kernel_macros::kernel_test;
 
     use super::{
-        get_frame, raw_alloc_frame, raw_free_frame, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS,
+        PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, raw_alloc_frame, raw_free_frame,
     };
     use crate::utils::quick_random;
 

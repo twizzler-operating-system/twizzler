@@ -3,8 +3,29 @@ use std::time::Instant;
 use clap::Parser;
 use miette::IntoDiagnostic;
 use naming::{GetFlags, dynamic_naming_factory};
+use secgate::TwzError;
 use tracing::Level;
 use twizzler::object::{MapFlags, ObjID};
+
+#[secgate::gatecall]
+pub fn hold(id: ObjID, flags: MapFlags) -> Result<bool, TwzError> {}
+#[secgate::gatecall]
+pub fn drop(id: ObjID, flags: MapFlags) -> Result<bool, TwzError> {}
+#[secgate::gatecall]
+pub fn preload(id: ObjID) -> Result<(), TwzError> {}
+#[secgate::gatecall]
+pub fn stat(_id: ObjID) -> Result<(), TwzError> {}
+#[secgate::gatecall]
+pub fn list_nth(nth: u64) -> Result<Option<CachedStats>, TwzError> {}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct CachedStats {
+    pub id: ObjID,
+    pub start: Instant,
+    pub flags: MapFlags,
+    pub addr: u64,
+}
 
 #[derive(clap::Args, Clone, Debug)]
 struct TrailingArgs {
@@ -38,32 +59,32 @@ struct Args {
 
 fn do_hold(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do hold: {}", id);
-    cache_srv::hold(id, MapFlags::READ)?;
-    cache_srv::hold(id, MapFlags::READ | MapFlags::EXEC)?;
-    cache_srv::hold(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
-    cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE)?;
-    cache_srv::hold(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
+    hold(id, MapFlags::READ)?;
+    hold(id, MapFlags::READ | MapFlags::EXEC)?;
+    hold(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
+    hold(id, MapFlags::READ | MapFlags::WRITE)?;
+    hold(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())
 }
 
 fn do_drop(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do drop: {}", id);
-    cache_srv::drop(id, MapFlags::READ)?;
-    cache_srv::drop(id, MapFlags::READ | MapFlags::EXEC)?;
-    cache_srv::drop(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
-    cache_srv::drop(id, MapFlags::READ | MapFlags::WRITE)?;
-    cache_srv::drop(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
+    drop(id, MapFlags::READ)?;
+    drop(id, MapFlags::READ | MapFlags::EXEC)?;
+    drop(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
+    drop(id, MapFlags::READ | MapFlags::WRITE)?;
+    drop(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())
 }
 
 fn do_preload(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do preload: {}", id);
-    cache_srv::preload(id)
+    preload(id)
 }
 
 fn do_stat(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do stat: {}", id);
-    cache_srv::stat(id)
+    stat(id)
 }
 
 fn per_arg(arg: &str, cb: fn(ObjID) -> twizzler::Result<()>) -> twizzler::Result<()> {
@@ -163,7 +184,7 @@ fn main() -> miette::Result<()> {
         }
         Command::List => {
             let mut i = 0;
-            while let Some(info) = cache_srv::list_nth(i).into_diagnostic()? {
+            while let Some(info) = list_nth(i).into_diagnostic()? {
                 println!(
                     "{} {:?} {:x} {} seconds old",
                     info.id,

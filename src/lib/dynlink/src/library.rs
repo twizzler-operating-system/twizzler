@@ -12,6 +12,7 @@ use elf::{
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use smallstr::SmallString;
+use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{
     core::{CtorSet, RuntimeInfo},
     debug::LoadedImageId,
@@ -47,6 +48,7 @@ pub enum AllowedGates {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 pub struct UnloadedLibrary {
     pub name: String,
+    pub id: Option<ObjID>,
 }
 
 impl UnloadedLibrary {
@@ -54,6 +56,14 @@ impl UnloadedLibrary {
     pub fn new(name: impl AsRef<str>) -> Self {
         Self {
             name: name.as_ref().to_string(),
+            id: None,
+        }
+    }
+
+    pub fn new_object(name: impl AsRef<str>, id: ObjID) -> Self {
+        Self {
+            name: name.as_ref().to_string(),
+            id: Some(id),
         }
     }
 }

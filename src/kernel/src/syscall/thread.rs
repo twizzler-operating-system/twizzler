@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
@@ -5,11 +7,15 @@ use twizzler_abi::{
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
-use twizzler_rt_abi::{error::TwzError, Result};
+use twizzler_rt_abi::{Result, error::TwzError};
 
 use crate::{
-    processor::sched::{lookup_thread_repr, schedule, SchedFlags},
+    processor::{
+        mp::all_processors,
+        sched::{SchedFlags, lookup_thread_repr, schedule},
+    },
     security::SwitchResult,
+    syscall::sync::{add_to_requeue, requeue_all},
     thread::current_thread_ref,
 };
 
@@ -19,6 +25,15 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
 
 pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u64) -> [u64; 2] {
     match cmd {
+        ThreadControl::GetUpcall => {
+            let arg = arg as usize as *mut UpcallTarget;
+            // TODO: verify args, check perms.
+            if let Some(target) = *current_thread_ref().unwrap().upcall_target.lock() {
+                unsafe { arg.write(target) };
+            } else {
+                return [1, 1];
+            }
+        }
         ThreadControl::SetUpcall => {
             let Some(data) = (unsafe { (arg as usize as *const UpcallTarget).as_ref() }) else {
                 return [1, 1];
@@ -55,7 +70,7 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
-            return current_thread_ref().unwrap().secctx.active_id().parts()
+            return current_thread_ref().unwrap().secctx.active_id().parts();
         }
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
@@ -109,6 +124,9 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                     ExecutionState::Suspended => {
                         thread.suspend();
                     }
+                    ExecutionState::Exited => {
+                        thread.force_exit();
+                    }
                     _ => {
                         return [1, TwzError::INVALID_ARGUMENT.raw()];
                     }
@@ -146,6 +164,28 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                 Ok(_) => [0, 0],
                 Err(e) => [1, e.raw()],
             };
+        }
+        ThreadControl::SendMessage => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            thread.pending_message.store(arg, Ordering::SeqCst);
+            if thread.reset_sync_sleep() {
+                add_to_requeue(thread);
+            }
+            requeue_all();
+            for p in all_processors().iter() {
+                if let Some(p) = p {
+                    if p.is_running() {
+                        p.wakeup(true);
+                    }
+                }
+            }
         }
         _ => {
             return [1, 1];

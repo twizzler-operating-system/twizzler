@@ -9,9 +9,12 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 devmgr = { path = "../../lib/devmgr" }
 virtio-drivers = "0.12"
 volatile = { version = "0.5", features = ["unstable"] }
-zerocopy = "0.8"
 once_cell = "1.19.0"
 tracing = "*"
+zerocopy = { workspace = true }
+twizzler-net = { path = "../../lib/twizzler-net" }
+twizzler = { path = "../../lib/twizzler" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 
 [dependencies.smoltcp]
 version = "0.11.0"

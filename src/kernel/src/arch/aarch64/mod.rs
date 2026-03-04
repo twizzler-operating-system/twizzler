@@ -5,7 +5,7 @@ use registers::{
 };
 use twizzler_abi::syscall::TimeSpan;
 
-use crate::{clock::Nanoseconds, syscall::SyscallContext, BootInfo};
+use crate::{BootInfo, clock::Nanoseconds, syscall::SyscallContext};
 
 pub mod address;
 mod cntp;
@@ -23,7 +23,7 @@ pub use address::{PhysAddr, VirtAddr};
 pub use interrupt::{init_interrupts, send_ipi, set_interrupt};
 pub use start::BootInfoSystemTable;
 
-pub fn init<B: BootInfo + Send + Sync + 'static + ?Sized>(boot_info: &B) {
+pub fn init() {
     // initialize exceptions by setting up our exception vectors
     exception::init();
     // configure registers needed by the memory management system
@@ -32,7 +32,9 @@ pub fn init<B: BootInfo + Send + Sync + 'static + ?Sized>(boot_info: &B) {
     // On reset, TPIDR_EL1 is initialized to some unknown value.
     // we set it to zero so that we know it is not initialized.
     TPIDR_EL1.set(0);
+}
 
+pub fn init_post_memory<B: BootInfo + Send + Sync + 'static + ?Sized>(boot_info: &B) {
     // Initialize the machine specific enumeration state (e.g., DeviceTree, ACPI)
     crate::machine::info::init(boot_info);
 

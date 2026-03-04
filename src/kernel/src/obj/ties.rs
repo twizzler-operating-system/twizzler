@@ -80,7 +80,7 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
         self.delete_ties(id);
         let _ = self
             .ties
-            .extract_if(|_, val| val.is_empty())
+            .extract_if(.., |_, val| val.is_empty())
             .collect::<Vec<_>>();
         if self.ties.get(&id).map_or(0, |set| set.len()) > 0 {
             self.pending_delete.insert(id, val);

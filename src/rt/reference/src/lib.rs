@@ -6,15 +6,15 @@
 #![feature(core_intrinsics)]
 #![feature(thread_local)]
 #![feature(fmt_internals)]
-#![feature(array_windows)]
 #![feature(unboxed_closures)]
 #![feature(allocator_api)]
-#![feature(btree_extract_if)]
-#![feature(naked_functions)]
 #![feature(c_variadic)]
 #![feature(linkage)]
 #![feature(c_size_t)]
-#![feature(result_flattening)]
+#![feature(once_cell_try)]
+#![feature(normalize_lexically)]
+#![feature(random)]
+#![feature(io_error_inprogress)]
 
 pub(crate) mod arch;
 

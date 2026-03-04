@@ -2,14 +2,14 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use ipi::IpiTask;
-use rq::{RunQueue, NR_QUEUES};
+use rq::{NR_QUEUES, RunQueue};
 
 use crate::{
     arch::{self, processor::ArchProcessor},
     interrupt,
     once::Once,
     spinlock::Spinlock,
-    thread::{priority::Priority, Thread, ThreadRef},
+    thread::{Thread, ThreadRef, priority::Priority},
 };
 
 pub mod ipi;
@@ -165,7 +165,7 @@ pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()
 }
 
-pub const KERNEL_STACK_SIZE: usize = 512 * 1024; // 512KB
+pub const KERNEL_STACK_SIZE: usize = 512 * 1024 * 8; // 4M
 
 /// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait
 /// code along with the provided pause function. The cond function should not mutate state, and it

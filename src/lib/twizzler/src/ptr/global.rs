@@ -1,8 +1,7 @@
 use core::fmt::Debug;
 use std::marker::PhantomData;
 
-use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_rt_abi::object::{MapFlags, ObjID, ObjectHandle};
 
 use super::{Ref, RefMut};
 use crate::{marker::Invariant, object::RawObject};

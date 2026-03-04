@@ -1,4 +1,3 @@
-#![feature(naked_functions)]
 #![feature(io_error_more)]
 #![feature(test)]
 #![feature(thread_local)]
@@ -40,8 +39,6 @@ mod physrw;
 mod request_handle;
 mod stats;
 mod threads;
-
-pub use handle::{pager_close_handle, pager_open_handle};
 
 /***
  * Tracing Init
@@ -199,11 +196,8 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
             id
         } else {
             tracing::info!("creating new naming object");
-
-            let ob = ObjectBuilder::default().persist(true);
-
-            let vo = VecObject::<u32, VecObjectAlloc>::new(ob).unwrap();
-            tracing::info!("naming object id: {:#?}", vo.object().id());
+            let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist(true))
+                .unwrap();
             run_async(po.set_config_id(vo.object().id().raw())).unwrap();
             vo.object().id().raw()
         }
@@ -213,18 +207,18 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     return bootstrap_id.into();
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "pager")]
 pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID> {
     Ok(do_pager_start(q1, q2))
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "pager")]
 pub fn adv_lethe() -> Result<()> {
     run_async(PAGER_CTX.get().unwrap().paged_ostore(None)?.flush()).unwrap();
     Ok(())
 }
 
-#[secgate::secure_gate]
+#[secgate::entry(lib = "pager")]
 pub fn disk_len(id: ObjID) -> Result<u64> {
     run_async(PAGER_CTX.get().unwrap().paged_ostore(None)?.len(id.raw()))
         // TODO: err

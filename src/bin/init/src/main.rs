@@ -1,39 +1,16 @@
-use std::io::{Read, Write};
-
-use embedded_io::ErrorType;
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
     object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
-    syscall::{sys_new_handle, NewHandleFlags},
+    syscall::{
+        sys_new_handle, KernelConsoleReadFlags, KernelConsoleWriteFlags, NewHandleFlags,
+        ObjectCreate,
+    },
 };
+use twizzler_io::pty::DEFAULT_TERMIOS;
 use twizzler_queue::Queue;
-
-struct TwzIo;
-
-impl ErrorType for TwzIo {
-    type Error = std::io::Error;
-}
-
-impl embedded_io::Read for TwzIo {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let len = std::io::stdin().read(buf)?;
-
-        Ok(len)
-    }
-}
-
-impl embedded_io::Write for TwzIo {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        std::io::stdout().write(buf)
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        std::io::stdout().flush()
-    }
-}
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
@@ -77,9 +54,12 @@ fn initialize_pager() -> ObjID {
     )
     .unwrap();
 
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "libpager_srv.so")
+        .expect("failed to find object");
     let pager_comp: CompartmentHandle = monitor_api::CompartmentLoader::new(
         "pager-srv",
         "libpager_srv.so",
+        id,
         monitor_api::NewCompartmentFlags::EXPORT_GATES,
     )
     .args(["pager-srv"])
@@ -98,9 +78,12 @@ fn initialize_pager() -> ObjID {
 
 fn initialize_namer(bootstrap: ObjID) -> ObjID {
     info!("starting namer");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "libnaming_srv.so")
+        .expect("failed to find object");
     let nmcomp: CompartmentHandle = CompartmentLoader::new(
         "naming",
         "libnaming_srv.so",
+        id,
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["naming"])
@@ -124,9 +107,12 @@ fn initialize_namer(bootstrap: ObjID) -> ObjID {
 
 fn initialize_devmgr() {
     info!("starting device manager");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "libdevmgr_srv.so")
+        .expect("failed to find object");
     let devcomp: CompartmentHandle = CompartmentLoader::new(
         "devmgr",
         "libdevmgr_srv.so",
+        id,
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["devmgr"])
@@ -145,9 +131,13 @@ fn initialize_devmgr() {
 
 fn initialize_cache() {
     info!("starting cache service");
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libcache_srv.so")
+            .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "cache",
         "libcache_srv.so",
+        id,
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["cache-srv"])
@@ -163,9 +153,13 @@ fn initialize_cache() {
 
 fn initialize_display() {
     info!("starting display manager");
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libdisplay_srv.so")
+            .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "display",
         "libdisplay_srv.so",
+        id,
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["display-srv"])
@@ -181,6 +175,47 @@ fn initialize_display() {
     };
     let _ = start_display();
     tracing::info!("display manager ready");
+    std::mem::forget(comp);
+}
+
+fn initialize_network() {
+    info!("starting network manager");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libnet_srv.so")
+        .expect("failed to find object");
+    let comp: CompartmentHandle = CompartmentLoader::new(
+        "net",
+        "libnet_srv.so",
+        id,
+        NewCompartmentFlags::EXPORT_GATES,
+    )
+    .args(&["net-srv"])
+    .load()
+    .expect("failed to initialize network manager");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
+    let start_net = unsafe {
+        comp.dynamic_gate::<(), RawTwzError>("start_network")
+            .unwrap()
+    };
+    let _ = start_net();
+    std::mem::forget(comp);
+}
+
+fn initialize_sshd() {
+    info!("starting ssh server");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/sshd")
+        .expect("failed to find object");
+    let comp: CompartmentHandle =
+        CompartmentLoader::new("sshd", "sshd", id, NewCompartmentFlags::empty())
+            .args(&["sshd"])
+            .load()
+            .expect("failed to initialize ssh server");
+    let mut flags = comp.info().flags;
+    while !flags.contains(CompartmentFlags::READY) {
+        flags = comp.wait(flags);
+    }
     std::mem::forget(comp);
 }
 
@@ -203,9 +238,12 @@ fn main() {
     }
 
     tracing::info!("starting logger");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "liblogboi_srv.so")
+        .expect("failed to find object");
     let lbcomp: CompartmentHandle = CompartmentLoader::new(
         "logboi",
         "liblogboi_srv.so",
+        id,
         NewCompartmentFlags::EXPORT_GATES,
     )
     .args(&["logboi"])
@@ -221,15 +259,15 @@ fn main() {
 
     let bootstrap_id = initialize_pager();
 
-    let root_id = initialize_namer(bootstrap_id);
-
-    // Set new nameroot for the monitor
-    tracing::info!("setting monitor nameroot: {}", root_id);
-    let _ = monitor_api::set_nameroot(root_id)
-        .inspect_err(|_| tracing::warn!("failed to set nameroot for monitor"));
+    let _root_id = initialize_namer(bootstrap_id);
 
     initialize_cache();
+    initialize_network();
     initialize_display();
+
+    std::env::set_var("PATH", "/initrd");
+
+    initialize_sshd();
 
     if start_unittest {
         // Load and wait for tests to complete
@@ -251,9 +289,53 @@ fn main() {
 
     println!("Hi, welcome to the basic twizzler test console.");
 
+    let pty =
+        twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
+    twizzler_rt_abi::fd::twz_rt_fd_close(0);
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    assert_eq!(client_fd, 0);
+    twizzler_rt_abi::fd::twz_rt_fd_close(1);
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    assert_eq!(client_fd, 1);
+    twizzler_rt_abi::fd::twz_rt_fd_close(2);
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+    assert_eq!(client_fd, 2);
+    let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
+
+    std::thread::spawn(move || loop {
+        let mut buf = [0; 1024];
+        let count = twizzler_abi::syscall::sys_kernel_console_read(
+            twizzler_abi::syscall::KernelConsoleSource::Console,
+            &mut buf,
+            KernelConsoleReadFlags::empty(),
+        )
+        .unwrap();
+        //tracing::info!("Read {} bytes from console: {:?}", count, &buf[0..count]);
+        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+        let mut done = 0;
+        while done < count {
+            done += twizzler_rt_abi::io::twz_rt_fd_pwrite(server_fd, &buf[done..count], &mut ioc)
+                .unwrap();
+        }
+    });
+
+    std::thread::spawn(move || loop {
+        let mut buf = [0; 1024];
+        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+        let count = twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
+        //tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
+        twizzler_abi::syscall::sys_kernel_console_write(
+            twizzler_abi::syscall::KernelConsoleSource::Console,
+            &buf[0..count],
+            KernelConsoleWriteFlags::empty(),
+        );
+    });
+
     if let Some(autostart) = autostart {
+        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &autostart)
+            .expect("failed to find autostart object");
         println!("autostart: {}", autostart);
-        let comp = CompartmentLoader::new(&autostart, &autostart, NewCompartmentFlags::empty())
+        let comp = CompartmentLoader::new(&autostart, &autostart, id, NewCompartmentFlags::empty())
             .args(&[&autostart])
             .load();
         if let Ok(comp) = comp {
@@ -266,92 +348,28 @@ fn main() {
         }
     }
 
-    println!("To run a program, type its name.");
-
-    let mut io = TwzIo;
-    let mut buffer = [0; 1024];
-    let mut history = [0; 1024];
-    let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
-        .with_slice_history(&mut history)
-        .build_sync(&mut io)
-        .unwrap();
     loop {
-        //let mstats = monitor_api::stats().unwrap();
-        //println!("{:?}", mstats);
-        let line = editor.readline("twz> ", &mut io).unwrap();
-        let cmd = line.split_whitespace().collect::<Vec<_>>();
-        if cmd.len() == 0 {
-            continue;
+        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/shell")
+            .expect("failed to find shell object");
+        let mut shell_comp =
+            CompartmentLoader::new("shell", "shell", id, NewCompartmentFlags::empty());
+        shell_comp.with_controller(monitor_api::ControllerOption::Object(pty.id()));
+        shell_comp.args(["shell"]);
+        let shell_comp = shell_comp.load().expect("failed to start shell");
+
+        let mut flags = shell_comp.info().flags;
+        while !flags.contains(CompartmentFlags::EXITED) {
+            flags = shell_comp.wait(flags);
         }
 
-        let background = cmd.iter().any(|s| *s == "&");
-
-        // Find env vars
-        let cmd = cmd.into_iter().map(|s| as_env(s)).collect::<Vec<_>>();
-        let vars = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok((k, v)) => Some((k, v)),
-                Err(_) => None,
-            })
-            .collect::<Vec<_>>();
-        let cmd = cmd
-            .iter()
-            .filter_map(|r| match r {
-                Ok(_) => None,
-                Err(s) => Some(s),
-            })
-            .collect::<Vec<_>>();
-
-        tracing::debug!("got env: {:?}, cmd: {:?}", vars, cmd);
-
-        let comp = CompartmentLoader::new(cmd[0], cmd[0], NewCompartmentFlags::empty())
-            .args(&cmd)
-            .env(vars.into_iter().map(|(k, v)| format!("{}={}", k, v)))
-            .load();
-        if let Ok(comp) = comp {
-            if background {
-                tracing::info!("continuing compartment {} in background", cmd[0]);
-            } else {
-                let mut flags = comp.info().flags;
-                while !flags.contains(CompartmentFlags::EXITED) {
-                    flags = comp.wait(flags);
-                }
-            }
-        } else {
-            warn!("failed to start {}", cmd[0]);
-        }
+        println!("shell exited -- restarting shell");
     }
 }
-
-fn as_env<'a>(s: &'a str) -> Result<(&'a str, &'a str), &'a str> {
-    let mut split = s.split("=");
-    Ok((split.next().ok_or(s)?, split.next().ok_or(s)?))
-}
-
-/*
-fn get_kernel_init_info() -> &'static KernelInitInfo {
-    unsafe {
-        (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
-            as *const KernelInitInfo)
-            .as_ref()
-            .unwrap()
-    }
-}
-
-fn find_init_name(name: &str) -> Option<ObjID> {
-    let init_info = get_kernel_init_info();
-    for n in init_info.names() {
-        if n.name() == name {
-            return Some(n.id());
-        }
-    }
-    None
-}
-*/
 
 fn run_tests() {
-    let comp = CompartmentLoader::new("unittest", "unittest", NewCompartmentFlags::empty())
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/unittest")
+        .expect("failed to find unittest object");
+    let comp = CompartmentLoader::new("unittest", "unittest", id, NewCompartmentFlags::empty())
         .args(&["unittest"])
         .load()
         .expect("failed to start unittest");

@@ -92,12 +92,7 @@ pub fn load_segments(
             }
         }
 
-        Ok(ObjectSource::new_copy(
-            src.id(),
-            src_start as u64,
-            dest_start as u64,
-            len,
-        ))
+        Ok(ObjectSource::new_copy(src.id(), src_start as u64, dest_start as u64, len).into())
     };
 
     let ld = ld.to_vec();
@@ -115,14 +110,14 @@ pub fn load_segments(
     let data_id = sys_object_create(
         create_spec,
         &data_cmds,
-        &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
+        &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
     let text_id = sys_object_create(
         create_spec,
         &text_cmds,
-        &[CreateTieSpec::new(instance, CreateTieFlags::empty())],
+        &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
     )
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
     //let text_id = src.id;

@@ -2,8 +2,8 @@
 //! metadata.
 
 /// The maximum size of an object, including null page and meta page(s).
-pub const MAX_SIZE: usize = 1024 * 1024 * 1024;
+pub const MAX_SIZE: usize = twizzler_rt_abi::object::MAX_SIZE;
 /// The size of the null page.
-pub const NULLPAGE_SIZE: usize = 0x1000;
+pub const NULLPAGE_SIZE: usize = twizzler_rt_abi::object::NULLPAGE_SIZE;
 
 pub use twizzler_rt_abi::object::{ObjID, Protections};

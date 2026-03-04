@@ -1,0 +1,12 @@
+[package]
+name = "sgtest-srv"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sgtest = { path = "../../lib/sgtest" }
+secgate = { path = "../../lib/secgate" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }

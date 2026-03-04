@@ -1,0 +1,345 @@
+use std::{
+    os::fd::FromRawFd,
+    process::{Command, Stdio},
+};
+
+use async_executor::LocalExecutor;
+use async_net::{TcpListener, TcpStream};
+use embedded_io_async::{ErrorType, Read, Write};
+use futures::{AsyncReadExt, AsyncWriteExt, FutureExt};
+use miette::{Context, IntoDiagnostic};
+use sunset::{ChanHandle, SignKey};
+use sunset_async::{ProgressHolder, SSHServer};
+use tracing::Level;
+use twizzler::object::{Object, RawObject};
+use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle};
+use twizzler_rt_abi::{
+    fd::{RawFd, twz_rt_fd_close},
+    object::ObjectCreate,
+};
+
+fn main() {
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(Level::INFO)
+            .without_time()
+            .compact()
+            .finish(),
+    )
+    .unwrap();
+    //tracing_log::LogTracer::init().unwrap();
+
+    let listener = async_io::block_on(async { TcpListener::bind("0.0.0.0:5555").await.unwrap() });
+
+    tracing::info!("ready for incomming connections");
+    for _ in 0..4 {
+        let listener = listener.clone();
+        std::thread::spawn(move || {
+            let ex = LocalExecutor::new();
+            async_io::block_on(ex.run(async { accept(&listener).await }));
+        });
+    }
+    let ex = LocalExecutor::new();
+    async_io::block_on(ex.run(async { accept(&listener).await }));
+}
+
+async fn accept(listener: &TcpListener) {
+    while let Ok(conn) = listener.accept().await {
+        tracing::info!("accepting connection from {}", conn.1);
+        match sunset_server(conn.0).await {
+            Ok(_) => {
+                tracing::info!("closed connection to {}", conn.1);
+            }
+            Err(e) => {
+                tracing::error!("error in connection to {}: {}", conn.1, e);
+            }
+        }
+    }
+}
+
+struct Reader {
+    sock: TcpStream,
+}
+
+impl ErrorType for Reader {
+    type Error = std::io::Error;
+}
+
+impl Read for Reader {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.sock.read(buf).await
+    }
+}
+
+struct Writer {
+    sock: TcpStream,
+}
+
+impl Write for Writer {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.sock.write(buf).await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.sock.flush().await
+    }
+}
+
+impl ErrorType for Writer {
+    type Error = std::io::Error;
+}
+
+async fn sunset_server(conn: TcpStream) -> miette::Result<()> {
+    let mut ssh_rxbuf = Box::new([0; 4096]);
+    let mut ssh_txbuf = Box::new([0; 4096]);
+    let serv = SSHServer::new(&mut *ssh_rxbuf, &mut *ssh_txbuf);
+
+    let mut rsock = Reader { sock: conn.clone() };
+    let mut wsock = Writer { sock: conn.clone() };
+
+    let out = {
+        let (send, recv) = async_channel::bounded(1);
+
+        let runner = async {
+            serv.run(&mut rsock, &mut wsock)
+                .await
+                .into_diagnostic()
+                .with_context(|| "server-run")
+        }
+        .fuse();
+        futures::pin_mut!(runner);
+        let session = session(&serv, send).fuse();
+        futures::pin_mut!(session);
+        let shell = shell(&serv, recv).fuse();
+        futures::pin_mut!(shell);
+
+        let out = futures::select! {
+            out = runner => out,
+            out = session => out,
+            out = shell => out,
+        }?;
+        conn.shutdown(std::net::Shutdown::Read)
+            .into_diagnostic()
+            .with_context(|| "from shutdown")?;
+
+        runner.await?;
+        out
+    };
+    drop(wsock);
+    drop(rsock);
+
+    Ok(out)
+}
+
+fn setup_pty() -> (RawFd, Object<PtyBase>) {
+    let pty =
+        twizzler_io::pty::PtyBase::create_object(ObjectCreate::default(), DEFAULT_TERMIOS).unwrap();
+    let client_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_client(pty.id().raw(), 0).unwrap();
+
+    (client_fd, pty)
+}
+
+struct SessionCtx {
+    chan_handle: ChanHandle,
+    command: Option<String>,
+    username: Option<String>,
+    env: Vec<(String, String)>,
+}
+
+async fn shell(
+    serv: &SSHServer<'_>,
+    ch_ch: async_channel::Receiver<SessionCtx>,
+) -> miette::Result<()> {
+    let ctx = ch_ch.recv().await.into_diagnostic()?;
+    let (stdio, _stderr) = serv.stdio_stderr(ctx.chan_handle).await.into_diagnostic()?;
+    let (mut stdin, mut stdout) = stdio.split();
+
+    let mut cmd = Command::new("/initrd/shell");
+
+    if let Some(command) = ctx.command.as_ref() {
+        cmd.arg("-c");
+        cmd.arg(command);
+    }
+
+    cmd.envs(ctx.env.into_iter());
+
+    let (client_fd, pty) = setup_pty();
+
+    unsafe {
+        cmd.stdin(Stdio::from_raw_fd(client_fd));
+        cmd.stdout(Stdio::from_raw_fd(client_fd));
+        cmd.stderr(Stdio::from_raw_fd(client_fd));
+    }
+
+    let netreader = async {
+        let mut server = PtyServerHandle::new(pty.id(), None).unwrap();
+        loop {
+            let mut buf = [0; 1024];
+            let count = stdin.read(&mut buf).await.unwrap();
+            let (_, s) = blocking::unblock(move || {
+                (
+                    <PtyServerHandle as std::io::Write>::write_all(&mut server, &buf[0..count])
+                        .unwrap(),
+                    server,
+                )
+            })
+            .await;
+            server = s;
+        }
+    }
+    .fuse();
+
+    let netwriter = async {
+        let mut server = PtyServerHandle::new(pty.id(), None).unwrap();
+        loop {
+            let mut buf = [0; 1024];
+            let (count, buf, s) = blocking::unblock(move || {
+                (
+                    <PtyServerHandle as std::io::Read>::read(&mut server, &mut buf).unwrap(),
+                    buf,
+                    server,
+                )
+            })
+            .await;
+            server = s;
+            stdout.write_all(&buf[0..count]).await.unwrap();
+            stdout.flush().await.unwrap();
+        }
+    }
+    .fuse();
+
+    tracing::debug!(
+        "spawning {} {:?} for {:?} (cfd = {})",
+        cmd.get_program().display(),
+        cmd.get_args(),
+        ctx.username,
+        client_fd
+    );
+    let mut handle = blocking::unblock(move || cmd.spawn())
+        .await
+        .into_diagnostic()?;
+
+    twz_rt_fd_close(client_fd);
+    let handle = blocking::unblock(move || {
+        let _ = handle.wait();
+    })
+    .fuse();
+
+    futures::pin_mut!(handle);
+    futures::pin_mut!(netreader);
+    futures::pin_mut!(netwriter);
+
+    futures::select! {
+        _ = netreader => (),
+        _ = netwriter => (),
+        _ = handle => (),
+    };
+
+    tracing::debug!("shell exited");
+    pty.handle()
+        .cmd(
+            twizzler_rt_abi::object::ObjectCmd::Delete,
+            core::ptr::null_mut::<()>(),
+        )
+        .unwrap();
+
+    Ok(())
+}
+
+async fn session(
+    serv: &SSHServer<'_>,
+    sender: async_channel::Sender<SessionCtx>,
+) -> miette::Result<()> {
+    let mut chan_handle = None;
+    let mut username = None;
+    let mut env = Vec::new();
+    loop {
+        let mut ph = ProgressHolder::new();
+        let event = serv.progress(&mut ph).await.into_diagnostic()?;
+        match event {
+            sunset::ServEvent::Hostkeys(serv_hostkeys) => {
+                let key = SignKey::generate(sunset::KeyType::Ed25519, None).into_diagnostic()?;
+                serv_hostkeys.hostkeys(&[&key]).into_diagnostic()?;
+            }
+            sunset::ServEvent::FirstAuth(serv_first_auth) => {
+                let name = serv_first_auth.username().into_diagnostic()?;
+                tracing::debug!("logging in as {}", name);
+                username = Some(name.to_string());
+                serv_first_auth.allow().into_diagnostic()?;
+            }
+            //sunset::ServEvent::PasswordAuth(serv_password_auth) => todo!(),
+            //sunset::ServEvent::PubkeyAuth(serv_pubkey_auth) => todo!(),
+            sunset::ServEvent::OpenSession(serv_open_session) => {
+                if chan_handle.is_some() {
+                    serv_open_session
+                        .reject(sunset::ChanFail::SSH_OPEN_ADMINISTRATIVELY_PROHIBITED)
+                        .into_diagnostic()?;
+                } else {
+                    let ch = serv_open_session.accept().into_diagnostic()?;
+                    tracing::debug!("opened session, channel = {}", ch.num());
+                    chan_handle = Some(ch);
+                }
+            }
+            sunset::ServEvent::SessionShell(serv_shell_request) => {
+                tracing::debug!("shell start on channel {}", serv_shell_request.channel());
+                if let Some(ch) = chan_handle.take() {
+                    serv_shell_request.succeed().into_diagnostic()?;
+                    sender
+                        .send(SessionCtx {
+                            chan_handle: ch,
+                            command: None,
+                            username: username.clone(),
+                            env: env.clone(),
+                        })
+                        .await
+                        .into_diagnostic()?;
+                } else {
+                    serv_shell_request.fail().into_diagnostic()?;
+                }
+            }
+            sunset::ServEvent::SessionExec(serv_exec_request) => {
+                tracing::debug!(
+                    "session exec on channel {}: {}",
+                    serv_exec_request.channel(),
+                    serv_exec_request.command().into_diagnostic()?
+                );
+                if let Some(ch) = chan_handle.take() {
+                    let command = serv_exec_request.command().into_diagnostic()?.to_string();
+                    serv_exec_request.succeed().into_diagnostic()?;
+                    sender
+                        .send(SessionCtx {
+                            chan_handle: ch,
+                            command: Some(command),
+                            username: username.clone(),
+                            env: env.clone(),
+                        })
+                        .await
+                        .into_diagnostic()?;
+                } else {
+                    serv_exec_request.fail().into_diagnostic()?;
+                }
+            }
+            sunset::ServEvent::SessionPty(serv_pty_request) => {
+                let ch = serv_pty_request.channel();
+                tracing::debug!("pty request on channel {}", ch);
+                serv_pty_request.succeed().into_diagnostic()?;
+            }
+            sunset::ServEvent::SessionEnv(serv_environment_request) => {
+                let name = serv_environment_request.name().into_diagnostic()?;
+                let value = serv_environment_request.value().into_diagnostic()?;
+                let ch = serv_environment_request.channel();
+                tracing::debug!("env request on channel {}: {}={}", ch, name, value);
+                env.push((name.to_string(), value.to_string()));
+                serv_environment_request.succeed().into_diagnostic()?;
+            }
+            sunset::ServEvent::PollAgain => {}
+            sunset::ServEvent::Defunct => {
+                tracing::debug!("server defunct");
+                return Ok(());
+            }
+            _ => {
+                tracing::warn!("unknown event: {:?}", event);
+            }
+        }
+    }
+}

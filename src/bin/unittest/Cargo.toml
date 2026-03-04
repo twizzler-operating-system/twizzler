@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = "*"
-serde_json = "*"
-monitor-api = { path = "../../rt/monitor-api" }
-unittest-report = { path = "unittest-report" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+monitor-api = { workspace = true }
+unittest-report = { workspace = true }

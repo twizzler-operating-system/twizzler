@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arrayvec = "0.7.6"
-secgate = { path = "../../../lib/secgate" }
-monitor-api = { path = "../../../rt/monitor-api" }
+arrayvec = { workspace = true }
+secgate = { workspace = true }
+monitor-api = { workspace = true }
 twizzler-rt-abi = "0.99"
-twizzler = { path = "../../../lib/twizzler" }
-tracing = "*"
-pager-dynamic = { path = "../../../lib/pager/pager-dynamic" }
-object-store = { path = "../../../srv/pager-srv/object-store"}
+twizzler = { workspace = true }
+tracing = { workspace = true }
+pager-dynamic = { workspace = true }
+object-store = { workspace = true }
 bitflags = "2"

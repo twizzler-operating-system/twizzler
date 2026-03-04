@@ -52,7 +52,6 @@ core::arch::global_asm!(
 
 #[panic_handler]
 #[linkage = "weak"]
-#[no_mangle]
 pub unsafe fn rust_begin_unwind(_pi: &::core::panic::PanicInfo) -> ! {
     core::intrinsics::abort()
 }

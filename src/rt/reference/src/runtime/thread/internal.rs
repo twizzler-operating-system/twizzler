@@ -23,7 +23,7 @@ pub struct InternalThread {
     args_box: usize,
     pub(super) id: u32,
     _tls: *mut Tcb<RuntimeThreadControl>,
-    name: Mutex<CString>,
+    name: Mutex<Option<CString>>,
 }
 
 impl InternalThread {
@@ -42,7 +42,7 @@ impl InternalThread {
             args_box,
             id,
             _tls: tls,
-            name: Mutex::new(CString::default()),
+            name: Mutex::new(None),
         }
     }
 
@@ -62,7 +62,8 @@ impl InternalThread {
     }
 
     pub fn set_name(&self, name: &CStr) {
-        *self.name.lock().unwrap() = name.to_owned();
+        let name = name.to_owned();
+        *self.name.lock().unwrap() = Some(name);
     }
 }
 

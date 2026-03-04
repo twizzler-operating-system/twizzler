@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-twizzler = { path = "../../lib/twizzler" }
-twizzler-display = { path = "../../lib/twizzler-display" }
-secgate = { path = "../../lib/secgate" }
-image = "*"
+twizzler = { workspace = true }
+twizzler-display = { workspace = true }
+secgate = { workspace = true }
+image = { workspace = true }

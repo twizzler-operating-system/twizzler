@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ffi::CStr, ptr::null_mut};
+use std::{alloc::Layout, collections::HashSet, ffi::CStr, ptr::null_mut};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -10,8 +10,10 @@ use dynlink::{
 use happylock::ThreadKey;
 use monitor_api::SharedCompConfig;
 use smallstr::SmallString;
+use talc::{ErrOnOom, Talc};
 use tinyvec::TinyVec;
 use twizzler_rt_abi::{
+    bindings::binding_info,
     core::{CtorSet, RuntimeInfo},
     error::{GenericError, TwzError},
     object::{MapFlags, ObjID},
@@ -109,11 +111,38 @@ impl LoadInfo {
         handle: MapHandle,
         stack_object: StackObject,
         is_debugging: bool,
+        controller: Option<ObjID>,
+        mut loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> Result<RunComp, DynlinkError> {
-        let comp_config =
-            CompConfigObject::new(handle, SharedCompConfig::new(self.sctx_id, null_mut()));
+        let mut comp_config = CompConfigObject::new(
+            handle,
+            SharedCompConfig::new(self.sctx_id, null_mut(), loader_config),
+        );
 
         let flags = if self.is_binary { COMP_IS_BINARY } else { 0 };
+
+        let mut alloc = Talc::new(ErrOnOom);
+        unsafe { alloc.claim(comp_config.alloc_span()).unwrap() };
+
+        if !loader_config.fd_spec.is_null() {
+            let fd_spec_layout = Layout::array::<binding_info>(loader_config.fd_spec_len).unwrap();
+            let fd_spec_ptr =
+                unsafe { alloc.malloc(fd_spec_layout).unwrap().cast::<binding_info>() };
+            let fd_spec_slice = unsafe {
+                core::slice::from_raw_parts_mut(fd_spec_ptr.as_ptr(), loader_config.fd_spec_len)
+            };
+            let src_fd_spec_slice = unsafe {
+                core::slice::from_raw_parts(loader_config.fd_spec, loader_config.fd_spec_len)
+            };
+            fd_spec_slice.copy_from_slice(src_fd_spec_slice);
+            loader_config.fd_spec = fd_spec_ptr.as_ptr();
+            comp_config.write_config(SharedCompConfig::new(
+                self.sctx_id,
+                null_mut(),
+                loader_config,
+            ));
+        }
+
         Ok(RunComp::new(
             self.sctx_id,
             self.sctx_id,
@@ -126,6 +155,8 @@ impl LoadInfo {
             self.entry.map(|x| x as usize).unwrap_or_default(),
             &self.ctor_info,
             is_debugging,
+            controller,
+            alloc,
         ))
     }
 }
@@ -169,6 +200,7 @@ impl RunCompLoader {
         comp_name: &str,
         root_unlib: UnloadedLibrary,
         extras: &[UnloadedLibrary],
+        extras_sctx: &[UnloadedLibrary],
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
     ) -> miette::Result<Self> {
@@ -186,7 +218,34 @@ impl RunCompLoader {
         };
         let mut load_ctx = LoadCtx::default();
 
-        let extra_load_ids: Vec<_> = extras
+        let mut extra_sctx_load_ids: Vec<_> = extras_sctx
+            .into_iter()
+            .map(|extra| {
+                let comp_id = dynlink
+                    .add_compartment(extra.name.clone(), NewCompartmentFlags::EXPORT_GATES)?;
+                if mondebug {
+                    tracing::info!(
+                        "loading sctx preload library: {} -> {}",
+                        extra.name,
+                        comp_id
+                    );
+                } else {
+                    tracing::debug!(
+                        "loading sctx preload library: {} -> {}",
+                        extra.name,
+                        comp_id
+                    );
+                }
+                dynlink.load_library_in_compartment(
+                    comp_id,
+                    extra.clone(),
+                    AllowedGates::Public,
+                    &mut load_ctx,
+                )
+            })
+            .try_collect()?;
+
+        let mut extra_load_ids: Vec<_> = extras
             .into_iter()
             .map(|extra| {
                 if mondebug {
@@ -210,6 +269,8 @@ impl RunCompLoader {
             &mut load_ctx,
         )?);
 
+        extra_load_ids.append(&mut extra_sctx_load_ids);
+
         for extra in &extra_load_ids {
             for extra in extra {
                 loads.0.push(extra.clone());
@@ -221,6 +282,12 @@ impl RunCompLoader {
         // the information about the extra compartments.
         let mut cache = HashSet::new();
         let extra_compartments = loads.0.iter().filter_map(|load| {
+            tracing::trace!(
+                "extra? {} {} {}",
+                load.comp,
+                root_comp_id,
+                cache.contains(&load.comp)
+            );
             if load.comp != root_comp_id {
                 // This compartment was loaded in addition to the root comp as part of our
                 // initial load request. Check if we haven't seen it before.
@@ -254,6 +321,7 @@ impl RunCompLoader {
             },
             extra_compartments,
         )?;
+        tracing::trace!("extras: {:?}", extra_compartments);
 
         let root_id = loads.0[0].lib;
         let rt_id = Self::maybe_inject_runtime(dynlink, root_id, root_comp_id, &mut load_ctx)?;
@@ -332,6 +400,8 @@ impl RunCompLoader {
         dynlink: &mut Context,
         mondebug: bool,
         is_debugging: bool,
+        controller: Option<ObjID>,
+        loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> miette::Result<ObjID> {
         let make_new_handle = |ty, id| {
             if mondebug {
@@ -353,11 +423,14 @@ impl RunCompLoader {
             DEFAULT_STACK_SIZE,
         )?;
 
-        let root_rc = self.root_comp.build_runcomp(
+        let mut root_rc = self.root_comp.build_runcomp(
             make_new_handle("comp-config", self.root_comp.sctx_id)?,
             stack,
             is_debugging,
+            controller,
+            loader_config,
         )?;
+        tracing::trace!("starting {} as {}", self.root_comp.name, root_rc.instance);
 
         let mut ids = vec![root_rc.instance];
         // Make all the handles first, for easier cleanup.
@@ -375,11 +448,16 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .zip(handles)
-            .map(|extra| extra.0.build_runcomp(extra.1 .0, extra.1 .1, false))
+            .map(|extra| {
+                extra
+                    .0
+                    .build_runcomp(extra.1 .0, extra.1 .1, false, controller, loader_config)
+            })
             .try_collect::<Vec<_>>()?;
 
         for rc in extras.drain(..) {
             ids.push(rc.instance);
+            root_rc.deps.push(rc.instance);
             cmp.insert(rc);
         }
         cmp.insert(root_rc);

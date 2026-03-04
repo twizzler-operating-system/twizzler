@@ -4,41 +4,44 @@ use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections, MAX_SIZE},
-    syscall::{MapControlCmd, MapFlags, SyncFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
-    trace::{ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind, CONTEXT_FAULT},
+    object::{MAX_SIZE, ObjID, Protections},
+    syscall::{MapControlCmd, MapFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
+    trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
         UpcallInfo,
     },
 };
-use twizzler_rt_abi::error::{IoError, RawTwzError, TwzError};
+use twizzler_rt_abi::{
+    bindings::{SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
+    error::{IoError, RawTwzError, TwzError},
+};
 
-use super::{ObjectPageProvider, PageFaultFlags, MAX_OPP_VEC};
+use super::{MAX_OPP_VEC, ObjectPageProvider, PageFaultFlags};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
+        FAULT_STATS,
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
         },
         tracker::{FrameAllocFlags, FrameAllocator},
-        FAULT_STATS,
     },
     mutex::Mutex,
     obj::{
+        ObjectRef, PageNumber,
         copy::copy_range_to_shadow,
         pages::{Page, PageRef},
         range::{GetPageFlags, PageRangeTree, PageStatus},
-        ObjectRef, PageNumber,
     },
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
     trace::{
-        mgr::{TraceEvent, TRACE_MGR},
+        mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
@@ -72,6 +75,9 @@ fn check_settings(
     kind: MemoryAccessKind,
 ) -> Result<(), UpcallInfo> {
     if !settings.flags().contains(MappingFlags::USER) {
+        return Ok(());
+    }
+    if current_thread_ref().is_some_and(|ct| ct.secctx.active_id().raw() == 0) {
         return Ok(());
     }
     let upcall =
@@ -348,6 +354,7 @@ impl MapRegion {
                 && !addr.is_kernel()
                 && !addr.is_kernel_object_memory()
                 && page.nr_pages() + large_diff >= pages_per_large
+                && false
             {
                 FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
                 log::trace!(
@@ -432,11 +439,7 @@ impl MapRegion {
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
         match cmd {
             MapControlCmd::Sync(sync_info_ptr) => {
-                // TODO: validation
-                let sync_info = unsafe { sync_info_ptr.read() };
-                let version = sync_info.release_compare;
-
-                if sync_info.flags.contains(SyncFlags::DURABLE) {
+                if sync_info_ptr.is_null() {
                     let dirty_pages = self.object().dirty_set().drain_all();
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
@@ -444,17 +447,37 @@ impl MapRegion {
                         dirty_pages
                     );
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages.as_slice(), sync_info, version);
+                        crate::pager::sync_region(self, dirty_pages.as_slice(), None, 0);
                     }
-                }
+                } else {
+                    let sync_info = unsafe { sync_info_ptr.read() };
+                    let version = sync_info.release_compare;
 
-                if sync_info.flags.contains(SyncFlags::ASYNC_DURABLE) {
-                    unsafe { sync_info.try_release() }?;
-                    let wake = ThreadSyncWake::new(
-                        ThreadSyncReference::Virtual(sync_info.release),
-                        usize::MAX,
-                    );
-                    wakeup(&wake)?;
+                    if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
+                        let dirty_pages = self.object().dirty_set().drain_all();
+                        log::trace!(
+                            "sync region {:?} with dirty pages {:?}",
+                            self.range,
+                            dirty_pages
+                        );
+                        if self.object().use_pager() && !dirty_pages.is_empty() {
+                            crate::pager::sync_region(
+                                self,
+                                dirty_pages.as_slice(),
+                                Some(sync_info),
+                                version,
+                            );
+                        }
+                    }
+
+                    if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
+                        unsafe { sync_info.try_release() }?;
+                        let wake = ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
+                            usize::MAX,
+                        );
+                        wakeup(&wake)?;
+                    }
                 }
 
                 Ok(0)

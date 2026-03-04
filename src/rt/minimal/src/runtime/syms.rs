@@ -69,6 +69,24 @@ macro_rules! check_ffi_type {
             }
         }
     };
+    ($f1:ident, _, _, _, _, _, _, _) => {
+        paste::paste! {
+            #[allow(dead_code, unused_variables, unused_assignments)]
+            fn [<__tc_ffi_ $f1>]() {
+                let mut x: unsafe extern "C-unwind" fn(_, _, _, _, _, _, _) -> _ = $f1;
+                x = twizzler_rt_abi::bindings::$f1;
+            }
+        }
+    };
+    ($f1:ident, _, _, _, _, _, _, _, _) => {
+        paste::paste! {
+            #[allow(dead_code, unused_variables, unused_assignments)]
+            fn [<__tc_ffi_ $f1>]() {
+                let mut x: unsafe extern "C-unwind" fn(_, _, _, _, _, _, _, _) -> _ = $f1;
+                x = twizzler_rt_abi::bindings::$f1;
+            }
+        }
+    };
 }
 
 use twizzler_rt_abi::error::{ArgumentError, TwzError};
@@ -125,7 +143,10 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 // alloc.h
 
-use twizzler_rt_abi::bindings::{ZERO_MEMORY, alloc_flags, io_ctx, release_flags};
+use twizzler_rt_abi::bindings::{
+    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, object_create, object_source, object_tie,
+    objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
+};
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
     sz: usize,
@@ -269,10 +290,33 @@ check_ffi_type!(twz_rt_join_thread, _, _);
 
 // fd.h
 
-use twizzler_rt_abi::bindings::{descriptor, open_info, open_result};
+use twizzler_rt_abi::bindings::{descriptor, name_root, open_info, open_result};
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
-    let name = unsafe { core::slice::from_raw_parts(info.name.cast(), info.len) };
+pub unsafe extern "C-unwind" fn twz_rt_get_nameroot(
+    _root: name_root,
+    _path: *mut c_char,
+    _len: usize,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_get_nameroot, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_open(
+    kind: open_kind,
+    flags: fd_flags,
+    bind_info: *mut c_void,
+    bind_len: usize,
+) -> open_result {
+    if kind != open_kind_OpenKind_Path {
+        return open_result {
+            fd: 0,
+            err: TwzError::INVALID_ARGUMENT.raw(),
+        };
+    }
+    let info = unsafe { bind_info.cast::<open_info>().as_ref().unwrap() };
+    let name = &info.name[0..info.len];
     let name = core::str::from_utf8(name)
         .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument);
     match name {
@@ -283,7 +327,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(info: open_info) -> open_result {
         },
     }
 }
-check_ffi_type!(twz_rt_fd_open, _);
+check_ffi_type!(twz_rt_fd_open, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
@@ -395,6 +439,21 @@ use twizzler_rt_abi::{
     bindings::{map_flags, map_result, object_handle, objid},
     object::MapFlags,
 };
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_create_object(
+    spec: *const object_create,
+    src: *const object_source,
+    src_len: usize,
+    ties: *const object_tie,
+    tie_len: usize,
+    name: *const c_char,
+    namelen: usize,
+) -> objid_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_create_object, _, _, _, _, _, _, _);
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_map_object(id: objid, flags: map_flags) -> map_result {
     OUR_RUNTIME
@@ -516,7 +575,21 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
     )
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn dl_iterate_phdr(
+    cb: ::core::option::Option<
+        unsafe extern "C-unwind" fn(
+            arg1: *const dl_phdr_info,
+            size: usize,
+            data: *mut ::core::ffi::c_void,
+        ) -> ::core::ffi::c_int,
+    >,
+    data: *mut core::ffi::c_void,
+) -> i32 {
+    unsafe { twz_rt_iter_phdr(cb, data) }
+}
 
+/*
 // additional definitions for C
 
 #[unsafe(no_mangle)]
@@ -537,20 +610,6 @@ pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn dl_iterate_phdr(
-    cb: ::core::option::Option<
-        unsafe extern "C-unwind" fn(
-            arg1: *const dl_phdr_info,
-            size: usize,
-            data: *mut ::core::ffi::c_void,
-        ) -> ::core::ffi::c_int,
-    >,
-    data: *mut core::ffi::c_void,
-) -> i32 {
-    unsafe { twz_rt_iter_phdr(cb, data) }
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn fwrite(
     ptr: *const core::ffi::c_void,
     len: usize,
@@ -567,12 +626,12 @@ pub unsafe extern "C-unwind" fn fwrite(
 pub unsafe extern "C-unwind" fn fprintf(
     file: *const core::ffi::c_void,
     fmt: *const core::ffi::c_char,
-    mut args: ...
+    args: ...
 ) -> i32 {
     unsafe {
         use printf_compat::{format, output};
         let mut s = rustc_alloc::string::String::new();
-        let bytes_written = format(fmt.cast(), args.as_va_list(), output::fmt_write(&mut s));
+        let bytes_written = format(fmt.cast(), args, output::fmt_write(&mut s));
         twz_rt_fd_pwrite(
             1,
             s.as_bytes().as_ptr().cast(),
@@ -581,4 +640,58 @@ pub unsafe extern "C-unwind" fn fprintf(
         );
         bytes_written
     }
+}
+
+*/
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPv() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPvj() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn _ZdlPvm() {}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
+    core::ptr::null()
+}
+use core::ffi::{c_char, c_int, c_void};
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_open(
+    _: *const c_char,
+    _: c_int,
+    _: *const c_void,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_resolve(
+    _: *const c_void,
+    _: *const c_char,
+    _: *const c_void,
+    _: *const c_char,
+) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
+    core::ptr::null()
 }

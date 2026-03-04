@@ -47,6 +47,7 @@ impl BumpAlloc {
 
 static MMIO_ALLOCATOR: Once<Spinlock<BumpAlloc>> = Once::new();
 
+#[allow(static_mut_refs)]
 pub fn mmio_allocator() -> &'static Spinlock<BumpAlloc> {
     MMIO_ALLOCATOR.call_once(|| {
         Spinlock::new({

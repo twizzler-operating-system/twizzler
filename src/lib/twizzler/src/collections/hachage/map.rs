@@ -77,7 +77,9 @@ impl<K: Invariant, V: Invariant> PersistentHashMap<K, V, DefaultHashBuilder, Has
     }
 }
 
-impl<K: Invariant, V: Invariant, S, A: Allocator> From<Object<RawTable<(K, V), S, A>>> for PersistentHashMap<K, V, S, A> {
+impl<K: Invariant, V: Invariant, S, A: Allocator> From<Object<RawTable<(K, V), S, A>>>
+    for PersistentHashMap<K, V, S, A>
+{
     fn from(table: Object<RawTable<(K, V), S, A>>) -> Self {
         Self { table }
     }
@@ -134,7 +136,7 @@ impl<K: Invariant, V: Invariant, S, A: Allocator> PersistentHashMap<K, V, S, A> 
         self.len() == 0
     }
 
-    pub fn ctx(&self) -> CarryCtx {
+    pub fn ctx(&self) -> CarryCtx<'_> {
         self.table.base().carry_ctx()
     }
 

@@ -4,6 +4,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(feature = "kernel"))]
 use core::time::Duration;
 
+use twizzler_rt_abi::marker::BaseType;
+
 #[cfg(not(feature = "kernel"))]
 use crate::syscall::*;
 use crate::syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep};
@@ -26,6 +28,8 @@ pub struct ThreadRepr {
     pub status: AtomicU64,
     code: AtomicU64,
 }
+
+impl BaseType for ThreadRepr {}
 
 /// Possible execution states for a thread. The transitions available are:
 /// +------------+     +-----------+     +-------------+

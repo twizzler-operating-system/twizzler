@@ -7,20 +7,20 @@ use core::{
 use twizzler_abi::{
     device::CacheType,
     meta::MetaInfo,
-    object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, Protections},
 };
 
 use super::{
-    range::{PageRangeTree, PageStatus},
     Object, ObjectRef, PageNumber,
+    range::{PageRangeTree, PageStatus},
 };
 use crate::{
     arch::memory::phys_to_virt,
     memory::{
-        frame::{get_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
-        pagetables::{MappingFlags, MappingSettings},
-        tracker::{alloc_frame, free_frame, FrameAllocFlags, FrameAllocator},
         PhysAddr, VirtAddr,
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
+        pagetables::{MappingFlags, MappingSettings},
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
     mutex::LockGuard,
     obj::range::GetPageFlags,
@@ -135,7 +135,7 @@ impl Page {
          * here */
         let va = self.as_virtaddr();
         let bytes = va.as_mut_ptr::<u8>();
-        bytes.add(offset) as *mut T
+        unsafe { bytes.add(offset) as *mut T }
     }
 
     pub fn as_mut_slice(&self, pnum: usize) -> &mut [u8] {
@@ -249,8 +249,10 @@ impl PageRef {
     }
 
     pub unsafe fn get_mut_to_val<T>(&self, offset: usize) -> *mut T {
-        self.page
-            .get_mut_to_val(offset + self.pn * PageNumber::PAGE_SIZE)
+        unsafe {
+            self.page
+                .get_mut_to_val(offset + self.pn * PageNumber::PAGE_SIZE)
+        }
     }
 
     pub fn copy_from(&mut self, other: &Self) {
@@ -283,8 +285,10 @@ impl Object {
             if let PageStatus::Ready(page, _) =
                 obj_page_tree.get_page(page_number, GetPageFlags::WRITE, None)
             {
-                let t = page.get_mut_to_val::<T>(page_offset);
-                *t = val;
+                unsafe {
+                    let t = page.get_mut_to_val::<T>(page_offset);
+                    *t = val;
+                }
             }
         }
         self.wakeup_word(offset, wakeup_count);
@@ -300,8 +304,10 @@ impl Object {
         if let PageStatus::Ready(page, _) =
             obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
         {
-            let t = page.get_mut_to_val::<AtomicU64>(page_offset);
-            (*t).load(Ordering::SeqCst)
+            unsafe {
+                let t = page.get_mut_to_val::<AtomicU64>(page_offset);
+                (*t).load(Ordering::SeqCst)
+            }
         } else {
             0
         }
@@ -328,16 +334,23 @@ impl Object {
                 let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
                 let large_page_number = page_number.align_down(pages_per_large);
 
-                let mut entries =
+                let entries =
                     page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
-                let all_empty = entries.all(|e| e.1.is_empty());
+                let all_empty = entries.count() == 0;
 
-                //log::info!("{} ==> {} {}", self.id(), all_empty, page_number);
+                log::trace!(
+                    "{} ==> {} {} {}",
+                    self.id(),
+                    all_empty,
+                    page_number,
+                    core::panic::Location::caller()
+                );
 
                 if !large_page_number.is_zero()
                     && page_number
                         < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
                     && all_empty
+                    && false
                 {
                     let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
                     if let Some(frame) = frame_allocator.try_allocate() {
@@ -445,8 +458,10 @@ impl Object {
         if let PageStatus::Ready(page, _) =
             obj_page_tree.get_page(page_number, GetPageFlags::empty(), None)
         {
-            let t = page.get_mut_to_val::<AtomicU32>(page_offset);
-            (*t).load(Ordering::SeqCst)
+            unsafe {
+                let t = page.get_mut_to_val::<AtomicU32>(page_offset);
+                (*t).load(Ordering::SeqCst)
+            }
         } else {
             0
         }

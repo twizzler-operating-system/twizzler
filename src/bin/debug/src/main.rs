@@ -54,7 +54,9 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
     let name = &run_cli.cmdline[0];
     let compname = format!("debug-{}", name);
 
-    let mut comp = CompartmentLoader::new(&compname, name, NewCompartmentFlags::DEBUG);
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), name).into_diagnostic()?;
+    let mut comp = CompartmentLoader::new(&compname, name, id, NewCompartmentFlags::DEBUG);
     comp.args(&run_cli.cmdline);
     let comp = comp.load().into_diagnostic()?;
 
@@ -72,3 +74,9 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
     tracing::info!("disconnected {}: {:?}", compname, r);
     Ok(())
 }
+
+#[test]
+fn test1() {
+    twizzler_abi::klog_println!("IN TEST 1");
+}
+

@@ -1,7 +1,6 @@
 use std::ops::{Bound, RangeBounds};
 
-use twizzler_abi::object::MAX_SIZE;
-use twizzler_rt_abi::object::{MapFlags, ObjectHandle};
+use twizzler_rt_abi::object::{MapFlags, ObjectHandle, MAX_SIZE};
 
 use crate::object::RawObject;
 

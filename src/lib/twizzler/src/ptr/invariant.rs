@@ -1,9 +1,8 @@
 use std::marker::PhantomData;
 
-use twizzler_abi::object::MAX_SIZE;
 use twizzler_rt_abi::{
     error::TwzError,
-    object::{MapFlags, ObjectHandle},
+    object::{MapFlags, ObjectHandle, MAX_SIZE},
 };
 
 use super::{GlobalPtr, Ref, RefMut};

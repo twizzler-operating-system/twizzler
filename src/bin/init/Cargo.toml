@@ -7,19 +7,13 @@ authors = ["Daniel Bittman <danielbittman1@gmail.com>"]
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = "0.99"
-twizzler-runtime = { path = "../../rt" }
-twizzler-queue = { path = "../../lib/twizzler-queue" }
-tracing = "0.1"
-tracing-subscriber = "0.3.17"
-async-io = "2.3.2"
-async-executor = "1.9.1"
-polling = "3.6.0"
-futures = "*"
-twizzler-futures = { path = "../../lib/twizzler-futures" }
-monitor-api = { path = "../../rt/monitor-api" }
-twizzler = { path = "../../lib/twizzler" }
-naming-core = { path = "../../lib/naming/naming-core" }
-embedded-io = { version = "*", features = ["std"] }
-noline = "*"
-twizzler-display = { path = "../../lib/twizzler-display" }
-secgate = { path = "../../lib/secgate" }
+twizzler-runtime = { workspace = true }
+twizzler-queue = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+monitor-api = { workspace = true }
+twizzler = { workspace = true }
+naming-core = { workspace = true }
+twizzler-display = { workspace = true }
+secgate = { workspace = true }
+twizzler-io = { path = "../../lib/twizzler-io" }

@@ -1,6 +1,6 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use twizzler::object::{ObjID, Object};
+use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_abi::{
     kso::{KactionCmd, KactionFlags, KactionGenericCmd},
     object::{MAX_SIZE, NULLPAGE_SIZE},
@@ -12,17 +12,18 @@ use super::{Access, DeviceSync, DmaOptions, DmaRegion, DmaSliceRegion};
 /// A handle for an object that can be used to perform DMA, and is most useful directly as a way to
 /// perform DMA operations on a specific object. For an allocator-like DMA interface, see
 /// [crate::dma::DmaPool].
+#[derive(Clone)]
 pub struct DmaObject {
     obj: Object<()>,
-    pub(crate) releasable_pins: Mutex<Vec<u32>>,
+    pub(crate) releasable_pins: Arc<Mutex<Vec<u32>>>,
 }
 
 impl DmaObject {
-    /// TODO: support
     /// Create a [DmaSliceRegion] from the base of this object, where the region represents memory
     /// of type `[T; len]`.
-    fn _slice_region<T: DeviceSync>(
+    pub fn slice_region<T: DeviceSync>(
         &self,
+        offset: usize,
         len: usize,
         access: Access,
         options: DmaOptions,
@@ -30,18 +31,19 @@ impl DmaObject {
         let nr_bytes = core::mem::size_of::<T>()
             .checked_mul(len)
             .expect("Value of len too large");
-        assert!(nr_bytes < MAX_SIZE - NULLPAGE_SIZE * 2);
-        DmaSliceRegion::new(
+        assert!(nr_bytes + offset < MAX_SIZE - NULLPAGE_SIZE * 2);
+        let virt = self.obj.lea_mut(offset, nr_bytes).unwrap();
+        DmaSliceRegion::new_with_virt(
             core::mem::size_of::<T>() * len,
             access,
             options,
-            NULLPAGE_SIZE,
+            offset,
             len,
-            None,
+            virt,
+            self.clone(),
         )
     }
 
-    /// TODO: support
     /// Create a [DmaRegion] from the base of this object, where the region represents memory
     /// of type `T`.
     fn _region<T: DeviceSync>(&self, access: Access, options: DmaOptions) -> DmaRegion<T> {
@@ -63,7 +65,7 @@ impl DmaObject {
     pub fn new<T>(obj: Object<T>) -> Self {
         Self {
             obj: unsafe { obj.cast() },
-            releasable_pins: Mutex::new(Vec::new()),
+            releasable_pins: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
