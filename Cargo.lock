@@ -7345,11 +7345,13 @@ dependencies = [
 name = "twizzler-net"
 version = "0.1.0"
 dependencies = [
+ "bitflags 1.3.2",
  "monitor-api",
  "secgate",
  "smoltcp",
  "twizzler",
  "twizzler-abi",
+ "twizzler-driver",
  "twizzler-io",
  "twizzler-queue",
 ]

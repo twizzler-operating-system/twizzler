@@ -2,6 +2,7 @@ use secgate::TwzError;
 pub use twizzler_io::packet;
 
 mod client;
+pub mod drivers;
 mod endpoint;
 mod server;
 

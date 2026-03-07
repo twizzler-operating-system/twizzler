@@ -13,6 +13,7 @@ assertions = true
 
 [build]
 target = []
+host = []
 submodules = false
 docs = false
 sanitizers = true

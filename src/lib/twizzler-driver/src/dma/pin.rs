@@ -2,7 +2,7 @@ use std::ops::Index;
 
 use crate::arch::DMA_PAGE_SIZE;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash, Default)]
 /// A physical address. Must be aligned on [DMA_PAGE_SIZE].
 pub struct PhysAddr(pub u64);
 
@@ -106,15 +106,6 @@ impl<'a> Index<usize> for DmaPin<'a> {
     fn index(&self, index: usize) -> &Self::Output {
         &self.backing[index]
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
-/// Possible failure modes for pinning memory.
-pub enum PinError {
-    /// An internal error occurred.
-    InternalError,
-    /// Kernel resources are exhausted.
-    Exhausted,
 }
 
 #[cfg(test)]

@@ -43,8 +43,11 @@ pub fn get_rust_lld(host_triple: &str) -> anyhow::Result<PathBuf> {
         .join("bin/rust-lld");
     Ok(rustlib_bin)
 }
-pub fn get_llvm_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
+pub fn get_llvm_bin(host_triple: &str, use_installed: bool) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
+    if use_installed {
+        return Ok(curdir.join("toolchain/install/bin"));
+    }
     let llvm_bin = curdir
         .join("toolchain/src/rust/build")
         .join(host_triple)
