@@ -48,6 +48,8 @@ pub struct BootstrapOptions {
         help = "Compresses the toolchain after bootstrapping for distribution"
     )]
     compress: bool,
+    #[clap(long, help = "Build the toolchain for use on Twizzler (host).")]
+    native: bool,
 }
 
 #[derive(Subcommand, Debug)]

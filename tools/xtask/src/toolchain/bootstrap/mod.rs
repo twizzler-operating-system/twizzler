@@ -41,6 +41,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         rust::build_rust(&cli)?;
     }
 
+    if cli.native {
+        return Ok(());
+    }
+
     println!("rust build finished, packaging toolchain");
     install::install(&cli)?;
 

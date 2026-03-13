@@ -38,6 +38,9 @@ pub fn build_rust(cli: &BootstrapOptions) -> anyhow::Result<()> {
     if !src_status.success() {
         anyhow::bail!("failed to install rust source");
     }
+    if cli.native {
+        return Ok(());
+    }
     println!("building crtx.o's for targets");
     for target in &crate::triple::all_possible_platforms() {
         build_crtx("crti", target)?;

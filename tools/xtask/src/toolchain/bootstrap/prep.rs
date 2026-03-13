@@ -71,7 +71,7 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
 
     println!("generating rust bootstrap.config file");
     let _ = std::fs::remove_file("toolchain/src/rust/bootstrap.toml");
-    generate_native_config_toml()?;
+    generate_config_toml(cli)?;
 
     println!("copying twizzler-abi headers and crate to libc and rust");
     let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
@@ -95,7 +95,10 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn generate_config_toml() -> anyhow::Result<()> {
+fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
+    if cli.native {
+        return generate_native_config_toml();
+    }
     /* We need to add two(ish) things to the config.toml for rustc: the paths of tools for each twizzler target (built by LLVM as part
     of rustc), and the host triple (added to the list of triples to support). */
     //TODO: make this an actual path instead of rle path
@@ -179,6 +182,7 @@ fn generate_native_config_toml() -> anyhow::Result<()> {
         .as_array_mut()
         .unwrap()
         .push(host_triple);
+    toml["install"]["prefix"] = toml_edit::value("../../install-native");
 
     let host_cc = std::env::var("CC").unwrap_or("/usr/bin/clang".to_string());
     let host_cxx = std::env::var("CXX").unwrap_or("/usr/bin/clang++".to_string());
