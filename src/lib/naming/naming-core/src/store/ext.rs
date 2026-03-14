@@ -1,7 +1,7 @@
 use twizzler::object::ObjID;
 
 use super::{Namespace, NsNode, ParentInfo};
-use crate::Result;
+use crate::{ExternalKind, Result};
 
 #[derive(Clone)]
 pub struct ExtNamespace {
@@ -44,6 +44,8 @@ impl Namespace for ExtNamespace {
     }
 
     fn items(&self) -> Vec<NsNode> {
+        panic!("test");
+        /*
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             if let Ok(items) = h.enumerate_external(self.id) {
                 return items
@@ -65,8 +67,7 @@ impl Namespace for ExtNamespace {
         } else {
             tracing::warn!("failed to open handle to pager");
         }
+        */
         vec![]
     }
 }
-
-use pager_dynamic::ExternalKind;

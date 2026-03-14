@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use dynlink::{compartment::MONITOR_COMPARTMENT_ID, context::Context};
 use miette::IntoDiagnostic;
 use twizzler_abi::{
@@ -31,8 +33,11 @@ impl CompThread {
         arg: usize,
         suspend_on_start: bool,
     ) -> miette::Result<Self> {
+        let _start = Instant::now();
         let frame = stack.get_entry_frame(instance, entry, arg);
         let start = move || {
+            let _enter = Instant::now();
+            tracing::info!("thread entry took {}ms", (_enter - _start).as_millis());
             twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
             let flags = if suspend_on_start {
                 ResumeFlags::SUSPEND

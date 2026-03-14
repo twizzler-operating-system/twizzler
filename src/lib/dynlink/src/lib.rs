@@ -105,6 +105,7 @@
 #![feature(allocator_api)]
 #![feature(alloc_layout_extra)]
 #![feature(pointer_is_aligned_to)]
+#![feature(once_cell_try)]
 
 // Nothing arch-specific should export directly.
 pub(crate) mod arch;

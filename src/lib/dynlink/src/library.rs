@@ -1,6 +1,10 @@
 //! Management of individual libraries.
 
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    sync::OnceLock,
+    time::Instant,
+};
 
 use elf::{
     abi::{DT_FLAGS_1, PT_DYNAMIC, PT_PHDR, PT_TLS, STB_WEAK},
@@ -116,6 +120,10 @@ pub struct Library {
     /// Information about constructors.
     pub(crate) ctors: CtorSet,
     pub(crate) secgate_info: SecgateInfo,
+
+    // Caching stuff
+    elf: OnceLock<elf::ElfBytes<'static, NativeEndian>>,
+    elf_common: OnceLock<elf::CommonElfData<'static, NativeEndian>>,
 }
 
 #[allow(dead_code)]
@@ -144,6 +152,8 @@ impl Library {
             comp_name,
             secgate_info,
             allowed_gates,
+            elf: OnceLock::new(),
+            elf_common: OnceLock::new(),
         }
     }
 
@@ -211,8 +221,18 @@ impl Library {
     }
 
     /// Return a handle to the full ELF file.
-    pub fn get_elf(&self) -> Result<elf::ElfBytes<'_, NativeEndian>, ParseError> {
-        elf::ElfBytes::minimal_parse(self.full_obj.slice())
+    pub fn get_elf(&self) -> Result<&elf::ElfBytes<'static, NativeEndian>, ParseError> {
+        self.elf.get_or_try_init(|| unsafe {
+            elf::ElfBytes::<'static, NativeEndian>::minimal_parse(std::mem::transmute(
+                self.full_obj.slice(),
+            ))
+        })
+    }
+
+    /// Return a handle to the full ELF file.
+    pub fn get_elf_common(&self) -> Result<&elf::CommonElfData<'static, NativeEndian>, ParseError> {
+        self.elf_common
+            .get_or_try_init(|| self.get_elf().and_then(|e| e.find_common_data()))
     }
 
     /// Get the load address for this library.
@@ -270,8 +290,9 @@ impl Library {
         name: &str,
         allow_weak: bool,
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
-        let elf = self.get_elf()?;
-        let common = elf.find_common_data()?;
+        let _start_1 = Instant::now();
+        let common = self.get_elf_common()?;
+        let _start_2 = Instant::now();
 
         /*
         if self.is_relocated() {
@@ -314,12 +335,18 @@ impl Library {
                         || allow_weak
                         || (self.is_relocated() && self.is_secgate(name))
                     {
+                        tracing::trace!(
+                            "found {} in gnu hash in {}us",
+                            name,
+                            _start_2.elapsed().as_micros()
+                        );
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
                     //tracing::warn!("undefined symbol: {}", name);
+                    return Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into());
                 }
             }
         }
@@ -359,12 +386,14 @@ impl Library {
                 }
             }
         }
-
+        /*
         if !self.allows_gates()
             && !self.allows_self_gates()
             && self.is_binary()
             && !name.starts_with("__TWIZZLER_SECURE_GATE")
+            && false
         {
+            tracing::warn!("trying gate lookup");
             let dstrs = common.dynsyms_strs.as_ref().unwrap();
             for sym in common.dynsyms.as_ref().unwrap().iter() {
                 let sym_name = dstrs.get(sym.st_name as usize)?;
@@ -385,6 +414,7 @@ impl Library {
                 }
             }
         }
+        */
         //tracing::warn!("undefined symbol: {}", name);
         Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
     }
@@ -395,7 +425,14 @@ impl Library {
         allow_weak: bool,
         allow_prefix: bool,
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
+        let _start = Instant::now();
         let ret = self.do_lookup_symbol(&name, allow_weak);
+        tracing::trace!(
+            "bare lookup ({} {}) costs {}us",
+            allow_weak,
+            allow_prefix,
+            _start.elapsed().as_micros()
+        );
         if allow_prefix && ret.is_err() && !name.starts_with("__TWIZZLER_SECURE_GATE_") {
             let mut prefixedname = SmallString::<[u8; 256]>::from_str("__TWIZZLER_SECURE_GATE_");
             prefixedname.push_str(name);

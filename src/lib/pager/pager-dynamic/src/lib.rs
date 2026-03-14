@@ -1,9 +1,7 @@
 use std::sync::OnceLock;
 
 use monitor_api::CompartmentHandle;
-pub use object_store::paged_object_store::{
-    ExternalFile, ExternalKind, MAX_EXTERNAL_PATH, NAME_MAX,
-};
+use naming_core::ExternalFile;
 use secgate::{
     util::{Descriptor, Handle, SimpleBuffer},
     DynamicSecGate,

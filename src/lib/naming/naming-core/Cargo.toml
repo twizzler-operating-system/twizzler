@@ -10,6 +10,4 @@ monitor-api = { workspace = true }
 twizzler-rt-abi = "0.99"
 twizzler = { workspace = true }
 tracing = { workspace = true }
-pager-dynamic = { workspace = true }
-object-store = { workspace = true }
 bitflags = "2"

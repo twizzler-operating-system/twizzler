@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use secgate::TwzError;
 use smoltcp::{
-    phy::{Device, TxToken},
+    phy::{Device as _, TxToken},
     time::Instant,
     wire::{EthernetFrame, PrettyPrinter},
 };
@@ -39,81 +39,15 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
     }
 }
 
-impl NetDriver for DeviceWrapper<TwizzlerTransport> {
-    fn init(device: Device) -> Result<Self, TwzError> {
-        todo!()
-    }
-
-    fn device(&self) -> &Device {
-        todo!()
-    }
-
-    fn device_mut(&mut self) -> &mut Device {
-        todo!()
-    }
-
-    fn setup_rx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
-        todo!()
-    }
-
-    fn destroy_rx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
-        todo!()
-    }
-
-    fn setup_tx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
-        todo!()
-    }
-
-    fn destroy_tx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
-        todo!()
-    }
-
-    fn tx_queues(&self) -> Vec<QueueHandle> {
-        todo!()
-    }
-
-    fn rx_queues(&self) -> Vec<QueueHandle> {
-        todo!()
-    }
-
-    fn mac_address(&self, queue: QueueHandle) -> Result<[u8; 6], TwzError> {
-        todo!()
-    }
-
-    fn recv_packets(
-        &mut self,
-        queue: QueueHandle,
-        packets: &mut [Packet],
-    ) -> Result<usize, TwzError> {
-        todo!()
-    }
-
-    fn send_packets(
-        &mut self,
-        queue: QueueHandle,
-        packets: &mut [Packet],
-    ) -> Result<usize, TwzError> {
-        todo!()
-    }
-
-    fn has_work(&self, queue: QueueHandle) -> WorkItems {
-        todo!()
-    }
-
-    fn waitpoint(&self, queue: QueueHandle) -> twizzler_abi::syscall::ThreadSync {
-        todo!()
-    }
-}
-
 fn handle_work(
     device: &mut Box<dyn NetDriver>,
     queue: QueueHandle,
     work: WorkItems,
-    inject: impl FnMut(&[Packets]) -> Result<usize, TwzError>,
+    inject: &mut impl FnMut(&[Packet]) -> Result<usize, TwzError>,
+    packets: &mut [Packet],
 ) {
     if work.contains(WorkItems::RX_READY) {
-        let mut packets = [Packet::default(); 32];
-        if let Ok(count) = device.recv_packets(queue, &mut packets) {
+        if let Ok(count) = device.recv_packets(queue, packets) {
             let mut injected = 0;
             while injected < count {
                 if let Ok(injected_count) = inject(&packets[injected..count]) {
@@ -137,9 +71,10 @@ fn handle_work(
 
 pub fn device_thread_main(
     mut device: Box<dyn NetDriver>,
-    inject: impl FnMut(&[Packets]) -> Result<usize, TwzError>,
+    mut inject: impl FnMut(&[Packet]) -> Result<usize, TwzError>,
 ) {
     let rx_queues = device.rx_queues();
+    let mut packets = vec![Packet::default(); 32];
     let mut waitpoints = rx_queues
         .iter()
         .map(|q| device.waitpoint(*q))
@@ -150,7 +85,7 @@ pub fn device_thread_main(
             let work = device.has_work(*q);
             if !work.is_empty() {
                 counter = 100;
-                handle_work(&mut device, *q, work, inject);
+                handle_work(&mut device, *q, work, &mut inject, packets.as_mut_slice());
             }
         }
         if counter > 0 {
@@ -162,7 +97,7 @@ pub fn device_thread_main(
                 let work = device.has_work(*q);
                 if !work.is_empty() {
                     any_ready = true;
-                    handle_work(&mut device, *q, work, inject);
+                    handle_work(&mut device, *q, work, &mut inject, packets.as_mut_slice());
                 }
                 waitpoints[i] = wp;
             }

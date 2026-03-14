@@ -3,7 +3,10 @@ use petgraph::graph::NodeIndex;
 use tracing::error;
 
 use crate::{
-    context::{relocate::EitherRel, Context},
+    context::{
+        relocate::{EitherRel, RelocCache},
+        Context,
+    },
     library::Library,
     symbol::LookupFlags,
     tls::{TlsRegion, TlsVariant},
@@ -59,6 +62,7 @@ impl Context {
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
         deps_list: &[NodeIndex],
+        reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
         let base = lib.base_addr() as u64;
@@ -73,10 +77,35 @@ impl Context {
             } else {
                 LookupFlags::ALLOW_WEAK
             };
-            strings
+            let _start = std::time::Instant::now();
+            let r = strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags, deps_list)))
-                .ok()
+                .map(|name| {
+                    let sym = match reloc_cache.find(name, lib.comp_id) {
+                        Some(sym) => {
+                            tracing::trace!("found {} in cache", name);
+                            Ok(sym.clone())
+                        }
+                        None => {
+                            let sym = self.lookup_symbol(lib.id(), name, flags, deps_list);
+                            if let Ok(ref sym) = sym {
+                                reloc_cache.insert(name, lib.comp_id, unsafe {
+                                    std::mem::transmute(sym.clone())
+                                });
+                            }
+                            sym
+                        }
+                    };
+
+                    (name, sym)
+                })
+                .ok();
+            tracing::trace!(
+                "lookup {:?} cost {}us",
+                r.as_ref().map(|r| r.0),
+                _start.elapsed().as_micros()
+            );
+            r
         } else {
             None
         };

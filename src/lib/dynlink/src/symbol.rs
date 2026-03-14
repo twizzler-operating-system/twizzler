@@ -4,6 +4,7 @@ use crate::library::Library;
 
 /// A (relocated) symbol. Contains information about the symbol itself, like value and size, along
 /// with a reference to the library that it comes from.
+#[derive(Clone)]
 pub struct RelocatedSymbol<'lib> {
     sym: Option<elf::symbol::Symbol>,
     pub(crate) lib: &'lib Library,
@@ -43,7 +44,7 @@ impl<'lib> RelocatedSymbol<'lib> {
 }
 
 bitflags::bitflags! {
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, Debug)]
     /// Options for use during symbol lookup. If all of these flags are specified together, the search will fail.
     pub struct LookupFlags : u32 {
         /// Look elsewhere first. Note that the symbol may still bind to us if the dep graph has a cycle.

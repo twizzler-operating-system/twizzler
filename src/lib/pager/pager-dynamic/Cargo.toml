@@ -8,4 +8,4 @@ secgate = { workspace = true }
 twizzler-abi = { path = "../../../lib/twizzler-abi" }
 twizzler-rt-abi = "0.99"
 monitor-api = { workspace = true }
-object-store = { workspace = true }
+naming-core = { path = "../../../lib/naming/naming-core" }

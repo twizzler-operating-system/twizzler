@@ -1132,3 +1132,9 @@ pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
 pub unsafe extern "C" fn __dlapi_find_object() -> *const c_char {
     core::ptr::null()
 }
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_get_tls() -> *const c_char {
+    core::ptr::null()
+}

@@ -4385,8 +4385,6 @@ dependencies = [
  "arrayvec",
  "bitflags 2.9.1",
  "monitor-api",
- "object-store",
- "pager-dynamic",
  "secgate",
  "tracing",
  "twizzler",
@@ -4469,6 +4467,7 @@ dependencies = [
  "tracing-subscriber",
  "twizzler",
  "twizzler-abi",
+ "twizzler-driver",
  "twizzler-net",
  "twizzler-queue",
  "twizzler-rt-abi",
@@ -4854,6 +4853,7 @@ dependencies = [
  "lru",
  "lwext4-rs",
  "mayheap",
+ "naming-core",
  "rand 0.8.5",
  "tracing",
  "tracing-subscriber",
@@ -5057,7 +5057,7 @@ name = "pager-dynamic"
 version = "0.1.0"
 dependencies = [
  "monitor-api",
- "object-store",
+ "naming-core",
  "secgate",
  "twizzler-abi",
  "twizzler-rt-abi",

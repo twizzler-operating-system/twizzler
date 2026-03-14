@@ -4,7 +4,10 @@ use tracing::error;
 use twizzler_rt_abi::thread::TlsDesc;
 
 use crate::{
-    context::{relocate::EitherRel, Context},
+    context::{
+        relocate::{EitherRel, RelocCache},
+        Context,
+    },
     library::Library,
     symbol::LookupFlags,
     tls::{TlsRegion, TlsVariant},
@@ -71,6 +74,7 @@ impl Context {
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
         deps: &[NodeIndex],
+        _reloc_cache: &mut RelocCache,
     ) -> Result<(), DynlinkError> {
         let addend = rel.addend();
         let base = lib.base_addr() as u64;

@@ -1,4 +1,4 @@
-use std::{alloc::Layout, collections::HashSet, ffi::CStr, ptr::null_mut};
+use std::{alloc::Layout, collections::HashSet, ffi::CStr, ptr::null_mut, time::Instant};
 
 use dynlink::{
     compartment::CompartmentId,
@@ -114,6 +114,7 @@ impl LoadInfo {
         controller: Option<ObjID>,
         mut loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> Result<RunComp, DynlinkError> {
+        let _start = Instant::now();
         let mut comp_config = CompConfigObject::new(
             handle,
             SharedCompConfig::new(self.sctx_id, null_mut(), loader_config),
@@ -142,6 +143,7 @@ impl LoadInfo {
                 loader_config,
             ));
         }
+        tracing::info!("build_runcomp in {}ms", _start.elapsed().as_millis());
 
         Ok(RunComp::new(
             self.sctx_id,
@@ -204,6 +206,7 @@ impl RunCompLoader {
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
     ) -> miette::Result<Self> {
+        let _start_1 = Instant::now();
         struct UnloadOnDrop(TinyVec<[LoadIds; SMALL_VEC_SIZE]>);
         impl Drop for UnloadOnDrop {
             fn drop(&mut self) {
@@ -217,6 +220,7 @@ impl RunCompLoader {
             AllowedGates::Private
         };
         let mut load_ctx = LoadCtx::default();
+        let _start_2 = Instant::now();
 
         let mut extra_sctx_load_ids: Vec<_> = extras_sctx
             .into_iter()
@@ -330,6 +334,7 @@ impl RunCompLoader {
             .flatten()
             .map(|x| x.lib)
             .collect::<Vec<_>>();
+        let _start_3 = Instant::now();
         for extra in &extra_lids {
             dynlink.relocate_all(*extra)?;
         }
@@ -388,6 +393,14 @@ impl RunCompLoader {
 
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
+
+        tracing::info!(
+            "prepped in {}ms, loaded in {}ms, relocated in {}ms",
+            (_start_2 - _start_1).as_millis(),
+            (_start_3 - _start_2).as_millis(),
+            _start_3.elapsed().as_millis()
+        );
+
         Ok(RunCompLoader {
             loaded_extras: extra_compartments,
             root_comp,
@@ -539,15 +552,24 @@ impl Monitor {
             return Err(GenericError::Internal.into());
         }
 
+        let _loop_start = Instant::now();
         loop {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);
             if state & COMP_READY != 0 {
+                tracing::info!(
+                    "started main detected ready in {}ms",
+                    _loop_start.elapsed().as_millis()
+                );
                 return Ok(());
             }
             if suspend_on_start {
                 // We can't wait for ready, since that need the thread to run.
                 if state & COMP_STARTED != 0 {
+                    tracing::info!(
+                        "started main detected started in {}ms",
+                        _loop_start.elapsed().as_millis()
+                    );
                     return Ok(());
                 }
             }
@@ -556,14 +578,18 @@ impl Monitor {
                     *self.locks.lock(ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance)?;
 
-                rc.start_main_thread(
+                let _start = Instant::now();
+                let r = rc.start_main_thread(
                     state,
                     &mut *tmgr,
                     &mut *dynlink,
                     args,
                     env,
                     suspend_on_start,
-                )
+                );
+                tracing::info!("start_main_thread in {}ms", _start.elapsed().as_millis());
+
+                r
             };
             if info.is_none() {
                 return Err(GenericError::Internal.into());

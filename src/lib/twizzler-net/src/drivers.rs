@@ -59,7 +59,7 @@ pub trait NetDriver {
     fn waitpoint(&self, queue: QueueHandle) -> ThreadSync;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Packet {
     po: Option<PacketObject>,
     pn: PacketNum,

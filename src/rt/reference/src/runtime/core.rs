@@ -6,6 +6,7 @@ use std::{
     ffi::{c_char, c_void, CStr, CString},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use dynlink::context::runtime::RuntimeInitInfo;
@@ -91,6 +92,7 @@ impl ReferenceRuntime {
         rtinfo: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
+        let _start = Instant::now();
         let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
         match rtinfo.kind {
             RUNTIME_INIT_MONITOR => {
@@ -156,6 +158,7 @@ impl ReferenceRuntime {
             args: rtinfo.args,
             env: env_ptr,
         };
+        preinit_println!("core runtime prep took {}us", _start.elapsed().as_micros());
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
@@ -173,6 +176,7 @@ impl ReferenceRuntime {
             self.init_slots();
             None
         } else {
+            let _start = Instant::now();
             unsafe { self.set_runtime_ready() };
             OUR_RUNTIME.init_fds();
 
@@ -199,6 +203,7 @@ impl ReferenceRuntime {
                 Ok(ret) => ret,
                 _ => self.abort(),
             };
+            preinit_println!("premain hook took {}us", _start.elapsed().as_micros());
             ret
         }
     }

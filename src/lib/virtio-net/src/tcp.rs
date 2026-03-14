@@ -4,8 +4,13 @@
 use std::sync::{Arc, Mutex};
 
 use smoltcp::wire::EthernetAddress;
+use twizzler::error::TwzError;
 use twizzler_abi::syscall::{ObjectCreate, ThreadSync};
-use twizzler_net::packet::PacketObject;
+use twizzler_driver::device::Device;
+use twizzler_net::{
+    drivers::{NetDriver, Packet, QueueHandle, WorkItems},
+    packet::PacketObject,
+};
 use virtio_drivers::{
     device::net::{RxBuffer, TxBuffer, VirtIONet},
     transport::Transport,
@@ -77,6 +82,75 @@ impl<T: Transport> DeviceWrapper<T> {
     }
 }
 
+impl NetDriver for DeviceWrapper<TwizzlerTransport> {
+    fn device(&self) -> &Device {
+        todo!()
+    }
+
+    fn device_mut(&mut self) -> &mut Device {
+        todo!()
+    }
+
+    fn setup_rx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
+        todo!()
+    }
+
+    fn destroy_rx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
+        todo!()
+    }
+
+    fn setup_tx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
+        todo!()
+    }
+
+    fn destroy_tx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
+        todo!()
+    }
+
+    fn tx_queues(&self) -> Vec<QueueHandle> {
+        todo!()
+    }
+
+    fn rx_queues(&self) -> Vec<QueueHandle> {
+        todo!()
+    }
+
+    fn mac_address(&self, queue: QueueHandle) -> Result<[u8; 6], TwzError> {
+        todo!()
+    }
+
+    fn recv_packets(
+        &mut self,
+        queue: QueueHandle,
+        packets: &mut [Packet],
+    ) -> Result<usize, TwzError> {
+        todo!()
+    }
+
+    fn send_packets(
+        &mut self,
+        queue: QueueHandle,
+        packets: &mut [Packet],
+    ) -> Result<usize, TwzError> {
+        todo!()
+    }
+
+    fn has_work(&self, queue: QueueHandle) -> WorkItems {
+        todo!()
+    }
+
+    fn waitpoint(&self, queue: QueueHandle) -> twizzler_abi::syscall::ThreadSync {
+        todo!()
+    }
+
+    fn rx_packet_buffer(&self, queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
+        todo!()
+    }
+
+    fn tx_packet_buffer(&self, queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
+        todo!()
+    }
+}
 /*
 impl<T: Transport> Device for DeviceWrapper<T> {
     type RxToken<'a>

@@ -450,11 +450,11 @@ const REG_RSRPD: u32 = 0x2C00; // RX Small Packet Detect Interrupt
 
 const REG_TIPG: u32 = 0x0410; // Transmit Inter Packet Gap
 
-const ICR_RX_READY: u32 = todo!();
-const ICR_TX_DONE: u32 = todo!();
-const ICR_RX_ERROR: u32 = todo!();
-const ICR_TX_ERROR: u32 = todo!();
-const ICR_LSU: u32 = todo!();
+const ICR_RX_READY: u32 = 0x80;
+const ICR_TX_DONE: u32 = 0x1;
+const ICR_RX_ERROR: u32 = 0x8;
+const ICR_TX_ERROR: u32 = 0;
+const ICR_LSU: u32 = 0x4;
 
 // Control Register
 const CTL_RST: u32 = 1 << 26; // Reset
