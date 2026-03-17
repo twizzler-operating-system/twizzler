@@ -70,7 +70,10 @@
 	url = ../../twizzler-operating-system/crossterm.git
 [submodule "src/ports/mio"]
 	path = src/ports/mio
-	url = git@github.com:twizzler-operating-system/mio.git
+	url = ../../twizzler-operating-system/mio.git
 [submodule "src/ports/signal-hook"]
 	path = src/ports/signal-hook
-	url = git@github.com:twizzler-operating-system/signal-hook.git
+	url = ../../twizzler-operating-system/signal-hook.git
+[submodule "src/ports/kibi"]
+	path = src/ports/kibi
+	url = ../../twizzler-operating-system/kibi.git
