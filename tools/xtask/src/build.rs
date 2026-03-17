@@ -1,16 +1,18 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::{
+    env::current_dir,
+    path::{Path, PathBuf},
+};
 
+use anyhow::anyhow;
 use cargo::{
     core::{
         compiler::{BuildConfig, Compilation, CompileMode, MessageFormat},
-        registry::PackageRegistry,
         Package, PackageId, SourceId, Workspace,
     },
     ops::{CompileOptions, Packages},
-    sources::{config::SourceConfigMap, RegistrySource},
     util::{cache_lock::CacheLockMode, context::GlobalContext, interning::InternedString},
 };
 use ouroboros::self_referencing;
@@ -106,8 +108,7 @@ fn build_third_party<'a>(
     crate::toolchain::set_static(&build_config.twz_triple());
     crate::toolchain::set_cc(&build_config.twz_triple())?;
     let config = user_workspace.gctx();
-    let smap = SourceConfigMap::new(config)?;
-    let mut registry = PackageRegistry::new_with_source_config(config, smap)?;
+    let registry = user_workspace.package_registry()?;
     let _g = config.acquire_package_cache_lock(CacheLockMode::MutateExclusive)?;
     let meta = user_workspace
         .custom_metadata()
@@ -119,33 +120,41 @@ fn build_third_party<'a>(
         return Ok(vec![]);
     }
     crate::print_status_line("collection: third-party", Some(build_config));
-    let ids: Vec<PackageId> = meta
+    let mut overrides = Vec::new();
+    let ids: Vec<Option<PackageId>> = meta
         .as_table()
         .unwrap()
         .iter()
         .map(|item| {
-            PackageId::try_new(
-                item.0,
-                item.1.as_str().unwrap(),
-                SourceId::crates_io(config).unwrap(),
-            )
-            .unwrap()
+            Ok(if let Some(table) = item.1.as_table() {
+                let path = table
+                    .get("path")
+                    .and_then(|path| path.as_str())
+                    .ok_or(anyhow!("required path key not found, or not a string"))?;
+                let mut cd = current_dir()?;
+                cd.push(path);
+                cd.push("Cargo.toml");
+                let package = user_workspace.load(&cd)?;
+                overrides.push(package);
+                None
+            } else if let Some(s) = item.1.as_str() {
+                Some(PackageId::try_new(item.0, s, SourceId::crates_io(config).unwrap()).unwrap())
+            } else {
+                anyhow::bail!("invalid item");
+            })
         })
-        .collect();
+        .try_collect()?;
 
-    registry
-        .add_sources(Some(SourceId::crates_io(config).unwrap()))
-        .unwrap();
-    let rs = RegistrySource::remote(
-        SourceId::crates_io(config).unwrap(),
-        &Default::default(),
-        config,
-    )
-    .unwrap();
-
+    let ids = ids
+        .iter()
+        .cloned()
+        .filter_map(|x| x)
+        .collect::<Vec<PackageId>>();
     let ps = registry.get(&ids).unwrap();
-    ps.sources_mut().insert(Box::new(rs));
-    let packs = ps.get_many(ids.iter().cloned()).unwrap();
+    let mut packs = ps.get_many(ids.iter().cloned()).unwrap();
+    for o in &overrides {
+        packs.push(o);
+    }
 
     let triple = Triple::new(
         build_config.arch,

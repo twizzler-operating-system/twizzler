@@ -594,3 +594,17 @@ impl<'a> Iterator for DirIter<'a> {
         Some((name, next))
     }
 }
+
+
+
+use naming_core::ExternalKind;
+impl From<FileKind> for ExternalKind {
+    fn from(value: FileKind) -> Self {
+        match value {
+            FileKind::Regular => ExternalKind::Regular,
+            FileKind::Directory => ExternalKind::Directory,
+            FileKind::Symlink => ExternalKind::SymLink,
+            FileKind::Other => ExternalKind::Other,
+        }
+    }
+}

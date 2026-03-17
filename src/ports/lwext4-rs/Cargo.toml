@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+naming-core = { path = "../../lib/naming/naming-core" }
+
 
 [build-dependencies]

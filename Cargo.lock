@@ -4117,6 +4117,7 @@ dependencies = [
 name = "lwext4-rs"
 version = "0.1.0"
 dependencies = [
+ "naming-core",
  "twizzler-abi",
 ]
 
