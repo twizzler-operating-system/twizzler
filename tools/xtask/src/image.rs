@@ -277,7 +277,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 }
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
-    let comp = crate::build::do_build(cli.clone().into())?;
+    let comp = crate::build::do_build(cli.clone().into())?.unwrap();
 
     let initrd_files = build_initrd(&cli, &comp)?;
     let data_files = generate_data_folder(&comp, cli.data.as_deref());

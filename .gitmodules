@@ -65,3 +65,12 @@
 [submodule "src/ports/async-net"]
 	path = src/ports/async-net
 	url = ../../twizzler-operating-system/async-net
+[submodule "src/ports/crossterm"]
+	path = src/ports/crossterm
+	url = ../../twizzler-operating-system/crossterm.git
+[submodule "src/ports/mio"]
+	path = src/ports/mio
+	url = git@github.com:twizzler-operating-system/mio.git
+[submodule "src/ports/signal-hook"]
+	path = src/ports/signal-hook
+	url = git@github.com:twizzler-operating-system/signal-hook.git

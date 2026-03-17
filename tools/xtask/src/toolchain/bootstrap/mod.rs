@@ -1,7 +1,10 @@
 use guess_host_triple::guess_host_triple;
 
 use super::BootstrapOptions;
-use crate::toolchain::{compress_toolchain, prune_bins, prune_toolchain};
+use crate::{
+    build::do_post_toolchain_runtime_build,
+    toolchain::{compress_toolchain, prune_bins, prune_toolchain},
+};
 
 mod paths;
 use paths::*;
@@ -51,6 +54,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if !cli.skip_prune {
         prune_toolchain()?;
     }
+
+    println!("building runtimes");
+    do_post_toolchain_runtime_build(&cli)?;
 
     println!("toolchain packaging finished, pruning binaries");
     prune_bins()?;

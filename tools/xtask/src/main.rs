@@ -84,6 +84,8 @@ struct BuildOptions {
     tests: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
+    #[clap(long, short, help = "Only build runtime part of system.")]
+    only_runtime: bool,
 }
 
 #[derive(Args, Debug)]
@@ -148,6 +150,7 @@ impl From<ImageOptions> for BuildOptions {
             config: io.config,
             tests: io.tests || io.benches || io.bench.is_some(),
             kernel: io.kernel,
+            only_runtime: false,
         }
     }
 }

@@ -1,3 +1,5 @@
+#![allow(unused_variables, dead_code)]
+
 use std::{cell::OnceCell, time::Instant};
 
 use twizzler::error::{IoError, TwzError};
@@ -135,7 +137,7 @@ impl E1000Device {
                 | RCTL_SECRC
                 | RCTL_BSIZE_2048,
         );
-        self.rx_desc.set(rx);
+        let _ = self.rx_desc.set(rx);
 
         Ok(())
     }
@@ -163,7 +165,7 @@ impl E1000Device {
             REG_TCTRL,
             TCTL_EN | TCTL_PSP | (15 << TCTL_CT_SHIFT) | (64 << TCTL_COLD_SHIFT) | TCTL_RTLC,
         );
-        self.tx_desc.set(tx);
+        let _ = self.tx_desc.set(tx);
 
         Ok(())
     }

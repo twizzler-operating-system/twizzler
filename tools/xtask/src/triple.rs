@@ -163,6 +163,7 @@ pub fn valid_targets() -> Vec<(Arch, Machine)> {
         (Arch::X86_64, Machine::Unknown),
         (Arch::Aarch64, Machine::Virt),
         (Arch::Aarch64, Machine::Morello),
+        (Arch::Aarch64, Machine::Unknown),
     ];
     targets
 }

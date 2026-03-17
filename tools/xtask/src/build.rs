@@ -21,12 +21,21 @@ struct OtherOptions {
     build_tests: bool,
     needs_full_rebuild: bool,
     build_twizzler: bool,
+    only_runtime: bool,
 }
 
 use crate::{
-    triple::{valid_targets, Arch, Triple},
+    toolchain::{get_sysroots_path, BootstrapOptions},
+    triple::{valid_targets, Arch, Machine, Triple},
     BuildOptions, CheckOptions, DocOptions, Profile,
 };
+
+fn locate_package(workspace: &Workspace, name: &str) -> Option<Package> {
+    workspace
+        .members()
+        .find(|p| p.name().as_str() == name)
+        .cloned()
+}
 
 fn locate_packages(workspace: &Workspace, kind: Option<&str>) -> Vec<Package> {
     workspace
@@ -257,6 +266,39 @@ fn build_twizzler<'a>(
             })
             .collect(),
     );
+    options.build_config.force_rebuild = other_options.needs_full_rebuild;
+    Ok(Some(cargo::ops::compile(workspace, &options)?))
+}
+
+fn build_runtime<'a>(
+    workspace: &'a Workspace,
+    mode: CompileMode,
+    build_config: &crate::BuildConfig,
+    other_options: &OtherOptions,
+) -> anyhow::Result<Option<Compilation<'a>>> {
+    crate::toolchain::set_dynamic(&build_config.twz_triple())?;
+    crate::toolchain::set_cc(&build_config.twz_triple())?;
+    crate::print_status_line("Twizzler runtime", Some(build_config));
+    // let triple =  build_config.twz_triple();
+    // the currently supported build target triples
+    // have a value of "unknown" for the machine, but
+    // we might specify a different value for machine
+    // on the cli for conditional compilation
+    let triple = Triple::new(
+        build_config.arch,
+        crate::triple::Machine::Unknown,
+        crate::triple::Host::Twizzler,
+        None,
+    );
+    let package = locate_package(workspace, "twz-rt").unwrap();
+    let mut options = CompileOptions::new(workspace.gctx(), mode)?;
+    options.build_config =
+        BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
+    options.build_config.message_format = other_options.message_format;
+    options.spec = Packages::Packages(vec![package.name().to_string()]);
+    //if build_config.profile == Profile::Release {
+    options.build_config.requested_profile = InternedString::new("release");
+    //}
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
 }
@@ -495,10 +537,10 @@ fn check_build_target(config: crate::BuildConfig) -> anyhow::Result<()> {
 }
 
 fn compile(
-    bc: crate::BuildConfig,
+    mut bc: crate::BuildConfig,
     mode: CompileMode,
     other_options: &OtherOptions,
-) -> anyhow::Result<TwizzlerCompilation> {
+) -> anyhow::Result<Option<TwizzlerCompilation>> {
     check_build_target(bc)?;
     crate::toolchain::init_for_build(
         mode.is_doc() || mode.is_check() || !other_options.build_twizzler,
@@ -514,6 +556,34 @@ fn compile(
     let mut config = GlobalContext::default()?;
     config.configure(0, false, None, false, false, false, &None, &[], &[])?;
 
+    let manifest_path = other_options
+        .manifest_path
+        .as_ref()
+        .unwrap_or(&PathBuf::from("Cargo.toml"))
+        .clone()
+        .canonicalize()?;
+
+    if other_options.only_runtime {
+        bc.profile = Profile::Release;
+        let workspace = Workspace::new(&manifest_path, &config).unwrap();
+        let compilation = build_runtime(&workspace, mode, &bc, other_options)?.unwrap();
+        for cd in compilation.cdylibs {
+            if cd.unit.pkg.name().as_str() == "twz-rt" {
+                println!("copying runtime cdylib to sysroot");
+                let triple = Triple::new(
+                    bc.arch,
+                    crate::triple::Machine::Unknown,
+                    crate::triple::Host::Twizzler,
+                    None,
+                );
+                let mut sysroot = get_sysroots_path(triple.to_string().as_str())?;
+                sysroot.push(cd.path.file_name().unwrap());
+                std::fs::copy(cd.path, sysroot)?;
+            }
+        }
+        return Ok(None);
+    }
+
     crate::toolchain::set_static(&bc.twz_triple());
     let mut static_config = GlobalContext::default()?;
     static_config.configure(0, false, None, false, false, false, &None, &[], &[])?;
@@ -526,14 +596,7 @@ fn compile(
     kernel_config.configure(0, false, None, false, false, false, &None, &[], &cli_config)?;
     kernel_config.reload_rooted_at("src/kernel")?;
 
-    let manifest_path = other_options
-        .manifest_path
-        .as_ref()
-        .unwrap_or(&PathBuf::from("Cargo.toml"))
-        .clone()
-        .canonicalize()?;
-
-    TwizzlerCompilation::try_new::<anyhow::Error>(
+    Ok(Some(TwizzlerCompilation::try_new::<anyhow::Error>(
         static_config,
         config,
         tools_config,
@@ -549,7 +612,7 @@ fn compile(
         |w, uc| maybe_build_tests_dynamic(w, &bc, uc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
         |w| build_third_party(w, mode, &bc, other_options),
-    )
+    )?))
 }
 
 pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
@@ -559,26 +622,55 @@ pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
         build_tests: false,
         needs_full_rebuild: false,
         build_twizzler: true,
+        only_runtime: false,
     };
-    compile(
+    Ok(compile(
         cli.config,
         CompileMode::Doc {
             deps: false,
             json: false,
         },
         &other_options,
-    )
+    )?
+    .unwrap())
 }
 
-pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<TwizzlerCompilation> {
+pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<Option<TwizzlerCompilation>> {
     let other_options = OtherOptions {
         message_format: MessageFormat::Human,
         manifest_path: None,
         build_tests: cli.tests,
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
+        only_runtime: cli.only_runtime,
     };
     compile(cli.config, CompileMode::Build, &other_options)
+}
+
+pub(crate) fn do_post_toolchain_runtime_build(_cli: &BootstrapOptions) -> anyhow::Result<()> {
+    let other_options = OtherOptions {
+        message_format: MessageFormat::Human,
+        manifest_path: None,
+        build_tests: false,
+        needs_full_rebuild: true,
+        build_twizzler: true,
+        only_runtime: true,
+    };
+
+    let bc = crate::BuildConfig {
+        profile: Profile::Release,
+        arch: Arch::X86_64,
+        machine: Machine::Unknown,
+    };
+    compile(bc, CompileMode::Build, &other_options)?;
+
+    let bc = crate::BuildConfig {
+        profile: Profile::Release,
+        arch: Arch::Aarch64,
+        machine: Machine::Unknown,
+    };
+    compile(bc, CompileMode::Build, &other_options)?;
+    Ok(())
 }
 
 pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
@@ -611,6 +703,7 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         build_tests: false,
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
+        only_runtime: false,
     };
     compile(
         cli.config,

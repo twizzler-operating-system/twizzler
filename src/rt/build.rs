@@ -1,4 +1,5 @@
 fn main() {
+    return;
     if let Ok(target) = std::env::var("TARGET") {
         if let Ok(profile) = std::env::var("PROFILE") {
             println!(

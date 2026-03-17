@@ -294,7 +294,7 @@ textwrap = "0.16.1"
 thiserror = { version = "2.0", default-features = false }
 tick_counter = "0.4"
 tinyvec = "1.10"
-tokio = "1.17.0"
+tokio = "^1.17.0"
 toml_edit = "0.22"
 tr = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 tracing = "0.1.41"
@@ -368,6 +368,10 @@ filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", 
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
+crossterm = { path = "src/ports/crossterm" }
+mio = { path = "src/ports/mio" }
+signal-hook = { path = "src/ports/signal-hook" }
+signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
 #memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
