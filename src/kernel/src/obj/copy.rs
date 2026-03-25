@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 use twizzler_abi::pager::PagerFlags;
 
 use super::{
+    InvalidateMode, ObjectRef, PageNumber,
     pages::{Page, PageRef},
     range::{GetPageFlags, PageRange, PageRangeTree, PageStatus},
-    InvalidateMode, ObjectRef, PageNumber,
 };
 use crate::{memory::tracker::FrameAllocator, mutex::LockGuard};
 
@@ -525,15 +525,15 @@ mod test {
     use super::copy_ranges;
     use crate::{
         memory::{
-            context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+            context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
             frame::PHYS_LEVEL_LAYOUTS,
             tracker::{FrameAllocFlags, FrameAllocator},
         },
         obj::{
+            ObjectRef, PageNumber,
             copy::zero_ranges,
             pages::{Page, PageRef},
             range::{GetPageFlags, PageStatus},
-            ObjectRef, PageNumber,
         },
         userinit::create_blank_object,
     };
@@ -666,7 +666,7 @@ mod test {
 
         let mut do_check = |src_off_misalign, dest_off_misalign, len| {
             let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages. Slightly wasteful, but it's just a
-                                                            // test.
+            // test.
             let src_off = calc_off(src_counting_page_num, src_off_misalign);
             let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
             src_counting_page_num += nr_pages;

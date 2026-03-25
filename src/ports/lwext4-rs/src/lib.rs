@@ -596,8 +596,8 @@ impl<'a> Iterator for DirIter<'a> {
 }
 
 
+use pager_dynamic::ExternalKind;
 
-use naming_core::ExternalKind;
 impl From<FileKind> for ExternalKind {
     fn from(value: FileKind) -> Self {
         match value {

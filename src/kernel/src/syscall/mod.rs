@@ -340,6 +340,7 @@ fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
                 context.arg1::<u64>(),
                 context.arg2::<u64>(),
             );
+            crate::panic::backtrace(false, None);
 
             context.set_return_values(0u64, 0u64);
         }

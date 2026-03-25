@@ -325,7 +325,8 @@ impl Thread {
                 self.read_registers(),
                 self.secctx.active_id(),
             );
-            //crate::panic::backtrace(true, None);
+            crate::panic::backtrace(true, None);
+            loop {}
         }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {

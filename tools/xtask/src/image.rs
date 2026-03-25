@@ -9,8 +9,10 @@ use anyhow::Context;
 use cargo::core::compiler::{Compilation, CompileTarget};
 
 use crate::{
-    build::TwizzlerCompilation, toolchain::get_toolchain_path, triple::Arch, BuildConfig,
-    ImageOptions,
+    build::TwizzlerCompilation,
+    toolchain::{get_sysroots_path, get_toolchain_path},
+    triple::Arch,
+    BuildConfig, ImageOptions,
 };
 
 pub struct ImageInfo {
@@ -269,8 +271,16 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             .to_owned();
 
         lib_path.push(libstd_name);
-        //initrd_files.push(testso_path);
         initrd_files.push(lib_path);
+
+        let lib_path = get_sysroots_path(&cli.config.twz_triple().to_string())?;
+        for lib in ["libc.so", "libdl.so", "libpthread.so", "libm.so"] {
+            let mut path = lib_path.clone();
+            path.push(lib);
+            initrd_files.push(path);
+        }
+
+        //initrd_files.push(testso_path);
 
         Ok(initrd_files)
     }

@@ -1,20 +1,20 @@
 use arm64::registers::{TTBR0_EL1, TTBR1_EL1};
 
 use crate::{
+    VirtAddr,
     arch::memory::pagetables::{Entry, EntryFlags, Table},
     memory::{
+        PhysAddr,
         frame::get_frame,
         pagetables::{
             Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
             PhysAddrProvider, SharedPageTable,
         },
-        tracker::{alloc_frame, free_frame, FrameAllocFlags},
-        PhysAddr,
+        tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
     mutex::Mutex,
     once::Once,
     spinlock::Spinlock,
-    VirtAddr,
 };
 
 // this does not need to be pub
@@ -30,7 +30,7 @@ pub struct ArchContext {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 // TODO: can we get the kernel tables elsewhere?
-pub struct ArchContextTarget(PhysAddr);
+pub struct ArchContextTarget(pub PhysAddr);
 
 // default kernel mapper that is shared among all kernel instances of ArchContext
 static KERNEL_MAPPER: Once<(Spinlock<Mapper>, PhysAddr)> = Once::new();

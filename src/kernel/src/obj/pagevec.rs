@@ -4,9 +4,9 @@ use core::{ops::Range, usize};
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 
 use super::{
+    PageNumber,
     pages::{Page, PageRef},
     range::PageRange,
-    PageNumber,
 };
 use crate::{
     memory::{pagetables::MappingSettings, tracker::FrameAllocator},
@@ -130,6 +130,9 @@ impl PageVec {
     pub fn try_get_page(&self, pn: usize) -> Option<PageRef> {
         let mut entry = self.tree.range(pn..(pn + 1));
         let entry = entry.next()?;
+        if *entry.0 > pn || (pn - *entry.0) >= entry.1.nr_pages() {
+            return None;
+        }
         Some(entry.1.adjust(pn - *entry.0))
     }
 
@@ -168,7 +171,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        memory::tracker::{alloc_frame, FrameAllocFlags},
+        memory::tracker::{FrameAllocFlags, alloc_frame},
         utils::quick_random,
     };
 

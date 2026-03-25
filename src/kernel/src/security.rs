@@ -289,6 +289,7 @@ impl SecCtxMgr {
     /// Switch to the specified context.
     pub fn switch_context(&self, id: ObjID) -> SwitchResult {
         if *self.active_id.lock() == id {
+            current_memory_context().map(|mc| mc.switch_to(id));
             return SwitchResult::NoSwitch;
         }
 
@@ -394,7 +395,7 @@ mod tests {
 
     use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, SigningKey, SigningScheme, MAX_KEY_SIZE};
+    use twizzler_security::{Cap, MAX_KEY_SIZE, SigningKey, SigningScheme};
 
     use crate::{random::getrandom, utils::benchmark};
     #[kernel_test]

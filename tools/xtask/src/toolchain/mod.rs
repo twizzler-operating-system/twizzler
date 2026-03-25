@@ -185,7 +185,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     } else {
         ""
     };
-    let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", extra_rustflags, sysroot_path.display(), sysroot_path.display());
+    let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr", extra_rustflags, sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
@@ -195,9 +195,10 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
 
 pub fn set_static(target: &Triple) {
     let sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
+    let rustlib_path = get_rustlib_lib(target.to_string().as_str()).unwrap();
     std::env::set_var(
         "RUSTFLAGS",
-        &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {}",  sysroot_path.display(), sysroot_path.display()),
+        &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a",  sysroot_path.display(), sysroot_path.display(), rustlib_path.display(), sysroot_path.display()),
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/static");
     std::env::set_var(

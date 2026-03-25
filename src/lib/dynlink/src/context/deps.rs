@@ -13,8 +13,13 @@ impl Context {
         &self,
         lib: &Library,
     ) -> Result<Vec<UnloadedLibrary, SMALL_VEC_SIZE>, DynlinkError> {
-        trace!("{}: enumerating dependencies", lib);
+        tracing::info!("{}: enumerating dependencies", lib);
         let common = lib.get_elf_common()?;
+        tracing::info!(
+            "==> {} {}",
+            common.dynsyms_strs.is_some(),
+            common.dynsyms.is_some()
+        );
 
         // Iterate over the dynamic table, looking for DT_NEEDED.
         let res = common
@@ -24,6 +29,7 @@ impl Context {
                 name: "dynamic".into(),
             })?
             .iter()
+            .inspect(|x| tracing::warn!("!!! {:?}", x))
             .filter_map(|d| match d.d_tag {
                 DT_NEEDED => Some({
                     // DT_NEEDED indicates a dependency. Lookup the name in the string table.

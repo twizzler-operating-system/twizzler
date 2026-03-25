@@ -250,7 +250,11 @@ impl MapRegion {
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
-            log::warn!("fallback allocate in fault to page {}", page_number);
+            log::warn!(
+                "fallback allocate in fault to page {} in {}",
+                page_number,
+                self.object().id()
+            );
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame, 1);
                 obj_page_tree.add_page(
@@ -388,6 +392,7 @@ impl MapRegion {
                 let mut provider = ObjectPageProvider::new(heapless::Vec::from([(page, settings)]));
                 if cause != MemoryAccessKind::Write
                     && !settings.perms().contains(Protections::WRITE)
+                    && false
                 {
                     let mut pages = heapless::Vec::<_, MAX_OPP_VEC>::new();
                     if obj_page_tree
@@ -418,12 +423,13 @@ impl MapRegion {
             }
         } else {
             log::warn!(
-                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}",
+                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}: {:?}",
                 page_number,
                 self.object().id(),
                 addr.raw(),
                 cause,
-                pfflags
+                pfflags,
+                status
             );
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),

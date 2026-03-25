@@ -383,7 +383,6 @@ impl RunComp {
             self.set_flag(COMP_EXITED);
             return None;
         }
-
         let mt = match CompThread::new(
             tmgr,
             dynlink,

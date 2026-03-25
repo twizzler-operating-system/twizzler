@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use secgate::TwzError;
 use smoltcp::{
     phy::{Device as _, TxToken},

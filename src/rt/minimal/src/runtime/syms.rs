@@ -145,7 +145,7 @@ check_ffi_type!(twz_rt_runtime_entry, _, _);
 
 use twizzler_rt_abi::bindings::{
     ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, object_create, object_source, object_tie,
-    objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
+    objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -353,6 +353,27 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(
 check_ffi_type!(twz_rt_fd_get_info, _, _);
 
 // io.h
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_get_config(
+    _fd: descriptor,
+    _reg: u32,
+    _b: *mut c_void,
+    _len: usize,
+) -> twz_error {
+    0
+}
+check_ffi_type!(twz_rt_fd_get_config, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
+    _fd: descriptor,
+    _reg: u32,
+    _b: *const c_void,
+    _len: usize,
+) -> twz_error {
+    0
+}
+check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
 
 use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
 #[unsafe(no_mangle)]

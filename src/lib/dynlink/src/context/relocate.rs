@@ -162,6 +162,63 @@ impl Context {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn process_relr(
+        &self,
+        lib: &Library,
+        start: *const u8,
+        ent: usize,
+        sz: usize,
+    ) -> Result<(), DynlinkError> {
+        tracing::info!(
+            "{}: processing RELR relocations (num = {}) at {:p}",
+            lib,
+            sz / ent,
+            start
+        );
+        // These are different, they indicate simple base additions based
+        // on a compressed format.
+
+        let relr_slice: &[usize] =
+            unsafe { std::slice::from_raw_parts(start as *const usize, sz / ent) };
+
+        let base = lib.base_addr();
+        let mut target = 0;
+
+        let reloc_at = |target: usize, base: usize| {
+            tracing::trace!("processing relr at {:x} += {:x}", target, base);
+            let ptr = unsafe { (target as *mut usize).as_mut().unwrap() };
+            (*ptr) += base;
+            tracing::trace!("new value is {:x}", *ptr);
+        };
+
+        let mut j = 0;
+        for entry in relr_slice {
+            tracing::info!("RELR: found [{}] {:x}", j, *entry);
+            if *entry & 1 != 0 {
+                if target == 0 {
+                    return Err(DynlinkError {
+                        kind: DynlinkErrorKind::Unknown,
+                        related: Default::default(),
+                    });
+                }
+                // LSB set -- its a bitmap
+                for i in 0..(size_of::<usize>() * 8 - 1) {
+                    if (entry >> (i + 1)) & 1 != 0 {
+                        reloc_at(target + size_of::<usize>() * i, base);
+                    }
+                }
+                target += size_of::<usize>() * (8 * size_of::<usize>() - 1);
+            } else {
+                // sets the address
+                reloc_at(base + *entry, base);
+                target = base + entry + size_of::<usize>();
+            }
+            j += 1;
+        }
+        Ok(())
+    }
+
     pub(crate) fn relocate_single(
         &mut self,
         lib_id: LibraryId,
@@ -217,9 +274,14 @@ impl Context {
         }
         debug!("{}: relocation flags: {:?} {:?}", lib, flags, flags_1);
 
+        // these aren't in elf v0.8.0
+        const DT_RELR: i64 = 0x24;
+        const DT_RELRENT: i64 = 0x25;
+        const DT_RELRSZ: i64 = 0x23;
         // Lookup all the tables
         let rels = find_dyn_rels(DT_REL, DT_RELENT, DT_RELSZ);
         let relas = find_dyn_rels(DT_RELA, DT_RELAENT, DT_RELASZ);
+        let relr = find_dyn_rels(DT_RELR, DT_RELRENT, DT_RELRSZ);
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
         let _pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT);
 
@@ -239,7 +301,13 @@ impl Context {
 
         let deps_list = self.build_deps_search_list(lib.id());
         let _start_2 = Instant::now();
+
         // Process relocations
+
+        if let Some((rel, ent, sz)) = relr {
+            self.process_relr(lib, rel, ent as usize, sz as usize)?;
+        }
+
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
                 lib,

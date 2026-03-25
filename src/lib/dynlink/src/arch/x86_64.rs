@@ -141,7 +141,10 @@ impl Context {
             REL_SYMBOLIC => unsafe {
                 *target = open_sym()?.reloc_value().wrapping_add_signed(addend)
             },
-            REL_PLT | REL_GOT => unsafe { *target = open_sym()?.reloc_value() },
+            REL_PLT | REL_GOT => unsafe {
+                let x = open_sym()?.reloc_value();
+                *target = x;
+            },
             REL_DTPMOD => {
                 // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {

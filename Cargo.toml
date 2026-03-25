@@ -74,7 +74,7 @@ members = [
     #"src/bin/gfxtest",
     "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
     #"src/lib/sgtest", "src/srv/sgtest-srv",
-    "src/lib/twizzler-net", "src/bin/sshd",
+    "src/lib/twizzler-net", "src/bin/sshd", "src/bin/async-test",
 ]
 
 exclude = [
@@ -118,6 +118,7 @@ initrd = [
     #"crate:st",
     "crate:stdnet_test",
     "third-party:kibi",
+    "crate:async-test",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -236,6 +237,7 @@ naming-core = { path = "src/lib/naming/naming-core" }
 naming-srv = { path = "src/srv/naming-srv" }
 ndarray = "0.16"
 ndarray-stats = "0.6"
+nix = { version = "0.29.0", path = "src/ports/nix" }
 nl = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 noline = "0.5"
 nonoverlapping_interval_tree = { version = "0.1.3", default-features = false }
@@ -363,6 +365,7 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 #gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 
+nix = { version = "0.29.0", path = "src/ports/nix" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }

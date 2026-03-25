@@ -7,13 +7,14 @@ use std::{
 use bitflags::bitflags;
 use ext::ExtNamespace;
 use nsobj::NamespaceObject;
+use pager_dynamic::objid_to_ino;
 use twizzler::marker::Invariant;
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError},
     object::ObjID,
 };
 
-use crate::{objid_to_ino, Result, MAX_KEY_SIZE};
+use crate::{Result, MAX_KEY_SIZE};
 
 mod ext;
 mod nsobj;

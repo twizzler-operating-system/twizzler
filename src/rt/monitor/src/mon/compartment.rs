@@ -551,6 +551,7 @@ impl super::Monitor {
                 mondebug,
             )
         }
+        .inspect_err(|e| tracing::error!("failed to load new compartment: {}", e))
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
@@ -572,6 +573,7 @@ impl super::Monitor {
                     controller,
                     config,
                 )
+                .inspect_err(|e| tracing::error!("failed to setup new compartment: {}", e))
                 .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);
@@ -585,8 +587,9 @@ impl super::Monitor {
             &env,
             mondebug,
             new_comp_flags.contains(NewCompartmentFlags::DEBUG),
-        )?;
-        tracing::info!(
+        )
+        .inspect_err(|e| tracing::error!("failed to start new compartment: {}", e))?;
+        tracing::trace!(
             "parse strings in {}ms, load in {}ms, start in {}ms",
             (_start_2 - _start_1).as_millis(),
             (_start_3 - _start_2).as_millis(),

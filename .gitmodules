@@ -77,3 +77,6 @@
 [submodule "src/ports/kibi"]
 	path = src/ports/kibi
 	url = ../../twizzler-operating-system/kibi.git
+[submodule "src/ports/nix"]
+	path = src/ports/nix
+	url = ../../twizzler-operating-system/nix.git

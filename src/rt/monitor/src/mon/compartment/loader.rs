@@ -143,7 +143,7 @@ impl LoadInfo {
                 loader_config,
             ));
         }
-        tracing::info!("build_runcomp in {}ms", _start.elapsed().as_millis());
+        tracing::trace!("build_runcomp in {}ms", _start.elapsed().as_millis());
 
         Ok(RunComp::new(
             self.sctx_id,
@@ -286,7 +286,7 @@ impl RunCompLoader {
         // the information about the extra compartments.
         let mut cache = HashSet::new();
         let extra_compartments = loads.0.iter().filter_map(|load| {
-            tracing::trace!(
+            tracing::debug!(
                 "extra? {} {} {}",
                 load.comp,
                 root_comp_id,
@@ -394,7 +394,7 @@ impl RunCompLoader {
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
 
-        tracing::info!(
+        tracing::trace!(
             "prepped in {}ms, loaded in {}ms, relocated in {}ms",
             (_start_2 - _start_1).as_millis(),
             (_start_3 - _start_2).as_millis(),
@@ -526,6 +526,7 @@ impl Monitor {
         if mondebug {
             tracing::info!("start compartment {}: {:?} {:?}", instance, args, env);
         }
+
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance)?;
@@ -557,7 +558,7 @@ impl Monitor {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);
             if state & COMP_READY != 0 {
-                tracing::info!(
+                tracing::trace!(
                     "started main detected ready in {}ms",
                     _loop_start.elapsed().as_millis()
                 );
@@ -566,7 +567,7 @@ impl Monitor {
             if suspend_on_start {
                 // We can't wait for ready, since that need the thread to run.
                 if state & COMP_STARTED != 0 {
-                    tracing::info!(
+                    tracing::trace!(
                         "started main detected started in {}ms",
                         _loop_start.elapsed().as_millis()
                     );
@@ -587,7 +588,7 @@ impl Monitor {
                     env,
                     suspend_on_start,
                 );
-                tracing::info!("start_main_thread in {}ms", _start.elapsed().as_millis());
+                tracing::trace!("start_main_thread in {}ms", _start.elapsed().as_millis());
 
                 r
             };

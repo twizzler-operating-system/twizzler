@@ -293,6 +293,7 @@ pub struct PageRangeTree {
     id: ObjID,
 }
 
+#[derive(Debug)]
 pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,

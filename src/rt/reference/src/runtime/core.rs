@@ -92,7 +92,6 @@ impl ReferenceRuntime {
         rtinfo: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
     ) -> ! {
-        let _start = Instant::now();
         let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
         match rtinfo.kind {
             RUNTIME_INIT_MONITOR => {
@@ -158,7 +157,6 @@ impl ReferenceRuntime {
             args: rtinfo.args,
             env: env_ptr,
         };
-        preinit_println!("core runtime prep took {}us", _start.elapsed().as_micros());
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
@@ -176,7 +174,6 @@ impl ReferenceRuntime {
             self.init_slots();
             None
         } else {
-            let _start = Instant::now();
             unsafe { self.set_runtime_ready() };
             OUR_RUNTIME.init_fds();
 
@@ -203,7 +200,6 @@ impl ReferenceRuntime {
                 Ok(ret) => ret,
                 _ => self.abort(),
             };
-            preinit_println!("premain hook took {}us", _start.elapsed().as_micros());
             ret
         }
     }
@@ -255,6 +251,7 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
+        let _start_1 = Instant::now();
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -266,9 +263,13 @@ impl ReferenceRuntime {
             );
         }
         let mut tg = TLS_GEN_MGR.lock();
+        let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        let _start_3 = Instant::now();
         twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        let _start_4 = Instant::now();
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
+        let _start_5 = Instant::now();
 
         if !unsafe { __mlibc_entry.is_null() } {
             let mlibc_entry = unsafe {
@@ -276,6 +277,7 @@ impl ReferenceRuntime {
             };
             mlibc_entry(entry_stack, core::ptr::null_mut());
         }
+        let _start_6 = Instant::now();
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -283,6 +285,18 @@ impl ReferenceRuntime {
             };
             self.init_ctors(ctor_slice);
         }
+
+        /*
+        preinit_println!(
+            "init: {}us, get_tls: {}ms, set_tls: {}ms, set_upcall: {}ms, mlibc: {}ms, ctors: {}ms",
+            (_start_2 - _start_1).as_micros(),
+            (_start_3 - _start_2).as_millis(),
+            (_start_4 - _start_3).as_millis(),
+            (_start_5 - _start_4).as_millis(),
+            (_start_6 - _start_5).as_millis(),
+            _start_6.elapsed().as_millis()
+        )
+        */
     }
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {

@@ -235,6 +235,18 @@ fn page_fault_to_region(
                 PageNumber::PAGE_SIZE * provider.page_count(),
             );
             if !ip.is_kernel() && !addr.is_kernel() {
+                if let Some(val) = provider.peek() {
+                    log::trace!(
+                        " ==> mapping {}: {} => {:?}, in {} ({:?})",
+                        id,
+                        offset,
+                        val,
+                        sctx_id,
+                        ctx.with_arch(sctx_id, |a| a.target)
+                    );
+                }
+            }
+            if !ip.is_kernel() && !addr.is_kernel() {
                 if let Some(val) = provider.peek()
                 //&& info.flags.contains(MapFlags::NO_NULLPAGE)
                 {

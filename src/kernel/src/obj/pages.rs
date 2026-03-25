@@ -313,6 +313,64 @@ impl Object {
         }
     }
 
+    fn ensure_in_core_not_pager<'a>(
+        self: &'a Arc<Object>,
+        mut page_tree: LockGuard<'a, PageRangeTree>,
+        page_number: PageNumber,
+    ) -> LockGuard<'a, PageRangeTree> {
+        let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
+        let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+        let large_page_number = page_number.align_down(pages_per_large);
+
+        let entries =
+            page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
+        let all_empty = entries.count() == 0;
+
+        log::trace!(
+            "{} ==> {} {} {}",
+            self.id(),
+            all_empty,
+            page_number,
+            core::panic::Location::caller()
+        );
+
+        if !large_page_number.is_zero()
+            && page_number < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
+            && all_empty
+            && false
+        {
+            let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
+            if let Some(frame) = frame_allocator.try_allocate() {
+                let page = Arc::new(Page::new(frame, 1));
+                assert_eq!(frame.size(), PHYS_LEVEL_LAYOUTS[1].size());
+                let page = PageRef::new(page, 0, pages_per_large);
+                let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
+                log::trace!(
+                    "{}: mapping {} for {}: {:x}",
+                    self.id(),
+                    large_page_number,
+                    page_number,
+                    page.physical_address().raw()
+                );
+                if page_tree
+                    .add_page(large_page_number, page, Some(&mut frame_allocator))
+                    .is_none()
+                {
+                    log::warn!("failed to map large page {}", large_page_number);
+                }
+            }
+            return page_tree;
+        }
+
+        let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
+        if let Some(frame) = frame_allocator.try_allocate() {
+            let page = Arc::new(Page::new(frame, 1));
+            let page = PageRef::new(page, 0, 1);
+            page_tree.add_page(page_number, page, Some(&mut frame_allocator));
+        }
+        page_tree
+    }
+
     #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a Arc<Object>,
@@ -320,67 +378,23 @@ impl Object {
         page_number: PageNumber,
         used_pager: &mut bool,
     ) -> LockGuard<'a, PageRangeTree> {
+        *used_pager = false;
         if matches!(
             page_tree.try_get_page(page_number, GetPageFlags::empty()),
             PageStatus::NoPage
         ) {
-            *used_pager = false;
             if self.use_pager() {
                 drop(page_tree);
                 *used_pager = crate::pager::get_object_page(self, page_number);
                 page_tree = self.lock_page_tree();
+                if matches!(
+                    page_tree.try_get_page(page_number, GetPageFlags::empty()),
+                    PageStatus::NoPage
+                ) {
+                    page_tree = self.ensure_in_core_not_pager(page_tree, page_number);
+                }
             } else {
-                let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
-                let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
-                let large_page_number = page_number.align_down(pages_per_large);
-
-                let entries =
-                    page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
-                let all_empty = entries.count() == 0;
-
-                log::trace!(
-                    "{} ==> {} {} {}",
-                    self.id(),
-                    all_empty,
-                    page_number,
-                    core::panic::Location::caller()
-                );
-
-                if !large_page_number.is_zero()
-                    && page_number
-                        < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
-                    && all_empty
-                    && false
-                {
-                    let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
-                    if let Some(frame) = frame_allocator.try_allocate() {
-                        let page = Arc::new(Page::new(frame, 1));
-                        assert_eq!(frame.size(), PHYS_LEVEL_LAYOUTS[1].size());
-                        let page = PageRef::new(page, 0, pages_per_large);
-                        let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
-                        log::trace!(
-                            "{}: mapping {} for {}: {:x}",
-                            self.id(),
-                            large_page_number,
-                            page_number,
-                            page.physical_address().raw()
-                        );
-                        if page_tree
-                            .add_page(large_page_number, page, Some(&mut frame_allocator))
-                            .is_none()
-                        {
-                            log::warn!("failed to map large page {}", large_page_number);
-                        }
-                    }
-                    return page_tree;
-                }
-
-                let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
-                if let Some(frame) = frame_allocator.try_allocate() {
-                    let page = Arc::new(Page::new(frame, 1));
-                    let page = PageRef::new(page, 0, 1);
-                    page_tree.add_page(page_number, page, Some(&mut frame_allocator));
-                }
+                page_tree = self.ensure_in_core_not_pager(page_tree, page_number);
             }
         }
         page_tree

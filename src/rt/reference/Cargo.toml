@@ -32,4 +32,4 @@ pager-dynamic = { workspace = true }
 ferroc = { workspace = true, features = ["global"] }
 twizzler-io = { path = "../../lib/twizzler-io" }
 twizzler-net = { path = "../../lib/twizzler-net" }
-libc = {workspace = true}
+libc = { workspace = true }

@@ -37,8 +37,9 @@ impl CompThread {
         let frame = stack.get_entry_frame(instance, entry, arg);
         let start = move || {
             let _enter = Instant::now();
-            tracing::info!("thread entry took {}ms", (_enter - _start).as_millis());
+            tracing::trace!("thread entry took {}ms", (_enter - _start).as_millis());
             twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
+
             let flags = if suspend_on_start {
                 ResumeFlags::SUSPEND
             } else {
