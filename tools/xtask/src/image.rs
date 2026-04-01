@@ -274,7 +274,13 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
         initrd_files.push(lib_path);
 
         let lib_path = get_sysroots_path(&cli.config.twz_triple().to_string())?;
-        for lib in ["libc.so", "libdl.so", "libpthread.so", "libm.so"] {
+        for lib in [
+            "libc.so",
+            "libdl.so",
+            "libpthread.so",
+            "libm.so",
+            "libc++abi.so",
+        ] {
             let mut path = lib_path.clone();
             path.push(lib);
             initrd_files.push(path);

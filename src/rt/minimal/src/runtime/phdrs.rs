@@ -1,4 +1,4 @@
-use super::tls::{set_tls_info, TlsInfo};
+use super::tls::{TlsInfo, set_tls_info};
 
 #[repr(C)]
 pub struct Phdr {
@@ -25,8 +25,5 @@ pub fn process_phdrs(phdrs: &'static [Phdr]) {
                 align: ph.align as usize,
             })
         }
-    }
-    unsafe {
-        PHDR_INFO = Some(phdrs);
     }
 }

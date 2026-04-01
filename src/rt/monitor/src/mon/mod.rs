@@ -134,6 +134,7 @@ impl Monitor {
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
+            0,
             &[],
             false,
             None,

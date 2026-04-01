@@ -54,6 +54,8 @@ struct LoadInfo {
     ctor_info: dynlink::Vec<CtorSet, SMALL_VEC_SIZE>,
     // entry point to call for the runtime to init this compartment
     entry: Option<extern "C" fn(*const RuntimeInfo) -> !>,
+    // entry point for the runtime to call to start the program
+    main_entry: Option<extern "C" fn(*const RuntimeInfo) -> !>,
     is_binary: bool,
 }
 
@@ -67,6 +69,7 @@ impl Default for LoadInfo {
             comp_id: CompartmentId::default(),
             ctor_info: dynlink::Vec::new(),
             entry: None,
+            main_entry: None,
             is_binary: false,
         }
     }
@@ -81,6 +84,7 @@ impl LoadInfo {
         is_binary: bool,
         extras: &[LibraryId],
     ) -> Result<Self, DynlinkError> {
+        let root_lib = dynlink.get_library(root_id)?;
         let lib = dynlink.get_library(rt_id)?;
         let extra_ctors: Vec<_> = extras
             .iter()
@@ -90,6 +94,10 @@ impl LoadInfo {
         let mut ctor_info: dynlink::Vec<_, SMALL_VEC_SIZE> =
             extra_ctors.iter().flatten().copied().collect();
         ctor_info.extend_from_slice(root_ctors.as_slice());
+
+        let main_entry = root_lib.get_entry_address().ok();
+        tracing::info!("{} ==> {:?}", root_lib.name, main_entry);
+
         Ok(Self {
             root_id,
             rt_id,
@@ -102,6 +110,7 @@ impl LoadInfo {
                 .into(),
             ctor_info,
             entry: Some(lib.get_entry_address()?),
+            main_entry,
             is_binary,
         })
     }
@@ -155,6 +164,7 @@ impl LoadInfo {
             flags,
             stack_object,
             self.entry.map(|x| x as usize).unwrap_or_default(),
+            self.main_entry.map(|x| x as usize).unwrap_or_default(),
             &self.ctor_info,
             is_debugging,
             controller,
@@ -523,13 +533,20 @@ impl Monitor {
         mondebug: bool,
         suspend_on_start: bool,
     ) -> Result<(), TwzError> {
-        if mondebug {
-            tracing::info!("start compartment {}: {:?} {:?}", instance, args, env);
-        }
-
         let deps = {
             let cmp = self.comp_mgr.read(ThreadKey::get().unwrap());
             let rc = cmp.get(instance)?;
+
+            if mondebug {
+                tracing::info!(
+                    "start compartment {}: {:?} {:?} flags = {:x}",
+                    instance,
+                    args,
+                    env,
+                    rc.raw_flags()
+                );
+            }
+
             tracing::debug!(
                 "starting compartment {} ({}) (binary = {})",
                 rc.name,

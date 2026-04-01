@@ -170,7 +170,7 @@ impl Context {
         ent: usize,
         sz: usize,
     ) -> Result<(), DynlinkError> {
-        tracing::info!(
+        tracing::debug!(
             "{}: processing RELR relocations (num = {}) at {:p}",
             lib,
             sz / ent,
@@ -194,7 +194,7 @@ impl Context {
 
         let mut j = 0;
         for entry in relr_slice {
-            tracing::info!("RELR: found [{}] {:x}", j, *entry);
+            tracing::trace!("RELR: found [{}] {:x}", j, *entry);
             if *entry & 1 != 0 {
                 if target == 0 {
                     return Err(DynlinkError {

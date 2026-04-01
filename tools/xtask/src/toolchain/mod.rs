@@ -176,7 +176,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
 }
 
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
-    let sysroot_path = get_sysroots_path(target.to_string().as_str())?;
+    let mut sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
     // rust's linkage support.
@@ -188,19 +188,23 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr", extra_rustflags, sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
+    sysroot_path.pop();
+    sysroot_path.pop();
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
 
     Ok(())
 }
 
 pub fn set_static(target: &Triple) {
-    let sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
+    let mut sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
     let rustlib_path = get_rustlib_lib(target.to_string().as_str()).unwrap();
     std::env::set_var(
         "RUSTFLAGS",
         &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a",  sysroot_path.display(), sysroot_path.display(), rustlib_path.display(), sysroot_path.display()),
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/static");
+    sysroot_path.pop();
+    sysroot_path.pop();
     std::env::set_var(
         "TWIZZLER_ABI_SYSROOTS",
         sysroot_path.canonicalize().unwrap(),

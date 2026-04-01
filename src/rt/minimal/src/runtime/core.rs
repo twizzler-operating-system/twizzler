@@ -61,6 +61,7 @@ impl MinimalRuntime {
         &self,
         rt_info: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
+        _main: usize,
     ) -> ! {
         let mut null_env: [*mut c_char; 4] = [
             b"RUST_BACKTRACE=1\0".as_ptr() as *mut c_char,
@@ -79,10 +80,12 @@ impl MinimalRuntime {
                 self.abort();
             }
             let min_init_info = &*rt_info.init_info.min;
-            process_phdrs(core::slice::from_raw_parts(
+            let phdrs = core::slice::from_raw_parts(
                 min_init_info.phdrs as *const Phdr,
                 min_init_info.nr_phdrs,
-            ));
+            );
+            process_phdrs(phdrs);
+            crate::runtime::phdrs::PHDR_INFO = Some(phdrs);
             if !rt_info.envp.is_null() {
                 env_ptr = rt_info.envp;
             }
@@ -98,6 +101,7 @@ impl MinimalRuntime {
         } else {
             crate::print_err("failed to initialize TLS\n");
         }
+
         let upcall_target = UpcallTarget::new(
             Some(crate::arch::upcall::upcall_entry),
             Some(crate::arch::upcall::upcall_entry),
@@ -138,11 +142,42 @@ impl MinimalRuntime {
             }
         }
 
+        unsafe {
+            if !__mlibc_entry_from_rust.is_null() {
+                let mlibc_entry_from_rust = {
+                    std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(
+                        __mlibc_entry_from_rust,
+                    )
+                };
+                let rt_info = rt_info.as_ref().unwrap();
+                let mut entry_stack = Vec::new();
+                entry_stack.push(rt_info.argc);
+                if !rt_info.args.is_null() {
+                    for arg in core::slice::from_raw_parts(rt_info.args, rt_info.argc) {
+                        entry_stack.push(*arg as usize);
+                    }
+                } else {
+                    entry_stack.push(0);
+                }
+                entry_stack.push(0);
+                if !rt_info.envp.is_null() {
+                    for env in core::slice::from_raw_parts(rt_info.envp, rt_info.argc) {
+                        entry_stack.push(*env as usize);
+                    }
+                } else {
+                    entry_stack.push(0);
+                }
+                entry_stack.push(0);
+                mlibc_entry_from_rust(entry_stack.as_mut_ptr(), core::ptr::null_mut());
+            }
+        }
+
         let ret = unsafe {
             std_entry(BasicAux {
                 argc: arg_count,
                 args: arg_ptr,
                 env: env_ptr,
+                entry: 0,
             })
         };
         self.exit(ret.code)
@@ -162,4 +197,11 @@ impl MinimalRuntime {
         let out = sys_get_random(buf, flags).expect("failed to get randomness from kernel");
         out
     }
+}
+
+unsafe extern "C" {
+    #[linkage = "extern_weak"]
+    static __mlibc_entry_from_rust: *mut u8;
+    #[linkage = "extern_weak"]
+    static _start: *const u8;
 }

@@ -37,7 +37,7 @@ use twizzler_rt_abi::{
         socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ,
         OPEN_FLAG_WRITE,
     },
-    error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
+    error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
     io::IoFlags,
     object::MapFlags,
@@ -71,7 +71,7 @@ impl FdKind {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
-            _ => Err(GenericError::NotSupported.into()),
+            _ => Ok(0),
         }
     }
 

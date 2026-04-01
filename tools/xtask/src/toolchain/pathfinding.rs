@@ -112,5 +112,5 @@ pub fn get_python_path() -> anyhow::Result<PathBuf> {
 pub fn get_sysroots_path(target_triple: &str) -> anyhow::Result<PathBuf> {
     let mut tc_path = get_toolchain_path()?;
     tc_path.push(format!("sysroots/{}/lib", target_triple));
-    Ok(tc_path)
+    Ok(tc_path.canonicalize()?)
 }

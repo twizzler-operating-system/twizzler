@@ -20,12 +20,16 @@ use twizzler_rt_abi::{
 };
 
 use super::internal::InternalThread;
-use crate::runtime::{
-    thread::{
-        tcb::{trampoline, TLS_GEN_MGR},
-        MIN_STACK_ALIGN, THREAD_MGR,
+use crate::{
+    runtime::{
+        thread::{
+            libc_init_tcb,
+            tcb::{trampoline, TLS_GEN_MGR},
+            MIN_STACK_ALIGN, THREAD_MGR,
+        },
+        ReferenceRuntime, OUR_RUNTIME,
     },
-    ReferenceRuntime, OUR_RUNTIME,
+    RuntimeState,
 };
 
 pub(crate) struct ThreadManager {
@@ -158,6 +162,7 @@ impl ReferenceRuntime {
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        libc_init_tcb(tls);
         Ok(())
     }
 
@@ -174,6 +179,10 @@ impl ReferenceRuntime {
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
+
+        if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+            libc_init_tcb(tls);
+        }
         let stack_raw = unsafe {
             OUR_RUNTIME
                 .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())

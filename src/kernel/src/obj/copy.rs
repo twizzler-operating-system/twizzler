@@ -212,6 +212,7 @@ pub fn copy_ranges(
     if vec_pages > 0 {
         let ranges = src_tree.range(src_point..src_point.offset(vec_pages));
         for range in ranges {
+            log::trace!("copy range {:?}: {:?}", range.0, range.1);
             // If the source point is below the range's start, then there's a hole in the source
             // page tree. We don't have to copy at all, just shift up the dest point to
             // where it needs to be for this range (since we will be copying from it).

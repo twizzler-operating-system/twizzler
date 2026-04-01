@@ -137,10 +137,11 @@ pub unsafe extern "C-unwind" fn twz_rt_runtime_entry(
             arg1: twizzler_rt_abi::bindings::basic_aux,
         ) -> twizzler_rt_abi::bindings::basic_return,
     >,
+    main: usize,
 ) {
-    OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked())
+    OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked(), main)
 }
-check_ffi_type!(twz_rt_runtime_entry, _, _);
+check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() -> bool {

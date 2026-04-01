@@ -17,7 +17,7 @@ use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
 mod internal;
 mod mgr;
 mod tcb;
-pub(crate) use tcb::{with_current_thread, TLS_GEN_MGR};
+pub(crate) use tcb::{libc_init_tcb, with_current_thread, TLS_GEN_MGR};
 
 const MIN_STACK_ALIGN: usize = 128;
 

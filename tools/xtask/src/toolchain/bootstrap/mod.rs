@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use guess_host_triple::guess_host_triple;
 
 use super::BootstrapOptions;
@@ -34,10 +36,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     );
 
     let current_dir = std::env::current_dir().unwrap();
-    let builtin_headers =
-        current_dir.join("toolchain/src/rust/build/host/llvm/lib/clang/21/include/");
+    let builtin_headers = current_dir
+        .join("toolchain/src/rust/build/host/llvm/lib/clang/21/include/")
+        .canonicalize()?;
     std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
-    std::env::set_var("TWIZZLER_ABI_SYSROOTS", "toolchain/install/sysroots");
+    let sysroots = Path::new("toolchain/install/sysroots").canonicalize()?;
+    std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroots);
 
     if !cli.skip_rust {
         println!("starting rust build");

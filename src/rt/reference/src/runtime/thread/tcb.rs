@@ -11,7 +11,7 @@ use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use twizzler_abi::simple_mutex::Mutex;
 
-use crate::runtime::alloc::LOCAL_ALLOCATOR;
+use crate::{runtime::alloc::LOCAL_ALLOCATOR, RuntimeState, OUR_RUNTIME};
 
 /// Run a closure using the current thread's control struct as the argument.
 pub(crate) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
@@ -92,10 +92,26 @@ impl TlsGenMgr {
 
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
+
             Some(tcb)
         }
     }
 
     // TODO: when threads exit or move on to a different TLS gen, track that in thread_count, and if
     // it hits zero, notify the monitor.
+}
+
+extern "C" {
+    #[linkage = "extern_weak"]
+    static __mlibc_init_tcb: *mut u8;
+}
+
+pub(crate) fn libc_init_tcb<T>(tcb: *mut Tcb<T>) {
+    unsafe {
+        if !__mlibc_init_tcb.is_null() {
+            let mlibc_init_tcb =
+                std::mem::transmute::<_, extern "C" fn(*mut Tcb<T>)>(__mlibc_init_tcb);
+            mlibc_init_tcb(tcb);
+        }
+    }
 }

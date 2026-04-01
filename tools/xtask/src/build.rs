@@ -105,7 +105,7 @@ fn build_third_party<'a>(
     if !other_options.build_twizzler {
         return Ok(vec![]);
     }
-    crate::toolchain::set_static(&build_config.twz_triple());
+    crate::toolchain::set_dynamic(&build_config.twz_triple())?;
     crate::toolchain::set_cc(&build_config.twz_triple())?;
     let config = user_workspace.gctx();
     let registry = user_workspace.package_registry()?;
@@ -156,6 +156,11 @@ fn build_third_party<'a>(
         packs.push(o);
     }
 
+    let packs = packs
+        .into_iter()
+        .map(|p| user_workspace.load(p.manifest_path()))
+        .try_collect::<Vec<_>>()?;
+
     let triple = Triple::new(
         build_config.arch,
         build_config.machine,
@@ -172,7 +177,6 @@ fn build_third_party<'a>(
 
     packs
         .into_iter()
-        .cloned()
         .map(|item| {
             options.spec = Packages::Packages(vec![item.name().to_string()]);
             let ws =

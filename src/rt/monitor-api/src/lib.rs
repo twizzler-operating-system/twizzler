@@ -875,6 +875,7 @@ mod lazy_sb {
 }
 
 pub const THREAD_STARTED: u32 = 1;
+#[repr(C)]
 pub struct RuntimeThreadControl {
     pub id: UnsafeCell<u32>,
     pub did_exit: UnsafeCell<u32>,
@@ -882,7 +883,7 @@ pub struct RuntimeThreadControl {
     pub internal_lock: AtomicU32,
     pub flags: AtomicU32,
     pub stack_canary: u64,
-    pub libc_data: [u64; 1000],
+    pub libc_data: [u64; 16],
 }
 
 impl Default for RuntimeThreadControl {
@@ -899,7 +900,7 @@ impl RuntimeThreadControl {
             id: UnsafeCell::new(id),
             did_exit: UnsafeCell::new(0),
             stack_canary: 0,
-            libc_data: [0; 1000],
+            libc_data: [0; 16],
         }
     }
 

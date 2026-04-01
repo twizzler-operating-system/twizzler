@@ -31,7 +31,6 @@ pub fn load_segments(
         ObjectCreateFlags::DELETE,
         Protections::all(),
     );
-    tracing::info!("directives: {:?}", ld);
 
     let build_copy_cmd = |directive: &LoadDirective| {
         if !within_object(
@@ -114,9 +113,6 @@ pub fn load_segments(
 
     let data_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, data_cmds)?;
     let text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
-
-    tracing::info!("LOAD CMDS: {:?}", text_cmds);
-    tracing::info!("LOAD CMDS: {:?}", data_cmds);
 
     let data_id = sys_object_create(
         create_spec,

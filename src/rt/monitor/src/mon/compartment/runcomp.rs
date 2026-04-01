@@ -62,7 +62,7 @@ pub struct RunComp {
     mapped_objects: HashMap<MapInfo, MapHandle>,
     flags: Box<AtomicU64>,
     pub per_thread: HashMap<ObjID, PerThread>,
-    init_info: Option<(StackObject, usize, Vec<CtorSet>)>,
+    init_info: Option<(StackObject, usize, usize, Vec<CtorSet>)>,
     is_debugging: bool,
     pub(crate) use_count: u64,
     pub controller: Option<ObjID>,
@@ -155,6 +155,7 @@ impl RunComp {
         flags: u64,
         main_stack: StackObject,
         entry: usize,
+        main_entry: usize,
         ctors: &[CtorSet],
         is_debugging: bool,
         controller: Option<ObjID>,
@@ -173,7 +174,7 @@ impl RunComp {
             mapped_objects: HashMap::default(),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: HashMap::new(),
-            init_info: Some((main_stack, entry, ctors.to_vec())),
+            init_info: Some((main_stack, entry, main_entry, ctors.to_vec())),
             use_count: 0,
             controller,
         }
@@ -324,7 +325,7 @@ impl RunComp {
         tracing::debug!("starting main thread for compartment {}", self.name);
         debug_assert!(self.main.is_none());
         // Unwrap-Ok: we only take this once, when starting the main thread.
-        let (stack, entry, ctors) = self.init_info.take().unwrap();
+        let (stack, entry, main_entry, ctors) = self.init_info.take().unwrap();
         let mut build_init_info = || -> Option<_> {
             let comp_config_info =
                 self.comp_config_object.get_comp_config() as *mut SharedCompConfig;
@@ -360,11 +361,13 @@ impl RunComp {
             };
             let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
             // TODO: fill out argc and argv and envp
+            tracing::info!("setting entry = {:x}", main_entry);
             let rtinfo = RuntimeInfo {
                 flags: 0,
                 kind: RUNTIME_INIT_COMP,
                 args: args_in_comp_in_comp.cast(),
                 argc,
+                entry: main_entry,
                 envp: envs_in_comp_in_comp.cast(),
                 init_info: InitInfoPtrs {
                     comp: comp_init_info_in_comp,
@@ -389,7 +392,7 @@ impl RunComp {
             stack,
             self.instance,
             Some(self.instance),
-            entry,
+            if main_entry != 0 { main_entry } else { entry },
             arg,
             suspend_on_start,
         ) {

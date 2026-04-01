@@ -29,3 +29,12 @@ pub(crate) fn bootstrap_dynlink_context() -> Option<InitDynlinkContext> {
 
     Some(InitDynlinkContext { ctx })
 }
+
+/*
+#[link(
+    name = "Scrt1.o",
+    kind = "static",
+    modifiers = "-bundle,+whole-archive,+verbatim"
+)]
+extern "C" {}
+*/

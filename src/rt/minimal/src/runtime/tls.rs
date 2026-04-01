@@ -1,5 +1,7 @@
 //! Implements TLS-related start up and new thread functionality.
 
+#![allow(static_mut_refs)]
+
 #[allow(dead_code)]
 const MIN_TLS_ALIGN: usize = 16;
 use core::alloc::Layout;
@@ -16,7 +18,7 @@ pub(crate) fn new_thread_tls() -> Option<(usize, *mut u8, usize, usize)> {
 #[allow(dead_code)]
 pub(crate) fn tls_variant1() -> Option<(usize, *mut u8, usize, usize)> {
     unsafe {
-        TLS_INFO.get().map(|tls_template| {
+        TLS_INFO.as_ref().map(|tls_template| {
             // TODO: reserved region may be arch specific. aarch64 reserves two
             // words after the thread pointer (TP), before any TLS blocks
             let reserved_bytes = core::mem::size_of::<*const u64>() * 2;
@@ -60,7 +62,7 @@ pub(crate) fn tls_variant1() -> Option<(usize, *mut u8, usize, usize)> {
 #[allow(dead_code)]
 pub(crate) fn tls_variant2() -> Option<(usize, *mut u8, usize, usize)> {
     unsafe {
-        TLS_INFO.get().map(|info| {
+        TLS_INFO.as_ref().map(|info| {
             let mut tls_size = info.memsz;
             tls_size += (((!tls_size) + 1) - (info.template_start as usize)) & (info.align - 1);
             let offset = tls_size;
@@ -96,8 +98,10 @@ pub(crate) struct TlsInfo {
 unsafe impl Send for TlsInfo {}
 unsafe impl Sync for TlsInfo {}
 
-static TLS_INFO: spin::Once<TlsInfo> = spin::Once::INIT;
+static mut TLS_INFO: Option<TlsInfo> = None;
 
 pub(super) fn set_tls_info(info: TlsInfo) {
-    TLS_INFO.call_once(|| info);
+    unsafe {
+        TLS_INFO = Some(info);
+    }
 }
