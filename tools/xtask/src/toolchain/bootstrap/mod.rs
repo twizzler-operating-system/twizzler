@@ -6,6 +6,7 @@ use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
     toolchain::{compress_toolchain, prune_bins, prune_toolchain},
+    triple::all_possible_platforms,
 };
 
 mod paths;
@@ -13,11 +14,28 @@ use paths::*;
 mod mover;
 
 mod install;
+mod libc;
+mod llvm;
 mod prep;
 mod rust;
 
 pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     prep::setup_build(&cli)?;
+
+    llvm::build_llvm(&cli)?;
+    llvm::build_lld(&cli)?;
+
+    for triple in all_possible_platforms() {
+        libc::install_headers(&cli, &triple)?;
+        llvm::build_runtimes(&cli, &triple)?;
+
+        libc::build_libc(&cli, &triple)?;
+
+        //libc::build_libcxx(&cli, triple)?;
+    }
+
+    return Ok(());
+
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     std::env::set_var(
@@ -36,10 +54,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     );
 
     let current_dir = std::env::current_dir().unwrap();
-    let builtin_headers = current_dir
-        .join("toolchain/src/rust/build/host/llvm/lib/clang/21/include/")
-        .canonicalize()?;
-    std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
     let sysroots = Path::new("toolchain/install/sysroots").canonicalize()?;
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroots);
 
@@ -47,6 +61,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         println!("starting rust build");
         rust::build_rust(&cli)?;
     }
+    return Ok(());
 
     if cli.native {
         return Ok(());

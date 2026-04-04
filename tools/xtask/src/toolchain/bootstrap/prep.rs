@@ -1,6 +1,7 @@
 use std::{
     fs::File,
     io::{Read, Write},
+    path::Path,
     process::Command,
 };
 
@@ -9,7 +10,7 @@ use toml_edit::DocumentMut;
 
 use crate::{
     toolchain::{
-        bootstrap::paths::{get_llvm_bin, get_rust_lld},
+        bootstrap::paths::{get_llvm_bin, get_llvm_src_path, get_rust_lld},
         download_file, guess_host_triple, install_build_tools, BootstrapOptions,
     },
     triple::all_possible_platforms,
@@ -126,6 +127,9 @@ fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
     toml["target"][host_triple]["cc"] = toml_edit::value(host_cc);
     toml["target"][host_triple]["cxx"] = toml_edit::value(host_cxx);
     toml["target"][host_triple]["linker"] = toml_edit::value(host_ld);
+    let llvm_config = Path::new("toolchain/install/bin/llvm-config").canonicalize()?;
+    toml["target"][host_triple]["llvm-config"] =
+        toml_edit::value(llvm_config.display().to_string());
 
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
@@ -152,6 +156,7 @@ fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
 
         toml["target"][tstr]["llvm-has-rust-patches"] = toml_edit::value(true);
         toml["target"][tstr]["llvm-libunwind"] = toml_edit::value("in-tree");
+        toml["target"][tstr]["llvm-config"] = toml_edit::value(llvm_config.display().to_string());
 
         toml["build"]["target"].as_array_mut().unwrap().push(tstr);
         //toml["build"]["host"].as_array_mut().unwrap().push(tstr);

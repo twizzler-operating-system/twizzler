@@ -19,7 +19,7 @@ docs = false
 sanitizers = true
 
 [rust]
-lld = true
+lld = false
 llvm-tools = true
 debug = true
 debuginfo-level = 1

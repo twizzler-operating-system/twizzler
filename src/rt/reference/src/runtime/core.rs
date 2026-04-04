@@ -144,10 +144,10 @@ impl ReferenceRuntime {
         }
 
         if !unsafe { __twz_enable_libc_trace.is_null() } {
-            let twz_enable_libc_trace =
+            let _twz_enable_libc_trace =
                 unsafe { std::mem::transmute::<_, extern "C" fn()>(__twz_enable_libc_trace) };
-            preinit_println!("enable libc trace");
-            twz_enable_libc_trace();
+            //preinit_println!("enable libc trace");
+            //twz_enable_libc_trace();
         }
 
         let mut null_env: [*mut c_char; 4] = [

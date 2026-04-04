@@ -43,16 +43,10 @@ pub fn get_rust_lld(host_triple: &str) -> anyhow::Result<PathBuf> {
         .join("bin/rust-lld");
     Ok(rustlib_bin)
 }
-pub fn get_llvm_bin(host_triple: &str, use_installed: bool) -> anyhow::Result<PathBuf> {
+
+pub fn get_llvm_bin(host_triple: &str, _use_installed: bool) -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
-    if use_installed {
-        return Ok(curdir.join("toolchain/install/bin"));
-    }
-    let llvm_bin = curdir
-        .join("toolchain/src/rust/build")
-        .join(host_triple)
-        .join("llvm/bin");
-    Ok(llvm_bin)
+    return Ok(curdir.join("toolchain/install/bin"));
 }
 
 pub fn get_lld_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
@@ -64,9 +58,16 @@ pub fn get_lld_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
     Ok(llvm_bin)
 }
 
-pub fn get_compiler_rt_path() -> anyhow::Result<PathBuf> {
+pub fn get_llvm_src_path() -> anyhow::Result<PathBuf> {
     let curdir = std::env::current_dir().unwrap();
-    let compiler_rt = curdir.join("toolchain/src/rust/src/llvm-project/compiler-rt");
+    let compiler_rt = curdir.join("toolchain/src/rust/src/llvm-project");
+
+    Ok(compiler_rt)
+}
+
+pub fn get_compiler_rt_path() -> anyhow::Result<PathBuf> {
+    let curdir = get_llvm_src_path()?;
+    let compiler_rt = curdir.join("compiler-rt");
 
     Ok(compiler_rt)
 }

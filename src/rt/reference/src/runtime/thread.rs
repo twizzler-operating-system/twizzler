@@ -71,6 +71,19 @@ impl ReferenceRuntime {
         })
     }
 
+    pub fn get_name(&self, _tcb: *const c_void, name: &mut [u8]) -> usize {
+        // TODO: if _tcb is non null and points to a different thread than our own, read that
+        // thread's name.
+        with_current_thread(|cur| {
+            THREAD_MGR
+                .with_internal(cur.id(), |th| th.get_name(name))
+                .unwrap_or_else(|| {
+                    name.fill(0);
+                    0
+                })
+        })
+    }
+
     pub fn sleep(&self, duration: std::time::Duration) {
         let _ = sys_thread_sync(&mut [], Some(duration));
     }

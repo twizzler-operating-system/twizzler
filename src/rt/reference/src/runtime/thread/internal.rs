@@ -3,6 +3,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     ffi::{CStr, CString},
+    os::raw::c_char,
     sync::Mutex,
 };
 
@@ -64,6 +65,18 @@ impl InternalThread {
     pub fn set_name(&self, name: &CStr) {
         let name = name.to_owned();
         *self.name.lock().unwrap() = Some(name);
+    }
+
+    pub fn get_name(&self, name: &mut [u8]) -> usize {
+        let th = self.name.lock().unwrap();
+        match &*th {
+            Some(n) => {
+                let len = name.len().min(n.as_bytes_with_nul().len());
+                name[..len].copy_from_slice(&n.as_bytes_with_nul()[..len]);
+                len
+            }
+            None => 0,
+        }
     }
 }
 

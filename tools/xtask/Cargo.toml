@@ -34,6 +34,8 @@ git2 = { workspace = true }
 wait-timeout = { workspace = true }
 
 unittest-report = { workspace = true }
+cmake = "*"
+cc = "*"
 
 [package.metadata]
 twizzler-build = "xtask"
