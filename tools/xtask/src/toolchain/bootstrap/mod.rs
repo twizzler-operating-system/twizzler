@@ -62,6 +62,9 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let tag = generate_tag()?;
     let toolchain_path = Path::new("toolchain").join(&tag);
     std::fs::create_dir_all(&toolchain_path)?;
+    if std::fs::symlink_metadata(Path::new("toolchain/install")).is_ok_and(|r| r.is_dir()) {
+        let _ = fs_extra::remove_items(&[Path::new("toolchain/install")]);
+    }
     let _ = std::fs::remove_file("toolchain/install");
     std::os::unix::fs::symlink(&tag, "toolchain/install")?;
 
