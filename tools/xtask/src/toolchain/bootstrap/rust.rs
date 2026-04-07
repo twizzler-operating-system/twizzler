@@ -1,6 +1,6 @@
-use std::{path::Path, process::Command};
+use std::process::Command;
 
-use crate::{toolchain::BootstrapOptions, triple::Triple};
+use crate::toolchain::BootstrapOptions;
 
 pub fn build_rust(cli: &BootstrapOptions) -> anyhow::Result<()> {
     let keep_args = if cli.keep_early_stages {

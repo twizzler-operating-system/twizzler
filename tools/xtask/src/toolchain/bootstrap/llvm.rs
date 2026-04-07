@@ -3,7 +3,7 @@ use std::{ffi::OsStr, path::Path};
 use guess_host_triple::guess_host_triple;
 
 use crate::{
-    toolchain::{bootstrap::paths::get_llvm_src_path, BootstrapOptions},
+    toolchain::BootstrapOptions,
     triple::{all_possible_platforms, Triple},
 };
 
@@ -38,7 +38,8 @@ pub fn setup_cmake_twizzler(
     let cxx = bin_dir.join("clang++");
     let ld = bin_dir.join("clang");
     let ar = bin_dir.join("llvm-ar");
-    let llvm_config = bin_dir.join("llvm-config");
+    let ranlib = bin_dir.join("llvm-ar");
+    let _llvm_config = bin_dir.join("llvm-config");
     cfg.target(&target.to_string());
     cfg.define("CMAKE_SYSTEM_NAME", "Twizzler");
     cfg.define("TWIZZLER", "True");
@@ -46,6 +47,9 @@ pub fn setup_cmake_twizzler(
     cfg.define("CMAKE_C_COMPILER", &cc);
     cfg.define("CMAKE_CXX_COMPILER", &cxx);
     cfg.define("CMAKE_ASM_COMPILER", &cc);
+    cfg.define("CMAKE_AR", &ar);
+    cfg.define("CMAKE_LD", &ld);
+    cfg.define("CMAKE_RANLIB", &ranlib);
 
     cfg.define("CMAKE_SYSROOT", sysroot.display().to_string());
     cfg.define("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM", "NEVER");
@@ -66,8 +70,8 @@ pub fn setup_cmake_twizzler(
     Ok(())
 }
 
-pub fn build_llvm(cli: &BootstrapOptions) -> anyhow::Result<()> {
-    let llvm_src_path = get_llvm_src_path()?;
+pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
+    let llvm_src_path = Path::new("toolchain/src/rust/src/llvm-project").canonicalize()?;
     let target_native = guess_host_triple().unwrap();
     let llvm_build_path = Path::new("toolchain/build/llvm").join(target_native);
     let nr_jobs = std::thread::available_parallelism()?.to_string();
@@ -117,7 +121,7 @@ pub fn build_llvm(cli: &BootstrapOptions) -> anyhow::Result<()> {
         Some(Path::new("toolchain/install").canonicalize()?.as_path()),
     )?;
 
-    let res = cfg.build();
+    let _res = cfg.build();
 
     for triple in all_possible_platforms() {
         let ls_name = format!("{}_linker_script.ld", triple.to_string().replace("-", "_"));
@@ -135,7 +139,7 @@ pub fn build_llvm(cli: &BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn build_lld(cli: &BootstrapOptions) -> anyhow::Result<()> {
+pub fn build_lld(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     let triple = guess_host_triple().unwrap();
     println!("== Building linker");
 
@@ -143,12 +147,12 @@ pub fn build_lld(cli: &BootstrapOptions) -> anyhow::Result<()> {
     let bin_dir = Path::new("toolchain/install/bin");
     let build_dir = Path::new("toolchain/build/lld").join(&triple.to_string());
     let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
-    let llvm_config = bin_dir.join("llvm-config");
+    let _llvm_config = bin_dir.join("llvm-config");
 
-    std::fs::create_dir_all(&build_dir);
+    std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
 
-    std::fs::create_dir_all(&bin_dir);
+    std::fs::create_dir_all(&bin_dir)?;
     let bin_dir = bin_dir.canonicalize()?;
 
     let mut cfg = cmake::Config::new(lld_dir);
@@ -171,7 +175,7 @@ pub fn build_lld(cli: &BootstrapOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn build_crtbeginend(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn build_crtbeginend(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("==> Building crtbegin/end for {}", triple);
     let install_dir = Path::new("toolchain/install/sysroots")
         .join(&triple.to_string())
@@ -240,7 +244,7 @@ pub fn build_runtimes(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result
     Ok(())
 }
 
-pub fn build_libunwind(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn build_libunwind(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Compiling libunwind for {}", triple);
 
     let build_dir = Path::new("toolchain/build/libunwind").join(&triple.to_string());
@@ -285,7 +289,6 @@ pub fn build_libunwind(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resul
         cfg.cargo_metadata(false);
         cfg.out_dir(&build_dir);
 
-        cfg.static_flag(true);
         //cfg.define("_LIBUNWIND_HAS_NO_THREADS", None);
         cfg.define("_LIBUNWIND_REMEMBER_STACK_ALLOC", None);
         // FIXME (dbittman): This is a hack to get bootstrap headers included when compiling
@@ -307,7 +310,7 @@ pub fn build_libunwind(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resul
     cc_cfg.compiler(bin_path.join("clang").canonicalize()?);
     cpp_cfg.compiler(bin_path.join("clang++").canonicalize()?);
 
-    let mut c_sources = vec![
+    let c_sources = vec![
         "Unwind-sjlj.c",
         "UnwindLevel1-gcc-ext.c",
         "UnwindLevel1.c",
@@ -358,7 +361,7 @@ pub fn build_libunwind(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resul
     Ok(())
 }
 
-pub fn build_compiler_rt(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn build_compiler_rt(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Building compiler-rt for {}", triple);
 
     let compiler_rt_dir =
@@ -370,10 +373,12 @@ pub fn build_compiler_rt(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Res
     let llvm_config = bin_dir.join("llvm-config");
 
     std::fs::create_dir_all(&install_dir)?;
-    let install_dir = install_dir.canonicalize()?;
+    let _install_dir = install_dir.canonicalize()?;
 
     std::fs::create_dir_all(&bin_dir)?;
     let bin_dir = bin_dir.canonicalize()?;
+
+    let _ = fs_extra::dir::remove(&build_dir);
 
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;

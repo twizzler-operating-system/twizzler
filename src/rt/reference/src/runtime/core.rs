@@ -39,6 +39,20 @@ unsafe impl Send for PtrToInfo {}
 unsafe impl Sync for PtrToInfo {}
 static MON_RTINFO: OnceLock<Option<PtrToInfo>> = OnceLock::new();
 
+fn search_envs_enabled(envp: *mut *mut c_char, name: &str) -> bool {
+    unsafe {
+        let mut env = envp;
+        while !env.is_null() && !(*env).is_null() {
+            let s = std::ffi::CStr::from_ptr(*env);
+            if s.to_str().unwrap_or("").starts_with(name) {
+                return true;
+            }
+            env = env.add(1);
+        }
+        false
+    }
+}
+
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
@@ -143,13 +157,6 @@ impl ReferenceRuntime {
             }
         }
 
-        if !unsafe { __twz_enable_libc_trace.is_null() } {
-            let _twz_enable_libc_trace =
-                unsafe { std::mem::transmute::<_, extern "C" fn()>(__twz_enable_libc_trace) };
-            //preinit_println!("enable libc trace");
-            //twz_enable_libc_trace();
-        }
-
         let mut null_env: [*mut c_char; 4] = [
             b"RUST_BACKTRACE=1\0".as_ptr() as *mut c_char,
             std::ptr::null_mut(),
@@ -161,6 +168,15 @@ impl ReferenceRuntime {
         } else {
             rtinfo.envp
         };
+
+        if !unsafe { __twz_enable_libc_trace.is_null() } {
+            let twz_enable_libc_trace =
+                unsafe { std::mem::transmute::<_, extern "C" fn()>(__twz_enable_libc_trace) };
+
+            if search_envs_enabled(env_ptr, "TWZ_LIBC_TRACE") {
+                twz_enable_libc_trace();
+            }
+        }
 
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = BasicAux {

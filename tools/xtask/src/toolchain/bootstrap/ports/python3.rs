@@ -5,7 +5,7 @@ use crate::{
     triple::Triple,
 };
 
-pub fn install(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn install(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     let src_dir = Path::new("src/ports/python/Python-3.14.3").canonicalize()?;
     let build_dir = Path::new("toolchain/build/ports/python").join(triple.to_string());
     let sysroot_dir = Path::new("toolchain/install/sysroots")

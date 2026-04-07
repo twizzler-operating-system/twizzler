@@ -6,7 +6,7 @@ use std::{
 use bootstrap::do_bootstrap;
 use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
-use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
+use pathfinding::{get_rustc_path, get_rustdoc_path};
 
 use crate::triple::{Arch, Triple};
 
@@ -48,18 +48,31 @@ pub struct BootstrapOptions {
     native: bool,
     #[clap(
         long,
-        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,rt,ports."
+        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,crt,rt,ports."
     )]
     step: Option<Vec<String>>,
 }
 
 impl BootstrapOptions {
     pub fn has_step(&self, s: &str) -> bool {
+        if self.step.as_ref().is_none_or(|x| x.is_empty()) {
+            return true;
+        }
         let s = s.to_string();
         let all = "all".to_string();
         self.step
             .as_ref()
             .map(|steps| steps.contains(&s) || steps.contains(&all))
+            .unwrap_or(true)
+    }
+    pub fn has_step_explicit(&self, s: &str) -> bool {
+        if self.step.as_ref().is_none_or(|x| x.is_empty()) {
+            return false;
+        }
+        let s = s.to_string();
+        self.step
+            .as_ref()
+            .map(|steps| steps.contains(&s))
             .unwrap_or(true)
     }
 }
@@ -209,7 +222,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
 
 pub fn set_static(target: &Triple) {
     let mut sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
-    let rustlib_path = get_rustlib_lib(target.to_string().as_str()).unwrap();
+    let rustlib_path = crate::toolchain::get_rustlib_lib(target.to_string().as_str()).unwrap();
     std::env::set_var(
         "RUSTFLAGS",
         &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a",  sysroot_path.display(), sysroot_path.display(), rustlib_path.display(), sysroot_path.display()),
@@ -243,7 +256,7 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     let builtin_headers = get_builtin_headers()?.canonicalize()?;
     //let compiler_rt_path = get_compiler_rt_path()?.canonicalize()?;
     //let lld_bin = get_lld_bin(guess_host_triple().unwrap())?.canonicalize()?;
-    let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?.canonicalize()?;
+    //let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?.canonicalize()?;
     let toolchain_bin = get_bin_path()?.canonicalize()?;
     let path = std::env::var("PATH").unwrap();
 
@@ -257,8 +270,8 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}",
-            rustlib_bin.canonicalize()?.to_string_lossy(),
+            "{}:{}",
+            //rustlib_bin.canonicalize()?.to_string_lossy(),
             //lld_bin.canonicalize()?.to_string_lossy(),
             toolchain_bin.canonicalize()?.to_string_lossy(),
             path

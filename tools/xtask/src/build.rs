@@ -27,7 +27,7 @@ struct OtherOptions {
 }
 
 use crate::{
-    toolchain::{get_sysroots_path, BootstrapOptions},
+    toolchain::BootstrapOptions,
     triple::{valid_targets, Arch, Machine, Triple},
     BuildOptions, CheckOptions, DocOptions, Profile,
 };

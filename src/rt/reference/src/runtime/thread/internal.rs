@@ -3,7 +3,6 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     ffi::{CStr, CString},
-    os::raw::c_char,
     sync::Mutex,
 };
 

@@ -91,19 +91,19 @@ impl NetDriver for DeviceWrapper<TwizzlerTransport> {
         todo!()
     }
 
-    fn setup_rx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
+    fn setup_rx_queue(&mut self, _len: usize) -> Result<QueueHandle, TwzError> {
         todo!()
     }
 
-    fn destroy_rx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
+    fn destroy_rx_queue(&mut self, _queue: QueueHandle) -> Result<(), TwzError> {
         todo!()
     }
 
-    fn setup_tx_queue(&mut self, len: usize) -> Result<QueueHandle, TwzError> {
+    fn setup_tx_queue(&mut self, _len: usize) -> Result<QueueHandle, TwzError> {
         todo!()
     }
 
-    fn destroy_tx_queue(&mut self, queue: QueueHandle) -> Result<(), TwzError> {
+    fn destroy_tx_queue(&mut self, _queue: QueueHandle) -> Result<(), TwzError> {
         todo!()
     }
 
@@ -115,39 +115,39 @@ impl NetDriver for DeviceWrapper<TwizzlerTransport> {
         todo!()
     }
 
-    fn mac_address(&self, queue: QueueHandle) -> Result<[u8; 6], TwzError> {
+    fn mac_address(&self, _queue: QueueHandle) -> Result<[u8; 6], TwzError> {
         todo!()
     }
 
     fn recv_packets(
         &mut self,
-        queue: QueueHandle,
-        packets: &mut [Packet],
+        _queue: QueueHandle,
+        _packets: &mut [Packet],
     ) -> Result<usize, TwzError> {
         todo!()
     }
 
     fn send_packets(
         &mut self,
-        queue: QueueHandle,
-        packets: &mut [Packet],
+        _queue: QueueHandle,
+        _packets: &mut [Packet],
     ) -> Result<usize, TwzError> {
         todo!()
     }
 
-    fn has_work(&self, queue: QueueHandle) -> WorkItems {
+    fn has_work(&self, _queue: QueueHandle) -> WorkItems {
         todo!()
     }
 
-    fn waitpoint(&self, queue: QueueHandle) -> twizzler_abi::syscall::ThreadSync {
+    fn waitpoint(&self, _queue: QueueHandle) -> twizzler_abi::syscall::ThreadSync {
         todo!()
     }
 
-    fn rx_packet_buffer(&self, queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
+    fn rx_packet_buffer(&self, _queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
         todo!()
     }
 
-    fn tx_packet_buffer(&self, queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
+    fn tx_packet_buffer(&self, _queue: QueueHandle) -> &twizzler_net::drivers::DmaPacketObject {
         todo!()
     }
 }

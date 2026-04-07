@@ -2,16 +2,13 @@ use std::{fs::File, io::Write, path::Path, process::Command};
 
 use crate::{
     toolchain::{
-        bootstrap::{
-            llvm::{setup_cmake, setup_cmake_twizzler},
-            setup_logfile,
-        },
+        bootstrap::llvm::{setup_cmake, setup_cmake_twizzler},
         BootstrapOptions,
     },
     triple::Triple,
 };
 
-pub fn install_headers(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Installing libc headers for {}", triple);
 
     let install_path = Path::new("toolchain/install");
@@ -20,11 +17,6 @@ pub fn install_headers(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resul
     let build_dir = Path::new("toolchain/build/mlibc").join(&build_dir_name);
 
     let mlibc_sysroot = install_path.join(format!("sysroots/{}", triple));
-    let linker_script = Path::new(&format!(
-        "toolchain/src/rust/compiler/rustc_target/src/spec/targets/{}_linker_script.ld",
-        triple.to_string().as_str().replace("-", "_")
-    ))
-    .canonicalize()?;
     let cross_file = format!("{}/meson-cross-twizzler.txt", mlibc_sysroot.display());
 
     std::fs::create_dir_all(&install_path)?;
@@ -126,13 +118,14 @@ pub fn install_headers(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resul
     Ok(())
 }
 
-pub fn build_libc(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Building libc for {}", triple);
 
     let install_path = Path::new("toolchain/install");
     let mlibc_src = Path::new("toolchain/src/mlibc").canonicalize()?;
     let build_dir_name = format!("build-{}", triple);
     let build_dir = Path::new("toolchain/build/mlibc").join(&build_dir_name);
+    let _ = fs_extra::dir::remove(&build_dir);
 
     let mlibc_sysroot = install_path.join(format!("sysroots/{}", triple));
     let cross_file = format!("{}/meson-cross-twizzler.txt", mlibc_sysroot.display());
@@ -140,7 +133,7 @@ pub fn build_libc(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()>
     std::fs::create_dir_all(&install_path)?;
     std::fs::create_dir_all(&build_dir)?;
     std::fs::create_dir_all(&mlibc_sysroot)?;
-    let install_path = install_path.canonicalize()?;
+    let _install_path = install_path.canonicalize()?;
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
@@ -189,6 +182,7 @@ pub fn build_libcxx(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     let build_dir_name = format!("build-{}", triple);
     let build_dir = Path::new("toolchain/build/libcxx").join(&build_dir_name);
     let libcxxabi_build_dir = Path::new("toolchain/build/libcxxabi").join(&build_dir_name);
+    let _ = fs_extra::dir::remove(&build_dir);
 
     std::fs::create_dir_all(&install_path)?;
     let install_path = install_path.canonicalize()?;
@@ -202,7 +196,7 @@ pub fn build_libcxx(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     cfg.define("CMAKE_C_COMPILER_TARGET", triple.to_string());
     cfg.define("CMAKE_CXX_COMPILER_TARGET", triple.to_string());
 
-    setup_cmake(&mut cfg, Some(install_path.as_path()));
+    setup_cmake(&mut cfg, Some(install_path.as_path()))?;
     setup_cmake_twizzler(
         &mut cfg,
         triple,
@@ -217,7 +211,7 @@ pub fn build_libcxx(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
             "-I".to_string(),
             install_path.join("include").display().to_string(),
         ],
-    );
+    )?;
 
     let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
     let llvm_config = install_path.join("bin/llvm-config");
@@ -249,12 +243,13 @@ pub fn build_libcxx(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     Ok(())
 }
 
-fn build_libcxxabi(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
+fn build_libcxxabi(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Building libcxxabi for {}", triple);
     let install_path = Path::new("toolchain/install/sysroots").join(&triple.to_string());
     let src_path = Path::new("toolchain/src/rust/src/llvm-project/libcxxabi").canonicalize()?;
     let build_dir_name = format!("build-{}", triple);
     let build_dir = Path::new("toolchain/build/libcxxabi").join(&build_dir_name);
+    let _ = fs_extra::dir::remove(&build_dir);
     let libcxx_build_dir = Path::new("toolchain/build/libcxx")
         .join(&build_dir_name)
         .canonicalize()?;
@@ -277,7 +272,7 @@ fn build_libcxxabi(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
     cfg.define("CMAKE_C_COMPILER_TARGET", triple.to_string());
     cfg.define("CMAKE_CXX_COMPILER_TARGET", triple.to_string());
 
-    setup_cmake(&mut cfg, Some(install_path.as_path()));
+    setup_cmake(&mut cfg, Some(install_path.as_path()))?;
     setup_cmake_twizzler(
         &mut cfg,
         triple,
@@ -292,7 +287,7 @@ fn build_libcxxabi(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
             "-I".to_string(),
             install_path.join("include").display().to_string(),
         ],
-    );
+    )?;
 
     let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
     let llvm_config = install_path.join("bin/llvm-config");

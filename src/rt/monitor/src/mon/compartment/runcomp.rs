@@ -361,7 +361,6 @@ impl RunComp {
             };
             let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
             // TODO: fill out argc and argv and envp
-            tracing::info!("setting entry = {:x}", main_entry);
             let rtinfo = RuntimeInfo {
                 flags: 0,
                 kind: RUNTIME_INIT_COMP,

@@ -96,7 +96,6 @@ impl LoadInfo {
         ctor_info.extend_from_slice(root_ctors.as_slice());
 
         let main_entry = root_lib.get_entry_address().ok();
-        tracing::info!("{} ==> {:?}", root_lib.name, main_entry);
 
         Ok(Self {
             root_id,

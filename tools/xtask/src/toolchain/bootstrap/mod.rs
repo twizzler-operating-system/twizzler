@@ -3,8 +3,6 @@ use std::{
     path::Path,
 };
 
-use guess_host_triple::guess_host_triple;
-
 use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
@@ -15,18 +13,13 @@ use crate::{
     triple::{all_possible_platforms, Triple},
 };
 
-mod paths;
-use paths::*;
-mod mover;
-
-mod install;
 mod libc;
 mod llvm;
 mod ports;
 mod prep;
 mod rust;
 
-pub fn setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
+pub fn _setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
     let logname = format!("{}.log", substep);
 
     let logdir = Path::new("toolchain/build").join(step);
@@ -82,10 +75,12 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
 
     for triple in all_possible_platforms() {
-        if cli.has_step("libc") {
+        if cli.has_step("crt") {
             libc::install_headers(&cli, &triple)?;
             llvm::build_runtimes(&cli, &triple)?;
+        }
 
+        if cli.has_step("libc") {
             libc::build_libc(&cli, &triple)?;
         }
 
@@ -95,12 +90,10 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
 
     let path = std::env::var("PATH").unwrap();
-    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}:{}",
-            lld_bin.to_string_lossy(),
+            "{}:{}:{}",
             std::fs::canonicalize("toolchain/install/bin")
                 .unwrap()
                 .to_string_lossy(),
@@ -111,7 +104,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         ),
     );
 
-    let current_dir = std::env::current_dir().unwrap();
     let sysroots = Path::new("toolchain/install/sysroots").canonicalize()?;
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroots);
 
@@ -127,8 +119,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    install::install(&cli)?;
-
     if !cli.skip_prune {
         prune_toolchain()?;
     }
@@ -138,7 +128,7 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         do_post_toolchain_runtime_build(&cli)?;
     }
 
-    if cli.has_step("ports") {
+    if cli.has_step_explicit("ports") {
         println!("building ports");
         build_and_install_ports(&cli)?;
     }
