@@ -38,17 +38,11 @@ pub fn build_rust(cli: &BootstrapOptions) -> anyhow::Result<()> {
     if !src_status.success() {
         anyhow::bail!("failed to install rust source");
     }
-    if cli.native {
-        return Ok(());
-    }
-    println!("building crtx.o's for targets");
-    for target in &crate::triple::all_possible_platforms() {
-        build_crtx("crti", target)?;
-        build_crtx("crtn", target)?;
-    }
+
     Ok(())
 }
 
+/*
 fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
     let objname = format!("{}.o", name);
     let srcname = format!("{}.rs", name);
@@ -77,3 +71,4 @@ fn build_crtx(name: &str, build_info: &Triple) -> anyhow::Result<()> {
 
     Ok(())
 }
+*/

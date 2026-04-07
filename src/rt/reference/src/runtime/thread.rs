@@ -1,5 +1,7 @@
 //! Implements thread management routines.
 
+use std::ffi::c_void;
+
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
     sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncFlags, ThreadSyncOp,

@@ -36,6 +36,7 @@ wait-timeout = { workspace = true }
 unittest-report = { workspace = true }
 cmake = "*"
 cc = "*"
+gag = "*"
 
 [package.metadata]
 twizzler-build = "xtask"

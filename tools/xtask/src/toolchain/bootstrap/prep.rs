@@ -11,7 +11,8 @@ use toml_edit::DocumentMut;
 use crate::{
     toolchain::{
         bootstrap::paths::{get_llvm_bin, get_llvm_src_path, get_rust_lld},
-        download_file, guess_host_triple, install_build_tools, BootstrapOptions,
+        download_file, get_toolchain_path, guess_host_triple, install_build_tools,
+        BootstrapOptions,
     },
     triple::all_possible_platforms,
 };
@@ -58,21 +59,15 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
         ));
         std::fs::create_dir_all(&sysroot_dir)?;
     }
-    if !cli.skip_downloads {
-        let client = Client::new();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(download_efi_files(&client))?;
+    let client = Client::new();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(download_efi_files(&client))?;
 
-        install_build_tools(&cli)?;
-    }
+    install_build_tools(&cli)?;
     let current_dir = std::env::current_dir().unwrap();
     std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
-
-    println!("generating rust bootstrap.config file");
-    let _ = std::fs::remove_file("toolchain/src/rust/bootstrap.toml");
-    generate_config_toml(cli)?;
 
     println!("copying twizzler-abi headers and crate to libc and rust");
     let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
@@ -93,10 +88,17 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("failed to copy twizzler ABI headers");
     }
+
+    let usr_link = format!("{}/usr", get_toolchain_path()?.display());
+    let local_link = format!("{}/local", get_toolchain_path()?.display());
+    let _ = std::fs::remove_file(&usr_link);
+    std::os::unix::fs::symlink(".", &usr_link)?;
+    let _ = std::fs::remove_file(&local_link);
+    std::os::unix::fs::symlink(".", &local_link)?;
     Ok(())
 }
 
-fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
+pub fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
     if cli.native {
         return generate_native_config_toml();
     }
@@ -134,7 +136,7 @@ fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
     for triple in all_possible_platforms() {
         let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
         // Use the C compiler as the linker.
-        let linker = get_rust_lld(host_triple)?.to_str().unwrap().to_string();
+        let linker = llvm_bin.join("ld.lld").to_str().unwrap().to_string();
         let clangxx = llvm_bin.join("clang++").to_str().unwrap().to_string();
         let ar = llvm_bin.join("llvm-ar").to_str().unwrap().to_string();
         let current_dir = std::env::current_dir().unwrap();

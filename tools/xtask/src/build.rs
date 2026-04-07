@@ -589,7 +589,9 @@ fn compile(
                     crate::triple::Host::Twizzler,
                     None,
                 );
-                let mut sysroot = get_sysroots_path(triple.to_string().as_str())?;
+                let mut sysroot = Path::new("toolchain/install/sysroots")
+                    .join(&triple.to_string())
+                    .join("lib");
                 sysroot.push(cd.path.file_name().unwrap());
                 std::fs::copy(cd.path, sysroot)?;
             }

@@ -19,10 +19,6 @@ pub use utils::*;
 
 #[derive(clap::Args, Debug)]
 pub struct BootstrapOptions {
-    #[clap(long, help = "Skip downloading boot files from file server.")]
-    skip_downloads: bool,
-    #[clap(long, help = "Skip compiling the rust toolchain (not recommended...).")]
-    skip_rust: bool,
     #[clap(
         long,
         help = "Don't remove the target/ directory after rebuilding the toolchain."
@@ -50,6 +46,22 @@ pub struct BootstrapOptions {
     compress: bool,
     #[clap(long, help = "Build the toolchain for use on Twizzler (host).")]
     native: bool,
+    #[clap(
+        long,
+        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,rt,ports."
+    )]
+    step: Option<Vec<String>>,
+}
+
+impl BootstrapOptions {
+    pub fn has_step(&self, s: &str) -> bool {
+        let s = s.to_string();
+        let all = "all".to_string();
+        self.step
+            .as_ref()
+            .map(|steps| steps.contains(&s) || steps.contains(&all))
+            .unwrap_or(true)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -221,10 +233,16 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
         .build()?
         .block_on(check_toolchain())?;
 
+    let tag = generate_tag()?;
+    let toolchain_path = Path::new("toolchain").join(&tag);
+    std::fs::create_dir_all(&toolchain_path)?;
+    let _ = std::fs::remove_file("toolchain/install");
+    std::os::unix::fs::symlink(&tag, "toolchain/install")?;
+
     let python_path = get_python_path()?.canonicalize()?;
     let builtin_headers = get_builtin_headers()?.canonicalize()?;
-    let compiler_rt_path = get_compiler_rt_path()?.canonicalize()?;
-    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?.canonicalize()?;
+    //let compiler_rt_path = get_compiler_rt_path()?.canonicalize()?;
+    //let lld_bin = get_lld_bin(guess_host_triple().unwrap())?.canonicalize()?;
     let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?.canonicalize()?;
     let toolchain_bin = get_bin_path()?.canonicalize()?;
     let path = std::env::var("PATH").unwrap();
@@ -234,14 +252,14 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var("CARGO_CACHE_RUSTC_INFO", "0");
     std::env::set_var("PYTHONPATH", python_path);
     std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
-    std::env::set_var("RUST_COMPILER_RT_ROOT", compiler_rt_path);
+    //std::env::set_var("RUST_COMPILER_RT_ROOT", compiler_rt_path);
 
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}",
             rustlib_bin.canonicalize()?.to_string_lossy(),
-            lld_bin.canonicalize()?.to_string_lossy(),
+            //lld_bin.canonicalize()?.to_string_lossy(),
             toolchain_bin.canonicalize()?.to_string_lossy(),
             path
         ),

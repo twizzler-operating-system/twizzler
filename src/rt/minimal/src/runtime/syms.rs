@@ -250,6 +250,19 @@ pub unsafe extern "C-unwind" fn twz_rt_set_name(name: *const ::core::ffi::c_char
 check_ffi_type!(twz_rt_set_name, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_name(
+    tcb: *const c_void,
+    name: *mut core::ffi::c_char,
+    len: *mut usize,
+) {
+    unsafe {
+        *name = 0;
+        *len = 0;
+    }
+}
+
+check_ffi_type!(twz_rt_get_name, _, _, _);
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_sleep(dur: twizzler_rt_abi::bindings::duration) {
     OUR_RUNTIME.sleep(dur.into());
 }

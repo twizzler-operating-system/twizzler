@@ -11,7 +11,8 @@ use crate::{
 };
 
 pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
-    println!("installing LLVM toolchain and native libraries");
+    println!("installi LLVM toolchain and native libraries");
+    /*
     for target in &crate::triple::all_possible_platforms() {
         let target = target.to_string();
 
@@ -59,17 +60,19 @@ pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
             target_triple.to_string()
         ));
         let build_dir_name = format!("build-{}", target_triple.to_string());
-        let src_dir = current_dir.join("toolchain/src/mlibc");
-        let build_dir = src_dir.join(&build_dir_name);
+        let libc_src_dir = current_dir.join("toolchain/src/mlibc");
+        let libc_build_dir = current_dir
+            .join("toolchain/build/mlibc")
+            .join(&build_dir_name);
         //let cross_file = format!("{}/meson-cross-twizzler.txt", sysroot_dir.display());
 
         let cxx_install_dir = current_dir.join(&format!(
-            "toolchain/src/rust/build/{}/native/libcxx",
+            "toolchain/build/libcxx/{}/build",
             target_triple.to_string()
         ));
 
         let cxxabi_install_dir = current_dir.join(&format!(
-            "toolchain/src/rust/build/{}/native/libcxxabi",
+            "toolchain/build/libcxxabi/{}/build",
             target_triple.to_string()
         ));
         let sysroot_include = sysroot_dir.join("include");
@@ -111,8 +114,6 @@ pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
             sysroot_lib.join("libc++abi.so"),
         )?;
 
-        let _ = std::fs::remove_dir_all(&build_dir);
-
         let usr_link = sysroot_dir.join("usr");
         let _ = std::fs::remove_file(&usr_link);
         std::os::unix::fs::symlink(".", usr_link)?;
@@ -132,6 +133,7 @@ pub fn install(cli: &BootstrapOptions) -> anyhow::Result<()> {
     for target_triple in all_possible_platforms() {
         crate::toolchain::bootstrap::mover::move_all(host_triple, &target_triple.to_string())?;
     }
+    */
 
     let usr_link = format!("{}/usr", get_toolchain_path()?.display());
     let local_link = format!("{}/local", get_toolchain_path()?.display());

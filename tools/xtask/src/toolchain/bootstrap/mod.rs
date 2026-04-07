@@ -1,12 +1,18 @@
-use std::path::Path;
+use std::{
+    fs::{File, OpenOptions},
+    path::Path,
+};
 
 use guess_host_triple::guess_host_triple;
 
 use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
-    toolchain::{compress_toolchain, prune_bins, prune_toolchain},
-    triple::all_possible_platforms,
+    toolchain::{
+        bootstrap::{ports::build_and_install_ports, prep::generate_config_toml},
+        compress_toolchain, generate_tag, prune_bins, prune_toolchain,
+    },
+    triple::{all_possible_platforms, Triple},
 };
 
 mod paths;
@@ -16,25 +22,77 @@ mod mover;
 mod install;
 mod libc;
 mod llvm;
+mod ports;
 mod prep;
 mod rust;
 
+pub fn setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
+    let logname = format!("{}.log", substep);
+
+    let logdir = Path::new("toolchain/build").join(step);
+    let logdir = if let Some(triple) = triple {
+        logdir.join(triple.to_string())
+    } else {
+        logdir
+    };
+
+    let logfile = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .read(true)
+        .open(logdir.join(logname))?;
+
+    println!(
+        "==> Performing {}: {} {}",
+        step,
+        substep,
+        if let Some(triple) = triple {
+            format!("(for {})", triple)
+        } else {
+            format!("")
+        }
+    );
+
+    Ok(logfile)
+}
+
 pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
-    prep::setup_build(&cli)?;
+    println!(
+        "Starting bootstrap with steps: {}",
+        cli.step
+            .as_ref()
+            .map(|s| s.join(","))
+            .unwrap_or("all".to_string())
+    );
 
-    llvm::build_llvm(&cli)?;
-    llvm::build_lld(&cli)?;
+    let tag = generate_tag()?;
+    let toolchain_path = Path::new("toolchain").join(&tag);
+    std::fs::create_dir_all(&toolchain_path)?;
+    let _ = std::fs::remove_file("toolchain/install");
+    std::os::unix::fs::symlink(&tag, "toolchain/install")?;
 
-    for triple in all_possible_platforms() {
-        libc::install_headers(&cli, &triple)?;
-        llvm::build_runtimes(&cli, &triple)?;
-
-        libc::build_libc(&cli, &triple)?;
-
-        //libc::build_libcxx(&cli, triple)?;
+    if cli.has_step("prep") {
+        prep::setup_build(&cli)?;
     }
 
-    return Ok(());
+    if cli.has_step("llvm") {
+        llvm::build_llvm(&cli)?;
+        llvm::build_lld(&cli)?;
+    }
+
+    for triple in all_possible_platforms() {
+        if cli.has_step("libc") {
+            libc::install_headers(&cli, &triple)?;
+            llvm::build_runtimes(&cli, &triple)?;
+
+            libc::build_libc(&cli, &triple)?;
+        }
+
+        if cli.has_step("libcxx") {
+            libc::build_libcxx(&cli, &triple)?;
+        }
+    }
 
     let path = std::env::var("PATH").unwrap();
     let lld_bin = get_lld_bin(guess_host_triple().unwrap())?;
@@ -57,30 +115,37 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     let sysroots = Path::new("toolchain/install/sysroots").canonicalize()?;
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroots);
 
-    if !cli.skip_rust {
+    if cli.has_step("rust") {
+        println!("generating rust bootstrap.config file");
+        let _ = std::fs::remove_file("toolchain/src/rust/bootstrap.toml");
+        generate_config_toml(&cli)?;
         println!("starting rust build");
         rust::build_rust(&cli)?;
     }
-    return Ok(());
 
     if cli.native {
         return Ok(());
     }
 
-    println!("rust build finished, packaging toolchain");
     install::install(&cli)?;
 
     if !cli.skip_prune {
         prune_toolchain()?;
     }
 
-    println!("building runtimes");
-    do_post_toolchain_runtime_build(&cli)?;
+    if cli.has_step("rt") {
+        println!("building runtimes");
+        do_post_toolchain_runtime_build(&cli)?;
+    }
 
-    println!("toolchain packaging finished, pruning binaries");
-    prune_bins()?;
+    if cli.has_step("ports") {
+        println!("building ports");
+        build_and_install_ports(&cli)?;
+    }
 
     if cli.compress {
+        println!("pruning binaries");
+        prune_bins()?;
         println!("compressing toolchain");
         compress_toolchain()?;
     }
