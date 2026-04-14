@@ -156,6 +156,7 @@ impl MapRegion {
 
     pub fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
+        prot.insert(Protections::READ);
         if wp {
             prot.remove(Protections::WRITE);
         }
@@ -209,7 +210,7 @@ impl MapRegion {
         if let Some(shared_pt) = &self.shared_pt
             && !is_kern_obj
         {
-            log::trace!(
+            log::debug!(
                 "shared map for: {}: {:?} {:?}: {:?}",
                 self.object().id(),
                 addr,
@@ -230,7 +231,8 @@ impl MapRegion {
                     settings.cache(),
                     settings.flags(),
                 );
-                check_settings(addr, &settings, cause)?;
+                check_settings(addr, &settings, cause)
+                    .inspect_err(|_| logln!("on check_settings (shadow)"))?;
                 self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
                 return mapper(
                     self.shared_pt.as_ref(),

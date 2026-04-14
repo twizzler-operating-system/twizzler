@@ -601,7 +601,6 @@ impl PagerData {
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         if objid_to_ino(id.raw()).is_some() {
-            ctx.paged_ostore(None)?.find_external(id.raw()).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,

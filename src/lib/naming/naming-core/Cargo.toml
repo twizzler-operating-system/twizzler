@@ -12,3 +12,4 @@ twizzler = { workspace = true }
 tracing = { workspace = true }
 bitflags = "2"
 pager-dynamic = { path = "../../pager/pager-dynamic" }
+libc = "*"

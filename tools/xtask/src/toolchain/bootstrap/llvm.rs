@@ -38,7 +38,7 @@ pub fn setup_cmake_twizzler(
     let cxx = bin_dir.join("clang++");
     let ld = bin_dir.join("clang");
     let ar = bin_dir.join("llvm-ar");
-    let ranlib = bin_dir.join("llvm-ar");
+    let ranlib = bin_dir.join("llvm-ranlib");
     let _llvm_config = bin_dir.join("llvm-config");
     cfg.target(&target.to_string());
     cfg.define("CMAKE_SYSTEM_NAME", "Twizzler");

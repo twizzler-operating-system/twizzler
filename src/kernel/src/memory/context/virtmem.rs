@@ -338,9 +338,10 @@ impl UserContext for VirtContext {
             None
         };
         log::debug!(
-            "insert {} to {:?}",
+            "insert {} to {:?} {:?}",
             object_info.object.id(),
-            slot.start_vaddr()
+            slot.start_vaddr(),
+            object_info.prot(),
         );
 
         let mut new_slot_info = MapRegion {

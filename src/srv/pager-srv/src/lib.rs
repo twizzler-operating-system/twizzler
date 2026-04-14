@@ -133,16 +133,6 @@ impl PagerContext {
         Ok(self.store.wait())
     }
 
-    pub async fn enumerate_external(&'static self, id: ObjID) -> Result<Vec<ExternalFile>> {
-        Ok(self
-            .paged_ostore(None)?
-            .enumerate_external(id.raw())
-            .await?
-            .iter()
-            .cloned()
-            .collect())
-    }
-
     pub fn notify_kernel(&'static self, id: u32, comp: CompletionToKernel) {
         self.kernel_notify
             .complete(id, comp, SubmissionFlags::empty())

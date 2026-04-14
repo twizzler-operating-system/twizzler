@@ -1,5 +1,10 @@
-use std::sync::OnceLock;
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::OnceLock,
+};
 
+use libc::mode_t;
 use monitor_api::CompartmentHandle;
 use secgate::{
     util::{Descriptor, Handle, SimpleBuffer},
@@ -13,6 +18,9 @@ struct PagerAPI {
     open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+    lookup_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+    create_external: DynamicSecGate<'static, (Descriptor, ObjID, mode_t, usize), usize>,
+    unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>,
 }
 
 static PAGER_API: OnceLock<PagerAPI> = OnceLock::new();
@@ -37,11 +45,29 @@ fn pager_api() -> &'static PagerAPI {
                 .dynamic_gate("pager_enumerate_external")
                 .expect("failed to find enumerate external gate call")
         };
+        let lookup_external = unsafe {
+            handle
+                .dynamic_gate("pager_lookup_external")
+                .expect("failed to find lookup external gate call")
+        };
+        let create_external = unsafe {
+            handle
+                .dynamic_gate("pager_create_external")
+                .expect("failed to find create external gate call")
+        };
+        let unlink_external = unsafe {
+            handle
+                .dynamic_gate("pager_unlink_external")
+                .expect("failed to find unlink external gate call")
+        };
         PagerAPI {
             _handle: handle,
             open_handle,
             close_handle,
             enumerate_external,
+            lookup_external,
+            create_external,
+            unlink_external,
         }
     })
 }
@@ -79,36 +105,85 @@ impl Drop for PagerHandle {
     }
 }
 
+fn get_external_file_from_sb(sb: &SimpleBuffer, offset: usize) -> Option<(ExternalFile, usize)> {
+    let mut file = std::mem::MaybeUninit::<ExternalFileSbHdr>::uninit();
+    let ptr = file.as_mut_ptr().cast::<u8>();
+    let slice =
+        unsafe { core::slice::from_raw_parts_mut(ptr, std::mem::size_of::<ExternalFileSbHdr>()) };
+    let thislen = sb.read_offset(slice, offset);
+
+    if thislen < std::mem::size_of::<ExternalFileSbHdr>() {
+        return None;
+    }
+
+    let file = unsafe { file.assume_init() };
+
+    let mut pathbuf = [0u8; MAX_EXTERNAL_PATH];
+    let pathlen = sb.read_offset(&mut pathbuf[0..(file.pathlen as usize)], offset + thislen);
+
+    if pathlen < file.pathlen as usize {
+        return None;
+    }
+
+    Some((
+        ExternalFile::new(
+            unsafe { str::from_utf8_unchecked(&pathbuf[0..pathlen]) },
+            file.kind,
+            file.id,
+        ),
+        thislen + pathlen,
+    ))
+}
+
 impl PagerHandle {
     /// Open a new logging handle.
     pub fn new() -> Option<Self> {
         Self::open(()).ok()
     }
 
-    pub fn enumerate_external(&mut self, id: ObjID) -> Result<Vec<ExternalFile>> {
+    pub fn unlink_external(&mut self, id: ObjID, name: impl AsRef<Path>) -> Result<()> {
+        let name = name.as_ref().as_os_str().as_encoded_bytes();
+        if name.len() > NAME_MAX {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let namelen = self.buffer.write(name);
+
+        (pager_api().unlink_external)(self.desc, id, namelen)
+    }
+
+    pub fn create_external_file(
+        &mut self,
+        dir: ObjID,
+        name: impl AsRef<Path>,
+        mode: mode_t,
+    ) -> Result<ExternalFile> {
+        let name = name.as_ref().as_os_str().as_encoded_bytes();
+        if name.len() > NAME_MAX {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let namelen = self.buffer.write(name);
+
+        let _filelen = (pager_api().create_external)(self.desc, dir, mode, namelen)?;
+
+        get_external_file_from_sb(&self.buffer, 0)
+            .ok_or(TwzError::INVALID_ARGUMENT)
+            .map(|x| x.0)
+    }
+
+    pub fn enumerate_external(&mut self, id: ObjID, entries: &mut Vec<ExternalFile>) -> Result<()> {
         let len = (pager_api().enumerate_external)(self.desc, id)?;
 
         let mut off = 0;
-        let mut v = Vec::new();
+        entries.clear();
         while off < len {
-            let mut file = std::mem::MaybeUninit::<ExternalFile>::uninit();
-            let ptr = file.as_mut_ptr().cast::<u8>();
-            let slice = unsafe {
-                core::slice::from_raw_parts_mut(ptr, std::mem::size_of::<ExternalFile>())
-            };
-            let thislen = self.buffer.read_offset(slice, off);
-
-            if thislen < std::mem::size_of::<ExternalFile>() {
+            let Some(file) = get_external_file_from_sb(&self.buffer, off) else {
                 break;
-            }
+            };
+            entries.push(file.0);
 
-            unsafe {
-                v.push(file.assume_init());
-            }
-
-            off += thislen;
+            off += file.1;
         }
-        Ok(v)
+        Ok(())
     }
 }
 
@@ -135,31 +210,24 @@ pub fn ino_to_objid(ino: u32) -> u128 {
 pub const MAX_EXTERNAL_PATH: usize = 4096;
 pub const NAME_MAX: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
-#[repr(C)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct ExternalFile {
     pub id: u128,
-    pub name: [u8; NAME_MAX],
-    pub name_len: u32,
+    pub path: PathBuf,
     pub kind: ExternalKind,
 }
 
 impl ExternalFile {
-    pub fn new(iname: &[u8], kind: ExternalKind, id: u128) -> Self {
-        let name_len = iname.len().min(NAME_MAX);
-        let sname = &iname[0..name_len];
-        let mut name = [0; NAME_MAX];
-        name[0..name_len].copy_from_slice(&sname);
+    pub fn new(path: impl AsRef<std::path::Path>, kind: ExternalKind, id: u128) -> Self {
         Self {
             id,
-            name,
+            path: path.as_ref().to_path_buf(),
             kind,
-            name_len: name_len as u32,
         }
     }
 
     pub fn name(&self) -> Option<&str> {
-        str::from_utf8(&self.name[0..(self.name_len as usize)]).ok()
+        self.path.file_name().and_then(|s| s.to_str())
     }
 }
 
@@ -170,4 +238,10 @@ pub enum ExternalKind {
     Directory,
     SymLink,
     Other,
+}
+
+pub struct ExternalFileSbHdr {
+    pub id: u128,
+    pub kind: ExternalKind,
+    pub pathlen: u32,
 }

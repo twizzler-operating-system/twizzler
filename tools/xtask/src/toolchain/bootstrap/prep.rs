@@ -132,11 +132,31 @@ pub fn generate_config_toml(cli: &BootstrapOptions) -> anyhow::Result<()> {
         toml_edit::value(llvm_config.display().to_string());
 
     for triple in all_possible_platforms() {
-        let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
+        let clang = llvm_bin
+            .join("clang")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
         // Use the C compiler as the linker.
-        let linker = llvm_bin.join("ld.lld").to_str().unwrap().to_string();
-        let clangxx = llvm_bin.join("clang++").to_str().unwrap().to_string();
-        let ar = llvm_bin.join("llvm-ar").to_str().unwrap().to_string();
+        let linker = llvm_bin
+            .join("ld.lld")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
+        let clangxx = llvm_bin
+            .join("clang++")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
+        let ar = llvm_bin
+            .join("llvm-ar")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
         let current_dir = std::env::current_dir().unwrap();
         let sysroot_dir = current_dir.join(format!(
             "toolchain/install/sysroots/{}/lib",
@@ -198,11 +218,31 @@ fn generate_native_config_toml() -> anyhow::Result<()> {
     toml["target"][host_triple]["linker"] = toml_edit::value(host_ld);
 
     for triple in all_possible_platforms() {
-        let clang = llvm_bin.join("clang").to_str().unwrap().to_string();
+        let clang = llvm_bin
+            .join("clang")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
         // Use the C compiler as the linker.
-        let clangxx = llvm_bin.join("clang++").to_str().unwrap().to_string();
-        let linker = llvm_bin.join("clang").to_str().unwrap().to_string();
-        let ar = llvm_bin.join("llvm-ar").to_str().unwrap().to_string();
+        let clangxx = llvm_bin
+            .join("clang++")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
+        let linker = llvm_bin
+            .join("clang")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
+        let ar = llvm_bin
+            .join("llvm-ar")
+            .canonicalize()?
+            .to_str()
+            .unwrap()
+            .to_string();
         let current_dir = std::env::current_dir().unwrap();
         let sysroot_dir = current_dir.join(format!(
             "toolchain/install/sysroots/{}/lib",

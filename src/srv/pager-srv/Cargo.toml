@@ -26,6 +26,7 @@ pager = { path = "../../lib/pager" }
 heapless = { workspace = true }
 async-channel = { workspace = true }
 mayheap = { workspace = true }
+libc = "*"
 
 async-trait = { workspace = true }
 volatile = { workspace = true }
