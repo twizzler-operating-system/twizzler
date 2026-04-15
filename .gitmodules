@@ -82,4 +82,4 @@
 	url = ../../twizzler-operating-system/nix.git
 [submodule "src/ports/python/cpython"]
 	path = src/ports/python/cpython
-	url = git@github.com:twizzler-operating-system/cpython.git
+	url = ../../twizzler-operating-system/cpython.git
