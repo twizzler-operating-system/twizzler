@@ -1,13 +1,13 @@
 use std::{path::Path, process::Command, thread::available_parallelism};
 
 use crate::{
-    toolchain::{guess_host_triple, BootstrapOptions},
+    toolchain::{bootstrap::setup_logfile, guess_host_triple},
     triple::Triple,
 };
 
-pub fn install(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
-    let src_dir = Path::new("src/ports/python/Python-3.14.3").canonicalize()?;
-    let build_dir = Path::new("toolchain/build/ports/python").join(triple.to_string());
+pub fn install(triple: &Triple) -> anyhow::Result<()> {
+    let src_dir = Path::new("src/ports/python/cpython").canonicalize()?;
+    let build_dir = Path::new("toolchain/build/ports/cpython").join(triple.to_string());
     let sysroot_dir = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .canonicalize()?;
@@ -16,8 +16,10 @@ pub fn install(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
 
+    let log = setup_logfile("ports/cpython", "xtask-configure", Some(triple))?;
     let mut cmd = Command::new(src_dir.join("configure"));
     cmd.current_dir(&build_dir)
+        .stdout(log)
         .arg("--host")
         .arg(triple.to_string())
         .arg("--target")
@@ -25,7 +27,7 @@ pub fn install(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
         .arg("--enable-shared")
         .arg("--with-mimalloc=no")
         .arg("--with-pymalloc=no")
-        .arg("--prefix=/usr")
+        .arg("--prefix=/")
         .arg("--build")
         .arg(guess_host_triple().unwrap())
         //.arg("--enable-optimizations")
@@ -54,10 +56,12 @@ pub fn install(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
         anyhow::bail!("failed to configure python");
     }
 
+    let log = setup_logfile("ports/cpython", "xtask-build", Some(triple))?;
     let mut cmd = Command::new("make");
     cmd.arg("-j")
         .arg(available_parallelism().unwrap().to_string());
     cmd.current_dir(&build_dir);
+    cmd.stdout(log);
     cmd.env("DESTDIR", sysroot_dir);
 
     cmd.arg("install");

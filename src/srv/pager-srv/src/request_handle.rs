@@ -120,7 +120,7 @@ async fn handle_page_data_request_task(
                 start: start.range.start,
                 end: last.range.end,
             };
-            tracing::info!("{:?} ==> {:?} {:?}", id, req_range, phys_range);
+            tracing::trace!("{:?} ==> {:?} {:?}", id, req_range, phys_range);
 
             let start = req_range.start + (count + acc as u64) * PAGE;
             let range = ObjectRange::new(start, start + phys_range.len() as u64);

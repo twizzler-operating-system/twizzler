@@ -10,7 +10,7 @@ use std::{
 use async_io::Timer;
 use disk::Disk;
 use memstore::virtio::init_virtio;
-use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
+use object_store::{Ext4Store, PagedObjectStore};
 use physrw::{init_pr_mgr, report_ready};
 use threads::{run_async, spawn_async, PagerThreadPool};
 use tracing_subscriber::fmt::format::FmtSpan;

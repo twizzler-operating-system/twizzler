@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::sync::Mutex;
 
 use object_store::{ExternalFile, ExternalFileSbHdr, ExternalFileStore, ExternalOpenFlags};
 use secgate::util::{Descriptor, SimpleBuffer};

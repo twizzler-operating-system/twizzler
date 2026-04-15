@@ -2746,6 +2746,16 @@ unsafe extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
+    pub fn ext4_link(
+        mp: *mut ext4_mountpoint,
+        parent: *mut ext4_inode_ref,
+        ch: *mut ext4_inode_ref,
+        n: *const ::std::os::raw::c_char,
+        len: u32,
+        rename: bool,
+    ) -> ::std::os::raw::c_int;
+}
+unsafe extern "C" {
     #[doc = "@brief Rename file.\n @param path Source.\n @param new_path Destination.\n @return  Standard error code."]
     pub fn ext4_frename(
         path: *const ::std::os::raw::c_char,

@@ -8,10 +8,14 @@ use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path};
 
-use crate::triple::{Arch, Triple};
+use crate::{
+    toolchain::ports::build_and_install_ports,
+    triple::{Arch, Triple},
+};
 
 mod bootstrap;
 mod pathfinding;
+mod ports;
 mod utils;
 
 pub use pathfinding::*;
@@ -48,7 +52,7 @@ pub struct BootstrapOptions {
     native: bool,
     #[clap(
         long,
-        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,crt,rt,ports."
+        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,crt,rt."
     )]
     step: Option<Vec<String>>,
 }
@@ -63,16 +67,6 @@ impl BootstrapOptions {
         self.step
             .as_ref()
             .map(|steps| steps.contains(&s) || steps.contains(&all))
-            .unwrap_or(true)
-    }
-    pub fn has_step_explicit(&self, s: &str) -> bool {
-        if self.step.as_ref().is_none_or(|x| x.is_empty()) {
-            return false;
-        }
-        let s = s.to_string();
-        self.step
-            .as_ref()
-            .map(|steps| steps.contains(&s))
             .unwrap_or(true)
     }
 }
@@ -103,6 +97,9 @@ pub enum ToolchainCommands {
 
     /// Compresses the active toolchain for distribution
     Compress,
+
+    /// Build non-rust ports
+    Ports,
 }
 
 #[derive(Args, Debug)]
@@ -129,6 +126,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             .block_on(pull_toolchain())?),
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Compress => compress_toolchain(),
+        ToolchainCommands::Ports => build_and_install_ports(),
         ToolchainCommands::Active => {
             match get_toolchain_path()?.canonicalize() {
                 Ok(_) => {

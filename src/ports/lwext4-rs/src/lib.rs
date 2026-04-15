@@ -6,6 +6,7 @@ use std::{
     u64,
 };
 
+use libc::mode_t;
 use lwext4::{
     ext4_block, ext4_blockdev, ext4_blockdev_iface, ext4_cache_flush, ext4_dir_iterator_fini,
     ext4_dir_iterator_init, ext4_dir_iterator_next, ext4_extent_get_blocks, ext4_file,
@@ -436,6 +437,67 @@ impl Ext4Fs {
         })
     }
 
+    pub fn open_file_from_container(
+        &mut self,
+        cont_ino: u32,
+        name: &str,
+        flags: u32,
+        mode: mode_t,
+    ) -> Result<Ext4File<'_>> {
+        let fs = unsafe { lwext4::ext4_mountpoint_fs(self.mnt_name.as_ptr()) };
+        let mut parent = self.get_inode(cont_ino)?;
+        if cont_ino == 0 || cont_ino == 2 {
+            return self.open_file(name, flags);
+        }
+
+        let mut search = ext4_dir_search_result {
+            block: ext4_block {
+                lb_id: 0,
+                buf: null_mut(),
+                data: null_mut(),
+            },
+            dentry: null_mut(),
+        };
+        let res = errno_to_result(unsafe {
+            ext4_dir_find_entry(
+                &mut search,
+                &mut parent.inode,
+                name.as_ptr().cast(),
+                name.len() as u32,
+            )
+        });
+
+        if res.is_err() && flags & O_CREAT != 0 {
+            let ft = if mode & libc::S_IFDIR != 0 {
+                return Err(ErrorKind::Unsupported.into());
+            } else if mode & libc::S_IFLNK != 0 {
+                lwext4::EXT4_INODE_MODE_SOFTLINK
+            } else {
+                lwext4::EXT4_INODE_MODE_FILE
+            };
+
+            let mut new_inode = MaybeUninit::uninit();
+            unsafe {
+                ext4_journal_start(self.mnt_name.as_ptr());
+                errno_to_result(ext4_fs_alloc_inode(fs, new_inode.as_mut_ptr(), ft as i32))?;
+                let mp = ext4_get_mount(self.mnt_name.as_ptr());
+                errno_to_result(lwext4::ext4_link(
+                    mp,
+                    &mut parent.inode,
+                    new_inode.as_mut_ptr(),
+                    name.as_ptr().cast(),
+                    name.len() as u32,
+                    false,
+                ))?;
+                ext4_journal_stop(self.mnt_name.as_ptr());
+                return self.open_file_from_inode(new_inode.assume_init().index, flags);
+            }
+        } else if res.is_err() {
+            return Err(res.err().unwrap());
+        }
+        return self.open_file_from_inode(unsafe { (*search.dentry).inode }, flags);
+    }
+
     pub fn open_file_from_inode(&mut self, index: u32, flags: u32) -> Result<Ext4File<'_>> {
         let name = format!("{}#{}", self.mnt_name.to_string_lossy(), index);
         let name = CString::new(name).unwrap();
@@ -595,8 +657,12 @@ impl<'a> Iterator for DirIter<'a> {
     }
 }
 
-
 use pager_dynamic::ExternalKind;
+
+use crate::lwext4::{
+    ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode, ext4_journal_start,
+    ext4_journal_stop,
+};
 
 impl From<FileKind> for ExternalKind {
     fn from(value: FileKind) -> Self {

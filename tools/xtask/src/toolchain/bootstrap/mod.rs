@@ -7,19 +7,18 @@ use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
     toolchain::{
-        bootstrap::{ports::build_and_install_ports, prep::generate_config_toml},
-        compress_toolchain, generate_tag, prune_bins, prune_toolchain,
+        bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag, prune_bins,
+        prune_toolchain,
     },
     triple::{all_possible_platforms, Triple},
 };
 
 mod libc;
 mod llvm;
-mod ports;
 mod prep;
 mod rust;
 
-pub fn _setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
+pub fn setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
     let logname = format!("{}.log", substep);
 
     let logdir = Path::new("toolchain/build").join(step);
@@ -129,11 +128,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     if cli.has_step("rt") {
         println!("building runtimes");
         do_post_toolchain_runtime_build(&cli)?;
-    }
-
-    if cli.has_step_explicit("ports") {
-        println!("building ports");
-        build_and_install_ports(&cli)?;
     }
 
     if cli.compress {

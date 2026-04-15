@@ -586,19 +586,24 @@ impl ReferenceRuntime {
             if bi.fd > 2 {
                 continue;
             }
-            let _ = self.open(
-                Some(bi.fd),
-                kind,
-                OperationOptions::from_bits_truncate(bi.flags),
-                bi.bind_data.as_ptr().cast(),
-                bi.bind_len as usize,
-                false,
-            );
+            let _ = self
+                .open(
+                    Some(bi.fd),
+                    kind,
+                    OperationOptions::from_bits_truncate(bi.flags),
+                    bi.bind_data.as_ptr().cast(),
+                    bi.bind_len as usize,
+                    false,
+                )
+                .inspect_err(|e| {
+                    twizzler_abi::klog_println!("Failed to open fd ({}): {}", bi.fd, e);
+                });
         }
     }
 
     fn open_path(
         &self,
+        existing_fd: Option<RawFd>,
         path: &str,
         create_opt: CreateOptions,
         open_opt: OperationOptions,
@@ -689,9 +694,13 @@ impl ReferenceRuntime {
 
         let mut binding = get_fd_slots().lock().unwrap();
 
-        let fd = binding
-            .insert_first_empty(elem)
-            .ok_or(ResourceError::OutOfNames)?;
+        let fd = if let Some(fd) = existing_fd {
+            binding.insert(fd.try_into().unwrap(), elem);
+            Some(fd as usize)
+        } else {
+            binding.insert_first_empty(elem)
+        }
+        .ok_or(ResourceError::OutOfNames)?;
 
         if did_create {
             session.put(path, obj_id)?;
@@ -852,6 +861,7 @@ impl ReferenceRuntime {
                 let name = core::str::from_utf8(name)
                     .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument)?;
                 return self.open_path(
+                    existing_fd,
                     name,
                     info.create.into(),
                     info.flags.into(),
