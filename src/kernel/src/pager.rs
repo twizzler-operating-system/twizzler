@@ -222,7 +222,34 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
     while cur < end {
         if let Some(range) = tree.get(cur) {
             // TODO: find holes in the range
-            cur = range.start.offset(range.length);
+
+            let len = range.length;
+            let start = range.start;
+            let mut holes = heapless::Vec::<_, 8>::new();
+            let off = range.holes(0, &mut holes);
+            log::info!(
+                "page {} is in core (range {}, off = {}, holes = {:?})",
+                cur,
+                range,
+                off,
+                holes
+            );
+
+            if off < range.length {
+                if get_pages_and_wait(obj, cur.offset(0), range.length, flags, tree) {
+                    used_pager = true;
+                }
+                tree = obj.lock_page_tree();
+            } else if holes.len() > 0 {
+                for hole in holes {
+                    if get_pages_and_wait(obj, cur.offset(hole.0), hole.1, flags, tree) {
+                        used_pager = true;
+                    }
+                    tree = obj.lock_page_tree();
+                }
+            }
+
+            cur = start.offset(len);
         } else {
             let mut r = tree.range(cur..end);
             let thislen = if let Some(first) = r.next() {

@@ -27,6 +27,23 @@ impl PageVec {
         }
     }
 
+    pub fn holes<const N: usize>(
+        &self,
+        pn: usize,
+        holes: &mut heapless::Vec<(usize, usize), N>,
+    ) -> usize {
+        let mut last_end = pn;
+        for r in self.tree.range(pn..usize::MAX) {
+            if *r.0 > last_end + 1 {
+                if holes.push((last_end + 1, *r.0 - last_end - 1)).is_err() {
+                    break;
+                }
+            }
+            last_end = (*r.0) + r.1.nr_pages();
+        }
+        last_end
+    }
+
     pub fn first(&self) -> Option<&PageRef> {
         self.tree
             .range(Range {

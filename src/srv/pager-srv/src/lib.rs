@@ -46,7 +46,7 @@ mod threads;
 fn tracing_init() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
+            .with_max_level(tracing::Level::DEBUG)
             .with_span_events(FmtSpan::ENTER)
             .without_time()
             .finish(),

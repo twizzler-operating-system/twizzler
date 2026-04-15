@@ -244,13 +244,19 @@ impl MapRegion {
             }
         }
 
-        let mut obj_page_tree = self.object.lock_page_tree();
+        let obj_page_tree = self.object.lock_page_tree();
         let mut used_pager = false;
-        obj_page_tree = self
-            .object
-            .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
+        let mut obj_page_tree =
+            self.object
+                .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
+        log::trace!(
+            "get_page for {} page {} got {:?}",
+            self.object().id(),
+            page_number,
+            status
+        );
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
             log::warn!(
                 "fallback allocate in fault to page {} in {}",
@@ -272,7 +278,7 @@ impl MapRegion {
             }
         }
 
-        if let PageStatus::Locked(sleeper) = status {
+        if let PageStatus::Locked(ref sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
             return self.map(

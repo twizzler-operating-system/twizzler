@@ -94,6 +94,32 @@ pub struct PageRange {
 }
 
 impl PageRange {
+    pub fn holes<const N: usize>(
+        &self,
+        off: usize,
+        holes: &mut heapless::Vec<(usize, usize), N>,
+    ) -> usize {
+        if off >= self.length {
+            return self.length;
+        }
+        match &self.backing {
+            BackingPages::Nothing => {
+                holes.push((off, self.length - off)).ok();
+                self.length
+            }
+            BackingPages::Single(page_ref) => {
+                if self.offset + off >= page_ref.nr_pages() {
+                    let delta = (self.offset + off) - page_ref.nr_pages();
+                    holes.push((off, delta)).ok();
+                    self.length
+                } else {
+                    (page_ref.nr_pages() - self.offset).min(self.length - off) + off
+                }
+            }
+            BackingPages::Many(mutex) => mutex.lock().holes(self.offset + off, holes),
+        }
+    }
+
     fn new(start: PageNumber) -> Self {
         Self {
             start,
@@ -424,7 +450,7 @@ impl PageRangeTree {
             return PageStatus::Ready(page, shared);
         }
         if let Some(allocator) = allocator {
-            log::debug!("split into three: {} {:?}", pn, flags);
+            log::info!("split into three: {} {:?}", pn, flags);
             if !self.split_into_three(pn, false, allocator) {
                 return PageStatus::AllocFail;
             }

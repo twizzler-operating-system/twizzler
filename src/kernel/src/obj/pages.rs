@@ -315,28 +315,29 @@ impl Object {
 
     fn ensure_in_core_not_pager<'a>(
         self: &'a Arc<Object>,
-        mut page_tree: LockGuard<'a, PageRangeTree>,
+        page_tree: &mut LockGuard<'a, PageRangeTree>,
         page_number: PageNumber,
-    ) -> LockGuard<'a, PageRangeTree> {
+    ) -> PageStatus {
         let flags = FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK;
         let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
-        let large_page_number = page_number.align_down(pages_per_large);
+        let _large_page_number = page_number.align_down(pages_per_large);
 
-        let entries =
-            page_tree.range(large_page_number..(large_page_number.offset(pages_per_large)));
-        let all_empty = entries.count() == 0;
+        //let mut entries = page_tree.range(page_number..page_number.next()); //TODO: optimize for
+        // large page case (currently we always check the first page, even if it's a large page and
+        // we're asking for the second page)
 
         log::trace!(
-            "{} ==> {} {} {}",
+            "{} ==> {} {}",
             self.id(),
-            all_empty,
+            //all_empty,
             page_number,
             core::panic::Location::caller()
         );
 
+        /*
         if !large_page_number.is_zero()
             && page_number < PageNumber::from_offset(MAX_SIZE - PHYS_LEVEL_LAYOUTS[1].size())
-            && all_empty
+           // && all_empty
             && false
         {
             let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[1]);
@@ -361,14 +362,38 @@ impl Object {
             }
             return page_tree;
         }
+        */
 
         let mut frame_allocator = FrameAllocator::new(flags, PHYS_LEVEL_LAYOUTS[0]);
-        if let Some(frame) = frame_allocator.try_allocate() {
-            let page = Arc::new(Page::new(frame, 1));
-            let page = PageRef::new(page, 0, 1);
-            page_tree.add_page(page_number, page, Some(&mut frame_allocator));
+        //let entry = entries.next();
+        /*
+        let pr = entry.and_then(|e| {
+            let mut pages = heapless::Vec::<_, 1>::new();
+            e.1.pages(page_number, &mut pages, MappingSettings::default_user());
+            pages.get(0).cloned()
+        });
+        */
+        let x = page_tree.get_page(
+            page_number,
+            GetPageFlags::empty(),
+            Some(&mut frame_allocator),
+        );
+        if matches!(x, PageStatus::Ready(_, _)) {
+            x
+        } else {
+            if let Some(frame) = frame_allocator.try_allocate() {
+                let page = Arc::new(Page::new(frame, 1));
+                let page = PageRef::new(page, 0, 1);
+                let p = page_tree.add_page(page_number, page, Some(&mut frame_allocator));
+                if let Some(p) = p {
+                    PageStatus::Ready(p, false)
+                } else {
+                    PageStatus::NoPage
+                }
+            } else {
+                PageStatus::NoPage
+            }
         }
-        page_tree
     }
 
     #[track_caller]
@@ -379,22 +404,26 @@ impl Object {
         used_pager: &mut bool,
     ) -> LockGuard<'a, PageRangeTree> {
         *used_pager = false;
-        if matches!(
-            page_tree.try_get_page(page_number, GetPageFlags::empty()),
-            PageStatus::NoPage
-        ) {
+        let res = page_tree.try_get_page(page_number, GetPageFlags::empty());
+        log::trace!(
+            "{}: ensure_in_core for page {}, got {:?}",
+            self.id(),
+            page_number,
+            res,
+        );
+        if matches!(res, PageStatus::NoPage) {
             if self.use_pager() {
                 drop(page_tree);
                 *used_pager = crate::pager::get_object_page(self, page_number);
                 page_tree = self.lock_page_tree();
-                if matches!(
-                    page_tree.try_get_page(page_number, GetPageFlags::empty()),
-                    PageStatus::NoPage
-                ) {
-                    page_tree = self.ensure_in_core_not_pager(page_tree, page_number);
+                let status = page_tree.try_get_page(page_number, GetPageFlags::empty());
+                if matches!(status, PageStatus::NoPage) {
+                    self.ensure_in_core_not_pager(&mut page_tree, page_number);
                 }
+                return page_tree;
             } else {
-                page_tree = self.ensure_in_core_not_pager(page_tree, page_number);
+                self.ensure_in_core_not_pager(&mut page_tree, page_number);
+                return page_tree;
             }
         }
         page_tree
@@ -416,8 +445,8 @@ impl Object {
                 return None;
             }
             let mut _used_pager = false;
-            obj_page_tree = self.ensure_in_core(obj_page_tree, page_number, &mut _used_pager);
-            drop(obj_page_tree);
+            let r = self.ensure_in_core(obj_page_tree, page_number, &mut _used_pager);
+            drop(r);
             self.read_meta(can_wait)
         }
     }
