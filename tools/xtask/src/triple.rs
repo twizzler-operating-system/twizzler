@@ -45,6 +45,7 @@ impl TryFrom<&str> for Arch {
         Ok(match s {
             "aarch64" => Self::Aarch64,
             "x86_64" => Self::X86_64,
+            "x86-64" => Self::X86_64,
             _ => return Err(()),
         })
     }

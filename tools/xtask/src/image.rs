@@ -279,6 +279,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             "libdl.so",
             "libpthread.so",
             "libm.so",
+            "librt.so",
             "libc++abi.so",
         ] {
             let mut path = lib_path.clone();

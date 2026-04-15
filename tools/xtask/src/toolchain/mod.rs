@@ -9,7 +9,7 @@ use guess_host_triple::guess_host_triple;
 use pathfinding::{get_rustc_path, get_rustdoc_path};
 
 use crate::{
-    toolchain::ports::build_and_install_ports,
+    toolchain::ports::{build_and_install_ports, PortOptions},
     triple::{Arch, Triple},
 };
 
@@ -48,8 +48,6 @@ pub struct BootstrapOptions {
         help = "Compresses the toolchain after bootstrapping for distribution"
     )]
     compress: bool,
-    #[clap(long, help = "Build the toolchain for use on Twizzler (host).")]
-    native: bool,
     #[clap(
         long,
         help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,crt,rt."
@@ -99,7 +97,7 @@ pub enum ToolchainCommands {
     Compress,
 
     /// Build non-rust ports
-    Ports,
+    Ports(PortOptions),
 }
 
 #[derive(Args, Debug)]
@@ -126,7 +124,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             .block_on(pull_toolchain())?),
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Compress => compress_toolchain(),
-        ToolchainCommands::Ports => build_and_install_ports(),
+        ToolchainCommands::Ports(opts) => build_and_install_ports(&opts),
         ToolchainCommands::Active => {
             match get_toolchain_path()?.canonicalize() {
                 Ok(_) => {

@@ -117,10 +117,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         rust::build_rust(&cli)?;
     }
 
-    if cli.native {
-        return Ok(());
-    }
-
     if !cli.skip_prune {
         prune_toolchain()?;
     }
