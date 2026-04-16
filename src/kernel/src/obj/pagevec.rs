@@ -131,9 +131,9 @@ impl PageVec {
         let range = self.tree.range(start..(start + len));
 
         for (k, entry) in range {
-            let thisrange = (*k)..(*entry.end());
             // TODO: use larger pages
             for i in 0..entry.nr_pages() {
+                let thisrange = (*k + i)..(*k + i + 1);
                 let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                 let mut new_page = PageRef::new(new_page, 0, 1);
                 new_page.copy_from(&entry.adjust(i));
@@ -147,6 +147,13 @@ impl PageVec {
     pub fn try_get_page(&self, pn: usize) -> Option<PageRef> {
         let mut entry = self.tree.range(pn..(pn + 1));
         let entry = entry.next()?;
+        log::trace!(
+            "try_get_page: looking for page {}, found entry at {}: {:?} with {} pages",
+            pn,
+            entry.0,
+            entry.1,
+            entry.1.nr_pages()
+        );
         if *entry.0 > pn || (pn - *entry.0) >= entry.1.nr_pages() {
             return None;
         }

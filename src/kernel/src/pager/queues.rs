@@ -168,7 +168,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::info!(
+    log::trace!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -209,7 +209,8 @@ fn pager_compl_handle_page_data(
         let pn = PageNumber::from(objpage_nr as usize);
         let pa = PhysAddr::new(physpage_nr * PageNumber::PAGE_SIZE as u64).unwrap();
 
-        let thiscount = (max_obj - count).min(max_phys - count).min(128);
+        // TODO: reenable multipage once the page tree bug is fixed.
+        let thiscount = (max_obj - count).min(max_phys - count).min(1);
         let page = if flags.contains(PageFlags::WIRED) {
             log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
             Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
@@ -298,7 +299,7 @@ pub(super) fn pager_compl_handler_main() {
             continue;
         };
         assert!(!current_thread.is_critical());
-        log::info!("got completion for {:?}: {:?}", request.req, completion.1);
+        log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
 
         match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(

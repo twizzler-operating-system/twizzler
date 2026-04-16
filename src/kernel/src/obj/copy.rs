@@ -158,7 +158,7 @@ pub fn copy_ranges(
             (_, _) => 2,
         };
 
-    log::info!(
+    log::trace!(
         "copy_ranges: src={:?}+{:x}, dest={:?}+{:x}, len={:x} ({} pages)",
         src,
         src_off,

@@ -227,7 +227,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
             let start = range.start;
             let mut holes = heapless::Vec::<_, 8>::new();
             let off = range.holes(0, &mut holes);
-            log::info!(
+            log::trace!(
                 "page {} is in core (range {}, off = {}, holes = {:?})",
                 cur,
                 range,

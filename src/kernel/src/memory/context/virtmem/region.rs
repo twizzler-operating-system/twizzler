@@ -263,6 +263,7 @@ impl MapRegion {
                 page_number,
                 self.object().id()
             );
+            obj_page_tree.print_tree();
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame, 1);
                 obj_page_tree.add_page(
