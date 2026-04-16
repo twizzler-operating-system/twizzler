@@ -80,11 +80,6 @@ pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     std::fs::create_dir_all("toolchain/install")?;
     let llvm_build_path = llvm_build_path.canonicalize()?;
 
-    if std::fs::exists(llvm_build_path.join("bin/llvm-config"))? {
-        println!("LLVM is already built");
-        //return Ok(());
-    }
-
     let mut cfg = cmake::Config::new(llvm_src_path.join("llvm"));
 
     cfg.out_dir(&llvm_build_path)
@@ -98,6 +93,7 @@ pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
         .define("LLVM_INCLUDE_DOCS", "OFF")
         .define("LLVM_INCLUDE_BENCHMARKS", "OFF")
         .define("LLVM_INCLUDE_TESTS", "OFF")
+        .define("LLVM_ENABLE_LIBXML2", "OFF")
         .define("LLVM_ENABLE_LIBEDIT", "OFF")
         .define("LLVM_ENABLE_BINDINGS", "OFF")
         .define("LLVM_ENABLE_Z3_SOLVER", "OFF")

@@ -25,6 +25,7 @@ llvm-tools = true
 debug = true
 debuginfo-level = 1
 dist-src = false
+deny-warnings = false
 
 [dist]
 src-tarball = false

@@ -3,8 +3,8 @@ use crate::triple::{Arch, Host, Machine, Triple};
 mod llvm;
 mod ncurses;
 mod python3;
+mod rust;
 mod zlib;
-//mod rust;
 
 #[derive(clap::Parser, Debug)]
 pub struct PortOptions {
@@ -26,7 +26,7 @@ pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
             "llvm" => llvm::install(&triple)?,
             "zlib" => zlib::install(&triple)?,
             "ncurses" => ncurses::install(&triple)?,
-            //"rust" => rust::install(&triple)?,
+            "rust" => rust::install(&triple)?,
             _ => anyhow::bail!("Unknown port: {}", port),
         }
     }
@@ -39,7 +39,7 @@ fn build_ports(triple: &Triple) -> anyhow::Result<()> {
     zlib::install(triple)?;
     ncurses::install(triple)?;
     llvm::install(triple)?;
-    //rust::install(triple)?;
+    rust::install(triple)?;
 
     Ok(())
 }

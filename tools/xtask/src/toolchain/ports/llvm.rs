@@ -6,6 +6,8 @@ use crate::{toolchain::BootstrapOptions, triple::Triple};
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building llvm for {}", triple);
     build_llvm(triple)?;
+    build_lld(triple)?;
+
     Ok(())
 }
 
@@ -100,6 +102,7 @@ fn build_llvm(triple: &Triple) -> anyhow::Result<()> {
         .define("LLVM_ENABLE_LIBEDIT", "OFF")
         .define("LLVM_ENABLE_BINDINGS", "OFF")
         .define("LLVM_ENABLE_Z3_SOLVER", "OFF")
+        .define("LLVM_ENABLE_LIBXML2", "OFF")
         .define("LLVM_PARALLEL_COMPILE_JOBS", &nr_jobs)
         .define(
             "LLVM_TARGET_ARCH",
@@ -126,38 +129,56 @@ fn build_llvm(triple: &Triple) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn build_lld(_cli: &BootstrapOptions) -> anyhow::Result<()> {
-    let triple = guess_host_triple().unwrap();
-    println!("== Building linker");
+pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
+    println!("== Building linker for {}", triple);
 
     let lld_dir = Path::new("toolchain/src/rust/src/llvm-project/lld").canonicalize()?;
-    let bin_dir = Path::new("toolchain/install/bin");
-    let build_dir = Path::new("toolchain/build/lld").join(&triple.to_string());
-    let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
-    let _llvm_config = bin_dir.join("llvm-config");
+    let lld_install_path = Path::new("toolchain/install/sysroots")
+        .join(triple.to_string())
+        .join("ports/lld");
+    let build_dir = Path::new("toolchain/build/ports/lld").join(&triple.to_string());
+    let llvm_cmake_dir = Path::new("toolchain/install/sysroots")
+        .join(&triple.to_string())
+        .join("ports/llvm/lib/cmake/llvm")
+        .canonicalize()?;
 
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
 
-    std::fs::create_dir_all(&bin_dir)?;
-    let bin_dir = bin_dir.canonicalize()?;
+    std::fs::create_dir_all(&lld_install_path)?;
+    let lld_install_path = lld_install_path.canonicalize()?;
+    std::fs::create_dir_all(&lld_install_path.join("bin"))?;
 
     let mut cfg = cmake::Config::new(lld_dir);
 
     setup_cmake(&mut cfg, None)?;
-    cfg.target(triple);
+    setup_cmake_twizzler(&mut cfg, triple, vec![])?;
 
     cfg.out_dir(&build_dir)
-        .define("LLVM_CMAKE_DIR", llvm_cmake_dir)
+        .define("LLVM_CMAKE_DIR", &llvm_cmake_dir)
+        .define("LLVM_DIR", &llvm_cmake_dir)
+        .define("LLVM_ENABLE_LIBXML2", "OFF")
         .define("LLVM_INCLUDE_TESTS", "OFF");
 
     cfg.build();
 
-    std::fs::copy(build_dir.join("bin/ld.lld"), bin_dir.join("ld.lld"))?;
-    std::fs::copy(build_dir.join("bin/lld"), bin_dir.join("lld"))?;
-    std::fs::copy(build_dir.join("bin/ld64.lld"), bin_dir.join("ld64.lld"))?;
-    std::fs::copy(build_dir.join("bin/lld-link"), bin_dir.join("lld-link"))?;
-    std::fs::copy(build_dir.join("bin/wasm-ld"), bin_dir.join("wasm-ld"))?;
+    std::fs::copy(
+        build_dir.join("bin/ld.lld"),
+        lld_install_path.join("bin/ld.lld"),
+    )?;
+    std::fs::copy(build_dir.join("bin/lld"), lld_install_path.join("bin/lld"))?;
+    std::fs::copy(
+        build_dir.join("bin/ld64.lld"),
+        lld_install_path.join("bin/ld64.lld"),
+    )?;
+    std::fs::copy(
+        build_dir.join("bin/lld-link"),
+        lld_install_path.join("bin/lld-link"),
+    )?;
+    std::fs::copy(
+        build_dir.join("bin/wasm-ld"),
+        lld_install_path.join("bin/wasm-ld"),
+    )?;
 
     Ok(())
 }
