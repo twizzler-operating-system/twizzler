@@ -1,6 +1,7 @@
 #![feature(iterator_try_collect)]
 
 mod build;
+mod disk;
 mod image;
 mod qemu;
 mod toolchain;
@@ -146,6 +147,27 @@ struct ImageOptions {
     autostart: Option<String>,
 }
 
+#[derive(Subcommand, ValueEnum, Debug, Clone, Copy)]
+enum DiskCmd {
+    Reset,
+    Setup,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiskImageOptions {
+    #[clap(flatten)]
+    pub config: BuildConfig,
+
+    #[clap(subcommand)]
+    pub cmd: DiskCmd,
+    #[clap(
+        long,
+        short,
+        help = "Force copying sysroot to disk image, even if it appears up to date."
+    )]
+    pub force: bool,
+}
+
 impl From<ImageOptions> for BuildOptions {
     fn from(io: ImageOptions) -> Self {
         Self {
@@ -229,6 +251,8 @@ enum Commands {
     MakeImage(ImageOptions),
     #[clap(about = "Boot a disk image in Qemu.")]
     StartQemu(QemuOptions),
+    #[clap(about = "Create or reset a disk image for a given target.")]
+    Disk(DiskImageOptions),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -247,6 +271,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
+            Commands::Disk(x) => disk::do_disk_image(x),
         }
     } else {
         anyhow::bail!("you must specify a subcommand.");

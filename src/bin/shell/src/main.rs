@@ -344,7 +344,30 @@ impl ShellInvoke {
         if let Some(job) = self.try_builtin(ctx)? {
             return Ok(job);
         }
-        let mut cmd = Command::new(&self.command[0]);
+
+        let path = if std::fs::exists(&self.command[0]).into_diagnostic()? {
+            self.command[0].clone()
+        } else {
+            let r = std::fs::read_dir("/pkg").into_diagnostic()?;
+            let mut found = None;
+            for entry in r {
+                if let Ok(entry) = entry {
+                    let path = format!(
+                        "/pkg/{}/bin/{}",
+                        entry.file_name().display(),
+                        &self.command[0]
+                    );
+                    if std::fs::exists(&path).into_diagnostic()? {
+                        found = Some(path);
+                        break;
+                    }
+                }
+            }
+
+            found.unwrap_or(self.command[0].clone())
+        };
+
+        let mut cmd = Command::new(path);
         cmd.args(&self.command[1..]);
         cmd.envs(std::env::vars());
         cmd.envs(self.env.iter().map(|x| (&x.0, &x.1)));

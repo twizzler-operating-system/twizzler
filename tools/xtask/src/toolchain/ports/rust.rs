@@ -16,7 +16,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     build_rust(triple)
 }
 
-fn build_rust(triple: &Triple) -> anyhow::Result<()> {
+fn build_rust(_triple: &Triple) -> anyhow::Result<()> {
     std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
 
     let status = Command::new("./x.py")
@@ -53,7 +53,7 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     let tstr = &triple.to_string();
     let install_prefix = Path::new("toolchain/install/sysroots")
         .join(tstr)
-        .join("ports/rust");
+        .join("pkg/rust");
     let build_dir = Path::new("toolchain/build/ports/rust").join(tstr);
     let sysroot_dir = Path::new("toolchain/install/sysroots")
         .join(tstr)
@@ -70,25 +70,25 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     toml["build"]["host"].as_array_mut().unwrap().push(tstr);
     toml["install"]["prefix"] = toml_edit::value(install_prefix.display().to_string());
 
-    let mut cc = llvm_bin
+    let cc = llvm_bin
         .join("clang")
         .canonicalize()?
         .to_str()
         .unwrap()
         .to_string();
-    let mut cxx = llvm_bin
+    let cxx = llvm_bin
         .join("clang++")
         .canonicalize()?
         .to_str()
         .unwrap()
         .to_string();
-    let mut ld = llvm_bin
+    let ld = llvm_bin
         .join("clang++")
         .canonicalize()?
         .to_str()
         .unwrap()
         .to_string();
-    let mut ar = llvm_bin
+    let ar = llvm_bin
         .join("llvm-ar")
         .canonicalize()?
         .to_str()

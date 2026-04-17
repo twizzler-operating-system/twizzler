@@ -12,7 +12,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .join(triple.to_string())
         .canonicalize()?;
     let bin_dir = Path::new("toolchain/install/bin").canonicalize()?;
-
+    let install_dir = std::path::Path::new("toolchain/install/sysroots").join(&triple.to_string());
+    std::fs::create_dir_all(&install_dir)?;
+    let install_dir = install_dir.canonicalize()?;
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
 
@@ -27,7 +29,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--enable-shared")
         .arg("--with-mimalloc=no")
         .arg("--with-pymalloc=no")
-        .arg("--prefix=/")
+        .arg("--prefix=/pkg/python")
         .arg("--build")
         .arg(guess_host_triple().unwrap())
         //.arg("--enable-optimizations")
@@ -41,9 +43,11 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
 
     cmd.env("PKG_CONFIG", "");
     cmd.env("CFLAGS", &cflags);
+    cmd.env("CPPFLAGS", &cflags);
     cmd.env("CXXFLAGS", &cflags);
     cmd.env("LDFLAGS", &cflags);
     cmd.env("CC", bin_dir.join("clang").display().to_string());
+    cmd.env("CPP", bin_dir.join("clang-cpp").display().to_string());
     cmd.env("CXX", bin_dir.join("clang++").display().to_string());
     cmd.env("LD", bin_dir.join("clang").display().to_string());
     cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
@@ -62,7 +66,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg(available_parallelism().unwrap().to_string());
     cmd.current_dir(&build_dir);
     cmd.stdout(log);
-    cmd.env("DESTDIR", sysroot_dir);
+    cmd.env("DESTDIR", install_dir);
 
     cmd.arg("install");
 

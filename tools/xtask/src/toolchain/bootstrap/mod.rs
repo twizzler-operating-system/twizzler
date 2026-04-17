@@ -28,6 +28,8 @@ pub fn setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyh
         logdir
     };
 
+    std::fs::create_dir_all(&logdir)?;
+
     let logfile = OpenOptions::new()
         .create(true)
         .truncate(true)

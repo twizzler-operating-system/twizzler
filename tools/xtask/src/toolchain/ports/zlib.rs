@@ -2,7 +2,10 @@ use std::{process::Command, thread::available_parallelism};
 
 use reqwest::Client;
 
-use crate::{toolchain::download_file, triple::Triple};
+use crate::{
+    toolchain::{bootstrap::setup_logfile, download_file},
+    triple::Triple,
+};
 
 const ZLIB_URL: &str = "https://zlib.net/zlib-1.3.2.tar.gz";
 
@@ -11,6 +14,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
 
     let cont_dir = std::path::Path::new("toolchain/build/ports/zlib");
     std::fs::create_dir_all(&cont_dir)?;
+    let install_dir = std::path::Path::new("toolchain/install/sysroots").join(&triple.to_string());
+    std::fs::create_dir_all(&install_dir)?;
+    let install_dir = install_dir.canonicalize()?;
     if !std::fs::exists("toolchain/build/ports/zlib/zlib-1.3.2.tar.gz")? {
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
@@ -33,6 +39,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         anyhow::bail!("failed to extract zlib");
     }
 
+    let log = setup_logfile("ports/zlib", "xtask-configure", Some(triple))?;
     let build_dir =
         std::path::Path::new("toolchain/build/ports/zlib/build").join(triple.to_string());
     let source_dir = std::path::Path::new("toolchain/build/ports/zlib").join("zlib-1.3.2");
@@ -46,7 +53,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .canonicalize()?;
 
     let mut cmd = Command::new(source_dir.join("configure"));
-    cmd.current_dir(&build_dir).arg("--prefix=/");
+    cmd.stdout(log).current_dir(&build_dir);
+
+    cmd.arg("--prefix=/pkg/zlib");
 
     let cflags = format!("-target {} --sysroot {}", triple, sysroot_dir.display());
 
@@ -67,11 +76,12 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     if !ch.wait()?.success() {
         anyhow::bail!("failed to configure zlib");
     }
+    let log = setup_logfile("ports/zlib", "xtask-make", Some(triple))?;
     let mut cmd = Command::new("make");
     cmd.arg("-j")
         .arg(available_parallelism().unwrap().to_string());
-    cmd.current_dir(&build_dir);
-    cmd.env("DESTDIR", sysroot_dir);
+    cmd.stdout(log).current_dir(&build_dir);
+    cmd.env("DESTDIR", install_dir);
 
     cmd.arg("install");
 

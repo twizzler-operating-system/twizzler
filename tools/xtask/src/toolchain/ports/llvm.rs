@@ -1,8 +1,8 @@
-use std::{ffi::OsStr, path::Path};
+use std::path::Path;
 
 use guess_host_triple::guess_host_triple;
 
-use crate::{toolchain::BootstrapOptions, triple::Triple};
+use crate::triple::Triple;
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building llvm for {}", triple);
     build_llvm(triple)?;
@@ -79,7 +79,7 @@ fn build_llvm(triple: &Triple) -> anyhow::Result<()> {
     let llvm_build_path = Path::new("toolchain/build/ports/llvm").join(triple.to_string());
     let llvm_install_path = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
-        .join("ports/llvm");
+        .join("pkg/llvm");
     let nr_jobs = std::thread::available_parallelism()?.to_string();
 
     std::fs::create_dir_all(&llvm_build_path)?;
@@ -135,11 +135,11 @@ pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
     let lld_dir = Path::new("toolchain/src/rust/src/llvm-project/lld").canonicalize()?;
     let lld_install_path = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
-        .join("ports/lld");
+        .join("pkg/lld");
     let build_dir = Path::new("toolchain/build/ports/lld").join(&triple.to_string());
     let llvm_cmake_dir = Path::new("toolchain/install/sysroots")
         .join(&triple.to_string())
-        .join("ports/llvm/lib/cmake/llvm")
+        .join("pkg/llvm/lib/cmake/llvm")
         .canonicalize()?;
 
     std::fs::create_dir_all(&build_dir)?;

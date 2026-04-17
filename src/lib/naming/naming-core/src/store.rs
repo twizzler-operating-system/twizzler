@@ -285,9 +285,10 @@ impl NameSession<'_> {
                 }
                 Component::Normal(os_str) => {
                     tracing::trace!(
-                        "lookup component {:?}: {}",
+                        "lookup component {:?}: {} in {}",
                         os_str.as_encoded_bytes(),
-                        os_str.to_str().ok_or(ArgumentError::InvalidArgument)?
+                        os_str.to_str().ok_or(ArgumentError::InvalidArgument)?,
+                        namespace.id(),
                     );
                     node = namespace.find(os_str.to_str().ok_or(ArgumentError::InvalidArgument)?);
 
@@ -312,8 +313,16 @@ impl NameSession<'_> {
                             tracing::trace!("search with: {}", ldname);
                             let (lnode, lcont) =
                                 self.namei_exist(Some(namespace), ldname, nr_derefs - 1, deref)?;
+                            tracing::trace!("found lnode as {:?}", lnode);
                             node = Some(lnode);
-                            namespace = lcont;
+                            namespace = self.open_namespace(
+                                lnode.id,
+                                lcont.persist(),
+                                Some(ParentInfo {
+                                    ns: lcont,
+                                    name_in_parent: lnode.name()?.to_string(),
+                                }),
+                            )?;
                         }
                     }
                     if !is_last && thisnode.kind == NsNodeKind::Namespace {
@@ -327,6 +336,7 @@ impl NameSession<'_> {
                 }
             }
         }
+        tracing::trace!("namei result: {:?}", node);
 
         if let Some(node) = node {
             Ok((Ok(node), namespace))
@@ -402,7 +412,7 @@ impl NameSession<'_> {
             Some(ParentInfo::new(container, node.name()?)),
         )?;
         let items = ns.items();
-        tracing::info!("collected: {:?}", items);
+        tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
 

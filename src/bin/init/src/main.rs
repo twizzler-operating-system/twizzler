@@ -269,6 +269,11 @@ fn main() {
 
     initialize_sshd();
 
+    let _ = std::os::twizzler::fs::symlink("/ext/sysroot/pkg", "/pkg")
+        .inspect_err(|e| tracing::warn!("failed to softlink /pkg: {}", e));
+    let _ = std::os::twizzler::fs::symlink("/ext/sysroot", "/sysroot")
+        .inspect_err(|e| tracing::warn!("failed to softlink /sysroot: {}", e));
+
     if start_unittest {
         // Load and wait for tests to complete
         run_tests();
