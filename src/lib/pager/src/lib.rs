@@ -34,3 +34,6 @@ pub fn pager_create_external(
 
 #[secgate::gatecall]
 pub fn pager_unlink_external(desc: Descriptor, id: ObjID, namelen: usize) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {}

@@ -8,7 +8,6 @@ use crate::{
     build::do_post_toolchain_runtime_build,
     toolchain::{
         bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag, prune_bins,
-        prune_toolchain,
     },
     triple::{all_possible_platforms, Triple},
 };
@@ -117,10 +116,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         generate_config_toml(&cli)?;
         println!("starting rust build");
         rust::build_rust(&cli)?;
-    }
-
-    if !cli.skip_prune {
-        prune_toolchain()?;
     }
 
     if cli.has_step("rt") {

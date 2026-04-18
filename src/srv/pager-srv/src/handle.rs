@@ -217,3 +217,18 @@ pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Re
 
     Ok(())
 }
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    let name = run_async(pager.paged_ostore(None)?.readlink_external(id.raw()))?;
+    let namelen = pager
+        .data
+        .with_handle_mut(comp, desc, |pc| pc.buffer.write(name.as_bytes()))
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+
+    Ok(namelen)
+}

@@ -20,6 +20,7 @@ struct PagerAPI {
     lookup_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
     create_external: DynamicSecGate<'static, (Descriptor, ObjID, mode_t, usize), usize>,
     unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>,
+    readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
 }
 
 static PAGER_API: OnceLock<PagerAPI> = OnceLock::new();
@@ -59,6 +60,11 @@ fn pager_api() -> &'static PagerAPI {
                 .dynamic_gate("pager_unlink_external")
                 .expect("failed to find unlink external gate call")
         };
+        let readlink_external = unsafe {
+            handle
+                .dynamic_gate("pager_readlink_external")
+                .expect("failed to find unlink external gate call")
+        };
         PagerAPI {
             _handle: handle,
             open_handle,
@@ -67,6 +73,7 @@ fn pager_api() -> &'static PagerAPI {
             lookup_external,
             create_external,
             unlink_external,
+            readlink_external,
         }
     })
 }
@@ -138,6 +145,13 @@ impl PagerHandle {
     /// Open a new logging handle.
     pub fn new() -> Option<Self> {
         Self::open(()).ok()
+    }
+
+    pub fn readlink_external(&mut self, id: ObjID) -> Result<String> {
+        let len = (pager_api().readlink_external)(self.desc, id)?;
+        let mut v = vec![0; len];
+        self.buffer.read(&mut v);
+        String::from_utf8(v).map_err(|_| TwzError::INVALID_ARGUMENT)
     }
 
     pub fn unlink_external(&mut self, id: ObjID, name: impl AsRef<Path>) -> Result<()> {

@@ -661,7 +661,7 @@ use pager_dynamic::ExternalKind;
 
 use crate::lwext4::{
     ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode, ext4_journal_start,
-    ext4_journal_stop,
+    ext4_journal_stop, ext4_readlink,
 };
 
 impl From<FileKind> for ExternalKind {

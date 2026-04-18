@@ -314,3 +314,19 @@ pub fn monitor_rt_lookup_compartment_id(id: ObjID) -> Result<Descriptor, TwzErro
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.lookup_compartment_id(caller, info.thread_id(), id)
 }
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_libname_map(namelen: usize, id: ObjID) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.libname_map(caller, info.thread_id(), namelen, id)
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_libname_unmap(namelen: Option<usize>, id: Option<ObjID>) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.libname_unmap(caller, info.thread_id(), namelen, id)
+}

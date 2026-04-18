@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
@@ -273,6 +275,37 @@ fn main() {
         .inspect_err(|e| tracing::warn!("failed to softlink /pkg: {}", e));
     let _ = std::os::twizzler::fs::symlink("/ext/sysroot", "/sysroot")
         .inspect_err(|e| tracing::warn!("failed to softlink /sysroot: {}", e));
+
+    let dir = std::fs::read_dir("/pkg").unwrap();
+    use std::os::twizzler::fs::MetadataExt;
+    tracing::info!("caching library directories");
+    for dir in dir {
+        let dir = dir.unwrap();
+        let libpath = Path::new("/pkg").join(dir.file_name()).join("lib");
+        if let Ok(libdir) = std::fs::read_dir(libpath) {
+            for lib in libdir {
+                let lib = lib.unwrap();
+                if lib.file_name().display().to_string().ends_with(".so") {
+                    let md = lib.metadata().unwrap();
+                    let id = md.st_objid();
+                    monitor_api::libname_map(&lib.file_name().display().to_string(), id.into())
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    if let Ok(libdir) = std::fs::read_dir("/sysroot/lib") {
+        for lib in libdir {
+            let lib = lib.unwrap();
+            if lib.file_name().display().to_string().ends_with(".so") {
+                let md = lib.metadata().unwrap();
+                let id = md.st_objid();
+                monitor_api::libname_map(&lib.file_name().display().to_string(), id.into())
+                    .unwrap();
+            }
+        }
+    }
 
     if start_unittest {
         // Load and wait for tests to complete

@@ -240,7 +240,7 @@ impl NameSession<'_> {
         &self,
         namespace: Option<Arc<dyn Namespace>>,
         name: P,
-        nr_derefs: usize,
+        mut nr_derefs: usize,
         deref: bool,
     ) -> Result<(std::result::Result<NsNode, PathBuf>, Arc<dyn Namespace>)> {
         tracing::trace!("namei: {:?}", name.as_ref());
@@ -256,6 +256,7 @@ impl NameSession<'_> {
         if components.is_empty() {
             return Ok((Err("".into()), namespace));
         }
+        tracing::trace!("start search {}", name.as_ref().display());
 
         let mut node = None;
         for (idx, item) in components.iter().enumerate() {
@@ -293,7 +294,7 @@ impl NameSession<'_> {
                     node = namespace.find(os_str.to_str().ok_or(ArgumentError::InvalidArgument)?);
 
                     // Did we find something?
-                    let Some(thisnode) = node else {
+                    let Some(mut thisnode) = node else {
                         tracing::trace!("failed to find component: (is_last = {})", is_last);
                         // Last component: return with this name, None.
                         if is_last {
@@ -309,20 +310,32 @@ impl NameSession<'_> {
                             return Err(NamingError::LinkLoop.into());
                         }
                         if deref || !is_last {
-                            let ldname = thisnode.readlink()?;
-                            tracing::trace!("search with: {}", ldname);
-                            let (lnode, lcont) =
-                                self.namei_exist(Some(namespace), ldname, nr_derefs - 1, deref)?;
-                            tracing::trace!("found lnode as {:?}", lnode);
-                            node = Some(lnode);
-                            namespace = self.open_namespace(
-                                lnode.id,
-                                lcont.persist(),
-                                Some(ParentInfo {
-                                    ns: lcont,
-                                    name_in_parent: lnode.name()?.to_string(),
-                                }),
-                            )?;
+                            let mut lcont = None;
+                            while thisnode.kind == NsNodeKind::SymLink {
+                                let ldname = thisnode.readlink()?;
+                                tracing::trace!("search with: {}", ldname);
+                                nr_derefs -= 1;
+                                let (lnode, lc) = self.namei_exist(
+                                    Some(namespace.clone()),
+                                    ldname,
+                                    nr_derefs,
+                                    deref,
+                                )?;
+                                tracing::trace!("found lnode as {:?}", lnode);
+                                node = Some(lnode);
+                                thisnode = lnode;
+                                lcont = Some(lc);
+                            }
+                            if !is_last {
+                                namespace = self.open_namespace(
+                                    thisnode.id,
+                                    lcont.as_ref().unwrap().persist(),
+                                    Some(ParentInfo {
+                                        ns: lcont.unwrap(),
+                                        name_in_parent: thisnode.name()?.to_string(),
+                                    }),
+                                )?;
+                            }
                         }
                     }
                     if !is_last && thisnode.kind == NsNodeKind::Namespace {

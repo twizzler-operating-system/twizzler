@@ -222,6 +222,8 @@ pub fn build_libcxx(cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     cfg.define("LIBCXX_CXX_ABI", "libcxxabi");
     cfg.define("LIBCXX_ENABLE_UNICODE", "ON");
     cfg.define("LIBCXX_ENABLE_SHARED", "OFF");
+    cfg.define("LIBCXX_ENABLE_EXCEPTIONS", "ON");
+    cfg.define("LIBCXX_ENABLE_RTTI", "ON");
     cfg.define("LIBCXX_ENABLE_WIDE_CHARACTERS", "ON");
     cfg.define("_LIBCPP_NO_VCRUNTIME", "ON");
     cfg.define("LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY", "OFF");
@@ -297,6 +299,7 @@ fn build_libcxxabi(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     cfg.define("_LIBCPP_NO_VCRUNTIME", "ON");
     cfg.define("LIBCXXABI_USE_LLVM_UNWINDER", "OFF");
     cfg.define("LIBCXXABI_ENABLE_THREADS", "ON");
+    cfg.define("LIBCXXABI_ENABLE_EXCEPTIONS", "ON");
 
     cfg.out_dir(&build_dir);
 

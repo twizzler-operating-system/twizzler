@@ -11,6 +11,7 @@ use std::{
 
 use bitflags::bitflags;
 use lazy_static::lazy_static;
+use libc::{S_IFDIR, S_IFLNK, S_IROTH, S_IRWXG, S_IRWXO, S_IRWXU};
 use monitor_api::{get_comp_config, CompartmentHandle};
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
@@ -87,7 +88,7 @@ impl FdKind {
                 created: Duration::from_secs(0).into(),
                 modified: Duration::from_secs(0).into(),
                 accessed: Duration::from_secs(0).into(),
-                unix_mode: 0,
+                unix_mode: S_IFDIR | S_IRWXO | S_IRWXG | S_IRWXO | S_IRWXU,
             }),
             FdKind::SymLink => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
@@ -97,7 +98,7 @@ impl FdKind {
                 created: Duration::from_secs(0).into(),
                 modified: Duration::from_secs(0).into(),
                 accessed: Duration::from_secs(0).into(),
-                unix_mode: 0,
+                unix_mode: S_IFLNK | S_IRWXU | S_IRWXG | S_IRWXO,
             }),
             _ => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
@@ -786,6 +787,7 @@ impl ReferenceRuntime {
         }
         let mut session = get_naming_handle().unwrap().lock().unwrap();
         let res = session.get(name, GetFlags::FOLLOW_SYMLINK)?;
+        tracing::trace!("resolve got {:?}", res);
         Ok(res.id)
     }
 

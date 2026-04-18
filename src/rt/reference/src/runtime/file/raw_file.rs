@@ -4,6 +4,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
+use libc::{S_IFREG, S_IRWXG, S_IRWXO, S_IRWXU};
 use twizzler_abi::{
     meta::MetaExt,
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
@@ -73,7 +74,7 @@ impl RawFile {
             size: self.len,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             id: self.handle.id().raw(),
-            unix_mode: 0,
+            unix_mode: S_IFREG | S_IRWXG | S_IRWXO | S_IRWXU,
             accessed: std::time::Duration::ZERO,
             modified: std::time::Duration::ZERO,
             created: std::time::Duration::ZERO,

@@ -24,7 +24,7 @@ pub use load::LoadIds;
 /// A dynamic linker context, the main state struct for this crate.
 pub struct Context {
     // Implementation callbacks.
-    pub(crate) engine: Box<dyn ContextEngine + Send>,
+    pub engine: Box<dyn ContextEngine + Send>,
     // Track all the compartment names.
     compartment_names: HashMap<String, usize>,
     // Compartments get stable IDs from StableVec.

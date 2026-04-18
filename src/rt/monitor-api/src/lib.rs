@@ -157,6 +157,13 @@ pub fn monitor_rt_post_signal(
 }
 
 #[secgate::gatecall]
+pub fn monitor_rt_libname_map(namelen: usize, id: ObjID) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_libname_unmap(namelen: Option<usize>, id: Option<ObjID>) -> Result<(), TwzError> {
+}
+
+#[secgate::gatecall]
 pub fn monitor_rt_set_controller(comp: ObjID, controller: ObjID) -> Result<(), TwzError> {}
 
 #[secgate::gatecall]
@@ -1088,4 +1095,14 @@ impl CompartmentLoaderConfig {
     pub fn fd_spec(&self) -> &[binding_info] {
         unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
     }
+}
+
+pub fn libname_map(name: &str, id: ObjID) -> Result<(), TwzError> {
+    let namelen = lazy_sb::write_bytes_to_sb(name.as_bytes());
+    monitor_rt_libname_map(namelen, id)
+}
+
+pub fn libname_unmap(name: Option<&str>, id: Option<ObjID>) -> Result<(), TwzError> {
+    let namelen = name.map(|name| lazy_sb::write_bytes_to_sb(name.as_bytes()));
+    monitor_rt_libname_unmap(namelen, id)
 }

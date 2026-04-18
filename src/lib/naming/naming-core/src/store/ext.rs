@@ -90,7 +90,13 @@ impl Namespace for ExtNamespace {
                         i.name().and_then(|name| {
                             match i.kind {
                                 ExternalKind::Directory => NsNode::ns(name, i.id.into()),
-                                // TODO: symlink
+                                ExternalKind::SymLink => {
+                                    if let Ok(lname) = h.readlink_external(i.id.into()) {
+                                        NsNode::symlink(name, lname)
+                                    } else {
+                                        NsNode::obj(name, i.id.into())
+                                    }
+                                }
                                 _ => NsNode::obj(name, i.id.into()),
                             }
                             .ok()

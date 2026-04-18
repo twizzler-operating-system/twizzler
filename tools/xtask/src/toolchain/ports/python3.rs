@@ -37,6 +37,8 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("ac_cv_file__dev_ptmx=no")
         .arg("ac_cv_file__dev_ptc=no")
         .arg("ac_cv_func_sched_setscheduler=no")
+        .arg("ac_cv_func_realpath=no")
+        .arg("ac_cv_func_readlink=no")
         .arg("--disable-ipv6");
 
     let cflags = format!("-target {} --sysroot {}", triple, sysroot_dir.display());

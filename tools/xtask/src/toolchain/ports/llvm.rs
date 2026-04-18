@@ -25,6 +25,7 @@ fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyhow::
     cfg.build_arg("-j").build_arg(&nr_jobs);
     cfg.profile("Release");
     cfg.host(guess_host_triple().unwrap());
+    cfg.define("CMAKE_BUILD_TYPE", "Release");
 
     Ok(())
 }
@@ -67,6 +68,7 @@ fn setup_cmake_twizzler(
     cflags.push(format!("--target={}", target.to_string()));
     cflags.push(format!("--sysroot={}", sysroot.display()));
     cflags.push(" -D__Twizzler__".to_string());
+    cflags.push("-v".to_string());
     cflags.append(&mut passed_c_flags);
     cfg.define("CMAKE_C_FLAGS", cflags.join(" "));
     cfg.define("CMAKE_CXX_FLAGS", cflags.join(" "));
@@ -133,12 +135,13 @@ pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
     println!("== Building linker for {}", triple);
 
     let lld_dir = Path::new("toolchain/src/rust/src/llvm-project/lld").canonicalize()?;
+    let toolchain_bin_dir = Path::new("toolchain/install/bin").canonicalize()?;
     let lld_install_path = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .join("pkg/lld");
     let build_dir = Path::new("toolchain/build/ports/lld").join(&triple.to_string());
     let llvm_cmake_dir = Path::new("toolchain/install/sysroots")
-        .join(&triple.to_string())
+        .join(triple.to_string())
         .join("pkg/llvm/lib/cmake/llvm")
         .canonicalize()?;
 
@@ -159,6 +162,7 @@ pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
         .define("LLVM_DIR", &llvm_cmake_dir)
         .define("LLVM_ENABLE_LIBXML2", "OFF")
         .define("LLVM_INCLUDE_TESTS", "OFF");
+    cfg.define("LLVM_TABLEGEN_EXE", toolchain_bin_dir.join("llvm-tblgen"));
 
     cfg.build();
 

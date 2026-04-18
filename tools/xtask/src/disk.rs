@@ -141,6 +141,9 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
                 let target = std::fs::read_link(entry.path()).unwrap();
                 let mut link = Path::new("/sysroot").to_path_buf();
                 link.push(image_path);
+                if ext4.exists(link.to_str().unwrap()) {
+                    ext4.remove(link.to_str().unwrap()).unwrap();
+                }
                 ext4.symlink(target.to_str().unwrap(), link.to_str().unwrap())
                     .unwrap();
             }
@@ -150,6 +153,9 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
 
             Ok::<_, std::io::Error>(())
         })?;
+
+    // This is provided by the initrd.
+    ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
 
     Ok(())
 }
