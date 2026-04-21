@@ -468,6 +468,20 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
+    fd: descriptor,
+    buf: *mut twizzler_rt_abi::bindings::name_entry,
+    len: ::core::ffi::c_size_t,
+    off: ::core::ffi::c_size_t,
+) -> io_result {
+    return io_result {
+        err: TwzError::NOT_SUPPORTED.raw(),
+        val: 0,
+    };
+}
+check_ffi_type!(twz_rt_fd_enumerate_names, _, _, _, _);
+
 // object.h
 
 use twizzler_rt_abi::{

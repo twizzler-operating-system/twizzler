@@ -107,7 +107,12 @@ fn write_external_file_to_sb(sb: &mut SimpleBuffer, file: &ExternalFile, off: us
 }
 
 #[secgate::entry(lib = "pager")]
-pub fn pager_enumerate_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {
+pub fn pager_enumerate_external(
+    desc: Descriptor,
+    id: ObjID,
+    skip: usize,
+    count: usize,
+) -> Result<usize, TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
@@ -116,7 +121,7 @@ pub fn pager_enumerate_external(desc: Descriptor, id: ObjID) -> Result<usize, Tw
     run_async(
         pager
             .paged_ostore(None)?
-            .readdir_external(id.raw(), &mut entries),
+            .readdir_external(id.raw(), skip, count, &mut entries),
     )?;
 
     pager
@@ -137,6 +142,11 @@ pub fn pager_lookup_external(
     id: ObjID,
     namelen: usize,
 ) -> Result<usize, TwzError> {
+    tracing::trace!(
+        "looking up name in external namespace {} (namelen {})",
+        id,
+        namelen
+    );
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
@@ -151,7 +161,7 @@ pub fn pager_lookup_external(
     let file = run_async(pager.paged_ostore(None)?.open_external(
         Some(id.raw()),
         name,
-        ExternalOpenFlags::empty(),
+        ExternalOpenFlags::READ,
         0,
     ))?;
 

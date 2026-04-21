@@ -11,7 +11,7 @@ use std::{
 
 use bitflags::bitflags;
 use lazy_static::lazy_static;
-use libc::{S_IFDIR, S_IFLNK, S_IROTH, S_IRWXG, S_IRWXO, S_IRWXU};
+use libc::{S_IFDIR, S_IFLNK, S_IRWXG, S_IRWXO, S_IRWXU};
 use monitor_api::{get_comp_config, CompartmentHandle};
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
@@ -59,7 +59,7 @@ enum FdKind {
     //File(Arc<Mutex<FileDesc>>),
     RawFile(Arc<Mutex<RawFile>>),
     KernelConsole,
-    Dir(ObjID),
+    Dir(ObjID, Arc<Mutex<usize>>),
     SymLink,
     Socket(SocketKind),
     Pty(PtyHandleKind),
@@ -72,6 +72,23 @@ impl FdKind {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().seek(pos),
             FdKind::RawFile(arc) => arc.lock().unwrap().seek(pos),
+            FdKind::Dir(_, fpos) => {
+                tracing::trace!(
+                    "seeking directory with pos {:?} and current pos {}",
+                    pos,
+                    *fpos.lock().unwrap()
+                );
+                let new_pos = match pos {
+                    SeekFrom::Start(off) => off as isize,
+                    SeekFrom::End(off) => *fpos.lock().unwrap() as isize + off as isize,
+                    SeekFrom::Current(off) => *fpos.lock().unwrap() as isize + off as isize,
+                };
+                if new_pos < 0 {
+                    return Err(ArgumentError::InvalidArgument.into());
+                }
+                *fpos.lock().unwrap() = new_pos as usize;
+                Ok(new_pos as usize)
+            }
             _ => Ok(0),
         }
     }
@@ -80,7 +97,7 @@ impl FdKind {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().stat(),
             FdKind::RawFile(arc) => arc.lock().unwrap().stat(),
-            FdKind::Dir(id) => Ok(FdInfo {
+            FdKind::Dir(id, _) => Ok(FdInfo {
                 flags: twizzler_rt_abi::fd::FdFlags::from_bits_truncate(0),
                 kind: twizzler_rt_abi::fd::FdKind::Directory,
                 size: 0,
@@ -173,7 +190,7 @@ impl FdKind {
                 )?;
                 Ok(len)
             }
-            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::Dir(_, _) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.read_from(buf, ep, flags),
             FdKind::Pty(pty) => pty.read(buf),
@@ -194,7 +211,7 @@ impl FdKind {
                 )?;
                 Ok(len)
             }
-            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::Dir(_, _) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.read(buf, flags),
             FdKind::Pty(pty) => pty.read(buf),
@@ -220,7 +237,7 @@ impl FdKind {
                 );
                 Ok(buf.len())
             }
-            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::Dir(_, _) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.write_to(buf, ep, flags),
             FdKind::Pty(pty) => pty.write(buf),
@@ -243,7 +260,7 @@ impl FdKind {
                 );
                 Ok(buf.len())
             }
-            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::Dir(_, _) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.write(buf, flags),
             FdKind::Pty(pty) => pty.write(buf),
@@ -257,7 +274,7 @@ impl FdKind {
             //FdKind::File(arc) => arc.lock().unwrap().flush(),
             FdKind::RawFile(arc) => arc.lock().unwrap().flush(),
             FdKind::KernelConsole => Ok(()),
-            FdKind::Dir(_) => Err(ErrorKind::IsADirectory.into()),
+            FdKind::Dir(_, _) => Err(ErrorKind::IsADirectory.into()),
             FdKind::SymLink => Err(ErrorKind::InvalidData.into()),
             FdKind::Socket(socket) => socket.flush(),
             FdKind::Pty(pty) => pty.flush(),
@@ -675,7 +692,7 @@ impl ReferenceRuntime {
         };
 
         let elem = match kind {
-            NsNodeKind::Namespace => FdKind::Dir(obj_id),
+            NsNodeKind::Namespace => FdKind::Dir(obj_id, Arc::new(Mutex::new(0))),
             NsNodeKind::Object => {
                 //if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
                 //    FdKind::File(Arc::new(Mutex::new(elem)))
@@ -1295,19 +1312,23 @@ impl ReferenceRuntime {
         buf: &mut [twizzler_rt_abi::fd::NameEntry],
         off: usize,
     ) -> Result<usize> {
+        tracing::trace!(
+            "fd_enumerate: fd={}, off={} ({}), buf_len={}",
+            fd,
+            off,
+            off * size_of::<twizzler_rt_abi::fd::NameEntry>(),
+            buf.len()
+        );
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
         let mut session = get_naming_handle()
             .ok_or(TwzError::NOT_SUPPORTED)?
             .lock()
             .unwrap();
-        let names = session.enumerate_names_nsid(stat.id.into())?;
-        if off >= names.len() {
-            return Ok(0);
-        }
-        let end = (off + buf.len()).min(names.len());
-        let count = end - off;
-        for i in 0..count {
-            let name = &names[off + i];
+        let names = session.enumerate_names_nsid(stat.id.into(), off, buf.len())?;
+        tracing::trace!("enumerate_names_nsid returned {} entries", names.len());
+        let end = buf.len().min(names.len());
+        for i in 0..end {
+            let name = &names[i];
             let Ok(entry_name) = name.name() else {
                 continue;
             };
@@ -1361,6 +1382,6 @@ impl ReferenceRuntime {
             };
             buf[i] = ne;
         }
-        Ok(count)
+        Ok(end)
     }
 }

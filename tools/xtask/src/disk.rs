@@ -154,8 +154,9 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
             Ok::<_, std::io::Error>(())
         })?;
 
-    // This is provided by the initrd.
+    // These are provided by the initrd.
     ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
+    ext4.remove("/sysroot/lib/libc.so").unwrap();
 
     Ok(())
 }

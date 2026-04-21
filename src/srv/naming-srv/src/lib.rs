@@ -291,7 +291,12 @@ pub fn remove(desc: Descriptor, name_len: usize) -> Result<()> {
 }
 
 #[secgate::entry(lib = "naming")]
-pub fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {
+pub fn enumerate_names(
+    desc: Descriptor,
+    name_len: usize,
+    skip: usize,
+    count: usize,
+) -> Result<usize> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
@@ -302,7 +307,7 @@ pub fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {
     let path = client.read_buffer(name_len)?;
 
     // TODO: make not bad
-    let vec1 = client.session.enumerate_namespace(path)?;
+    let vec1 = client.session.enumerate_namespace(path, skip, count)?;
     let len = vec1.len();
 
     let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());
@@ -318,7 +323,12 @@ pub fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {
 }
 
 #[secgate::entry(lib = "naming")]
-pub fn enumerate_names_nsid(desc: Descriptor, id: ObjID) -> Result<usize> {
+pub fn enumerate_names_nsid(
+    desc: Descriptor,
+    id: ObjID,
+    skip: usize,
+    count: usize,
+) -> Result<usize> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let service = NAMINGSERVICE.get().unwrap();
     let mut binding = service.handles.lock().unwrap();
@@ -327,7 +337,7 @@ pub fn enumerate_names_nsid(desc: Descriptor, id: ObjID) -> Result<usize> {
         .ok_or(ErrorKind::Other)?;
 
     // TODO: make not bad
-    let vec1 = client.session.enumerate_namespace_nsid(id)?;
+    let vec1 = client.session.enumerate_namespace_nsid(id, skip, count)?;
     let len = vec1.len();
 
     let mut buffer = SimpleBuffer::new(client.buffer.handle().clone());

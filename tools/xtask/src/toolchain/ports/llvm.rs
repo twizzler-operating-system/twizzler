@@ -68,7 +68,6 @@ fn setup_cmake_twizzler(
     cflags.push(format!("--target={}", target.to_string()));
     cflags.push(format!("--sysroot={}", sysroot.display()));
     cflags.push(" -D__Twizzler__".to_string());
-    cflags.push("-v".to_string());
     cflags.append(&mut passed_c_flags);
     cfg.define("CMAKE_C_FLAGS", cflags.join(" "));
     cfg.define("CMAKE_CXX_FLAGS", cflags.join(" "));
@@ -119,6 +118,8 @@ fn build_llvm(triple: &Triple) -> anyhow::Result<()> {
     cfg.define("LLVM_ENABLE_RUNTIMES", "");
     cfg.define("LLVM_ENABLE_PROJECTS", "clang");
     cfg.define("LLVM_VERSION_SUFFIX", "-rust-twizzler");
+
+    cfg.define("HAVE_GETAUXVAL", "0");
 
     cfg.target(&triple.to_string()).host(&triple.to_string());
     cfg.define("LLVM_ENABLE_ZSTD", "OFF");

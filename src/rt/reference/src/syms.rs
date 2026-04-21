@@ -1103,6 +1103,7 @@ pub unsafe extern "C-unwind" fn _ZdlPvm() {}
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_error: not yet implemented");
     core::ptr::null()
 }
 use core::ffi::c_int;
@@ -1110,44 +1111,65 @@ use core::ffi::c_int;
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_open(
-    _: *const c_char,
-    _: c_int,
-    _: *const c_void,
+    a: *const c_char,
+    b: c_int,
+    c: *const c_void,
 ) -> *const c_char {
+    twizzler_abi::klog_println!(
+        "called __dlapi_open {:p}, {:x}, {:p}: not yet implemented",
+        a,
+        b,
+        c
+    );
     core::ptr::null()
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_resolve(
-    _: *const c_void,
-    _: *const c_char,
-    _: *const c_void,
-    _: *const c_char,
+    a: *const c_void,
+    b: *const c_char,
+    c: *const c_void,
+    d: *const c_char,
 ) -> *const c_char {
+    twizzler_abi::klog_println!(
+        "called __dlapi_resolve {:p}, {:p}, {:p}, {:p}: not yet implemented",
+        a,
+        b,
+        c,
+        d
+    );
     core::ptr::null()
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
+pub unsafe extern "C" fn __dlapi_reverse(a: *const c_void, b: *const c_void) -> *const c_char {
+    twizzler_abi::klog_println!(
+        "called __dlapi_reverse {:p}, {:p}: not yet implemented",
+        a,
+        b
+    );
     core::ptr::null()
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
+pub unsafe extern "C" fn __dlapi_close(a: *const c_void) -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_close {:p}: not yet implemented", a);
     core::ptr::null()
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_find_object() -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_find_object: not yet implemented");
     core::ptr::null()
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_get_tls() -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_get_tls: not yet implemented");
     core::ptr::null()
 }

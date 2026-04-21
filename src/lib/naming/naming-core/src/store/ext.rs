@@ -19,9 +19,38 @@ impl Namespace for ExtNamespace {
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
-        self.items()
-            .into_iter()
-            .find(|i| i.name().is_ok_and(|n| n == name))
+        tracing::trace!("looking up {} in external namespace {}", name, self.id);
+        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+            h.lookup_external(self.id, name).ok().and_then(|i| {
+                tracing::trace!(
+                    "found {} in external namespace {} with ID {} and kind {:?}",
+                    name,
+                    self.id,
+                    i.id,
+                    i.kind
+                );
+                i.name().and_then(|name| {
+                    tracing::trace!(
+                        "creating node for {} in external namespace {} with ID {} and kind {:?}",
+                        name,
+                        self.id,
+                        i.id,
+                        i.kind
+                    );
+                    let node = match i.kind {
+                        ExternalKind::SymLink => h
+                            .readlink_external(i.id.into())
+                            .and_then(|lname| NsNode::symlink(name, lname)),
+                        ExternalKind::Directory => NsNode::ns(name, i.id.into()),
+                        _ => NsNode::obj(name, i.id.into()),
+                    };
+
+                    node.ok()
+                })
+            })
+        } else {
+            None
+        }
     }
 
     fn insert(&self, mut node: NsNode) -> Option<NsNode> {
@@ -80,20 +109,38 @@ impl Namespace for ExtNamespace {
         self.parent_info.as_ref()
     }
 
-    fn items(&self) -> Vec<NsNode> {
+    fn items(&self, skip: usize, count: usize) -> Vec<NsNode> {
+        tracing::trace!(
+            "enumerating external namespace {} (skip {}, count {})",
+            self.id,
+            skip,
+            count
+        );
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             let mut entries = Vec::new();
-            if let Ok(_) = h.enumerate_external(self.id, &mut entries) {
+            if let Ok(_) = h.enumerate_external(self.id, &mut entries, skip, count) {
                 return entries
                     .iter()
                     .filter_map(|i| {
                         i.name().and_then(|name| {
+                            tracing::trace!(
+                                "enumerated {} in external namespace {} with ID {} and kind {:?}",
+                                name,
+                                self.id,
+                                i.id,
+                                i.kind
+                            );
                             match i.kind {
                                 ExternalKind::Directory => NsNode::ns(name, i.id.into()),
                                 ExternalKind::SymLink => {
                                     if let Ok(lname) = h.readlink_external(i.id.into()) {
                                         NsNode::symlink(name, lname)
                                     } else {
+                                        tracing::warn!(
+                                            "failed to readlink for {} in external namespace {}",
+                                            name,
+                                            self.id
+                                        );
                                         NsNode::obj(name, i.id.into())
                                     }
                                 }

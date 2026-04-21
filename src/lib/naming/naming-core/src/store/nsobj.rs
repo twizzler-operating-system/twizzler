@@ -114,7 +114,7 @@ impl Namespace for NamespaceObject {
         self.persist
     }
 
-    fn items(&self) -> Vec<NsNode> {
-        self.with_obj(|obj| obj.iter().cloned().collect())
+    fn items(&self, skip: usize, count: usize) -> Vec<NsNode> {
+        self.with_obj(|obj| obj.iter().skip(skip).take(count).cloned().collect())
     }
 }

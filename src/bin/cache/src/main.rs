@@ -110,7 +110,7 @@ fn per_arg(arg: &str, cb: fn(ObjID) -> twizzler::Result<()>) -> twizzler::Result
                 tracing::debug!("enumerating directory {}", arg);
                 match dynamic_naming_factory()
                     .unwrap()
-                    .enumerate_names_nsid(ns.id)
+                    .enumerate_names_nsid(ns.id, 0, usize::MAX)
                 {
                     Ok(nodes) => {
                         for node in nodes {

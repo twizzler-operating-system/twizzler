@@ -162,7 +162,10 @@ impl FileDesc {
                             }
                         }
             */
-            _ => Err(GenericError::NoSuchOperation.into()),
+            _ => {
+                twizzler_abi::klog_println!("Unsupported fd_cmd: {}", cmd);
+                Err(GenericError::NoSuchOperation.into())
+            }
         }
     }
 }

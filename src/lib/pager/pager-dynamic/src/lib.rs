@@ -16,8 +16,8 @@ struct PagerAPI {
     _handle: &'static CompartmentHandle,
     open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
-    lookup_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+    enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>,
+    lookup_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), usize>,
     create_external: DynamicSecGate<'static, (Descriptor, ObjID, mode_t, usize), usize>,
     unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>,
     readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
@@ -183,8 +183,28 @@ impl PagerHandle {
             .map(|x| x.0)
     }
 
-    pub fn enumerate_external(&mut self, id: ObjID, entries: &mut Vec<ExternalFile>) -> Result<()> {
-        let len = (pager_api().enumerate_external)(self.desc, id)?;
+    pub fn lookup_external(&mut self, dir: ObjID, name: impl AsRef<Path>) -> Result<ExternalFile> {
+        let name = name.as_ref().as_os_str().as_encoded_bytes();
+        if name.len() > NAME_MAX {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let namelen = self.buffer.write(name);
+
+        let _filelen = (pager_api().lookup_external)(self.desc, dir, namelen)?;
+
+        get_external_file_from_sb(&self.buffer, 0)
+            .ok_or(TwzError::INVALID_ARGUMENT)
+            .map(|x| x.0)
+    }
+
+    pub fn enumerate_external(
+        &mut self,
+        id: ObjID,
+        entries: &mut Vec<ExternalFile>,
+        skip: usize,
+        count: usize,
+    ) -> Result<()> {
+        let len = (pager_api().enumerate_external)(self.desc, id, skip, count)?;
 
         let mut off = 0;
         entries.clear();
@@ -240,7 +260,7 @@ impl ExternalFile {
     }
 
     pub fn name(&self) -> Option<&str> {
-        self.path.file_name().and_then(|s| s.to_str())
+        self.path.to_str()
     }
 }
 

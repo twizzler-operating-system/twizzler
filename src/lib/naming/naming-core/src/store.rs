@@ -133,11 +133,11 @@ trait Namespace {
 
     fn id(&self) -> ObjID;
 
-    fn items(&self) -> Vec<NsNode>;
+    fn items(&self, skip: usize, count: usize) -> Vec<NsNode>;
 
     #[allow(dead_code)]
     fn len(&self) -> usize {
-        self.items().len()
+        self.items(0, usize::MAX).len()
     }
 
     fn persist(&self) -> bool;
@@ -412,7 +412,12 @@ impl NameSession<'_> {
         Ok(node)
     }
 
-    pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<NsNode>> {
+    pub fn enumerate_namespace<P: AsRef<Path>>(
+        &self,
+        name: P,
+        skip: usize,
+        count: usize,
+    ) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("enumerate: {:?}", name.as_ref());
         let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         if node.kind != NsNodeKind::Namespace {
@@ -424,15 +429,20 @@ impl NameSession<'_> {
             false,
             Some(ParentInfo::new(container, node.name()?)),
         )?;
-        let items = ns.items();
+        let items = ns.items(skip, count);
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
 
-    pub fn enumerate_namespace_nsid(&self, id: ObjID) -> Result<std::vec::Vec<NsNode>> {
-        tracing::trace!("opening namespace-ensid: {}", id);
+    pub fn enumerate_namespace_nsid(
+        &self,
+        id: ObjID,
+        skip: usize,
+        count: usize,
+    ) -> Result<std::vec::Vec<NsNode>> {
+        tracing::trace!("opening namespace-ensid: {} {} {}", id, skip, count);
         let ns = self.open_namespace(id, false, None)?;
-        let items = ns.items();
+        let items = ns.items(skip, count);
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }

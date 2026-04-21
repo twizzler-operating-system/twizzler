@@ -427,9 +427,8 @@ impl Ext4Fs {
             fsize: 0,
             fpos: 0,
         });
-        errno_to_result(unsafe {
-            lwext4::ext4_fopen2(file.as_mut(), name.as_ptr(), flags as i32)
-        })?;
+        errno_to_result(unsafe { lwext4::ext4_fopen2(file.as_mut(), name.as_ptr(), flags as i32) })
+            .inspect_err(|e| twizzler_abi::klog_println!("!lw {}", e))?;
         Ok(Ext4File {
             file,
             name,
@@ -499,7 +498,7 @@ impl Ext4Fs {
     }
 
     pub fn open_file_from_inode(&mut self, index: u32, flags: u32) -> Result<Ext4File<'_>> {
-        let name = format!("{}#{}", self.mnt_name.to_string_lossy(), index);
+        let name = format!("{}{}", self.mnt_name.to_string_lossy(), index);
         let name = CString::new(name).unwrap();
 
         let inode = self.get_inode(index)?;

@@ -26,7 +26,6 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg(triple.to_string())
         .arg("--target")
         .arg(triple.to_string())
-        .arg("--enable-shared")
         .arg("--with-mimalloc=no")
         .arg("--with-pymalloc=no")
         .arg("--prefix=/pkg/python")

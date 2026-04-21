@@ -15,7 +15,13 @@ pub fn pager_open_handle() -> Result<(Descriptor, ObjID), TwzError> {}
 #[secgate::gatecall]
 pub fn pager_close_handle(desc: Descriptor) -> Result<(), TwzError> {}
 #[secgate::gatecall]
-pub fn pager_enumerate_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {}
+pub fn pager_enumerate_external(
+    desc: Descriptor,
+    id: ObjID,
+    skip: usize,
+    count: usize,
+) -> Result<usize, TwzError> {
+}
 #[secgate::gatecall]
 pub fn pager_lookup_external(
     desc: Descriptor,

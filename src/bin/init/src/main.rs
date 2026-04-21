@@ -307,6 +307,8 @@ fn main() {
         }
     }
 
+    std::fs::create_dir_all("/tmp").unwrap();
+
     if start_unittest {
         // Load and wait for tests to complete
         run_tests();
