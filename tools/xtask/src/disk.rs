@@ -7,7 +7,7 @@ use std::{
 
 use ext4_lwext4::OpenFlags;
 
-use crate::{triple::Triple, DiskCmd, DiskImageOptions};
+use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOptions};
 
 const DISK_IMAGE_SIZE: u64 = 1024 * 1024 * 1024 * 100; // 100 GB
 
@@ -157,6 +157,62 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
     // These are provided by the initrd.
     ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
     ext4.remove("/sysroot/lib/libc.so").unwrap();
+    ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
+
+    Ok(())
+}
+
+pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyhow::Result<()> {
+    let path = format!("target/disk-{}.img", triple);
+    let device = ext4_lwext4::FileBlockDevice::open(path)?;
+    let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
+
+    println!("Copying Twizzler build to disk image for {}", triple,);
+    for cd in build
+        .borrow_user_compilation()
+        .as_ref()
+        .unwrap()
+        .cdylibs
+        .iter()
+        .chain(
+            build
+                .borrow_user_compilation()
+                .as_ref()
+                .unwrap()
+                .binaries
+                .iter(),
+        )
+    {
+        //println!("Copying {} to disk image", cd.path.display());
+        ext4.mkdir("/sysroot", 0o755).unwrap();
+        ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
+        ext4.mkdir("/sysroot/pkg/twizzler", 0o755).unwrap();
+        ext4.mkdir("/sysroot/pkg/twizzler/bin", 0o755).unwrap();
+        ext4.mkdir("/sysroot/pkg/twizzler/lib", 0o755).unwrap();
+        let mut dest = Path::new("/sysroot/pkg/twizzler").to_path_buf();
+
+        if cd.path.extension().is_some_and(|x| x == "so") {
+            dest.push("lib");
+        } else {
+            dest.push("bin");
+        }
+
+        dest.push(cd.path.file_name().unwrap());
+
+        if ext4.exists(dest.to_str().unwrap()) {
+            ext4.remove(dest.to_str().unwrap()).unwrap();
+        }
+
+        let mut dest_file = ext4
+            .open(
+                dest.to_str().unwrap(),
+                OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+            )
+            .unwrap();
+        let mut src_file = File::open(&cd.path)?;
+
+        std::io::copy(&mut src_file, &mut dest_file).unwrap();
+    }
 
     Ok(())
 }

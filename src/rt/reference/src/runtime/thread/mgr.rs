@@ -3,6 +3,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     collections::BTreeMap,
+    ffi::c_void,
 };
 
 use monitor_api::RuntimeThreadControl;
@@ -169,7 +170,7 @@ impl ReferenceRuntime {
     pub(super) fn impl_spawn(
         &self,
         mut args: twizzler_rt_abi::thread::ThreadSpawnArgs,
-    ) -> Result<u32> {
+    ) -> Result<(u32, *mut c_void)> {
         if args.stack_size < 1024 * 1024 * 8 {
             args.stack_size = 1024 * 1024 * 8;
         }
@@ -238,7 +239,7 @@ impl ReferenceRuntime {
         let id = thread.id;
         inner.all_threads.insert(thread.id, thread);
 
-        Ok(id)
+        Ok((id, tls.cast()))
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {

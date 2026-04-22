@@ -397,7 +397,7 @@ pub fn build_compiler_rt(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Re
     cfg.asmflag("-nostdinc");
 
     cfg.define("COMPILER_RT_BUILD_LIBFUZZER", "OFF");
-    cfg.define("COMPILER_RT_BUILD_PROFILE", "OFF");
+    cfg.define("COMPILER_RT_BUILD_PROFILE", "ON");
     cfg.define("COMPILER_RT_BUILD_XRAY", "OFF");
     cfg.define("COMPILER_RT_DEFAULT_TARGET_ONLY", "ON");
     cfg.define("COMPILER_RT_USE_LIBCXX", "OFF");

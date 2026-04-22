@@ -32,6 +32,17 @@ impl RawFile {
         }
     }
 
+    pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
+        match cmd {
+            twizzler_rt_abi::bindings::FD_CMD_TRUNCATE => {
+                let new_len = unsafe { *(arg as *const u64) };
+                self.truncate(new_len)?;
+                Ok(())
+            }
+            _ => Err(ArgumentError::InvalidArgument.into()),
+        }
+    }
+
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
         let handle = OUR_RUNTIME
             .map_object(obj_id, flags | MapFlags::NO_NULLPAGE)
@@ -49,6 +60,16 @@ impl RawFile {
             len,
             handle,
         })
+    }
+
+    pub fn truncate(&mut self, new_len: u64) -> Result<()> {
+        if new_len > (MAX_SIZE - NULLPAGE_SIZE) as u64 {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        self.len = new_len;
+        let me = MetaExt::new(MEXT_SIZED, self.len);
+        unsafe { self.handle.set_meta_ext(me)? };
+        Ok(())
     }
 
     pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {

@@ -104,7 +104,7 @@ impl ReferenceRuntime {
         tp.get_addr(index)
     }
 
-    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<u32> {
+    pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<(u32, *mut c_void)> {
         self.impl_spawn(args)
     }
 

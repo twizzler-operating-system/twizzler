@@ -145,7 +145,7 @@ check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, object_create, object_source, object_tie,
+    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, io_ctx, object_create, object_source, object_tie,
     objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
 };
 #[unsafe(no_mangle)]
@@ -283,7 +283,10 @@ check_ffi_type!(twz_rt_tls_get_addr, _);
 pub unsafe extern "C-unwind" fn twz_rt_spawn_thread(
     args: twizzler_rt_abi::bindings::spawn_args,
 ) -> twizzler_rt_abi::bindings::spawn_result {
-    OUR_RUNTIME.spawn(args).into()
+    OUR_RUNTIME
+        .spawn(args)
+        .map(|x| (x, core::ptr::null_mut()))
+        .into()
 }
 check_ffi_type!(twz_rt_spawn_thread, _);
 #[unsafe(no_mangle)]
@@ -344,11 +347,71 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(
 check_ffi_type!(twz_rt_fd_open, _, _, _, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_reopen(
+    _fd: descriptor,
+    _kind: open_kind,
+    _flags: u32,
+    _bind_info: *mut c_void,
+    _bind_info_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_reopen, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
     OUR_RUNTIME.close(fd);
 }
 check_ffi_type!(twz_rt_fd_close, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_remove(_name: *const c_char, _len: usize) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_remove, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_exec_spawn(
+    _args: *const twizzler_rt_abi::bindings::exec_spawn_args,
+) -> open_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_exec_spawn, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
+    _fd: descriptor,
+    _cmd: twizzler_rt_abi::bindings::fd_cmd,
+    _arg: *mut ::core::ffi::c_void,
+    _ret: *mut ::core::ffi::c_void,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+
+check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pread_from(
+    _fd: descriptor,
+    _buf: *mut ::core::ffi::c_void,
+    _len: usize,
+    _ctx: *mut io_ctx,
+    _ep: *mut endpoint,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_fd_pread_from, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite_to(
+    _fd: descriptor,
+    _buf: *const ::core::ffi::c_void,
+    _len: usize,
+    _ctx: *mut io_ctx,
+    _ep: *const endpoint,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_fd_pwrite_to, _, _, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(
     fd: descriptor,
@@ -467,6 +530,18 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
+    _name: *const c_char,
+    _len: usize,
+    _target: *mut c_char,
+    _target_len: usize,
+    _read_len: *mut u64,
+) -> twz_error {
+    return TwzError::NOT_SUPPORTED.raw();
+}
+check_ffi_type!(twz_rt_fd_readlink, _, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(

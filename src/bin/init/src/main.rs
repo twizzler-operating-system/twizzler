@@ -133,9 +133,11 @@ fn initialize_devmgr() {
 
 fn initialize_cache() {
     info!("starting cache service");
-    let id =
-        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libcache_srv.so")
-            .expect("failed to find object");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
+        Default::default(),
+        "/pkg/twizzler/lib/libcache_srv.so",
+    )
+    .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "cache",
         "libcache_srv.so",
@@ -155,9 +157,11 @@ fn initialize_cache() {
 
 fn initialize_display() {
     info!("starting display manager");
-    let id =
-        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libdisplay_srv.so")
-            .expect("failed to find object");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
+        Default::default(),
+        "/pkg/twizzler/lib/libdisplay_srv.so",
+    )
+    .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "display",
         "libdisplay_srv.so",
@@ -182,8 +186,11 @@ fn initialize_display() {
 
 fn initialize_network() {
     info!("starting network manager");
-    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/libnet_srv.so")
-        .expect("failed to find object");
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
+        Default::default(),
+        "/pkg/twizzler/lib/libnet_srv.so",
+    )
+    .expect("failed to find object");
     let comp: CompartmentHandle = CompartmentLoader::new(
         "net",
         "libnet_srv.so",
@@ -207,7 +214,7 @@ fn initialize_network() {
 
 fn initialize_sshd() {
     info!("starting ssh server");
-    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/sshd")
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/pkg/twizzler/bin/sshd")
         .expect("failed to find object");
     let comp: CompartmentHandle =
         CompartmentLoader::new("sshd", "sshd", id, NewCompartmentFlags::empty())
@@ -263,13 +270,7 @@ fn main() {
 
     let _root_id = initialize_namer(bootstrap_id);
 
-    initialize_cache();
-    initialize_network();
-    initialize_display();
-
     std::env::set_var("PATH", "/initrd");
-
-    initialize_sshd();
 
     let _ = std::os::twizzler::fs::symlink("/ext/sysroot/pkg", "/pkg")
         .inspect_err(|e| tracing::warn!("failed to softlink /pkg: {}", e));
@@ -309,6 +310,11 @@ fn main() {
 
     std::fs::create_dir_all("/tmp").unwrap();
 
+    initialize_cache();
+    initialize_network();
+    initialize_display();
+    initialize_sshd();
+
     if start_unittest {
         // Load and wait for tests to complete
         run_tests();
@@ -323,7 +329,7 @@ fn main() {
     for util in utils {
         let link = format!("/initrd/{}", util);
         tracing::debug!("creating link: {}", link);
-        let _ = std::os::twizzler::fs::symlink("uuhelper", link)
+        let _ = std::os::twizzler::fs::symlink("/pkg/twizzler/bin/uuhelper", link)
             .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 

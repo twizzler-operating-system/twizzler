@@ -1,3 +1,8 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use pager_dynamic::ExternalKind;
 use twizzler::object::ObjID;
 
@@ -8,6 +13,45 @@ use crate::{NsNodeKind, Result};
 pub struct ExtNamespace {
     id: ObjID,
     parent_info: Option<ParentInfo>,
+    cache: Arc<Mutex<HashMap<String, NsNode>>>,
+}
+
+impl ExtNamespace {
+    pub fn cache_ready(&self) -> bool {
+        !self.cache.lock().unwrap().is_empty()
+    }
+
+    pub fn reset_cache(&self) {
+        self.cache.lock().unwrap().clear();
+    }
+
+    pub fn cache_node(&self, node: NsNode) {
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(node.name().unwrap().to_string(), node);
+    }
+
+    pub fn lookup_cache(&self, name: &str) -> Option<NsNode> {
+        self.cache.lock().unwrap().get(name).cloned()
+    }
+
+    pub fn enumerate_cache(&self, skip: usize, count: usize) -> Vec<NsNode> {
+        self.cache
+            .lock()
+            .unwrap()
+            .values()
+            .skip(skip)
+            .take(count)
+            .cloned()
+            .collect()
+    }
+
+    pub fn load_cache(&self) {
+        for node in self.items(0, usize::MAX) {
+            self.cache_node(node);
+        }
+    }
 }
 
 impl Namespace for ExtNamespace {
@@ -15,11 +59,18 @@ impl Namespace for ExtNamespace {
     where
         Self: Sized,
     {
-        Ok(Self { id, parent_info })
+        Ok(Self {
+            id,
+            parent_info,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
         tracing::trace!("looking up {} in external namespace {}", name, self.id);
+        if let Some(node) = self.lookup_cache(name) {
+            return Some(node);
+        }
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             h.lookup_external(self.id, name).ok().and_then(|i| {
                 tracing::trace!(
@@ -65,6 +116,7 @@ impl Namespace for ExtNamespace {
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             if let Ok(file) = h.create_external_file(self.id, node.name().ok()?, mode) {
                 node.id = file.id.into();
+                self.reset_cache();
                 return Some(node);
             } else {
                 tracing::warn!(
@@ -83,6 +135,7 @@ impl Namespace for ExtNamespace {
         let node = self.find(name)?;
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             if h.unlink_external(self.id, name).is_ok() {
+                self.reset_cache();
                 return Some(node);
             } else {
                 tracing::warn!(
@@ -116,6 +169,9 @@ impl Namespace for ExtNamespace {
             skip,
             count
         );
+        if self.cache_ready() {
+            return self.enumerate_cache(skip, count);
+        }
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             let mut entries = Vec::new();
             if let Ok(_) = h.enumerate_external(self.id, &mut entries, skip, count) {

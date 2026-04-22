@@ -296,7 +296,7 @@ fn zero_ok<T: Into<u64>>(t: T) -> (u64, u64) {
     (0, t.into())
 }
 
-fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
+fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     if context.num() as u64 != Syscall::KernelConsoleWrite.num() {
         log::trace!(
             "sys {}: {:?}",
@@ -334,11 +334,13 @@ fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
-                "{}: null call {:x} {:x} {:x}",
+                "{}: null call {:x} {:x} {:x} {:x} {:?}",
                 current_thread_ref().unwrap().objid(),
                 context.arg0::<u64>(),
                 context.arg1::<u64>(),
                 context.arg2::<u64>(),
+                context.pc().raw(),
+                context
             );
             crate::panic::backtrace(false, None);
 
@@ -588,7 +590,7 @@ fn do_syscall_entry<T: SyscallContext>(context: &mut T) {
         }
     }
 }
-pub fn syscall_entry<T: SyscallContext>(context: &mut T) {
+pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     let data = SyscallEntryEvent {
         ip: context.pc().raw(),
         num: context.num().into(),

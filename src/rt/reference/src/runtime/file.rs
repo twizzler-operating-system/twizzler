@@ -130,8 +130,9 @@ impl FdKind {
         }
     }
 
-    pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, _ret: *mut u8) -> Result<()> {
+    pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
         match self {
+            FdKind::RawFile(file) => file.lock().unwrap().fd_cmd(cmd, arg, ret),
             //FdKind::File(arc) => arc.lock().unwrap().fd_cmd(cmd, arg, ret),
             FdKind::Socket(socket) => {
                 if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
@@ -697,7 +698,11 @@ impl ReferenceRuntime {
                 //if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
                 //    FdKind::File(Arc::new(Mutex::new(elem)))
                 //} else {
-                FdKind::RawFile(Arc::new(Mutex::new(RawFile::open(obj_id, flags)?)))
+                let mut file = RawFile::open(obj_id, flags)?;
+                if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
+                    file.truncate(0)?;
+                }
+                FdKind::RawFile(Arc::new(Mutex::new(file)))
                 //}
             }
             NsNodeKind::SymLink => FdKind::SymLink,

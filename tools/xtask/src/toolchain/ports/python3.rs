@@ -40,7 +40,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("ac_cv_func_readlink=no")
         .arg("--disable-ipv6");
 
-    let cflags = format!("-target {} --sysroot {}", triple, sysroot_dir.display());
+    let cflags = format!("-target {} --sysroot {} -O3", triple, sysroot_dir.display());
 
     cmd.env("PKG_CONFIG", "");
     cmd.env("CFLAGS", &cflags);
