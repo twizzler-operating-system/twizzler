@@ -283,14 +283,21 @@ fn main() {
     for dir in dir {
         let dir = dir.unwrap();
         let libpath = Path::new("/pkg").join(dir.file_name()).join("lib");
-        if let Ok(libdir) = std::fs::read_dir(libpath) {
+        if let Ok(libdir) = std::fs::read_dir(&libpath) {
             for lib in libdir {
                 let lib = lib.unwrap();
-                if lib.file_name().display().to_string().ends_with(".so") {
+                let lib = libpath.join(lib.file_name());
+                if lib
+                    .file_name()
+                    .is_some_and(|s| s.to_string_lossy().contains(".so"))
+                {
                     let md = lib.metadata().unwrap();
                     let id = md.st_objid();
-                    monitor_api::libname_map(&lib.file_name().display().to_string(), id.into())
-                        .unwrap();
+                    monitor_api::libname_map(
+                        &lib.file_name().unwrap().to_string_lossy(),
+                        id.into(),
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -299,10 +306,14 @@ fn main() {
     if let Ok(libdir) = std::fs::read_dir("/sysroot/lib") {
         for lib in libdir {
             let lib = lib.unwrap();
-            if lib.file_name().display().to_string().ends_with(".so") {
+            let lib = Path::new("/sysroot/lib").join(lib.file_name());
+            if lib
+                .file_name()
+                .is_some_and(|s| s.to_string_lossy().contains(".so"))
+            {
                 let md = lib.metadata().unwrap();
                 let id = md.st_objid();
-                monitor_api::libname_map(&lib.file_name().display().to_string(), id.into())
+                monitor_api::libname_map(&lib.file_name().unwrap().to_string_lossy(), id.into())
                     .unwrap();
             }
         }

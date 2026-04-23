@@ -1,7 +1,11 @@
 use crate::triple::{Arch, Host, Machine, Triple};
 
+mod binutils;
+mod curl;
 mod llvm;
 mod ncurses;
+mod openssl;
+mod psl;
 mod python3;
 mod rust;
 mod zlib;
@@ -27,6 +31,10 @@ pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
             "zlib" => zlib::install(&triple)?,
             "ncurses" => ncurses::install(&triple)?,
             "rust" => rust::install(&triple)?,
+            "openssl" => openssl::install(&triple)?,
+            "curl" => curl::install(&triple)?,
+            "psl" => psl::install(&triple)?,
+            "binutils" => binutils::install(&triple)?,
             _ => anyhow::bail!("Unknown port: {}", port),
         }
     }
@@ -39,7 +47,8 @@ fn build_ports(triple: &Triple) -> anyhow::Result<()> {
     zlib::install(triple)?;
     ncurses::install(triple)?;
     llvm::install(triple)?;
-    rust::install(triple)?;
+    //rust::install(triple)?;
+    openssl::install(triple)?;
 
     Ok(())
 }

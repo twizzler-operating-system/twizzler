@@ -20,7 +20,7 @@ use crate::OUR_RUNTIME;
 
 #[derive(Clone)]
 pub struct RawFile {
-    pos: u64,
+    pub(crate) pos: u64,
     len: u64,
     handle: ObjectHandle,
 }
@@ -105,22 +105,31 @@ impl RawFile {
 
 impl Read for RawFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.update_len();
-        let copy_len = buf.len().min((self.len - self.pos) as usize);
-        let data = unsafe {
-            core::slice::from_raw_parts(self.handle.start().add(self.pos as usize), copy_len)
-        };
-        buf[0..copy_len].copy_from_slice(&data);
-        self.pos += copy_len as u64;
-        Ok(copy_len)
+        let n = self.pread(buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 
-impl Write for RawFile {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl RawFile {
+    /// Read up to `buf.len()` bytes from position `offset` without updating `self.pos`.
+    pub fn pread(&mut self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
         self.update_len();
+        if offset >= self.len {
+            return Ok(0);
+        }
+        let copy_len = buf.len().min((self.len - offset) as usize);
+        let data = unsafe {
+            core::slice::from_raw_parts(self.handle.start().add(offset as usize), copy_len)
+        };
+        buf[0..copy_len].copy_from_slice(data);
+        Ok(copy_len)
+    }
+
+    /// Write `buf` at position `offset` without updating `self.pos`.
+    pub fn pwrite(&mut self, buf: &[u8], offset: u64) -> std::io::Result<usize> {
         let write_len = buf.len();
-        let end_pos = self.pos + write_len as u64;
+        let end_pos = offset + write_len as u64;
         if end_pos > (MAX_SIZE - NULLPAGE_SIZE) as u64 {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidInput,
@@ -133,12 +142,19 @@ impl Write for RawFile {
             unsafe { self.handle.set_meta_ext(me)? };
         }
         unsafe {
-            let dest = self.handle.start().add(self.pos as usize);
+            let dest = self.handle.start().add(offset as usize);
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dest, write_len);
         }
-        self.pos += write_len as u64;
         self.handle.cmd(ObjectCmd::Sync, null_mut::<()>())?;
         Ok(write_len)
+    }
+}
+
+impl Write for RawFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.pwrite(buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

@@ -552,7 +552,7 @@ pub unsafe extern "C-unwind" fn twz_rt_set_nameroot(
 check_ffi_type!(twz_rt_set_nameroot, _, _, _);
 
 // io.h
-use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
+use twizzler_rt_abi::bindings::{io_result, iovec, whence};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
@@ -637,7 +637,7 @@ check_ffi_type!(twz_rt_fd_seek, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -649,7 +649,7 @@ check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -1144,13 +1144,15 @@ pub unsafe extern "C" fn __dlapi_resolve(
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(a: *const c_void, b: *const c_void) -> *const c_char {
+pub unsafe extern "C" fn __dlapi_reverse(a: *const c_void, b: *const c_void) -> std::ffi::c_int {
     twizzler_abi::klog_println!(
         "called __dlapi_reverse {:p}, {:p}: not yet implemented",
         a,
         b
     );
-    core::ptr::null()
+    // Return non-zero (failure): the stub cannot look up the symbol. This makes dladdr()
+    // correctly report failure rather than returning a garbage dli_fname.
+    1
 }
 
 #[linkage = "weak"]

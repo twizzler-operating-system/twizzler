@@ -19,7 +19,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     Result,
-    bindings::{io_ctx, io_vec},
+    bindings::{io_ctx, iovec},
     error::{ArgumentError, GenericError, IoError},
     fd::RawFd,
     io::SeekFrom,
@@ -211,7 +211,7 @@ impl MinimalRuntime {
     pub fn fd_pwritev(
         &self,
         _fd: RawFd,
-        _buf: &[io_vec],
+        _buf: &[iovec],
         _ctx: Option<&mut io_ctx>,
     ) -> Result<usize> {
         return Err(GenericError::NotSupported.into());
@@ -220,7 +220,7 @@ impl MinimalRuntime {
     pub fn fd_preadv(
         &self,
         _fd: RawFd,
-        _buf: &[io_vec],
+        _buf: &[iovec],
         _ctx: Option<&mut io_ctx>,
     ) -> Result<usize> {
         return Err(GenericError::NotSupported.into());

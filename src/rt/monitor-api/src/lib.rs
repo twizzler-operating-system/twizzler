@@ -632,6 +632,8 @@ pub struct CompartmentInfo<'a> {
     pub flags: CompartmentFlags,
     /// Number of libraries
     pub nr_libs: usize,
+    /// Exit code of the main thread (valid when EXITED flag is set).
+    pub exit_code: u64,
     _pd: PhantomData<&'a ()>,
 }
 
@@ -643,6 +645,7 @@ impl<'a> CompartmentInfo<'a> {
             sctx: raw.sctx,
             flags: CompartmentFlags::from_bits_truncate(raw.flags),
             nr_libs: raw.nr_libs,
+            exit_code: raw.exit_code,
             _pd: PhantomData,
         }
     }
@@ -1039,6 +1042,8 @@ pub struct CompartmentInfoRaw {
     pub sctx: ObjID,
     pub flags: u64,
     pub nr_libs: usize,
+    /// Exit code of the compartment's main thread (valid when EXITED flag is set).
+    pub exit_code: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Copy)]

@@ -33,7 +33,7 @@ use twizzler_io::{
 };
 use twizzler_rt_abi::{
     bindings::{
-        binding_info, create_options, endpoint, io_ctx, io_vec, object_bind_info, open_kind,
+        binding_info, create_options, endpoint, io_ctx, iovec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, prot_kind_ProtKind_Stream,
         socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ,
         OPEN_FLAG_WRITE,
@@ -249,6 +249,45 @@ impl FdKind {
 }
 
 impl FdKind {
+    /// Positional read: read from `offset` (or current position if `None`) without updating the
+    /// fd's internal position.
+    fn pread(&mut self, buf: &mut [u8], offset: Option<u64>) -> std::io::Result<usize> {
+        match self {
+            FdKind::RawFile(arc) => {
+                let mut f = arc.lock().unwrap();
+                let off = offset.unwrap_or(f.pos);
+                f.pread(buf, off)
+            }
+            // For everything else fall back to seek-then-read (or just read if no offset).
+            other => {
+                if let Some(off) = offset {
+                    other.seek(SeekFrom::Start(off)).ok();
+                }
+                other.read(buf, IoFlags::empty())
+            }
+        }
+    }
+
+    /// Positional write: write at `offset` (or current position if `None`) without updating the
+    /// fd's internal position.
+    fn pwrite(&mut self, buf: &[u8], offset: Option<u64>) -> std::io::Result<usize> {
+        match self {
+            FdKind::RawFile(arc) => {
+                let mut f = arc.lock().unwrap();
+                let off = offset.unwrap_or(f.pos);
+                f.pwrite(buf, off)
+            }
+            other => {
+                if let Some(off) = offset {
+                    other.seek(SeekFrom::Start(off)).ok();
+                }
+                other.write(buf, IoFlags::empty())
+            }
+        }
+    }
+}
+
+impl FdKind {
     fn write(&mut self, buf: &[u8], flags: IoFlags) -> std::io::Result<usize> {
         match self {
             //FdKind::File(arc) => arc.lock().unwrap().write(buf),
@@ -282,6 +321,21 @@ impl FdKind {
             FdKind::Pipe(pipe) => pipe.flush(),
             FdKind::Compartment(comp) => comp.flush(),
         }
+    }
+}
+
+/// Extract the optional file offset from an `io_ctx`. Returns `None` when the offset is `FD_POS`
+/// (meaning "use the fd's current position").
+fn io_ctx_offset(ctx: *mut io_ctx) -> Option<u64> {
+    let raw_offset = if ctx.is_null() {
+        twizzler_rt_abi::bindings::FD_POS
+    } else {
+        unsafe { (*ctx).offset }
+    };
+    if raw_offset == twizzler_rt_abi::bindings::FD_POS {
+        None
+    } else {
+        Some(raw_offset as u64)
     }
 }
 
@@ -384,20 +438,40 @@ impl FileDesc {
         self.kind.fd_cmd(cmd, arg, ret)
     }
 
-    fn write_to(
-        &mut self,
-        buf: &[u8],
-        ep: &twizzler_rt_abi::io::Endpoint,
-    ) -> std::io::Result<usize> {
-        self.kind.write_to(buf, ep, self.flags)
+    fn pread(&mut self, buf: &mut [u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
+        let offset = io_ctx_offset(ctx);
+        self.kind.pread(buf, offset)
     }
 
-    fn read_from(
+    fn pwrite(&mut self, buf: &[u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
+        let offset = io_ctx_offset(ctx);
+        self.kind.pwrite(buf, offset)
+    }
+
+    fn pread_from(
         &mut self,
         buf: &mut [u8],
+        ctx: *mut io_ctx,
         ep: &mut twizzler_rt_abi::io::Endpoint,
     ) -> std::io::Result<usize> {
-        self.kind.read_from(buf, ep, self.flags)
+        let offset = io_ctx_offset(ctx);
+        match &mut self.kind {
+            FdKind::RawFile(_) => self.kind.pread(buf, offset),
+            other => other.read_from(buf, ep, self.flags),
+        }
+    }
+
+    fn pwrite_to(
+        &mut self,
+        buf: &[u8],
+        ctx: *mut io_ctx,
+        ep: &twizzler_rt_abi::io::Endpoint,
+    ) -> std::io::Result<usize> {
+        let offset = io_ctx_offset(ctx);
+        match &mut self.kind {
+            FdKind::RawFile(_) => self.kind.pwrite(buf, offset),
+            other => other.write_to(buf, ep, self.flags),
+        }
     }
 }
 
@@ -1073,7 +1147,7 @@ impl ReferenceRuntime {
         &self,
         fd: RawFd,
         buf: &mut [u8],
-        _ctx: *mut io_ctx,
+        ctx: *mut io_ctx,
         ep: *mut endpoint,
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_mut().unwrap() };
@@ -1083,16 +1157,14 @@ impl ReferenceRuntime {
             .cloned()
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-
-        let len = file_desc.read_from(buf, ep)?;
-        Ok(len)
+        Ok(file_desc.pread_from(buf, ctx, ep)?)
     }
 
     pub fn fd_pwrite_to(
         &self,
         fd: RawFd,
         buf: &[u8],
-        _ctx: *mut io_ctx,
+        ctx: *mut io_ctx,
         ep: *const endpoint,
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_ref().unwrap() };
@@ -1102,25 +1174,59 @@ impl ReferenceRuntime {
             .cloned()
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-
-        let len = file_desc.write_to(buf, ep)?;
-        Ok(len)
+        Ok(file_desc.pwrite_to(buf, ctx, ep)?)
     }
 
     pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
-        self.read(fd, buf, ctx)
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+        Ok(file_desc.pread(buf, ctx)?)
     }
 
     pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
-        self.write(fd, buf, ctx)
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+        Ok(file_desc.pwrite(buf, ctx)?)
     }
 
-    pub fn fd_pwritev(&self, _fd: RawFd, _buf: &[io_vec], _ctx: *mut io_ctx) -> Result<usize> {
-        return Err(TwzError::NOT_SUPPORTED);
+    pub fn fd_pwritev(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+        let mut total = 0usize;
+        for iov in iovs {
+            let slice =
+                unsafe { core::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len) };
+            total += file_desc.pwrite(slice, ctx)?;
+        }
+        Ok(total)
     }
 
-    pub fn fd_preadv(&self, _fd: RawFd, _buf: &[io_vec], _ctx: *mut io_ctx) -> Result<usize> {
-        return Err(TwzError::NOT_SUPPORTED);
+    pub fn fd_preadv(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
+        let binding = get_fd_slots().lock().unwrap();
+        let mut file_desc = binding
+            .get(fd.try_into().unwrap())
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        drop(binding);
+        let mut total = 0usize;
+        for iov in iovs {
+            let slice =
+                unsafe { core::slice::from_raw_parts_mut(iov.iov_base.cast::<u8>(), iov.iov_len) };
+            total += file_desc.pread(slice, ctx)?;
+        }
+        Ok(total)
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {

@@ -162,7 +162,8 @@ impl ContextEngine for Engine {
         let (id, full) = if unlib.id.is_some() {
             (unlib.id.unwrap(), unlib.name.clone())
         } else {
-            self.name_resolver(&unlib.name)?
+            self.name_resolver(&unlib.name)
+                .inspect_err(|e| tracing::warn!("failed to find {}: {}", unlib, e))?
         };
         let mapping = Space::map(
             &get_monitor().space,
@@ -171,7 +172,8 @@ impl ContextEngine for Engine {
                 flags: MapFlags::READ,
             },
         )
-        .map_err(|_err| DynlinkErrorKind::NewBackingFail)?;
+        .map_err(|_err| DynlinkErrorKind::NewBackingFail)
+        .inspect_err(|e| tracing::warn!("failed to map {}: {}", unlib, e))?;
         Ok(unsafe {
             Backing::new_owned(
                 mapping.monitor_data_start(),

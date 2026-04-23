@@ -42,13 +42,14 @@ impl CompartmentFile {
                 if val_len < std::mem::size_of::<u64>() {
                     Err(TwzError::INVALID_ARGUMENT)
                 } else {
-                    let flags = self.inner.comp.info().flags;
-                    let mut status = if flags.contains(CompartmentFlags::EXITED) {
-                        STATUS_FLAG_TERMINATED
+                    let info = self.inner.comp.info();
+                    let mut status = if info.flags.contains(CompartmentFlags::EXITED) {
+                        // Lower 32 bits: exit code; upper bits: status flags.
+                        STATUS_FLAG_TERMINATED | (info.exit_code & 0xffff_ffff)
                     } else {
-                        0 // TODO
+                        0
                     };
-                    if flags.contains(CompartmentFlags::READY) {
+                    if info.flags.contains(CompartmentFlags::READY) {
                         status |= STATUS_FLAG_READY;
                     };
                     unsafe {

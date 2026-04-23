@@ -452,7 +452,7 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
 }
 check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
 
-use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
+use twizzler_rt_abi::bindings::{io_result, iovec, whence};
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
@@ -506,7 +506,7 @@ check_ffi_type!(twz_rt_fd_seek, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -520,7 +520,7 @@ check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -530,6 +530,12 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(_name: *const c_char, _len: usize) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_mkns, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
@@ -810,8 +816,9 @@ pub unsafe extern "C" fn __dlapi_resolve(
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
-    core::ptr::null()
+pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> std::ffi::c_int {
+    // Return non-zero (failure) so dladdr() correctly reports it cannot look up the symbol.
+    1
 }
 
 #[linkage = "weak"]

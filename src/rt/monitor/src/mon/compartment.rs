@@ -292,6 +292,7 @@ impl super::Monitor {
             sctx: comp.sctx,
             flags: comp.raw_flags(),
             nr_libs,
+            exit_code: comp.read_error_code(),
         })
     }
 
