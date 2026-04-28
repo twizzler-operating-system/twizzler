@@ -79,6 +79,8 @@ members = [
     "src/lib/twizzler-net",
     "src/bin/sshd",
     "src/bin/async-test",
+    "src/bin/lltest",
+    "src/bin/lltest/llt",
 ]
 
 exclude = [
@@ -134,6 +136,8 @@ initrd = [
     #"crate:ls",
     #"crate:gadget",
     #"crate:serialecho",
+    "lib:llt",
+    "crate:lltest",
 ]
 
 [workspace.metadata.third-party]
@@ -395,3 +399,4 @@ ferroc = { path = "src/ports/ferroc" }
 virtio-drivers = { path = "src/ports/virtio-drivers" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
+libloading = { path = "src/ports/rust_libloading" }

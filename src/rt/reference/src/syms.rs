@@ -1103,63 +1103,179 @@ pub unsafe extern "C-unwind" fn _ZdlPvm() {}
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
-    twizzler_abi::klog_println!("called __dlapi_error: not yet implemented");
-    core::ptr::null()
+    take_dl_error()
 }
+
 use core::ffi::c_int;
+use std::cell::RefCell;
+
+#[thread_local]
+static DLAPI_ERROR: RefCell<Option<std::ffi::CString>> = const { RefCell::new(None) };
+
+fn set_dl_error(msg: impl Into<Vec<u8>>) {
+    *DLAPI_ERROR.borrow_mut() = std::ffi::CString::new(msg).ok();
+}
+
+fn take_dl_error() -> *const c_char {
+    DLAPI_ERROR
+        .borrow_mut()
+        .take()
+        .map(|s| s.into_raw() as *const c_char)
+        .unwrap_or(core::ptr::null())
+}
+
+/// The __dlapi_symbol struct as defined by mlibc's dlfcn.cpp.
+#[repr(C)]
+struct DlapiSymbol {
+    file: *const c_char,
+    base: *mut c_void,
+    symbol: *const c_char,
+    address: *mut c_void,
+    elf_symbol: *const c_void,
+    link_map: *mut c_void,
+}
+
+/// Encode a `Descriptor` as a non-null `void*` handle (offset by 1 so descriptor 0 != NULL).
+fn desc_to_handle(desc: secgate::util::Descriptor) -> *mut c_void {
+    (desc as usize + 1) as *mut c_void
+}
+
+/// Decode a handle back to a descriptor. Returns `None` for NULL (RTLD_DEFAULT).
+fn handle_to_desc(handle: *const c_void) -> Option<secgate::util::Descriptor> {
+    let v = handle as usize;
+    if v == 0 {
+        None
+    } else {
+        Some((v - 1) as secgate::util::Descriptor)
+    }
+}
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_open(
-    a: *const c_char,
-    b: c_int,
-    c: *const c_void,
-) -> *const c_char {
-    twizzler_abi::klog_println!(
-        "called __dlapi_open {:p}, {:x}, {:p}: not yet implemented",
-        a,
-        b,
-        c
-    );
-    core::ptr::null()
+    filename: *const c_char,
+    _flags: c_int,
+    _return_addr: *const c_void,
+) -> *mut c_void {
+    twizzler_abi::klog_println!("called __dlapi_open with filename = {:p}", filename);
+    if filename.is_null() {
+        return core::ptr::null_mut(); // RTLD_DEFAULT sentinel
+    }
+    let name = match unsafe { std::ffi::CStr::from_ptr(filename) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            set_dl_error("dlopen: invalid UTF-8 in filename");
+            return core::ptr::null_mut();
+        }
+    };
+    let id = OUR_RUNTIME
+        .resolve_name(twizzler_rt_abi::fd::NameResolver::Default, name.as_bytes())
+        .ok();
+    match monitor_api::LibraryLoader::new(name, id).load() {
+        Ok(desc) => desc_to_handle(desc.into_raw()),
+        Err(e) => {
+            set_dl_error(format!("dlopen: library '{}' not found: {:?}", name, e));
+            core::ptr::null_mut()
+        }
+    }
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_resolve(
-    a: *const c_void,
-    b: *const c_char,
-    c: *const c_void,
-    d: *const c_char,
-) -> *const c_char {
-    twizzler_abi::klog_println!(
-        "called __dlapi_resolve {:p}, {:p}, {:p}, {:p}: not yet implemented",
-        a,
-        b,
-        c,
-        d
-    );
-    core::ptr::null()
+    handle: *const c_void,
+    symbol: *const c_char,
+    _return_addr: *const c_void,
+    _version: *const c_char,
+) -> *mut c_void {
+    let sym_name = match unsafe { std::ffi::CStr::from_ptr(symbol) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            set_dl_error("dlsym: invalid UTF-8 in symbol name");
+            return core::ptr::null_mut();
+        }
+    };
+    let lib_desc = handle_to_desc(handle);
+    match monitor_api::lookup_symbol_by_name(lib_desc, sym_name) {
+        Ok(addr) if addr != 0 => addr as *mut c_void,
+        Ok(_) => {
+            set_dl_error(format!("dlsym: symbol '{}' resolved to NULL", sym_name));
+            core::ptr::null_mut()
+        }
+        Err(e) => {
+            set_dl_error(format!("dlsym: symbol '{}' not found: {:?}", sym_name, e));
+            core::ptr::null_mut()
+        }
+    }
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(a: *const c_void, b: *const c_void) -> std::ffi::c_int {
-    twizzler_abi::klog_println!(
-        "called __dlapi_reverse {:p}, {:p}: not yet implemented",
-        a,
-        b
-    );
-    // Return non-zero (failure): the stub cannot look up the symbol. This makes dladdr()
-    // correctly report failure rather than returning a garbage dli_fname.
-    1
+pub unsafe extern "C" fn __dlapi_reverse(
+    ptr: *const c_void,
+    out: *mut c_void, // actually *mut DlapiSymbol
+) -> c_int {
+    twizzler_abi::klog_println!("called __dlapi_reverse with ptr = {:p}", ptr);
+    if out.is_null() {
+        return 1;
+    }
+    let out = unsafe { &mut *(out as *mut DlapiSymbol) };
+
+    // Iterate libraries in the current compartment until we find one whose mapped
+    // range contains `ptr`.
+    let mut lib_n: usize = 0;
+    loop {
+        let desc = match monitor_api::monitor_rt_get_library_handle(None, lib_n) {
+            Ok(d) => d,
+            Err(_) => break,
+        };
+        let raw = match monitor_api::monitor_rt_get_library_info(desc) {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+                break;
+            }
+        };
+        let lib_info = monitor_api::LibraryInfo::from_raw(raw);
+        let base = lib_info.dl_info.addr as *const u8;
+        let len = lib_info.len;
+
+        if !base.is_null()
+            && (ptr as usize) >= (base as usize)
+            && (ptr as usize) < (base as usize + len)
+        {
+            // TODO: this leaks.
+            let name_cstring = std::ffi::CString::new(lib_info.name.clone()).unwrap_or_default();
+            let name_ptr: *const c_char = name_cstring.into_raw();
+            let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+            out.file = name_ptr;
+            out.base = base as *mut c_void;
+            out.symbol = core::ptr::null();
+            out.address = core::ptr::null_mut();
+            out.elf_symbol = core::ptr::null();
+            out.link_map = lib_info.link_map.0.ld.cast();
+            return 0;
+        }
+
+        let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+        lib_n += 1;
+    }
+    1 // not found
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_close(a: *const c_void) -> *const c_char {
-    twizzler_abi::klog_println!("called __dlapi_close {:p}: not yet implemented", a);
-    core::ptr::null()
+pub unsafe extern "C" fn __dlapi_close(handle: *const c_void) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+    let Some(desc) = handle_to_desc(handle) else {
+        return 0;
+    };
+    match monitor_api::monitor_rt_drop_library_handle(desc) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
 }
 
 #[linkage = "weak"]

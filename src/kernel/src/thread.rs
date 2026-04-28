@@ -326,7 +326,7 @@ impl Thread {
                 self.secctx.active_id(),
                 self.objid(),
             );
-            crate::panic::backtrace(true, None);
+            //crate::panic::backtrace(true, None);
             loop {}
         }
 

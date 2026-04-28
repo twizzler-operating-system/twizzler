@@ -27,7 +27,7 @@ use twizzler_rt_abi::{
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
-    preinit::{preinit_abort, preinit_unwrap},
+    preinit::{self, preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::{thread::libc_init_tcb, RuntimeState},
     OUR_RUNTIME,
@@ -223,6 +223,7 @@ impl ReferenceRuntime {
                 }
             }
 
+            preinit_println!("runtime is ready");
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
@@ -280,6 +281,7 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
+        preinit_println!("initializing for compartment",);
         let _start_1 = Instant::now();
         unsafe {
             preinit_unwrap(
@@ -299,7 +301,9 @@ impl ReferenceRuntime {
         let _start_4 = Instant::now();
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
         let _start_5 = Instant::now();
+        libc_init_tcb(preinit_unwrap(tls));
 
+        preinit_println!("running ctors");
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
                 core::slice::from_raw_parts(init_info.ctor_set_array, init_info.ctor_set_len)
@@ -307,6 +311,7 @@ impl ReferenceRuntime {
             self.init_ctors(ctor_slice);
         }
 
+        preinit_println!("mlibc entry");
         if !unsafe { __mlibc_entry_from_rust.is_null() } {
             let mlibc_entry_from_rust = unsafe {
                 std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(
@@ -315,7 +320,6 @@ impl ReferenceRuntime {
             };
             mlibc_entry_from_rust(entry_stack, core::ptr::null_mut());
         }
-        libc_init_tcb(preinit_unwrap(tls));
         let _start_6 = Instant::now();
 
         /*

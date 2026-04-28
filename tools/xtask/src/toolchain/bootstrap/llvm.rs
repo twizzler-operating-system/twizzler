@@ -105,7 +105,7 @@ pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     cfg.define("LLVM_INSTALL_UTILS", "ON");
     cfg.define("LLVM_ENABLE_ZLIB", "OFF");
 
-    cfg.define("LLVM_ENABLE_RUNTIMES", "");
+    cfg.define("LLVM_ENABLE_RUNTIMES", "compiler-rt");
     cfg.define("LLVM_ENABLE_PROJECTS", "clang");
     cfg.define("LLVM_VERSION_SUFFIX", "-rust-twizzler");
 
@@ -389,6 +389,7 @@ pub fn build_compiler_rt(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Re
     cfg.define("COMPILER_RT_BUILD_SANITIZERS", "OFF");
     cfg.define("COMPILER_RT_BAREMETAL_BUILD", "ON");
     cfg.define("BUILD_SHARED_LIBS", "ON");
+    cfg.define("LLVM_ENABLE_RUNTIMES", "compiler-rt");
     cfg.cflag("-nostdlib");
     cfg.cxxflag("-nostdlib");
     cfg.cflag("-fno-stack-protector");

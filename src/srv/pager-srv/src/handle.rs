@@ -163,6 +163,7 @@ pub fn pager_lookup_external(
         name,
         ExternalOpenFlags::READ,
         0,
+        None,
     ))?;
 
     pager
@@ -179,6 +180,7 @@ pub fn pager_create_external(
     dir: ObjID,
     mode: libc::mode_t,
     namelen: usize,
+    link_to: Option<ObjID>,
 ) -> Result<usize, TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
@@ -196,6 +198,7 @@ pub fn pager_create_external(
         name,
         ExternalOpenFlags::CREATE,
         mode,
+        link_to.map(|x| x.raw()),
     ))?;
 
     pager

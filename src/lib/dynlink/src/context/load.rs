@@ -154,6 +154,12 @@ impl Context {
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
     ) -> Result<Library, DynlinkError> {
+        tracing::info!(
+            "loading library {} (idx = {:?}) into comp {}",
+            unlib,
+            idx,
+            comp_id
+        );
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
 

@@ -38,23 +38,38 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("ac_cv_func_sched_setscheduler=no")
         .arg("ac_cv_func_realpath=no")
         .arg("ac_cv_func_readlink=no")
+        .arg("--enable-shared")
+        .arg("--with-static-libpython=no")
         .arg("--disable-ipv6");
 
-    let cflags = format!("-target {} --sysroot {} -O3", triple, sysroot_dir.display());
+    let cflags = format!(
+        "-target {} --sysroot {} -O3 -fPIC",
+        triple,
+        sysroot_dir.display()
+    );
 
     cmd.env("PKG_CONFIG", "");
     cmd.env("CFLAGS", &cflags);
     cmd.env("CPPFLAGS", &cflags);
     cmd.env("CXXFLAGS", &cflags);
-    cmd.env("LDFLAGS", &cflags);
+    cmd.env(
+        "LDFLAGS",
+        format!("-target {} --sysroot {}", triple, sysroot_dir.display()),
+    );
     cmd.env("CC", bin_dir.join("clang").display().to_string());
     cmd.env("CPP", bin_dir.join("clang-cpp").display().to_string());
     cmd.env("CXX", bin_dir.join("clang++").display().to_string());
     cmd.env("LD", bin_dir.join("clang").display().to_string());
     cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
     cmd.env("RANLIB", bin_dir.join("llvm-ranlib").display().to_string());
-    cmd.env("BLDSHARED", format!("{}/clang -shared", bin_dir.display()));
-    cmd.env("LDSHARED", format!("{}/clang -shared", bin_dir.display()));
+    let ldshared = format!(
+        "{}/clang -shared -target {} --sysroot {}",
+        bin_dir.display(),
+        triple,
+        sysroot_dir.display()
+    );
+    cmd.env("BLDSHARED", &ldshared);
+    cmd.env("LDSHARED", &ldshared);
 
     let mut ch = cmd.spawn()?;
     if !ch.wait()?.success() {

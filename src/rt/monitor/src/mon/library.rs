@@ -1,10 +1,15 @@
-use dynlink::library::LibraryId;
+use dynlink::{
+    engines::LoadCtx,
+    library::{AllowedGates, LibraryId, UnloadedLibrary},
+    symbol::LookupFlags,
+};
 use happylock::ThreadKey;
 use monitor_api::LibraryInfoRaw;
 use secgate::util::Descriptor;
+use tracing::span::Id;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
-    bindings::link_map,
+    bindings::{ctor_set, link_map},
     debug::LinkMap,
     error::{ArgumentError, GenericError, ResourceError, TwzError},
     object::ObjID,
@@ -95,14 +100,69 @@ impl Monitor {
             .ok_or(ResourceError::OutOfResources.into())
     }
 
-    /// Load a library in the given compartment.
-    pub fn load_library(
+    /// Load a library by name into the caller's compartment.
+    /// The name is read from the caller's per-thread simple buffer.
+    /// If the library is already loaded, returns a handle to the existing instance.
+    pub fn load_library_by_name(
         &self,
-        _caller: ObjID,
-        _id: ObjID,
-        _comp: Option<Descriptor>,
-    ) -> Result<Descriptor, TwzError> {
-        todo!()
+        caller: ObjID,
+        thread: ObjID,
+        name_len: usize,
+        id: Option<ObjID>,
+    ) -> Result<(Descriptor, usize), TwzError> {
+        let (_, ref mut comps, ref mut dynlink, ref mut handles, _) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let rc = comps.get_mut(caller)?;
+        let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
+        let name = std::str::from_utf8(&name_bytes)
+            .map_err(|_| ArgumentError::InvalidArgument)?
+            .to_string();
+        let comp_id = rc.compartment_id;
+
+        // If already loaded in this compartment, return a handle to it.
+        let lib_id = if let Some(id) = dynlink.lookup_library(comp_id, &name) {
+            id
+        } else {
+            // Load the library and all its dependencies into the caller's compartment.
+            let unlib = if let Some(id) = id {
+                UnloadedLibrary::new_object(name, id)
+            } else {
+                UnloadedLibrary::new(name.clone())
+            };
+            let mut load_ctx = LoadCtx::default();
+            let loads = dynlink
+                .load_library_in_compartment(comp_id, unlib, AllowedGates::Private, &mut load_ctx)
+                .map_err(|_| TwzError::NOT_FOUND)?;
+            let root_id = loads.first().ok_or(GenericError::Internal)?.lib;
+            // Relocate the newly loaded library graph.
+            dynlink
+                .relocate_all(root_id)
+                .map_err(|_| GenericError::Internal)?;
+            root_id
+        };
+
+        let ctors = dynlink
+            .build_ctors_list(lib_id, Some(comp_id))
+            .map_err(|_| TwzError::INVALID_ARGUMENT)?;
+
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                ctors.as_ptr().cast::<u8>(),
+                ctors.len() * core::mem::size_of::<ctor_set>(),
+            )
+        };
+        let ctor_len = rc.get_per_thread(thread).write_bytes(bytes);
+
+        handles
+            .insert(
+                caller,
+                LibraryHandle {
+                    comp: caller,
+                    id: lib_id,
+                },
+            )
+            .ok_or(ResourceError::OutOfResources.into())
+            .map(|h| (h, ctor_len))
     }
 
     /// Drop a library handle.
@@ -111,5 +171,65 @@ impl Monitor {
         self.library_handles
             .write(ThreadKey::get().unwrap())
             .remove(caller, desc);
+    }
+
+    /// Look up a symbol by name in the given library (or all libs in the caller's compartment
+    /// if `lib_desc` is `None`). The symbol name is read from the caller's per-thread simple
+    /// buffer. Returns the relocated symbol address.
+    pub fn lookup_symbol(
+        &self,
+        caller: ObjID,
+        thread: ObjID,
+        lib_desc: Option<Descriptor>,
+        name_len: usize,
+    ) -> Result<usize, TwzError> {
+        let (_, ref mut comps, ref dynlink, ref libhandles, _) =
+            *self.locks.lock(ThreadKey::get().unwrap());
+        let rc = comps.get_mut(caller)?;
+        let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
+        let name = std::str::from_utf8(&name_bytes).map_err(|_| ArgumentError::InvalidArgument)?;
+
+        tracing::info!(
+            "looking up symbol '{}' for caller {}, lib_desc = {:?}",
+            name,
+            caller,
+            lib_desc
+        );
+        match lib_desc {
+            Some(desc) => {
+                let lib = libhandles
+                    .lookup(caller, desc)
+                    .ok_or(ArgumentError::InvalidArgument)?;
+                let deps = dynlink.build_deps_search_list(lib.id);
+                let sym = dynlink
+                    .lookup_symbol(
+                        lib.id,
+                        name,
+                        LookupFlags::SKIP_SECGATE_CHECK | LookupFlags::ALLOW_WEAK,
+                        &deps,
+                    )
+                    .map_err(|_| TwzError::NOT_FOUND)?;
+                return Ok(sym.reloc_value() as usize);
+            }
+            None => {
+                // RTLD_DEFAULT: start from the compartment's root (first) library.
+                for lid in dynlink
+                    .get_compartment(rc.compartment_id)
+                    .map_err(|_| GenericError::Internal)?
+                    .library_ids()
+                {
+                    let deps = dynlink.build_deps_search_list(lid);
+                    if let Ok(sym) = dynlink.lookup_symbol(
+                        lid,
+                        name,
+                        LookupFlags::SKIP_SECGATE_CHECK | LookupFlags::ALLOW_WEAK,
+                        &deps,
+                    ) {
+                        return Ok(sym.reloc_value() as usize);
+                    }
+                }
+            }
+        }
+        Err(TwzError::NOT_FOUND)
     }
 }

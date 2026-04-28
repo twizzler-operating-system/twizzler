@@ -286,16 +286,21 @@ impl NameSession<'_> {
                 }
                 Component::Normal(os_str) => {
                     tracing::trace!(
-                        "lookup component {:?}: {} in {}",
-                        os_str.as_encoded_bytes(),
+                        "lookup component {} in {}",
                         os_str.to_str().ok_or(ArgumentError::InvalidArgument)?,
                         namespace.id(),
                     );
                     node = namespace.find(os_str.to_str().ok_or(ArgumentError::InvalidArgument)?);
+                    let name = node.as_ref().map(|x| x.name());
+                    tracing::trace!("found node: {:?} (is_last = {})", name, is_last);
 
                     // Did we find something?
                     let Some(mut thisnode) = node else {
-                        tracing::trace!("failed to find component: (is_last = {})", is_last);
+                        tracing::trace!(
+                            "failed to find component {:?}: (is_last = {})",
+                            os_str.to_str(),
+                            is_last
+                        );
                         // Last component: return with this name, None.
                         if is_last {
                             return Ok((Err(os_str.into()), namespace));
@@ -472,15 +477,18 @@ impl NameSession<'_> {
     }
 
     pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
+        tracing::trace!("rename: {:?} to {:?}", old.as_ref(), new.as_ref());
         // Look up the old entry (don't follow symlinks — we're moving the entry itself)
         let (old_node, old_container) =
             self.namei_exist(None, &old, Self::MAX_SYMLINK_DEREF, false)?;
 
-        // Check that the new path doesn't already exist
-        let (new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
-        let Err(new_name) = new_node else {
-            return Err(NamingError::AlreadyExists.into());
-        };
+        let (_new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
+        let new_name = new
+            .as_ref()
+            .file_name()
+            .ok_or(ArgumentError::InvalidArgument)?
+            .to_str()
+            .ok_or(ArgumentError::InvalidArgument)?;
 
         // Create new entry preserving the old node's type and data
         let new_entry = if old_node.kind == NsNodeKind::SymLink {
@@ -494,7 +502,13 @@ impl NameSession<'_> {
             NsNode::new::<_, &str>(old_node.kind, old_node.id, &new_name, None)?
         };
 
+        tracing::trace!(
+            "insert new entry: {:?} in container {}",
+            new_entry,
+            new_container.id()
+        );
         // Insert at new location, then remove from old location
+        let _ = new_container.remove(new_name);
         new_container.insert(new_entry);
         old_container
             .remove(old_node.name()?)

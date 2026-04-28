@@ -416,6 +416,23 @@ impl Ext4Fs {
         Ok(this)
     }
 
+    pub fn link(&mut self, name: &str, container: u32, new_inode: u32) -> Result<()> {
+        let name = CString::new(name).unwrap();
+        let mp = unsafe { ext4_get_mount(self.mnt_name.as_ptr()) };
+        let mut cont = self.get_inode(container)?;
+        let mut ch = self.get_inode(new_inode)?;
+        errno_to_result(unsafe {
+            lwext4::ext4_link(
+                mp,
+                &mut cont.inode,
+                &mut ch.inode,
+                name.as_ptr().cast(),
+                name.as_bytes().len() as u32,
+                false,
+            )
+        })
+    }
+
     pub fn open_file(&mut self, name: &str, flags: u32) -> Result<Ext4File<'_>> {
         let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
         let name = CString::new(name).unwrap();
@@ -427,8 +444,9 @@ impl Ext4Fs {
             fsize: 0,
             fpos: 0,
         });
-        errno_to_result(unsafe { lwext4::ext4_fopen2(file.as_mut(), name.as_ptr(), flags as i32) })
-            .inspect_err(|e| twizzler_abi::klog_println!("!lw {}", e))?;
+        errno_to_result(unsafe {
+            lwext4::ext4_fopen2(file.as_mut(), name.as_ptr(), flags as i32)
+        })?;
         Ok(Ext4File {
             file,
             name,

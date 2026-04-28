@@ -35,6 +35,7 @@ pub fn pager_create_external(
     dir: ObjID,
     mode: libc::mode_t,
     namelen: usize,
+    link_to: Option<ObjID>,
 ) -> Result<usize, TwzError> {
 }
 

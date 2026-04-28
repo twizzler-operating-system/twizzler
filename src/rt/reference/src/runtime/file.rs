@@ -440,11 +440,23 @@ impl FileDesc {
 
     fn pread(&mut self, buf: &mut [u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
         let offset = io_ctx_offset(ctx);
+        if offset.is_none() {
+            // If no offset is provided, just do a normal read.
+            return self
+                .kind
+                .read(buf, IoFlags::from_bits_truncate(unsafe { (*ctx).flags }));
+        }
         self.kind.pread(buf, offset)
     }
 
     fn pwrite(&mut self, buf: &[u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
         let offset = io_ctx_offset(ctx);
+        if offset.is_none() {
+            // If no offset is provided, just do a normal read.
+            return self
+                .kind
+                .write(buf, IoFlags::from_bits_truncate(unsafe { (*ctx).flags }));
+        }
         self.kind.pwrite(buf, offset)
     }
 

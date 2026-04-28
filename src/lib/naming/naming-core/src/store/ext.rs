@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pager_dynamic::ExternalKind;
+use pager_dynamic::{objid_to_ino, ExternalKind};
 use twizzler::object::ObjID;
 
 use super::{Namespace, NsNode, ParentInfo};
@@ -105,6 +105,12 @@ impl Namespace for ExtNamespace {
     }
 
     fn insert(&self, mut node: NsNode) -> Option<NsNode> {
+        tracing::trace!(
+            "inserting {} into external namespace {}, id = {}",
+            node.name().ok()?,
+            self.id,
+            node.id
+        );
         let mut mode = libc::S_IRUSR | libc::S_IWUSR | libc::S_IRGRP | libc::S_IROTH;
         match node.kind {
             NsNodeKind::Namespace => mode |= libc::S_IFDIR,
@@ -114,16 +120,24 @@ impl Namespace for ExtNamespace {
         }
 
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
-            if let Ok(file) = h.create_external_file(self.id, node.name().ok()?, mode) {
-                node.id = file.id.into();
+            tracing::trace!("==> {:?}", objid_to_ino(node.id.raw()));
+            if objid_to_ino(node.id.raw()).is_none() {
+                if let Ok(file) = h.create_external_file(self.id, node.name().ok()?, None, mode) {
+                    node.id = file.id.into();
+                    self.reset_cache();
+                    return Some(node);
+                } else {
+                    tracing::warn!(
+                        "failed to create external file {} in namespace {}",
+                        node.name().ok()?,
+                        self.id
+                    );
+                }
+            } else {
+                h.create_external_file(self.id, node.name().ok()?, Some(node.id.into()), mode)
+                    .ok()?;
                 self.reset_cache();
                 return Some(node);
-            } else {
-                tracing::warn!(
-                    "failed to create external file {} in namespace {}",
-                    node.name().ok()?,
-                    self.id
-                );
             }
         } else {
             tracing::warn!("failed to open handle to pager");
