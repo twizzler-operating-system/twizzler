@@ -76,9 +76,9 @@ impl Context {
         deps: &[NodeIndex],
         _reloc_cache: &mut RelocCache,
     ) -> Result<(), DynlinkError> {
-        let addend = rel.addend();
         let base = lib.base_addr() as u64;
         let target: *mut u64 = lib.laddr_mut(rel.offset());
+        let addend = rel.addend(target);
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
             let sym = syms.get(rel.sym() as usize)?;

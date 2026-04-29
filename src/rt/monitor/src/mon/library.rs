@@ -120,12 +120,12 @@ impl Monitor {
         let comp_id = rc.compartment_id;
 
         // If already loaded in this compartment, return a handle to it.
-        let lib_id = if let Some(id) = dynlink.lookup_library(comp_id, &name) {
-            id
+        let (lib_id, loads) = if let Some(id) = dynlink.lookup_library(comp_id, &name) {
+            (id, None)
         } else {
             // Load the library and all its dependencies into the caller's compartment.
             let unlib = if let Some(id) = id {
-                UnloadedLibrary::new_object(name, id)
+                UnloadedLibrary::new_object(name.clone(), id)
             } else {
                 UnloadedLibrary::new(name.clone())
             };
@@ -133,17 +133,22 @@ impl Monitor {
             let loads = dynlink
                 .load_library_in_compartment(comp_id, unlib, AllowedGates::Private, &mut load_ctx)
                 .map_err(|_| TwzError::NOT_FOUND)?;
+            tracing::info!("loaded library '{}', got loads: {:#?}", name, loads);
             let root_id = loads.first().ok_or(GenericError::Internal)?.lib;
             // Relocate the newly loaded library graph.
             dynlink
                 .relocate_all(root_id)
                 .map_err(|_| GenericError::Internal)?;
-            root_id
+            (root_id, Some(loads))
         };
 
-        let ctors = dynlink
-            .build_ctors_list(lib_id, Some(comp_id))
-            .map_err(|_| TwzError::INVALID_ARGUMENT)?;
+        let ctors = if loads.is_none() {
+            vec![]
+        } else {
+            dynlink
+                .build_ctors_list(lib_id, Some(comp_id), loads)
+                .map_err(|_| TwzError::INVALID_ARGUMENT)?
+        };
 
         let bytes = unsafe {
             core::slice::from_raw_parts(

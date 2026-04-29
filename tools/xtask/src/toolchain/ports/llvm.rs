@@ -7,6 +7,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building llvm for {}", triple);
     build_llvm(triple)?;
     build_lld(triple)?;
+    build_compiler_rt(triple)?;
 
     Ok(())
 }
@@ -184,6 +185,81 @@ pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
         build_dir.join("bin/wasm-ld"),
         lld_install_path.join("bin/wasm-ld"),
     )?;
+
+    Ok(())
+}
+
+pub fn build_compiler_rt(triple: &Triple) -> anyhow::Result<()> {
+    println!("== Building compiler-rt for {}", triple);
+
+    let compiler_rt_dir =
+        Path::new("toolchain/src/rust/src/llvm-project/compiler-rt").canonicalize()?;
+    let install_dir = Path::new("toolchain/install/sysroots")
+        .join(&triple.to_string())
+        .join("pkg/llvm");
+    let bin_dir = Path::new("toolchain/install/bin");
+    let build_dir = Path::new("toolchain/build/ports/crt").join(&triple.to_string());
+    let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
+    let llvm_config = bin_dir.join("llvm-config");
+
+    std::fs::create_dir_all(&install_dir)?;
+    let _install_dir = install_dir.canonicalize()?;
+
+    std::fs::create_dir_all(&bin_dir)?;
+    let bin_dir = bin_dir.canonicalize()?;
+
+    let _ = fs_extra::dir::remove(&build_dir);
+
+    std::fs::create_dir_all(&build_dir)?;
+    let build_dir = build_dir.canonicalize()?;
+
+    let mut cfg = cmake::Config::new(&compiler_rt_dir);
+    cfg.profile("Release");
+    cfg.define("CMAKE_C_COMPILER_TARGET", triple.to_string());
+    cfg.define("CMAKE_CXX_COMPILER_TARGET", triple.to_string());
+
+    cfg.define("COMPILER_RT_BUILD_BUILTINS", "ON");
+    cfg.define("COMPILER_RT_BUILD_CRT", "ON");
+    cfg.define("COMPILER_RT_BUILD_SANITIZERS", "OFF");
+    cfg.define("COMPILER_RT_BAREMETAL_BUILD", "ON");
+    cfg.define("BUILD_SHARED_LIBS", "ON");
+    cfg.define("LLVM_ENABLE_RUNTIMES", "compiler-rt");
+    cfg.cflag("-nostdlib");
+    cfg.cxxflag("-nostdlib");
+    cfg.cflag("-fno-stack-protector");
+    cfg.asmflag("-target");
+    cfg.asmflag(&triple.to_string());
+    cfg.asmflag("-nostdinc");
+
+    cfg.define("COMPILER_RT_BUILD_LIBFUZZER", "OFF");
+    cfg.define("COMPILER_RT_BUILD_PROFILE", "ON");
+    cfg.define("COMPILER_RT_BUILD_XRAY", "OFF");
+    cfg.define("COMPILER_RT_DEFAULT_TARGET_ONLY", "ON");
+    cfg.define("COMPILER_RT_USE_LIBCXX", "OFF");
+    cfg.define("LLVM_CONFIG_PATH", &llvm_config);
+
+    cfg.define("COMPILER_RT_USE_BUILTINS_LIBRARY", "ON");
+
+    setup_cmake(&mut cfg, None)?;
+    setup_cmake_twizzler(&mut cfg, triple, vec!["-nostdlib".to_string()])?;
+
+    cfg.define("LLVM_CMAKE_DIR", &llvm_cmake_dir)
+        .define("LLVM_DIR", &llvm_cmake_dir)
+        .define("LLVM_INCLUDE_TESTS", "OFF");
+
+    cfg.out_dir(&build_dir);
+
+    let build_target = format!("libclang_rt.builtins-{}.a", triple.arch);
+    cfg.build_target(&build_target);
+    cfg.build();
+
+    let src = build_dir.join("build/lib/twizzler").join(&build_target);
+    let dest = install_dir.clone();
+    let dest = dest.join("lib/clang/21/lib").join(&triple.to_string());
+    std::fs::create_dir_all(&dest)?;
+
+    let dest = dest.join("libclang_rt.builtins.a");
+    std::fs::copy(src, dest)?;
 
     Ok(())
 }

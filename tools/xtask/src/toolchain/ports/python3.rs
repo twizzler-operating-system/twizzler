@@ -43,7 +43,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--disable-ipv6");
 
     let cflags = format!(
-        "-target {} --sysroot {} -O3 -fPIC",
+        "-target {} --sysroot {} -Og -fPIC -g -D__DEBUG__ -D__Debug__",
         triple,
         sysroot_dir.display()
     );
@@ -71,9 +71,11 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("BLDSHARED", &ldshared);
     cmd.env("LDSHARED", &ldshared);
 
-    let mut ch = cmd.spawn()?;
-    if !ch.wait()?.success() {
-        anyhow::bail!("failed to configure python");
+    if false {
+        let mut ch = cmd.spawn()?;
+        if !ch.wait()?.success() {
+            anyhow::bail!("failed to configure python");
+        }
     }
 
     let log = setup_logfile("ports/cpython", "xtask-build", Some(triple))?;

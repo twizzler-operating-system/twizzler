@@ -88,9 +88,9 @@ impl LoadInfo {
         let lib = dynlink.get_library(rt_id)?;
         let extra_ctors: Vec<_> = extras
             .iter()
-            .map(|extra| dynlink.build_ctors_list(*extra, Some(lib.compartment())))
+            .map(|extra| dynlink.build_ctors_list::<1>(*extra, Some(lib.compartment()), None))
             .try_collect()?;
-        let root_ctors = dynlink.build_ctors_list(root_id, Some(lib.compartment()))?;
+        let root_ctors = dynlink.build_ctors_list::<1>(root_id, Some(lib.compartment()), None)?;
         let mut ctor_info: dynlink::Vec<_, SMALL_VEC_SIZE> =
             extra_ctors.iter().flatten().copied().collect();
         ctor_info.extend_from_slice(root_ctors.as_slice());

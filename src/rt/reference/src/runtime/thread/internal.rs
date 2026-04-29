@@ -9,7 +9,10 @@ use std::{
 use dynlink::tls::Tcb;
 use monitor_api::RuntimeThreadControl;
 use tracing::trace;
-use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
+use twizzler_abi::{
+    object::{ObjID, NULLPAGE_SIZE},
+    thread::ThreadRepr,
+};
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
 use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
@@ -22,7 +25,7 @@ pub struct InternalThread {
     stack_size: usize,
     args_box: usize,
     pub(super) id: u32,
-    _tls: *mut Tcb<RuntimeThreadControl>,
+    pub(super) tls: *mut Tcb<RuntimeThreadControl>,
     name: Mutex<Option<CString>>,
 }
 
@@ -41,9 +44,13 @@ impl InternalThread {
             stack_size,
             args_box,
             id,
-            _tls: tls,
+            tls,
             name: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn objid(&self) -> ObjID {
+        self.repr_handle.id()
     }
 
     #[allow(dead_code)]

@@ -218,7 +218,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
     ptr: *mut u32,
     expected: twizzler_rt_abi::bindings::futex_word,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> bool {
+) -> twz_error {
     unsafe {
         if timeout.is_some != 0 {
             OUR_RUNTIME.futex_wait(&*ptr.cast(), expected, Some(timeout.dur.into()))
@@ -230,7 +230,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
 check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> bool {
+pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> twz_error {
     unsafe { OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize) }
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
@@ -662,6 +662,29 @@ pub unsafe extern "C-unwind" fn twz_rt_get_loaded_image(
     true
 }
 check_ffi_type!(twz_rt_get_loaded_image, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
+    _id: twizzler_rt_abi::bindings::thread_id,
+) -> twizzler_rt_abi::bindings::thread_info {
+    twizzler_rt_abi::bindings::thread_info {
+        id: 0,
+        tcb: core::ptr::null_mut(),
+        objid: 0,
+    }
+}
+check_ffi_type!(twz_rt_get_thread_info, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
+    _old_name: *const c_char,
+    _old_len: usize,
+    _new_name: *const c_char,
+    _new_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_rename, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_iter_phdr(

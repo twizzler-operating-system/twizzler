@@ -59,9 +59,9 @@ impl EitherRel {
         }
     }
 
-    pub fn addend(&self) -> i64 {
+    pub fn addend(&self, target: *mut u64) -> i64 {
         match self {
-            EitherRel::Rel(_) => 0,
+            EitherRel::Rel(_) => unsafe { target.read() as i64 },
             EitherRel::Rela(r) => r.r_addend,
         }
     }

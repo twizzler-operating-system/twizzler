@@ -8,13 +8,17 @@ use twizzler_abi::syscall::{
     ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_rt_abi::{
+    bindings::{thread_info, twz_error},
     error::TwzError,
     thread::{ThreadSpawnArgs, TlsIndex},
     Result,
 };
 
 use super::ReferenceRuntime;
-use crate::{preinit_println, runtime::thread::mgr::ThreadManager};
+use crate::{
+    preinit_println,
+    runtime::thread::{internal::InternalThread, mgr::ThreadManager},
+};
 
 mod internal;
 mod mgr;
@@ -35,10 +39,10 @@ impl ReferenceRuntime {
         futex: &core::sync::atomic::AtomicU32,
         expected: u32,
         timeout: Option<core::time::Duration>,
-    ) -> bool {
+    ) -> twz_error {
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
-            return true;
+            return 0;
         }
 
         let r = sys_thread_sync(
@@ -51,16 +55,23 @@ impl ReferenceRuntime {
             timeout,
         );
 
-        !matches!(r, Err(TwzError::TIMED_OUT))
+        match r {
+            Err(e) => return e.raw(),
+            _ => return 0,
+        }
     }
 
-    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> bool {
+    pub fn futex_wake(
+        &self,
+        futex: &core::sync::atomic::AtomicU32,
+        count: usize,
+    ) -> twizzler_rt_abi::bindings::twz_error {
         let wake = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
         ));
         let _ = sys_thread_sync(&mut [wake], None);
-        false
+        0
     }
 
     pub fn yield_now(&self) {
@@ -110,5 +121,29 @@ impl ReferenceRuntime {
 
     pub fn join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
         self.impl_join(id, timeout)
+    }
+
+    pub fn thread_get_info(&self, id: Option<u32>) -> thread_info {
+        let make_info = |th: &InternalThread| -> thread_info {
+            twizzler_abi::klog_println!(
+                "found thread with id {}, objid {}, tcb {:p}",
+                th.id,
+                th.objid(),
+                th.tls
+            );
+            thread_info {
+                id: th.id,
+                tcb: th.tls.cast(),
+                objid: th.objid().raw(),
+            }
+        };
+        let id = id.unwrap_or_else(|| with_current_thread(|cur| cur.id()));
+        THREAD_MGR
+            .with_internal(id, make_info)
+            .unwrap_or(thread_info {
+                id,
+                tcb: core::ptr::null_mut(),
+                objid: 0,
+            })
     }
 }

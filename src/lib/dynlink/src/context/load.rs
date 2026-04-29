@@ -3,7 +3,7 @@ use std::mem::size_of;
 use elf::{
     abi::{
         DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, PT_DYNAMIC,
-        PT_TLS,
+        PT_TLS, SHT_NOBITS,
     },
     dynamic::DynamicTable,
     endian::NativeEndian,
@@ -260,10 +260,12 @@ impl Context {
         let backings = self
             .engine
             .load_segments(&backing, &directives, comp_id, load_ctx)?;
+
         if backings.is_empty() {
             return Err(DynlinkErrorKind::NewBackingFail.into());
         }
         let base_addr = backings[0].load_addr();
+
         debug!(
             "{}: loaded to {:x} (data at {:x})",
             unlib,

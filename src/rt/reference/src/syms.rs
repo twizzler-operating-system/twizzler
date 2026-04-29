@@ -86,7 +86,10 @@ use std::{
 };
 
 use tracing::warn;
-use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE},
+    syscall::ObjectCreate,
+};
 // core.h
 use twizzler_rt_abi::bindings::{
     binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, object_create,
@@ -221,7 +224,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
     ptr: *mut u32,
     expected: twizzler_rt_abi::bindings::futex_word,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> bool {
+) -> twizzler_rt_abi::bindings::twz_error {
     if timeout.is_some != 0 {
         OUR_RUNTIME.futex_wait(&*ptr.cast(), expected, Some(timeout.dur.into()))
     } else {
@@ -231,7 +234,10 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
 check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> bool {
+pub unsafe extern "C-unwind" fn twz_rt_futex_wake(
+    ptr: *mut u32,
+    max: i64,
+) -> twizzler_rt_abi::bindings::twz_error {
     OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize)
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
@@ -480,6 +486,19 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
     }
 }
 check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
+    id: twizzler_rt_abi::bindings::thread_id,
+) -> twizzler_rt_abi::bindings::thread_info {
+    let id = if id == twizzler_rt_abi::bindings::TWZ_RT_THREAD_ID_SELF {
+        None
+    } else {
+        Some(id)
+    };
+    OUR_RUNTIME.thread_get_info(id)
+}
+check_ffi_type!(twz_rt_get_thread_info, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
@@ -1157,7 +1176,7 @@ pub unsafe extern "C" fn __dlapi_open(
     _flags: c_int,
     _return_addr: *const c_void,
 ) -> *mut c_void {
-    twizzler_abi::klog_println!("called __dlapi_open with filename = {:p}", filename);
+    //twizzler_abi::klog_println!("called __dlapi_open with filename = {:p}", filename);
     if filename.is_null() {
         return core::ptr::null_mut(); // RTLD_DEFAULT sentinel
     }
@@ -1215,7 +1234,7 @@ pub unsafe extern "C" fn __dlapi_reverse(
     ptr: *const c_void,
     out: *mut c_void, // actually *mut DlapiSymbol
 ) -> c_int {
-    twizzler_abi::klog_println!("called __dlapi_reverse with ptr = {:p}", ptr);
+    //twizzler_abi::klog_println!("called __dlapi_reverse with ptr = {:p}", ptr);
     if out.is_null() {
         return 1;
     }
@@ -1242,7 +1261,7 @@ pub unsafe extern "C" fn __dlapi_reverse(
 
         if !base.is_null()
             && (ptr as usize) >= (base as usize)
-            && (ptr as usize) < (base as usize + len)
+            && (ptr as usize) < (base as usize + MAX_SIZE * 2)
         {
             // TODO: this leaks.
             let name_cstring = std::ffi::CString::new(lib_info.name.clone()).unwrap_or_default();

@@ -64,9 +64,9 @@ impl Context {
         deps_list: &[NodeIndex],
         reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
-        let addend = rel.addend();
         let base = lib.base_addr() as u64;
         let target: *mut u64 = lib.laddr_mut(rel.offset());
+        let addend = rel.addend(target);
         let mut is_weak = false;
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
@@ -200,6 +200,7 @@ impl Context {
                 )?
             }
         }
+        tracing::trace!("set reloc {} to {:x}", rel.r_type(), unsafe { *target });
 
         Ok(())
     }

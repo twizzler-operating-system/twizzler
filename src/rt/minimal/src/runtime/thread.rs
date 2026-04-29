@@ -12,12 +12,13 @@ use twizzler_abi::{
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
+    Result,
+    bindings::twz_error,
     error::{ArgumentError, GenericError, TwzError},
     thread::{ThreadSpawnArgs, TlsIndex},
-    Result,
 };
 
-use super::{idcounter::IdCounter, object::InternalObject, MinimalRuntime};
+use super::{MinimalRuntime, idcounter::IdCounter, object::InternalObject};
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,
@@ -43,10 +44,10 @@ impl MinimalRuntime {
         futex: &core::sync::atomic::AtomicU32,
         expected: u32,
         timeout: Option<core::time::Duration>,
-    ) -> bool {
+    ) -> twz_error {
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
-            return true;
+            return TwzError::SUCCESS.raw();
         }
 
         let r = twizzler_abi::syscall::sys_thread_sync(
@@ -60,18 +61,18 @@ impl MinimalRuntime {
         );
 
         match r {
-            Err(TwzError::Generic(GenericError::TimedOut)) => return false,
-            _ => return true,
+            Err(e) => return e.raw(),
+            _ => return TwzError::SUCCESS.raw(),
         }
     }
 
-    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> bool {
+    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> twz_error {
         let wake = ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
         ));
         let _ = twizzler_abi::syscall::sys_thread_sync(&mut [wake], None);
-        false
+        TwzError::SUCCESS.raw()
     }
 
     #[allow(dead_code)]

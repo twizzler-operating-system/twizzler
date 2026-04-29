@@ -63,9 +63,15 @@ impl Engine {
         if name.starts_with("libtest") {
             name = "libtest.so";
         }
+        if name.contains("libtwz_rt.so") {
+            name = "libtwz_rt.so";
+        }
 
         if let Some(id) = self.name_map.get(name) {
             return Ok((*id, name.to_string()));
+        }
+        if name.contains("/") {
+            return self.name_resolver(name.split("/").last().unwrap());
         }
         Err(DynlinkError::new(DynlinkErrorKind::NameNotFound {
             name: SmallString::from_str(name),
