@@ -88,6 +88,17 @@ pub struct ThreadSyncSleep {
     pub flags: ThreadSyncFlags,
 }
 
+impl From<(&AtomicU64, u64)> for ThreadSyncSleep {
+    fn from((reference, value): (&AtomicU64, u64)) -> Self {
+        Self {
+            reference: ThreadSyncReference::Virtual(reference),
+            value,
+            op: ThreadSyncOp::Equal,
+            flags: ThreadSyncFlags::empty(),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[repr(C)]
 /// Specification for a thread wake request.

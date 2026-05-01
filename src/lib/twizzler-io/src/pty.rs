@@ -54,10 +54,6 @@ struct PtyOutputWriter {
 impl Write for PtyOutputWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let count = self.pty.base().client_output.write_bytes(buf)?;
-        if count == 0 && buf.len() > 0 {
-            do_sleep(self.pty.base().client_output.sync_for_avail_space())?;
-            return self.write(buf);
-        }
         Ok(count)
     }
 
@@ -71,22 +67,27 @@ struct PtyOutputReader {
     pty: Object<PtyBase>,
 }
 
-impl Read for PtyOutputReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl PtyOutputReader {
+    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         let count = self.pty.base().client_output.read_bytes(buf)?;
-        if count == 0 && buf.len() > 0 {
-            do_sleep(self.pty.base().client_output.sync_for_pending_data())?;
-            return self.read(buf);
-        }
         Ok(count)
     }
 }
 
-#[derive(Clone)]
 pub struct PtyClientHandle {
     input: Arc<Mutex<InputConverter<PtyInputReader>>>,
-    output: OutputConverter<PtyOutputWriter>,
-    termios_gen: u64,
+    output: Arc<Mutex<OutputConverter<PtyOutputWriter>>>,
+    termios_gen: AtomicU64,
+}
+
+impl Clone for PtyClientHandle {
+    fn clone(&self) -> Self {
+        Self {
+            input: self.input.clone(),
+            output: self.output.clone(),
+            termios_gen: AtomicU64::new(self.termios_gen.load(Ordering::SeqCst)),
+        }
+    }
 }
 
 impl PtyClientHandle {
@@ -99,27 +100,38 @@ impl PtyClientHandle {
                 termios,
                 PtyInputReader { pty: obj.clone() },
             ))),
-            output: OutputConverter::new(termios, PtyOutputWriter { pty: obj.clone() }),
-            termios_gen,
+            output: Arc::new(Mutex::new(OutputConverter::new(
+                termios,
+                PtyOutputWriter { pty: obj.clone() },
+            ))),
+            termios_gen: AtomicU64::new(termios_gen),
         })
     }
 
-    fn update_termios(&mut self) {
+    fn update_termios(&self) {
         if let Some((termios, termios_gen)) = self
             .output
+            .lock()
+            .unwrap()
             .writer
             .pty
             .base()
-            .try_read_termios(self.termios_gen)
+            .try_read_termios(self.termios_gen.load(Ordering::SeqCst))
         {
             self.input.lock().unwrap().termios = termios;
-            self.output.termios = termios;
-            self.termios_gen = termios_gen;
+            self.output.lock().unwrap().termios = termios;
+            self.termios_gen.store(termios_gen, Ordering::SeqCst);
         }
     }
 
     pub fn set_termios(&self, termios: libc::termios) {
-        self.output.writer.pty.base().update_termios(|_| termios);
+        self.output
+            .lock()
+            .unwrap()
+            .writer
+            .pty
+            .base()
+            .update_termios(|_| termios);
     }
 }
 
@@ -131,13 +143,7 @@ struct PtyInputPoster {
 impl Write for PtyInputPoster {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let count = self.pty.base().client_input.write_bytes(buf)?;
-        if count == 0 && buf.len() > 0 {
-            let sync = self.pty.base().client_input.sync_for_avail_space();
-            do_sleep(sync)?;
-            return self.write(buf);
-        } else {
-            Ok(count)
-        }
+        Ok(count)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -145,12 +151,22 @@ impl Write for PtyInputPoster {
     }
 }
 
-#[derive(Clone)]
 pub struct PtyServerHandle {
     client_input: Arc<Mutex<InputPoster<PtyInputPoster, PtyOutputWriter>>>,
     client_output: PtyOutputReader,
-    termios_gen: u64,
+    termios_gen: AtomicU64,
     signal_handler: Option<fn(&PtyServerHandle, PtySignal)>,
+}
+
+impl Clone for PtyServerHandle {
+    fn clone(&self) -> Self {
+        Self {
+            client_input: self.client_input.clone(),
+            client_output: self.client_output.clone(),
+            termios_gen: AtomicU64::new(self.termios_gen.load(Ordering::SeqCst)),
+            signal_handler: self.signal_handler,
+        }
+    }
 }
 
 impl PtyServerHandle {
@@ -167,21 +183,21 @@ impl PtyServerHandle {
                 PtyInputPoster { pty: obj.clone() },
                 PtyOutputWriter { pty: obj.clone() },
             ))),
-            termios_gen,
+            termios_gen: AtomicU64::new(termios_gen),
             client_output: PtyOutputReader { pty: obj },
             signal_handler,
         })
     }
 
-    fn update_termios(&mut self) {
+    fn update_termios(&self) {
         if let Some((termios, termios_gen)) = self
             .client_output
             .pty
             .base()
-            .try_read_termios(self.termios_gen)
+            .try_read_termios(self.termios_gen.load(Ordering::SeqCst))
         {
             self.client_input.lock().unwrap().termios = termios;
-            self.termios_gen = termios_gen;
+            self.termios_gen.store(termios_gen, Ordering::SeqCst);
         }
     }
 
@@ -192,10 +208,55 @@ impl PtyServerHandle {
     pub fn set_termios(&self, termios: libc::termios) {
         self.client_output.pty.base().update_termios(|_| termios);
     }
+
+    pub fn waitpoint(&self, write: bool) -> ThreadSyncSleep {
+        if write {
+            self.client_output
+                .pty
+                .base()
+                .client_input
+                .sync_for_avail_space()
+        } else {
+            self.client_output
+                .pty
+                .base()
+                .client_output
+                .sync_for_pending_data()
+        }
+    }
 }
 
-impl Write for PtyServerHandle {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl PtyServerHandle {
+    pub fn write_nb(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.update_termios();
+        let report = self.client_input.lock().unwrap().write_input(buf)?;
+        if let Some(signal) = report.posted_signal
+            && let Some(signal_handler) = self.signal_handler
+        {
+            (signal_handler)(self, signal);
+        }
+        if report.consumed == 0 && buf.len() > 0 {
+            return Err(ErrorKind::WouldBlock.into());
+        }
+        Ok(report.consumed)
+    }
+
+    pub fn read_nb(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.update_termios();
+        let count = self.client_output.read(buf)?;
+        if count == 0 && buf.len() > 0 {
+            return Err(ErrorKind::WouldBlock.into());
+        }
+        Ok(count)
+    }
+}
+
+impl PtyServerHandle {
+    pub fn get_termios(&self) -> libc::termios {
+        self.client_output.pty.base().read_termios().0
+    }
+
+    pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
         let report = self.client_input.lock().unwrap().write_input(buf)?;
         if let Some(signal) = report.posted_signal
@@ -205,7 +266,6 @@ impl Write for PtyServerHandle {
         }
         if report.consumed == 0 && buf.len() > 0 {
             do_sleep(
-                // we just need the shared pty without locking
                 self.client_output
                     .pty
                     .base()
@@ -217,32 +277,116 @@ impl Write for PtyServerHandle {
         Ok(report.consumed)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    pub fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-impl Read for PtyServerHandle {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl PtyServerHandle {
+    pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
-        self.client_output.read(buf)
+        let count = self.client_output.read(buf)?;
+        if count == 0 && buf.len() > 0 {
+            do_sleep(
+                self.client_output
+                    .pty
+                    .base()
+                    .client_output
+                    .sync_for_pending_data(),
+            )?;
+            return self.read(buf);
+        }
+        Ok(count)
     }
 }
 
-impl Write for PtyClientHandle {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.update_termios();
-        self.output.write(buf)
+impl PtyClientHandle {
+    pub fn waitpoint(&self, write: bool) -> ThreadSyncSleep {
+        if write {
+            self.output
+                .lock()
+                .unwrap()
+                .writer
+                .pty
+                .base()
+                .client_output
+                .sync_for_avail_space()
+        } else {
+            self.output
+                .lock()
+                .unwrap()
+                .writer
+                .pty
+                .base()
+                .client_input
+                .sync_for_pending_data()
+        }
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    pub fn write_nb(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
-        self.output.flush()
+        let count = self.output.lock().unwrap().write(buf)?;
+        if count == 0 && buf.len() > 0 {
+            return Err(ErrorKind::WouldBlock.into());
+        }
+        Ok(count)
+    }
+
+    pub fn read_nb(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.update_termios();
+        let res = self.input.lock().unwrap().read(buf);
+        match res {
+            Ok(c) => Ok(c),
+            Err(e) if e.kind() != ErrorKind::WouldBlock => Err(e),
+            _ => {
+                if buf.len() == 0 {
+                    return Ok(0);
+                }
+                Err(ErrorKind::WouldBlock.into())
+            }
+        }
     }
 }
 
-impl Read for PtyClientHandle {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl PtyClientHandle {
+    pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+        self.update_termios();
+        let count = self.output.lock().unwrap().write(buf)?;
+        if count == 0 && buf.len() > 0 {
+            do_sleep(
+                self.output
+                    .lock()
+                    .unwrap()
+                    .writer
+                    .pty
+                    .base()
+                    .client_input
+                    .sync_for_avail_space(),
+            )?;
+            return self.write(buf);
+        }
+        Ok(count)
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.update_termios();
+        self.output.lock().unwrap().flush()
+    }
+}
+
+impl PtyClientHandle {
+    pub fn get_termios(&self) -> libc::termios {
+        self.output
+            .lock()
+            .unwrap()
+            .writer
+            .pty
+            .base()
+            .read_termios()
+            .0
+    }
+
+    pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
         let res = self.input.lock().unwrap().read(buf);
         match res {
@@ -254,6 +398,8 @@ impl Read for PtyClientHandle {
                 }
                 do_sleep(
                     self.output
+                        .lock()
+                        .unwrap()
                         .writer
                         .pty
                         .base()

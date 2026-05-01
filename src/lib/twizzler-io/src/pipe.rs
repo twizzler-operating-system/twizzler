@@ -1,6 +1,6 @@
 use std::{
-    io::{ErrorKind, Read, Write},
-    sync::atomic::{AtomicU64, Ordering},
+    io::ErrorKind,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use twizzler::{
@@ -34,9 +34,9 @@ impl PipeBase {
 }
 
 pub struct Pipe {
-    pipe: Object<PipeBase>,
-    reader: bool,
-    writer: bool,
+    pub pipe: Object<PipeBase>,
+    reader: AtomicBool,
+    writer: AtomicBool,
 }
 
 impl Pipe {
@@ -44,8 +44,8 @@ impl Pipe {
         let obj = ObjectBuilder::new(spec).build(PipeBase::new())?;
         Ok(Self {
             pipe: obj,
-            reader: true,
-            writer: true,
+            reader: AtomicBool::new(true),
+            writer: AtomicBool::new(true),
         })
     }
 
@@ -56,8 +56,8 @@ impl Pipe {
         obj.base().writers.fetch_add(1, Ordering::SeqCst);
         Ok(Self {
             pipe: obj,
-            reader: true,
-            writer: true,
+            reader: AtomicBool::new(true),
+            writer: AtomicBool::new(true),
         })
     }
 
@@ -73,11 +73,18 @@ impl Pipe {
         self.pipe.base().writers.load(Ordering::SeqCst)
     }
 
+    pub fn read_waitpoint(&self) -> ThreadSyncSleep {
+        self.pipe.base().buffer.sync_for_pending_data()
+    }
+
+    pub fn write_waitpoint(&self) -> ThreadSyncSleep {
+        self.pipe.base().buffer.sync_for_avail_space()
+    }
+
     pub fn close_reader(&mut self) {
-        if !self.reader {
+        if !self.reader.swap(false, Ordering::SeqCst) {
             return;
         }
-        self.reader = false;
         if self.readers() == 0 {
             return;
         }
@@ -95,10 +102,9 @@ impl Pipe {
     }
 
     pub fn close_writer(&mut self) {
-        if !self.writer {
+        if !self.writer.swap(false, Ordering::SeqCst) {
             return;
         }
-        self.writer = false;
         if self.writers() == 0 {
             return;
         }
@@ -137,57 +143,63 @@ impl Pipe {
     }
 }
 
-impl Read for Pipe {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl Pipe {
+    pub fn read(&self, buf: &mut [u8], nb: bool) -> std::io::Result<usize> {
         let count = self.pipe.base().buffer.read_bytes(buf)?;
         if count == 0 && buf.len() > 0 && self.writers() > 0 {
+            if !nb {
+                return Err(ErrorKind::WouldBlock.into());
+            }
             self.do_sleep(self.pipe.base().buffer.sync_for_pending_data())?;
-            return self.read(buf);
+            return self.read(buf, nb);
         }
         Ok(count)
     }
 }
 
-impl Write for Pipe {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+impl Pipe {
+    pub fn write(&self, buf: &[u8], nb: bool) -> std::io::Result<usize> {
         if self.readers() == 0 {
             return Err(ErrorKind::BrokenPipe.into());
         }
         let count = self.pipe.base().buffer.write_bytes(buf)?;
         if count == 0 && buf.len() > 0 && self.readers() > 0 {
+            if !nb {
+                return Err(ErrorKind::WouldBlock.into());
+            }
             self.do_sleep(self.pipe.base().buffer.sync_for_avail_space())?;
-            return self.write(buf);
+            return self.write(buf, nb);
         }
         Ok(count)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    pub fn flush(&self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
 impl Clone for Pipe {
     fn clone(&self) -> Self {
-        if self.reader {
+        if self.reader.load(Ordering::SeqCst) {
             self.pipe.base().readers.fetch_add(1, Ordering::SeqCst);
         }
-        if self.writer {
+        if self.writer.load(Ordering::SeqCst) {
             self.pipe.base().writers.fetch_add(1, Ordering::SeqCst);
         }
         Self {
             pipe: self.pipe.clone(),
-            reader: self.reader,
-            writer: self.writer,
+            reader: AtomicBool::new(self.reader.load(Ordering::SeqCst)),
+            writer: AtomicBool::new(self.writer.load(Ordering::SeqCst)),
         }
     }
 }
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        if self.reader {
+        if self.reader.load(Ordering::SeqCst) {
             self.close_reader();
         }
-        if self.writer {
+        if self.writer.load(Ordering::SeqCst) {
             self.close_writer();
         }
     }

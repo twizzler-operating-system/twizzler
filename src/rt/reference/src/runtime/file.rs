@@ -1,6 +1,6 @@
 use std::{
     ffi::c_void,
-    io::{ErrorKind, Read, SeekFrom, Write},
+    io::{ErrorKind, SeekFrom},
     mem::ManuallyDrop,
     net::{Shutdown, SocketAddr},
     ops::Deref,
@@ -24,7 +24,7 @@ use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_object_create, BackingType, KernelConsoleSource, LifetimeType, ObjectCreate,
-        ObjectCreateFlags,
+        ObjectCreateFlags, ThreadSyncSleep,
     },
 };
 use twizzler_io::{
@@ -40,7 +40,7 @@ use twizzler_rt_abi::{
     },
     error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
-    io::IoFlags,
+    io::{Endpoint, IoFlags},
     object::MapFlags,
     Result,
 };
@@ -48,25 +48,49 @@ use twizzler_rt_abi::{
 use super::ReferenceRuntime;
 use crate::runtime::file::{compartment::CompartmentFile, pty::PtyHandleKind};
 
-mod compartment;
 mod file_desc;
-mod pty;
-mod raw_file;
-mod socket;
+mod kinds;
 
-#[derive(Clone)]
-enum FdKind {
-    //File(Arc<Mutex<FileDesc>>),
-    RawFile(Arc<Mutex<RawFile>>),
-    KernelConsole,
-    Dir(ObjID, Arc<Mutex<usize>>),
-    SymLink,
-    Socket(SocketKind),
-    Pty(PtyHandleKind),
-    Pipe(Pipe),
-    Compartment(CompartmentFile),
+trait Fd {
+    fn read(
+        &self,
+        buf: &mut [u8],
+        flags: IoFlags,
+        offset: Option<u64>,
+        ep: Option<&mut Endpoint>,
+    ) -> Result<usize>;
+    fn write(
+        &self,
+        buf: &[u8],
+        flags: IoFlags,
+        offset: Option<u64>,
+        to: Option<&Endpoint>,
+    ) -> Result<usize>;
+    fn seek(&self, _pos: SeekFrom) -> Result<usize> {
+        Err(ErrorKind::Unsupported.into())
+    }
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+    fn stat(&self) -> Result<FdInfo>;
+    fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
+        Ok((()))
+    }
+    fn get_config(&self, _reg: u32, _val: *mut c_void, _val_len: usize) -> Result<()> {
+        Err(ErrorKind::Unsupported.into())
+    }
+    fn set_config(&self, _reg: u32, _val: *const c_void, _val_len: usize) -> Result<()> {
+        Err(ErrorKind::Unsupported.into())
+    }
+    fn waitpoint(&self, _kind: wait_kind) -> Result<ThreadSyncSleep> {
+        Err(ErrorKind::Unsupported.into())
+    }
+    fn shutdown(&self, _sh: Shutdown) -> Result<()> {
+        Ok(())
+    }
 }
 
+/*
 impl FdKind {
     fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
         match self {
@@ -324,6 +348,7 @@ impl FdKind {
     }
 }
 
+*/
 /// Extract the optional file offset from an `io_ctx`. Returns `None` when the offset is `FD_POS`
 /// (meaning "use the fd's current position").
 fn io_ctx_offset(ctx: *mut io_ctx) -> Option<u64> {
@@ -378,14 +403,23 @@ impl<T> Drop for MaybeNoDrop<T> {
 
 #[derive(Clone)]
 struct FileDesc {
-    kind: FdKind,
+    file: Arc<dyn Fd + Send>,
     binding: MaybeNoDrop<Arc<binding_info>>,
     flags: IoFlags,
 }
 
 impl FileDesc {
+    fn io_ctx_flags(&self, ctx: *mut io_ctx) -> IoFlags {
+        self.flags
+            | if ctx.is_null() {
+                IoFlags::empty()
+            } else {
+                IoFlags::from_bits_truncate(unsafe { (*ctx).flags })
+            }
+    }
+
     pub fn new(
-        kind: FdKind,
+        file: Arc<dyn Fd + Send>,
         bind_kind: open_kind,
         flags: u32,
         bind_info: Option<&[u8]>,
@@ -403,18 +437,18 @@ impl FileDesc {
             binding.bind_data[0..bind_len].copy_from_slice(&bind_info[0..bind_len])
         }
         FileDesc {
-            kind,
+            file,
             binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
             flags: IoFlags::empty(),
         }
     }
 
-    pub fn seek(&mut self, pos: SeekFrom) -> Result<usize> {
-        self.kind.seek(pos)
+    pub fn seek(&self, pos: SeekFrom) -> Result<usize> {
+        self.file.seek(pos).into()
     }
 
-    pub fn stat(&mut self) -> Result<FdInfo> {
-        self.kind.stat()
+    pub fn stat(&self) -> Result<FdInfo> {
+        self.file.stat().into()
     }
 
     pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
@@ -435,29 +469,19 @@ impl FileDesc {
             b.flags = flags;
             self.binding = MaybeNoDrop::new(Arc::new(b), true);
         }
-        self.kind.fd_cmd(cmd, arg, ret)
+        self.file.fd_cmd(cmd, arg, ret).into()
     }
 
-    fn pread(&mut self, buf: &mut [u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
+    fn pread(&mut self, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
         let offset = io_ctx_offset(ctx);
-        if offset.is_none() {
-            // If no offset is provided, just do a normal read.
-            return self
-                .kind
-                .read(buf, IoFlags::from_bits_truncate(unsafe { (*ctx).flags }));
-        }
-        self.kind.pread(buf, offset)
+        let flags = self.io_ctx_flags(ctx);
+        self.file.read(buf, flags, offset, None)
     }
 
-    fn pwrite(&mut self, buf: &[u8], ctx: *mut io_ctx) -> std::io::Result<usize> {
+    fn pwrite(&mut self, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
         let offset = io_ctx_offset(ctx);
-        if offset.is_none() {
-            // If no offset is provided, just do a normal read.
-            return self
-                .kind
-                .write(buf, IoFlags::from_bits_truncate(unsafe { (*ctx).flags }));
-        }
-        self.kind.pwrite(buf, offset)
+        let flags = self.io_ctx_flags(ctx);
+        self.file.write(buf, flags, offset, None)
     }
 
     fn pread_from(
@@ -465,12 +489,10 @@ impl FileDesc {
         buf: &mut [u8],
         ctx: *mut io_ctx,
         ep: &mut twizzler_rt_abi::io::Endpoint,
-    ) -> std::io::Result<usize> {
+    ) -> Result<usize> {
         let offset = io_ctx_offset(ctx);
-        match &mut self.kind {
-            FdKind::RawFile(_) => self.kind.pread(buf, offset),
-            other => other.read_from(buf, ep, self.flags),
-        }
+        let flags = self.io_ctx_flags(ctx);
+        self.file.read(buf, flags, offset, Some(ep))
     }
 
     fn pwrite_to(
@@ -478,28 +500,10 @@ impl FileDesc {
         buf: &[u8],
         ctx: *mut io_ctx,
         ep: &twizzler_rt_abi::io::Endpoint,
-    ) -> std::io::Result<usize> {
+    ) -> Result<usize> {
         let offset = io_ctx_offset(ctx);
-        match &mut self.kind {
-            FdKind::RawFile(_) => self.kind.pwrite(buf, offset),
-            other => other.write_to(buf, ep, self.flags),
-        }
-    }
-}
-
-impl Read for FileDesc {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.kind.read(buf, self.flags)
-    }
-}
-
-impl Write for FileDesc {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.kind.write(buf, self.flags)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.kind.flush()
+        let flags = self.io_ctx_flags(ctx);
+        self.file.write(buf, flags, offset, Some(ep))
     }
 }
 
@@ -706,123 +710,6 @@ impl ReferenceRuntime {
         }
     }
 
-    fn open_path(
-        &self,
-        existing_fd: Option<RawFd>,
-        path: &str,
-        create_opt: CreateOptions,
-        open_opt: OperationOptions,
-        bind_info: &[u8],
-        should_drop: bool,
-    ) -> Result<RawFd> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
-
-        if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
-            && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
-        {
-            return Err(TwzError::INVALID_ARGUMENT);
-        }
-        let create = ObjectCreate::new(
-            BackingType::Normal,
-            LifetimeType::Persistent,
-            None,
-            ObjectCreateFlags::empty(),
-            Protections::all(),
-        );
-        let flags = match (
-            open_opt.contains(OperationOptions::OPEN_FLAG_READ),
-            open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
-        ) {
-            (true, true) => MapFlags::READ | MapFlags::WRITE,
-            (true, false) => MapFlags::READ,
-            (false, true) => MapFlags::WRITE,
-            (false, false) => MapFlags::READ,
-        };
-        let get_flags = if open_opt.contains(OperationOptions::OPEN_FLAG_SYMLINK) {
-            GetFlags::empty()
-        } else {
-            GetFlags::FOLLOW_SYMLINK
-        };
-        let (obj_id, did_create, kind) = match create_opt {
-            CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
-            CreateOptions::CreateKindExisting => {
-                let n = session.get(path, get_flags)?;
-                (n.id, false, n.kind)
-            }
-            CreateOptions::CreateKindNew => {
-                if session.get(path, GetFlags::empty()).is_ok() {
-                    return Err(NamingError::AlreadyExists.into());
-                }
-                (
-                    sys_object_create(create, &[], &[])?,
-                    true,
-                    NsNodeKind::Object,
-                )
-            }
-            CreateOptions::CreateKindBind(id) => {
-                if session.get(path, GetFlags::empty()).is_ok() {
-                    return Err(NamingError::AlreadyExists.into());
-                }
-                (id, true, NsNodeKind::Object)
-            }
-            CreateOptions::CreateKindEither => session
-                .get(path, get_flags)
-                .map(|x| (ObjID::from(x.id), false, x.kind))
-                .unwrap_or((
-                    sys_object_create(create, &[], &[])?,
-                    true,
-                    NsNodeKind::Object,
-                )),
-        };
-
-        let elem = match kind {
-            NsNodeKind::Namespace => FdKind::Dir(obj_id, Arc::new(Mutex::new(0))),
-            NsNodeKind::Object => {
-                //if let Ok(elem) = FileDesc::open(&open_opt, obj_id, flags, &create_opt) {
-                //    FdKind::File(Arc::new(Mutex::new(elem)))
-                //} else {
-                let mut file = RawFile::open(obj_id, flags)?;
-                if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
-                    file.truncate(0)?;
-                }
-                FdKind::RawFile(Arc::new(Mutex::new(file)))
-                //}
-            }
-            NsNodeKind::SymLink => FdKind::SymLink,
-        };
-        let elem = FileDesc::new(
-            elem,
-            open_kind_OpenKind_Path,
-            0,
-            Some(bind_info),
-            should_drop,
-        );
-
-        let mut binding = get_fd_slots().lock().unwrap();
-
-        let fd = if let Some(fd) = existing_fd {
-            binding.insert(fd.try_into().unwrap(), elem);
-            Some(fd as usize)
-        } else {
-            binding.insert_first_empty(elem)
-        }
-        .ok_or(ResourceError::OutOfNames)?;
-
-        if did_create {
-            session.put(path, obj_id)?;
-        }
-
-        drop(binding);
-        if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
-            self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
-        }
-
-        Ok(fd.try_into().unwrap())
-    }
-
     pub fn canon_name(
         &self,
         resolver: twizzler_rt_abi::fd::NameResolver,
@@ -963,120 +850,21 @@ impl ReferenceRuntime {
         } else {
             unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) }
         };
-        let mut elem = match kind {
-            OpenKind::Path => {
-                let info = bind_info as *const twizzler_rt_abi::bindings::open_info;
-                let info = unsafe { &*info };
-                let name = &info.name[0..info.len];
-                let name = core::str::from_utf8(name)
-                    .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument)?;
-                return self.open_path(
-                    existing_fd,
-                    name,
-                    info.create.into(),
-                    info.flags.into(),
-                    bind_info_bytes,
-                    should_drop,
-                );
-            }
-            OpenKind::PtyServer => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
-                let id = unsafe { &*id };
-                let pty = PtyHandleKind::Server(PtyServerHandle::new(
-                    ObjID::new(id.id),
-                    Some(pty_signal_handler),
-                )?);
-                FdKind::Pty(pty)
-            }
-            OpenKind::PtyClient => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
-                let id = unsafe { &*id };
-                let pty = PtyHandleKind::Client(PtyClientHandle::new(ObjID::new(id.id))?);
-                FdKind::Pty(pty)
-            }
+        let mut elem = kinds::open(existing_fd, kind, binding, binding_len, opts)?;
+
+        if elem.is_none() && existing_fd.is_none() {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+
+        if elem.is_none() {
+            return Ok(existing_fd.unwrap());
+        }
+        let elem = elem.unwrap();
+
+        let elem = match kind {
             OpenKind::Pipe => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
-                let id = unsafe { (*id).id };
-                if id == 0 {
-                    let pipe = twizzler_io::pipe::Pipe::create_object(ObjectCreate::default())?;
-                    FdKind::Pipe(pipe)
-                } else {
-                    let pipe = twizzler_io::pipe::Pipe::open_object(id.into())?;
-                    FdKind::Pipe(pipe)
-                }
-            }
-            OpenKind::Compartment => {
-                let id = bind_info as *const twizzler_rt_abi::bindings::object_bind_info;
-                let id = unsafe { (*id).id };
-                let comp = CompartmentHandle::lookup_id(id.into())?;
-                FdKind::Compartment(CompartmentFile::new(comp))
-            }
-            OpenKind::SocketConnect => {
-                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
-                let addr = unsafe { &*addr };
-                if addr.prot == prot_kind_ProtKind_Stream {
-                    FdKind::Socket(SocketKind::connect(SocketAddr::from(SocketAddress(
-                        addr.addr,
-                    )))?)
-                } else {
-                    let binding = get_fd_slots().lock().unwrap();
-                    let Some(fd) = binding.get(existing_fd.unwrap() as usize) else {
-                        return Err(TwzError::INVALID_ARGUMENT);
-                    };
-
-                    match &fd.kind {
-                        FdKind::Socket(socket) => {
-                            socket.udp_connect(SocketAddr::from(SocketAddress(addr.addr)))?
-                        }
-                        _ => return Err(TwzError::INVALID_ARGUMENT),
-                    };
-                    drop(binding);
-                    return Ok(existing_fd.unwrap());
-                }
-            }
-            OpenKind::SocketBind => {
-                let addr = bind_info as *const twizzler_rt_abi::bindings::socket_bind_info;
-                if addr.is_null() {
-                    FdKind::Socket(SocketKind::None)
-                } else {
-                    let addr = unsafe { &*addr };
-                    if addr.prot == prot_kind_ProtKind_Stream {
-                        FdKind::Socket(SocketKind::bind(SocketAddr::from(SocketAddress(
-                            addr.addr,
-                        )))?)
-                    } else {
-                        FdKind::Socket(SocketKind::udp_bind(SocketAddr::from(SocketAddress(
-                            addr.addr,
-                        )))?)
-                    }
-                }
-            }
-            OpenKind::SocketAccept => {
-                let fd_ptr = bind_info as *const RawFd;
-                let fd = unsafe { *fd_ptr };
-                let binding = get_fd_slots().lock().unwrap();
-                let Some(fd) = binding.get(fd.try_into().unwrap()) else {
-                    return Err(TwzError::INVALID_ARGUMENT);
-                };
-
-                let socket = match &fd.kind {
-                    FdKind::Socket(socket) => socket.clone(),
-                    _ => return Err(TwzError::INVALID_ARGUMENT),
-                };
-                drop(binding);
-
-                FdKind::Socket(SocketKind::accept(&socket)?)
-            }
-            OpenKind::KernelConsole => FdKind::KernelConsole,
-            _ => {
-                return Err(TwzError::NOT_SUPPORTED);
-            }
-        };
-
-        let elem = match elem {
-            FdKind::Pipe(ref mut pipe) => {
                 let binding_info = object_bind_info {
-                    id: pipe.id().raw(),
+                    id: elem.id().raw(),
                 };
                 let bind_info_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -1086,11 +874,11 @@ impl ReferenceRuntime {
                 };
 
                 if !open_opt.contains(OperationOptions::OPEN_FLAG_READ) {
-                    pipe.close_reader();
+                    let _ = elem.shutdown(Shutdown::Read);
                 }
 
                 if !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE) {
-                    pipe.close_writer();
+                    let _ = elem.shutdown(Shutdown::Write);
                 }
 
                 FileDesc::new(
@@ -1143,15 +931,17 @@ impl ReferenceRuntime {
         Ok(session.remove(path)?)
     }
 
-    pub fn read(&self, fd: RawFd, buf: &mut [u8], _ctx: *mut io_ctx) -> Result<usize> {
+    pub fn read(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
-        let mut file_desc = binding
+        let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        let len = file_desc.read(buf)?;
+        let len = file_desc
+            .file
+            .read(buf, file_desc.io_ctx_flags(ctx), None, None)?;
         Ok(len)
     }
 
@@ -1269,22 +1059,9 @@ impl ReferenceRuntime {
             return Ok(());
         }
 
-        match &mut fd.kind {
-            FdKind::Socket(socket_kind) => {
-                return socket_kind.get_config(reg, val, val_len);
-            }
-            //FdKind::Pty(pty_handle_kind) => todo!(),
-            //FdKind::Pipe(pipe) => todo!(),
-            FdKind::Compartment(compartment_file) => {
-                return compartment_file.get_config(reg, val, val_len);
-            }
-            _ => {}
-        }
-
         let buf = unsafe { core::slice::from_raw_parts_mut(val.cast::<u8>(), val_len) };
         buf.fill(0);
-
-        Ok(())
+        fd.file.get_config(reg, val, val_len).into()
     }
 
     pub fn fd_set_config(
@@ -1307,21 +1084,7 @@ impl ReferenceRuntime {
             fd.flags = IoFlags::from_bits_truncate(val);
             return Ok(());
         }
-
-        match &mut fd.kind {
-            FdKind::Pty(pty_handle_kind) => {
-                return pty_handle_kind.set_config(reg, val, val_len);
-            }
-            FdKind::Socket(socket_kind) => {
-                return socket_kind.set_config(reg, val, val_len);
-            }
-            //FdKind::Pipe(pipe) => todo!(),
-            FdKind::Compartment(compartment_file) => {
-                return compartment_file.set_config(reg, val, val_len);
-            }
-            _ => {}
-        }
-        Ok(())
+        fd.file.set_config(reg, val, val_len).into()
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
@@ -1345,15 +1108,17 @@ impl ReferenceRuntime {
         file_desc.fd_cmd(cmd, arg, ret)
     }
 
-    pub fn write(&self, fd: RawFd, buf: &[u8], _ctx: *mut io_ctx) -> Result<usize> {
+    pub fn write(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
-        let mut file_desc = binding
+        let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        let len = file_desc.write(buf)?;
+        let len = file_desc
+            .file
+            .write(buf, file_desc.io_ctx_flags(ctx), None, None)?;
         Ok(len)
     }
 
@@ -1366,17 +1131,14 @@ impl ReferenceRuntime {
             return Some(());
         };
 
-        match &file_desc.kind {
-            FdKind::Socket(socket_kind) => socket_kind.close().ok()?,
-            _ => (),
-        }
+        file_desc.file.shutdown(Shutdown::Both).ok()?;
 
         Some(())
     }
 
     pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize> {
         let binding = get_fd_slots().lock().unwrap();
-        let mut file_desc = binding
+        let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
             .ok_or(ArgumentError::BadHandle)?;
@@ -1412,10 +1174,7 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        match &file_desc.kind {
-            FdKind::Socket(socket_kind) => socket_kind.waitpoint(kind),
-            _ => Err(TwzError::NOT_SUPPORTED),
-        }
+        file_desc.file.waitpoint(kind).into()
     }
 
     pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {
