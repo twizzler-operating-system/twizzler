@@ -81,7 +81,7 @@ impl Pipe {
         self.pipe.base().buffer.sync_for_avail_space()
     }
 
-    pub fn close_reader(&mut self) {
+    pub fn close_reader(&self) {
         if !self.reader.swap(false, Ordering::SeqCst) {
             return;
         }
@@ -101,7 +101,7 @@ impl Pipe {
         .inspect_err(|e| tracing::warn!("failed to wake on readers: {e}"));
     }
 
-    pub fn close_writer(&mut self) {
+    pub fn close_writer(&self) {
         if !self.writer.swap(false, Ordering::SeqCst) {
             return;
         }

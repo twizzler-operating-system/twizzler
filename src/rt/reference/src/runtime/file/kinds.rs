@@ -1,31 +1,37 @@
-use std::{ffi::c_void, io::ErrorKind, sync::Arc};
+use std::{ffi::c_void, io::ErrorKind, net::SocketAddr, sync::Arc};
 
+use monitor_api::CompartmentHandle;
 use naming_core::{GetFlags, NsNodeKind};
 use secgate::TwzError;
 use twizzler_abi::{
     object::{ObjID, Protections},
-    syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
 use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
 use twizzler_rt_abi::{
-    bindings::{open_info, open_kind},
-    fd::{OpenKind, RawFd},
+    bindings::{open_info, prot_kind_ProtKind_Stream},
+    error::NamingError,
+    fd::{OpenKind, RawFd, SocketAddress},
     object::MapFlags,
     Result,
 };
 
 use crate::runtime::file::{
-    kinds::{compartment::CompartmentFile, dir::DirFile, pty::PtyHandleKind, symlink::SymLinkFile},
-    pty_signal_handler, CreateOptions, Fd, OperationOptions,
+    get_fd_slots, get_naming_handle,
+    kinds::{
+        compartment::CompartmentFile, dir::DirFile, kconsole::KernelConsoleFile,
+        pty::PtyHandleKind, raw_file::RawFile, socket::SocketKind, symlink::SymLinkFile,
+    },
+    pty_signal_handler, CreateOptions, FdImpl, OperationOptions,
 };
 
-mod compartment;
-mod dir;
-mod kconsole;
-mod pty;
-mod raw_file;
-mod socket;
-mod symlink;
+pub mod compartment;
+pub mod dir;
+pub mod kconsole;
+pub mod pty;
+pub mod raw_file;
+pub mod socket;
+pub mod symlink;
 
 fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Result<&'a T> {
     if std::mem::size_of::<T>() <= binding_len {
@@ -38,12 +44,7 @@ fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Re
     }
 }
 
-fn open_path(
-    path: &str,
-    create_opt: CreateOptions,
-    open_opt: OperationOptions,
-    bind_info: &[u8],
-) -> Result<Arc<dyn Fd + Send>> {
+fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
     let mut session = get_naming_handle()
         .ok_or(TwzError::NOT_SUPPORTED)?
         .lock()
@@ -75,7 +76,7 @@ fn open_path(
     } else {
         GetFlags::FOLLOW_SYMLINK
     };
-    let (obj_id, did_create, kind) = match create_opt {
+    let (obj_id, _did_create, kind) = match create_opt {
         CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
         CreateOptions::CreateKindExisting => {
             let n = session.get(path, get_flags)?;
@@ -110,7 +111,7 @@ fn open_path(
     Ok(match kind {
         NsNodeKind::Namespace => Arc::new(DirFile::new(obj_id)?),
         NsNodeKind::Object => {
-            let mut file = RawFile::open(obj_id, flags)?;
+            let file = RawFile::open(obj_id, flags)?;
             if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
                 file.truncate(0)?;
             }
@@ -126,18 +127,21 @@ pub fn open(
     binding: *const c_void,
     binding_len: usize,
     opts: OperationOptions,
-) -> Result<Option<Arc<dyn Fd + Send>>> {
-    let bind_info_bytes = if binding.is_null() {
-        &[]
-    } else {
-        unsafe { core::slice::from_raw_parts(binding.cast::<u8>(), binding_len) }
-    };
+) -> Result<Option<FdImpl>> {
+    twizzler_abi::klog_println!(
+        "open: kind={:?} existing_fd={:?} binding={:?} binding_len={} opts={:?}",
+        kind,
+        existing_fd,
+        binding,
+        binding_len,
+        opts
+    );
     Ok(match kind {
         OpenKind::Path => {
             let info = binding_ref::<open_info>(binding, binding_len)?;
             let name = &info.name[0..info.len];
             let name = core::str::from_utf8(name).map_err(|_| ErrorKind::InvalidInput)?;
-            open_path(name, info.create.into(), info.flags.into(), bind_info_bytes).map(Some)?
+            open_path(name, info.create.into(), opts).map(Some)?
         }
         OpenKind::PtyServer => {
             let id =
@@ -185,8 +189,13 @@ pub fn open(
                     return Err(TwzError::INVALID_ARGUMENT);
                 };
 
-                fd.file
-                    .udp_connect(SocketAddr::from(SocketAddress(addr.addr)))?;
+                let file = fd.file.clone();
+                let downcast = file.as_socket();
+                let Some(socket) = downcast else {
+                    tracing::warn!("tried to connect from a non-socket fd");
+                    return Err(TwzError::INVALID_ARGUMENT);
+                };
+                socket.udp_connect(SocketAddr::from(SocketAddress(addr.addr)))?;
 
                 drop(binding);
                 None
@@ -215,15 +224,17 @@ pub fn open(
         OpenKind::SocketAccept => {
             let fd =
                 binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)?;
-            let fd = *fd;
+            let fd = fd.id as usize;
             let binding = get_fd_slots().lock().unwrap();
-            let Some(fd) = binding.get(fd.try_into().unwrap()) else {
+            let Some(fd) = binding.get(fd) else {
                 return Err(ErrorKind::InvalidInput.into());
             };
 
-            let socket = match &fd.kind {
-                FdKind::Socket(socket) => socket.clone(),
-                _ => return Err(ErrorKind::InvalidInput.into()),
+            let file = fd.file.clone();
+            let downcast = file.as_socket();
+            let Some(socket) = downcast else {
+                tracing::warn!("tried to accept on a non-socket fd");
+                return Err(ErrorKind::InvalidInput.into());
             };
             drop(binding);
 

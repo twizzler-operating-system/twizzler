@@ -1,4 +1,4 @@
-use std::{os::raw::c_void, time::Duration};
+use std::time::Duration;
 
 use libc::{termios, S_IFCHR};
 use twizzler_abi::syscall::ThreadSyncSleep;
@@ -7,7 +7,7 @@ use twizzler_io::{
     pty::{PtyClientHandle, PtyServerHandle},
 };
 use twizzler_rt_abi::{
-    bindings::{wait_kind, IO_REGISTER_TERMIOS, WAIT_WRITE},
+    bindings::{IO_REGISTER_TERMIOS, WAIT_WRITE},
     error::TwzError,
     fd::FdFlags,
     io::IoFlags,
@@ -32,13 +32,13 @@ impl Fd for PtyHandleKind {
     ) -> Result<usize> {
         if flags.contains(IoFlags::NONBLOCKING) {
             match self {
-                PtyHandleKind::Server(server) => server.clone().read_nb(buf).into(),
-                PtyHandleKind::Client(client) => client.clone().read_nb(buf).into(),
+                PtyHandleKind::Server(server) => server.clone().read_nb(buf).map_err(Into::into),
+                PtyHandleKind::Client(client) => client.clone().read_nb(buf).map_err(Into::into),
             }
         } else {
             match self {
-                PtyHandleKind::Server(server) => server.clone().read(buf).into(),
-                PtyHandleKind::Client(client) => client.clone().read(buf).into(),
+                PtyHandleKind::Server(server) => server.clone().read_b(buf).map_err(Into::into),
+                PtyHandleKind::Client(client) => client.clone().read_b(buf).map_err(Into::into),
             }
         }
     }
@@ -52,13 +52,13 @@ impl Fd for PtyHandleKind {
     ) -> Result<usize> {
         if flags.contains(IoFlags::NONBLOCKING) {
             match self {
-                PtyHandleKind::Server(server) => server.clone().write_nb(buf).into(),
-                PtyHandleKind::Client(client) => client.clone().write_nb(buf).into(),
+                PtyHandleKind::Server(server) => server.clone().write_nb(buf).map_err(Into::into),
+                PtyHandleKind::Client(client) => client.clone().write_nb(buf).map_err(Into::into),
             }
         } else {
             match self {
-                PtyHandleKind::Server(server) => server.clone().write(buf).into(),
-                PtyHandleKind::Client(client) => client.clone().write(buf).into(),
+                PtyHandleKind::Server(server) => server.clone().write_b(buf).map_err(Into::into),
+                PtyHandleKind::Client(client) => client.clone().write_b(buf).map_err(Into::into),
             }
         }
     }
@@ -66,9 +66,12 @@ impl Fd for PtyHandleKind {
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
         Ok(twizzler_rt_abi::fd::FdInfo {
             size: 0,
-            kind: twizzler_rt_abi::fd::FdKind::PtyHandle,
+            kind: twizzler_rt_abi::fd::FdKind::Pty,
             flags: FdFlags::IS_TERMINAL,
-            id: 0,
+            id: match self {
+                PtyHandleKind::Server(server) => server.object().id().raw(),
+                PtyHandleKind::Client(client) => client.object().id().raw(),
+            },
             created: Duration::ZERO,
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
@@ -82,13 +85,13 @@ impl Fd for PtyHandleKind {
 
     fn flush(&self) -> Result<()> {
         match self {
-            PtyHandleKind::Server(server) => server.clone().flush().into(),
-            PtyHandleKind::Client(client) => client.clone().flush().into(),
+            PtyHandleKind::Server(server) => server.clone().flush_b().map_err(Into::into),
+            PtyHandleKind::Client(client) => client.clone().flush_b().map_err(Into::into),
         }
     }
 
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        Ok((()))
+        Ok(())
     }
 
     fn get_config(&self, reg: u32, val: *mut std::ffi::c_void, val_len: usize) -> Result<()> {
@@ -98,8 +101,8 @@ impl Fd for PtyHandleKind {
                     return Err(TwzError::INVALID_ARGUMENT);
                 }
                 let termios = match self {
-                    PtyHandleKind::Server(pty_server_handle) => pty_server_handle.get_termios()?,
-                    PtyHandleKind::Client(pty_client_handle) => pty_client_handle.get_termios()?,
+                    PtyHandleKind::Server(pty_server_handle) => pty_server_handle.get_termios(),
+                    PtyHandleKind::Client(pty_client_handle) => pty_client_handle.get_termios(),
                 };
                 unsafe { (val as *mut termios).write(termios) };
                 Ok(())
@@ -148,7 +151,8 @@ impl Fd for Pipe {
         _offset: Option<u64>,
         _ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        self.read(buf, flags.contains(IoFlags::NONBLOCKING)).into()
+        self.read(buf, flags.contains(IoFlags::NONBLOCKING))
+            .map_err(Into::into)
     }
 
     fn write(
@@ -158,7 +162,8 @@ impl Fd for Pipe {
         _offset: Option<u64>,
         _to: Option<&twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        self.write(buf, flags.contains(IoFlags::NONBLOCKING)).into()
+        self.write(buf, flags.contains(IoFlags::NONBLOCKING))
+            .map_err(Into::into)
     }
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
@@ -179,11 +184,11 @@ impl Fd for Pipe {
     }
 
     fn flush(&self) -> Result<()> {
-        self.flush().into()
+        self.flush().map_err(Into::into)
     }
 
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        Ok((()))
+        Ok(())
     }
 
     fn get_config(&self, _reg: u32, _val: *mut std::ffi::c_void, _val_len: usize) -> Result<()> {
@@ -196,9 +201,9 @@ impl Fd for Pipe {
 
     fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<ThreadSyncSleep> {
         if kind == WAIT_WRITE {
-            Ok(self.pipe.base().buffer.write_waitpoint())
+            Ok(self.write_waitpoint())
         } else {
-            Ok(self.pipe.base().buffer.read_waitpoint())
+            Ok(self.read_waitpoint())
         }
     }
 

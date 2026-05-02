@@ -27,7 +27,7 @@ use twizzler_rt_abi::{
 
 use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
-    preinit::{self, preinit_abort, preinit_unwrap},
+    preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
     runtime::{thread::libc_init_tcb, RuntimeState},
     OUR_RUNTIME,

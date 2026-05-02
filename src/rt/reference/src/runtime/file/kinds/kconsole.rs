@@ -1,9 +1,11 @@
 use std::time::Duration;
 
+use libc::S_IFCHR;
 use twizzler_abi::syscall::{
-    sys_kernel_console_read, sys_kernel_console_write, KernelConsoleSource, KernelConsoleWriteFlags,
+    sys_kernel_console_read, sys_kernel_console_write, KernelConsoleReadFlags, KernelConsoleSource,
+    KernelConsoleWriteFlags,
 };
-use twizzler_rt_abi::{fd::FdFlags, io::IoFlags, Result};
+use twizzler_rt_abi::{fd::FdFlags, io::IoFlags};
 
 use crate::runtime::file::Fd;
 
@@ -20,8 +22,8 @@ impl Fd for KernelConsoleFile {
         &self,
         buf: &mut [u8],
         flags: twizzler_rt_abi::io::IoFlags,
-        offset: Option<u64>,
-        ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
+        _offset: Option<u64>,
+        _ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> twizzler_rt_abi::Result<usize> {
         sys_kernel_console_read(
             KernelConsoleSource::Console,

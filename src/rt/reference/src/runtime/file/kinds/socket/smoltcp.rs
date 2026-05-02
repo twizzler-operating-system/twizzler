@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 };
 
 use super::engine::ENGINE;
-use crate::runtime::file::socket::engine::WAITERS;
+use crate::runtime::file::kinds::socket::engine::WAITERS;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 

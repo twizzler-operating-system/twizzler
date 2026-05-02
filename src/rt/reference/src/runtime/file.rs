@@ -2,56 +2,48 @@ use std::{
     ffi::c_void,
     io::{ErrorKind, SeekFrom},
     mem::ManuallyDrop,
-    net::{Shutdown, SocketAddr},
+    net::Shutdown,
     ops::Deref,
     path::PathBuf,
-    sync::{atomic::AtomicU64, Arc, Mutex, OnceLock},
-    time::Duration,
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use bitflags::bitflags;
+use kinds::socket::SocketKind;
 use lazy_static::lazy_static;
-use libc::{S_IFDIR, S_IFLNK, S_IRWXG, S_IRWXO, S_IRWXU};
 use monitor_api::{get_comp_config, CompartmentHandle};
 use naming_core::{
     dynamic::{dynamic_naming_factory, DynamicNamingHandle},
     GetFlags, NsNodeKind,
 };
-use raw_file::RawFile;
-use socket::SocketKind;
 use twizzler_abi::{
     aux::KernelInitInfo,
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_object_create, BackingType, KernelConsoleSource, LifetimeType, ObjectCreate,
-        ObjectCreateFlags, ThreadSyncSleep,
-    },
+    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
+    syscall::ThreadSyncSleep,
 };
-use twizzler_io::{
-    pipe::Pipe,
-    pty::{PtyClientHandle, PtyServerHandle, PtySignal},
-};
+use twizzler_io::pty::{PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, endpoint, io_ctx, iovec, object_bind_info, open_kind,
-        open_kind_OpenKind_KernelConsole, open_kind_OpenKind_Path, prot_kind_ProtKind_Stream,
-        socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ,
-        OPEN_FLAG_WRITE,
+        open_kind_OpenKind_KernelConsole, socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP,
+        FD_CMD_SYNC, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
     io::{Endpoint, IoFlags},
-    object::MapFlags,
     Result,
 };
 
 use super::ReferenceRuntime;
-use crate::runtime::file::{compartment::CompartmentFile, pty::PtyHandleKind};
+use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
 mod kinds;
+mod select;
 
-trait Fd {
+pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
+
+pub trait Fd {
     fn read(
         &self,
         buf: &mut [u8],
@@ -74,7 +66,7 @@ trait Fd {
     }
     fn stat(&self) -> Result<FdInfo>;
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        Ok((()))
+        Ok(())
     }
     fn get_config(&self, _reg: u32, _val: *mut c_void, _val_len: usize) -> Result<()> {
         Err(ErrorKind::Unsupported.into())
@@ -87,6 +79,10 @@ trait Fd {
     }
     fn shutdown(&self, _sh: Shutdown) -> Result<()> {
         Ok(())
+    }
+
+    fn as_socket(&self) -> Option<&SocketKind> {
+        None
     }
 }
 
@@ -403,7 +399,7 @@ impl<T> Drop for MaybeNoDrop<T> {
 
 #[derive(Clone)]
 struct FileDesc {
-    file: Arc<dyn Fd + Send>,
+    file: FdImpl,
     binding: MaybeNoDrop<Arc<binding_info>>,
     flags: IoFlags,
 }
@@ -419,7 +415,7 @@ impl FileDesc {
     }
 
     pub fn new(
-        file: Arc<dyn Fd + Send>,
+        file: FdImpl,
         bind_kind: open_kind,
         flags: u32,
         bind_info: Option<&[u8]>,
@@ -468,6 +464,8 @@ impl FileDesc {
             };
             b.flags = flags;
             self.binding = MaybeNoDrop::new(Arc::new(b), true);
+        } else if cmd == FD_CMD_SYNC {
+            self.file.flush()?;
         }
         self.file.fd_cmd(cmd, arg, ret).into()
     }
@@ -549,7 +547,7 @@ lazy_static! {
         slots.insert(
             0,
             FileDesc::new(
-                FdKind::KernelConsole,
+                Arc::new(KernelConsoleFile::new()),
                 open_kind_OpenKind_KernelConsole,
                 0,
                 None,
@@ -559,7 +557,7 @@ lazy_static! {
         slots.insert(
             1,
             FileDesc::new(
-                FdKind::KernelConsole,
+                Arc::new(KernelConsoleFile::new()),
                 open_kind_OpenKind_KernelConsole,
                 0,
                 None,
@@ -569,7 +567,7 @@ lazy_static! {
         slots.insert(
             2,
             FileDesc::new(
-                FdKind::KernelConsole,
+                Arc::new(KernelConsoleFile::new()),
                 open_kind_OpenKind_KernelConsole,
                 0,
                 None,
@@ -629,7 +627,7 @@ impl From<create_options> for CreateOptions {
 }
 
 bitflags! {
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct OperationOptions: u32 {
         const OPEN_FLAG_READ = twizzler_rt_abi::bindings::OPEN_FLAG_READ;
         const OPEN_FLAG_WRITE = twizzler_rt_abi::bindings::OPEN_FLAG_WRITE;
@@ -727,7 +725,7 @@ impl ReferenceRuntime {
                 )
             };
 
-            let res = crate::runtime::file::socket::dns(name)?;
+            let res = crate::runtime::file::kinds::socket::dns(name)?;
             for i in 0..res.len().min(out_slice.len()) {
                 let sa = SocketAddress::from(res[i]);
                 out_slice[i] = sa.0;
@@ -850,7 +848,7 @@ impl ReferenceRuntime {
         } else {
             unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) }
         };
-        let mut elem = kinds::open(existing_fd, kind, binding, binding_len, opts)?;
+        let elem = kinds::open(existing_fd, kind, bind_info, bind_info_len, open_opt)?;
 
         if elem.is_none() && existing_fd.is_none() {
             return Err(TwzError::NOT_SUPPORTED);
@@ -864,7 +862,7 @@ impl ReferenceRuntime {
         let elem = match kind {
             OpenKind::Pipe => {
                 let binding_info = object_bind_info {
-                    id: elem.id().raw(),
+                    id: elem.stat()?.id,
                 };
                 let bind_info_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -1166,7 +1164,7 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<(*const AtomicU64, u64)> {
+    pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<ThreadSyncSleep> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())

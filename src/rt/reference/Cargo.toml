@@ -8,7 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 tick_counter = { workspace = true }
-twizzler-rt-abi = { version = "0.99", features = ["stderr"] }
+twizzler-rt-abi = { version = "0.99", features = [
+    "stderr",
+], default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 tracing-subscriber = { workspace = true }

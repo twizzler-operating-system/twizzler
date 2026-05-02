@@ -9,7 +9,6 @@ use twizzler_abi::syscall::{
 };
 use twizzler_rt_abi::{
     bindings::{thread_info, twz_error},
-    error::TwzError,
     thread::{ThreadSpawnArgs, TlsIndex},
     Result,
 };

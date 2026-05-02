@@ -1,6 +1,5 @@
 use std::{
-    io::{ErrorKind, Read, Write},
-    os::raw::c_void,
+    io::ErrorKind,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -86,7 +85,7 @@ impl Fd for CompartmentFile {
             size: 0,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             kind: twizzler_rt_abi::fd::FdKind::Compartment,
-            id: self.inner.comp.id(),
+            id: info.id.raw(),
             created: Duration::ZERO,
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
@@ -103,7 +102,7 @@ impl Fd for CompartmentFile {
     }
 
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        Ok((()))
+        Ok(())
     }
 
     fn get_config(&self, reg: u32, val: *mut std::ffi::c_void, val_len: usize) -> Result<()> {

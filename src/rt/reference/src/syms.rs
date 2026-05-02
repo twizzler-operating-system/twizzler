@@ -422,9 +422,14 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
     val: *mut u64,
 ) -> twz_error {
     match OUR_RUNTIME.fd_waitpoint(fd, kind) {
-        Ok((pt, v)) => {
-            point.write(pt.cast::<u64>() as *mut _);
-            val.write(v);
+        Ok(ts) => {
+            point.write(
+                ts.reference
+                    .address()
+                    .unwrap_or(core::ptr::null_mut())
+                    .cast(),
+            );
+            val.write(ts.value);
             RawTwzError::success().raw()
         }
         Err(e) => e.raw(),

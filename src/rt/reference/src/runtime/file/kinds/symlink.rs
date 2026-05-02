@@ -1,4 +1,5 @@
 use secgate::TwzError;
+use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::Result;
 
 use crate::runtime::file::Fd;
@@ -35,6 +36,15 @@ impl Fd for SymLinkFile {
     }
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
-        todo!()
+        Ok(twizzler_rt_abi::fd::FdInfo {
+            size: 0,
+            flags: twizzler_rt_abi::fd::FdFlags::empty(),
+            kind: twizzler_rt_abi::fd::FdKind::SymLink,
+            id: self.obj_id.raw(),
+            created: std::time::Duration::ZERO,
+            accessed: std::time::Duration::ZERO,
+            modified: std::time::Duration::ZERO,
+            unix_mode: 0o777 | libc::S_IFLNK,
+        })
     }
 }

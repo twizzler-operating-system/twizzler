@@ -4,7 +4,7 @@ mod smoltcp;
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     os::raw::c_void,
-    sync::{atomic::AtomicU64, Arc},
+    sync::Arc,
     time::Duration,
 };
 
@@ -19,7 +19,7 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use crate::runtime::file::{socket::smoltcp::UdpSocket, Fd};
+use crate::runtime::file::{kinds::socket::smoltcp::UdpSocket, Fd};
 
 #[derive(Clone)]
 pub enum SocketKind {
@@ -60,13 +60,13 @@ impl SocketKind {
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         SmolTcpListener::bind(addr)
             .map(|listener| SocketKind::TcpListener(Arc::new(listener)))
-            .into()
+            .map_err(Into::into)
     }
 
     pub fn udp_bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         UdpSocket::bind(addr)
             .map(|listener| SocketKind::UdpSocket(Arc::new(listener)))
-            .into()
+            .map_err(Into::into)
     }
 
     pub fn accept(&self) -> Result<Self> {
@@ -74,14 +74,14 @@ impl SocketKind {
             SocketKind::TcpListener(listener) => listener
                 .accept(IoFlags::empty())
                 .map(|stream| SocketKind::TcpStream(Arc::new(stream.0)))
-                .into(),
+                .map_err(Into::into),
             _ => Err(TwzError::NOT_SUPPORTED),
         }
     }
 
     pub fn udp_connect<A: ToSocketAddrs>(&self, addr: A) -> Result<()> {
         match self {
-            SocketKind::UdpSocket(udp_socket) => udp_socket.connect(addr),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.connect(addr)?),
             _ => panic!("invalid socket type"),
         }
     }
@@ -89,7 +89,7 @@ impl SocketKind {
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         SmolTcpStream::connect(IoFlags::empty(), addr)
             .map(|stream| SocketKind::TcpStream(Arc::new(stream)))
-            .into()
+            .map_err(Into::into)
     }
 }
 
@@ -98,7 +98,7 @@ impl Fd for SocketKind {
         &self,
         buf: &mut [u8],
         flags: IoFlags,
-        offset: Option<u64>,
+        _offset: Option<u64>,
         ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
         if let Some(ep) = ep {
@@ -116,8 +116,8 @@ impl Fd for SocketKind {
             }
         } else {
             match self {
-                SocketKind::TcpStream(stream) => stream.read(buf, flags).into(),
-                SocketKind::UdpSocket(stream) => stream.read(buf, flags).into(),
+                SocketKind::TcpStream(stream) => stream.read(buf, flags).map_err(Into::into),
+                SocketKind::UdpSocket(stream) => stream.read(buf, flags).map_err(Into::into),
                 _ => Err(TwzError::NOT_SUPPORTED),
             }
         }
@@ -127,11 +127,11 @@ impl Fd for SocketKind {
         &self,
         buf: &[u8],
         flags: IoFlags,
-        offset: Option<u64>,
+        _offset: Option<u64>,
         to: Option<&twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
         if let Some(to) = to {
-            let sa = twizzler_rt_abi::fd::SocketAddress::try_from(*ep)?;
+            let sa = twizzler_rt_abi::fd::SocketAddress::try_from(*to)?;
             let sa = SocketAddr::from(sa);
             match self {
                 SocketKind::UdpSocket(stream) => {
@@ -142,8 +142,11 @@ impl Fd for SocketKind {
             }
         } else {
             match self {
-                SocketKind::TcpStream(stream) => stream.write(buf, flags).into(),
-                SocketKind::UdpSocket(stream) => stream.write(buf, flags).map(|_| buf.len()).into(),
+                SocketKind::TcpStream(stream) => stream.write(buf, flags).map_err(Into::into),
+                SocketKind::UdpSocket(stream) => stream
+                    .write(buf, flags)
+                    .map(|_| buf.len())
+                    .map_err(Into::into),
                 _ => Err(TwzError::NOT_SUPPORTED),
             }
         }
@@ -168,14 +171,14 @@ impl Fd for SocketKind {
 
     fn flush(&self) -> Result<()> {
         match self {
-            SocketKind::TcpStream(stream) => stream.flush().into(),
-            SocketKind::UdpSocket(stream) => stream.flush().into(),
+            SocketKind::TcpStream(stream) => stream.flush().map_err(Into::into),
+            SocketKind::UdpSocket(stream) => stream.flush().map_err(Into::into),
             _ => Ok(()),
         }
     }
 
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        Ok((()))
+        Ok(())
     }
 
     fn set_config(&self, reg: u32, val: *const c_void, val_len: usize) -> Result<()> {
@@ -216,17 +219,30 @@ impl Fd for SocketKind {
     fn waitpoint(&self, kind: wait_kind) -> Result<ThreadSyncSleep> {
         match self {
             SocketKind::None => Err(TwzError::NOT_SUPPORTED),
-            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.waitpoint(kind).into(),
-            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.waitpoint(kind).into(),
-            SocketKind::UdpSocket(udp_socket) => udp_socket.waitpoint(kind).into(),
+            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream
+                .waitpoint(kind)
+                .map_err(Into::into)
+                .map(Into::into),
+            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener
+                .waitpoint(kind)
+                .map_err(Into::into)
+                .map(Into::into),
+            SocketKind::UdpSocket(udp_socket) => udp_socket
+                .waitpoint(kind)
+                .map_err(Into::into)
+                .map(Into::into),
         }
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {
         match self {
-            SocketKind::TcpStream(stream) => stream.shutdown(shutdown).into(),
-            SocketKind::UdpSocket(stream) => stream.shutdown(shutdown).into(),
+            SocketKind::TcpStream(stream) => stream.shutdown(sh).map_err(Into::into),
+            SocketKind::UdpSocket(stream) => stream.shutdown(sh).map_err(Into::into),
             _ => Err(TwzError::NOT_SUPPORTED),
         }
+    }
+
+    fn as_socket(&self) -> Option<&SocketKind> {
+        Some(self)
     }
 }

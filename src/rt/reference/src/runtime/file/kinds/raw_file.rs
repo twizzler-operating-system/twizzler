@@ -1,7 +1,10 @@
 use std::{
-    io::{ErrorKind, Read, SeekFrom, Write},
+    io::{ErrorKind, SeekFrom},
     ptr::null_mut,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use libc::{S_IFREG, S_IRWXG, S_IRWXO, S_IRWXU};
@@ -22,8 +25,8 @@ use crate::{runtime::file::Fd, OUR_RUNTIME};
 
 #[derive(Clone)]
 pub struct RawFile {
-    pub(crate) pos: AtomicU64,
-    len: AtomicU64,
+    pub(crate) pos: Arc<AtomicU64>,
+    len: Arc<AtomicU64>,
     handle: ObjectHandle,
 }
 
@@ -48,8 +51,8 @@ impl RawFile {
             0
         };
         Ok(Self {
-            pos: AtomicU64::new(0),
-            len: AtomicU64::new(len),
+            pos: Arc::new(AtomicU64::new(0)),
+            len: Arc::new(AtomicU64::new(len)),
             handle,
         })
     }
