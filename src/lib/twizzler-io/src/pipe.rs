@@ -1,9 +1,8 @@
 use std::{
     io::ErrorKind,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use libc::Elf32_Addr;
 use twizzler::{
     BaseType, Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder, TypedObject},
@@ -36,8 +35,8 @@ impl PipeBase {
 
 pub struct Pipe {
     pub pipe: Object<PipeBase>,
-    reader: AtomicU64,
-    writer: AtomicU64,
+    reader: AtomicBool,
+    writer: AtomicBool,
 }
 
 impl Pipe {
@@ -45,21 +44,22 @@ impl Pipe {
         let obj = ObjectBuilder::new(spec).build(PipeBase::new())?;
         Ok(Self {
             pipe: obj,
-            reader: AtomicU64::new(1),
-            writer: AtomicU64::new(1),
+            reader: AtomicBool::new(true),
+            writer: AtomicBool::new(true),
         })
     }
 
     pub fn open_object(id: ObjID) -> std::io::Result<Self> {
         let obj =
             unsafe { Object::<PipeBase>::map_unchecked(id, MapFlags::READ | MapFlags::WRITE) }?;
-        obj.base().readers.fetch_add(1, Ordering::SeqCst);
-        obj.base().writers.fetch_add(1, Ordering::SeqCst);
-        Ok(Self {
+        let this = Self {
             pipe: obj,
-            reader: AtomicU64::new(1),
-            writer: AtomicU64::new(1),
-        })
+            reader: AtomicBool::new(true),
+            writer: AtomicBool::new(true),
+        };
+        this.increment_reader();
+        this.increment_writer();
+        Ok(this)
     }
 
     pub fn id(&self) -> ObjID {
@@ -83,15 +83,20 @@ impl Pipe {
     }
 
     pub fn is_reader(&self) -> bool {
-        self.reader.load(Ordering::SeqCst) > 0
+        self.reader.load(Ordering::SeqCst)
     }
 
     pub fn is_writer(&self) -> bool {
-        self.writer.load(Ordering::SeqCst) > 0
+        self.writer.load(Ordering::SeqCst)
+    }
+
+    pub fn enable_reader(&self) {
+        if !self.reader.swap(true, Ordering::SeqCst) {
+            self.increment_reader();
+        }
     }
 
     pub fn increment_reader(&self) {
-        self.reader.fetch_add(1, Ordering::SeqCst);
         self.pipe.base().readers.fetch_add(1, Ordering::SeqCst);
         let _ = sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
@@ -103,8 +108,13 @@ impl Pipe {
         .inspect_err(|e| tracing::warn!("failed to wake on readers: {e}"));
     }
 
+    pub fn enable_writer(&self) {
+        if !self.writer.swap(true, Ordering::SeqCst) {
+            self.increment_writer();
+        }
+    }
+
     pub fn increment_writer(&self) {
-        self.writer.fetch_add(1, Ordering::SeqCst);
         self.pipe.base().writers.fetch_add(1, Ordering::SeqCst);
         let _ = sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
@@ -117,32 +127,9 @@ impl Pipe {
     }
 
     pub fn close_reader(&self) {
-        twizzler_abi::klog_println!(
-            "Pipe::close_reader: reader={}, readers={}",
-            self.reader.load(Ordering::SeqCst),
-            self.readers()
-        );
-        let my_readers = self.reader.load(Ordering::SeqCst);
-        if my_readers == 0 {
+        if !self.reader.swap(false, Ordering::SeqCst) {
             return;
         }
-        while self
-            .reader
-            .compare_exchange(
-                my_readers,
-                my_readers - 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .is_err()
-        {
-            std::hint::spin_loop();
-            let my_readers = self.reader.load(Ordering::SeqCst);
-            if my_readers == 0 {
-                return;
-            }
-        }
-
         if self.readers() == 0 {
             return;
         }
@@ -160,32 +147,9 @@ impl Pipe {
     }
 
     pub fn close_writer(&self) {
-        twizzler_abi::klog_println!(
-            "Pipe::close_writer: writer={}, writers={}",
-            self.writer.load(Ordering::SeqCst),
-            self.writers()
-        );
-        let my_writers = self.writer.load(Ordering::SeqCst);
-        if my_writers == 0 {
+        if !self.writer.swap(false, Ordering::SeqCst) {
             return;
         }
-        while self
-            .writer
-            .compare_exchange(
-                my_writers,
-                my_writers - 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
-            .is_err()
-        {
-            std::hint::spin_loop();
-            let my_writers = self.writer.load(Ordering::SeqCst);
-            if my_writers == 0 {
-                return;
-            }
-        }
-
         if self.writers() == 0 {
             return;
         }
@@ -222,43 +186,47 @@ impl Pipe {
         )?;
         Ok(())
     }
+
+    pub fn has_pending_data(&self) -> bool {
+        !self.pipe.base().buffer.is_empty()
+    }
+
+    pub fn has_avail_space(&self) -> bool {
+        self.pipe.base().buffer.avail_space() > 0
+    }
 }
 
 impl Pipe {
     pub fn read(&self, buf: &mut [u8], nb: bool) -> std::io::Result<usize> {
-        twizzler_abi::klog_println!(
-            "Pipe::read: readers={}, writers={}",
-            self.readers(),
-            self.writers()
-        );
+        let writers = self.writers();
+        let sync = self.pipe.base().buffer.sync_for_pending_data();
         let count = self.pipe.base().buffer.read_bytes(buf)?;
-        if count == 0 && buf.len() > 0 && self.writers() > 0 {
-            if !nb {
+        if count == 0 && buf.len() > 0 && writers > 0 {
+            if nb {
                 return Err(ErrorKind::WouldBlock.into());
             }
-            self.do_sleep(self.pipe.base().buffer.sync_for_pending_data())?;
+            self.do_sleep(sync)?;
             return self.read(buf, nb);
         }
-        twizzler_abi::klog_println!("Pipe::read: read {} bytes", count);
         Ok(count)
     }
 }
 
 impl Pipe {
     pub fn write(&self, buf: &[u8], nb: bool) -> std::io::Result<usize> {
-        if self.readers() == 0 {
-            twizzler_abi::klog_println!("Pipe::write: no readers, returning BrokenPipe");
+        let readers = self.readers();
+        let sync = self.pipe.base().buffer.sync_for_avail_space();
+        if readers == 0 {
             return Err(ErrorKind::BrokenPipe.into());
         }
         let count = self.pipe.base().buffer.write_bytes(buf)?;
-        if count == 0 && buf.len() > 0 && self.readers() > 0 {
-            if !nb {
+        if count == 0 && buf.len() > 0 && readers > 0 {
+            if nb {
                 return Err(ErrorKind::WouldBlock.into());
             }
-            self.do_sleep(self.pipe.base().buffer.sync_for_avail_space())?;
+            self.do_sleep(sync)?;
             return self.write(buf, nb);
         }
-        twizzler_abi::klog_println!("Pipe::write: wrote {} bytes", count);
         Ok(count)
     }
 
@@ -269,23 +237,29 @@ impl Pipe {
 
 impl Clone for Pipe {
     fn clone(&self) -> Self {
-        if self.is_reader() {
-            self.pipe.base().readers.fetch_add(1, Ordering::SeqCst);
+        let reader = self.reader.load(Ordering::SeqCst);
+        let writer = self.writer.load(Ordering::SeqCst);
+        if reader {
+            self.increment_reader();
         }
-        if self.is_writer() {
-            self.pipe.base().writers.fetch_add(1, Ordering::SeqCst);
+        if writer {
+            self.increment_writer();
         }
         Self {
             pipe: self.pipe.clone(),
-            reader: AtomicU64::new(if self.is_reader() { 1 } else { 0 }),
-            writer: AtomicU64::new(if self.is_writer() { 1 } else { 0 }),
+            reader: AtomicBool::new(reader),
+            writer: AtomicBool::new(writer),
         }
     }
 }
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        self.close_reader();
-        self.close_writer();
+        if self.reader.load(Ordering::SeqCst) {
+            self.close_reader();
+        }
+        if self.writer.load(Ordering::SeqCst) {
+            self.close_writer();
+        }
     }
 }

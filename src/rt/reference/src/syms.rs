@@ -420,9 +420,10 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
     kind: wait_kind,
     point: *mut *mut u64,
     val: *mut u64,
+    ready: *mut bool,
 ) -> twz_error {
     match OUR_RUNTIME.fd_waitpoint(fd, kind) {
-        Ok(ts) => {
+        Ok((ts, is_ready)) => {
             point.write(
                 ts.reference
                     .address()
@@ -430,12 +431,13 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
                     .cast(),
             );
             val.write(ts.value);
+            ready.write(is_ready);
             RawTwzError::success().raw()
         }
         Err(e) => e.raw(),
     }
 }
-check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _);
+check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_select(

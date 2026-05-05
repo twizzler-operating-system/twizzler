@@ -13,7 +13,10 @@ use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
 use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_rt_abi::{
-    bindings::{wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER, IO_REGISTER_SOCKET_FLAGS},
+    bindings::{
+        wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER, IO_REGISTER_SOCKET_FLAGS, WAIT_READ,
+        WAIT_WRITE,
+    },
     fd::{FdFlags, SocketAddress},
     io::IoFlags,
     Result,
@@ -58,6 +61,10 @@ impl SocketKind {
     }
 
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
+        tracing::info!(
+            "Binding TCP socket to address {:?}",
+            addr.to_socket_addrs().map(|mut x| x.next())
+        );
         SmolTcpListener::bind(addr)
             .map(|listener| SocketKind::TcpListener(Arc::new(listener)))
             .map_err(Into::into)
@@ -70,6 +77,7 @@ impl SocketKind {
     }
 
     pub fn accept(&self) -> Result<Self> {
+        tracing::info!("Accepting on socket");
         match self {
             SocketKind::TcpListener(listener) => listener
                 .accept(IoFlags::empty())
@@ -87,9 +95,31 @@ impl SocketKind {
     }
 
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
+        tracing::info!(
+            "Connecting to socket at address {:?}",
+            addr.to_socket_addrs().map(|mut x| x.next())
+        );
         SmolTcpStream::connect(IoFlags::empty(), addr)
             .map(|stream| SocketKind::TcpStream(Arc::new(stream)))
             .map_err(Into::into)
+    }
+
+    pub fn is_ready(&self, kind: wait_kind) -> bool {
+        match kind {
+            x if x == WAIT_READ => match self {
+                SocketKind::None => false,
+                SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.can_read(),
+                SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.can_read(),
+                SocketKind::UdpSocket(udp_socket) => udp_socket.can_read(),
+            },
+            x if x == WAIT_WRITE => match self {
+                SocketKind::None => false,
+                SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.can_write(),
+                SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.can_write(),
+                SocketKind::UdpSocket(udp_socket) => udp_socket.can_write(),
+            },
+            _ => false,
+        }
     }
 }
 
@@ -216,8 +246,8 @@ impl Fd for SocketKind {
         }
     }
 
-    fn waitpoint(&self, kind: wait_kind) -> Result<ThreadSyncSleep> {
-        match self {
+    fn waitpoint(&self, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
+        let sync = match self {
             SocketKind::None => Err(TwzError::NOT_SUPPORTED),
             SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream
                 .waitpoint(kind)
@@ -231,7 +261,9 @@ impl Fd for SocketKind {
                 .waitpoint(kind)
                 .map_err(Into::into)
                 .map(Into::into),
-        }
+        };
+        let ready = self.is_ready(kind);
+        sync.map(|s| (s, ready))
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {

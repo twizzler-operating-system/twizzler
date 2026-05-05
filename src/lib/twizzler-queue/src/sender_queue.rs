@@ -64,12 +64,18 @@ pub struct QueueSender<S: Copy, C: Copy> {
 }
 
 impl<S: Copy, C: Copy> twizzler_futures::TwizzlerWaitable for QueueSenderInner<S, C> {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        self.queue.setup_read_com_sleep()
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            self.queue.setup_read_com_sleep(),
+            self.queue.has_pending_completion(),
+        )
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        self.queue.setup_write_sub_sleep()
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            self.queue.setup_write_sub_sleep(),
+            self.queue.has_sub_space(),
+        )
     }
 }
 

@@ -249,6 +249,14 @@ impl PtyServerHandle {
                 .sync_for_pending_data()
         }
     }
+
+    pub fn is_ready(&self, write: bool) -> bool {
+        if write {
+            self.client_output.pty.base().client_input.avail_space() > 0
+        } else {
+            !self.client_output.pty.base().client_output.is_empty()
+        }
+    }
 }
 
 impl PtyServerHandle {
@@ -283,6 +291,12 @@ impl PtyServerHandle {
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
+        let sync = self
+            .client_output
+            .pty
+            .base()
+            .client_input
+            .sync_for_avail_space();
         let report = self.client_input.lock().unwrap().write_input(buf)?;
         if let Some(signal) = report.posted_signal
             && let Some(signal_handler) = self.signal_handler
@@ -290,13 +304,7 @@ impl PtyServerHandle {
             (signal_handler)(self, signal);
         }
         if report.consumed == 0 && buf.len() > 0 {
-            do_sleep(
-                self.client_output
-                    .pty
-                    .base()
-                    .client_input
-                    .sync_for_avail_space(),
-            )?;
+            do_sleep(sync)?;
             return self.write_b(buf);
         }
         Ok(report.consumed)
@@ -310,15 +318,15 @@ impl PtyServerHandle {
 impl PtyServerHandle {
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
+        let sync = self
+            .client_output
+            .pty
+            .base()
+            .client_output
+            .sync_for_pending_data();
         let count = self.client_output.read(buf)?;
         if count == 0 && buf.len() > 0 {
-            do_sleep(
-                self.client_output
-                    .pty
-                    .base()
-                    .client_output
-                    .sync_for_pending_data(),
-            )?;
+            do_sleep(sync)?;
             return self.read_b(buf);
         }
         Ok(count)
@@ -331,6 +339,14 @@ impl PtyClientHandle {
             self.pty.base().client_output.sync_for_avail_space()
         } else {
             self.pty.base().client_input.sync_for_pending_data()
+        }
+    }
+
+    pub fn is_ready(&self, write: bool) -> bool {
+        if write {
+            self.pty.base().client_output.avail_space() > 0
+        } else {
+            !self.pty.base().client_input.is_empty()
         }
     }
 
@@ -366,9 +382,9 @@ impl PtyClientHandle {
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
+        let sync = self.pty.base().client_output.sync_for_avail_space();
         let count = self.output.lock().unwrap().write(buf)?;
         if count == 0 && buf.len() > 0 {
-            let sync = self.pty.base().client_input.sync_for_avail_space();
             do_sleep(sync)?;
             return self.write_b(buf);
         }
@@ -388,6 +404,7 @@ impl PtyClientHandle {
 
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
+        let sync = self.pty.base().client_input.sync_for_pending_data();
         let res = self.input.lock().unwrap().read(buf);
         match res {
             Ok(c) => Ok(c),
@@ -396,7 +413,6 @@ impl PtyClientHandle {
                 if buf.len() == 0 {
                     return Ok(0);
                 }
-                let sync = self.pty.base().client_input.sync_for_pending_data();
                 do_sleep(sync)?;
                 self.read_b(buf)
             }

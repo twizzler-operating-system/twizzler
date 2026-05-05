@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use libc::{termios, S_IFCHR};
 use twizzler_abi::syscall::ThreadSyncSleep;
@@ -132,11 +132,19 @@ impl Fd for PtyHandleKind {
         }
     }
 
-    fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<ThreadSyncSleep> {
-        Ok(match self {
+    fn waitpoint(
+        &self,
+        kind: twizzler_rt_abi::bindings::wait_kind,
+    ) -> Result<(ThreadSyncSleep, bool)> {
+        let wp = match self {
             PtyHandleKind::Server(server) => server.waitpoint(kind == WAIT_WRITE),
             PtyHandleKind::Client(client) => client.waitpoint(kind == WAIT_WRITE),
-        })
+        };
+        let ready = match self {
+            PtyHandleKind::Server(server) => server.is_ready(kind == WAIT_WRITE),
+            PtyHandleKind::Client(client) => client.is_ready(kind == WAIT_WRITE),
+        };
+        Ok((wp, ready))
     }
 
     fn shutdown(&self, _sh: std::net::Shutdown) -> Result<()> {
@@ -189,15 +197,6 @@ impl Fd for Pipe {
     }
 
     fn fd_cmd(&self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
-        twizzler_abi::klog_println!("Pipe::fd_cmd: cmd={}", cmd);
-        if cmd == FD_CMD_DUP {
-            if self.is_reader() {
-                self.increment_reader();
-            }
-            if self.is_writer() {
-                self.increment_writer();
-            }
-        }
         Ok(())
     }
 
@@ -209,16 +208,18 @@ impl Fd for Pipe {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 
-    fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<ThreadSyncSleep> {
+    fn waitpoint(
+        &self,
+        kind: twizzler_rt_abi::bindings::wait_kind,
+    ) -> Result<(ThreadSyncSleep, bool)> {
         if kind == WAIT_WRITE {
-            Ok(self.write_waitpoint())
+            Ok((self.write_waitpoint(), self.has_avail_space()))
         } else {
-            Ok(self.read_waitpoint())
+            Ok((self.read_waitpoint(), self.has_pending_data()))
         }
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {
-        twizzler_abi::klog_println!("Pipe::shutdown: shutdown={:?}", sh);
         if matches!(sh, std::net::Shutdown::Read) || matches!(sh, std::net::Shutdown::Both) {
             self.close_reader();
         }
@@ -226,5 +227,9 @@ impl Fd for Pipe {
             self.close_writer();
         }
         Ok(())
+    }
+
+    fn dup(&self) -> Option<crate::runtime::file::FdImpl> {
+        Some(Arc::new(self.clone()))
     }
 }

@@ -58,7 +58,7 @@ impl ReferenceRuntime {
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
             let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
-            if id == 0 {
+            if id == 1 {
                 OUR_RUNTIME.close_fds();
             }
             twizzler_abi::syscall::sys_thread_exit(code as u64);

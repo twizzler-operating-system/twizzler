@@ -12,6 +12,7 @@ use crate::runtime::{
     ReferenceRuntime,
 };
 
+#[derive(Debug)]
 pub struct FdSet {
     set: *mut libc::fd_set,
     nfd: usize,
@@ -92,6 +93,22 @@ impl SelectState {
                 // Unsupported for now
             }
         }
+        twizzler_abi::klog_println!(
+            "SelectState::new: nfds={}, timeout={:?}, read={:?}, write={:?}, except={:?}",
+            nfds,
+            timeout,
+            fds.set
+                .keys()
+                .filter(|(_, k)| *k == WAIT_READ)
+                .map(|(fd, _)| fd)
+                .collect::<Vec<_>>(),
+            fds.set
+                .keys()
+                .filter(|(_, k)| *k == WAIT_WRITE)
+                .map(|(fd, _)| fd)
+                .collect::<Vec<_>>(),
+            except
+        );
         Ok(Self {
             fds,
             timeout,
@@ -104,30 +121,33 @@ impl SelectState {
     fn wait(&self) -> Result<usize, TwzError> {
         let mut ready = 0;
 
-        let maybe_mark_ready = |wp: &ThreadSync, kind: wait_kind, fd: RawFd| -> bool {
-            let is_ready = wp.ready();
-            if is_ready {
-                match kind {
-                    w if w == WAIT_READ => self.read.insert(fd),
-                    w if w == WAIT_WRITE => self.write.insert(fd),
-                    _ => {}
+        let maybe_mark_ready =
+            |wp: &ThreadSync, kind: wait_kind, fd: RawFd, fd_is_ready: bool| -> bool {
+                let is_ready = wp.ready() || fd_is_ready;
+                if is_ready {
+                    match kind {
+                        w if w == WAIT_READ => self.read.insert(fd),
+                        w if w == WAIT_WRITE => self.write.insert(fd),
+                        _ => {}
+                    }
                 }
-            }
-            is_ready
-        };
+                is_ready
+            };
 
         let (fds, mut waits): (Vec<_>, Vec<_>) = self
             .fds
             .set
             .iter()
             .filter_map(|((fd, kind), fd_desc)| {
-                let wp = ThreadSync::new_sleep(fd_desc.file.waitpoint(*kind).ok()?);
-                if maybe_mark_ready(&wp, *kind, *fd) {
+                let (wp, fd_is_ready) = fd_desc.file.waitpoint(*kind).ok()?;
+                let wp = ThreadSync::new_sleep(wp);
+                if maybe_mark_ready(&wp, *kind, *fd, fd_is_ready) {
                     ready += 1;
                 }
                 Some(((fd, *kind, fd_desc), wp))
             })
             .unzip();
+        twizzler_abi::klog_println!("SelectState::wait: initial ready={}", ready,);
 
         if ready > 0 {
             return Ok(ready);
@@ -136,7 +156,7 @@ impl SelectState {
         sys_thread_sync(&mut waits, self.timeout)?;
 
         for ((fd, kind, _), wp) in fds.into_iter().zip(waits.into_iter()) {
-            if maybe_mark_ready(&wp, kind, *fd) {
+            if maybe_mark_ready(&wp, kind, *fd, false) {
                 ready += 1;
             }
         }

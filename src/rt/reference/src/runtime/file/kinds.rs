@@ -132,14 +132,6 @@ pub fn open(
     binding_len: usize,
     opts: OperationOptions,
 ) -> Result<Option<FdImpl>> {
-    twizzler_abi::klog_println!(
-        "open: kind={:?} existing_fd={:?} binding={:?} binding_len={} opts={:?}",
-        kind,
-        existing_fd,
-        binding,
-        binding_len,
-        opts
-    );
     Ok(match kind {
         OpenKind::Path => {
             let info = binding_ref::<open_info>(binding, binding_len)?;

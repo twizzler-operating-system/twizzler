@@ -294,6 +294,12 @@ impl RawQueueHdr {
         !self.is_empty(b, t) && self.is_turn(t, item)
     }
 
+    pub fn has_space<T>(&self) -> bool {
+        let h = self.head.load(Ordering::SeqCst);
+        let t = self.tail.load(Ordering::SeqCst);
+        !self.is_full(h, t)
+    }
+
     #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
@@ -518,6 +524,10 @@ impl<T: Copy> RawQueue<T> {
 
     pub fn has_pending(&self) -> bool {
         self.hdr().has_pending(unsafe { *self.buf.get() })
+    }
+
+    pub fn has_space(&self) -> bool {
+        self.hdr().has_space::<T>()
     }
 
     pub fn setup_sleep<'a>(

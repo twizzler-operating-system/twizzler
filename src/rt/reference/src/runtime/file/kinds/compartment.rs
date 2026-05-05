@@ -145,7 +145,10 @@ impl Fd for CompartmentFile {
         }
     }
 
-    fn waitpoint(&self, _kind: twizzler_rt_abi::bindings::wait_kind) -> Result<ThreadSyncSleep> {
+    fn waitpoint(
+        &self,
+        _kind: twizzler_rt_abi::bindings::wait_kind,
+    ) -> Result<(ThreadSyncSleep, bool)> {
         Err(ErrorKind::Unsupported.into())
     }
 

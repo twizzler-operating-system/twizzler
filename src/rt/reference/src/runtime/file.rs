@@ -51,6 +51,7 @@ pub trait Fd {
         offset: Option<u64>,
         ep: Option<&mut Endpoint>,
     ) -> Result<usize>;
+
     fn write(
         &self,
         buf: &[u8],
@@ -58,25 +59,33 @@ pub trait Fd {
         offset: Option<u64>,
         to: Option<&Endpoint>,
     ) -> Result<usize>;
+
     fn seek(&self, _pos: SeekFrom) -> Result<usize> {
         Err(ErrorKind::Unsupported.into())
     }
+
     fn flush(&self) -> Result<()> {
         Ok(())
     }
+
     fn stat(&self) -> Result<FdInfo>;
+
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
         Ok(())
     }
+
     fn get_config(&self, _reg: u32, _val: *mut c_void, _val_len: usize) -> Result<()> {
         Err(ErrorKind::Unsupported.into())
     }
+
     fn set_config(&self, _reg: u32, _val: *const c_void, _val_len: usize) -> Result<()> {
         Err(ErrorKind::Unsupported.into())
     }
-    fn waitpoint(&self, _kind: wait_kind) -> Result<ThreadSyncSleep> {
+
+    fn waitpoint(&self, _kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
         Err(ErrorKind::Unsupported.into())
     }
+
     fn shutdown(&self, _sh: Shutdown) -> Result<()> {
         Ok(())
     }
@@ -84,8 +93,13 @@ pub trait Fd {
     fn as_socket(&self) -> Option<&SocketKind> {
         None
     }
+
     fn close(&self) -> Result<()> {
         self.shutdown(Shutdown::Both)
+    }
+
+    fn dup(&self) -> Option<FdImpl> {
+        None
     }
 }
 
@@ -409,12 +423,13 @@ struct FileDesc {
 
 impl FileDesc {
     fn io_ctx_flags(&self, ctx: *mut io_ctx) -> IoFlags {
-        self.flags
+        let flags = self.flags
             | if ctx.is_null() {
                 IoFlags::empty()
             } else {
                 IoFlags::from_bits_truncate(unsafe { (*ctx).flags })
-            }
+            };
+        flags
     }
 
     pub fn new(
@@ -673,6 +688,7 @@ impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
         for (_i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
+                let _ = fd.file.close();
                 drop(fd);
             }
         }
@@ -1105,8 +1121,12 @@ impl ReferenceRuntime {
         let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
 
         if cmd == FD_CMD_DUP {
+            let file = file_desc
+                .file
+                .dup()
+                .unwrap_or_else(|| file_desc.file.clone());
             let mut nfd = file_desc.clone();
-            file_desc.fd_cmd(cmd, arg, ret)?;
+            nfd.file = file;
             let b = **nfd.binding;
             nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
             let newfd = binding
@@ -1178,7 +1198,7 @@ impl ReferenceRuntime {
         Ok(())
     }
 
-    pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<ThreadSyncSleep> {
+    pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
         let binding = get_fd_slots().lock().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
@@ -1186,7 +1206,7 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.file.waitpoint(kind).into()
+        file_desc.file.waitpoint(kind)
     }
 
     pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {

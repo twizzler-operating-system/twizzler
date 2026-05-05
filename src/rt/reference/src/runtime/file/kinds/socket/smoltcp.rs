@@ -65,6 +65,21 @@ impl SmolTcpListener {
 
     pub fn set_flags(&self, _flags: u32) {}
 
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        for listener in self.listeners.lock().unwrap().iter() {
+            let sock = core.get_mutable_socket(listener.socket_handle);
+            if sock.can_recv() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn can_write(&self) -> bool {
+        false
+    }
+
     pub fn addr(&self, peer: bool) -> SocketAddress {
         if peer {
             SocketAddress::default()
@@ -320,6 +335,18 @@ impl SmolTcpStream {
 }
 
 impl SmolTcpStream {
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let socket = core.get_mutable_socket(self.inner.socket_handle);
+        socket.can_recv()
+    }
+
+    pub fn can_write(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let socket = core.get_mutable_socket(self.inner.socket_handle);
+        socket.can_send()
+    }
+
     /* each_addr:
      * helper function for connect()
      * processes each address given to see whether it can implement ToSocketAddr, then tries to
@@ -484,6 +511,18 @@ impl UdpSocket {
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
+    }
+
+    pub fn can_write(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
+        sock.can_send()
+    }
+
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
+        sock.can_recv()
     }
 
     pub fn read_from(

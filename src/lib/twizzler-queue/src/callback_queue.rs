@@ -17,12 +17,18 @@ pub struct CallbackQueueReceiver<S, C> {
 impl<S: Copy + Send + Sync, C: Copy + Send + Sync> twizzler_futures::TwizzlerWaitable
     for CallbackQueueReceiverInner<S, C>
 {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        self.queue.setup_read_sub_sleep()
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            self.queue.setup_read_sub_sleep(),
+            self.queue.has_pending_submission(),
+        )
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        self.queue.setup_write_com_sleep()
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            self.queue.setup_write_com_sleep(),
+            self.queue.has_com_space(),
+        )
     }
 }
 

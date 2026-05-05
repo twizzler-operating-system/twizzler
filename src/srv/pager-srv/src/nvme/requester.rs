@@ -79,7 +79,7 @@ impl<'a> InflightRequest<'a> {
             }
 
             unsafe { &*flags }.fetch_or(WAITER, Ordering::Release);
-            sys_thread_sync(&mut [ThreadSync::new_sleep(wait)], None)?;
+            sys_thread_sync(&mut [ThreadSync::new_sleep(wait.0)], None)?;
         }
     }
 }
@@ -117,18 +117,21 @@ impl<'a> Drop for InflightRequest<'a> {
 }
 
 impl<'a> TwizzlerWaitable for InflightRequest<'a> {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
         let requests = &self.req.inner.lock().unwrap().requests;
         let req = requests.get(self.id as usize).unwrap();
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&req.flags),
-            WAITER,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+        (
+            ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&req.flags),
+                WAITER,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ),
+            false,
         )
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
         self.wait_item_read()
     }
 }
