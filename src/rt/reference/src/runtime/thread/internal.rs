@@ -91,13 +91,17 @@ impl Drop for InternalThread {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
             // Stack is manually allocated, just free it directly.
-            OUR_RUNTIME.dealloc(
-                self.stack_addr as *mut u8,
-                Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
-            );
-            // Args is allocated by a box.
-            let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
-            drop(_args);
+            if self.stack_addr != 0 {
+                OUR_RUNTIME.dealloc(
+                    self.stack_addr as *mut u8,
+                    Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
+                );
+            }
+            if self.args_box != 0 {
+                // Args is allocated by a box.
+                let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
+                drop(_args);
+            }
             tracing::debug!("TODO: drop TLS");
         }
     }

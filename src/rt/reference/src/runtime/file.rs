@@ -84,6 +84,9 @@ pub trait Fd {
     fn as_socket(&self) -> Option<&SocketKind> {
         None
     }
+    fn close(&self) -> Result<()> {
+        self.shutdown(Shutdown::Both)
+    }
 }
 
 /*
@@ -464,8 +467,11 @@ impl FileDesc {
             };
             b.flags = flags;
             self.binding = MaybeNoDrop::new(Arc::new(b), true);
+            self.file.shutdown(shutdown)?;
+            return Ok(());
         } else if cmd == FD_CMD_SYNC {
             self.file.flush()?;
+            return Ok(());
         }
         self.file.fd_cmd(cmd, arg, ret).into()
     }
@@ -871,6 +877,13 @@ impl ReferenceRuntime {
                     )
                 };
 
+                if !open_opt.contains(OperationOptions::OPEN_FLAG_READ)
+                    && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
+                {
+                    tracing::error!(
+                        "Invalid open options for pipe: must specify at least one of read or write"
+                    );
+                }
                 if !open_opt.contains(OperationOptions::OPEN_FLAG_READ) {
                     let _ = elem.shutdown(Shutdown::Read);
                 }
@@ -1093,6 +1106,7 @@ impl ReferenceRuntime {
 
         if cmd == FD_CMD_DUP {
             let mut nfd = file_desc.clone();
+            file_desc.fd_cmd(cmd, arg, ret)?;
             let b = **nfd.binding;
             nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
             let newfd = binding
@@ -1129,7 +1143,7 @@ impl ReferenceRuntime {
             return Some(());
         };
 
-        file_desc.file.shutdown(Shutdown::Both).ok()?;
+        file_desc.file.close().ok()?;
 
         Some(())
     }

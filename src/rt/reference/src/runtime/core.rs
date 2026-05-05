@@ -291,6 +291,7 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
+
         let mut tg = TLS_GEN_MGR.lock();
         let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
@@ -300,6 +301,7 @@ impl ReferenceRuntime {
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
         let _start_5 = Instant::now();
         libc_init_tcb(preinit_unwrap(tls));
+        self.init_core_thread(preinit_unwrap(tls));
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {

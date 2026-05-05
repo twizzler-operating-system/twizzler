@@ -6,11 +6,12 @@ use std::{
     ffi::c_void,
 };
 
-use monitor_api::RuntimeThreadControl;
+use monitor_api::{RuntimeThreadControl, Tcb};
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
+    syscall::sys_thread_self_id,
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
@@ -66,7 +67,7 @@ unsafe impl Sync for ThreadManager {}
 impl ThreadManagerInner {
     const fn new() -> Self {
         Self {
-            next_id: 1,
+            next_id: 2, // 0 is reserved, 1 is the core thread.
             all_threads: BTreeMap::new(),
             to_cleanup: vec![],
             id_stack: vec![],
@@ -135,6 +136,21 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
+    pub fn init_core_thread(&self, tls: *mut Tcb<RuntimeThreadControl>) {
+        let thid = sys_thread_self_id();
+        let thread_repr_obj = self
+            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
+            .unwrap();
+        (unsafe { &mut *tls }).runtime_data.set_id(1);
+        let thread = InternalThread::new(thread_repr_obj, 0, 0, 0, 1, tls);
+
+        THREAD_MGR
+            .inner
+            .lock()
+            .all_threads
+            .insert(thread.id, thread);
+    }
+
     pub fn cross_compartment_entry(&self) -> Result<()> {
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {

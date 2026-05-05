@@ -71,11 +71,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("BLDSHARED", &ldshared);
     cmd.env("LDSHARED", &ldshared);
 
-    if false {
-        let mut ch = cmd.spawn()?;
-        if !ch.wait()?.success() {
-            anyhow::bail!("failed to configure python");
-        }
+    let mut ch = cmd.spawn()?;
+    if !ch.wait()?.success() {
+        anyhow::bail!("failed to configure python");
     }
 
     let log = setup_logfile("ports/cpython", "xtask-build", Some(triple))?;

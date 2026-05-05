@@ -116,7 +116,6 @@ impl Namespace for ExtNamespace {
             NsNodeKind::Namespace => mode |= libc::S_IFDIR,
             NsNodeKind::SymLink => mode |= libc::S_IFLNK,
             NsNodeKind::Object => mode |= libc::S_IFREG,
-            _ => {}
         }
 
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {

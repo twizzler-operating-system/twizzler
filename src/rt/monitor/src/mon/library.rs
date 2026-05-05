@@ -6,7 +6,6 @@ use dynlink::{
 use happylock::ThreadKey;
 use monitor_api::LibraryInfoRaw;
 use secgate::util::Descriptor;
-use tracing::span::Id;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::{
     bindings::{ctor_set, link_map},

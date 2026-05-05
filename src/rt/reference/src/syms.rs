@@ -92,7 +92,7 @@ use twizzler_abi::{
 };
 // core.h
 use twizzler_rt_abi::bindings::{
-    binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, object_create,
+    binding_info, endpoint, fd_set, io_ctx, name_resolver, name_root, object_cmd, object_create,
     object_source, object_tie, option_exit_code, release_flags, twz_error, u32_result, wait_kind,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
@@ -436,6 +436,37 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
     }
 }
 check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_select(
+    nfds: usize,
+    readfds: *mut fd_set,
+    writefds: *mut fd_set,
+    exceptfds: *mut fd_set,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    match OUR_RUNTIME.select(
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        if timeout.is_some != 0 {
+            Some(timeout.dur.into())
+        } else {
+            None
+        },
+    ) {
+        Ok(result) => io_result {
+            err: TwzError::SUCCESS.raw(),
+            val: result,
+        },
+        Err(e) => io_result {
+            err: e.raw(),
+            val: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_fd_select, _, _, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(

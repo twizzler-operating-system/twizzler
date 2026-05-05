@@ -7,7 +7,7 @@ use twizzler_io::{
     pty::{PtyClientHandle, PtyServerHandle},
 };
 use twizzler_rt_abi::{
-    bindings::{IO_REGISTER_TERMIOS, WAIT_WRITE},
+    bindings::{FD_CMD_DUP, IO_REGISTER_TERMIOS, WAIT_WRITE},
     error::TwzError,
     fd::FdFlags,
     io::IoFlags,
@@ -50,7 +50,7 @@ impl Fd for PtyHandleKind {
         _offset: Option<u64>,
         _to: Option<&twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        if flags.contains(IoFlags::NONBLOCKING) {
+        let x = if flags.contains(IoFlags::NONBLOCKING) {
             match self {
                 PtyHandleKind::Server(server) => server.clone().write_nb(buf).map_err(Into::into),
                 PtyHandleKind::Client(client) => client.clone().write_nb(buf).map_err(Into::into),
@@ -60,7 +60,8 @@ impl Fd for PtyHandleKind {
                 PtyHandleKind::Server(server) => server.clone().write_b(buf).map_err(Into::into),
                 PtyHandleKind::Client(client) => client.clone().write_b(buf).map_err(Into::into),
             }
-        }
+        };
+        x
     }
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
@@ -80,7 +81,7 @@ impl Fd for PtyHandleKind {
     }
 
     fn seek(&self, _pos: std::io::SeekFrom) -> Result<usize> {
-        Err(std::io::ErrorKind::Unsupported.into())
+        Ok(0)
     }
 
     fn flush(&self) -> Result<()> {
@@ -171,7 +172,7 @@ impl Fd for Pipe {
             size: 0,
             kind: twizzler_rt_abi::fd::FdKind::Pipe,
             flags: FdFlags::empty(),
-            id: 0,
+            id: self.id().raw(),
             created: Duration::ZERO,
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
@@ -180,14 +181,23 @@ impl Fd for Pipe {
     }
 
     fn seek(&self, _pos: std::io::SeekFrom) -> Result<usize> {
-        Err(std::io::ErrorKind::Unsupported.into())
+        Ok(0)
     }
 
     fn flush(&self) -> Result<()> {
-        self.flush().map_err(Into::into)
+        Ok(())
     }
 
-    fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
+    fn fd_cmd(&self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
+        twizzler_abi::klog_println!("Pipe::fd_cmd: cmd={}", cmd);
+        if cmd == FD_CMD_DUP {
+            if self.is_reader() {
+                self.increment_reader();
+            }
+            if self.is_writer() {
+                self.increment_writer();
+            }
+        }
         Ok(())
     }
 
@@ -208,6 +218,7 @@ impl Fd for Pipe {
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {
+        twizzler_abi::klog_println!("Pipe::shutdown: shutdown={:?}", sh);
         if matches!(sh, std::net::Shutdown::Read) || matches!(sh, std::net::Shutdown::Both) {
             self.close_reader();
         }

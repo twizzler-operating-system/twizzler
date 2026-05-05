@@ -124,12 +124,6 @@ impl ReferenceRuntime {
 
     pub fn thread_get_info(&self, id: Option<u32>) -> thread_info {
         let make_info = |th: &InternalThread| -> thread_info {
-            twizzler_abi::klog_println!(
-                "found thread with id {}, objid {}, tcb {:p}",
-                th.id,
-                th.objid(),
-                th.tls
-            );
             thread_info {
                 id: th.id,
                 tcb: th.tls.cast(),

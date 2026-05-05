@@ -76,7 +76,7 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
     } else {
         GetFlags::FOLLOW_SYMLINK
     };
-    let (obj_id, _did_create, kind) = match create_opt {
+    let (obj_id, did_create, kind) = match create_opt {
         CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
         CreateOptions::CreateKindExisting => {
             let n = session.get(path, get_flags)?;
@@ -107,6 +107,10 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
                 NsNodeKind::Object,
             )),
     };
+
+    if did_create {
+        session.put(path, obj_id)?;
+    }
 
     Ok(match kind {
         NsNodeKind::Namespace => Arc::new(DirFile::new(obj_id)?),

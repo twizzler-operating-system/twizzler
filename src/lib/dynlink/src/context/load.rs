@@ -3,7 +3,7 @@ use std::mem::size_of;
 use elf::{
     abi::{
         DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, PT_DYNAMIC,
-        PT_TLS, SHT_NOBITS,
+        PT_TLS,
     },
     dynamic::DynamicTable,
     endian::NativeEndian,
