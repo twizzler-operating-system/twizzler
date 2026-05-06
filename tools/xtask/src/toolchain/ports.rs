@@ -49,6 +49,9 @@ fn build_ports(triple: &Triple) -> anyhow::Result<()> {
     llvm::install(triple)?;
     //rust::install(triple)?;
     openssl::install(triple)?;
+    psl::install(triple)?;
+    curl::install(triple)?;
+    binutils::install(triple)?;
 
     Ok(())
 }

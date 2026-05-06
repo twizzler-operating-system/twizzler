@@ -154,7 +154,7 @@ impl Context {
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
     ) -> Result<Library, DynlinkError> {
-        tracing::info!(
+        tracing::debug!(
             "loading library {} (idx = {:?}) into comp {}",
             unlib,
             idx,

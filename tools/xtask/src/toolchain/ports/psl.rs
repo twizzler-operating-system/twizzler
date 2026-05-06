@@ -1,6 +1,5 @@
 use std::{
-    fs::OpenOptions, io::Write, os::linux::raw::stat, path::Path, process::Command,
-    thread::available_parallelism,
+    fs::OpenOptions, io::Write, path::Path, process::Command, thread::available_parallelism,
 };
 
 use futures::executor::block_on;

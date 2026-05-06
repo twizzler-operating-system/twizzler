@@ -5,7 +5,10 @@ use std::{
     net::Shutdown,
     ops::Deref,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, OnceLock,
+    },
 };
 
 use bitflags::bitflags;
@@ -39,6 +42,7 @@ use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
 mod kinds;
+mod poll;
 mod select;
 
 pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
@@ -418,12 +422,12 @@ impl<T> Drop for MaybeNoDrop<T> {
 struct FileDesc {
     file: FdImpl,
     binding: MaybeNoDrop<Arc<binding_info>>,
-    flags: IoFlags,
+    flags: Arc<AtomicU32>,
 }
 
 impl FileDesc {
     fn io_ctx_flags(&self, ctx: *mut io_ctx) -> IoFlags {
-        let flags = self.flags
+        let flags = IoFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
             | if ctx.is_null() {
                 IoFlags::empty()
             } else {
@@ -453,7 +457,7 @@ impl FileDesc {
         FileDesc {
             file,
             binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
-            flags: IoFlags::empty(),
+            flags: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -870,6 +874,16 @@ impl ReferenceRuntime {
         } else {
             unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) }
         };
+        let existing_flags = if kind == OpenKind::SocketConnect && existing_fd.is_some() {
+            let slots = get_fd_slots().lock().unwrap();
+            if let Some(fd) = slots.get(existing_fd.unwrap() as usize) {
+                Some(fd.flags.load(Ordering::SeqCst))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let elem = kinds::open(existing_fd, kind, bind_info, bind_info_len, open_opt)?;
 
         if elem.is_none() && existing_fd.is_none() {
@@ -924,6 +938,9 @@ impl ReferenceRuntime {
                 should_drop,
             ),
         };
+        if let Some(existing_flags) = existing_flags {
+            elem.flags.store(existing_flags, Ordering::SeqCst);
+        }
 
         let mut binding = get_fd_slots().lock().unwrap();
 
@@ -1082,7 +1099,7 @@ impl ReferenceRuntime {
             if val_len != size_of::<u32>() {
                 return Err(TwzError::INVALID_ARGUMENT);
             }
-            unsafe { val.cast::<u32>().write(fd.flags.bits()) };
+            unsafe { val.cast::<u32>().write(fd.flags.load(Ordering::SeqCst)) };
             return Ok(());
         }
 
@@ -1108,7 +1125,7 @@ impl ReferenceRuntime {
                 return Err(TwzError::INVALID_ARGUMENT);
             }
             let val = unsafe { val.cast::<u32>().read() };
-            fd.flags = IoFlags::from_bits_truncate(val);
+            fd.flags.store(val, Ordering::SeqCst);
             return Ok(());
         }
         fd.file.set_config(reg, val, val_len).into()

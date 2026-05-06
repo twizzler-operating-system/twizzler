@@ -7,7 +7,7 @@ use twizzler_io::{
     pty::{PtyClientHandle, PtyServerHandle},
 };
 use twizzler_rt_abi::{
-    bindings::{FD_CMD_DUP, IO_REGISTER_TERMIOS, WAIT_WRITE},
+    bindings::{IO_REGISTER_TERMIOS, WAIT_WRITE},
     error::TwzError,
     fd::FdFlags,
     io::IoFlags,
@@ -196,7 +196,7 @@ impl Fd for Pipe {
         Ok(())
     }
 
-    fn fd_cmd(&self, cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
+    fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
         Ok(())
     }
 

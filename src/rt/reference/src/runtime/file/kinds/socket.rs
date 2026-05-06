@@ -61,7 +61,7 @@ impl SocketKind {
     }
 
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        tracing::info!(
+        tracing::debug!(
             "Binding TCP socket to address {:?}",
             addr.to_socket_addrs().map(|mut x| x.next())
         );
@@ -77,7 +77,7 @@ impl SocketKind {
     }
 
     pub fn accept(&self) -> Result<Self> {
-        tracing::info!("Accepting on socket");
+        tracing::debug!("Accepting on socket");
         match self {
             SocketKind::TcpListener(listener) => listener
                 .accept(IoFlags::empty())
@@ -95,7 +95,7 @@ impl SocketKind {
     }
 
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        tracing::info!(
+        tracing::debug!(
             "Connecting to socket at address {:?}",
             addr.to_socket_addrs().map(|mut x| x.next())
         );

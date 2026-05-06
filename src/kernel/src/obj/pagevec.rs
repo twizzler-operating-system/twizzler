@@ -74,7 +74,7 @@ impl PageVec {
 
     /// Remove the first pages up to offset, and then truncate the vector to the given page count.
     pub fn truncate_and_drain(&mut self, _offset: usize, _pages: usize) {
-        logln!("todo: truncate and drain");
+        log::debug!("todo: truncate and drain");
     }
 
     pub fn show_part(&self, range: &PageRange) -> String {

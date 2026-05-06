@@ -226,6 +226,19 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_select(
 }
 check_ffi_type!(twz_rt_fd_select, _, _, _, _, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_poll(
+    fds: *mut twizzler_rt_abi::bindings::pollfd,
+    nfds: usize,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    return io_result {
+        val: 0,
+        err: TwzError::NOT_SUPPORTED.raw(),
+    };
+}
+check_ffi_type!(twz_rt_fd_poll, _, _, _);
+
 // thread.h
 
 #[unsafe(no_mangle)]

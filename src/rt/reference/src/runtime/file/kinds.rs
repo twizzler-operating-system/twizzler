@@ -156,8 +156,9 @@ pub fn open(
         }
         OpenKind::Pipe => {
             let id =
-                binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)?;
-            let id = id.id;
+                binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)
+                    .map(|b| b.id)
+                    .unwrap_or(0);
             let pipe = if id == 0 {
                 twizzler_io::pipe::Pipe::create_object(ObjectCreate::default())?
             } else {
