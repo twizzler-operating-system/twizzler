@@ -158,6 +158,29 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
     ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
     ext4.remove("/sysroot/lib/libc.so").unwrap();
     ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
+    ext4.mkdir("/sysroot/etc", 0o755).unwrap();
+
+    let _ = ext4.remove("/sysroot/etc/services");
+    let mut file = ext4
+        .open(
+            "/sysroot/etc/services",
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+        )
+        .unwrap();
+
+    let host_file = File::open("/etc/services")?;
+    std::io::copy(&mut &host_file, &mut file).unwrap();
+    file.flush().unwrap();
+
+    let _ = ext4.remove("/sysroot/etc/resolv.conf");
+    let mut file = ext4
+        .open(
+            "/sysroot/etc/resolv.conf",
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+        )
+        .unwrap();
+    write!(file, "nameserver 8.8.8.8\n").unwrap();
+    file.flush().unwrap();
 
     Ok(())
 }

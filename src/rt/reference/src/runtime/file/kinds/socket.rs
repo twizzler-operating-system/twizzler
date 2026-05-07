@@ -4,7 +4,7 @@ mod smoltcp;
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     os::raw::c_void,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -26,37 +26,41 @@ use crate::runtime::file::{kinds::socket::smoltcp::UdpSocket, Fd};
 
 #[derive(Clone)]
 pub enum SocketKind {
-    None,
     TcpStream(Arc<SmolTcpStream>),
     TcpListener(Arc<SmolTcpListener>),
-    UdpSocket(Arc<UdpSocket>),
+    UdpSocket(OnceLock<Arc<UdpSocket>>),
 }
 
 impl SocketKind {
     fn get_endpoint_addr(&self, peer: bool) -> Result<SocketAddress> {
         match self {
-            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
             SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.addr(peer)),
             SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.addr(peer)),
-            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.addr(peer)),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .addr(peer)),
         }
     }
 
     fn get_socket_flags(&self) -> Result<u32> {
         match self {
-            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
             SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.flags()),
             SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.flags()),
-            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.flags()),
+            SocketKind::UdpSocket(udp_socket) => {
+                Ok(udp_socket.get().ok_or(TwzError::INVALID_ARGUMENT)?.flags())
+            }
         }
     }
 
     fn set_socket_flags(&self, flags: u32) -> Result<()> {
         match self {
-            SocketKind::None => Err(TwzError::INVALID_ARGUMENT),
             SocketKind::TcpStream(smol_tcp_stream) => Ok(smol_tcp_stream.set_flags(flags)),
             SocketKind::TcpListener(smol_tcp_listener) => Ok(smol_tcp_listener.set_flags(flags)),
-            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.set_flags(flags)),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .set_flags(flags)),
         }
     }
 
@@ -72,7 +76,7 @@ impl SocketKind {
 
     pub fn udp_bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         UdpSocket::bind(addr)
-            .map(|listener| SocketKind::UdpSocket(Arc::new(listener)))
+            .map(|listener| SocketKind::UdpSocket(OnceLock::from(Arc::new(listener))))
             .map_err(Into::into)
     }
 
@@ -89,7 +93,10 @@ impl SocketKind {
 
     pub fn udp_connect<A: ToSocketAddrs>(&self, addr: A) -> Result<()> {
         match self {
-            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket.connect(addr)?),
+            SocketKind::UdpSocket(udp_socket) => Ok(udp_socket
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .connect(addr)?),
             _ => panic!("invalid socket type"),
         }
     }
@@ -107,16 +114,18 @@ impl SocketKind {
     pub fn is_ready(&self, kind: wait_kind) -> bool {
         match kind {
             x if x == WAIT_READ => match self {
-                SocketKind::None => false,
                 SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.can_read(),
                 SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.can_read(),
-                SocketKind::UdpSocket(udp_socket) => udp_socket.can_read(),
+                SocketKind::UdpSocket(udp_socket) => {
+                    udp_socket.get().map_or(false, |s| s.can_read())
+                }
             },
             x if x == WAIT_WRITE => match self {
-                SocketKind::None => false,
                 SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.can_write(),
                 SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.can_write(),
-                SocketKind::UdpSocket(udp_socket) => udp_socket.can_write(),
+                SocketKind::UdpSocket(udp_socket) => {
+                    udp_socket.get().map_or(false, |s| s.can_write())
+                }
             },
             _ => false,
         }
@@ -134,7 +143,10 @@ impl Fd for SocketKind {
         if let Some(ep) = ep {
             match self {
                 SocketKind::UdpSocket(stream) => {
-                    let val = stream.read_from(buf, flags)?;
+                    let val = stream
+                        .get()
+                        .ok_or(TwzError::INVALID_ARGUMENT)?
+                        .read_from(buf, flags)?;
                     if let Some(addr) = val.1.map(|x| x.endpoint) {
                         let sa = SocketAddr::from((addr.addr, addr.port));
                         let sa = twizzler_rt_abi::fd::SocketAddress::from(sa);
@@ -147,7 +159,11 @@ impl Fd for SocketKind {
         } else {
             match self {
                 SocketKind::TcpStream(stream) => stream.read(buf, flags).map_err(Into::into),
-                SocketKind::UdpSocket(stream) => stream.read(buf, flags).map_err(Into::into),
+                SocketKind::UdpSocket(stream) => stream
+                    .get()
+                    .ok_or(TwzError::INVALID_ARGUMENT)?
+                    .read(buf, flags)
+                    .map_err(Into::into),
                 _ => Err(TwzError::NOT_SUPPORTED),
             }
         }
@@ -165,6 +181,9 @@ impl Fd for SocketKind {
             let sa = SocketAddr::from(sa);
             match self {
                 SocketKind::UdpSocket(stream) => {
+                    let stream = stream.get_or_try_init(|| {
+                        Ok::<_, std::io::Error>(Arc::new(UdpSocket::bind_ephemeral(sa)?))
+                    })?;
                     stream.write_to(buf, sa.into(), flags)?;
                     Ok(buf.len())
                 }
@@ -174,6 +193,8 @@ impl Fd for SocketKind {
             match self {
                 SocketKind::TcpStream(stream) => stream.write(buf, flags).map_err(Into::into),
                 SocketKind::UdpSocket(stream) => stream
+                    .get()
+                    .ok_or(TwzError::INVALID_ARGUMENT)?
                     .write(buf, flags)
                     .map(|_| buf.len())
                     .map_err(Into::into),
@@ -202,7 +223,11 @@ impl Fd for SocketKind {
     fn flush(&self) -> Result<()> {
         match self {
             SocketKind::TcpStream(stream) => stream.flush().map_err(Into::into),
-            SocketKind::UdpSocket(stream) => stream.flush().map_err(Into::into),
+            SocketKind::UdpSocket(stream) => stream
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .flush()
+                .map_err(Into::into),
             _ => Ok(()),
         }
     }
@@ -248,7 +273,6 @@ impl Fd for SocketKind {
 
     fn waitpoint(&self, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
         let sync = match self {
-            SocketKind::None => Err(TwzError::NOT_SUPPORTED),
             SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream
                 .waitpoint(kind)
                 .map_err(Into::into)
@@ -258,6 +282,8 @@ impl Fd for SocketKind {
                 .map_err(Into::into)
                 .map(Into::into),
             SocketKind::UdpSocket(udp_socket) => udp_socket
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
                 .waitpoint(kind)
                 .map_err(Into::into)
                 .map(Into::into),
@@ -269,7 +295,11 @@ impl Fd for SocketKind {
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {
         match self {
             SocketKind::TcpStream(stream) => stream.shutdown(sh).map_err(Into::into),
-            SocketKind::UdpSocket(stream) => stream.shutdown(sh).map_err(Into::into),
+            SocketKind::UdpSocket(stream) => stream
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .shutdown(sh)
+                .map_err(Into::into),
             _ => Err(TwzError::NOT_SUPPORTED),
         }
     }

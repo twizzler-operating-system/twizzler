@@ -1,4 +1,9 @@
-use std::{ffi::c_void, io::ErrorKind, net::SocketAddr, sync::Arc};
+use std::{
+    ffi::c_void,
+    io::ErrorKind,
+    net::SocketAddr,
+    sync::{Arc, OnceLock},
+};
 
 use monitor_api::CompartmentHandle;
 use naming_core::{GetFlags, NsNodeKind};
@@ -203,7 +208,7 @@ pub fn open(
                 Err(_) => {
                     // If we can't read the bind info, treat it as a "no bind info" case and create
                     // an unbound socket
-                    Some(Arc::new(SocketKind::None))
+                    Some(Arc::new(SocketKind::UdpSocket(OnceLock::new())))
                 }
                 Ok(addr) => {
                     if addr.prot == prot_kind_ProtKind_Stream {

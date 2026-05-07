@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 };
 
 use super::engine::ENGINE;
-use crate::runtime::file::kinds::socket::engine::WAITERS;
+use crate::runtime::file::kinds::socket::engine::{SockKind, WAITERS};
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
@@ -54,7 +54,7 @@ impl Drop for Listener {
             .unwrap()
             .get_mutable_socket(self.socket_handle)
             .abort();
-        ENGINE.track(self.socket_handle, self.port, false);
+        ENGINE.track(self.socket_handle, self.port, false, SockKind::Tcp);
     }
 }
 
@@ -462,7 +462,12 @@ impl SmolTcpStream {
 
 impl Drop for TcpStreamInner {
     fn drop(&mut self) {
-        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
+        ENGINE.track(
+            self.socket_handle,
+            self.port,
+            self.is_ephemeral_port,
+            SockKind::Tcp,
+        );
     }
 }
 
@@ -589,6 +594,45 @@ impl UdpSocket {
         Ok(())
     }
 
+    pub fn bind_ephemeral(addr: SocketAddr) -> Result<Self, Error> {
+        let mut sock = {
+            SmolUdpSocket::new(
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; RX_BUF_SIZE]),
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; TX_BUF_SIZE]),
+            )
+        };
+
+        let port = ENGINE.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
+
+        let addr = ENGINE
+            .with_iface_for(addr, |iface| iface.ip_addrs()[0])
+            .unwrap();
+        if let Err(e) = sock.bind((addr.address(), port)) {
+            ENGINE.return_port(port);
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                format!("failed to bind to ephemeral port: {e}"),
+            ));
+        }
+        if !sock.endpoint().is_specified() {
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                "address not available",
+            ));
+        }
+        let port = sock.endpoint().port;
+        let socket_handle = ENGINE.add_udp_socket(sock);
+        Ok(Self {
+            inner: Arc::new(UdpSocketInner {
+                socket_handle,
+                port,
+                is_ephemeral_port: true,
+                rx_shutdown: AtomicBool::new(false),
+                connect_addr: Mutex::new(None),
+            }),
+        })
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self, Error> {
         let mut sock = {
             SmolUdpSocket::new(
@@ -663,7 +707,12 @@ impl UdpSocket {
 
 impl Drop for UdpSocketInner {
     fn drop(&mut self) {
-        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
+        ENGINE.track(
+            self.socket_handle,
+            self.port,
+            self.is_ephemeral_port,
+            SockKind::Udp,
+        );
     }
 }
 

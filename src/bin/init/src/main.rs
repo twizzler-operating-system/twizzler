@@ -276,6 +276,8 @@ fn main() {
         .inspect_err(|e| tracing::warn!("failed to softlink /pkg: {}", e));
     let _ = std::os::twizzler::fs::symlink("/ext/sysroot", "/sysroot")
         .inspect_err(|e| tracing::warn!("failed to softlink /sysroot: {}", e));
+    let _ = std::os::twizzler::fs::symlink("/ext/sysroot/etc", "/etc")
+        .inspect_err(|e| tracing::warn!("failed to softlink /etc: {}", e));
 
     let dir = std::fs::read_dir("/pkg").unwrap();
     use std::os::twizzler::fs::MetadataExt;
