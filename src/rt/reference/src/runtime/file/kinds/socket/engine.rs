@@ -225,7 +225,8 @@ impl Engine {
                     let is_closed = match item.2 {
                         SockKind::Tcp => core.get_mutable_socket(item.0).state() == State::Closed,
                         // TODO: this causes some kind of stall.
-                        SockKind::Udp => false, // core.get_mutable_udp_socket(item.0).is_open(),
+                        SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.0).
+                                                 * is_open(), */
                     };
                     if is_closed {
                         tracing::debug!("tracked socket {} in closed state", item.0);

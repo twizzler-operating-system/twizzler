@@ -304,7 +304,9 @@ impl PtyServerHandle {
             (signal_handler)(self, signal);
         }
         if report.consumed == 0 && buf.len() > 0 {
-            do_sleep(sync)?;
+            if !self.is_ready(true) {
+                do_sleep(sync)?;
+            }
             return self.write_b(buf);
         }
         Ok(report.consumed)
@@ -326,7 +328,9 @@ impl PtyServerHandle {
             .sync_for_pending_data();
         let count = self.client_output.read(buf)?;
         if count == 0 && buf.len() > 0 {
-            do_sleep(sync)?;
+            if !self.is_ready(false) {
+                do_sleep(sync)?;
+            }
             return self.read_b(buf);
         }
         Ok(count)
@@ -385,7 +389,9 @@ impl PtyClientHandle {
         let sync = self.pty.base().client_output.sync_for_avail_space();
         let count = self.output.lock().unwrap().write(buf)?;
         if count == 0 && buf.len() > 0 {
-            do_sleep(sync)?;
+            if !self.is_ready(true) {
+                do_sleep(sync)?;
+            }
             return self.write_b(buf);
         }
         Ok(count)
@@ -413,7 +419,9 @@ impl PtyClientHandle {
                 if buf.len() == 0 {
                     return Ok(0);
                 }
-                do_sleep(sync)?;
+                if !self.is_ready(false) {
+                    do_sleep(sync)?;
+                }
                 self.read_b(buf)
             }
         }
