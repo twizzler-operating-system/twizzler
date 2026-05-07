@@ -102,7 +102,7 @@ impl SocketKind {
     }
 
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        tracing::debug!(
+        tracing::info!(
             "Connecting to socket at address {:?}",
             addr.to_socket_addrs().map(|mut x| x.next())
         );
