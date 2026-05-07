@@ -86,3 +86,11 @@
 [submodule "src/ports/rust_libloading"]
 	path = src/ports/rust_libloading
 	url = ../../dbittman/rust_libloading.git
+[submodule "src/ports/termion"]
+	path = src/ports/termion
+	url = https://github.com/cosdet/termion-twiz
+	branch = femto-twiz
+[submodule "src/ports/femto"]
+	path = src/ports/femto
+	url = https://github.com/cosdet/femto
+	branch = twizzler

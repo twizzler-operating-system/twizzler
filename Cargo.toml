@@ -62,14 +62,14 @@ members = [
     #"src/bin/ls",
     #"src/lib/devmgr",
     #"src/bin/serialecho", "tools/serialtest",
-    "src/bin/stdnet_test",
+
     "src/bin/ptest",
     #"src/bin/sqlite_test",
-    "src/bin/ptest",
+
     #"src/bin/persistent-hashmap-test",
     "src/bin/debug",
     "src/bin/trace",
-    "src/bin/sec",
+
     "src/bin/schedtest",
     #"src/bin/gfxtest",
     "src/bin/stdnet_test",
@@ -81,6 +81,11 @@ members = [
     "src/bin/async-test",
     "src/bin/lltest",
     "src/bin/lltest/llt",
+    #"src/bin/async-test",
+    #"src/bin/lltest",
+    #"src/bin/lltest/llt",
+
+    "src/ports/femto",
 ]
 
 exclude = [
@@ -138,6 +143,7 @@ initrd = [
     #"crate:serialecho",
     "lib:llt",
     "crate:lltest",
+    "crate:femto",
 ]
 
 [workspace.metadata.third-party]
@@ -400,3 +406,4 @@ virtio-drivers = { path = "src/ports/virtio-drivers" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
 libloading = { path = "src/ports/rust_libloading" }
+termion = { path = "src/ports/termion" }
