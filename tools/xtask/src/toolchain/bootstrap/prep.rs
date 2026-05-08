@@ -2,16 +2,13 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::Path,
-    process::Command,
 };
 
 use reqwest::Client;
 use toml_edit::DocumentMut;
 
 use crate::{
-    toolchain::{
-        download_file, get_toolchain_path, guess_host_triple, install_build_tools, BootstrapOptions,
-    },
+    toolchain::{download_file, guess_host_triple, install_build_tools, BootstrapOptions},
     triple::all_possible_platforms,
 };
 
@@ -47,16 +44,6 @@ async fn download_efi_files(client: &Client) -> anyhow::Result<()> {
 }
 
 pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
-    fs_extra::dir::create_all("toolchain/install/bin", false)?;
-    fs_extra::dir::create_all("toolchain/install/python/bin", false)?;
-    let current_dir = std::env::current_dir().unwrap();
-    for target_triple in all_possible_platforms() {
-        let sysroot_dir = current_dir.join(format!(
-            "toolchain/install/sysroots/{}",
-            target_triple.to_string()
-        ));
-        std::fs::create_dir_all(&sysroot_dir)?;
-    }
     let client = Client::new();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -64,35 +51,7 @@ pub fn setup_build(cli: &BootstrapOptions) -> anyhow::Result<()> {
         .block_on(download_efi_files(&client))?;
 
     install_build_tools(&cli)?;
-    let current_dir = std::env::current_dir().unwrap();
-    std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
 
-    println!("copying twizzler-abi headers and crate to libc and rust");
-    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
-    let status = Command::new("cp")
-        .arg("-R")
-        .arg("src/abi")
-        .arg("toolchain/src/rust/library/twizzler-abis")
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to copy twizzler ABI files");
-    }
-
-    let status = Command::new("cp")
-        .arg("-R")
-        .arg("src/abi/include")
-        .arg("toolchain/src/mlibc/sysdeps/twizzler")
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to copy twizzler ABI headers");
-    }
-
-    let usr_link = format!("{}/usr", get_toolchain_path()?.display());
-    let local_link = format!("{}/local", get_toolchain_path()?.display());
-    let _ = std::fs::remove_file(&usr_link);
-    std::os::unix::fs::symlink(".", &usr_link)?;
-    let _ = std::fs::remove_file(&local_link);
-    std::os::unix::fs::symlink(".", &local_link)?;
     Ok(())
 }
 

@@ -384,6 +384,13 @@ impl Ext4Fs {
         &mut self.bd
     }
 
+    pub fn mode(&self, inode: &Ext4InodeRef) -> u32 {
+        let mut sb = null_mut();
+        errno_to_result(unsafe { lwext4::ext4_get_sblock(self.mnt_name.as_ptr(), &mut sb) })
+            .unwrap();
+        unsafe { ext4_inode_get_mode(sb, inode.inode.inode) }
+    }
+
     pub fn new(bd: Ext4Blockdev, mnt_name: CString, read_only: bool) -> Result<Self> {
         let r = unsafe { ext4_mount(bd.name.as_ptr(), mnt_name.as_ptr(), read_only) };
         errno_to_result(r)?;
@@ -677,8 +684,8 @@ impl<'a> Iterator for DirIter<'a> {
 use pager_dynamic::ExternalKind;
 
 use crate::lwext4::{
-    ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode, ext4_journal_start,
-    ext4_journal_stop,
+    ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode, ext4_inode_get_mode,
+    ext4_journal_start, ext4_journal_stop,
 };
 
 impl From<FileKind> for ExternalKind {

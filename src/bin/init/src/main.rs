@@ -271,6 +271,8 @@ fn main() {
     let _root_id = initialize_namer(bootstrap_id);
 
     std::env::set_var("PATH", "/initrd");
+    std::env::set_var("PYTHON_HISTORY", "/data/.python_history");
+    std::env::set_var("TERM", "xterm");
 
     let _ = std::os::twizzler::fs::symlink("/ext/sysroot/pkg", "/pkg")
         .inspect_err(|e| tracing::warn!("failed to softlink /pkg: {}", e));
@@ -426,8 +428,9 @@ fn main() {
 }
 
 fn run_tests() {
-    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/unittest")
-        .expect("failed to find unittest object");
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/pkg/twizzler/bin/unittest")
+            .expect("failed to find unittest object");
     let comp = CompartmentLoader::new("unittest", "unittest", id, NewCompartmentFlags::empty())
         .args(&["unittest"])
         .load()

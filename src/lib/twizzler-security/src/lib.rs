@@ -11,8 +11,6 @@
 //!
 //! - `kernel` - Enable kernel-space functionality
 //! - `user` - Enable user-space functionality (mutually exclusive with `kernel`)
-//!
-//! ```
 
 extern crate alloc;
 

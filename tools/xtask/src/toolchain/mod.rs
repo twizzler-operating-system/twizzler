@@ -233,15 +233,10 @@ pub fn set_static(target: &Triple) {
 }
 
 pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
-    //TODO: make sure we have the toolchain we need, if not then prompt to build it / error out if
-    // its a non-interactive
-    //
-
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(check_toolchain())?;
-
     let tag = generate_tag()?;
     let toolchain_path = Path::new("toolchain").join(&tag);
     std::fs::create_dir_all(&toolchain_path)?;
@@ -302,6 +297,7 @@ git submodule update --init --recursive
 cargo toolchain bootstrap
                 "#
             );
+            anyhow::bail!("No toolchain found!");
         }
     }
 

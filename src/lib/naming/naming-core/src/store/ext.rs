@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 
@@ -13,33 +13,57 @@ use crate::{NsNodeKind, Result};
 pub struct ExtNamespace {
     id: ObjID,
     parent_info: Option<ParentInfo>,
-    cache: Arc<Mutex<HashMap<String, NsNode>>>,
+    cache: Arc<Mutex<NsCache>>,
 }
 
-impl ExtNamespace {
+struct NsCache {
+    cache: BTreeMap<String, NsNode>,
+    cache_ready: bool,
+}
+
+struct GlobalCache {
+    namespaces: Mutex<BTreeMap<ObjID, Arc<Mutex<NsCache>>>>,
+}
+
+impl GlobalCache {
+    fn get_namespace_cache(&self, id: ObjID) -> Arc<Mutex<NsCache>> {
+        let mut namespaces = self.namespaces.lock().unwrap();
+        namespaces
+            .entry(id)
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(NsCache {
+                    cache: BTreeMap::new(),
+                    cache_ready: false,
+                }))
+            })
+            .clone()
+    }
+}
+
+static GLOBAL_CACHE: GlobalCache = GlobalCache {
+    namespaces: Mutex::new(BTreeMap::new()),
+};
+
+impl NsCache {
     pub fn cache_ready(&self) -> bool {
-        !self.cache.lock().unwrap().is_empty()
+        self.cache_ready
     }
 
-    pub fn reset_cache(&self) {
-        self.cache.lock().unwrap().clear();
+    pub fn reset_cache(&mut self) {
+        self.cache.clear();
+        self.cache_ready = false;
     }
 
-    pub fn cache_node(&self, node: NsNode) {
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(node.name().unwrap().to_string(), node);
+    pub fn cache_node(&mut self, node: NsNode) {
+        self.cache.insert(node.name().unwrap().to_string(), node);
     }
 
     pub fn lookup_cache(&self, name: &str) -> Option<NsNode> {
-        self.cache.lock().unwrap().get(name).cloned()
+        self.cache.get(name).cloned()
     }
 
     pub fn enumerate_cache(&self, skip: usize, count: usize) -> Vec<NsNode> {
         self.cache
-            .lock()
-            .unwrap()
             .values()
             .skip(skip)
             .take(count)
@@ -47,10 +71,39 @@ impl ExtNamespace {
             .collect()
     }
 
-    pub fn load_cache(&self) {
-        for node in self.items(0, usize::MAX) {
+    pub fn load_cache(&mut self, items: impl IntoIterator<Item = NsNode>) {
+        for node in items {
             self.cache_node(node);
         }
+        self.cache_ready = true;
+    }
+}
+
+impl ExtNamespace {
+    pub fn lookup_cache(&self, name: &str) -> Option<NsNode> {
+        self.cache.lock().unwrap().lookup_cache(name)
+    }
+
+    pub fn cache_node(&self, node: NsNode) {
+        self.cache.lock().unwrap().cache_node(node);
+    }
+
+    pub fn enumerate_cache(&self, skip: usize, count: usize) -> Vec<NsNode> {
+        self.cache.lock().unwrap().enumerate_cache(skip, count)
+    }
+
+    pub fn load_cache(&self) {
+        let items = self.items(0, usize::MAX);
+        let mut cache = self.cache.lock().unwrap();
+        cache.load_cache(items);
+    }
+
+    pub fn cache_ready(&self) -> bool {
+        self.cache.lock().unwrap().cache_ready()
+    }
+
+    pub fn reset_cache(&self) {
+        self.cache.lock().unwrap().reset_cache();
     }
 }
 
@@ -62,12 +115,12 @@ impl Namespace for ExtNamespace {
         Ok(Self {
             id,
             parent_info,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: GLOBAL_CACHE.get_namespace_cache(id),
         })
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
-        tracing::trace!("looking up {} in external namespace {}", name, self.id);
+        tracing::debug!("looking up {} in external namespace {}", name, self.id);
         if let Some(node) = self.lookup_cache(name) {
             return Some(node);
         }
@@ -96,6 +149,10 @@ impl Namespace for ExtNamespace {
                         _ => NsNode::obj(name, i.id.into()),
                     };
 
+                    if let Ok(node) = node {
+                        self.cache_node(node);
+                    }
+
                     node.ok()
                 })
             })
@@ -105,7 +162,7 @@ impl Namespace for ExtNamespace {
     }
 
     fn insert(&self, mut node: NsNode) -> Option<NsNode> {
-        tracing::trace!(
+        tracing::debug!(
             "inserting {} into external namespace {}, id = {}",
             node.name().ok()?,
             self.id,
@@ -119,11 +176,12 @@ impl Namespace for ExtNamespace {
         }
 
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
-            tracing::trace!("==> {:?}", objid_to_ino(node.id.raw()));
             if objid_to_ino(node.id.raw()).is_none() {
                 if let Ok(file) = h.create_external_file(self.id, node.name().ok()?, None, mode) {
                     node.id = file.id.into();
-                    self.reset_cache();
+                    if self.cache_ready() {
+                        self.reset_cache();
+                    }
                     return Some(node);
                 } else {
                     tracing::warn!(
@@ -135,7 +193,9 @@ impl Namespace for ExtNamespace {
             } else {
                 h.create_external_file(self.id, node.name().ok()?, Some(node.id.into()), mode)
                     .ok()?;
-                self.reset_cache();
+                if self.cache_ready() {
+                    self.reset_cache();
+                }
                 return Some(node);
             }
         } else {
@@ -145,6 +205,12 @@ impl Namespace for ExtNamespace {
     }
 
     fn remove(&self, name: &str) -> Option<NsNode> {
+        tracing::debug!(
+            "removing {} from external namespace {}, id = {}",
+            name,
+            self.id,
+            self.id
+        );
         let node = self.find(name)?;
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {
             if h.unlink_external(self.id, name).is_ok() {
@@ -176,13 +242,24 @@ impl Namespace for ExtNamespace {
     }
 
     fn items(&self, skip: usize, count: usize) -> Vec<NsNode> {
-        tracing::trace!(
-            "enumerating external namespace {} (skip {}, count {})",
+        tracing::debug!(
+            "enumerating external namespace {} (skip {}, count {}, cache-ready {})",
             self.id,
             skip,
-            count
+            count,
+            self.cache_ready(),
         );
         if self.cache_ready() {
+            return self.enumerate_cache(skip, count);
+        }
+        if skip == 0 && count > 60 && count != usize::MAX {
+            self.reset_cache();
+            self.load_cache();
+            tracing::debug!(
+                "loaded cache for external namespace {}, now cache-ready = {}",
+                self.id,
+                self.cache_ready()
+            );
             return self.enumerate_cache(skip, count);
         }
         if let Some(mut h) = pager_dynamic::PagerHandle::new() {

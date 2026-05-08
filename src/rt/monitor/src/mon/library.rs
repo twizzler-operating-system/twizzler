@@ -132,7 +132,7 @@ impl Monitor {
             let loads = dynlink
                 .load_library_in_compartment(comp_id, unlib, AllowedGates::Private, &mut load_ctx)
                 .map_err(|_| TwzError::NOT_FOUND)?;
-            tracing::info!("loaded library '{}', got loads: {:#?}", name, loads);
+            tracing::debug!("loaded library '{}'", name);
             let root_id = loads.first().ok_or(GenericError::Internal)?.lib;
             // Relocate the newly loaded library graph.
             dynlink
@@ -193,7 +193,7 @@ impl Monitor {
         let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
         let name = std::str::from_utf8(&name_bytes).map_err(|_| ArgumentError::InvalidArgument)?;
 
-        tracing::info!(
+        tracing::debug!(
             "looking up symbol '{}' for caller {}, lib_desc = {:?}",
             name,
             caller,

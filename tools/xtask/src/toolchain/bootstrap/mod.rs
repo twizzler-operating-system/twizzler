@@ -1,12 +1,15 @@
 use std::{
     fs::{File, OpenOptions},
     path::Path,
+    process::Command,
 };
 
 use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
-    toolchain::{bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag},
+    toolchain::{
+        bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag, get_toolchain_path,
+    },
     triple::{all_possible_platforms, Triple},
 };
 
@@ -65,6 +68,47 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
     let _ = std::fs::remove_file("toolchain/install");
     std::os::unix::fs::symlink(&tag, "toolchain/install")?;
+
+    fs_extra::dir::create_all("toolchain/install/bin", false)?;
+    fs_extra::dir::create_all("toolchain/install/python/bin", false)?;
+    let current_dir = std::env::current_dir().unwrap();
+    for target_triple in all_possible_platforms() {
+        let sysroot_dir = current_dir.join(format!(
+            "toolchain/install/sysroots/{}",
+            target_triple.to_string()
+        ));
+        std::fs::create_dir_all(&sysroot_dir)?;
+    }
+
+    let current_dir = std::env::current_dir().unwrap();
+    std::env::set_var("PYTHONPATH", current_dir.join("toolchain/install/python"));
+
+    println!("copying twizzler-abi headers and crate to libc and rust");
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-abis");
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg("src/abi")
+        .arg("toolchain/src/rust/library/twizzler-abis")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to copy twizzler ABI files");
+    }
+
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg("src/abi/include")
+        .arg("toolchain/src/mlibc/sysdeps/twizzler")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to copy twizzler ABI headers");
+    }
+
+    let usr_link = format!("{}/usr", get_toolchain_path()?.display());
+    let local_link = format!("{}/local", get_toolchain_path()?.display());
+    let _ = std::fs::remove_file(&usr_link);
+    std::os::unix::fs::symlink(".", &usr_link)?;
+    let _ = std::fs::remove_file(&local_link);
+    std::os::unix::fs::symlink(".", &local_link)?;
 
     if cli.has_step("prep") {
         prep::setup_build(&cli)?;

@@ -447,11 +447,6 @@ impl<'a> LibraryLoader<'a> {
         let (desc, ctor_len): (Descriptor, usize) =
             monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id, len)?;
 
-        twizzler_abi::klog_println!(
-            "calling ctors for library {} (len = {})",
-            self.name,
-            ctor_len
-        );
         // Call ctors.
         let ctors = lazy_sb::read_bytes_from_sb(ctor_len);
         let ctor_slice = unsafe {
@@ -464,12 +459,10 @@ impl<'a> LibraryLoader<'a> {
             unsafe {
                 let init_array = core::slice::from_raw_parts(ctor.init_array, ctor.init_array_len);
                 for func in init_array {
-                    twizzler_abi::klog_println!("calling ctor at {:?}", *func);
                     if let Some(f) = func {
                         f();
                     }
                 }
-                twizzler_abi::klog_println!("calling legacy ctor at {:?}", ctor.legacy_init);
                 if let Some(f) = ctor.legacy_init {
                     f();
                 }

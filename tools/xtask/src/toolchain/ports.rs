@@ -17,19 +17,49 @@ pub struct PortOptions {
     pub ports: Vec<String>,
 }
 
+pub fn list_ports() -> anyhow::Result<()> {
+    let ports = vec![
+        ("python3", "zlib,openssl,ncurses"),
+        ("llvm", "zlib"),
+        ("zlib", ""),
+        ("ncurses", ""),
+        //("rust", ""),
+        ("openssl", "zlib"),
+        ("curl", "zlib,openssl"),
+        ("psl", ""),
+        ("binutils", ""),
+    ];
+
+    for port in ports {
+        if port.1.is_empty() {
+            println!("{}", port.0);
+        } else {
+            println!("{} (requires {})", port.0, port.1);
+        }
+    }
+
+    println!("\nTo compile all ports, run cargo toolchain ports @all");
+
+    Ok(())
+}
+
 pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
     let triple = Triple::new(cli.arch, Machine::Unknown, Host::Twizzler, None);
     if cli.ports.is_empty() {
-        build_ports(&triple)?;
-        return Ok(());
+        return list_ports();
     }
 
     for port in &cli.ports {
+        if port == "@all" {
+            build_ports(&triple)?;
+            continue;
+        }
         match port.as_str() {
             "python3" => python3::install(&triple)?,
             "llvm" => llvm::install(&triple)?,
             "zlib" => zlib::install(&triple)?,
             "ncurses" => ncurses::install(&triple)?,
+            // in-progress support
             "rust" => rust::install(&triple)?,
             "openssl" => openssl::install(&triple)?,
             "curl" => curl::install(&triple)?,
