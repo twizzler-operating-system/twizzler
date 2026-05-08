@@ -2,7 +2,6 @@ use std::{
     fs::OpenOptions, io::Write, path::Path, process::Command, thread::available_parallelism,
 };
 
-use futures::executor::block_on;
 use reqwest::Client;
 
 use crate::{toolchain::download_file, triple::Triple};
@@ -14,11 +13,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .join(triple.to_string())
         .canonicalize()?;
 
-    let client = Client::new();
     let url =
         "https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz";
 
-    let cont_dir = Path::new("toolchain/build/ports/openssl");
+    let cont_dir = Path::new("toolchain/install/build/ports/openssl");
     std::fs::create_dir_all(&cont_dir)?;
     let cont_dir = cont_dir.canonicalize()?;
     let tar_file = cont_dir.join("openssl-4.0.0.tar.gz");
@@ -37,14 +35,14 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let status = std::process::Command::new("tar")
         .arg("-xzf")
         .arg("openssl-4.0.0.tar.gz")
-        .current_dir("toolchain/build/ports/openssl")
+        .current_dir("toolchain/install/build/ports/openssl")
         .status()?;
 
     if !status.success() {
         anyhow::bail!("failed to extract openssl");
     }
 
-    let src_dir = Path::new("toolchain/build/ports/openssl/openssl-4.0.0");
+    let src_dir = Path::new("toolchain/install/build/ports/openssl/openssl-4.0.0");
 
     let bin_dir = Path::new("toolchain/install/bin").canonicalize()?;
     let cc = bin_dir.join("clang");

@@ -21,6 +21,7 @@ use clap::Parser;
 use colored::Colorize;
 use embedded_io::ErrorType;
 use miette::IntoDiagnostic;
+use tracing::Level;
 use twizzler_abi::{
     syscall::sys_thread_exit,
     upcall::{UpcallData, UpcallFrame},
@@ -701,6 +702,11 @@ struct Args {
 
 fn main() {
     unsafe { twz_rt_set_upcall_handler(Some(upcall_handler)) };
+
+    let sub = tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .finish();
+    tracing::subscriber::set_global_default(sub).unwrap();
 
     let mut io = TwzIo;
     let mut buffer = [0; 1024];

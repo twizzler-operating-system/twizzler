@@ -12,12 +12,12 @@ const ZLIB_URL: &str = "https://zlib.net/zlib-1.3.2.tar.gz";
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building zlib for {}", triple);
 
-    let cont_dir = std::path::Path::new("toolchain/build/ports/zlib");
+    let cont_dir = std::path::Path::new("toolchain/install/build/ports/zlib");
     std::fs::create_dir_all(&cont_dir)?;
     let install_dir = std::path::Path::new("toolchain/install/sysroots").join(&triple.to_string());
     std::fs::create_dir_all(&install_dir)?;
     let install_dir = install_dir.canonicalize()?;
-    if !std::fs::exists("toolchain/build/ports/zlib/zlib-1.3.2.tar.gz")? {
+    if !std::fs::exists("toolchain/install/build/ports/zlib/zlib-1.3.2.tar.gz")? {
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -25,14 +25,14 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
             .block_on(download_file(
                 &client,
                 ZLIB_URL,
-                "toolchain/build/ports/zlib/zlib-1.3.2.tar.gz",
+                "toolchain/install/build/ports/zlib/zlib-1.3.2.tar.gz",
             ))?;
     }
 
     let status = std::process::Command::new("tar")
         .arg("-xzf")
         .arg("zlib-1.3.2.tar.gz")
-        .current_dir("toolchain/build/ports/zlib")
+        .current_dir("toolchain/install/build/ports/zlib")
         .status()?;
 
     if !status.success() {
@@ -41,8 +41,8 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
 
     let log = setup_logfile("ports/zlib", "xtask-configure", Some(triple))?;
     let build_dir =
-        std::path::Path::new("toolchain/build/ports/zlib/build").join(triple.to_string());
-    let source_dir = std::path::Path::new("toolchain/build/ports/zlib").join("zlib-1.3.2");
+        std::path::Path::new("toolchain/install/build/ports/zlib/build").join(triple.to_string());
+    let source_dir = std::path::Path::new("toolchain/install/build/ports/zlib").join("zlib-1.3.2");
 
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;

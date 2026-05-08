@@ -360,7 +360,6 @@ impl RunComp {
                 comp_config_info: comp_config_info.cast(),
             };
             let comp_init_info_in_comp = self.monitor_new(comp_init_info).ok()?;
-            // TODO: fill out argc and argv and envp
             let rtinfo = RuntimeInfo {
                 flags: 0,
                 kind: RUNTIME_INIT_COMP,

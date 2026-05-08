@@ -54,7 +54,7 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     let install_prefix = Path::new("toolchain/install/sysroots")
         .join(tstr)
         .join("pkg/rust");
-    let build_dir = Path::new("toolchain/build/ports/rust").join(tstr);
+    let build_dir = Path::new("toolchain/install/build/ports/rust").join(tstr);
     let sysroot_dir = Path::new("toolchain/install/sysroots")
         .join(tstr)
         .canonicalize()?;

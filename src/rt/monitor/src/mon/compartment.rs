@@ -505,7 +505,6 @@ impl super::Monitor {
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
             .map_err(|_| TwzError::INVALID_ARGUMENT)?;
-        tracing::trace!("load {}: env: {:?}", compname, env);
 
         let extras = env
             .iter()

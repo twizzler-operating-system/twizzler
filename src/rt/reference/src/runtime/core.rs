@@ -143,8 +143,10 @@ impl ReferenceRuntime {
                 }
                 entry_stack.push(0);
                 if !rtinfo.envp.is_null() {
-                    for env in unsafe { core::slice::from_raw_parts(rtinfo.envp, rtinfo.argc) } {
-                        entry_stack.push(*env as usize);
+                    let mut envp = rtinfo.envp;
+                    while !envp.is_null() && !unsafe { (*envp).is_null() } {
+                        entry_stack.push(unsafe { *envp } as usize);
+                        envp = unsafe { envp.add(1) };
                     }
                 }
                 entry_stack.push(0);
@@ -302,14 +304,6 @@ impl ReferenceRuntime {
         let _start_5 = Instant::now();
         libc_init_tcb(preinit_unwrap(tls));
         self.init_core_thread(preinit_unwrap(tls));
-
-        if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
-            let ctor_slice = unsafe {
-                core::slice::from_raw_parts(init_info.ctor_set_array, init_info.ctor_set_len)
-            };
-            self.init_ctors(ctor_slice);
-        }
-
         if !unsafe { __mlibc_entry_from_rust.is_null() } {
             let mlibc_entry_from_rust = unsafe {
                 std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(
@@ -319,6 +313,13 @@ impl ReferenceRuntime {
             mlibc_entry_from_rust(entry_stack, core::ptr::null_mut());
         }
         let _start_6 = Instant::now();
+
+        if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
+            let ctor_slice = unsafe {
+                core::slice::from_raw_parts(init_info.ctor_set_array, init_info.ctor_set_len)
+            };
+            self.init_ctors(ctor_slice);
+        }
 
         /*
         preinit_println!(

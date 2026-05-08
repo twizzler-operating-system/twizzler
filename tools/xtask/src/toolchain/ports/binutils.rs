@@ -1,8 +1,5 @@
-use std::{
-    fs::OpenOptions, io::Write, path::Path, process::Command, thread::available_parallelism,
-};
+use std::{io::Write, path::Path, process::Command, thread::available_parallelism};
 
-use futures::executor::block_on;
 use reqwest::Client;
 
 use crate::{toolchain::download_file, triple::Triple};
@@ -34,10 +31,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .join(triple.to_string())
         .canonicalize()?;
 
-    let client = Client::new();
     let url = "https://sourceware.org/pub/binutils/releases/binutils-2.46.0.tar.xz";
 
-    let cont_dir = Path::new("toolchain/build/ports/binutils");
+    let cont_dir = Path::new("toolchain/install/build/ports/binutils");
     std::fs::create_dir_all(&cont_dir)?;
     let cont_dir = cont_dir.canonicalize()?;
     let tar_file = cont_dir.join("binutils-2.46.0.tar.xz");
@@ -56,20 +52,22 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let status = std::process::Command::new("tar")
         .arg("-xJf")
         .arg("binutils-2.46.0.tar.xz")
-        .current_dir("toolchain/build/ports/binutils")
+        .current_dir("toolchain/install/build/ports/binutils")
         .status()?;
 
     if !status.success() {
         anyhow::bail!("failed to extract binutils");
     }
 
-    let src_dir = Path::new("toolchain/build/ports/binutils/binutils-2.46.0").canonicalize()?;
-    let build_dir = Path::new("toolchain/build/ports/binutils/build").join(triple.to_string());
+    let src_dir =
+        Path::new("toolchain/install/build/ports/binutils/binutils-2.46.0").canonicalize()?;
+    let build_dir =
+        Path::new("toolchain/install/build/ports/binutils/build").join(triple.to_string());
     let install_dir = Path::new("toolchain/install/sysroots").join(&triple.to_string());
     std::fs::create_dir_all(&install_dir)?;
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
-    std::fs::remove_dir_all(&build_dir);
+    let _ = std::fs::remove_dir_all(&build_dir);
     std::fs::create_dir_all(&build_dir)?;
     let install_dir = install_dir.canonicalize()?;
 

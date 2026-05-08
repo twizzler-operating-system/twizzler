@@ -78,7 +78,7 @@ impl Fd for DirFile {
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
         Ok(twizzler_rt_abi::fd::FdInfo {
-            size: 0,
+            size: 4096,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             kind: twizzler_rt_abi::fd::FdKind::Directory,
             id: self.obj_id.raw(),

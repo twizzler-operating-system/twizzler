@@ -1,8 +1,5 @@
-use std::{
-    fs::OpenOptions, io::Write, path::Path, process::Command, thread::available_parallelism,
-};
+use std::{path::Path, process::Command, thread::available_parallelism};
 
-use futures::executor::block_on;
 use reqwest::Client;
 
 use crate::{toolchain::download_file, triple::Triple};
@@ -14,10 +11,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .join(triple.to_string())
         .canonicalize()?;
 
-    let client = Client::new();
     let url = "https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz";
 
-    let cont_dir = Path::new("toolchain/build/ports/libpsl");
+    let cont_dir = Path::new("toolchain/install/build/ports/libpsl");
     std::fs::create_dir_all(&cont_dir)?;
     let cont_dir = cont_dir.canonicalize()?;
     let tar_file = cont_dir.join("libpsl-0.21.5.tar.gz");
@@ -36,15 +32,16 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let status = std::process::Command::new("tar")
         .arg("-xzf")
         .arg("libpsl-0.21.5.tar.gz")
-        .current_dir("toolchain/build/ports/libpsl")
+        .current_dir("toolchain/install/build/ports/libpsl")
         .status()?;
 
     if !status.success() {
         anyhow::bail!("failed to extract libpsl");
     }
 
-    let src_dir = Path::new("toolchain/build/ports/libpsl/libpsl-0.21.5").canonicalize()?;
-    let build_dir = Path::new("toolchain/build/ports/libpsl/build").join(triple.to_string());
+    let src_dir = Path::new("toolchain/install/build/ports/libpsl/libpsl-0.21.5").canonicalize()?;
+    let build_dir =
+        Path::new("toolchain/install/build/ports/libpsl/build").join(triple.to_string());
     let install_dir = Path::new("toolchain/install/sysroots").join(&triple.to_string());
     std::fs::create_dir_all(&install_dir)?;
     std::fs::create_dir_all(&build_dir)?;

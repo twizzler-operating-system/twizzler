@@ -182,6 +182,9 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
     write!(file, "nameserver 8.8.8.8\n").unwrap();
     file.flush().unwrap();
 
+    ext4.symlink("/pkg/ncurses/share/terminfo", "/sysroot/etc/terminfo")
+        .unwrap();
+
     Ok(())
 }
 

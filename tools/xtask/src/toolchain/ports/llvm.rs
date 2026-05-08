@@ -78,7 +78,7 @@ fn setup_cmake_twizzler(
 
 fn build_llvm(triple: &Triple) -> anyhow::Result<()> {
     let llvm_src_path = Path::new("toolchain/src/rust/src/llvm-project").canonicalize()?;
-    let llvm_build_path = Path::new("toolchain/build/ports/llvm").join(triple.to_string());
+    let llvm_build_path = Path::new("toolchain/install/build/ports/llvm").join(triple.to_string());
     let llvm_install_path = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .join("pkg/llvm");
@@ -141,7 +141,7 @@ pub fn build_lld(triple: &Triple) -> anyhow::Result<()> {
     let lld_install_path = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .join("pkg/lld");
-    let build_dir = Path::new("toolchain/build/ports/lld").join(&triple.to_string());
+    let build_dir = Path::new("toolchain/install/build/ports/lld").join(&triple.to_string());
     let llvm_cmake_dir = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .join("pkg/llvm/lib/cmake/llvm")
@@ -198,7 +198,7 @@ pub fn build_compiler_rt(triple: &Triple) -> anyhow::Result<()> {
         .join(&triple.to_string())
         .join("pkg/llvm");
     let bin_dir = Path::new("toolchain/install/bin");
-    let build_dir = Path::new("toolchain/build/ports/crt").join(&triple.to_string());
+    let build_dir = Path::new("toolchain/install/build/ports/crt").join(&triple.to_string());
     let llvm_cmake_dir = Path::new("toolchain/install/lib/cmake/llvm").canonicalize()?;
     let llvm_config = bin_dir.join("llvm-config");
 
@@ -206,7 +206,6 @@ pub fn build_compiler_rt(triple: &Triple) -> anyhow::Result<()> {
     let _install_dir = install_dir.canonicalize()?;
 
     std::fs::create_dir_all(&bin_dir)?;
-    let bin_dir = bin_dir.canonicalize()?;
 
     let _ = fs_extra::dir::remove(&build_dir);
 

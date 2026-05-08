@@ -10,7 +10,6 @@ use std::{
 use unittest_report::ReportStatus;
 
 use crate::{
-    disk::copy_twizzler_build,
     toolchain::get_toolchain_path,
     triple::{Arch, Machine},
     QemuOptions,

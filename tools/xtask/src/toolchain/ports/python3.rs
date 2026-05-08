@@ -7,7 +7,7 @@ use crate::{
 
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let src_dir = Path::new("src/ports/python/cpython").canonicalize()?;
-    let build_dir = Path::new("toolchain/build/ports/cpython").join(triple.to_string());
+    let build_dir = Path::new("toolchain/install/build/ports/cpython").join(triple.to_string());
     let sysroot_dir = Path::new("toolchain/install/sysroots")
         .join(triple.to_string())
         .canonicalize()?;

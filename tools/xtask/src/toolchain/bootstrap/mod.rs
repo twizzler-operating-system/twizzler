@@ -6,9 +6,7 @@ use std::{
 use super::BootstrapOptions;
 use crate::{
     build::do_post_toolchain_runtime_build,
-    toolchain::{
-        bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag, prune_bins,
-    },
+    toolchain::{bootstrap::prep::generate_config_toml, compress_toolchain, generate_tag},
     triple::{all_possible_platforms, Triple},
 };
 
@@ -20,7 +18,7 @@ mod rust;
 pub fn setup_logfile(step: &str, substep: &str, triple: Option<&Triple>) -> anyhow::Result<File> {
     let logname = format!("{}.log", substep);
 
-    let logdir = Path::new("toolchain/build").join(step);
+    let logdir = Path::new("toolchain/install/build").join(step);
     let logdir = if let Some(triple) = triple {
         logdir.join(triple.to_string())
     } else {
@@ -124,8 +122,6 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
     }
 
     if cli.compress {
-        println!("pruning binaries");
-        prune_bins()?;
         println!("compressing toolchain");
         compress_toolchain()?;
     }

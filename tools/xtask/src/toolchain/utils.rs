@@ -1,7 +1,7 @@
 use std::{
     fs::{self, read_dir, remove_dir_all, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -11,6 +11,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 
 use super::{get_bin_path, get_toolchain_path, BootstrapOptions};
+use crate::triple::all_possible_platforms;
 
 const BASE_REPO_URL: &str = "https://github.com/twizzler-operating-system/twizzler";
 // const BASE_REPO_URL: &str = "https://github.com/suri-codes/twizzler";
@@ -27,9 +28,7 @@ pub async fn download_file(client: &Client, url: &str, path: &str) -> anyhow::Re
         anyhow::bail!("HTTP error {}: {}", res.status(), url);
     }
 
-    let total_size = res
-        .content_length()
-        .with_context(|| format!("failed to get content-length for {}", url))?;
+    let total_size = res.content_length().unwrap_or(0);
     println!("downloading {}", url);
     let pb = ProgressBar::new(total_size);
     pb.set_style(ProgressStyle::default_bar().template("{prefix}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")?.progress_chars("#>-"));
@@ -83,7 +82,7 @@ pub fn install_build_tools(_cli: &BootstrapOptions) -> anyhow::Result<()> {
 }
 
 /// Removes binaries from the `/install` directory during bootstrap
-pub fn prune_bins() -> anyhow::Result<()> {
+pub fn _prune_bins() -> anyhow::Result<()> {
     let wanted_bins = [
         "bindgen",
         "clang",
@@ -204,13 +203,26 @@ pub fn compress_toolchain() -> anyhow::Result<()> {
 
     let tc_path = get_toolchain_path()?;
 
-    let _ = Command::new("tar")
-        .arg("--zstd")
-        .arg("-c")
+    let excludes = all_possible_platforms()
+        .iter()
+        .map(|p| format!("--exclude=sysroots/{}/pkg", p.to_string()))
+        .collect::<Vec<_>>();
+
+    let mut cmd = Command::new("tar");
+    cmd.args(&excludes);
+    cmd.arg("--exclude=build/ports");
+    cmd.arg("--totals");
+    cmd.arg("-c")
+        .arg("-J")
         .arg("-f")
-        .arg([tag.as_str(), ".tar.zst"].concat())
-        .arg(tc_path)
-        .spawn()?;
+        .arg([tag.as_str(), ".tar.xz"].concat())
+        .arg(tc_path);
+    println!("==> {:?}", cmd);
+
+    let mut status = cmd.spawn()?;
+    if !status.wait()?.success() {
+        anyhow::bail!("failed to compress toolchain");
+    }
 
     Ok(())
 }
@@ -278,6 +290,15 @@ cargo toolchain bootstrap
 
     println!("extracting toolchain");
     decompress_toolchain(PathBuf::from(&local_archive_path))?;
+
+    let tag = generate_tag()?;
+    let toolchain_path = Path::new("toolchain").join(&tag);
+    std::fs::create_dir_all(&toolchain_path)?;
+    if std::fs::symlink_metadata(Path::new("toolchain/install")).is_ok_and(|r| r.is_dir()) {
+        let _ = fs_extra::remove_items(&[Path::new("toolchain/install")]);
+    }
+    let _ = std::fs::remove_file("toolchain/install");
+    std::os::unix::fs::symlink(&tag, "toolchain/install")?;
 
     println!("cleaning up archive file");
     fs::remove_file(&local_archive_path)?;

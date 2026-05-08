@@ -1,8 +1,5 @@
-use std::{
-    fs::OpenOptions, io::Write, path::Path, process::Command, thread::available_parallelism,
-};
+use std::{path::Path, process::Command, thread::available_parallelism};
 
-use futures::executor::block_on;
 use reqwest::Client;
 
 use crate::{toolchain::download_file, triple::Triple};
@@ -14,10 +11,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .join(triple.to_string())
         .canonicalize()?;
 
-    let client = Client::new();
     let url = "https://curl.se/download/curl-8.19.0.tar.xz";
 
-    let cont_dir = Path::new("toolchain/build/ports/curl");
+    let cont_dir = Path::new("toolchain/install/build/ports/curl");
     std::fs::create_dir_all(&cont_dir)?;
     let cont_dir = cont_dir.canonicalize()?;
     let tar_file = cont_dir.join("curl-8.19.0.tar.xz");
@@ -36,15 +32,15 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let status = std::process::Command::new("tar")
         .arg("-xJf")
         .arg("curl-8.19.0.tar.xz")
-        .current_dir("toolchain/build/ports/curl")
+        .current_dir("toolchain/install/build/ports/curl")
         .status()?;
 
     if !status.success() {
         anyhow::bail!("failed to extract curl");
     }
 
-    let src_dir = Path::new("toolchain/build/ports/curl/curl-8.19.0").canonicalize()?;
-    let build_dir = Path::new("toolchain/build/ports/curl/build").join(triple.to_string());
+    let src_dir = Path::new("toolchain/install/build/ports/curl/curl-8.19.0").canonicalize()?;
+    let build_dir = Path::new("toolchain/install/build/ports/curl/build").join(triple.to_string());
     let install_dir = Path::new("toolchain/install/sysroots").join(&triple.to_string());
     std::fs::create_dir_all(&install_dir)?;
     std::fs::create_dir_all(&build_dir)?;

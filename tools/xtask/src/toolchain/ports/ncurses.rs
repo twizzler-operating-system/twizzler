@@ -12,9 +12,9 @@ const NCURSES_URL: &str = "https://github.com/mirror/ncurses/archive/refs/tags/v
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building ncurses for {}", triple);
 
-    let cont_dir = std::path::Path::new("toolchain/build/ports/ncurses");
+    let cont_dir = std::path::Path::new("toolchain/install/build/ports/ncurses");
     std::fs::create_dir_all(&cont_dir)?;
-    if !std::fs::exists("toolchain/build/ports/ncurses/ncurses-6.4.tar.gz")? {
+    if !std::fs::exists("toolchain/install/build/ports/ncurses/ncurses-6.4.tar.gz")? {
         let client = Client::new();
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -22,14 +22,14 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
             .block_on(download_file(
                 &client,
                 NCURSES_URL,
-                "toolchain/build/ports/ncurses/ncurses-6.4.tar.gz",
+                "toolchain/install/build/ports/ncurses/ncurses-6.4.tar.gz",
             ))?;
     }
 
     let status = std::process::Command::new("tar")
         .arg("-xzf")
         .arg("ncurses-6.4.tar.gz")
-        .current_dir("toolchain/build/ports/ncurses")
+        .current_dir("toolchain/install/build/ports/ncurses")
         .status()?;
 
     if !status.success() {
@@ -37,9 +37,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     }
     let log = setup_logfile("ports/ncurses", "xtask-configure", Some(triple))?;
 
-    let build_dir =
-        std::path::Path::new("toolchain/build/ports/ncurses/build").join(triple.to_string());
-    let source_dir = std::path::Path::new("toolchain/build/ports/ncurses").join("ncurses-6.4");
+    let build_dir = std::path::Path::new("toolchain/install/build/ports/ncurses/build")
+        .join(triple.to_string());
+    let source_dir =
+        std::path::Path::new("toolchain/install/build/ports/ncurses").join("ncurses-6.4");
     let install_dir = std::path::Path::new("toolchain/install/sysroots").join(&triple.to_string());
     std::fs::create_dir_all(&install_dir)?;
     std::fs::create_dir_all(&build_dir)?;
