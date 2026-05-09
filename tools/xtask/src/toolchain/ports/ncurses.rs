@@ -1,5 +1,6 @@
 use std::{process::Command, thread::available_parallelism};
 
+use guess_host_triple::guess_host_triple;
 use reqwest::Client;
 
 use crate::{
@@ -66,6 +67,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--program-prefix=")
         .arg("--with-install-prefix");
     cmd.env("DESTDIR", &install_dir);
+    if guess_host_triple().unwrap().contains("darwin") {
+        cmd.env("TIC", "/opt/homebrew/opt/ncurses/bin/tic");
+    }
 
     let cflags = format!(
         "-target {} --sysroot {} -fPIC",
@@ -76,8 +80,12 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("PKG_CONFIG", "");
     cmd.env("CFLAGS", &cflags);
     cmd.env("CXXFLAGS", &cflags);
+    cmd.env("CPPFLAGS", &cflags);
     cmd.env("LDFLAGS", &cflags);
+    cmd.env("BUILD_CC", "clang");
+    cmd.env("BUILD_CFLAGS", "");
     cmd.env("CC", bin_dir.join("clang").display().to_string());
+    cmd.env("CPP", bin_dir.join("clang-cpp").display().to_string());
     cmd.env("CXX", bin_dir.join("clang++").display().to_string());
     cmd.env("LD", bin_dir.join("clang").display().to_string());
     let mut lds = bin_dir.join("clang").display().to_string();
