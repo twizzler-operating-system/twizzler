@@ -78,7 +78,7 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
 
     let _ = std::fs::remove_dir_all(&build_dir);
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=true")
