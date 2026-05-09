@@ -37,7 +37,7 @@ jobs:
               run: |
                   if ! cargo +nightly toolchain pull; then
                     git submodule update --init --recursive
-                    cargo +nightly toolchain bootstrap
+                    RUST_BACKTRACE=1 cargo +nightly toolchain bootstrap
                   fi
             - name: Build x86_64
               run: cargo +nightly build-all
