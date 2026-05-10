@@ -33,6 +33,7 @@ fn main() {
 
     let status = proc.status().unwrap();
     assert!(status.success());
+    let target = std::env::var("TARGET").unwrap();
 
     let mut proc = std::process::Command::new("bindgen");
     proc.stdout(stderr())
@@ -42,6 +43,10 @@ fn main() {
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")
+        .arg(format!(
+            "-I../../../toolchain/install/sysroots/{}/include",
+            target
+        ))
         .args(cflags.split_whitespace());
 
     let status = proc.status().unwrap();
