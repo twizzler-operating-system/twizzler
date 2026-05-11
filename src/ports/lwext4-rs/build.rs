@@ -35,7 +35,7 @@ fn main() {
     assert!(status.success());
     let target = std::env::var("TARGET").unwrap();
 
-    let mut proc = std::process::Command::new("bindgen");
+    let mut proc = std::process::Command::new("../../../toolchain/install/bin/bindgen");
     proc.stdout(stderr())
         .arg("src/lwext4.h")
         .arg("-o")
@@ -48,6 +48,7 @@ fn main() {
             target
         ))
         .args(cflags.split_whitespace());
+    eprintln!("running bindgen : {:?}", proc);
 
     let status = proc.status().unwrap();
     assert!(status.success());
