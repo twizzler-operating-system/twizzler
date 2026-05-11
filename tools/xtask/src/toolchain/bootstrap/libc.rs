@@ -78,7 +78,7 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
 
     let _ = std::fs::remove_dir_all(&build_dir);
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=true")
@@ -96,7 +96,7 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         ))?;
     }
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("compile")
         .arg("-C")
         .arg(&build_dir)
@@ -105,7 +105,7 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         Err(std::io::Error::other("failed to build libc headers"))?;
     }
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("install")
         .arg("-q")
         .arg("-C")
@@ -137,7 +137,7 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=false")
@@ -153,7 +153,7 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Err(std::io::Error::other("failed to setup meson for libc"))?;
     }
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("compile")
         .arg("-C")
         .arg(&build_dir)
@@ -162,7 +162,7 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Err(std::io::Error::other("failed to build libc"))?;
     }
 
-    let status = Command::new("meson")
+    let status = Command::new("toolchain/install/python/bin/meson")
         .arg("install")
         .arg("-q")
         .arg("-C")
