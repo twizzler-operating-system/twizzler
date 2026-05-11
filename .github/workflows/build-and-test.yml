@@ -40,11 +40,11 @@ jobs:
                     RUST_BACKTRACE=1 cargo +nightly toolchain bootstrap
                   fi
             - name: Build x86_64
-              run: cargo +nightly build-all
+              run: RUST_BACKTRACE=1 cargo +nightly build-all
             - name: Test x86_64 Debug
-              run: cargo +nightly start-qemu --tests --qemu-options=--nographic
+              run: RUST_BACKTRACE=1 cargo +nightly start-qemu --tests --qemu-options=--nographic
             - name: Test x86_64 Release
-              run: cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
+              run: RUST_BACKTRACE=1 cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
             # aarch64 is compiled for QEMU virt, builds in debug mode
             #- name: Build aarch64
             #  run: cargo +nightly build-all -a aarch64 -m virt
