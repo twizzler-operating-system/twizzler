@@ -3,7 +3,10 @@ use petgraph::graph::NodeIndex;
 use tracing::error;
 
 use crate::{
-    context::{relocate::EitherRel, Context},
+    context::{
+        relocate::{EitherRel, RelocCache},
+        Context,
+    },
     library::Library,
     symbol::LookupFlags,
     tls::{TlsRegion, TlsVariant},
@@ -59,10 +62,11 @@ impl Context {
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
         deps_list: &[NodeIndex],
+        reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
-        let addend = rel.addend();
         let base = lib.base_addr() as u64;
         let target: *mut u64 = lib.laddr_mut(rel.offset());
+        let addend = rel.addend(target);
         let mut is_weak = false;
         // Lookup a symbol if the relocation's symbol index is non-zero.
         let symbol = if rel.sym() != 0 {
@@ -73,10 +77,35 @@ impl Context {
             } else {
                 LookupFlags::ALLOW_WEAK
             };
-            strings
+            let _start = std::time::Instant::now();
+            let r = strings
                 .get(sym.st_name as usize)
-                .map(|name| (name, self.lookup_symbol(lib.id(), name, flags, deps_list)))
-                .ok()
+                .map(|name| {
+                    let sym = match reloc_cache.find(name, lib.comp_id) {
+                        Some(sym) => {
+                            tracing::trace!("found {} in cache", name);
+                            Ok(sym.clone())
+                        }
+                        None => {
+                            let sym = self.lookup_symbol(lib.id(), name, flags, deps_list);
+                            if let Ok(ref sym) = sym {
+                                reloc_cache.insert(name, lib.comp_id, unsafe {
+                                    std::mem::transmute(sym.clone())
+                                });
+                            }
+                            sym
+                        }
+                    };
+
+                    (name, sym)
+                })
+                .ok();
+            tracing::trace!(
+                "lookup {:?} cost {}us",
+                r.as_ref().map(|r| r.0),
+                _start.elapsed().as_micros()
+            );
+            r
         } else {
             None
         };
@@ -112,7 +141,10 @@ impl Context {
             REL_SYMBOLIC => unsafe {
                 *target = open_sym()?.reloc_value().wrapping_add_signed(addend)
             },
-            REL_PLT | REL_GOT => unsafe { *target = open_sym()?.reloc_value() },
+            REL_PLT | REL_GOT => unsafe {
+                let x = open_sym()?.reloc_value();
+                *target = x;
+            },
             REL_DTPMOD => {
                 // See the TLS module for understanding where the TLS ID is coming from.
                 let id = if rel.sym() == 0 {
@@ -168,6 +200,7 @@ impl Context {
                 )?
             }
         }
+        tracing::trace!("set reloc {} to {:x}", rel.r_type(), unsafe { *target });
 
         Ok(())
     }

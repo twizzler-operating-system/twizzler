@@ -1,0 +1,7 @@
+[package]
+name = "lltest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libloading = { path = "../../ports/rust_libloading" }

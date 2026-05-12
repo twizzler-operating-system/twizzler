@@ -1,5 +1,4 @@
 use std::{
-    fs::OpenOptions,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::{Path, PathBuf},
@@ -60,60 +59,29 @@ impl QemuCommand {
             disk_image.as_path().display()
         ));
 
-        let already_exists = std::fs::exists("target/nvme.img").unwrap();
-        if let Ok(f) = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open("target/nvme.img")
-        {
-            f.set_len(1024 * 1024 * 1024 * 100).unwrap();
+        let disk_image_path = format!(
+            "target/disk-{}.img",
+            options.config.twz_triple().to_string()
+        );
+        if !std::fs::exists(&disk_image_path).unwrap() {
+            crate::disk::create_fresh_disk_image(&options.config.twz_triple()).unwrap();
         }
 
-        std::env::set_var(
-            "PATH",
-            format!(
-                "{}:{}",
-                std::env::var("PATH").unwrap(),
-                "/opt/homebrew/opt/e2fsprogs/sbin/"
-            ),
-        );
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
-        );
-        let fs_type = "ext2";
-        if !already_exists {
-            println!("creating {} FS for image", fs_type);
-            if !Command::new("mke2fs")
-                .arg("-b")
-                .arg("4096")
-                .arg("-qF")
-                .arg("-E")
-                .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
-                .arg("-t")
-                .arg(fs_type)
-                .arg("target/nvme.img")
-                .arg("10000000")
-                .status()
-                .expect("failed to create disk image")
-                .success()
-            {
-                panic!("failed to run mke2fs on nvme.img");
-            }
-        }
-
+        let nvme_drive = format!("file={},if=none,id=nvme", disk_image_path);
         self.cmd
             .arg("-drive")
-            .arg("file=target/nvme.img,if=none,id=nvme")
+            .arg(nvme_drive)
             .arg("-device")
             .arg("nvme,serial=deadbeef,drive=nvme");
 
         self.cmd
             .arg("-device")
             .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
-        self.cmd.arg("-object").arg(
-            "memory-backend-file,id=dataset,size=107374182400,mem-path=target/nvme.img,share=on",
+        let mem_drive = format!(
+            "memory-backend-file,id=dataset,size=107374182400,mem-path={},share=on",
+            disk_image_path
         );
+        self.cmd.arg("-object").arg(mem_drive);
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 

@@ -11,6 +11,7 @@ walkdir = { workspace = true }
 strum = { workspace = true }
 anyhow = { workspace = true }
 strum_macros = { workspace = true }
+ext4-lwext4 = "*"
 
 # a bug prevents us from updating to lastest cargo. newest version no longer
 # seems to apply RUSTFLAGS when specified by environment, causing the build
@@ -34,6 +35,9 @@ git2 = { workspace = true }
 wait-timeout = { workspace = true }
 
 unittest-report = { workspace = true }
+cmake = "*"
+cc = "*"
+gag = "*"
 
 [package.metadata]
 twizzler-build = "xtask"

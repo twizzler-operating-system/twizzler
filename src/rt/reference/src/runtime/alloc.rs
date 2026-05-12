@@ -55,6 +55,10 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return LOCAL_ALLOCATOR.dealloc(ptr, layout);
         }
 
+        if LOCAL_ALLOCATOR.get_id_from_ptr(ptr).is_some() {
+            return;
+        }
+
         if let Some(ptr) = NonNull::new(ptr) {
             //let start_time = Instant::now();
             ferroc::TwzFerroc.deallocate(ptr, layout);

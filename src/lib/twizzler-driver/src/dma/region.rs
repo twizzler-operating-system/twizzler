@@ -1,7 +1,10 @@
 use core::{marker::PhantomData, ops::Range};
 use std::sync::Arc;
 
-use twizzler::object::RawObject;
+use twizzler::{
+    error::{GenericError, ResourceError, TwzError},
+    object::RawObject,
+};
 use twizzler_abi::{
     kso::{
         pack_kaction_pin_start_and_len, unpack_kaction_pin_token_and_len, KactionCmd, KactionFlags,
@@ -12,7 +15,7 @@ use twizzler_abi::{
 };
 
 use super::{
-    pin::{PhysInfo, PinError},
+    pin::PhysInfo,
     pool::{AllocatableDmaObject, SplitPageRange},
     Access, DeviceSync, DmaObject, DmaOptions, DmaPin, SyncMode,
 };
@@ -122,7 +125,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
         (self.len - 1) / DMA_PAGE_SIZE + 1
     }
 
-    fn setup_backing(&mut self) -> Result<(), PinError> {
+    fn setup_backing(&mut self) -> Result<(), TwzError> {
         if self.backing.is_some() {
             return Ok(());
         }
@@ -138,20 +141,18 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
             Some(self.dma_object().object().id()),
             ptr,
-            pack_kaction_pin_start_and_len(start, len).ok_or(PinError::InternalError)?,
+            pack_kaction_pin_start_and_len(start, len).ok_or(GenericError::Other)?,
             KactionFlags::empty(),
-        )
-        .map_err(|_| PinError::InternalError)?
+        )?
         .u64()
-        .ok_or(PinError::InternalError)?;
+        .ok_or(GenericError::Other)?;
 
-        let (token, retlen) =
-            unpack_kaction_pin_token_and_len(res).ok_or(PinError::InternalError)?;
+        let (token, retlen) = unpack_kaction_pin_token_and_len(res).ok_or(GenericError::Other)?;
 
         if retlen < len {
-            return Err(PinError::Exhausted);
+            return Err(ResourceError::OutOfResources.into());
         } else if retlen > len {
-            return Err(PinError::InternalError);
+            return Err(GenericError::Other.into());
         }
 
         let backing: Result<Vec<_>, _> = pins
@@ -159,7 +160,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
             .map(|p| p.physical_address().try_into().map(|pa| PhysInfo::new(pa)))
             .collect();
 
-        self.backing = Some((backing.map_err(|_| PinError::InternalError)?, token));
+        self.backing = Some((backing.map_err(|_| GenericError::Other)?, token));
 
         Ok(())
     }
@@ -176,7 +177,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
 
     // Determines the backing information for region. This includes acquiring physical addresses for
     // the region and holding a pin for the pages.
-    pub fn pin(&mut self) -> Result<DmaPin<'_>, PinError> {
+    pub fn pin(&mut self) -> Result<DmaPin<'_>, TwzError> {
         self.setup_backing()?;
         Ok(DmaPin::new(&self.backing.as_ref().unwrap().0))
     }
@@ -326,7 +327,7 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
     // Determines the backing information for region. This includes acquiring physical addresses for
     // the region and holding a pin for the pages.
     #[inline]
-    pub fn pin(&mut self) -> Result<DmaPin<'_>, PinError> {
+    pub fn pin(&mut self) -> Result<DmaPin<'_>, TwzError> {
         self.region.pin()
     }
 

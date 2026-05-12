@@ -33,8 +33,9 @@ fn main() {
 
     let status = proc.status().unwrap();
     assert!(status.success());
+    let target = std::env::var("TARGET").unwrap();
 
-    let mut proc = std::process::Command::new("bindgen");
+    let mut proc = std::process::Command::new("../../../toolchain/install/bin/bindgen");
     proc.stdout(stderr())
         .arg("src/lwext4.h")
         .arg("-o")
@@ -42,7 +43,12 @@ fn main() {
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")
+        .arg(format!(
+            "-I../../../toolchain/install/sysroots/{}/include",
+            target
+        ))
         .args(cflags.split_whitespace());
+    eprintln!("running bindgen : {:?}", proc);
 
     let status = proc.status().unwrap();
     assert!(status.success());

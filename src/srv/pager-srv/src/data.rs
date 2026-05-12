@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    sync::{Arc, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex},
     task::Waker,
     time::Instant,
 };
@@ -10,7 +10,7 @@ use itertools::Itertools;
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
-use twizzler::object::{ObjID, ObjectHandle};
+use twizzler::object::{MetaExt, MetaInfo, ObjID, ObjectHandle};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
     pager::{
@@ -28,6 +28,7 @@ use crate::{
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, PAGE},
     stats::RecentStats,
+    threads::run_async,
     PagerContext,
 };
 
@@ -128,12 +129,37 @@ impl PerObject {
         };
         let pages_done = Instant::now();
         let mut page_count = 0;
+        let mut set_len = None;
         let mut reqs = pages
             .into_iter()
             .filter_map(|p| {
                 if let Some(mut start_page) = p.0.pages().next() {
                     if p.0.start == (MAX_SIZE as u64) - PAGE {
                         start_page = 0;
+                        if objid_to_ino(self.id.raw()).is_some() {
+                            let mut buffer = [0; PAGE as usize];
+
+                            run_async(crate::physrw::read_physical_pages(
+                                &mut buffer,
+                                p.1[0].range,
+                            ))
+                            .unwrap();
+                            let me_ptr = unsafe {
+                                buffer.as_ptr().add(size_of::<MetaInfo>()).cast::<MetaExt>()
+                            };
+                            let len = (unsafe { &*me_ptr }).value.load(Ordering::SeqCst);
+                            tracing::trace!(
+                                "read meta page for external file, len: {}, range: {:?}",
+                                len,
+                                p.1[0].range
+                            );
+                            set_len = Some(len);
+                            ctx.paged_ostore(None)
+                                .unwrap()
+                                .set_len(self.id.raw(), len)
+                                .unwrap();
+                            return None;
+                        }
                     }
                     let nr_pages = p.1.iter().fold(0, |acc, x| acc + x.nr_pages());
                     page_count += nr_pages;
@@ -172,6 +198,12 @@ impl PerObject {
             }
             Ok(count) => count,
         };
+        if let Some(len) = set_len {
+            ctx.paged_ostore(None)
+                .unwrap()
+                .set_len(self.id.raw(), len)
+                .unwrap();
+        }
         let io_done = Instant::now();
         if page_count >= 1024 {
             tracing::info!(
@@ -601,7 +633,6 @@ impl PagerData {
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         if objid_to_ino(id.raw()).is_some() {
-            ctx.paged_ostore(None)?.find_external(id.raw()).await?;
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,

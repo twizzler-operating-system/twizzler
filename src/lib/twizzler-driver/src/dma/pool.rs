@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use twizzler::{
+    error::{GenericError, TwzError},
     marker::{BaseType, Invariant},
     object::ObjectBuilder,
 };
@@ -165,15 +166,6 @@ pub struct DmaPool {
     objects: Mutex<Vec<Arc<AllocatableDmaObject>>>,
 }
 
-/// Possible errors that can arise from a DMA pool allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum AllocationError {
-    /// The requested region size was too large.
-    TooBig,
-    /// An internal error occurred.
-    InternalError,
-}
-
 #[repr(C)]
 struct EmptyBase;
 
@@ -239,13 +231,13 @@ impl AllocatableDmaObject {
         })
     }
 
-    fn new(spec: ObjectBuilder<()>) -> Result<AllocatableDmaObject, AllocationError> {
+    fn new(spec: ObjectBuilder<()>) -> Result<AllocatableDmaObject, TwzError> {
         Ok(AllocatableDmaObject {
             // TODO: automatic object deletion.
             dma: DmaObject::new::<EmptyBase>(
                 spec.cast()
                     .build(EmptyBase)
-                    .map_err(|_| AllocationError::InternalError)?,
+                    .map_err(|_| GenericError::Other)?,
             ),
             freelist: Mutex::new(vec![SplitPageRange::new(
                 1,
@@ -272,7 +264,7 @@ impl DmaPool {
         ObjectBuilder::default()
     }
 
-    fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, AllocationError> {
+    fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, TwzError> {
         let obj = Arc::new(AllocatableDmaObject::new(self.spec.clone())?);
         Ok(obj)
     }
@@ -280,9 +272,9 @@ impl DmaPool {
     fn do_allocate(
         &self,
         len: usize,
-    ) -> Result<(Arc<AllocatableDmaObject>, SplitPageRange), AllocationError> {
+    ) -> Result<(Arc<AllocatableDmaObject>, SplitPageRange), TwzError> {
         if len > MAX_SIZE - NULLPAGE_SIZE * 2 {
-            return Err(AllocationError::TooBig);
+            return Err(TwzError::INVALID_ARGUMENT);
         }
         let mut objects = self.objects.lock().unwrap();
         for obj in &*objects {
@@ -298,7 +290,7 @@ impl DmaPool {
 
     /// Allocate a new `[DmaRegion]` from the pool. The region will be initialized with the
     /// provided initial value.
-    pub fn allocate<'a, T: DeviceSync>(&'a self, init: T) -> Result<DmaRegion<T>, AllocationError> {
+    pub fn allocate<'a, T: DeviceSync>(&'a self, init: T) -> Result<DmaRegion<T>, TwzError> {
         let len = core::mem::size_of::<T>();
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaRegion::new(
@@ -318,7 +310,7 @@ impl DmaPool {
         &'a self,
         count: usize,
         init: T,
-    ) -> Result<DmaSliceRegion<T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, TwzError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(
@@ -339,7 +331,7 @@ impl DmaPool {
         &'a self,
         count: usize,
         init: impl Fn() -> T,
-    ) -> Result<DmaSliceRegion<T>, AllocationError> {
+    ) -> Result<DmaSliceRegion<T>, TwzError> {
         let len = core::mem::size_of::<T>() * count;
         let (ado, range) = self.do_allocate(len)?;
         let mut reg = DmaSliceRegion::new(

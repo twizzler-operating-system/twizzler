@@ -61,8 +61,21 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         self.api.remove(self.desc, name_len)
     }
 
-    pub fn enumerate_names_nsid(&mut self, nsid: ObjID) -> Result<Vec<NsNode>> {
-        let element_count = self.api.enumerate_names_nsid(self.desc, nsid)?;
+    pub fn enumerate_names_nsid(
+        &mut self,
+        nsid: ObjID,
+        skip: usize,
+        count: usize,
+    ) -> Result<Vec<NsNode>> {
+        tracing::trace!(
+            "enumerating namespace {} (skip {}, count {})",
+            nsid,
+            skip,
+            count
+        );
+        let element_count = self
+            .api
+            .enumerate_names_nsid(self.desc, nsid, skip, count)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
         self.buffer.read(&mut buf_vec);
@@ -81,9 +94,14 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok(r_vec)
     }
 
-    pub fn enumerate_names_relative<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<NsNode>> {
+    pub fn enumerate_names_relative<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        skip: usize,
+        count: usize,
+    ) -> Result<Vec<NsNode>> {
         let name_len = self.write_buffer(path)?;
-        let element_count = self.api.enumerate_names(self.desc, name_len)?;
+        let element_count = self.api.enumerate_names(self.desc, name_len, skip, count)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
         self.buffer.read(&mut buf_vec);
@@ -102,8 +120,8 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok(r_vec)
     }
 
-    pub fn enumerate_names(&mut self) -> Result<Vec<NsNode>> {
-        self.enumerate_names_relative(&".")
+    pub fn enumerate_names(&mut self, skip: usize, count: usize) -> Result<Vec<NsNode>> {
+        self.enumerate_names_relative(&".", skip, count)
     }
 
     pub fn change_namespace<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {

@@ -148,6 +148,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
         },
         args: args.as_ptr() as *mut *mut c_char,
         argc: args.len() - 1,
+        entry: 0,
         envp: core::ptr::null_mut(),
     };
     let rtinfo_ptr = &mut rtinfo as *mut RuntimeInfo;

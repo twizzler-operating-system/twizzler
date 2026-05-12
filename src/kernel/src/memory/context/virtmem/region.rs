@@ -156,6 +156,7 @@ impl MapRegion {
 
     pub fn mapping_settings(&self, wp: bool, is_kern_obj: bool) -> MappingSettings {
         let mut prot = self.prot;
+        prot.insert(Protections::READ);
         if wp {
             prot.remove(Protections::WRITE);
         }
@@ -209,7 +210,7 @@ impl MapRegion {
         if let Some(shared_pt) = &self.shared_pt
             && !is_kern_obj
         {
-            log::trace!(
+            log::debug!(
                 "shared map for: {}: {:?} {:?}: {:?}",
                 self.object().id(),
                 addr,
@@ -230,7 +231,8 @@ impl MapRegion {
                     settings.cache(),
                     settings.flags(),
                 );
-                check_settings(addr, &settings, cause)?;
+                check_settings(addr, &settings, cause)
+                    .inspect_err(|_| logln!("on check_settings (shadow)"))?;
                 self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
                 return mapper(
                     self.shared_pt.as_ref(),
@@ -242,15 +244,26 @@ impl MapRegion {
             }
         }
 
-        let mut obj_page_tree = self.object.lock_page_tree();
+        let obj_page_tree = self.object.lock_page_tree();
         let mut used_pager = false;
-        obj_page_tree = self
-            .object
-            .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
+        let mut obj_page_tree =
+            self.object
+                .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
 
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
+        log::trace!(
+            "get_page for {} page {} got {:?}",
+            self.object().id(),
+            page_number,
+            status
+        );
         if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
-            log::warn!("fallback allocate in fault to page {}", page_number);
+            log::warn!(
+                "fallback allocate in fault to page {} in {}",
+                page_number,
+                self.object().id()
+            );
+            obj_page_tree.print_tree();
             if let Some(frame) = fa.try_allocate() {
                 let page = Page::new(frame, 1);
                 obj_page_tree.add_page(
@@ -266,7 +279,7 @@ impl MapRegion {
             }
         }
 
-        if let PageStatus::Locked(sleeper) = status {
+        if let PageStatus::Locked(ref sleeper) = status {
             drop(obj_page_tree);
             sleeper.wait();
             return self.map(
@@ -388,6 +401,7 @@ impl MapRegion {
                 let mut provider = ObjectPageProvider::new(heapless::Vec::from([(page, settings)]));
                 if cause != MemoryAccessKind::Write
                     && !settings.perms().contains(Protections::WRITE)
+                    && false
                 {
                     let mut pages = heapless::Vec::<_, MAX_OPP_VEC>::new();
                     if obj_page_tree
@@ -418,12 +432,13 @@ impl MapRegion {
             }
         } else {
             log::warn!(
-                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}",
+                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}: {:?}",
                 page_number,
                 self.object().id(),
                 addr.raw(),
                 cause,
-                pfflags
+                pfflags,
+                status
             );
             Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
                 self.object().id(),

@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 use twizzler_abi::pager::PagerFlags;
 
 use super::{
+    InvalidateMode, ObjectRef, PageNumber,
     pages::{Page, PageRef},
     range::{GetPageFlags, PageRange, PageRangeTree, PageStatus},
-    InvalidateMode, ObjectRef, PageNumber,
 };
 use crate::{memory::tracker::FrameAllocator, mutex::LockGuard};
 
@@ -157,6 +157,17 @@ pub fn copy_ranges(
             (0, _) | (_, 0) => 1,
             (_, _) => 2,
         };
+
+    log::trace!(
+        "copy_ranges: src={:?}+{:x}, dest={:?}+{:x}, len={:x} ({} pages)",
+        src,
+        src_off,
+        dest,
+        dest_off,
+        byte_length,
+        nr_pages
+    );
+
     crate::pager::ensure_in_core(src, src_start, nr_pages, PagerFlags::empty());
     // Step 1: lock the page trees for the objects, in a canonical order.
     let (mut src_tree, mut dest_tree) = crate::utils::lock_two(&src.range_tree, &dest.range_tree);
@@ -212,6 +223,7 @@ pub fn copy_ranges(
     if vec_pages > 0 {
         let ranges = src_tree.range(src_point..src_point.offset(vec_pages));
         for range in ranges {
+            log::trace!("copy range {:?}: {:?}", range.0, range.1);
             // If the source point is below the range's start, then there's a hole in the source
             // page tree. We don't have to copy at all, just shift up the dest point to
             // where it needs to be for this range (since we will be copying from it).
@@ -525,15 +537,15 @@ mod test {
     use super::copy_ranges;
     use crate::{
         memory::{
-            context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+            context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
             frame::PHYS_LEVEL_LAYOUTS,
             tracker::{FrameAllocFlags, FrameAllocator},
         },
         obj::{
+            ObjectRef, PageNumber,
             copy::zero_ranges,
             pages::{Page, PageRef},
             range::{GetPageFlags, PageStatus},
-            ObjectRef, PageNumber,
         },
         userinit::create_blank_object,
     };
@@ -666,7 +678,7 @@ mod test {
 
         let mut do_check = |src_off_misalign, dest_off_misalign, len| {
             let nr_pages = len / PageNumber::PAGE_SIZE + 2; // Just bump up, assuming there are partial pages. Slightly wasteful, but it's just a
-                                                            // test.
+            // test.
             let src_off = calc_off(src_counting_page_num, src_off_misalign);
             let dest_off = calc_off(dest_counting_page_num, dest_off_misalign);
             src_counting_page_num += nr_pages;

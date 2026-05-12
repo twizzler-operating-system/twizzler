@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use petgraph::graph::NodeIndex;
 
 use super::{Context, LoadedOrUnloaded};
@@ -26,13 +28,39 @@ impl Context {
         lookup_flags: LookupFlags,
         deps_list: &[NodeIndex],
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
+        let _start = Instant::now();
+        let r = self.do_lookup_symbol(start_id, name, lookup_flags, deps_list);
+        tracing::trace!(
+            "sym {}, {:?} from {} ({}): took {}us",
+            name,
+            lookup_flags,
+            start_id,
+            r.is_ok(),
+            _start.elapsed().as_micros()
+        );
+
+        r
+    }
+
+    fn do_lookup_symbol<'a>(
+        &'a self,
+        start_id: LibraryId,
+        name: &str,
+        lookup_flags: LookupFlags,
+        deps_list: &[NodeIndex],
+    ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK);
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
+            let _start = Instant::now();
             if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
                 return Ok(sym);
             }
+            tracing::trace!(
+                "failed to find sym in self in {}us",
+                _start.elapsed().as_micros()
+            );
         }
 
         // Next, try all of our transitive dependencies.
@@ -43,6 +71,7 @@ impl Context {
                     match dep {
                         LoadedOrUnloaded::Unloaded(_) => {}
                         LoadedOrUnloaded::Loaded(dep) => {
+                            tracing::trace!("trying in {}", dep.name);
                             if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
                                 || dep.is_local_or_secgate_from(start_lib, name)
                             {

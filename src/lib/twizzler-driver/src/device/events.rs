@@ -55,14 +55,14 @@ impl IntInner {
 }
 
 impl TwizzlerWaitable for IntInner {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
         let repr = self.repr();
-        repr.setup_interrupt_sleep(self.inum)
+        (repr.setup_interrupt_sleep(self.inum), false)
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
         let repr = self.repr();
-        repr.setup_interrupt_sleep(self.inum)
+        (repr.setup_interrupt_sleep(self.inum), false)
     }
 }
 
@@ -85,21 +85,27 @@ impl MailboxInner {
 }
 
 impl TwizzlerWaitable for MailboxInner {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
-            0,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
+                0,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ),
+            false,
         )
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
-            0,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        (
+            ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&self.repr().mailboxes[self.inum]),
+                0,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ),
+            false,
         )
     }
 }

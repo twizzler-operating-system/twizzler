@@ -56,6 +56,12 @@ impl ReferenceRuntime {
         &self,
         args: &twizzler_rt_abi::bindings::exec_spawn_args,
     ) -> Result<descriptor, TwzError> {
+        tracing::trace!(
+            "DOING EXEC SPAWN: prog={:?}, args={:?}, env={:?}",
+            unsafe { CStr::from_ptr(args.prog) },
+            c_str_array_to_vec(args.args),
+            c_str_array_to_vec(args.env)
+        );
         let name_cstr = unsafe { CStr::from_ptr(args.prog) };
         let name = name_cstr.to_string_lossy();
 

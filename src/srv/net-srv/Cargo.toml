@@ -21,3 +21,4 @@ virtio-net = { path = "../../lib/virtio-net" }
 twizzler-net = { path = "../../lib/twizzler-net" }
 twizzler = { path = "../../lib/twizzler" }
 smoltcp = "0.11"
+twizzler-driver = { path = "../../lib/twizzler-driver" }

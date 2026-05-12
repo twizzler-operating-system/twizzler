@@ -92,10 +92,26 @@ impl TlsGenMgr {
 
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
+
             Some(tcb)
         }
     }
 
     // TODO: when threads exit or move on to a different TLS gen, track that in thread_count, and if
     // it hits zero, notify the monitor.
+}
+
+extern "C" {
+    #[linkage = "extern_weak"]
+    static __mlibc_init_tcb: *mut u8;
+}
+
+pub(crate) fn libc_init_tcb<T>(tcb: *mut Tcb<T>) {
+    unsafe {
+        if !__mlibc_init_tcb.is_null() {
+            let mlibc_init_tcb =
+                std::mem::transmute::<_, extern "C" fn(*mut Tcb<T>)>(__mlibc_init_tcb);
+            mlibc_init_tcb(tcb);
+        }
+    }
 }

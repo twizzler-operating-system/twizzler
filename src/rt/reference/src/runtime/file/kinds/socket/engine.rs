@@ -39,10 +39,16 @@ pub struct Engine {
     nc_handle: Descriptor,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum SockKind {
+    Tcp,
+    Udp,
+}
+
 pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
-    tracking: Vec<(SocketHandle, u16)>,
+    tracking: Vec<(SocketHandle, u16, SockKind)>,
     listeners: HashSet<SocketHandle>,
 }
 
@@ -216,9 +222,14 @@ impl Engine {
                 let mut core = ENGINE.core.lock().unwrap();
                 for idx in 0..core.tracking.len() {
                     let item = core.tracking[idx];
-                    let socket = core.get_mutable_socket(item.0);
-                    if socket.state() == State::Closed {
-                        tracing::debug!("tracked tcp socket {} in closed state", item.0);
+                    let is_closed = match item.2 {
+                        SockKind::Tcp => core.get_mutable_socket(item.0).state() == State::Closed,
+                        // TODO: this causes some kind of stall.
+                        SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.0).
+                                                 * is_open(), */
+                    };
+                    if is_closed {
+                        tracing::debug!("tracked socket {} in closed state", item.0);
                         core.release_socket(item.0);
                         core.tracking.remove(idx);
                         drop(core);
@@ -346,9 +357,13 @@ impl Engine {
         }
     }
 
-    pub fn track(&self, handle: SocketHandle, port: u16, is_ephem: bool) {
+    pub fn track(&self, handle: SocketHandle, port: u16, is_ephem: bool, kind: SockKind) {
         let port = if is_ephem { port } else { 0 };
-        self.core.lock().unwrap().tracking.push((handle, port))
+        self.core
+            .lock()
+            .unwrap()
+            .tracking
+            .push((handle, port, kind))
     }
 
     pub fn with_iface_for<R>(

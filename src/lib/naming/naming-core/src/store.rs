@@ -7,7 +7,7 @@ use std::{
 use bitflags::bitflags;
 use ext::ExtNamespace;
 use nsobj::NamespaceObject;
-use object_store::objid_to_ino;
+use pager_dynamic::objid_to_ino;
 use twizzler::marker::Invariant;
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError},
@@ -133,11 +133,11 @@ trait Namespace {
 
     fn id(&self) -> ObjID;
 
-    fn items(&self) -> Vec<NsNode>;
+    fn items(&self, skip: usize, count: usize) -> Vec<NsNode>;
 
     #[allow(dead_code)]
     fn len(&self) -> usize {
-        self.items().len()
+        self.items(0, usize::MAX).len()
     }
 
     fn persist(&self) -> bool;
@@ -240,7 +240,7 @@ impl NameSession<'_> {
         &self,
         namespace: Option<Arc<dyn Namespace>>,
         name: P,
-        nr_derefs: usize,
+        mut nr_derefs: usize,
         deref: bool,
     ) -> Result<(std::result::Result<NsNode, PathBuf>, Arc<dyn Namespace>)> {
         tracing::trace!("namei: {:?}", name.as_ref());
@@ -256,6 +256,7 @@ impl NameSession<'_> {
         if components.is_empty() {
             return Ok((Err("".into()), namespace));
         }
+        tracing::trace!("start search {}", name.as_ref().display());
 
         let mut node = None;
         for (idx, item) in components.iter().enumerate() {
@@ -285,15 +286,21 @@ impl NameSession<'_> {
                 }
                 Component::Normal(os_str) => {
                     tracing::trace!(
-                        "lookup component {:?}: {}",
-                        os_str.as_encoded_bytes(),
-                        os_str.to_str().ok_or(ArgumentError::InvalidArgument)?
+                        "lookup component {} in {}",
+                        os_str.to_str().ok_or(ArgumentError::InvalidArgument)?,
+                        namespace.id(),
                     );
                     node = namespace.find(os_str.to_str().ok_or(ArgumentError::InvalidArgument)?);
+                    let name = node.as_ref().map(|x| x.name());
+                    tracing::trace!("found node: {:?} (is_last = {})", name, is_last);
 
                     // Did we find something?
-                    let Some(thisnode) = node else {
-                        tracing::trace!("failed to find component: (is_last = {})", is_last);
+                    let Some(mut thisnode) = node else {
+                        tracing::trace!(
+                            "failed to find component {:?}: (is_last = {})",
+                            os_str.to_str(),
+                            is_last
+                        );
                         // Last component: return with this name, None.
                         if is_last {
                             return Ok((Err(os_str.into()), namespace));
@@ -308,12 +315,32 @@ impl NameSession<'_> {
                             return Err(NamingError::LinkLoop.into());
                         }
                         if deref || !is_last {
-                            let ldname = thisnode.readlink()?;
-                            tracing::trace!("search with: {}", ldname);
-                            let (lnode, lcont) =
-                                self.namei_exist(Some(namespace), ldname, nr_derefs - 1, deref)?;
-                            node = Some(lnode);
-                            namespace = lcont;
+                            let mut lcont = None;
+                            while thisnode.kind == NsNodeKind::SymLink {
+                                let ldname = thisnode.readlink()?;
+                                tracing::trace!("search with: {}", ldname);
+                                nr_derefs -= 1;
+                                let (lnode, lc) = self.namei_exist(
+                                    Some(namespace.clone()),
+                                    ldname,
+                                    nr_derefs,
+                                    deref,
+                                )?;
+                                tracing::trace!("found lnode as {:?}", lnode);
+                                node = Some(lnode);
+                                thisnode = lnode;
+                                lcont = Some(lc);
+                            }
+                            if !is_last {
+                                namespace = self.open_namespace(
+                                    thisnode.id,
+                                    lcont.as_ref().unwrap().persist(),
+                                    Some(ParentInfo {
+                                        ns: lcont.unwrap(),
+                                        name_in_parent: thisnode.name()?.to_string(),
+                                    }),
+                                )?;
+                            }
                         }
                     }
                     if !is_last && thisnode.kind == NsNodeKind::Namespace {
@@ -327,6 +354,7 @@ impl NameSession<'_> {
                 }
             }
         }
+        tracing::trace!("namei result: {:?}", node);
 
         if let Some(node) = node {
             Ok((Ok(node), namespace))
@@ -389,7 +417,12 @@ impl NameSession<'_> {
         Ok(node)
     }
 
-    pub fn enumerate_namespace<P: AsRef<Path>>(&self, name: P) -> Result<std::vec::Vec<NsNode>> {
+    pub fn enumerate_namespace<P: AsRef<Path>>(
+        &self,
+        name: P,
+        skip: usize,
+        count: usize,
+    ) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("enumerate: {:?}", name.as_ref());
         let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         if node.kind != NsNodeKind::Namespace {
@@ -401,15 +434,20 @@ impl NameSession<'_> {
             false,
             Some(ParentInfo::new(container, node.name()?)),
         )?;
-        let items = ns.items();
-        tracing::info!("collected: {:?}", items);
+        let items = ns.items(skip, count);
+        tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
 
-    pub fn enumerate_namespace_nsid(&self, id: ObjID) -> Result<std::vec::Vec<NsNode>> {
-        tracing::trace!("opening namespace-ensid: {}", id);
+    pub fn enumerate_namespace_nsid(
+        &self,
+        id: ObjID,
+        skip: usize,
+        count: usize,
+    ) -> Result<std::vec::Vec<NsNode>> {
+        tracing::trace!("opening namespace-ensid: {} {} {}", id, skip, count);
         let ns = self.open_namespace(id, false, None)?;
-        let items = ns.items();
+        let items = ns.items(skip, count);
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }
@@ -439,15 +477,18 @@ impl NameSession<'_> {
     }
 
     pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
+        tracing::trace!("rename: {:?} to {:?}", old.as_ref(), new.as_ref());
         // Look up the old entry (don't follow symlinks — we're moving the entry itself)
         let (old_node, old_container) =
             self.namei_exist(None, &old, Self::MAX_SYMLINK_DEREF, false)?;
 
-        // Check that the new path doesn't already exist
-        let (new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
-        let Err(new_name) = new_node else {
-            return Err(NamingError::AlreadyExists.into());
-        };
+        let (_new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
+        let new_name = new
+            .as_ref()
+            .file_name()
+            .ok_or(ArgumentError::InvalidArgument)?
+            .to_str()
+            .ok_or(ArgumentError::InvalidArgument)?;
 
         // Create new entry preserving the old node's type and data
         let new_entry = if old_node.kind == NsNodeKind::SymLink {
@@ -461,7 +502,13 @@ impl NameSession<'_> {
             NsNode::new::<_, &str>(old_node.kind, old_node.id, &new_name, None)?
         };
 
+        tracing::trace!(
+            "insert new entry: {:?} in container {}",
+            new_entry,
+            new_container.id()
+        );
         // Insert at new location, then remove from old location
+        let _ = new_container.remove(new_name);
         new_container.insert(new_entry);
         old_container
             .remove(old_node.name()?)

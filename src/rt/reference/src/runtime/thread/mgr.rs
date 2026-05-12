@@ -3,13 +3,15 @@
 use std::{
     alloc::{GlobalAlloc, Layout},
     collections::BTreeMap,
+    ffi::c_void,
 };
 
-use monitor_api::RuntimeThreadControl;
+use monitor_api::{RuntimeThreadControl, Tcb};
 use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
+    syscall::sys_thread_self_id,
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
@@ -20,12 +22,16 @@ use twizzler_rt_abi::{
 };
 
 use super::internal::InternalThread;
-use crate::runtime::{
-    thread::{
-        tcb::{trampoline, TLS_GEN_MGR},
-        MIN_STACK_ALIGN, THREAD_MGR,
+use crate::{
+    runtime::{
+        thread::{
+            libc_init_tcb,
+            tcb::{trampoline, TLS_GEN_MGR},
+            MIN_STACK_ALIGN, THREAD_MGR,
+        },
+        ReferenceRuntime, OUR_RUNTIME,
     },
-    ReferenceRuntime, OUR_RUNTIME,
+    RuntimeState,
 };
 
 pub(crate) struct ThreadManager {
@@ -61,7 +67,7 @@ unsafe impl Sync for ThreadManager {}
 impl ThreadManagerInner {
     const fn new() -> Self {
         Self {
-            next_id: 1,
+            next_id: 2, // 0 is reserved, 1 is the core thread.
             all_threads: BTreeMap::new(),
             to_cleanup: vec![],
             id_stack: vec![],
@@ -130,6 +136,21 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
+    pub fn init_core_thread(&self, tls: *mut Tcb<RuntimeThreadControl>) {
+        let thid = sys_thread_self_id();
+        let thread_repr_obj = self
+            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
+            .unwrap();
+        (unsafe { &mut *tls }).runtime_data.set_id(1);
+        let thread = InternalThread::new(thread_repr_obj, 0, 0, 0, 1, tls);
+
+        THREAD_MGR
+            .inner
+            .lock()
+            .all_threads
+            .insert(thread.id, thread);
+    }
+
     pub fn cross_compartment_entry(&self) -> Result<()> {
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
@@ -158,13 +179,14 @@ impl ReferenceRuntime {
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        libc_init_tcb(tls);
         Ok(())
     }
 
     pub(super) fn impl_spawn(
         &self,
         mut args: twizzler_rt_abi::thread::ThreadSpawnArgs,
-    ) -> Result<u32> {
+    ) -> Result<(u32, *mut c_void)> {
         if args.stack_size < 1024 * 1024 * 8 {
             args.stack_size = 1024 * 1024 * 8;
         }
@@ -174,6 +196,10 @@ impl ReferenceRuntime {
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
+
+        if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+            libc_init_tcb(tls);
+        }
         let stack_raw = unsafe {
             OUR_RUNTIME
                 .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())
@@ -229,7 +255,7 @@ impl ReferenceRuntime {
         let id = thread.id;
         inner.all_threads.insert(thread.id, thread);
 
-        Ok(id)
+        Ok((id, tls.cast()))
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {

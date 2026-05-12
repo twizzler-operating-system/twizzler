@@ -26,7 +26,7 @@ use twizzler_rt_abi::{
 };
 
 use super::engine::ENGINE;
-use crate::runtime::file::socket::engine::WAITERS;
+use crate::runtime::file::kinds::socket::engine::{SockKind, WAITERS};
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
@@ -54,7 +54,7 @@ impl Drop for Listener {
             .unwrap()
             .get_mutable_socket(self.socket_handle)
             .abort();
-        ENGINE.track(self.socket_handle, self.port, false);
+        ENGINE.track(self.socket_handle, self.port, false, SockKind::Tcp);
     }
 }
 
@@ -64,6 +64,21 @@ impl SmolTcpListener {
     }
 
     pub fn set_flags(&self, _flags: u32) {}
+
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        for listener in self.listeners.lock().unwrap().iter() {
+            let sock = core.get_mutable_socket(listener.socket_handle);
+            if sock.can_recv() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn can_write(&self) -> bool {
+        false
+    }
 
     pub fn addr(&self, peer: bool) -> SocketAddress {
         if peer {
@@ -320,6 +335,18 @@ impl SmolTcpStream {
 }
 
 impl SmolTcpStream {
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let socket = core.get_mutable_socket(self.inner.socket_handle);
+        socket.can_recv()
+    }
+
+    pub fn can_write(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let socket = core.get_mutable_socket(self.inner.socket_handle);
+        socket.can_send()
+    }
+
     /* each_addr:
      * helper function for connect()
      * processes each address given to see whether it can implement ToSocketAddr, then tries to
@@ -435,7 +462,12 @@ impl SmolTcpStream {
 
 impl Drop for TcpStreamInner {
     fn drop(&mut self) {
-        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
+        ENGINE.track(
+            self.socket_handle,
+            self.port,
+            self.is_ephemeral_port,
+            SockKind::Tcp,
+        );
     }
 }
 
@@ -484,6 +516,18 @@ impl UdpSocket {
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
+    }
+
+    pub fn can_write(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
+        sock.can_send()
+    }
+
+    pub fn can_read(&self) -> bool {
+        let mut core = ENGINE.core.lock().unwrap();
+        let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
+        sock.can_recv()
     }
 
     pub fn read_from(
@@ -548,6 +592,45 @@ impl UdpSocket {
         *self.inner.connect_addr.lock().unwrap() =
             Some(addr.to_socket_addrs()?.next().unwrap().into());
         Ok(())
+    }
+
+    pub fn bind_ephemeral(addr: SocketAddr) -> Result<Self, Error> {
+        let mut sock = {
+            SmolUdpSocket::new(
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; RX_BUF_SIZE]),
+                PacketBuffer::new(vec![PacketMetadata::EMPTY; 1024], vec![0; TX_BUF_SIZE]),
+            )
+        };
+
+        let port = ENGINE.get_ephemeral_port().ok_or(ErrorKind::ResourceBusy)?;
+
+        let addr = ENGINE
+            .with_iface_for(addr, |iface| iface.ip_addrs()[0])
+            .unwrap();
+        if let Err(e) = sock.bind((addr.address(), port)) {
+            ENGINE.return_port(port);
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                format!("failed to bind to ephemeral port: {e}"),
+            ));
+        }
+        if !sock.endpoint().is_specified() {
+            return Err(Error::new(
+                ErrorKind::AddrNotAvailable,
+                "address not available",
+            ));
+        }
+        let port = sock.endpoint().port;
+        let socket_handle = ENGINE.add_udp_socket(sock);
+        Ok(Self {
+            inner: Arc::new(UdpSocketInner {
+                socket_handle,
+                port,
+                is_ephemeral_port: true,
+                rx_shutdown: AtomicBool::new(false),
+                connect_addr: Mutex::new(None),
+            }),
+        })
     }
 
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self, Error> {
@@ -624,7 +707,12 @@ impl UdpSocket {
 
 impl Drop for UdpSocketInner {
     fn drop(&mut self) {
-        ENGINE.track(self.socket_handle, self.port, self.is_ephemeral_port);
+        ENGINE.track(
+            self.socket_handle,
+            self.port,
+            self.is_ephemeral_port,
+            SockKind::Udp,
+        );
     }
 }
 

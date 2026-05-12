@@ -36,43 +36,11 @@ pub fn clear_rustflags() {
     std::env::remove_var("CARGO_TARGET_DIR");
 }
 
-pub fn get_lld_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
-    let llvm_bin = get_toolchain_path()?
-        .join("rust/build")
-        .join(host_triple)
-        .join("lld/bin");
-    Ok(llvm_bin)
-}
-
-pub fn get_rustlib_bin(host_triple: &str) -> anyhow::Result<PathBuf> {
-    let rustlib_bin = get_toolchain_path()?
-        .join("lib/rustlib")
-        .join(host_triple)
-        .join("bin");
-    Ok(rustlib_bin)
-}
-
 pub fn get_rustlib_lib(host_triple: &str) -> anyhow::Result<PathBuf> {
     let rustlib_bin = get_toolchain_path()?
         .join("lib/rustlib")
         .join(host_triple)
         .join("lib");
-    Ok(rustlib_bin)
-}
-
-pub fn get_compiler_rt_path() -> anyhow::Result<PathBuf> {
-    let compiler_rt = get_toolchain_path()?.join("rust/src/llvm-project/compiler-rt");
-
-    Ok(compiler_rt)
-}
-
-pub fn get_rust_lld(host_triple: &str) -> anyhow::Result<PathBuf> {
-    let rustlib_bin = get_toolchain_path()?
-        .join("rust/build")
-        .join(host_triple)
-        .join("stage1/lib/rustlib")
-        .join(host_triple)
-        .join("bin/rust-lld");
     Ok(rustlib_bin)
 }
 
@@ -84,15 +52,6 @@ pub fn get_rust_stage2_std(host_triple: &str, target_triple: &str) -> anyhow::Re
         .join(target_triple)
         .join("release");
 
-    Ok(dir)
-}
-
-pub fn get_llvm_native_runtime_install(target_triple: &str) -> anyhow::Result<PathBuf> {
-    let archive_name = "libclang_rt.builtins.a";
-    let dir = get_toolchain_path()?
-        .join("lib/clang/21/lib")
-        .join(target_triple)
-        .join(archive_name);
     Ok(dir)
 }
 
@@ -112,5 +71,5 @@ pub fn get_python_path() -> anyhow::Result<PathBuf> {
 pub fn get_sysroots_path(target_triple: &str) -> anyhow::Result<PathBuf> {
     let mut tc_path = get_toolchain_path()?;
     tc_path.push(format!("sysroots/{}/lib", target_triple));
-    Ok(tc_path)
+    Ok(tc_path.canonicalize()?)
 }

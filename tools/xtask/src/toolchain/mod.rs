@@ -6,12 +6,16 @@ use std::{
 use bootstrap::do_bootstrap;
 use clap::{Args, Subcommand};
 use guess_host_triple::guess_host_triple;
-use pathfinding::{get_rustc_path, get_rustdoc_path, get_rustlib_bin};
+use pathfinding::{get_rustc_path, get_rustdoc_path};
 
-use crate::triple::{Arch, Triple};
+use crate::{
+    toolchain::ports::{build_and_install_ports, PortOptions},
+    triple::{Arch, Triple},
+};
 
 mod bootstrap;
 mod pathfinding;
+mod ports;
 mod utils;
 
 pub use pathfinding::*;
@@ -19,10 +23,6 @@ pub use utils::*;
 
 #[derive(clap::Args, Debug)]
 pub struct BootstrapOptions {
-    #[clap(long, help = "Skip downloading boot files from file server.")]
-    skip_downloads: bool,
-    #[clap(long, help = "Skip compiling the rust toolchain (not recommended...).")]
-    skip_rust: bool,
     #[clap(
         long,
         help = "Don't remove the target/ directory after rebuilding the toolchain."
@@ -48,6 +48,25 @@ pub struct BootstrapOptions {
         help = "Compresses the toolchain after bootstrapping for distribution"
     )]
     compress: bool,
+    #[clap(
+        long,
+        help = "Only do these steps (can be specified multiple times). Default: all. Steps include: prep,llvm,libc,libcxx,rust,crt,rt."
+    )]
+    step: Option<Vec<String>>,
+}
+
+impl BootstrapOptions {
+    pub fn has_step(&self, s: &str) -> bool {
+        if self.step.as_ref().is_none_or(|x| x.is_empty()) {
+            return true;
+        }
+        let s = s.to_string();
+        let all = "all".to_string();
+        self.step
+            .as_ref()
+            .map(|steps| steps.contains(&s) || steps.contains(&all))
+            .unwrap_or(true)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -76,6 +95,9 @@ pub enum ToolchainCommands {
 
     /// Compresses the active toolchain for distribution
     Compress,
+
+    /// Build non-rust ports
+    Ports(PortOptions),
 }
 
 #[derive(Args, Debug)]
@@ -102,6 +124,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             .block_on(pull_toolchain())?),
         ToolchainCommands::Prune => prune_toolchain(),
         ToolchainCommands::Compress => compress_toolchain(),
+        ToolchainCommands::Ports(opts) => build_and_install_ports(&opts),
         ToolchainCommands::Active => {
             match get_toolchain_path()?.canonicalize() {
                 Ok(_) => {
@@ -174,7 +197,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
 }
 
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
-    let sysroot_path = get_sysroots_path(target.to_string().as_str())?;
+    let mut sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
     // rust's linkage support.
@@ -183,21 +206,26 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     } else {
         ""
     };
-    let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {}", extra_rustflags, sysroot_path.display(), sysroot_path.display());
+    let args = format!("-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr", extra_rustflags, sysroot_path.display(), sysroot_path.display());
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
+    sysroot_path.pop();
+    sysroot_path.pop();
     std::env::set_var("TWIZZLER_ABI_SYSROOTS", sysroot_path.canonicalize()?);
 
     Ok(())
 }
 
 pub fn set_static(target: &Triple) {
-    let sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
+    let mut sysroot_path = get_sysroots_path(target.to_string().as_str()).unwrap();
+    let rustlib_path = crate::toolchain::get_rustlib_lib(target.to_string().as_str()).unwrap();
     std::env::set_var(
         "RUSTFLAGS",
-        &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {}",  sysroot_path.display(), sysroot_path.display()),
+        &format!("-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a",  sysroot_path.display(), sysroot_path.display(), rustlib_path.display(), sysroot_path.display()),
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/static");
+    sysroot_path.pop();
+    sysroot_path.pop();
     std::env::set_var(
         "TWIZZLER_ABI_SYSROOTS",
         sysroot_path.canonicalize().unwrap(),
@@ -205,20 +233,21 @@ pub fn set_static(target: &Triple) {
 }
 
 pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
-    //TODO: make sure we have the toolchain we need, if not then prompt to build it / error out if
-    // its a non-interactive
-    //
-
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(check_toolchain())?;
+    let tag = generate_tag()?;
+    let toolchain_path = Path::new("toolchain").join(&tag);
+    std::fs::create_dir_all(&toolchain_path)?;
+    let _ = std::fs::remove_file("toolchain/install");
+    std::os::unix::fs::symlink(&tag, "toolchain/install")?;
 
     let python_path = get_python_path()?.canonicalize()?;
     let builtin_headers = get_builtin_headers()?.canonicalize()?;
-    let compiler_rt_path = get_compiler_rt_path()?.canonicalize()?;
-    let lld_bin = get_lld_bin(guess_host_triple().unwrap())?.canonicalize()?;
-    let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?.canonicalize()?;
+    //let compiler_rt_path = get_compiler_rt_path()?.canonicalize()?;
+    //let lld_bin = get_lld_bin(guess_host_triple().unwrap())?.canonicalize()?;
+    //let rustlib_bin = get_rustlib_bin(guess_host_triple().unwrap())?.canonicalize()?;
     let toolchain_bin = get_bin_path()?.canonicalize()?;
     let path = std::env::var("PATH").unwrap();
 
@@ -227,14 +256,14 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     std::env::set_var("CARGO_CACHE_RUSTC_INFO", "0");
     std::env::set_var("PYTHONPATH", python_path);
     std::env::set_var("TWIZZLER_ABI_BUILTIN_HEADERS", builtin_headers);
-    std::env::set_var("RUST_COMPILER_RT_ROOT", compiler_rt_path);
+    //std::env::set_var("RUST_COMPILER_RT_ROOT", compiler_rt_path);
 
     std::env::set_var(
         "PATH",
         format!(
-            "{}:{}:{}:{}",
-            rustlib_bin.canonicalize()?.to_string_lossy(),
-            lld_bin.canonicalize()?.to_string_lossy(),
+            "{}:{}",
+            //rustlib_bin.canonicalize()?.to_string_lossy(),
+            //lld_bin.canonicalize()?.to_string_lossy(),
             toolchain_bin.canonicalize()?.to_string_lossy(),
             path
         ),
@@ -268,6 +297,7 @@ git submodule update --init --recursive
 cargo toolchain bootstrap
                 "#
             );
+            anyhow::bail!("No toolchain found!");
         }
     }
 

@@ -17,7 +17,7 @@ pub(crate) unsafe extern "C-unwind" fn twz_rt_upcall_entry_c(
 }
 
 #[no_mangle]
-#[naked]
+#[unsafe(naked)]
 /// TLS descriptor resolver for static TLS relocations
 pub unsafe extern "C" fn _tlsdesc_static(desc: *const TlsDesc) {
     // The offset for the variable in the static TLS block is

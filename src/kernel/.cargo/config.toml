@@ -14,6 +14,7 @@ rustflags = [
     "sha2_backend=\"soft\"",
     "-C",
     "debuginfo=2",
+    "-C", "linker=ld.lld",
 ]
 
 [target.aarch64-unknown-none]
@@ -24,6 +25,7 @@ rustflags = [
     "link-arg=--image-base=0xffffffff80100000",
     "--cfg",
     "chacha20_force_soft",
+    "-C", "linker=ld.lld",
 ]
 
 #[profile.dev]
@@ -32,8 +34,9 @@ rustflags = [
 #]
 
 [env]
-CC = "clang"
-CXX = "clang++"
+CC = "toolchain/install/clang"
+CXX = "toolchain/install/clang++"
+LD = "toolchain/install/clang"
 
 [build]
 target = "target-spec/x86_64-unknown-none.json"

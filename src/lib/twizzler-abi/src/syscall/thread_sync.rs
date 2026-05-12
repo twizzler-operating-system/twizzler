@@ -72,6 +72,14 @@ impl ThreadSyncReference {
                 .into(),
         }
     }
+
+    pub fn address(&self) -> Option<*mut u8> {
+        match self {
+            ThreadSyncReference::ObjectRef(_, _) => None,
+            ThreadSyncReference::Virtual(p) => Some(*p as *mut u8),
+            ThreadSyncReference::Virtual32(p) => Some(*p as *mut u8),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -86,6 +94,28 @@ pub struct ThreadSyncSleep {
     pub op: ThreadSyncOp,
     /// Flags to apply to this sleep request.
     pub flags: ThreadSyncFlags,
+}
+
+impl From<(&AtomicU64, u64)> for ThreadSyncSleep {
+    fn from((reference, value): (&AtomicU64, u64)) -> Self {
+        Self {
+            reference: ThreadSyncReference::Virtual(reference),
+            value,
+            op: ThreadSyncOp::Equal,
+            flags: ThreadSyncFlags::empty(),
+        }
+    }
+}
+
+impl From<(*const AtomicU64, u64)> for ThreadSyncSleep {
+    fn from((reference, value): (*const AtomicU64, u64)) -> Self {
+        Self {
+            reference: ThreadSyncReference::Virtual(reference),
+            value,
+            op: ThreadSyncOp::Equal,
+            flags: ThreadSyncFlags::empty(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]

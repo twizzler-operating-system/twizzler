@@ -94,6 +94,32 @@ pub struct PageRange {
 }
 
 impl PageRange {
+    pub fn holes<const N: usize>(
+        &self,
+        off: usize,
+        holes: &mut heapless::Vec<(usize, usize), N>,
+    ) -> usize {
+        if off >= self.length {
+            return self.length;
+        }
+        match &self.backing {
+            BackingPages::Nothing => {
+                holes.push((off, self.length - off)).ok();
+                self.length
+            }
+            BackingPages::Single(page_ref) => {
+                if self.offset + off >= page_ref.nr_pages() {
+                    let delta = (self.offset + off) - page_ref.nr_pages();
+                    holes.push((off, delta)).ok();
+                    self.length
+                } else {
+                    (page_ref.nr_pages() - self.offset).min(self.length - off) + off
+                }
+            }
+            BackingPages::Many(mutex) => mutex.lock().holes(self.offset + off, holes),
+        }
+    }
+
     fn new(start: PageNumber) -> Self {
         Self {
             start,
@@ -293,6 +319,7 @@ pub struct PageRangeTree {
     id: ObjID,
 }
 
+#[derive(Debug)]
 pub enum PageStatus {
     Ready(PageRef, bool),
     NoPage,
@@ -343,7 +370,9 @@ impl PageRangeTree {
             // No work to do
             return true;
         };
+        log::trace!("split_into_three: splitting range {:?} at {}", range, pn);
         let (r1, mut r2, r3) = range.split_at(pn);
+        log::trace!("split_into_three: split into {:?}, {:?}, {:?}", r1, r2, r3);
         /* r2 is always the one we want */
         let backing = if discard {
             BackingPages::Nothing
@@ -366,6 +395,9 @@ impl PageRangeTree {
 
             let Some(backing) = clone(&r2.backing) else {
                 // Failed to allocate pages, restore the tree.
+                log::warn!(
+                    "split_into_three: failed to clone backing pages, restoring original range"
+                );
                 self.tree.insert(range.range(), range);
                 return false;
             };
@@ -375,14 +407,17 @@ impl PageRangeTree {
         r2.backing = backing;
 
         if let Some(r1) = r1 {
+            log::trace!("split_into_three: inserting first range {:?}", r1);
             let res = self.insert_replace(r1.range(), r1);
             assert_eq!(res.len(), 0);
         }
 
+        log::trace!("split_into_three: inserting middle range {:?}", r2);
         let res = self.insert_replace(r2.range(), r2);
         assert_eq!(res.len(), 0);
 
         if let Some(r3) = r3 {
+            log::trace!("split_into_three: inserting last range {:?}", r3);
             let res = self.insert_replace(r3.range(), r3);
             assert_eq!(res.len(), 0);
         }
@@ -423,7 +458,6 @@ impl PageRangeTree {
             return PageStatus::Ready(page, shared);
         }
         if let Some(allocator) = allocator {
-            log::debug!("split into three: {} {:?}", pn, flags);
             if !self.split_into_three(pn, false, allocator) {
                 return PageStatus::AllocFail;
             }

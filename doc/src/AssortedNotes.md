@@ -3,7 +3,7 @@
 ## Updating the toolchain
 
 1. Update the repos. Go into toolchain/src/rust and, for each of ., library/libc, library/backtrace, and src/llvm-project, you'll need to:
-    a. Add the upstream remote (usually github rust-lang/<name of repo>, though backtrace is called "backtrace-rs" there)
+    a. Add the upstream remote (usually github rust-lang/\<name of repo\>, though backtrace is called "backtrace-rs" there)
     b. Ensure you've fetched the twizzler branch from origin, and the following branches from upstream:
         - libc: "libc-2.0"
         - bracktrace: "master"

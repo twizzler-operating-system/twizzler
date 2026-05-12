@@ -1,6 +1,6 @@
 use super::{
-    consistency::{Consistency, DeferredUnmappingOps},
     MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, SharedPageTable,
+    consistency::{Consistency, DeferredUnmappingOps},
 };
 use crate::arch::{
     address::PhysAddr,

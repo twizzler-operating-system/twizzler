@@ -61,6 +61,10 @@ impl PacketObject {
         self.obj.id()
     }
 
+    pub fn object(&self) -> &Object<PacketBufferBase> {
+        &self.obj
+    }
+
     pub fn new(
         spec: ObjectCreate,
         nr_packets: usize,
@@ -77,6 +81,12 @@ impl PacketObject {
 
     pub fn packet_size(&self) -> usize {
         self.obj.base().packet_size.max(MIN_PACKET_SIZE)
+    }
+
+    pub fn packet_offset(&self, id: u32) -> usize {
+        let offset =
+            self.obj.base().packet_mem_offset_from_base() + (id as usize * self.packet_size());
+        offset + NULLPAGE_SIZE
     }
 
     pub fn packet_mem(&self, id: u32) -> &[u8] {

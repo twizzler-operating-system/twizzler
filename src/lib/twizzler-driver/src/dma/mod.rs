@@ -11,7 +11,7 @@ mod region;
 use std::cell::UnsafeCell;
 
 pub use object::DmaObject;
-pub use pin::{DmaPin, PhysAddr, PhysInfo, PinError};
+pub use pin::{DmaPin, PhysAddr, PhysInfo};
 pub use pool::DmaPool;
 pub use region::{DmaRegion, DmaSliceRegion};
 

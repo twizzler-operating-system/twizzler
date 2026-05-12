@@ -1,5 +1,6 @@
 target
 toolchain/install
+toolchain/build
 toolchain/toolchain*
 .vscode
 workspace.code-workspace

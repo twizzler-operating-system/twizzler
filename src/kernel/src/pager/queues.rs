@@ -175,6 +175,13 @@ fn pager_compl_handle_page_data(
         phys_range,
         pcount
     );
+    if obj_range.len() != phys_range.len() {
+        log::warn!(
+            "object and phys range lengths differ (obj: {}, phys: {})",
+            obj_range.len(),
+            phys_range.len()
+        );
+    }
 
     if !flags.contains(PageFlags::WIRED) {
         log::trace!(
@@ -194,14 +201,16 @@ fn pager_compl_handle_page_data(
     let mut count = 0;
     let max_obj = obj_range.page_count();
     let max_phys = phys_range.page_count();
-    while count < max_obj {
+    let max = max_obj.min(max_phys);
+    while count < max {
         let objpage_nr = obj_range.pages().nth(count).unwrap();
         let physpage_nr = phys_range.pages().nth(count).unwrap();
 
         let pn = PageNumber::from(objpage_nr as usize);
         let pa = PhysAddr::new(physpage_nr * PageNumber::PAGE_SIZE as u64).unwrap();
 
-        let thiscount = (max_obj - count).min(max_phys - count);
+        // TODO: reenable multipage once the page tree bug is fixed.
+        let thiscount = (max_obj - count).min(max_phys - count).min(1);
         let page = if flags.contains(PageFlags::WIRED) {
             log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
             Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)

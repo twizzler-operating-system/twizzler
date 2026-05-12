@@ -62,7 +62,8 @@ Building Twizzler is done in several steps:
 
   0. Building xtask.
   1. Fetching/Building the toolchain.
-  2. Building Twizzler itself.
+  2. (optional) Building third-party ports.
+  3. Building Twizzler itself.
 
 Fortunately, step 0 is handled automatically whenever we try to do anything. That's because xtask is
 the "build system orchestrator". Essentially, building Twizzler requires using the right toolchain,
@@ -89,7 +90,7 @@ If not, please make an issue requesting support for your OS/architecture combina
 and in the meantime do the following to use a locally compiled toolchain.
 
 Warning! This will take around 1-3 hours depending on your machine, as well as
-requiring 50 gigs of free storage for that duration.
+requiring 50 gigs of free storage for that duration. Make some tea while you wait.
 
 ```
 cd where/you/cloned/twizzler
@@ -98,12 +99,40 @@ cargo toolchain bootstrap
 ```
 
 This will compile llvm and bootstrap the rust compiler, both
-of which take a long time. At the end, you should see a "build completed successfully" message,
-followed by a few lines about building crti and friends.
+of which take a long time. At the end, you should see a "ready!" message.
 
-## Step 2: Building Twizzler
+## Step 2: (optional) Building third-party ports.
 
-Now that we've got the toolchain built and linked, we can compile the rest of Twizzler. Run
+This step is optional, but provides additional common utilities for the Twizzler system.
+Note that many of them currently are compiled in debug mode while we continue to develop libc support.
+
+Currently supported ports include:
+
+ * zlib (required for all)
+ * ncurses
+ * psl (required for curl)
+ * openssl (required for curl and python3)
+ * llvm
+ * python3 
+ * binutils (not including ld, as we use llvm-ld)
+ * curl
+
+This list can also be viewed by running ```cargo toolchain ports```.
+
+Any of these may be compiled and installed into the sysroot by running
+
+```cargo toolchain ports <port-name>...```
+
+Running `cargo toolchain ports @all` will install all currently supported ports.
+
+Important: after compiling any ports, you must update the disk image with
+`cargo xtask disk -f reset`.
+
+See [Ports documentation](Ports.md) for more info.
+
+## Step 3: Building Twizzler
+
+Now that we've got the toolchain built , we can compile the rest of Twizzler. Run
 
 ```
 cargo build-all

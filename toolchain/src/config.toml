@@ -13,16 +13,19 @@ assertions = true
 
 [build]
 target = []
+host = []
 submodules = false
 docs = false
 sanitizers = true
+build-dir = "../../build/rust"
 
 [rust]
-lld = true
+lld = false
 llvm-tools = true
 debug = true
 debuginfo-level = 1
 dist-src = false
+deny-warnings = false
 
 [dist]
 src-tarball = false

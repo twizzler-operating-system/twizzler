@@ -1,10 +1,13 @@
 use std::alloc::Layout;
 
+use tinyvec::TinyVec;
 use twizzler_abi::object::MAX_SIZE;
 use twizzler_rt_abi::core::CtorSet;
 
 use super::{Context, LoadedOrUnloaded};
-use crate::{compartment::CompartmentId, library::LibraryId, tls::TlsRegion, DynlinkError};
+use crate::{
+    compartment::CompartmentId, context::LoadIds, library::LibraryId, tls::TlsRegion, DynlinkError,
+};
 
 #[repr(C)]
 pub struct RuntimeInitInfo {
@@ -43,15 +46,21 @@ impl RuntimeInitInfo {
 
 impl Context {
     /// Build up a list of constructors to call for a library and its dependencies.
-    pub fn build_ctors_list(
+    pub fn build_ctors_list<const N: usize>(
         &self,
         root_id: LibraryId,
         comp: Option<CompartmentId>,
+        loads: Option<TinyVec<[LoadIds; N]>>,
     ) -> Result<Vec<CtorSet>, DynlinkError> {
         let mut ctors = vec![];
         self.with_dfs_postorder(root_id, |lib| match lib {
             LoadedOrUnloaded::Unloaded(_) => {}
             LoadedOrUnloaded::Loaded(lib) => {
+                if let Some(ref loads) = loads {
+                    if !loads.iter().any(|load| load.lib == lib.id()) {
+                        return;
+                    }
+                }
                 if let Some(comp) = comp {
                     if comp == lib.comp_id {
                         ctors.push(lib.ctors);
@@ -70,7 +79,7 @@ impl Context {
         root_id: LibraryId,
         tls: TlsRegion,
     ) -> Result<RuntimeInitInfo, DynlinkError> {
-        let ctors = self.build_ctors_list(root_id, None)?;
+        let ctors = self.build_ctors_list::<32>(root_id, None, None)?;
         Ok(RuntimeInitInfo::new(
             tls,
             self,

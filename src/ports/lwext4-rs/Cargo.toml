@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+pager-dynamic = { path = "../../lib/pager/pager-dynamic" }
+libc = "*"
 
 [build-dependencies]

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::CStr};
+use std::{collections::HashMap, ffi::CStr, time::Instant};
 
 use dynlink::{
     compartment::{Compartment, CompartmentId},
@@ -292,6 +292,7 @@ impl super::Monitor {
             sctx: comp.sctx,
             flags: comp.raw_flags(),
             nr_libs,
+            exit_code: comp.read_error_code(),
         })
     }
 
@@ -476,6 +477,7 @@ impl super::Monitor {
         config: *const CompartmentLoaderConfig,
     ) -> Result<Descriptor, TwzError> {
         // TODO: verify config pointer
+        let _start_1 = Instant::now();
         let config = unsafe { config.read() };
         let total_bytes = name_len + args_len + env_len;
         let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
@@ -503,7 +505,6 @@ impl super::Monitor {
             .map(CStr::from_bytes_with_nul)
             .try_collect::<Vec<_>>()
             .map_err(|_| TwzError::INVALID_ARGUMENT)?;
-        tracing::trace!("load {}: env: {:?}", compname, env);
 
         let extras = env
             .iter()
@@ -537,6 +538,7 @@ impl super::Monitor {
             .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
             .is_some();
 
+        let _start_2 = Instant::now();
         let loader = {
             let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
             loader::RunCompLoader::new(
@@ -549,6 +551,7 @@ impl super::Monitor {
                 mondebug,
             )
         }
+        .inspect_err(|e| tracing::error!("failed to load new compartment: {}", e))
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
@@ -570,19 +573,28 @@ impl super::Monitor {
                     controller,
                     config,
                 )
+                .inspect_err(|e| tracing::error!("failed to setup new compartment: {}", e))
                 .map_err(|_| GenericError::Internal)?
         };
         tracing::trace!("loaded {} as {}", compname, root_comp);
 
         let desc = self.get_compartment_handle(caller, root_comp)?;
 
+        let _start_3 = Instant::now();
         self.start_compartment(
             root_comp,
             &args,
             &env,
             mondebug,
             new_comp_flags.contains(NewCompartmentFlags::DEBUG),
-        )?;
+        )
+        .inspect_err(|e| tracing::error!("failed to start new compartment: {}", e))?;
+        tracing::trace!(
+            "parse strings in {}ms, load in {}ms, start in {}ms",
+            (_start_2 - _start_1).as_millis(),
+            (_start_3 - _start_2).as_millis(),
+            _start_3.elapsed().as_millis()
+        );
 
         Ok(desc)
     }
@@ -600,7 +612,6 @@ impl super::Monitor {
             }
             cmgr.process_cleanup_queue(&mut *dynlink)
         };
-        tracing::trace!("HRE");
         drop(comps);
     }
 

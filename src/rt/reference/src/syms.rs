@@ -86,10 +86,13 @@ use std::{
 };
 
 use tracing::warn;
-use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
+use twizzler_abi::{
+    object::{ObjID, MAX_SIZE},
+    syscall::ObjectCreate,
+};
 // core.h
 use twizzler_rt_abi::bindings::{
-    binding_info, endpoint, io_ctx, name_resolver, name_root, object_cmd, object_create,
+    binding_info, endpoint, fd_set, io_ctx, name_resolver, name_root, object_cmd, object_create,
     object_source, object_tie, option_exit_code, release_flags, twz_error, u32_result, wait_kind,
 };
 use twizzler_rt_abi::error::{ArgumentError, RawTwzError, TwzError};
@@ -137,10 +140,11 @@ pub unsafe extern "C-unwind" fn twz_rt_runtime_entry(
             arg1: twizzler_rt_abi::bindings::basic_aux,
         ) -> twizzler_rt_abi::bindings::basic_return,
     >,
+    main: usize,
 ) {
-    OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked())
+    OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked(), main)
 }
-check_ffi_type!(twz_rt_runtime_entry, _, _);
+check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_cross_compartment_entry() -> bool {
@@ -220,7 +224,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
     ptr: *mut u32,
     expected: twizzler_rt_abi::bindings::futex_word,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> bool {
+) -> twizzler_rt_abi::bindings::twz_error {
     if timeout.is_some != 0 {
         OUR_RUNTIME.futex_wait(&*ptr.cast(), expected, Some(timeout.dur.into()))
     } else {
@@ -230,7 +234,10 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
 check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[no_mangle]
-pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> bool {
+pub unsafe extern "C-unwind" fn twz_rt_futex_wake(
+    ptr: *mut u32,
+    max: i64,
+) -> twizzler_rt_abi::bindings::twz_error {
     OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize)
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
@@ -248,6 +255,18 @@ pub unsafe extern "C-unwind" fn twz_rt_set_name(name: *const ::core::ffi::c_char
     }
 }
 check_ffi_type!(twz_rt_set_name, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_name(
+    tcb: *const c_void,
+    name: *mut core::ffi::c_char,
+    len: *mut usize,
+) {
+    unsafe {
+        *len = OUR_RUNTIME.get_name(tcb, core::slice::from_raw_parts_mut(name.cast(), *len));
+    }
+}
+check_ffi_type!(twz_rt_get_name, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_sleep(dur: twizzler_rt_abi::bindings::duration) {
@@ -401,17 +420,83 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_waitpoint(
     kind: wait_kind,
     point: *mut *mut u64,
     val: *mut u64,
+    ready: *mut bool,
 ) -> twz_error {
     match OUR_RUNTIME.fd_waitpoint(fd, kind) {
-        Ok((pt, v)) => {
-            point.write(pt.cast::<u64>() as *mut _);
-            val.write(v);
+        Ok((ts, is_ready)) => {
+            point.write(
+                ts.reference
+                    .address()
+                    .unwrap_or(core::ptr::null_mut())
+                    .cast(),
+            );
+            val.write(ts.value);
+            ready.write(is_ready);
             RawTwzError::success().raw()
         }
         Err(e) => e.raw(),
     }
 }
-check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _);
+check_ffi_type!(twz_rt_fd_waitpoint, _, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_select(
+    nfds: usize,
+    readfds: *mut fd_set,
+    writefds: *mut fd_set,
+    exceptfds: *mut fd_set,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    match OUR_RUNTIME.select(
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        if timeout.is_some != 0 {
+            Some(timeout.dur.into())
+        } else {
+            None
+        },
+    ) {
+        Ok(result) => io_result {
+            err: TwzError::SUCCESS.raw(),
+            val: result,
+        },
+        Err(e) => io_result {
+            err: e.raw(),
+            val: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_fd_select, _, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_poll(
+    fds: *mut twizzler_rt_abi::bindings::pollfd,
+    nfds: usize,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    let fd_slice = unsafe { core::slice::from_raw_parts_mut(fds, nfds) };
+    match OUR_RUNTIME.ppoll(
+        fd_slice,
+        if timeout.is_some != 0 {
+            Some(timeout.dur.into())
+        } else {
+            None
+        },
+        core::ptr::null(),
+    ) {
+        Ok(result) => io_result {
+            err: TwzError::SUCCESS.raw(),
+            val: result,
+        },
+        Err(e) => io_result {
+            err: e.raw(),
+            val: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_fd_poll, _, _, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
@@ -467,6 +552,19 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
     }
 }
 check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
+    id: twizzler_rt_abi::bindings::thread_id,
+) -> twizzler_rt_abi::bindings::thread_info {
+    let id = if id == twizzler_rt_abi::bindings::TWZ_RT_THREAD_ID_SELF {
+        None
+    } else {
+        Some(id)
+    };
+    OUR_RUNTIME.thread_get_info(id)
+}
+check_ffi_type!(twz_rt_get_thread_info, _);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
@@ -539,7 +637,7 @@ pub unsafe extern "C-unwind" fn twz_rt_set_nameroot(
 check_ffi_type!(twz_rt_set_nameroot, _, _, _);
 
 // io.h
-use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
+use twizzler_rt_abi::bindings::{io_result, iovec, whence};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
@@ -624,7 +722,7 @@ check_ffi_type!(twz_rt_fd_seek, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -636,7 +734,7 @@ check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -1090,45 +1188,191 @@ pub unsafe extern "C-unwind" fn _ZdlPvm() {}
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_error() -> *const c_char {
-    core::ptr::null()
+    take_dl_error()
 }
+
 use core::ffi::c_int;
+use std::cell::RefCell;
+
+#[thread_local]
+static DLAPI_ERROR: RefCell<Option<std::ffi::CString>> = const { RefCell::new(None) };
+
+fn set_dl_error(msg: impl Into<Vec<u8>>) {
+    *DLAPI_ERROR.borrow_mut() = std::ffi::CString::new(msg).ok();
+}
+
+fn take_dl_error() -> *const c_char {
+    DLAPI_ERROR
+        .borrow_mut()
+        .take()
+        .map(|s| s.into_raw() as *const c_char)
+        .unwrap_or(core::ptr::null())
+}
+
+/// The __dlapi_symbol struct as defined by mlibc's dlfcn.cpp.
+#[repr(C)]
+struct DlapiSymbol {
+    file: *const c_char,
+    base: *mut c_void,
+    symbol: *const c_char,
+    address: *mut c_void,
+    elf_symbol: *const c_void,
+    link_map: *mut c_void,
+}
+
+/// Encode a `Descriptor` as a non-null `void*` handle (offset by 1 so descriptor 0 != NULL).
+fn desc_to_handle(desc: secgate::util::Descriptor) -> *mut c_void {
+    (desc as usize + 1) as *mut c_void
+}
+
+/// Decode a handle back to a descriptor. Returns `None` for NULL (RTLD_DEFAULT).
+fn handle_to_desc(handle: *const c_void) -> Option<secgate::util::Descriptor> {
+    let v = handle as usize;
+    if v == 0 {
+        None
+    } else {
+        Some((v - 1) as secgate::util::Descriptor)
+    }
+}
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_open(
-    _: *const c_char,
-    _: c_int,
-    _: *const c_void,
-) -> *const c_char {
-    core::ptr::null()
+    filename: *const c_char,
+    _flags: c_int,
+    _return_addr: *const c_void,
+) -> *mut c_void {
+    //twizzler_abi::klog_println!("called __dlapi_open with filename = {:p}", filename);
+    if filename.is_null() {
+        return core::ptr::null_mut(); // RTLD_DEFAULT sentinel
+    }
+    let name = match unsafe { std::ffi::CStr::from_ptr(filename) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            set_dl_error("dlopen: invalid UTF-8 in filename");
+            return core::ptr::null_mut();
+        }
+    };
+    let id = OUR_RUNTIME
+        .resolve_name(twizzler_rt_abi::fd::NameResolver::Default, name.as_bytes())
+        .ok();
+    match monitor_api::LibraryLoader::new(name, id).load() {
+        Ok(desc) => desc_to_handle(desc.into_raw()),
+        Err(e) => {
+            set_dl_error(format!("dlopen: library '{}' not found: {:?}", name, e));
+            core::ptr::null_mut()
+        }
+    }
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_resolve(
-    _: *const c_void,
-    _: *const c_char,
-    _: *const c_void,
-    _: *const c_char,
-) -> *const c_char {
-    core::ptr::null()
+    handle: *const c_void,
+    symbol: *const c_char,
+    _return_addr: *const c_void,
+    _version: *const c_char,
+) -> *mut c_void {
+    let sym_name = match unsafe { std::ffi::CStr::from_ptr(symbol) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            set_dl_error("dlsym: invalid UTF-8 in symbol name");
+            return core::ptr::null_mut();
+        }
+    };
+    let lib_desc = handle_to_desc(handle);
+    match monitor_api::lookup_symbol_by_name(lib_desc, sym_name) {
+        Ok(addr) if addr != 0 => addr as *mut c_void,
+        Ok(_) => {
+            set_dl_error(format!("dlsym: symbol '{}' resolved to NULL", sym_name));
+            core::ptr::null_mut()
+        }
+        Err(e) => {
+            set_dl_error(format!("dlsym: symbol '{}' not found: {:?}", sym_name, e));
+            core::ptr::null_mut()
+        }
+    }
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
-    core::ptr::null()
+pub unsafe extern "C" fn __dlapi_reverse(
+    ptr: *const c_void,
+    out: *mut c_void, // actually *mut DlapiSymbol
+) -> c_int {
+    //twizzler_abi::klog_println!("called __dlapi_reverse with ptr = {:p}", ptr);
+    if out.is_null() {
+        return 1;
+    }
+    let out = unsafe { &mut *(out as *mut DlapiSymbol) };
+
+    // Iterate libraries in the current compartment until we find one whose mapped
+    // range contains `ptr`.
+    let mut lib_n: usize = 0;
+    loop {
+        let desc = match monitor_api::monitor_rt_get_library_handle(None, lib_n) {
+            Ok(d) => d,
+            Err(_) => break,
+        };
+        let raw = match monitor_api::monitor_rt_get_library_info(desc) {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+                break;
+            }
+        };
+        let lib_info = monitor_api::LibraryInfo::from_raw(raw);
+        let base = lib_info.dl_info.addr as *const u8;
+        let len = lib_info.len;
+
+        if !base.is_null()
+            && (ptr as usize) >= (base as usize)
+            && (ptr as usize) < (base as usize + MAX_SIZE * 2)
+        {
+            // TODO: this leaks.
+            let name_cstring = std::ffi::CString::new(lib_info.name.clone()).unwrap_or_default();
+            let name_ptr: *const c_char = name_cstring.into_raw();
+            let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+            out.file = name_ptr;
+            out.base = base as *mut c_void;
+            out.symbol = core::ptr::null();
+            out.address = core::ptr::null_mut();
+            out.elf_symbol = core::ptr::null();
+            out.link_map = lib_info.link_map.0.ld.cast();
+            return 0;
+        }
+
+        let _ = monitor_api::monitor_rt_drop_library_handle(desc);
+        lib_n += 1;
+    }
+    1 // not found
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_close(_: *const c_void) -> *const c_char {
-    core::ptr::null()
+pub unsafe extern "C" fn __dlapi_close(handle: *const c_void) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+    let Some(desc) = handle_to_desc(handle) else {
+        return 0;
+    };
+    match monitor_api::monitor_rt_drop_library_handle(desc) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
 }
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __dlapi_find_object() -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_find_object: not yet implemented");
+    core::ptr::null()
+}
+
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __dlapi_get_tls() -> *const c_char {
+    twizzler_abi::klog_println!("called __dlapi_get_tls: not yet implemented");
     core::ptr::null()
 }

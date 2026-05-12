@@ -2,17 +2,17 @@ use alloc::{sync::Arc, vec::Vec};
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
-    object::{Protections, MAX_SIZE},
+    object::{MAX_SIZE, Protections},
     slot::RESERVED_STACK,
     syscall::MapFlags,
 };
-use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RuntimeInfo, RUNTIME_INIT_MIN};
+use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RUNTIME_INIT_MIN, RuntimeInfo};
 use xmas_elf::program::SegmentData;
 
 use crate::{
     get_boot_info,
     initrd::get_boot_objects,
-    memory::{context::UserContext, VirtAddr},
+    memory::{VirtAddr, context::UserContext},
     obj::ObjectRef,
     thread::current_memory_context,
 };
@@ -165,6 +165,7 @@ pub extern "C" fn user_init() {
             init_info: InitInfoPtrs { min: min_start },
             args: argv_ptr.cast(),
             argc,
+            entry: elf.header.pt2.entry_point() as usize,
             envp: core::ptr::null_mut(),
         };
 

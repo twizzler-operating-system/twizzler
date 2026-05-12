@@ -44,6 +44,7 @@ pub fn load_segments(
             || directive.offset > MAX_SIZE - NULLPAGE_SIZE * 2
             || directive.filesz > directive.memsz
         {
+            tracing::error!("invalid directives: {:?}", directive);
             return Err(DynlinkError::new(DynlinkErrorKind::LoadDirectiveFail {
                 dir: *directive,
             }));
@@ -85,6 +86,12 @@ pub fn load_segments(
             // be after the NULLPAGE. Loading still works on aarch64, but copies data.
             #[cfg(target_arch = "x86_64")]
             if src_start != dest_start {
+                tracing::error!(
+                    "invalid align: {:?}, {:x} {:x}",
+                    directive,
+                    src_start,
+                    dest_start
+                );
                 // TODO: check len too.
                 return Err(DynlinkError::new(DynlinkErrorKind::LoadDirectiveFail {
                     dir: *directive,

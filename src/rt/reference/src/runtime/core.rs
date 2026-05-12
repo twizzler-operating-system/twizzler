@@ -6,6 +6,7 @@ use std::{
     ffi::{c_char, c_void, CStr, CString},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use dynlink::context::runtime::RuntimeInitInfo;
@@ -28,7 +29,7 @@ use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
-    runtime::RuntimeState,
+    runtime::{thread::libc_init_tcb, RuntimeState},
     OUR_RUNTIME,
 };
 
@@ -38,12 +39,26 @@ unsafe impl Send for PtrToInfo {}
 unsafe impl Sync for PtrToInfo {}
 static MON_RTINFO: OnceLock<Option<PtrToInfo>> = OnceLock::new();
 
+fn search_envs_enabled(envp: *mut *mut c_char, name: &str) -> bool {
+    unsafe {
+        let mut env = envp;
+        while !env.is_null() && !(*env).is_null() {
+            let s = std::ffi::CStr::from_ptr(*env);
+            if s.to_str().unwrap_or("").starts_with(name) {
+                return true;
+            }
+            env = env.add(1);
+        }
+        false
+    }
+}
+
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
         if self.state().contains(RuntimeState::READY) {
             let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
-            if id == 0 {
+            if id == 1 {
                 OUR_RUNTIME.close_fds();
             }
             twizzler_abi::syscall::sys_thread_exit(code as u64);
@@ -90,7 +105,11 @@ impl ReferenceRuntime {
         &self,
         rtinfo: *const RuntimeInfo,
         std_entry: unsafe extern "C-unwind" fn(BasicAux) -> BasicReturn,
-    ) -> ! {
+        main: usize,
+    ) {
+        if OUR_RUNTIME.state().contains(RuntimeState::READY) {
+            return;
+        }
         let rtinfo = unsafe { rtinfo.as_ref().unwrap() };
         match rtinfo.kind {
             RUNTIME_INIT_MONITOR => {
@@ -124,8 +143,10 @@ impl ReferenceRuntime {
                 }
                 entry_stack.push(0);
                 if !rtinfo.envp.is_null() {
-                    for env in unsafe { core::slice::from_raw_parts(rtinfo.envp, rtinfo.argc) } {
-                        entry_stack.push(*env as usize);
+                    let mut envp = rtinfo.envp;
+                    while !envp.is_null() && !unsafe { (*envp).is_null() } {
+                        entry_stack.push(unsafe { *envp } as usize);
+                        envp = unsafe { envp.add(1) };
                     }
                 }
                 entry_stack.push(0);
@@ -150,12 +171,23 @@ impl ReferenceRuntime {
             rtinfo.envp
         };
 
+        if !unsafe { __twz_enable_libc_trace.is_null() } {
+            let twz_enable_libc_trace =
+                unsafe { std::mem::transmute::<_, extern "C" fn()>(__twz_enable_libc_trace) };
+
+            if search_envs_enabled(env_ptr, "TWZ_LIBC_TRACE") {
+                twz_enable_libc_trace();
+            }
+        }
+
         // Step 3: call into libstd to finish setting up the standard library and call main
         let ba = BasicAux {
             argc: rtinfo.argc,
             args: rtinfo.args,
             env: env_ptr,
+            entry: main,
         };
+
         let ret = unsafe { std_entry(ba) };
         self.exit(ret.code);
     }
@@ -250,6 +282,7 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
+        let _start_1 = Instant::now();
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -260,17 +293,26 @@ impl ReferenceRuntime {
                 .ok(),
             );
         }
-        let mut tg = TLS_GEN_MGR.lock();
-        let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
-        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
-        twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
 
-        if !unsafe { __mlibc_entry.is_null() } {
-            let mlibc_entry = unsafe {
-                std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(__mlibc_entry)
+        let mut tg = TLS_GEN_MGR.lock();
+        let _start_2 = Instant::now();
+        let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        let _start_3 = Instant::now();
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        let _start_4 = Instant::now();
+        twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
+        let _start_5 = Instant::now();
+        libc_init_tcb(preinit_unwrap(tls));
+        self.init_core_thread(preinit_unwrap(tls));
+        if !unsafe { __mlibc_entry_from_rust.is_null() } {
+            let mlibc_entry_from_rust = unsafe {
+                std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(
+                    __mlibc_entry_from_rust,
+                )
             };
-            mlibc_entry(entry_stack, core::ptr::null_mut());
+            mlibc_entry_from_rust(entry_stack, core::ptr::null_mut());
         }
+        let _start_6 = Instant::now();
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -278,6 +320,18 @@ impl ReferenceRuntime {
             };
             self.init_ctors(ctor_slice);
         }
+
+        /*
+        preinit_println!(
+            "init: {}us, get_tls: {}ms, set_tls: {}ms, set_upcall: {}ms, mlibc: {}ms, ctors: {}ms",
+            (_start_2 - _start_1).as_micros(),
+            (_start_3 - _start_2).as_millis(),
+            (_start_4 - _start_3).as_millis(),
+            (_start_5 - _start_4).as_millis(),
+            (_start_6 - _start_5).as_millis(),
+            _start_6.elapsed().as_millis()
+        )
+        */
     }
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {
@@ -314,5 +368,35 @@ impl ReferenceRuntime {
 
 extern "C" {
     #[linkage = "extern_weak"]
-    static __mlibc_entry: *mut u8;
+    static __mlibc_entry_from_rust: *mut u8;
+    #[linkage = "extern_weak"]
+    static __twz_enable_libc_trace: *mut u8;
 }
+
+use twizzler_rt_abi::core::rt0::__rust_entry_from_c;
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub unsafe extern "C" fn _start() {
+    core::arch::naked_asm!(
+        "b {entry}",
+        entry = sym __rust_entry_from_c,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub unsafe extern "C" fn _start() {
+    // Align the stack and jump to rust code. If we come back, trigger an exception.
+    core::arch::naked_asm!(
+        "and rsp, 0xfffffffffffffff0",
+        "call {entry}",
+        "ud2",
+        entry = sym __rust_entry_from_c,
+    );
+}
+
+#[used]
+// Ensure the compiler doesn't optimize us away!
+static ENTRY: unsafe extern "C" fn() = _start;

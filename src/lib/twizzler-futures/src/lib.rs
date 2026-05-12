@@ -7,28 +7,34 @@ use twizzler_rt_abi::{
 };
 
 pub trait TwizzlerWaitable {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep;
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep;
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool);
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool);
 }
 
 impl<T: AsRawFd> TwizzlerWaitable for T {
-    fn wait_item_read(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        let (pt, val) = twz_rt_fd_waitpoint(self.as_raw_fd(), WAIT_READ).unwrap();
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(pt),
-            val,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+    fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        let (pt, val, ready) = twz_rt_fd_waitpoint(self.as_raw_fd(), WAIT_READ).unwrap();
+        (
+            ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(pt),
+                val,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ),
+            ready,
         )
     }
 
-    fn wait_item_write(&self) -> twizzler_abi::syscall::ThreadSyncSleep {
-        let (pt, val) = twz_rt_fd_waitpoint(self.as_raw_fd(), WAIT_WRITE).unwrap();
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(pt),
-            val,
-            twizzler_abi::syscall::ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+    fn wait_item_write(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
+        let (pt, val, ready) = twz_rt_fd_waitpoint(self.as_raw_fd(), WAIT_WRITE).unwrap();
+        (
+            ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(pt),
+                val,
+                twizzler_abi::syscall::ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ),
+            ready,
         )
     }
 }

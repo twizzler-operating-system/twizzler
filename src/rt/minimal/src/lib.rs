@@ -9,6 +9,7 @@
 #![feature(linkage)]
 #![feature(test)]
 #![feature(c_variadic)]
+#![feature(c_size_t)]
 
 use twizzler_abi::syscall::KernelConsoleSource;
 

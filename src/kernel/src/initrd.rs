@@ -93,10 +93,7 @@ pub fn init(modules: &[BootModule]) {
                 fotcount: 0,
                 extcount: 1,
             };
-            let me = MetaExt {
-                tag: MEXT_SIZED,
-                value: e.data().len() as u64,
-            };
+            let me = MetaExt::new(MEXT_SIZED, e.data().len() as u64);
             unsafe {
                 buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]

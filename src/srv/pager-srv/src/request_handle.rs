@@ -40,6 +40,7 @@ async fn handle_page_data_request_task(
         .unwrap()
         .len(id.raw())
         .await
+        .map(|x| x + PAGE)
         .unwrap_or(MAX_SIZE as u64)
         .min(MAX_SIZE as u64);
     if req_range.start >= MAX_SIZE as u64 {
@@ -119,6 +120,7 @@ async fn handle_page_data_request_task(
                 start: start.range.start,
                 end: last.range.end,
             };
+            tracing::trace!("{:?} ==> {:?} {:?}", id, req_range, phys_range);
 
             let start = req_range.start + (count + acc as u64) * PAGE;
             let range = ObjectRange::new(start, start + phys_range.len() as u64);
@@ -205,7 +207,7 @@ pub async fn handle_kernel_request(
     qid: u32,
     request: RequestFromKernel,
 ) -> Vec<CompletionToKernel> {
-    tracing::trace!("handling kernel request {:?}", request);
+    tracing::debug!("handling kernel request {:?}", request);
 
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range, flags) => {

@@ -29,6 +29,9 @@ pub trait ContextEngine {
 
     /// Select which compartment a library should go in.
     fn select_compartment(&mut self, unlib: &UnloadedLibrary) -> Option<CompartmentId>;
+
+    fn add_name_map(&mut self, _name: &str, _id: ObjID) {}
+    fn remove_name_map(&mut self, _name: Option<&str>, _id: Option<ObjID>) {}
 }
 
 /// A single load directive, matching closely with an ELF program header.

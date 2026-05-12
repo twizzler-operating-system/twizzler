@@ -318,14 +318,16 @@ impl Thread {
 
         if info.number() != UpcallInfo::Mailbox(0).number() {
             log::warn!(
-                "upcall: {}: {:?}, RIP = {:x}, regs = {:?} ctx = {}",
+                "upcall: {}: {:?}, RIP = {:x}, regs = {:?} ctx = {} thread = {}",
                 self.id(),
                 info,
                 self.read_ip(),
                 self.read_registers(),
                 self.secctx.active_id(),
+                self.objid(),
             );
             //crate::panic::backtrace(true, None);
+            loop {}
         }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {

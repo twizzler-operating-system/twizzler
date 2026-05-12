@@ -34,6 +34,28 @@ impl Engine {
         Self { name_map }
     }
 
+    pub fn libname_add(&mut self, name: &str, id: ObjID) {
+        self.name_map.insert(name.to_string(), id);
+    }
+
+    pub fn libname_remove(&mut self, name: Option<&str>, id: Option<ObjID>) {
+        if let Some(id) = id {
+            let removed = self
+                .name_map
+                .extract_if(.., |_k, v| *v == id)
+                .collect::<Vec<_>>();
+            for r in removed {
+                tracing::info!("removed {} => {}", r.0, r.1);
+            }
+        }
+        if let Some(name) = name {
+            let r = self.name_map.remove(name);
+            if let Some(r) = r {
+                tracing::info!("removed {} => {}", name, r);
+            }
+        }
+    }
+
     fn name_resolver(&self, mut name: &str) -> Result<(ObjID, String), DynlinkError> {
         if name.starts_with("libstd") {
             name = "libstd.so";
@@ -41,9 +63,15 @@ impl Engine {
         if name.starts_with("libtest") {
             name = "libtest.so";
         }
+        if name.contains("libtwz_rt.so") {
+            name = "libtwz_rt.so";
+        }
 
         if let Some(id) = self.name_map.get(name) {
             return Ok((*id, name.to_string()));
+        }
+        if name.contains("/") {
+            return self.name_resolver(name.split("/").last().unwrap());
         }
         Err(DynlinkError::new(DynlinkErrorKind::NameNotFound {
             name: SmallString::from_str(name),
@@ -140,7 +168,8 @@ impl ContextEngine for Engine {
         let (id, full) = if unlib.id.is_some() {
             (unlib.id.unwrap(), unlib.name.clone())
         } else {
-            self.name_resolver(&unlib.name)?
+            self.name_resolver(&unlib.name)
+                .inspect_err(|e| tracing::warn!("failed to find {}: {}", unlib, e))?
         };
         let mapping = Space::map(
             &get_monitor().space,
@@ -149,7 +178,8 @@ impl ContextEngine for Engine {
                 flags: MapFlags::READ,
             },
         )
-        .map_err(|_err| DynlinkErrorKind::NewBackingFail)?;
+        .map_err(|_err| DynlinkErrorKind::NewBackingFail)
+        .inspect_err(|e| tracing::warn!("failed to map {}: {}", unlib, e))?;
         Ok(unsafe {
             Backing::new_owned(
                 mapping.monitor_data_start(),
@@ -166,6 +196,14 @@ impl ContextEngine for Engine {
         _unlib: &UnloadedLibrary,
     ) -> Option<dynlink::compartment::CompartmentId> {
         Some(MONITOR_COMPARTMENT_ID)
+    }
+
+    fn add_name_map(&mut self, name: &str, id: ObjID) {
+        self.libname_add(name, id);
+    }
+
+    fn remove_name_map(&mut self, name: Option<&str>, id: Option<ObjID>) {
+        self.libname_remove(name, id);
     }
 }
 

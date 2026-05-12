@@ -4,9 +4,9 @@ use core::{ops::Range, usize};
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 
 use super::{
+    PageNumber,
     pages::{Page, PageRef},
     range::PageRange,
-    PageNumber,
 };
 use crate::{
     memory::{pagetables::MappingSettings, tracker::FrameAllocator},
@@ -25,6 +25,23 @@ impl PageVec {
         Self {
             tree: NonOverlappingIntervalTree::new(),
         }
+    }
+
+    pub fn holes<const N: usize>(
+        &self,
+        pn: usize,
+        holes: &mut heapless::Vec<(usize, usize), N>,
+    ) -> usize {
+        let mut last_end = pn;
+        for r in self.tree.range(pn..usize::MAX) {
+            if *r.0 > last_end + 1 {
+                if holes.push((last_end + 1, *r.0 - last_end - 1)).is_err() {
+                    break;
+                }
+            }
+            last_end = (*r.0) + r.1.nr_pages();
+        }
+        last_end
     }
 
     pub fn first(&self) -> Option<&PageRef> {
@@ -57,7 +74,7 @@ impl PageVec {
 
     /// Remove the first pages up to offset, and then truncate the vector to the given page count.
     pub fn truncate_and_drain(&mut self, _offset: usize, _pages: usize) {
-        logln!("todo: truncate and drain");
+        log::debug!("todo: truncate and drain");
     }
 
     pub fn show_part(&self, range: &PageRange) -> String {
@@ -114,9 +131,9 @@ impl PageVec {
         let range = self.tree.range(start..(start + len));
 
         for (k, entry) in range {
-            let thisrange = (*k)..(*entry.end());
             // TODO: use larger pages
             for i in 0..entry.nr_pages() {
+                let thisrange = (*k + i)..(*k + i + 1);
                 let new_page = Arc::new(Page::new(allocator.try_allocate()?, 1));
                 let mut new_page = PageRef::new(new_page, 0, 1);
                 new_page.copy_from(&entry.adjust(i));
@@ -130,6 +147,16 @@ impl PageVec {
     pub fn try_get_page(&self, pn: usize) -> Option<PageRef> {
         let mut entry = self.tree.range(pn..(pn + 1));
         let entry = entry.next()?;
+        log::trace!(
+            "try_get_page: looking for page {}, found entry at {}: {:?} with {} pages",
+            pn,
+            entry.0,
+            entry.1,
+            entry.1.nr_pages()
+        );
+        if *entry.0 > pn || (pn - *entry.0) >= entry.1.nr_pages() {
+            return None;
+        }
         Some(entry.1.adjust(pn - *entry.0))
     }
 
@@ -168,7 +195,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        memory::tracker::{alloc_frame, FrameAllocFlags},
+        memory::tracker::{FrameAllocFlags, alloc_frame},
         utils::quick_random,
     };
 

@@ -10,7 +10,7 @@ use std::{
 use async_io::Timer;
 use disk::Disk;
 use memstore::virtio::init_virtio;
-use object_store::{Ext4Store, ExternalFile, PagedObjectStore};
+use object_store::{Ext4Store, PagedObjectStore};
 use physrw::{init_pr_mgr, report_ready};
 use threads::{run_async, spawn_async, PagerThreadPool};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -131,16 +131,6 @@ struct PagerContext {
 impl PagerContext {
     pub fn paged_ostore(&self, _id: Option<ObjID>) -> Result<&Ext4Store<Disk>> {
         Ok(self.store.wait())
-    }
-
-    pub async fn enumerate_external(&'static self, id: ObjID) -> Result<Vec<ExternalFile>> {
-        Ok(self
-            .paged_ostore(None)?
-            .enumerate_external(id.raw())
-            .await?
-            .iter()
-            .cloned()
-            .collect())
     }
 
     pub fn notify_kernel(&'static self, id: u32, comp: CompletionToKernel) {

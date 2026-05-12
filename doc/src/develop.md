@@ -130,3 +130,21 @@ When developing for Twizzler, you should write tests that cover code you wrote. 
 userspace and kernelspace code. Note that writing tests for the kernel is slightly different, in
 that a test-case failing causes the whole system to stop, and you need to use the `#[kernel_test]`
 attribute from the `twizzler-kernel-macros` crate instead of `#[test]`.
+
+## Developing Toolchain Components
+
+The Twizzler toolchain has a number of components, including a libc, llvm, and rust itself. When working on these
+components, it's useful to build only part of the toolchain at a time. This can be done with the --step option:
+
+```cargo toolchain bootstrap --step libc```
+
+This will build and install only the libc part of the toolchain. Multiple steps can be specified. Current steps are:
+
+ * prep: downloads and installs tools for building the toolchain
+ * libc: compiles and installs libc
+ * libcxx: compiles and installs libc++ and libc++abi
+ * rt: builds the twizzler runtime as a cdylib for the toolchain sysroots
+ * crt: compiles and installs the C runtime files (crt*.o)
+ * rust: compiles and installs the rust compiler that can target twizzler
+ * llvm: compiles and installs LLVM with clang that can target twizzler
+

@@ -1,13 +1,13 @@
 use std::sync::Mutex;
 
-use object_store::ExternalFile;
+use object_store::{ExternalFile, ExternalFileSbHdr, ExternalFileStore, ExternalOpenFlags};
 use secgate::util::{Descriptor, SimpleBuffer};
 use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
     object::Protections,
     syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
 };
-use twizzler_rt_abi::{error::TwzError, object::MapFlags};
+use twizzler_rt_abi::{bindings::NAME_DATA_MAX, error::TwzError, object::MapFlags};
 
 use crate::{threads::run_async, PAGER_CTX};
 
@@ -93,28 +93,155 @@ pub fn pager_close_handle(desc: Descriptor) -> Result<(), TwzError> {
     Ok(())
 }
 
+fn write_external_file_to_sb(sb: &mut SimpleBuffer, file: &ExternalFile, off: usize) -> usize {
+    let ext_file_hdr = ExternalFileSbHdr {
+        pathlen: file.path.as_os_str().as_encoded_bytes().len() as u32,
+        kind: file.kind,
+        id: file.id,
+    };
+    let ptr = &ext_file_hdr as *const ExternalFileSbHdr as *const u8;
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, size_of::<ExternalFileSbHdr>()) };
+    let thislen = sb.write_offset(bytes, off);
+    let pathlen = sb.write_offset(file.path.as_os_str().as_encoded_bytes(), off + thislen);
+    thislen + pathlen
+}
+
 #[secgate::entry(lib = "pager")]
-pub fn pager_enumerate_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {
+pub fn pager_enumerate_external(
+    desc: Descriptor,
+    id: ObjID,
+    skip: usize,
+    count: usize,
+) -> Result<usize, TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 
-    let items = run_async(pager.enumerate_external(id))?;
+    let mut entries: Vec<ExternalFile> = Vec::new();
+    run_async(
+        pager
+            .paged_ostore(None)?
+            .readdir_external(id.raw(), skip, count, &mut entries),
+    )?;
 
     pager
         .data
         .with_handle_mut(comp, desc, |pc| {
             let mut len = 0;
-            for (idx, item) in items.iter().enumerate() {
-                let ptr = item as *const ExternalFile;
-                let bytes = unsafe {
-                    core::slice::from_raw_parts(ptr.cast::<u8>(), size_of::<ExternalFile>())
-                };
-                len += pc
-                    .buffer
-                    .write_offset(bytes, idx * size_of::<ExternalFile>());
+            for item in entries.iter() {
+                len += write_external_file_to_sb(&mut pc.buffer, item, len);
             }
             len
         })
         .ok_or(TwzError::INVALID_ARGUMENT)
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_lookup_external(
+    desc: Descriptor,
+    id: ObjID,
+    namelen: usize,
+) -> Result<usize, TwzError> {
+    tracing::trace!(
+        "looking up name in external namespace {} (namelen {})",
+        id,
+        namelen
+    );
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    let mut namebuf = [0u8; NAME_DATA_MAX];
+    let namelen = pager
+        .data
+        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+    let name =
+        str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+
+    let file = run_async(pager.paged_ostore(None)?.open_external(
+        Some(id.raw()),
+        name,
+        ExternalOpenFlags::READ,
+        0,
+        None,
+    ))?;
+
+    pager
+        .data
+        .with_handle_mut(comp, desc, |pc| {
+            write_external_file_to_sb(&mut pc.buffer, &file, 0)
+        })
+        .ok_or(TwzError::INVALID_ARGUMENT)
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_create_external(
+    desc: Descriptor,
+    dir: ObjID,
+    mode: libc::mode_t,
+    namelen: usize,
+    link_to: Option<ObjID>,
+) -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    let mut namebuf = [0u8; NAME_DATA_MAX];
+    let namelen = pager
+        .data
+        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+    let name =
+        str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+
+    let file = run_async(pager.paged_ostore(None)?.open_external(
+        Some(dir.raw()),
+        name,
+        ExternalOpenFlags::CREATE,
+        mode,
+        link_to.map(|x| x.raw()),
+    ))?;
+
+    pager
+        .data
+        .with_handle_mut(comp, desc, |pc| {
+            write_external_file_to_sb(&mut pc.buffer, &file, 0)
+        })
+        .ok_or(TwzError::INVALID_ARGUMENT)
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    let mut namebuf = [0u8; NAME_DATA_MAX];
+    let namelen = pager
+        .data
+        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+    let name =
+        str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+
+    run_async(
+        pager
+            .paged_ostore(None)?
+            .unlink_external(Some(dir.raw()), name),
+    )?;
+
+    Ok(())
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    let name = run_async(pager.paged_ostore(None)?.readlink_external(id.raw()))?;
+    let namelen = pager
+        .data
+        .with_handle_mut(comp, desc, |pc| pc.buffer.write(name.as_bytes()))
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+
+    Ok(namelen)
 }

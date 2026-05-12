@@ -89,7 +89,9 @@ pub fn init(tls: VirtAddr) {
         .unwrap_or_default();
 
     unsafe {
-        let mut cr4 = x86::controlregs::cr4() | x86::controlregs::Cr4::CR4_ENABLE_SSE;
+        let mut cr4 = x86::controlregs::cr4()
+            | x86::controlregs::Cr4::CR4_ENABLE_SSE
+            | x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES;
         if has_xsave {
             cr4 |= x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE
                 | x86::controlregs::Cr4::CR4_UNMASKED_SSE;

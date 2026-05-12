@@ -72,9 +72,15 @@ members = [
     "src/bin/sec",
     "src/bin/schedtest",
     #"src/bin/gfxtest",
-    "src/bin/stdnet_test", "src/lib/twizzler-io", "src/bin/shell",
+    "src/bin/stdnet_test",
+    "src/lib/twizzler-io",
+    "src/bin/shell",
     #"src/lib/sgtest", "src/srv/sgtest-srv",
-    "src/lib/twizzler-net", "src/bin/sshd",
+    "src/lib/twizzler-net",
+    "src/bin/sshd",
+    "src/bin/async-test",
+    "src/bin/lltest",
+    "src/bin/lltest/llt",
 ]
 
 exclude = [
@@ -90,33 +96,35 @@ initrd = [
     "crate:init",
     "lib:devmgr-srv",
     "crate:monitor",
-    "crate:montest",
+    #"crate:montest",
     "lib:naming-srv",
     "lib:twz-rt",
-    "lib:montest-srv",
+    #"lib:montest-srv",
     "lib:logboi-srv",
     "lib:pager-srv",
-    "lib:cache-srv",
-    "lib:display-srv",
-    "lib:net-srv",
+    #"lib:cache-srv",
+    #"lib:display-srv",
+    #"lib:net-srv",
     #"lib:sgtest-srv",
-    "crate:unittest",
-    "crate:uuhelper",
-    "crate:debug",
-    "crate:cache",
-    "crate:trace",
+    #"crate:unittest",
+    #"crate:uuhelper",
+    #"crate:debug",
+    #"crate:cache",
+    #"crate:trace",
     #"crate:gfxtest",
     "crate:shell",
-    "crate:sshd",
+    #"crate:sshd",
 
-    "crate:sec",
-    "crate:ptest",
+    #"crate:sec",
+    #"crate:ptest",
     #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
 
     #"crate:twzcandle",
     #"crate:st",
-    "crate:stdnet_test",
+    #"crate:stdnet_test",
+    "third-party:kibi",
+    #"crate:async-test",
 
     #"third-party:hello-world-rs"
     #"crate:test-tiny-http",
@@ -128,9 +136,12 @@ initrd = [
     #"crate:ls",
     #"crate:gadget",
     #"crate:serialecho",
+    "lib:llt",
+    "crate:lltest",
 ]
 
 [workspace.metadata.third-party]
+kibi = { path = "src/ports/kibi", version = "0.3.3" }
 
 [workspace.dependencies]
 addr2line = { version = "0.25", default-features = false }
@@ -234,6 +245,7 @@ naming-core = { path = "src/lib/naming/naming-core" }
 naming-srv = { path = "src/srv/naming-srv" }
 ndarray = "0.16"
 ndarray-stats = "0.6"
+nix = { version = "0.29.0", path = "src/ports/nix" }
 nl = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 noline = "0.5"
 nonoverlapping_interval_tree = { version = "0.1.3", default-features = false }
@@ -294,7 +306,7 @@ textwrap = "0.16.1"
 thiserror = { version = "2.0", default-features = false }
 tick_counter = "0.4"
 tinyvec = "1.10"
-tokio = "1.17.0"
+tokio = "^1.17.0"
 toml_edit = "0.22"
 tr = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 tracing = "0.1.41"
@@ -361,6 +373,7 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 #gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 
+nix = { version = "0.29.0", path = "src/ports/nix" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }
@@ -368,6 +381,10 @@ filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", 
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
+crossterm = { path = "src/ports/crossterm" }
+mio = { path = "src/ports/mio" }
+signal-hook = { path = "src/ports/signal-hook" }
+signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
 #memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
 memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
@@ -382,3 +399,4 @@ ferroc = { path = "src/ports/ferroc" }
 virtio-drivers = { path = "src/ports/virtio-drivers" }
 #rocksdb = { path = "src/ports/rust-rocksdb" }
 #librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
+libloading = { path = "src/ports/rust_libloading" }

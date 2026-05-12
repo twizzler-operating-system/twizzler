@@ -134,6 +134,7 @@ impl Monitor {
             StackObject::new(stack_handle, DEFAULT_STACK_SIZE).unwrap(),
             0, /* doesn't matter -- we won't be starting a main thread for this compartment in
                 * the normal way */
+            0,
             &[],
             false,
             None,
@@ -479,6 +480,40 @@ impl Monitor {
         let mut cm = self.comp_mgr.write(ThreadKey::get().unwrap());
         cm.set_controller(target, controller)?;
         return Ok(());
+    }
+
+    pub fn libname_map(
+        &self,
+        caller: ObjID,
+        thread: ObjID,
+        namelen: usize,
+        id: ObjID,
+    ) -> Result<(), TwzError> {
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen)?;
+
+        let name = str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+        tracing::trace!("libname map: {}", name);
+        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+        dynlink.engine.add_name_map(name, id);
+
+        Ok(())
+    }
+
+    pub fn libname_unmap(
+        &self,
+        caller: ObjID,
+        thread: ObjID,
+        namelen: Option<usize>,
+        id: Option<ObjID>,
+    ) -> Result<(), TwzError> {
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen.unwrap_or(0))?;
+        let name = namelen
+            .map(|_| str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT))
+            .transpose()?;
+        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+        dynlink.engine.remove_name_map(name, id);
+
+        Ok(())
     }
 }
 

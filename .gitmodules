@@ -65,3 +65,24 @@
 [submodule "src/ports/async-net"]
 	path = src/ports/async-net
 	url = ../../twizzler-operating-system/async-net
+[submodule "src/ports/crossterm"]
+	path = src/ports/crossterm
+	url = ../../twizzler-operating-system/crossterm.git
+[submodule "src/ports/mio"]
+	path = src/ports/mio
+	url = ../../twizzler-operating-system/mio.git
+[submodule "src/ports/signal-hook"]
+	path = src/ports/signal-hook
+	url = ../../twizzler-operating-system/signal-hook.git
+[submodule "src/ports/kibi"]
+	path = src/ports/kibi
+	url = ../../twizzler-operating-system/kibi.git
+[submodule "src/ports/nix"]
+	path = src/ports/nix
+	url = ../../twizzler-operating-system/nix.git
+[submodule "src/ports/python/cpython"]
+	path = src/ports/python/cpython
+	url = ../../twizzler-operating-system/cpython.git
+[submodule "src/ports/rust_libloading"]
+	path = src/ports/rust_libloading
+	url = ../../dbittman/rust_libloading.git

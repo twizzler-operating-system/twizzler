@@ -14,8 +14,8 @@ pub struct DynamicNamerAPI {
     get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), NsNode>,
     open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_names: DynamicSecGate<'static, (Descriptor, usize), usize>,
-    enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+    enumerate_names: DynamicSecGate<'static, (Descriptor, usize, usize, usize), usize>,
+    enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>,
     remove: DynamicSecGate<'static, (Descriptor, usize), ()>,
     rename: DynamicSecGate<'static, (Descriptor, usize, usize), ()>,
     change_namespace: DynamicSecGate<'static, (Descriptor, usize), ()>,
@@ -39,12 +39,24 @@ impl NamerAPI for DynamicNamerAPI {
         Ok(())
     }
 
-    fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> Result<usize> {
-        (self.enumerate_names)(desc, name_len)
+    fn enumerate_names(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        (self.enumerate_names)(desc, name_len, skip, count)
     }
 
-    fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> Result<usize> {
-        (self.enumerate_names_nsid)(desc, id)
+    fn enumerate_names_nsid(
+        &self,
+        desc: Descriptor,
+        id: ObjID,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        (self.enumerate_names_nsid)(desc, id, skip, count)
     }
 
     fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {

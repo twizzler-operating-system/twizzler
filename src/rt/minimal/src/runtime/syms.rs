@@ -136,16 +136,17 @@ pub unsafe extern "C-unwind" fn twz_rt_runtime_entry(
             arg1: twizzler_rt_abi::bindings::basic_aux,
         ) -> twizzler_rt_abi::bindings::basic_return,
     >,
+    main: usize,
 ) {
-    unsafe { OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked()) }
+    unsafe { OUR_RUNTIME.runtime_entry(arg, std_entry.unwrap_unchecked(), main) }
 }
-check_ffi_type!(twz_rt_runtime_entry, _, _);
+check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, fd_flags, io_ctx, object_create, object_source, object_tie,
-    objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
+    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source,
+    object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -210,6 +211,34 @@ pub unsafe extern "C-unwind" fn twz_rt_realloc(
 }
 check_ffi_type!(twz_rt_realloc, _, _, _, _, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_select(
+    _nfds: usize,
+    _readfds: *mut fd_set,
+    _writefds: *mut fd_set,
+    _exceptfds: *mut fd_set,
+    _timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    return io_result {
+        val: 0,
+        err: TwzError::NOT_SUPPORTED.raw(),
+    };
+}
+check_ffi_type!(twz_rt_fd_select, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_poll(
+    fds: *mut twizzler_rt_abi::bindings::pollfd,
+    nfds: usize,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    return io_result {
+        val: 0,
+        err: TwzError::NOT_SUPPORTED.raw(),
+    };
+}
+check_ffi_type!(twz_rt_fd_poll, _, _, _);
+
 // thread.h
 
 #[unsafe(no_mangle)]
@@ -217,7 +246,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
     ptr: *mut u32,
     expected: twizzler_rt_abi::bindings::futex_word,
     timeout: twizzler_rt_abi::bindings::option_duration,
-) -> bool {
+) -> twz_error {
     unsafe {
         if timeout.is_some != 0 {
             OUR_RUNTIME.futex_wait(&*ptr.cast(), expected, Some(timeout.dur.into()))
@@ -229,7 +258,7 @@ pub unsafe extern "C-unwind" fn twz_rt_futex_wait(
 check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> bool {
+pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> twz_error {
     unsafe { OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize) }
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
@@ -248,6 +277,19 @@ pub unsafe extern "C-unwind" fn twz_rt_set_name(name: *const ::core::ffi::c_char
 }
 check_ffi_type!(twz_rt_set_name, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_name(
+    tcb: *const c_void,
+    name: *mut core::ffi::c_char,
+    len: *mut usize,
+) {
+    unsafe {
+        *name = 0;
+        *len = 0;
+    }
+}
+
+check_ffi_type!(twz_rt_get_name, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_sleep(dur: twizzler_rt_abi::bindings::duration) {
     OUR_RUNTIME.sleep(dur.into());
@@ -269,7 +311,10 @@ check_ffi_type!(twz_rt_tls_get_addr, _);
 pub unsafe extern "C-unwind" fn twz_rt_spawn_thread(
     args: twizzler_rt_abi::bindings::spawn_args,
 ) -> twizzler_rt_abi::bindings::spawn_result {
-    OUR_RUNTIME.spawn(args).into()
+    OUR_RUNTIME
+        .spawn(args)
+        .map(|x| (x, core::ptr::null_mut()))
+        .into()
 }
 check_ffi_type!(twz_rt_spawn_thread, _);
 #[unsafe(no_mangle)]
@@ -330,11 +375,71 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_open(
 check_ffi_type!(twz_rt_fd_open, _, _, _, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_reopen(
+    _fd: descriptor,
+    _kind: open_kind,
+    _flags: u32,
+    _bind_info: *mut c_void,
+    _bind_info_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_reopen, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_close(fd: descriptor) {
     OUR_RUNTIME.close(fd);
 }
 check_ffi_type!(twz_rt_fd_close, _);
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_remove(_name: *const c_char, _len: usize) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_remove, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_exec_spawn(
+    _args: *const twizzler_rt_abi::bindings::exec_spawn_args,
+) -> open_result {
+    todo!()
+}
+check_ffi_type!(twz_rt_exec_spawn, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_cmd(
+    _fd: descriptor,
+    _cmd: twizzler_rt_abi::bindings::fd_cmd,
+    _arg: *mut ::core::ffi::c_void,
+    _ret: *mut ::core::ffi::c_void,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+
+check_ffi_type!(twz_rt_fd_cmd, _, _, _, _);
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pread_from(
+    _fd: descriptor,
+    _buf: *mut ::core::ffi::c_void,
+    _len: usize,
+    _ctx: *mut io_ctx,
+    _ep: *mut endpoint,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_fd_pread_from, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_pwrite_to(
+    _fd: descriptor,
+    _buf: *const ::core::ffi::c_void,
+    _len: usize,
+    _ctx: *mut io_ctx,
+    _ep: *const endpoint,
+) -> io_result {
+    Err(TwzError::NOT_SUPPORTED).into()
+}
+check_ffi_type!(twz_rt_fd_pwrite_to, _, _, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(
     fd: descriptor,
@@ -353,8 +458,29 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_get_info(
 check_ffi_type!(twz_rt_fd_get_info, _, _);
 
 // io.h
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_get_config(
+    _fd: descriptor,
+    _reg: u32,
+    _b: *mut c_void,
+    _len: usize,
+) -> twz_error {
+    0
+}
+check_ffi_type!(twz_rt_fd_get_config, _, _, _, _);
 
-use twizzler_rt_abi::bindings::{io_result, io_vec, whence};
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_set_config(
+    _fd: descriptor,
+    _reg: u32,
+    _b: *const c_void,
+    _len: usize,
+) -> twz_error {
+    0
+}
+check_ffi_type!(twz_rt_fd_set_config, _, _, _, _);
+
+use twizzler_rt_abi::bindings::{io_result, iovec, whence};
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pread(
     fd: descriptor,
@@ -408,7 +534,7 @@ check_ffi_type!(twz_rt_fd_seek, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_preadv(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -422,7 +548,7 @@ check_ffi_type!(twz_rt_fd_preadv, _, _, _, _);
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
     fd: descriptor,
-    iovs: *const io_vec,
+    iovs: *const iovec,
     nr_iovs: usize,
     ctx: *mut io_ctx,
 ) -> io_result {
@@ -432,6 +558,38 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(_name: *const c_char, _len: usize) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_mkns, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
+    _name: *const c_char,
+    _len: usize,
+    _target: *mut c_char,
+    _target_len: usize,
+    _read_len: *mut u64,
+) -> twz_error {
+    return TwzError::NOT_SUPPORTED.raw();
+}
+check_ffi_type!(twz_rt_fd_readlink, _, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
+    fd: descriptor,
+    buf: *mut twizzler_rt_abi::bindings::name_entry,
+    len: ::core::ffi::c_size_t,
+    off: ::core::ffi::c_size_t,
+) -> io_result {
+    return io_result {
+        err: TwzError::NOT_SUPPORTED.raw(),
+        val: 0,
+    };
+}
+check_ffi_type!(twz_rt_fd_enumerate_names, _, _, _, _);
 
 // object.h
 
@@ -532,6 +690,29 @@ pub unsafe extern "C-unwind" fn twz_rt_get_loaded_image(
     true
 }
 check_ffi_type!(twz_rt_get_loaded_image, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
+    _id: twizzler_rt_abi::bindings::thread_id,
+) -> twizzler_rt_abi::bindings::thread_info {
+    twizzler_rt_abi::bindings::thread_info {
+        id: 0,
+        tcb: core::ptr::null_mut(),
+        objid: 0,
+    }
+}
+check_ffi_type!(twz_rt_get_thread_info, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
+    _old_name: *const c_char,
+    _old_len: usize,
+    _new_name: *const c_char,
+    _new_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_rename, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_iter_phdr(
@@ -686,8 +867,9 @@ pub unsafe extern "C" fn __dlapi_resolve(
 
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> *const c_char {
-    core::ptr::null()
+pub unsafe extern "C" fn __dlapi_reverse(_: *const c_void, _: *const c_void) -> std::ffi::c_int {
+    // Return non-zero (failure) so dladdr() correctly reports it cannot look up the symbol.
+    1
 }
 
 #[linkage = "weak"]

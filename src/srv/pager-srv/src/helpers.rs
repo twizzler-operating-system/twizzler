@@ -73,7 +73,7 @@ pub async fn page_in(
 
             let len = ctx
                 .paged_ostore(None)?
-                .find_external(obj_id.raw())
+                .len(obj_id.raw())
                 .await
                 .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
             tracing::debug!("building meta page for external file, len: {}", len);
@@ -86,10 +86,7 @@ pub async fn page_in(
                 fotcount: 0,
                 extcount: 1,
             };
-            let me = MetaExt {
-                tag: MEXT_SIZED,
-                value: len as u64,
-            };
+            let me = MetaExt::new(MEXT_SIZED, len);
             unsafe {
                 buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]

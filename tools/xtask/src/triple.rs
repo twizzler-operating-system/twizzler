@@ -45,6 +45,7 @@ impl TryFrom<&str> for Arch {
         Ok(match s {
             "aarch64" => Self::Aarch64,
             "x86_64" => Self::X86_64,
+            "x86-64" => Self::X86_64,
             _ => return Err(()),
         })
     }
@@ -163,6 +164,7 @@ pub fn valid_targets() -> Vec<(Arch, Machine)> {
         (Arch::X86_64, Machine::Unknown),
         (Arch::Aarch64, Machine::Virt),
         (Arch::Aarch64, Machine::Morello),
+        (Arch::Aarch64, Machine::Unknown),
     ];
     targets
 }

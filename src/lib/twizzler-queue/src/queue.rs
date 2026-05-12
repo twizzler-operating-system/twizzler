@@ -97,6 +97,18 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         self.submission.has_pending()
     }
 
+    pub fn has_pending_completion(&self) -> bool {
+        self.completion.has_pending()
+    }
+
+    pub fn has_sub_space(&self) -> bool {
+        self.submission.has_space()
+    }
+
+    pub fn has_com_space(&self) -> bool {
+        self.completion.has_space()
+    }
+
     /// Create a new Twizzler queue object.
     pub fn init(obj: &ObjectHandle, sub_queue_len: usize, com_queue_len: usize) {
         const HDR_LEN: usize = 0x1000;

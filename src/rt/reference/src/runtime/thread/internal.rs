@@ -9,7 +9,10 @@ use std::{
 use dynlink::tls::Tcb;
 use monitor_api::RuntimeThreadControl;
 use tracing::trace;
-use twizzler_abi::{object::NULLPAGE_SIZE, thread::ThreadRepr};
+use twizzler_abi::{
+    object::{ObjID, NULLPAGE_SIZE},
+    thread::ThreadRepr,
+};
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
 use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
@@ -22,7 +25,7 @@ pub struct InternalThread {
     stack_size: usize,
     args_box: usize,
     pub(super) id: u32,
-    _tls: *mut Tcb<RuntimeThreadControl>,
+    pub(super) tls: *mut Tcb<RuntimeThreadControl>,
     name: Mutex<Option<CString>>,
 }
 
@@ -41,9 +44,13 @@ impl InternalThread {
             stack_size,
             args_box,
             id,
-            _tls: tls,
+            tls,
             name: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn objid(&self) -> ObjID {
+        self.repr_handle.id()
     }
 
     #[allow(dead_code)]
@@ -65,6 +72,18 @@ impl InternalThread {
         let name = name.to_owned();
         *self.name.lock().unwrap() = Some(name);
     }
+
+    pub fn get_name(&self, name: &mut [u8]) -> usize {
+        let th = self.name.lock().unwrap();
+        match &*th {
+            Some(n) => {
+                let len = name.len().min(n.as_bytes_with_nul().len());
+                name[..len].copy_from_slice(&n.as_bytes_with_nul()[..len]);
+                len
+            }
+            None => 0,
+        }
+    }
 }
 
 impl Drop for InternalThread {
@@ -72,13 +91,17 @@ impl Drop for InternalThread {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
             // Stack is manually allocated, just free it directly.
-            OUR_RUNTIME.dealloc(
-                self.stack_addr as *mut u8,
-                Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
-            );
-            // Args is allocated by a box.
-            let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
-            drop(_args);
+            if self.stack_addr != 0 {
+                OUR_RUNTIME.dealloc(
+                    self.stack_addr as *mut u8,
+                    Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
+                );
+            }
+            if self.args_box != 0 {
+                // Args is allocated by a box.
+                let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
+                drop(_args);
+            }
             tracing::debug!("TODO: drop TLS");
         }
     }

@@ -14,9 +14,9 @@ fn open_handle() -> Result<(Descriptor, ObjID)> {}
 #[secgate::gatecall]
 fn close_handle(desc: Descriptor) -> Result<()> {}
 #[secgate::gatecall]
-fn enumerate_names(desc: Descriptor, name_len: usize) -> Result<usize> {}
+fn enumerate_names(desc: Descriptor, name_len: usize, skip: usize, count: usize) -> Result<usize> {}
 #[secgate::gatecall]
-fn enumerate_names_nsid(desc: Descriptor, id: ObjID) -> Result<usize> {}
+fn enumerate_names_nsid(desc: Descriptor, id: ObjID, skip: usize, count: usize) -> Result<usize> {}
 #[secgate::gatecall]
 fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {}
 #[secgate::gatecall]
@@ -48,12 +48,24 @@ impl NamerAPI for StaticNamingAPI {
         close_handle(desc)
     }
 
-    fn enumerate_names(&self, desc: Descriptor, name_len: usize) -> Result<usize> {
-        enumerate_names(desc, name_len)
+    fn enumerate_names(
+        &self,
+        desc: Descriptor,
+        name_len: usize,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        enumerate_names(desc, name_len, skip, count)
     }
 
-    fn enumerate_names_nsid(&self, desc: Descriptor, id: ObjID) -> Result<usize> {
-        enumerate_names_nsid(desc, id)
+    fn enumerate_names_nsid(
+        &self,
+        desc: Descriptor,
+        id: ObjID,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        enumerate_names_nsid(desc, id, skip, count)
     }
 
     fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {

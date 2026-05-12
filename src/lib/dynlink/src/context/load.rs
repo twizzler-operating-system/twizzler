@@ -1,14 +1,18 @@
 use std::mem::size_of;
 
 use elf::{
-    abi::{DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, PT_TLS},
+    abi::{
+        DT_INIT, DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ, PT_DYNAMIC,
+        PT_TLS,
+    },
+    dynamic::DynamicTable,
     endian::NativeEndian,
     file::Class,
 };
 use petgraph::stable_graph::NodeIndex;
 use secgate::RawSecGateInfo;
 use tracing::{debug, warn};
-use twizzler_rt_abi::core::CtorSet;
+use twizzler_rt_abi::{core::CtorSet, object::MAX_SIZE};
 
 use super::{Context, LoadedOrUnloaded};
 use crate::{
@@ -57,6 +61,7 @@ impl Context {
 
         Ok(info)
     }
+
     // Collect information about constructors.
     pub(crate) fn get_ctor_info(
         &self,
@@ -64,11 +69,26 @@ impl Context {
         elf: &elf::ElfBytes<'_, NativeEndian>,
         base_addr: usize,
     ) -> Result<CtorSet, DynlinkError> {
-        let dynamic = elf
-            .dynamic()?
-            .ok_or_else(|| DynlinkErrorKind::MissingSection {
+        let ph = elf.segments();
+
+        let ph = ph.unwrap();
+        let mut dynamic = None;
+        for p in ph {
+            if p.p_type == PT_DYNAMIC {
+                let slice = unsafe {
+                    std::slice::from_raw_parts(
+                        (p.p_vaddr + base_addr as u64) as *const u8,
+                        p.p_memsz as usize,
+                    )
+                };
+                dynamic = Some(DynamicTable::new(NativeEndian, Class::ELF64, slice));
+            }
+        }
+        let dynamic = dynamic.ok_or_else(|| {
+            DynlinkError::new(DynlinkErrorKind::MissingSection {
                 name: "dynamic".into(),
-            })?;
+            })
+        })?;
 
         // If this isn't present, just call it 0, since if there's an init_array, this entry must be
         // present in valid ELF files.
@@ -110,9 +130,12 @@ impl Context {
             warn!("{}: PREINIT_ARRAY is unsupported", libname);
         }
 
-        debug!(
+        tracing::debug!(
             "{}: ctor info: init_array: {:?} len={}, legacy: {:?}",
-            libname, init_array, init_array_len, leg_init
+            libname,
+            init_array,
+            init_array_len,
+            leg_init
         );
         Ok(CtorSet {
             legacy_init: leg_init.map(|x| unsafe { std::mem::transmute(x) }),
@@ -131,6 +154,12 @@ impl Context {
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
     ) -> Result<Library, DynlinkError> {
+        tracing::debug!(
+            "loading library {} (idx = {:?}) into comp {}",
+            unlib,
+            idx,
+            comp_id
+        );
         let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
 
@@ -207,7 +236,9 @@ impl Context {
             .filter(|p| p.p_type == elf::abi::PT_LOAD)
             .map(|phdr| {
                 let ld = LoadDirective {
-                    load_flags: if phdr.p_flags & elf::abi::PF_W != 0 {
+                    load_flags: if phdr.p_flags & elf::abi::PF_W != 0
+                        || phdr.p_vaddr > MAX_SIZE as u64
+                    {
                         LoadFlags::TARGETS_DATA
                     } else {
                         LoadFlags::empty()
@@ -229,10 +260,12 @@ impl Context {
         let backings = self
             .engine
             .load_segments(&backing, &directives, comp_id, load_ctx)?;
+
         if backings.is_empty() {
             return Err(DynlinkErrorKind::NewBackingFail.into());
         }
         let base_addr = backings[0].load_addr();
+
         debug!(
             "{}: loaded to {:x} (data at {:x})",
             unlib,

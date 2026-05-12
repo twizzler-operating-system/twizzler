@@ -1,4 +1,8 @@
-use std::{collections::HashSet, mem::size_of};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::size_of,
+    time::Instant,
+};
 
 use elf::{
     abi::{
@@ -16,9 +20,28 @@ use tracing::{debug, error, trace};
 
 use super::{Context, Library};
 use crate::{
+    compartment::CompartmentId,
     library::{LibraryId, RelocState},
+    symbol::RelocatedSymbol,
     DynlinkError, DynlinkErrorKind, Vec, SMALL_VEC_SIZE,
 };
+
+#[derive(Default)]
+pub(crate) struct RelocCache<'a> {
+    syms: HashMap<CompartmentId, HashMap<String, RelocatedSymbol<'a>>>,
+}
+
+impl<'a> RelocCache<'a> {
+    pub fn find(&mut self, name: &str, from: CompartmentId) -> Option<&RelocatedSymbol<'a>> {
+        let entry = self.syms.entry(from).or_default();
+        entry.get(name)
+    }
+
+    pub fn insert(&mut self, name: &str, from: CompartmentId, sym: RelocatedSymbol<'a>) {
+        let entry = self.syms.entry(from).or_default();
+        entry.insert(name.to_string(), sym);
+    }
+}
 
 // A relocation is either a REL type or a RELA type. The only difference is that
 // the RELA type contains an addend (used in the reloc calculations below).
@@ -36,9 +59,9 @@ impl EitherRel {
         }
     }
 
-    pub fn addend(&self) -> i64 {
+    pub fn addend(&self, target: *mut u64) -> i64 {
         match self {
-            EitherRel::Rel(_) => 0,
+            EitherRel::Rel(_) => unsafe { target.read() as i64 },
             EitherRel::Rela(r) => r.r_addend,
         }
     }
@@ -83,6 +106,7 @@ impl Context {
         strings: &StringTable,
         syms: &SymbolTable<NativeEndian>,
         deps_list: &[NodeIndex],
+        reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
         debug!(
             "{}: processing {} relocations (num = {})",
@@ -98,7 +122,16 @@ impl Context {
                     secname: "REL".into(),
                     library: lib.name.as_str().into(),
                 },
-                rels.map(|rel| self.do_reloc(lib, EitherRel::Rel(rel), strings, syms, deps_list)),
+                rels.map(|rel| {
+                    self.do_reloc(
+                        lib,
+                        EitherRel::Rel(rel),
+                        strings,
+                        syms,
+                        deps_list,
+                        reloc_cache,
+                    )
+                }),
             )?;
             Ok(())
         } else if let Some(relas) = self.get_parsing_iter(start, ent, sz) {
@@ -108,7 +141,14 @@ impl Context {
                     library: lib.name.as_str().into(),
                 },
                 relas.map(|rela| {
-                    self.do_reloc(lib, EitherRel::Rela(rela), strings, syms, deps_list)
+                    self.do_reloc(
+                        lib,
+                        EitherRel::Rela(rela),
+                        strings,
+                        syms,
+                        deps_list,
+                        reloc_cache,
+                    )
                 }),
             )?;
             Ok(())
@@ -122,13 +162,75 @@ impl Context {
         }
     }
 
-    pub(crate) fn relocate_single(&mut self, lib_id: LibraryId) -> Result<(), DynlinkError> {
+    #[allow(clippy::too_many_arguments)]
+    fn process_relr(
+        &self,
+        lib: &Library,
+        start: *const u8,
+        ent: usize,
+        sz: usize,
+    ) -> Result<(), DynlinkError> {
+        tracing::debug!(
+            "{}: processing RELR relocations (num = {}) at {:p}",
+            lib,
+            sz / ent,
+            start
+        );
+        // These are different, they indicate simple base additions based
+        // on a compressed format.
+
+        let relr_slice: &[usize] =
+            unsafe { std::slice::from_raw_parts(start as *const usize, sz / ent) };
+
+        let base = lib.base_addr();
+        let mut target = 0;
+
+        let reloc_at = |target: usize, base: usize| {
+            tracing::trace!("processing relr at {:x} += {:x}", target, base);
+            let ptr = unsafe { (target as *mut usize).as_mut().unwrap() };
+            (*ptr) += base;
+            tracing::trace!("new value is {:x}", *ptr);
+        };
+
+        let mut j = 0;
+        for entry in relr_slice {
+            tracing::trace!("RELR: found [{}] {:x}", j, *entry);
+            if *entry & 1 != 0 {
+                if target == 0 {
+                    return Err(DynlinkError {
+                        kind: DynlinkErrorKind::Unknown,
+                        related: Default::default(),
+                    });
+                }
+                // LSB set -- its a bitmap
+                for i in 0..(size_of::<usize>() * 8 - 1) {
+                    if (entry >> (i + 1)) & 1 != 0 {
+                        reloc_at(target + size_of::<usize>() * i, base);
+                    }
+                }
+                target += size_of::<usize>() * (8 * size_of::<usize>() - 1);
+            } else {
+                // sets the address
+                reloc_at(base + *entry, base);
+                target = base + entry + size_of::<usize>();
+            }
+            j += 1;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn relocate_single(
+        &mut self,
+        lib_id: LibraryId,
+        reloc_cache: &mut RelocCache<'_>,
+    ) -> Result<(), DynlinkError> {
+        let _start_1 = Instant::now();
         let lib = self.get_library(lib_id)?;
         debug!("{}: relocating library", lib);
-        let elf = lib.get_elf()?;
-        let common = elf.find_common_data()?;
+        let common = lib.get_elf_common()?;
         let dynamic = common
             .dynamic
+            .as_ref()
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
                 name: "dynamic".into(),
             })?;
@@ -172,25 +274,40 @@ impl Context {
         }
         debug!("{}: relocation flags: {:?} {:?}", lib, flags, flags_1);
 
+        // these aren't in elf v0.8.0
+        const DT_RELR: i64 = 0x24;
+        const DT_RELRENT: i64 = 0x25;
+        const DT_RELRSZ: i64 = 0x23;
         // Lookup all the tables
         let rels = find_dyn_rels(DT_REL, DT_RELENT, DT_RELSZ);
         let relas = find_dyn_rels(DT_RELA, DT_RELAENT, DT_RELASZ);
+        let relr = find_dyn_rels(DT_RELR, DT_RELRENT, DT_RELRSZ);
         let jmprels = find_dyn_rels(DT_JMPREL, DT_PLTREL, DT_PLTRELSZ);
         let _pltgot: Option<*const u8> = find_dyn_entry(DT_PLTGOT);
 
         let dynsyms = common
             .dynsyms
+            .as_ref()
             .ok_or_else(|| DynlinkErrorKind::MissingSection {
                 name: "dynsyms".into(),
             })?;
-        let dynsyms_str = common
-            .dynsyms_strs
-            .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                name: "dynsyms_strs".into(),
-            })?;
+        let dynsyms_str =
+            common
+                .dynsyms_strs
+                .as_ref()
+                .ok_or_else(|| DynlinkErrorKind::MissingSection {
+                    name: "dynsyms_strs".into(),
+                })?;
 
         let deps_list = self.build_deps_search_list(lib.id());
+        let _start_2 = Instant::now();
+
         // Process relocations
+
+        if let Some((rel, ent, sz)) = relr {
+            self.process_relr(lib, rel, ent as usize, sz as usize)?;
+        }
+
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
                 lib,
@@ -201,6 +318,7 @@ impl Context {
                 &dynsyms_str,
                 &dynsyms,
                 deps_list.as_slice(),
+                reloc_cache,
             )?;
         }
 
@@ -214,6 +332,7 @@ impl Context {
                 &dynsyms_str,
                 &dynsyms,
                 deps_list.as_slice(),
+                reloc_cache,
             )?;
         }
 
@@ -241,13 +360,24 @@ impl Context {
                 &dynsyms_str,
                 &dynsyms,
                 deps_list.as_slice(),
+                reloc_cache,
             )?;
         }
+        tracing::trace!(
+            "reloc {}: {}ms prep, {}ms reloc",
+            lib.name,
+            (_start_2 - _start_1).as_millis(),
+            _start_2.elapsed().as_millis()
+        );
 
         Ok(())
     }
 
-    fn relocate_recursive(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
+    fn relocate_recursive(
+        &mut self,
+        root_id: LibraryId,
+        reloc_cache: &mut RelocCache<'_>,
+    ) -> Result<(), DynlinkError> {
         let lib = self.get_library(root_id)?;
         let libname = lib.name.to_string();
         match lib.reloc_state {
@@ -279,7 +409,7 @@ impl Context {
         let rets = deps.into_iter().map(|dep_id| {
             if !visit_state.contains(&dep_id) {
                 visit_state.insert(dep_id);
-                self.relocate_recursive(LibraryId(dep_id))
+                self.relocate_recursive(LibraryId(dep_id), reloc_cache)
             } else {
                 Ok(())
             }
@@ -296,7 +426,7 @@ impl Context {
         let lib = self.get_library_mut(root_id)?;
         lib.reloc_state = RelocState::PartialRelocation;
 
-        let res = self.relocate_single(root_id);
+        let res = self.relocate_single(root_id, reloc_cache);
 
         let lib = self.get_library_mut(root_id)?;
         if res.is_ok() {
@@ -311,8 +441,13 @@ impl Context {
     /// been relocated.
     pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
         let name = self.get_library(root_id)?.name.as_str().into();
-        self.relocate_recursive(root_id).map_err(|e| {
-            DynlinkError::new_collect(DynlinkErrorKind::RelocationFail { library: name }, vec![e])
-        })
+        let mut reloc_cache = RelocCache::default();
+        self.relocate_recursive(root_id, &mut reloc_cache)
+            .map_err(|e| {
+                DynlinkError::new_collect(
+                    DynlinkErrorKind::RelocationFail { library: name },
+                    vec![e],
+                )
+            })
     }
 }

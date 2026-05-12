@@ -82,7 +82,7 @@ jobs:
           os=$(uname)
           arch=$(uname -m)
           base_tag="${{ needs.check-tag.outputs.tag }}"
-          filename="toolchain_${arch}_${os}_${base_tag#toolchain_}.tar.zst"
+          filename="toolchain_${arch}_${os}_${base_tag#toolchain_}.tar.xz"
           echo "filename=$filename" >> $GITHUB_OUTPUT
 
       - name: Upload artifact for release
@@ -107,6 +107,6 @@ jobs:
         with:
           tag_name: ${{ needs.check-tag.outputs.tag }}
           name: Release for ${{ needs.check-tag.outputs.tag }}
-          files: toolchain_*.tar.zst
+          files: toolchain_*.tar.xz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

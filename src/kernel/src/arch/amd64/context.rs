@@ -75,6 +75,12 @@ impl ArchContext {
         unsafe { Self::switch_to_target(&self.target) }
     }
 
+    pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
+        let mut inner = self.inner.lock();
+        let result = f(&mut inner.mapper);
+        result
+    }
+
     /// Switch to a given set of page tables.
     ///
     /// # Safety
@@ -166,6 +172,7 @@ impl ArchContextInner {
             )
             .start_address(),
         );
+
         let km = kernel_mapper().lock();
         for idx in 256..512 {
             mapper.set_top_level_table(idx, km.get_top_level_table(idx));
@@ -179,7 +186,7 @@ impl ArchContextInner {
             MappingSettings::new(
                 Protections::READ | Protections::EXEC,
                 twizzler_abi::device::CacheType::WriteBack,
-                MappingFlags::GLOBAL | MappingFlags::USER,
+                MappingFlags::USER,
             ),
         );
         mapper

@@ -11,3 +11,5 @@ secgate = { path = "../secgate" }
 smoltcp = "0.11"
 twizzler-abi = { path = "../twizzler-abi" }
 monitor-api = { path = "../../rt/monitor-api" }
+twizzler-driver = { path = "../twizzler-driver" }
+bitflags = "*"

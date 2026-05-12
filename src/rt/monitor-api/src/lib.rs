@@ -31,7 +31,7 @@ use twizzler_abi::{
     syscall::{sys_thread_sync, ThreadSync, ThreadSyncReference, ThreadSyncWake},
 };
 use twizzler_rt_abi::{
-    bindings::binding_info,
+    bindings::{binding_info, ctor_set},
     debug::{DlPhdrInfo, LinkMap, LoadedImageId},
     error::{ArgumentError, TwzError},
     thread::ThreadSpawnArgs,
@@ -110,8 +110,9 @@ pub fn monitor_rt_drop_compartment_handle(desc: Descriptor) -> Result<(), TwzErr
 #[secgate::gatecall]
 pub fn monitor_rt_load_library(
     compartment: Option<Descriptor>,
-    id: ObjID,
-) -> Result<Descriptor, TwzError> {
+    id: Option<ObjID>,
+    name_len: usize,
+) -> Result<(Descriptor, usize), TwzError> {
 }
 
 #[secgate::gatecall]
@@ -157,10 +158,29 @@ pub fn monitor_rt_post_signal(
 }
 
 #[secgate::gatecall]
+pub fn monitor_rt_libname_map(namelen: usize, id: ObjID) -> Result<(), TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_libname_unmap(namelen: Option<usize>, id: Option<ObjID>) -> Result<(), TwzError> {
+}
+
+#[secgate::gatecall]
 pub fn monitor_rt_set_controller(comp: ObjID, controller: ObjID) -> Result<(), TwzError> {}
 
 #[secgate::gatecall]
 pub fn monitor_rt_lookup_compartment_id(id: ObjID) -> Result<Descriptor, TwzError> {}
+
+/// Look up a symbol by name, searching within the library identified by `lib_desc`
+/// (or across all libraries in the caller's compartment if `lib_desc` is `None`).
+/// The symbol name (as UTF-8 bytes) must be written to the per-thread simple buffer before
+/// calling, and `name_len` must be the number of bytes written.
+/// Returns the relocated symbol address (as a `usize`) on success.
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_symbol(
+    lib_desc: Option<Descriptor>,
+    name_len: usize,
+) -> Result<usize, TwzError> {
+}
 /// Shared data between the monitor and a compartment runtime. Written to by the monitor, and
 /// read-only from the compartment.
 #[repr(C)]
@@ -355,7 +375,7 @@ pub struct LibraryInfo<'a> {
 }
 
 impl<'a> LibraryInfo<'a> {
-    fn from_raw(raw: LibraryInfoRaw) -> Self {
+    pub fn from_raw(raw: LibraryInfoRaw) -> Self {
         let name = lazy_sb::read_bytes_from_sb(raw.name_len);
         let mut this = Self {
             name: lazy_sb::read_string_from_sb(raw.name_len),
@@ -390,18 +410,29 @@ impl LibraryHandle {
     pub fn desc(&self) -> Descriptor {
         self.desc
     }
+
+    pub fn into_raw(self) -> Descriptor {
+        let desc = self.desc;
+        core::mem::forget(self);
+        desc
+    }
 }
 
 /// A builder-type for loading libraries.
 pub struct LibraryLoader<'a> {
-    id: ObjID,
+    id: Option<ObjID>,
+    name: String,
     comp: Option<&'a CompartmentHandle>,
 }
 
 impl<'a> LibraryLoader<'a> {
     /// Make a new LibraryLoader.
-    pub fn new(id: ObjID) -> Self {
-        Self { id, comp: None }
+    pub fn new(name: impl ToString, id: Option<ObjID>) -> Self {
+        Self {
+            name: name.to_string(),
+            id,
+            comp: None,
+        }
     }
 
     /// Load the library in the given compartment.
@@ -412,8 +443,32 @@ impl<'a> LibraryLoader<'a> {
 
     /// Load the library.
     pub fn load(&self) -> Result<LibraryHandle, TwzError> {
-        let desc: Descriptor =
-            monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id)?;
+        let len = lazy_sb::write_bytes_to_sb(self.name.as_bytes());
+        let (desc, ctor_len): (Descriptor, usize) =
+            monitor_rt_load_library(self.comp.map(|comp| comp.desc).flatten(), self.id, len)?;
+
+        // Call ctors.
+        let ctors = lazy_sb::read_bytes_from_sb(ctor_len);
+        let ctor_slice = unsafe {
+            core::slice::from_raw_parts(
+                ctors.as_ptr().cast::<ctor_set>(),
+                ctor_len / core::mem::size_of::<ctor_set>(),
+            )
+        };
+        for ctor in ctor_slice {
+            unsafe {
+                let init_array = core::slice::from_raw_parts(ctor.init_array, ctor.init_array_len);
+                for func in init_array {
+                    if let Some(f) = func {
+                        f();
+                    }
+                }
+                if let Some(f) = ctor.legacy_init {
+                    f();
+                }
+            }
+        }
+
         Ok(LibraryHandle { desc })
     }
 }
@@ -625,6 +680,8 @@ pub struct CompartmentInfo<'a> {
     pub flags: CompartmentFlags,
     /// Number of libraries
     pub nr_libs: usize,
+    /// Exit code of the main thread (valid when EXITED flag is set).
+    pub exit_code: u64,
     _pd: PhantomData<&'a ()>,
 }
 
@@ -636,6 +693,7 @@ impl<'a> CompartmentInfo<'a> {
             sctx: raw.sctx,
             flags: CompartmentFlags::from_bits_truncate(raw.flags),
             nr_libs: raw.nr_libs,
+            exit_code: raw.exit_code,
             _pd: PhantomData,
         }
     }
@@ -875,6 +933,7 @@ mod lazy_sb {
 }
 
 pub const THREAD_STARTED: u32 = 1;
+#[repr(C)]
 pub struct RuntimeThreadControl {
     pub id: UnsafeCell<u32>,
     pub did_exit: UnsafeCell<u32>,
@@ -882,7 +941,7 @@ pub struct RuntimeThreadControl {
     pub internal_lock: AtomicU32,
     pub flags: AtomicU32,
     pub stack_canary: u64,
-    pub libc_data: [u64; 1000],
+    pub libc_data: [u64; 16],
 }
 
 impl Default for RuntimeThreadControl {
@@ -899,7 +958,7 @@ impl RuntimeThreadControl {
             id: UnsafeCell::new(id),
             did_exit: UnsafeCell::new(0),
             stack_canary: 0,
-            libc_data: [0; 1000],
+            libc_data: [0; 16],
         }
     }
 
@@ -1031,6 +1090,8 @@ pub struct CompartmentInfoRaw {
     pub sctx: ObjID,
     pub flags: u64,
     pub nr_libs: usize,
+    /// Exit code of the compartment's main thread (valid when EXITED flag is set).
+    pub exit_code: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, Copy)]
@@ -1087,4 +1148,30 @@ impl CompartmentLoaderConfig {
     pub fn fd_spec(&self) -> &[binding_info] {
         unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
     }
+}
+
+pub fn libname_map(name: &str, id: ObjID) -> Result<(), TwzError> {
+    let namelen = lazy_sb::write_bytes_to_sb(name.as_bytes());
+    monitor_rt_libname_map(namelen, id)
+}
+
+pub fn libname_unmap(name: Option<&str>, id: Option<ObjID>) -> Result<(), TwzError> {
+    let namelen = name.map(|name| lazy_sb::write_bytes_to_sb(name.as_bytes()));
+    monitor_rt_libname_unmap(namelen, id)
+}
+
+/// Look up a library by name in the caller's compartment. Returns a library handle descriptor.
+pub fn lookup_library_by_name(name: &str) -> Result<secgate::util::Descriptor, TwzError> {
+    LibraryHandle::open((None, lazy_sb::write_bytes_to_sb(name.as_bytes())))
+        .map(|handle| handle.desc())
+}
+
+/// Look up a symbol by name. If `lib_desc` is `None`, searches across all libraries in the
+/// caller's compartment (RTLD_DEFAULT semantics). Returns the relocated symbol address.
+pub fn lookup_symbol_by_name(
+    lib_desc: Option<secgate::util::Descriptor>,
+    name: &str,
+) -> Result<usize, TwzError> {
+    let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
+    monitor_rt_lookup_symbol(lib_desc, name_len)
 }
