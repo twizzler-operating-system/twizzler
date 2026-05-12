@@ -82,11 +82,11 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
         let image_time = std::fs::metadata(&path)?.modified()?;
 
         if image_time > latest_time && !force {
-            println!("Disk image is up to date, skipping copy.");
+            println!("Disk image sysroot is up to date, skipping sysroot copy.");
             return Ok(());
         }
     } else {
-        create_fresh_disk_image(triple)?;
+        return create_fresh_disk_image(triple);
     }
 
     println!("Copying sysroot to disk image for {}", triple,);
@@ -215,7 +215,6 @@ pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyh
                 .iter(),
         )
     {
-        //println!("Copying {} to disk image", cd.path.display());
         ext4.mkdir("/sysroot", 0o755).unwrap();
         ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
         ext4.mkdir("/sysroot/pkg/twizzler", 0o755).unwrap();
