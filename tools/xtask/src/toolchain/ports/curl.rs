@@ -59,27 +59,41 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--build")
         .arg(crate::toolchain::guess_host_triple().unwrap())
         .arg("--prefix=/pkg/curl")
-        .arg("--enable-shared")
-        .arg("--with-openssl")
-        .arg("--without-psl")
-        .arg("--enable-optimizations");
+        .arg("--enable-shared");
+    // This currently is broken on macos.
+    if crate::toolchain::guess_host_triple()
+        .unwrap()
+        .contains("darwin")
+    {
+        cmd.arg("--without-ssl");
+    } else {
+        cmd.arg(format!(
+            "--with-openssl={}",
+            sysroot_dir.join("pkg/openssl").display()
+        ));
+    }
+    cmd.arg("--without-psl").arg("--enable-optimizations");
     cmd.env("DESTDIR", &install_dir);
 
     let cflags = format!(
         "-target {} --sysroot {} -fPIC",
         triple,
-        sysroot_dir.display()
+        sysroot_dir.display(),
     );
 
-    cmd.env("PKG_CONFIG", "");
+    cmd.env("PKG_CONFIG_PATH", "/bin/false");
+    cmd.env("PKG_CONFIG", "/bin/false");
     cmd.env("CFLAGS", &cflags);
     cmd.env("CXXFLAGS", &cflags);
+    cmd.env("CPPFLAGS", &cflags);
     cmd.env("LDFLAGS", &cflags);
+    cmd.env("CPP", bin_dir.join("clang-cpp").display().to_string());
     cmd.env("CC", bin_dir.join("clang").display().to_string());
     cmd.env("CXX", bin_dir.join("clang++").display().to_string());
     cmd.env("LD", bin_dir.join("clang").display().to_string());
     let mut lds = bin_dir.join("clang").display().to_string();
-    lds.push_str(" -shared");
+    lds.push_str(" -shared ");
+    lds.push_str(&cflags);
     cmd.env("LDSHARED", lds);
     cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
     cmd.env("RANLIB", bin_dir.join("llvm-ranlib").display().to_string());

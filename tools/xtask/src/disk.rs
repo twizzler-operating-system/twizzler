@@ -78,13 +78,18 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
             }
         });
 
-    let image_time = std::fs::metadata(&path)?.modified()?;
-    println!("Copying sysroot to disk image for {}", triple,);
+    if std::fs::exists(&path)? {
+        let image_time = std::fs::metadata(&path)?.modified()?;
 
-    if image_time > latest_time && !force {
-        println!("Disk image is up to date, skipping copy.");
-        return Ok(());
+        if image_time > latest_time && !force {
+            println!("Disk image is up to date, skipping copy.");
+            return Ok(());
+        }
+    } else {
+        create_fresh_disk_image(triple)?;
     }
+
+    println!("Copying sysroot to disk image for {}", triple,);
 
     let device = ext4_lwext4::FileBlockDevice::open(path)?;
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
@@ -189,6 +194,7 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
 }
 
 pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyhow::Result<()> {
+    copy_sysroot(triple, false)?;
     let path = format!("target/disk-{}.img", triple);
     let device = ext4_lwext4::FileBlockDevice::open(path)?;
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;

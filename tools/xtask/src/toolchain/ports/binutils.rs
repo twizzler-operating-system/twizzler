@@ -111,30 +111,49 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--prefix=/pkg/binutils")
         .arg("--enable-shared")
         .arg("--enable-ld=no")
+        .arg("--enable-gprof=no")
         .arg("--enable-gas=no")
+        .arg("--with-system-zlib")
         .arg("ac_cv_have_malloc_h=no")
         .arg("ac_cv_have_decl_basename=yes")
+        .arg("ac_cv_header_stdc=yes")
         .arg("--enable-optimizations");
     cmd.env("DESTDIR", &install_dir);
 
     let cflags = format!(
-        "-target {} --sysroot {} -fPIC -DHAVE_DECL_BASENAME=1",
+        "-target {} --sysroot {} -fPIC -DHAVE_DECL_BASENAME=1 -O2",
         triple,
         sysroot_dir.display()
     );
 
-    cmd.env("PKG_CONFIG", "");
-    cmd.env("CFLAGS", &cflags);
-    cmd.env("CXXFLAGS", &cflags);
-    cmd.env("LDFLAGS", &cflags);
-    cmd.env("CC", bin_dir.join("clang").display().to_string());
-    cmd.env("CXX", bin_dir.join("clang++").display().to_string());
-    cmd.env("LD", bin_dir.join("clang").display().to_string());
-    let mut lds = bin_dir.join("clang").display().to_string();
-    lds.push_str(" -shared");
-    cmd.env("LDSHARED", lds);
-    cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
-    cmd.env("RANLIB", bin_dir.join("llvm-ranlib").display().to_string());
+    let set_env = |cmd: &mut Command| {
+        cmd.env("ac_cv_header_stdc", "yes");
+        cmd.env("PKG_CONFIG", "");
+        cmd.env("CFLAGS", &cflags);
+        cmd.env("LIBS", "-lz");
+        cmd.env("CXXFLAGS", &cflags);
+        cmd.env("CPPFLAGS", &cflags);
+        cmd.arg(format!("CPPFLAGS={}", &cflags));
+        cmd.env("LDFLAGS", cflags.clone() + " -lz");
+        cmd.env("CC", bin_dir.join("clang").display().to_string());
+        cmd.env(
+            "CPP",
+            bin_dir.join("clang").display().to_string() + " -E " + &cflags,
+        );
+        cmd.arg(
+            "CPP=".to_string() + &bin_dir.join("clang").display().to_string() + " -E " + &cflags,
+        );
+        cmd.env("CXX", bin_dir.join("clang++").display().to_string());
+        cmd.env("LD", bin_dir.join("clang").display().to_string());
+        let mut lds = bin_dir.join("clang").display().to_string();
+        lds.push_str(" -shared ");
+        lds.push_str(&cflags);
+        cmd.env("LDSHARED", lds);
+        cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
+        cmd.env("RANLIB", bin_dir.join("llvm-ranlib").display().to_string());
+    };
+
+    set_env(&mut cmd);
 
     let mut ch = cmd.spawn()?;
     if !ch.wait()?.success() {
@@ -145,6 +164,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.current_dir(&build_dir)
         .arg("-j")
         .arg(available_parallelism().unwrap().get().to_string());
+    set_env(&mut cmd);
 
     let status = cmd.status()?;
     if !status.success() {
@@ -157,6 +177,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg(format!("DESTDIR={}", sysroot_dir.display()))
         .arg("-j")
         .arg(available_parallelism().unwrap().get().to_string());
+    set_env(&mut cmd);
 
     let status = cmd.status()?;
     if !status.success() {
