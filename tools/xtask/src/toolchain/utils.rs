@@ -138,7 +138,7 @@ pub fn prune_toolchain() -> anyhow::Result<()> {
 
 /// generates generic tag using currently checked out submodules
 /// only used to name a github release
-/// format: toolchain_<hash>.tar.zst
+/// format: toolchain_<hash>.tar.xz
 pub fn generate_tag() -> anyhow::Result<String> {
     let hash = generate_hash()?;
 
@@ -149,7 +149,7 @@ pub fn generate_tag() -> anyhow::Result<String> {
 
 /// generates tag using currently checked out submodules, as well as
 /// host operating system/architecture
-/// format: toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.zst
+/// format: toolchain_<x86|aarch64>_<linux|darwin>_<hash>.tar.xz
 pub fn generate_os_arch_tag() -> anyhow::Result<String> {
     let hash = generate_hash()?;
 
@@ -233,7 +233,7 @@ pub async fn get_checked_download_url() -> anyhow::Result<String> {
     let remote_tc_url = {
         let toolchain_tag = generate_tag()?;
         let os_arch_tag = generate_os_arch_tag()?;
-        let archive_filename = format!("{}.tar.zst", os_arch_tag);
+        let archive_filename = format!("{}.tar.xz", os_arch_tag);
         format!(
             "{}/releases/download/{}/{}",
             BASE_REPO_URL, toolchain_tag, archive_filename
@@ -277,7 +277,7 @@ cargo toolchain bootstrap
     })?;
 
     let tc_os_arch_tag = generate_os_arch_tag()?;
-    let archive_filename = format!("{}.tar.zst", tc_os_arch_tag);
+    let archive_filename = format!("{}.tar.xz", tc_os_arch_tag);
     println!("pulling toolchain for {}", tc_tag);
 
     let client = Client::new();
@@ -310,10 +310,10 @@ cargo toolchain bootstrap
 
 /// Decompresses the toolchain archive and places it inside `/toolchain`
 pub fn decompress_toolchain(archive_path: PathBuf) -> anyhow::Result<()> {
-    // `tar --zstd -xf toolchain_arm64_Darwin_46042ba-1a94b71-4543a3e.tar.zst --strip-components=1
+    // `tar --xz -xf toolchain_arm64_Darwin_46042ba-1a94b71-4543a3e.tar.xz --strip-components=1
     // -C toolchain/`
     let _ = Command::new("tar")
-        .arg("--zstd")
+        .arg("--xz")
         .arg("-xf")
         .arg(&archive_path)
         .arg("--strip-components=1")
