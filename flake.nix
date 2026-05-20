@@ -1,6 +1,5 @@
 {
   description = "Twizzler Development Environment";
-
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1"; # unstable Nixpkgs
     fenix = {
@@ -8,10 +7,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-
   outputs =
     { self, ... }@inputs:
-
     let
       supportedSystems = [
         "x86_64-linux"
@@ -35,20 +32,11 @@
     in
     {
       overlays.default = final: prev: {
-        rustToolchain =
-          with inputs.fenix.packages.${prev.stdenv.hostPlatform.system};
-          combine (
-            with stable;
-            [
-              clippy
-              rustc
-              cargo
-              rustfmt
-              rust-src
-            ]
-          );
+        rustToolchain = inputs.fenix.packages.${prev.stdenv.hostPlatform.system}.fromToolchainFile {
+          file = ./rust-toolchain;
+          sha256 = "sha256-tX7DPHB0+utlIgFILpRy1McUA3L4qizFg9cFCfmZ39M=";
+        };
       };
-
       devShells = forEachSupportedSystem (
         { pkgs }:
         {
@@ -60,8 +48,6 @@
               cargo-deny
               cargo-edit
               cargo-watch
-              rust-analyzer
-
               ninja
               cmake
               qemu
@@ -71,15 +57,11 @@
               virt-manager
               libvirt
               libclang
-
               mdbook
-
             ];
-
             env = {
               # Required by rust-analyzer
               RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
-
               # Required by bindgen to find libclang.so
               LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
             };
