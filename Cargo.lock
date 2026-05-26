@@ -1981,7 +1981,10 @@ checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
 name = "femto"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "termion",
+ "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
@@ -3721,6 +3724,7 @@ dependencies = [
 name = "init"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "monitor-api",
  "naming-core",
  "secgate",

@@ -682,6 +682,10 @@ unsafe extern "C-unwind" fn upcall_handler(frame: *mut c_void, data: *const c_vo
     let _frame = unsafe { frame.cast::<UpcallFrame>().as_ref().unwrap() };
     match data.info {
         twizzler_abi::upcall::UpcallInfo::Mailbox(val) => {
+            if val == libc::SIGWINCH as u64 {
+                // Ignores window change signals from other PTY applications
+                return;
+            }
             twizzler_abi::klog_println!("shell: signal {}", val);
             if val == libc::SIGINFO as u64 {
                 let mstats = monitor_api::stats().unwrap();
