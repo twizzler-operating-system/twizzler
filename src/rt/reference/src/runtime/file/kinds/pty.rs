@@ -1,13 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
-use libc::{termios, S_IFCHR};
+use libc::{termios, winsize, S_IFCHR};
 use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_io::{
     pipe::Pipe,
     pty::{PtyClientHandle, PtyServerHandle},
 };
 use twizzler_rt_abi::{
-    bindings::{IO_REGISTER_TERMIOS, WAIT_WRITE},
+    bindings::{IO_REGISTER_TERMIOS, IO_REGISTER_WINSIZE, WAIT_WRITE},
     error::TwzError,
     fd::FdFlags,
     io::IoFlags,
@@ -108,6 +108,17 @@ impl Fd for PtyHandleKind {
                 unsafe { (val as *mut termios).write(termios) };
                 Ok(())
             }
+            IO_REGISTER_WINSIZE => {
+                if val_len < size_of::<winsize>() {                     
+                        return Err(TwzError::INVALID_ARGUMENT);                             
+                }
+                let winsize = match self {
+                    PtyHandleKind::Server(pty_server_handle) => pty_server_handle.get_winsize(),
+                    PtyHandleKind::Client(pty_client_handle) => pty_client_handle.get_winsize(),
+                };
+                unsafe { (val as *mut winsize).write(winsize) }
+                Ok(())
+            }
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
@@ -124,6 +135,20 @@ impl Fd for PtyHandleKind {
                     }
                     PtyHandleKind::Client(pty_client_handle) => {
                         pty_client_handle.set_termios(unsafe { val.cast::<termios>().read() })
+                    }
+                }
+                Ok(())
+            }
+            IO_REGISTER_WINSIZE => {
+                if val_len < size_of::<winsize>() {                     
+                        return Err(TwzError::INVALID_ARGUMENT);                             
+                }
+                match self {
+                    PtyHandleKind::Server(pty_server_handle) => {
+                        pty_server_handle.set_winsize(unsafe {val.cast::<winsize>().read() })
+                    }
+                    PtyHandleKind::Client(pty_client_handle) => {
+                        pty_client_handle.set_winsize(unsafe {val.cast::<winsize>().read() })
                     }
                 }
                 Ok(())

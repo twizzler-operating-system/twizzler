@@ -673,6 +673,7 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
         PtySignal::Interrupt => libc::SIGINT,
         PtySignal::Quit => libc::SIGQUIT,
         PtySignal::Status => libc::SIGINFO,
+        PtySignal::Winch => libc::SIGWINCH,
     } as u64;
     let _ = monitor_api::post_signal(
         Some(server.object().id()),

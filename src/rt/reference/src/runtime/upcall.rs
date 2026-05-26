@@ -43,6 +43,9 @@ pub(crate) fn upcall_def_handler(frame: &mut UpcallFrame, info: &UpcallData) {
                 twizzler_abi::klog_println!("interrupted");
                 twizzler_abi::syscall::sys_thread_exit(128 + sig);
             }
+            libc::SIGWINCH => {
+                // Ignore SIGWINCH by default to prevent crashing
+            }
             _ => twizzler_abi::syscall::sys_thread_exit(128 + sig),
         },
         _ => {
