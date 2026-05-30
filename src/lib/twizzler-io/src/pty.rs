@@ -126,6 +126,10 @@ impl PtyClientHandle {
     pub fn set_termios(&self, termios: libc::termios) {
         self.pty.base().update_termios(|_| termios);
     }
+
+    pub fn set_winsize(&self, winsize: libc::winsize) {
+        self.pty.base().update_winsize(|_| winsize);
+    }
 }
 
 #[derive(Clone)]
@@ -214,6 +218,10 @@ impl PtyServerHandle {
         })
     }
 
+    pub fn object(&self) -> &Object<PtyBase> {
+        &self.client_output.pty
+    }
+
     fn update_termios(&self) {
         if let Some((termios, termios_gen)) = self
             .client_output
@@ -226,12 +234,18 @@ impl PtyServerHandle {
         }
     }
 
-    pub fn object(&self) -> &Object<PtyBase> {
-        &self.client_output.pty
-    }
-
     pub fn set_termios(&self, termios: libc::termios) {
         self.client_output.pty.base().update_termios(|_| termios);
+    }
+
+    pub fn set_winsize(&self, winsize: libc::winsize) {
+        let old = self.client_output.pty.base().read_winsize().0;
+        if old.ws_row != winsize.ws_row || old.ws_col != winsize.ws_col || old.ws_xpixel != winsize.ws_xpixel || old.ws_ypixel != winsize.ws_ypixel {
+            self.client_output.pty.base().update_winsize(|_| winsize);
+            if let Some(signal_handler) = self.signal_handler {
+                (signal_handler)(self, PtySignal::Winch);
+            }
+        }
     }
 
     pub fn waitpoint(&self, write: bool) -> ThreadSyncSleep {
@@ -287,6 +301,10 @@ impl PtyServerHandle {
 impl PtyServerHandle {
     pub fn get_termios(&self) -> libc::termios {
         self.client_output.pty.base().read_termios().0
+    }
+
+    pub fn get_winsize(&self) -> libc::winsize {
+        self.client_output.pty.base().read_winsize().0
     }
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
@@ -408,6 +426,10 @@ impl PtyClientHandle {
         self.pty.base().read_termios().0
     }
 
+    pub fn get_winsize(&self) -> libc::winsize {
+        self.pty.base().read_winsize().0
+    }
+
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.update_termios();
         let sync = self.pty.base().client_input.sync_for_pending_data();
@@ -432,6 +454,8 @@ impl PtyClientHandle {
 pub struct PtyBase {
     termios_gen: AtomicU64,
     termios: UnsafeCell<libc::termios>,
+    winsize_gen: AtomicU64,
+    winsize: UnsafeCell<libc::winsize>,
     client_input: VolatileBuffer<BUF_SZ>,
     client_output: VolatileBuffer<BUF_SZ>,
 }
@@ -558,6 +582,8 @@ impl PtyBase {
         Self {
             termios_gen: AtomicU64::new(0),
             termios: UnsafeCell::new(termios),
+            winsize_gen: AtomicU64::new(0),
+            winsize: UnsafeCell::new(libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 }),
             client_input: VolatileBuffer::new(),
             client_output: VolatileBuffer::new(),
         }
@@ -664,6 +690,89 @@ impl PtyBase {
         self.do_sleep_for_termios_gen(generation);
         self.termios_gen.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    pub fn update_winsize(
+        &self,
+        mut f: impl FnMut(libc::winsize) -> libc::winsize,
+    ) -> libc::winsize {
+        loop {
+            let current_gen = self.winsize_gen.load(std::sync::atomic::Ordering::Acquire);
+
+            if current_gen & 1 != 0 {
+                self.do_sleep_for_winsize_gen(current_gen);
+                continue;
+            }
+            if self
+                .winsize_gen
+                .compare_exchange(
+                    current_gen,
+                    current_gen + 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                let winsize = unsafe { self.winsize.get().read() };
+                let new_winsize = f(winsize);
+                unsafe { self.winsize.get().write(new_winsize) };
+                self.winsize_gen
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.do_wake_for_winsize_gen();
+                return new_winsize;
+            }
+        }
+    }
+
+    fn do_wake_for_winsize_gen(&self) {
+        let _ = twizzler_abi::syscall::sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&self.winsize_gen),
+                usize::MAX,
+            ))],
+            None,
+        )
+        .inspect_err(|e| tracing::error!("failed to wake on winsize for pty: {}", e));
+    }
+
+    fn do_sleep_for_winsize_gen(&self, generation: u64) {
+        let _ = twizzler_abi::syscall::sys_thread_sync(
+            &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+                ThreadSyncReference::Virtual(&self.winsize_gen),
+                generation,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            ))],
+            None,
+        )
+        .inspect_err(|e| tracing::error!("failed to wait on winsize for pty: {}", e));
+    }
+
+    pub fn try_read_winsize(&self, current: u64) -> Option<(libc::winsize, u64)> {
+        let current_gen = self.winsize_gen.load(std::sync::atomic::Ordering::Acquire);
+        if current == current_gen {
+            return None;
+        }
+        let val = unsafe { self.winsize.get().read() };
+        let after_gen = self.winsize_gen.load(std::sync::atomic::Ordering::SeqCst);
+
+        if current_gen == after_gen && current_gen & 1 == 0 {
+            return Some((val, current_gen));
+        }
+        None
+    }
+
+    pub fn read_winsize(&self) -> (libc::winsize, u64) {
+        loop {
+            let current_gen = self.winsize_gen.load(std::sync::atomic::Ordering::Acquire);
+            let val = unsafe { self.winsize.get().read() };
+            let after_gen = self.winsize_gen.load(std::sync::atomic::Ordering::SeqCst);
+
+            if current_gen == after_gen && current_gen & 1 == 0 {
+                return (val, current_gen);
+            }
+            self.do_sleep_for_winsize_gen(after_gen);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -680,6 +789,7 @@ pub enum PtySignal {
     Interrupt,
     Quit,
     Status,
+    Winch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
