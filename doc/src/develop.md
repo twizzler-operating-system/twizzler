@@ -50,9 +50,8 @@ index 338455b..cb38fb5 100644
   5. From within Twizzler run your new program
 
 ```
-run hello
-got: <run hello>
-> Hello, world!
+root@twizzler [/]# hello
+Hello, world!
 ```
 
   6. Exit the simulator with ```Ctrl-a x```
