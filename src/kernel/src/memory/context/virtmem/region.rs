@@ -25,9 +25,7 @@ use crate::{
         FAULT_STATS,
         context::ObjectContextInfo,
         frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::{
-            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
-        },
+        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable},
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
@@ -189,7 +187,6 @@ impl MapRegion {
             PageNumber,
             ObjectPageProvider,
         ) -> Result<(), UpcallInfo>,
-        shared_mapper: impl Fn(VirtAddr, &SharedPageTable) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
         let mut page_number = PageNumber::from_address(addr);
         if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
@@ -206,21 +203,6 @@ impl MapRegion {
         } else {
             GetPageFlags::empty()
         };
-
-        if let Some(shared_pt) = &self.shared_pt
-            && !is_kern_obj
-        {
-            log::debug!(
-                "shared map for: {}: {:?} {:?}: {:?}",
-                self.object().id(),
-                addr,
-                cause,
-                shared_pt.provider().peek().unwrap().addr
-            );
-            check_settings(addr, &shared_pt.settings, cause)?;
-            shared_mapper(addr, shared_pt)?;
-            shared_pt.inc_refs();
-        }
 
         if let Some(shadow) = &self.shadow {
             if let Some(page) = shadow.get_page(page_number, get_page_flags) {
@@ -291,7 +273,6 @@ impl MapRegion {
                 default_prot,
                 start_time,
                 mapper,
-                shared_mapper,
             );
         }
 

@@ -14,6 +14,7 @@ use crate::{
         tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
     mutex::Mutex,
+    obj::pagetables::ObjectPageTable,
     once::Once,
     spinlock::Spinlock,
 };
@@ -106,12 +107,8 @@ impl ArchContext {
         }
     }
 
-    pub fn shared_map(&self, cursor: MappingCursor, spt: &SharedPageTable) {
-        let ops = if cursor.start().is_kernel() {
-            panic!("cannot map kernel memory with shared page tables")
-        } else {
-            self.inner.lock().shared_map(cursor, spt)
-        };
+    pub fn object_map(&self, cursor: MappingCursor, object_tables: &ObjectPageTable) {
+        let ops = self.inner.lock().object_map(cursor, object_tables);
         ops.run_all();
     }
 
@@ -234,8 +231,12 @@ impl ArchContextInner {
         self.mapper.unmap(cursor)
     }
 
-    fn shared_map(&mut self, cursor: MappingCursor, spt: &SharedPageTable) -> DeferredUnmappingOps {
-        self.mapper.shared_map(cursor, spt)
+    fn object_map(
+        &mut self,
+        cursor: MappingCursor,
+        object_tables: &ObjectPageTable,
+    ) -> DeferredUnmappingOps {
+        self.mapper.object_map(cursor, object_tables)
     }
 }
 

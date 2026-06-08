@@ -39,6 +39,7 @@ pub mod control;
 pub mod copy;
 pub mod id;
 pub mod pages;
+pub mod pagetables;
 pub mod pagevec;
 pub mod range;
 pub mod thread_sync;

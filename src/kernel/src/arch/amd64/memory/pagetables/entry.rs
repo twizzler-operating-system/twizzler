@@ -31,17 +31,33 @@ impl Entry {
         Self(0)
     }
 
+    pub fn is_cow(&self) -> bool {
+        self.flags().contains(EntryFlags::COW)
+    }
+
+    pub fn set_cow(&mut self, value: bool) {
+        let mut flags = self.flags();
+        flags.set(EntryFlags::COW, value);
+        self.set_flags(flags);
+    }
+
+    pub fn is_object_table(&self) -> bool {
+        self.flags().contains(EntryFlags::OBJECT_TABLE)
+    }
+
+    pub fn set_object_table(&mut self, value: bool) {
+        let mut flags = self.flags();
+        flags.set(EntryFlags::OBJECT_TABLE, value);
+        self.set_flags(flags);
+    }
+
     pub(super) fn get_avail_bit(&self) -> bool {
         self.flags().contains(EntryFlags::AVAIL_1)
     }
 
     pub(super) fn set_avail_bit(&mut self, value: bool) {
         let mut flags = self.flags();
-        if value {
-            flags.insert(EntryFlags::AVAIL_1);
-        } else {
-            flags.remove(EntryFlags::AVAIL_1);
-        }
+        flags.set(EntryFlags::AVAIL_1, value);
         self.set_flags(flags);
     }
 
@@ -88,6 +104,7 @@ impl Entry {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     /// The possible flags in an X86 page table entry.
     pub struct EntryFlags: u64 {
         const PRESENT = 1 << 0;
@@ -100,7 +117,8 @@ bitflags::bitflags! {
         const HUGE_PAGE = 1 << 7;
         const GLOBAL = 1 << 8;
         const AVAIL_1 = 1 << 9;
-        const SHARED_PAGE_TABLE = 1 << 10;
+        const OBJECT_TABLE = 1 << 10;
+        const COW = 1 << 11;
         const NO_EXECUTE = 1 << 63;
     }
 }

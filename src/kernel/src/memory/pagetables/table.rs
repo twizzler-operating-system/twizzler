@@ -1,16 +1,13 @@
-use super::{
-    consistency::Consistency, MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
-    SharedPageTable,
-};
+use super::{MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, consistency::Consistency};
 use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{get_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
-        pagetables::MappingFlags,
-        tracker::{try_alloc_frame, FrameAllocFlags},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
+        pagetables::{Mapper, MappingFlags},
+        tracker::{FrameAllocFlags, try_alloc_frame},
     },
 };
 
@@ -109,33 +106,112 @@ impl Table {
         }
     }
 
-    pub(super) fn shared_map(
+    pub(super) fn split_huge(&mut self, index: usize, level: usize) -> Option<()> {
+        let entry = &mut self[index];
+        if !entry.is_present() || !entry.is_huge() {
+            return Some(());
+        }
+        assert_ne!(level, Self::last_level());
+        let start_paddr = entry.addr(level);
+        let flags = entry.flags();
+        // TODO: this might generate spurious faults.
+        self.populate(index, EntryFlags::intermediate())?;
+
+        let next_table = self.next_table_mut(index).unwrap();
+
+        for i in 0..Table::PAGE_TABLE_ENTRIES {
+            let paddr = start_paddr
+                .offset(i * Self::level_to_page_size(level))
+                .ok()?;
+            next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
+        }
+        Some(())
+    }
+
+    pub(super) fn do_cow_copy(&mut self, index: usize, level: usize) -> Option<()> {
+        let entry = &mut self[index];
+        if !entry.is_present() || !entry.is_cow() {
+            return Some(());
+        }
+
+        let orig_paddr = entry.addr(level);
+        let flags = entry.flags();
+
+        let frame = try_alloc_frame(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        )?;
+        frame.copy_contents_from_physaddr(0, orig_paddr, PHYS_LEVEL_LAYOUTS[0].size());
+
+        if level != 0 {
+            let next_table = self.next_table_mut(index).unwrap();
+            for i in 0..Table::PAGE_TABLE_ENTRIES {
+                next_table[i].set_cow(true);
+            }
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        self[index] = Entry::new(
+            frame.start_address(),
+            (flags | EntryFlags::WRITE) - EntryFlags::COW,
+        );
+
+        Some(())
+    }
+
+    pub(super) fn cow_copy(
+        &mut self,
+        consist: &mut Consistency,
+        cursor: &MappingCursor,
+        level: usize,
+    ) -> Option<()> {
+        if level < cursor.biggest_level() {
+            return Some(());
+        }
+
+        let index = Self::get_index(cursor.start(), level);
+        if self[index].is_huge() && level != Self::last_level() {
+            self.split_huge(index, level)?;
+        } else {
+            self.do_cow_copy(index, level)?;
+        }
+
+        if let Some(next) = self.next_table_mut(index) {
+            next.cow_copy(consist, cursor, level - 1)?;
+        }
+        Some(())
+    }
+
+    pub(super) fn object_map(
         &mut self,
         consist: &mut Consistency,
         cursor: MappingCursor,
         level: usize,
-        spt: &SharedPageTable,
+        object_tables: &mut Mapper,
     ) -> Option<()> {
         let index = Self::get_index(cursor.start(), level);
 
-        if level == spt.level() + 1 {
-            let pinfo = spt.provider().peek().unwrap();
+        let max_level = object_tables.start_level() - 1;
+        let target_level = cursor.biggest_level().min(max_level) + 1;
+
+        if level == target_level {
+            let paddr = object_tables.get_table_addr(level);
             let mut flags = EntryFlags::intermediate();
-            flags.insert(EntryFlags::SHARED_PAGE_TABLE);
+            flags.insert(EntryFlags::OBJECT_TABLE);
             self.update_entry(
                 consist,
                 index,
-                Entry::new(pinfo.addr, flags),
+                Entry::new(paddr, flags),
                 cursor.start(),
                 false,
                 level,
             );
             Some(())
-        } else if level > spt.level() + 1 {
+        } else if level > target_level {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
             let next_table = self.next_table_mut(index).unwrap();
-            next_table.shared_map(consist, cursor, Self::next_level(level), spt);
+            next_table.object_map(consist, cursor, Self::next_level(level), object_tables);
             Some(())
         } else {
             panic!("tried to map within arch-tables for shared tables");
@@ -225,7 +301,7 @@ impl Table {
                     level,
                 );
             } else if entry.is_present() && level != Self::last_level() {
-                if !entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE) {
+                if !entry.is_object_table() {
                     let next_table = self.next_table_mut(idx).unwrap();
                     next_table.unmap(consist, cursor, Self::next_level(level));
                     if next_table.read_count() == 0 && level != Table::top_level() {
@@ -305,7 +381,7 @@ impl Table {
                 entry.addr(level),
                 entry.flags().settings(),
                 Self::level_to_page_size(level),
-                entry.flags().contains(EntryFlags::SHARED_PAGE_TABLE),
+                entry.is_object_table(),
             ))
         } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();

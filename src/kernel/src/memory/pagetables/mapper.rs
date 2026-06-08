@@ -1,10 +1,13 @@
 use super::{
-    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, SharedPageTable,
+    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
     consistency::{Consistency, DeferredUnmappingOps},
 };
-use crate::arch::{
-    address::PhysAddr,
-    memory::pagetables::{Entry, Table},
+use crate::{
+    arch::{
+        address::PhysAddr,
+        memory::pagetables::{Entry, Table},
+    },
+    obj::pagetables::ObjectPageTable,
 };
 
 /// Manager for a set of page tables. This is the primary interface for manipulating a set of page
@@ -121,15 +124,27 @@ impl Mapper {
         self.start_level
     }
 
-    pub fn shared_map(
+    pub fn object_map(
         &mut self,
         cursor: MappingCursor,
-        spt: &SharedPageTable,
+        object_tables: &ObjectPageTable,
     ) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
-        root.shared_map(&mut consist, cursor, level, spt);
-        consist.into_deferred()
+        object_tables.with_mapper(|mapper| {
+            root.object_map(&mut consist, cursor, level, mapper);
+            consist.into_deferred()
+        })
+    }
+
+    pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {
+        // This function will:
+        // Search for a table at the given level that can be used to map into a view.
+        // If one is found, return its address.
+        // If one is not found, allocate a new one and return its address.
+        // If a leaf page is found where the table should be, we'll need to split it into smaller
+        // tables.
+        todo!()
     }
 }

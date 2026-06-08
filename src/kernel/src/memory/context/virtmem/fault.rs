@@ -14,8 +14,7 @@ use crate::{
     memory::{
         FAULT_STATS,
         context::{ContextRef, kernel_context},
-        frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::{MappingCursor, PhysAddrProvider, SharedPageTable},
+        pagetables::{PhysAddrProvider, SharedPageTable},
     },
     obj::PageNumber,
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
@@ -209,24 +208,6 @@ fn page_fault_to_region(
     if sctx_id.raw() == 0 {
         //logln!("perms: {:?} {:?} {:?} {:?}", addr, cause, ip, perms);
     }
-
-    let shared_mapper = |addr: VirtAddr, spt: &SharedPageTable| {
-        let aligned_addr = spt.align_addr(addr);
-
-        let cursor = MappingCursor::new(aligned_addr, PHYS_LEVEL_LAYOUTS[spt.level()].size());
-        ctx.with_arch(sctx_id, |arch| {
-            if !arch.readmap(cursor, |mut x| {
-                x.next().map(|m| !m.is_shared()).unwrap_or_default()
-            }) {
-                if arch.readmap(cursor, |x| x.count()) > 0 {
-                    arch.unmap(cursor);
-                }
-                arch.shared_map(cursor, spt);
-            }
-        });
-        Ok(())
-    };
-
     let mapper =
         |spt: Option<&SharedPageTable>, offset: PageNumber, mut provider: ObjectPageProvider| {
             // TODO: limit page count by mapping or by max?
@@ -267,20 +248,16 @@ fn page_fault_to_region(
                 }
             }
 
-            if let Some(shared_pt) = spt {
-                shared_pt.map(cursor, &mut provider);
-            } else {
-                ctx.with_arch(sctx_id, |arch| {
-                    if provider
-                        .peek()
-                        .is_some_and(|p| p.settings.perms().contains(Protections::WRITE))
-                        && arch.readmap(cursor, |x| x.count()) > 0
-                    {
-                        arch.unmap(cursor);
-                    }
-                    arch.map(cursor, &mut provider);
-                });
-            }
+            ctx.with_arch(sctx_id, |arch| {
+                if provider
+                    .peek()
+                    .is_some_and(|p| p.settings.perms().contains(Protections::WRITE))
+                    && arch.readmap(cursor, |x| x.count()) > 0
+                {
+                    arch.unmap(cursor);
+                }
+                arch.map(cursor, &mut provider);
+            });
             Ok(())
         };
 
@@ -293,7 +270,6 @@ fn page_fault_to_region(
         default_prot,
         start_time,
         mapper,
-        shared_mapper,
     )
 }
 
