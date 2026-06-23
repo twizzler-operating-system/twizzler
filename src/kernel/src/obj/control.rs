@@ -3,22 +3,19 @@
 //! for the base, we optimize a bit by avoiding creating a kernel object handle if the base
 //! type fits in one page.
 
-use alloc::sync::Arc;
 use core::ptr::NonNull;
 
 use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
-use super::pages::PageRef;
 use crate::{
     memory::{
         context::{
-            kernel_context, KernelMemoryContext, KernelObject, KernelObjectHandle,
-            ObjectContextInfo,
+            KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo,
+            kernel_context,
         },
         frame::FrameRef,
-        tracker::{alloc_frame, FrameAllocFlags},
     },
-    obj::{pages::Page, ObjectRef, PageNumber},
+    obj::{ObjectRef, PageNumber},
     userinit::create_blank_object,
 };
 
@@ -56,6 +53,7 @@ impl<Base> ControlObjectCacher<Base> {
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
+            /*
             // TODO: this should probably use the frame Page variant.
             let frame = alloc_frame(
                 FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK | FrameAllocFlags::KERNEL,
@@ -72,6 +70,8 @@ impl<Base> ControlObjectCacher<Base> {
                 base_ptr: NonNull::new(base_ptr).unwrap(),
                 base_frame: frame,
             })
+            */
+            todo!()
         };
         Self {
             object,

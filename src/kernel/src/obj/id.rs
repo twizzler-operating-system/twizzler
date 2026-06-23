@@ -83,21 +83,23 @@ fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Pr
 
 impl Object {
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {
-        *self.verified_id.call_once(|| loop {
-            let meta = self.read_meta(true);
-            if let Some(meta) = meta {
-                break (
-                    verify_id(
-                        self.id,
-                        meta.nonce.0,
-                        meta.kuid,
-                        meta.flags,
+        *self.verified_id.call_once(|| {
+            loop {
+                let meta = self.read_meta();
+                if let Some(meta) = meta {
+                    break (
+                        verify_id(
+                            self.id,
+                            meta.nonce.0,
+                            meta.kuid,
+                            meta.flags,
+                            meta.default_prot,
+                        ),
                         meta.default_prot,
-                    ),
-                    meta.default_prot,
-                );
-            } else {
-                logln!("failed to read metadata");
+                    );
+                } else {
+                    logln!("failed to read metadata");
+                }
             }
         })
     }

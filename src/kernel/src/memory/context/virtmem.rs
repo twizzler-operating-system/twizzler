@@ -3,7 +3,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
 
-use region::{MapRegion, RegionManager, Shadow};
+use region::{MapRegion, RegionManager};
 use twizzler_abi::{
     device::CacheType,
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
@@ -22,6 +22,7 @@ use crate::{
     idcounter::{Id, IdCounter, StableId},
     memory::{
         PhysAddr,
+        frame::FrameRef,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
@@ -29,7 +30,7 @@ use crate::{
         tracker::FrameAllocFlags,
     },
     mutex::Mutex,
-    obj::{self, ObjectRef, PageNumber, pages::PageRef},
+    obj::{self, ObjectRef, PageNumber},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -117,11 +118,11 @@ const MAX_OPP_VEC: usize = 128;
 struct ObjectPageProvider {
     pos: usize,
     inner_pos: usize,
-    pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>,
+    pages: heapless::Vec<(FrameRef, MappingSettings), MAX_OPP_VEC>,
 }
 
 impl ObjectPageProvider {
-    pub fn new(pages: heapless::Vec<(PageRef, MappingSettings), MAX_OPP_VEC>) -> Self {
+    pub fn new(pages: heapless::Vec<(FrameRef, MappingSettings), MAX_OPP_VEC>) -> Self {
         Self {
             pages,
             pos: 0,
@@ -144,11 +145,11 @@ impl PhysAddrProvider for ObjectPageProvider {
         if page.0.nr_pages() > 1 {
             log::trace!(
                 "peek: {:?}",
-                page.0.physical_address().offset(self.inner_pos).unwrap()
+                page.0.start_address().offset(self.inner_pos).unwrap()
             );
         }
         Some(PhysMapInfo {
-            addr: page.0.physical_address().offset(self.inner_pos).unwrap(),
+            addr: page.0.start_address().offset(self.inner_pos).unwrap(),
             len: PageNumber::PAGE_SIZE * page.0.nr_pages() - self.inner_pos,
             settings: page.1,
         })
@@ -332,11 +333,6 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), TwzError> {
-        let shadow = if object_info.flags.contains(MapFlags::STABLE) {
-            Some(Arc::new(Shadow::new(object_info)))
-        } else {
-            None
-        };
         log::debug!(
             "insert {} to {:?} {:?}",
             object_info.object.id(),
@@ -350,7 +346,6 @@ impl UserContext for VirtContext {
             object: object_info.object().clone(),
             offset: 0,
             range: slot.range(),
-            shadow,
             flags: object_info.flags,
             shared_pt: None,
         };
@@ -583,7 +578,6 @@ impl KernelMemoryContext for VirtContext {
             offset: 0,
             prot: info.prot(),
             cache_type: info.cache(),
-            shadow: None,
             flags: info.flags,
             shared_pt: None,
         };

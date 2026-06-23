@@ -4,19 +4,19 @@ use core::mem::size_of;
 use memoffset::offset_of;
 use twizzler_abi::{
     device::{
-        BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MmioInfo,
-        SubObjectType, MMIO_OFFSET,
+        BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MMIO_OFFSET,
+        MmioInfo, SubObjectType,
     },
     kso::{
-        pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len, KactionCmd,
-        KactionGenericCmd, KactionValue, KsoHdr,
+        KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, pack_kaction_pin_token_and_len,
+        unpack_kaction_pin_start_and_len,
     },
-    object::{ObjID, NULLPAGE_SIZE},
+    object::{NULLPAGE_SIZE, ObjID},
     syscall::PinnedPage,
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, GenericError, ObjectError, TwzError},
     Result,
+    error::{ArgumentError, GenericError, ObjectError, TwzError},
 };
 
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
     memory::PhysAddr,
     mutex::Mutex,
     obj::{
-        lookup_object, register_object, InvalidateMode, LookupFlags, Object, ObjectRef, PageNumber,
+        InvalidateMode, LookupFlags, Object, ObjectRef, PageNumber, lookup_object, register_object,
     },
     once::Once,
     syscall::create_user_slice,
@@ -98,6 +98,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 let slice = unsafe { create_user_slice::<PinnedPage>(arg, len as u64) }
                     .ok_or(ArgumentError::InvalidArgument)?;
 
+                /*
                 let (pins, token) = obj
                     .pin(
                         (start as usize)
@@ -111,9 +112,11 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 for i in 0..(len as usize) {
                     slice[i] = PinnedPage::new(pins[i].into())
                 }
+                */
+                todo!()
 
-                let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
-                Ok(KactionValue::U64(retval))
+                //let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
+                //Ok(KactionValue::U64(retval))
             }
             KactionGenericCmd::GetKsoRoot => {
                 let ksom = get_kso_manager();
@@ -198,7 +201,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 } else {
                     CacheType::WriteBack
                 };
-                obj.map_phys(obj_start, start, end, ct);
+                obj.map_phys(obj_start as usize, start, end, ct);
                 obj.invalidate(
                     PageNumber::from_offset(obj_start as usize)
                         ..PageNumber::from_offset(obj_start as usize + len),
@@ -300,7 +303,7 @@ impl Device {
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = Arc::new(crate::obj::Object::new_kernel());
-        obj.map_phys(MMIO_OFFSET as u64, start, end, ct);
+        obj.map_phys(MMIO_OFFSET, start, end, ct);
         let mmio_info = MmioInfo {
             length: (end - start) as u64,
             cache_type: CacheType::Uncacheable,

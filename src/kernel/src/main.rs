@@ -15,6 +15,7 @@
 #![feature(allocator_api)]
 #![feature(likely_unlikely)]
 #![feature(ptr_as_ref_unchecked)]
+#![feature(atomic_internals)]
 
 #[macro_use]
 pub mod log;

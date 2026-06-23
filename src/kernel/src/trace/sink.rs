@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{ptr::addr_of, sync::atomic::AtomicU64, usize};
 
 use twizzler_abi::{
-    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags, TraceSpec},
     trace::{TraceBase, TraceData, TraceEntryFlags, TraceEntryHead},
 };
@@ -10,7 +10,7 @@ use twizzler_rt_abi::error::{ObjectError, TwzError};
 
 use super::buffered_trace_data::BufferedTraceData;
 use crate::{
-    obj::{lookup_object, LookupFlags, ObjectRef},
+    obj::{LookupFlags, ObjectRef, lookup_object},
     syscall::object::sys_object_create,
 };
 
@@ -122,8 +122,11 @@ impl TraceSink {
             ));
 
             unsafe {
-                self.current_object
-                    .try_write_val_and_signal(NULLPAGE_SIZE, self.offset, usize::MAX)
+                let _ = self.current_object.try_write_val_and_signal(
+                    NULLPAGE_SIZE,
+                    self.offset,
+                    usize::MAX,
+                );
             }
 
             self.current_object = obj;

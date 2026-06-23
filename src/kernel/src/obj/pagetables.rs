@@ -1,13 +1,17 @@
 use alloc::sync::Arc;
 
+use twizzler_abi::device::CacheType;
+use twizzler_rt_abi::error::TwzError;
+
 use crate::{
-    arch::VirtAddr,
+    arch::{PhysAddr, VirtAddr},
     memory::{
         frame::FrameRef,
         pagetables::{Consistency, ContiguousProvider, Mapper, MappingCursor, MappingSettings},
         tracker::{FrameAllocFlags, alloc_frame},
     },
     mutex::Mutex,
+    obj::Object,
 };
 
 pub struct ObjectPageTable {
@@ -46,5 +50,25 @@ impl ObjectPageTable {
     pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
         let mut guard = self.mapper.lock();
         f(&mut guard)
+    }
+
+    pub fn print_tree(&self) {
+        todo!()
+    }
+
+    pub fn count_pages(&self) -> usize {
+        todo!()
+    }
+}
+
+impl Object {
+    pub fn map_phys(
+        &self,
+        offset: usize,
+        start: PhysAddr,
+        end: PhysAddr,
+        ct: CacheType,
+    ) -> Result<(), TwzError> {
+        todo!()
     }
 }

@@ -175,6 +175,7 @@ pub extern "C" fn user_init() {
         }
 
         // remove permission mappings from text segment
+        /*
         let page_tree = obj_text.lock_page_tree();
         for r in page_tree.range(0.into()..usize::MAX.into()) {
             let range = *r.0..r.0.offset(r.1.length);
@@ -184,6 +185,8 @@ pub extern "C" fn user_init() {
                 crate::obj::InvalidateMode::WriteProtect,
             );
         }
+        */
+        todo!();
 
         (rtinfo_start, elf.header.pt2.entry_point())
     };

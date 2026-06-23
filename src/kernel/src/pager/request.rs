@@ -16,8 +16,7 @@ use crate::{
     arch::PhysAddr,
     condvar::CondVarLinkAdapter,
     instant::Instant,
-    memory::context::virtmem::region::Shadow,
-    obj::{ObjectRef, PageNumber, range::GetPageFlags},
+    obj::{ObjectRef, PageNumber},
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
     thread::{CriticalGuard, ThreadRef, current_thread_ref},
@@ -26,7 +25,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct SyncRegionInfo {
     pub reqs: Arc<Vec<RequestFromKernel>>,
-    shadow: Option<Arc<Shadow>>,
+    //shadow: Option<Arc<Shadow>>,
     pub id: ObjID,
     pub unique_id: ObjID,
     pub sync_info: Option<sync_info>,
@@ -145,11 +144,12 @@ impl ReqKind {
 
     pub fn new_sync_region(
         object: &ObjectRef,
-        shadow: Option<Shadow>,
+        //shadow: Option<Shadow>,
         dirty_set: &[(PageNumber, usize)],
         sync_info: Option<sync_info>,
         version: u64,
     ) -> Self {
+        /*
         let mut page_tree = object.lock_page_tree();
         let pages = dirty_set
             .iter()
@@ -245,6 +245,8 @@ impl ReqKind {
             unique_id: unique_id.into(),
             sync_info,
         })
+        */
+        todo!()
     }
 
     pub fn new_del(obj_id: ObjID) -> Self {

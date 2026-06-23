@@ -29,12 +29,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
-    obj::{
-        ObjectRef, PageNumber,
-        copy::copy_range_to_shadow,
-        pages::{Page, PageRef},
-        range::{GetPageFlags, PageRangeTree, PageStatus},
-    },
+    obj::{ObjectRef, PageNumber},
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
@@ -47,7 +42,7 @@ use crate::{
 #[derive(Clone)]
 pub struct MapRegion {
     pub object: ObjectRef,
-    pub shadow: Option<Arc<Shadow>>,
+    //pub shadow: Option<Arc<Shadow>>,
     pub offset: u64,
     pub cache_type: CacheType,
     pub prot: Protections,
@@ -198,6 +193,7 @@ impl MapRegion {
             FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
             PHYS_LEVEL_LAYOUTS[0],
         );
+        /*
         let get_page_flags = if cause == MemoryAccessKind::Write {
             GetPageFlags::WRITE
         } else {
@@ -225,13 +221,15 @@ impl MapRegion {
                 );
             }
         }
+        */
 
-        let obj_page_tree = self.object.lock_page_tree();
+        let obj_page_tree = self.object.lock_page_tables();
         let mut used_pager = false;
         let mut obj_page_tree =
             self.object
                 .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
 
+        /*
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         log::trace!(
             "get_page for {} page {} got {:?}",
@@ -430,6 +428,8 @@ impl MapRegion {
                 addr.raw() as usize,
             )))
         }
+        */
+        todo!()
     }
 
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
@@ -496,9 +496,9 @@ impl MapRegion {
                     cache: self.cache_type,
                     flags: self.flags,
                 };
-                if let Some(shadow) = &self.shadow {
-                    shadow.update(&info);
-                }
+                //if let Some(shadow) = &self.shadow {
+                //    shadow.update(&info);
+                //}
                 let ctx = current_memory_context().unwrap();
                 ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
                     let cursor = self.mapping_cursor(0, MAX_SIZE);
@@ -566,6 +566,7 @@ impl RegionManager {
     }
 }
 
+/*
 pub struct Shadow {
     tree: Mutex<PageRangeTree>,
 }
@@ -610,3 +611,5 @@ impl From<&MapRegion> for Shadow {
         Shadow::new(&info)
     }
 }
+
+*/

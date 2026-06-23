@@ -62,6 +62,8 @@ impl Table {
                 FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
                 PHYS_LEVEL_LAYOUTS[0],
             )?;
+            frame.set_pt(true);
+            frame.inc_refcount();
             *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }
@@ -89,6 +91,9 @@ impl Table {
             .settings()
             .flags()
             .contains(MappingFlags::GLOBAL);
+
+        // TODO: do we need to decrement the page refcount, etc?
+
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry as *const _);
         consist.flush(entry_addr);

@@ -99,10 +99,14 @@ impl Drop for DeferredUnmappingOps {
 impl DeferredUnmappingOps {
     pub fn run_all(mut self) {
         while let Some(page) = self.pages.pop_back() {
+            page.dec_refcount();
+            page.set_pt(false);
             crate::memory::tracker::free_frame(page)
         }
 
         while let Some(page) = self.shared.pop_back() {
+            page.dec_refcount();
+            page.set_pt(false);
             crate::memory::pagetables::free_shared_frame(page)
         }
     }

@@ -5,21 +5,21 @@ use core::{
 };
 
 use bitflags::bitflags;
-use intrusive_collections::{intrusive_adapter, LinkedList};
+use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};
 
 use super::{
-    frame::{get_frame, split_frame, FrameRef, PhysicalFrameFlags, PHYS_LEVEL_LAYOUTS},
     PhysAddr,
+    frame::{FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
 };
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
     once::Once,
-    processor::sched::{schedule, SchedFlags},
+    processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, finish_blocking, requeue_all},
-    thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, Thread, ThreadRef},
+    thread::{Thread, ThreadRef, current_thread_ref, entry::start_new_kernel, priority::Priority},
 };
 
 pub struct MemoryTracker {
@@ -306,6 +306,14 @@ pub fn try_alloc_split_frames(flags: FrameAllocFlags, layout: Layout) -> Option<
 /// If the frame's flags indicates that it is zeroed, it will be placed on
 /// the zeroed list.
 pub fn free_frame(frame: FrameRef) {
+    assert!(
+        frame.refcount() == 0,
+        "freeing frame with non-zero refcount"
+    );
+    assert!(
+        !frame.is_pt(),
+        "freeing frame that is still marked as a page table"
+    );
     TRACKER
         .poll()
         .expect("page tracker not initialized")

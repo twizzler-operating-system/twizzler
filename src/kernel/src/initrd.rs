@@ -12,10 +12,7 @@ use crate::{
         VirtAddr,
         tracker::{FrameAllocFlags, alloc_frame},
     },
-    obj::{
-        self, ObjectRef, PageNumber,
-        pages::{Page, PageRef},
-    },
+    obj::{self, ObjectRef, PageNumber},
     once::Once,
 };
 pub struct BootModule {
@@ -69,6 +66,7 @@ pub fn init(modules: &[BootModule]) {
             let mut total = 0;
             let mut pagenr = 1;
             while total < data.len() {
+                /*
                 let page = Page::new(
                     alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
                     1,
@@ -82,6 +80,8 @@ pub fn init(modules: &[BootModule]) {
                 obj.add_page(pagenr.into(), page, None);
                 total += thislen;
                 pagenr += 1;
+                */
+                todo!();
             }
 
             let mut buffer = [0; 0x1000];
@@ -99,6 +99,7 @@ pub fn init(modules: &[BootModule]) {
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
+            /*
             let page = Page::new(
                 alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
                 1,
@@ -113,6 +114,8 @@ pub fn init(modules: &[BootModule]) {
                 page,
                 None,
             );
+            */
+            todo!();
 
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());

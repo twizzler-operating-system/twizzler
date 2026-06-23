@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 use core::{
     alloc::Layout,
     mem::{size_of, transmute},
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering},
 };
 
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
@@ -359,6 +359,8 @@ pub struct Frame {
     pa: PhysAddr,
     flags: AtomicU8,
     level: AtomicU8,
+    _resv: AtomicU16,
+    refcount: AtomicU32,
     link: LinkedListLink,
 }
 intrusive_adapter!(pub FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
@@ -382,6 +384,7 @@ impl Frame {
     unsafe fn reset(&mut self, pa: PhysAddr, level: u8, init_flags: PhysicalFrameFlags) {
         self.flags.store(init_flags.bits(), Ordering::SeqCst);
         self.level.store(level, Ordering::SeqCst);
+        self.refcount.store(0, Ordering::SeqCst);
         let pa_ptr = &mut self.pa as *mut _;
         unsafe {
             *pa_ptr = pa;
@@ -422,6 +425,36 @@ impl Frame {
     /// Get the length of the frame in bytes.
     pub fn size(&self) -> usize {
         PHYS_LEVEL_LAYOUTS[self.get_level()].size()
+    }
+
+    pub fn nr_pages(&self) -> usize {
+        self.size() / PHYS_LEVEL_LAYOUTS[0].size()
+    }
+
+    pub fn refcount(&self) -> u32 {
+        self.refcount.load(Ordering::SeqCst)
+    }
+
+    pub fn inc_refcount(&self) {
+        self.refcount.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn dec_refcount(&self) -> u32 {
+        self.refcount.fetch_sub(1, Ordering::SeqCst)
+    }
+
+    pub fn is_pt(&self) -> bool {
+        self.get_flags().contains(PhysicalFrameFlags::IS_PT)
+    }
+
+    pub fn set_pt(&self, is_pt: bool) {
+        if is_pt {
+            self.flags
+                .fetch_or(PhysicalFrameFlags::IS_PT.bits(), Ordering::SeqCst);
+        } else {
+            self.flags
+                .fetch_and(!PhysicalFrameFlags::IS_PT.bits(), Ordering::SeqCst);
+        }
     }
 
     /// Zero a frame.
@@ -547,13 +580,14 @@ bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct PhysicalFrameFlags: u8 {
         /// The frame is zeroed (or, allocate a zeroed frame)
-        const ZEROED = 1;
+        const ZEROED = (1 << 0);
         /// The frame has been allocated by the system.
-        const ALLOCATED = 2;
+        const ALLOCATED = (1 << 1);
         /// (internal) The frame has been admitted into the frame tracking system.
-        const ADMITTED = 4;
+        const ADMITTED = (1 << 2);
         /// (internal) The frame is owned by the kernel.
-        const KERNEL = 8;
+        const KERNEL = (1 << 3);
+        const IS_PT = (1 << 4);
 
         const LOCKED = (1 << 7);
     }

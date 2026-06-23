@@ -10,25 +10,21 @@ use core::{
 };
 
 use bitset_core::BitSet;
-use pages::PageRef;
-use range::{GetPageFlags, PageStatus};
 use twizzler_abi::{
-    device::{CacheType, NUM_DEVICE_INTERRUPTS},
+    device::NUM_DEVICE_INTERRUPTS,
     meta::{MetaFlags, MetaInfo},
     object::{MAX_SIZE, ObjID, Protections},
     syscall::{BackingType, LifetimeType, ObjectInfo},
 };
 use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
 
-use self::{pages::Page, thread_sync::SleepInfo};
+use self::thread_sync::SleepInfo;
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
-        PhysAddr, VirtAddr,
+        VirtAddr,
         context::{Context, ContextRef, UserContext, kernel_context},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame},
     },
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
@@ -36,12 +32,13 @@ use crate::{
 };
 
 pub mod control;
-pub mod copy;
+//pub mod copy;
 pub mod id;
-pub mod pages;
+//pub mod pages;
 pub mod pagetables;
-pub mod pagevec;
-pub mod range;
+//pub mod pagevec;
+//pub mod range;
+pub mod data;
 pub mod thread_sync;
 pub mod ties;
 
@@ -50,7 +47,8 @@ pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
-    range_tree: Mutex<range::PageRangeTree>,
+    //range_tree: Mutex<range::PageRangeTree>,
+    tables: Mutex<pagetables::ObjectPageTable>,
     sleep_info: Mutex<SleepInfo>,
     device_interrupt_info: Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>,
     pin_info: Mutex<PinInfo>,
@@ -193,14 +191,16 @@ impl Object {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
-    pub fn lock_page_tree(&self) -> LockGuard<'_, range::PageRangeTree> {
-        self.range_tree.lock()
+    pub fn lock_page_tables(&self) -> LockGuard<'_, pagetables::ObjectPageTable> {
+        self.tables.lock()
     }
 
+    /*
     pub fn add_page(&self, pn: PageNumber, page: PageRef, allocator: Option<&mut FrameAllocator>) {
         let mut range_tree = self.range_tree.lock();
         range_tree.add_page(pn, page, allocator);
     }
+    */
 
     pub fn id(&self) -> ObjID {
         self.id
@@ -211,6 +211,7 @@ impl Object {
         // implement eviction.
     }
 
+    /*
     pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
         log::debug!("pinning {} {}", start.0, len);
         assert!(!self.use_pager());
@@ -289,11 +290,12 @@ impl Object {
         Some((v, token))
     }
 
+    */
     pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
         Self {
             id,
             flags: AtomicU32::new(0),
-            range_tree: Mutex::new(range::PageRangeTree::new(id)),
+            tables: Mutex::new(pagetables::ObjectPageTable::new()),
             sleep_info: Mutex::new(SleepInfo::new(id)),
             pin_info: Mutex::new(PinInfo::default()),
             contexts: Mutex::new(ContextInfo::default()),
@@ -319,7 +321,7 @@ impl Object {
                 extcount: 0,
             };
             let obj = Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
-            while !obj.write_meta(meta, true) {
+            while !obj.write_meta(meta) {
                 logln!("failed to write object metadata -- retrying");
             }
             return obj;
@@ -338,7 +340,7 @@ impl Object {
             fotcount: 0,
             extcount: 0,
         };
-        while !obj.write_meta(meta, true) {
+        while !obj.write_meta(meta) {
             logln!("failed to write object metadata -- retrying");
         }
         obj
@@ -364,7 +366,7 @@ impl Object {
 
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
-        self.range_tree.lock().print_tree();
+        self.tables.lock().print_tree();
     }
 
     pub fn dirty_set(&self) -> &DirtySet {
@@ -373,13 +375,8 @@ impl Object {
 
     pub fn info(&self) -> ObjectInfo {
         let num_pages = {
-            let page_tree = self.lock_page_tree();
-            let r = page_tree.range(0.into()..usize::MAX.into());
-            let mut page_count = 0;
-            for range in r {
-                page_count += range.1.length;
-            }
-            page_count
+            let page_tree = self.tables.lock();
+            page_tree.count_pages()
         };
         ObjectInfo {
             id: self.id,

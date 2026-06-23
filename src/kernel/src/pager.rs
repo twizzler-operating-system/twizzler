@@ -13,12 +13,10 @@ use twizzler_rt_abi::bindings::sync_info;
 
 use crate::{
     memory::{
-        context::virtmem::region::{MapRegion, Shadow},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::FrameAllocFlags,
+        context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
     },
     mutex::{LockGuard, Mutex},
-    obj::{LookupFlags, ObjectRef, PageNumber, range::PageRangeTree},
+    obj::{LookupFlags, ObjectRef, PageNumber, pagetables::ObjectPageTable},
     once::Once,
     processor::sched::{SchedFlags, schedule},
     syscall::sync::{finish_blocking, sys_thread_sync},
@@ -78,7 +76,7 @@ fn get_pages_and_wait(
     page: PageNumber,
     len: usize,
     flags: PagerFlags,
-    tree: LockGuard<'_, PageRangeTree>,
+    tree: LockGuard<'_, ObjectPageTable>,
 ) -> bool {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
@@ -158,9 +156,7 @@ pub fn sync_region(
     sync_info: Option<sync_info>,
     version: u64,
 ) {
-    // TODO: need to use shadow mapping to ensure that the pager sees a consistent mapping.
-    let _shadow = Shadow::from(region);
-    let req = ReqKind::new_sync_region(region.object(), None, dirty_set, sync_info, version);
+    let req = ReqKind::new_sync_region(region.object(), dirty_set, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
@@ -218,6 +214,7 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
     let mut cur = start;
     let end = start.offset(len);
     let mut used_pager = false;
+    /*
     let mut tree = obj.lock_page_tree();
     while cur < end {
         if let Some(range) = tree.get(cur) {
@@ -264,6 +261,8 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
             tree = obj.lock_page_tree();
         }
     }
+    */
+    todo!();
     used_pager
 }
 

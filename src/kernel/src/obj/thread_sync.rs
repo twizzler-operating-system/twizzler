@@ -8,11 +8,11 @@ use twizzler_abi::{
     syscall::{ThreadSyncFlags, ThreadSyncOp},
 };
 
-use super::{Object, OBJ_HAS_INTERRUPTS};
+use super::{OBJ_HAS_INTERRUPTS, Object};
 use crate::{
     interrupt::wait_for_device_interrupt,
     syscall::sync::add_to_requeue,
-    thread::{current_thread_ref, ThreadRef},
+    thread::{ThreadRef, current_thread_ref},
 };
 
 struct SleepEntry {
@@ -188,7 +188,7 @@ impl Object {
         let mut sleep_info = self.sleep_info.lock();
         let cur = vaddr
             .map(|vaddr| vaddr.load(Ordering::SeqCst))
-            .unwrap_or_else(|| unsafe { self.read_atomic_u64(offset) });
+            .unwrap_or_else(|| unsafe { self.read_atomic::<u64>(offset) });
         let res = op.check(cur, val, flags);
         log::trace!(
             "thread {} ({}) setting sleep word on {} (did sleep? {})",
@@ -226,7 +226,7 @@ impl Object {
 
         let cur = vaddr
             .map(|vaddr| vaddr.load(Ordering::SeqCst))
-            .unwrap_or_else(|| unsafe { self.read_atomic_u32(offset) });
+            .unwrap_or_else(|| unsafe { self.read_atomic::<u32>(offset) });
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {

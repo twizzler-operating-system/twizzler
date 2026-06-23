@@ -64,6 +64,7 @@ pub fn sys_object_create(
         return Ok(obj.id());
     }
     for src in srcs {
+        /*
         if src.id == 0 {
             crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len as usize)
         } else {
@@ -82,6 +83,8 @@ pub fn sys_object_create(
                 &mut fa,
             )
         }
+        */
+        todo!()
     }
     let meta = MetaInfo {
         nonce: Nonce(nonce),
@@ -91,7 +94,7 @@ pub fn sys_object_create(
         fotcount: 0,
         extcount: 0,
     };
-    while !obj.write_meta(meta, true) {
+    while !obj.write_meta(meta) {
         logln!("failed to write object metadata -- retrying");
     }
     crate::obj::register_object(obj.clone());
@@ -284,7 +287,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
                     MAX_SIZE / PageNumber::PAGE_SIZE,
                     PagerFlags::PREFETCH,
                 );
-                let tree = obj.lock_page_tree();
+                let tree = obj.lock_page_tables();
                 obj.ensure_in_core(tree, PageNumber::meta_page(), &mut false);
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());

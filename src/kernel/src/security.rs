@@ -115,7 +115,7 @@ impl SecurityContext {
                 }
             };
 
-            let Some(meta) = target_obj.read_meta(true) else {
+            let Some(meta) = target_obj.read_meta() else {
                 granted_perms.provide &= base.global_mask;
                 return granted_perms;
             };

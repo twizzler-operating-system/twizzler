@@ -28,10 +28,7 @@ use crate::{
         sim_memory_pressure,
         tracker::start_reclaim_thread,
     },
-    obj::{
-        LookupFlags, Object, ObjectRef, PageNumber, lookup_object,
-        pages::{Page, PageRef},
-    },
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
@@ -211,6 +208,8 @@ fn pager_compl_handle_page_data(
 
         // TODO: reenable multipage once the page tree bug is fixed.
         let thiscount = (max_obj - count).min(max_phys - count).min(1);
+        todo!();
+        /*
         let page = if flags.contains(PageFlags::WIRED) {
             log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
             Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
@@ -230,6 +229,7 @@ fn pager_compl_handle_page_data(
         let mut object_tree = request.obj.as_ref().unwrap().lock_page_tree();
         object_tree.add_page(pn, page, None);
         drop(object_tree);
+        */
         count += thiscount;
     }
 

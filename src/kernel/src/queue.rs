@@ -162,7 +162,7 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
             max_len,
             obj.id()
         );
-        let mut pt = obj.lock_page_tree();
+        let mut pt = obj.lock_page_tables();
         for pg in 0..(num_bytes / PageNumber::PAGE_SIZE) {
             let mut _up = false;
             pt = obj.ensure_in_core(
