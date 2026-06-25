@@ -56,6 +56,22 @@ impl MappingSettings {
         )
     }
 
+    pub fn with_perms(&self, perms: Protections) -> Self {
+        Self {
+            perms,
+            cache: self.cache,
+            flags: self.flags,
+        }
+    }
+
+    pub fn with_cache(&self, cache: CacheType) -> Self {
+        Self {
+            perms: self.perms,
+            cache,
+            flags: self.flags,
+        }
+    }
+
     pub fn default_cachetype(cache: CacheType) -> Self {
         Self::new(Protections::all(), cache, MappingFlags::USER)
     }

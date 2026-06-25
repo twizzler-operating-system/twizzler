@@ -7,6 +7,7 @@ use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadSyncFlags, ThreadSyncOp},
 };
+use twizzler_rt_abi::error::TwzError;
 
 use super::{OBJ_HAS_INTERRUPTS, Object};
 use crate::{
@@ -161,25 +162,25 @@ impl Object {
         first_sleep: bool,
         flags: ThreadSyncFlags,
         vaddr: Option<&AtomicU64>,
-    ) -> bool {
+    ) -> Result<bool, TwzError> {
         let thread = current_thread_ref().unwrap();
 
         if let Some(vaddr) = vaddr {
             let cur = vaddr.load(Ordering::SeqCst);
             if !op.check(cur, val, flags) {
-                return false;
+                return Ok(false);
             }
             if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {
                 for i in 0..NUM_DEVICE_INTERRUPTS {
                     let di_offset = self.device_interrupt_info[i].1.load(Ordering::Acquire);
                     let di_vector = self.device_interrupt_info[i].0.load(Ordering::Acquire);
                     if di_offset as usize == offset {
-                        return wait_for_device_interrupt(
+                        return Ok(wait_for_device_interrupt(
                             thread,
                             di_vector as u32,
                             first_sleep,
                             vaddr,
-                        );
+                        ));
                     }
                 }
             }
@@ -187,8 +188,8 @@ impl Object {
 
         let mut sleep_info = self.sleep_info.lock();
         let cur = vaddr
-            .map(|vaddr| vaddr.load(Ordering::SeqCst))
-            .unwrap_or_else(|| unsafe { self.read_atomic::<u64>(offset) });
+            .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
+            .unwrap_or_else(|| self.read_atomic_64(offset))?;
         let res = op.check(cur, val, flags);
         log::trace!(
             "thread {} ({}) setting sleep word on {} (did sleep? {})",
@@ -203,7 +204,7 @@ impl Object {
             }
             sleep_info.insert(offset, thread.clone());
         }
-        res
+        Ok(res)
     }
 
     pub fn setup_sleep_word32(
@@ -214,19 +215,19 @@ impl Object {
         first_sleep: bool,
         flags: ThreadSyncFlags,
         vaddr: Option<&AtomicU32>,
-    ) -> bool {
+    ) -> Result<bool, TwzError> {
         if let Some(vaddr) = vaddr {
             let cur = vaddr.load(Ordering::SeqCst);
             if !op.check(cur, val, flags) {
-                return false;
+                return Ok(false);
             }
         }
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = vaddr
-            .map(|vaddr| vaddr.load(Ordering::SeqCst))
-            .unwrap_or_else(|| unsafe { self.read_atomic::<u32>(offset) });
+            .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
+            .unwrap_or_else(|| self.read_atomic_32(offset))?;
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
@@ -234,7 +235,7 @@ impl Object {
             }
             sleep_info.insert(offset, thread.clone());
         }
-        res
+        Ok(res)
     }
 
     pub fn remove_from_sleep_word(&self, offset: usize) {

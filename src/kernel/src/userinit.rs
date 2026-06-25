@@ -186,7 +186,7 @@ pub extern "C" fn user_init() {
             );
         }
         */
-        todo!();
+        log::warn!("TODO: remove write permissions from text segment");
 
         (rtinfo_start, elf.header.pt2.entry_point())
     };

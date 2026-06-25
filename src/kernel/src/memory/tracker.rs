@@ -4,6 +4,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use backtracer_core::Frame;
 use bitflags::bitflags;
 use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};
@@ -300,7 +301,6 @@ pub fn try_alloc_split_frames(flags: FrameAllocFlags, layout: Layout) -> Option<
         .expect("page tracker not initialized")
         .try_alloc_split_frames(flags, layout)
 }
-
 /// Free a physical frame.
 ///
 /// If the frame's flags indicates that it is zeroed, it will be placed on
@@ -490,10 +490,12 @@ pub fn init(total: usize, idle: usize, kern: usize) {
     });
 }
 
+const MAX_FA_FRAMES: usize = 32;
+
 pub struct FrameAllocator {
     flags: FrameAllocFlags,
     layout: Layout,
-    frames: Vec<FrameRef>,
+    frames: heapless::Vec<FrameRef, MAX_FA_FRAMES>,
 }
 
 impl FrameAllocator {
@@ -501,7 +503,7 @@ impl FrameAllocator {
         FrameAllocator {
             flags,
             layout,
-            frames: Vec::new(),
+            frames: heapless::Vec::new(),
         }
     }
 
@@ -515,7 +517,12 @@ impl FrameAllocator {
 
     pub fn abort(&mut self, frames: impl IntoIterator<Item = FrameRef>) {
         for frame in frames {
-            self.frames.push(frame);
+            if self.frames.push(frame).is_err() {
+                log::warn!(
+                    "frame allocator abort: too many frames to store, dropping frame {:?}",
+                    frame
+                );
+            }
         }
     }
 }

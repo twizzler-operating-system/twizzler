@@ -42,13 +42,11 @@ use crate::{
 #[derive(Clone)]
 pub struct MapRegion {
     pub object: ObjectRef,
-    //pub shadow: Option<Arc<Shadow>>,
     pub offset: u64,
     pub cache_type: CacheType,
     pub prot: Protections,
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
-    pub shared_pt: Option<SharedPageTable>,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -193,6 +191,18 @@ impl MapRegion {
             FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
             PHYS_LEVEL_LAYOUTS[0],
         );
+
+        log::debug!(
+            "map fault for {:?} at {:?} (page {}) in object {} (ip: {:?}): pn {}, is_kern {}",
+            cause,
+            addr,
+            page_number,
+            self.object().id(),
+            ip,
+            page_number,
+            is_kern_obj
+        );
+
         /*
         let get_page_flags = if cause == MemoryAccessKind::Write {
             GetPageFlags::WRITE
@@ -223,7 +233,25 @@ impl MapRegion {
         }
         */
 
-        let obj_page_tree = self.object.lock_page_tables();
+        let mut obj_page_tree = self.object.lock_page_tables();
+        //obj_page_tree.print_tree();
+
+        if obj_page_tree
+            .get_frame(page_number.as_byte_offset() as u64)
+            .is_some()
+        {
+            log::info!("=== CURRENT PAGE TABLES ===");
+            let ctx = current_memory_context().unwrap();
+            ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
+                arch.with_mapper(|m| m.print_tables());
+            });
+            panic!(
+                "page {} is already mapped in object {}",
+                page_number,
+                self.object().id()
+            );
+        }
+
         let mut used_pager = false;
         let mut obj_page_tree =
             self.object
@@ -429,7 +457,8 @@ impl MapRegion {
             )))
         }
         */
-        todo!()
+        //todo!()
+        Ok(())
     }
 
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {

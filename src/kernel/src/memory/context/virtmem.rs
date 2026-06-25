@@ -210,6 +210,15 @@ impl VirtContext {
             .expect("cannot get arch mapper for unattached security context"))
     }
 
+    pub fn map_object(&self, info: &MapRegion) {
+        let mut pt = info.object().lock_page_tables();
+        let sctx = self.secctx.lock();
+        let len = info.range.end - info.range.start;
+        for arch in sctx.values() {
+            arch.object_map(MappingCursor::new(info.range.start, len), &mut *pt);
+        }
+    }
+
     pub fn print_objects(&self) {
         let mut slots = self.regions.lock();
         for obj in slots.objects().copied().collect::<Vec<_>>().iter() {
@@ -340,34 +349,17 @@ impl UserContext for VirtContext {
             object_info.prot(),
         );
 
-        let mut new_slot_info = MapRegion {
+        let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
             object: object_info.object().clone(),
             offset: 0,
             range: slot.range(),
             flags: object_info.flags,
-            shared_pt: None,
         };
-        let shared_pt = if !object_info.flags.contains(MapFlags::STABLE)
-            && !object_info.perms.contains(Protections::WRITE)
-        {
-            log::debug!(
-                "shared PT: {}: {:?}, {:?}",
-                object_info.object.id(),
-                object_info.flags,
-                object_info.perms
-            );
-            Some(SharedPageTable::new(
-                1,
-                new_slot_info.mapping_settings(false, false),
-            ))
-        } else {
-            None
-        };
-        new_slot_info.shared_pt = shared_pt;
 
         object_info.object().add_context(self);
+        self.map_object(&new_slot_info);
         let mut slots = self.regions.lock();
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
@@ -579,8 +571,8 @@ impl KernelMemoryContext for VirtContext {
             prot: info.prot(),
             cache_type: info.cache(),
             flags: info.flags,
-            shared_pt: None,
         };
+        self.map_object(&new_slot_info);
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
             info,

@@ -41,14 +41,18 @@ use alloc::vec::Vec;
 use core::{
     alloc::Layout,
     mem::{size_of, transmute},
-    sync::atomic::{AtomicU8, AtomicU16, AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
 };
 
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
 
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
-    arch::memory::{frame::FRAME_SIZE, phys_to_virt},
+    arch::{
+        VirtAddr,
+        memory::{frame::FRAME_SIZE, phys_to_virt},
+    },
+    memory::tracker::FrameAllocator,
     once::Once,
     spinlock::Spinlock,
 };
@@ -357,10 +361,7 @@ struct PhysicalFrameAllocator {
 /// Contains a physical address and flags that indicate if the frame is zeroed or not.
 pub struct Frame {
     pa: PhysAddr,
-    flags: AtomicU8,
-    level: AtomicU8,
-    _resv: AtomicU16,
-    refcount: AtomicU32,
+    info: AtomicU64,
     link: LinkedListLink,
 }
 intrusive_adapter!(pub FrameAdapter = &'static Frame: Frame { link: LinkedListLink });
@@ -372,8 +373,8 @@ impl core::fmt::Debug for Frame {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Frame")
             .field("pa", &self.pa)
-            .field("flags", &self.flags.load(Ordering::SeqCst))
-            .field("level", &self.level.load(Ordering::SeqCst))
+            .field("flags", &self.get_flags())
+            .field("level", &self.get_level())
             .finish()
     }
 }
@@ -382,9 +383,10 @@ impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized
     // yet.
     unsafe fn reset(&mut self, pa: PhysAddr, level: u8, init_flags: PhysicalFrameFlags) {
-        self.flags.store(init_flags.bits(), Ordering::SeqCst);
-        self.level.store(level, Ordering::SeqCst);
-        self.refcount.store(0, Ordering::SeqCst);
+        self.info.store(
+            (init_flags.bits() as u64) | ((level as u64) << 8),
+            Ordering::SeqCst,
+        );
         let pa_ptr = &mut self.pa as *mut _;
         unsafe {
             *pa_ptr = pa;
@@ -398,9 +400,9 @@ impl Frame {
 
     fn lock(&self) {
         while self
-            .flags
-            .fetch_or(PhysicalFrameFlags::LOCKED.bits(), Ordering::SeqCst)
-            & PhysicalFrameFlags::LOCKED.bits()
+            .info
+            .fetch_or(PhysicalFrameFlags::LOCKED.bits() as u64, Ordering::SeqCst)
+            & PhysicalFrameFlags::LOCKED.bits() as u64
             != 0
         {
             crate::arch::processor::spin_wait_iteration();
@@ -409,8 +411,10 @@ impl Frame {
     }
 
     fn unlock(&self) {
-        self.flags
-            .fetch_and(!PhysicalFrameFlags::LOCKED.bits(), Ordering::SeqCst);
+        self.info.fetch_and(
+            !(PhysicalFrameFlags::LOCKED.bits() as u64),
+            Ordering::SeqCst,
+        );
     }
 
     /// Get the start address of the frame.
@@ -419,7 +423,7 @@ impl Frame {
     }
 
     fn get_level(&self) -> usize {
-        self.level.load(Ordering::SeqCst) as usize
+        ((self.info.load(Ordering::SeqCst) >> 8) & 0xFF) as usize
     }
 
     /// Get the length of the frame in bytes.
@@ -432,29 +436,34 @@ impl Frame {
     }
 
     pub fn refcount(&self) -> u32 {
-        self.refcount.load(Ordering::SeqCst)
+        (self.info.load(Ordering::SeqCst) >> 32) as u32
     }
 
     pub fn inc_refcount(&self) {
-        self.refcount.fetch_add(1, Ordering::SeqCst);
+        self.info.fetch_add(1 << 32, Ordering::SeqCst);
     }
 
     pub fn dec_refcount(&self) -> u32 {
-        self.refcount.fetch_sub(1, Ordering::SeqCst)
+        assert!(self.refcount() > 0);
+        (self.info.fetch_sub(1 << 32, Ordering::SeqCst) >> 32) as u32
     }
 
     pub fn is_pt(&self) -> bool {
         self.get_flags().contains(PhysicalFrameFlags::IS_PT)
     }
 
-    pub fn set_pt(&self, is_pt: bool) {
-        if is_pt {
-            self.flags
-                .fetch_or(PhysicalFrameFlags::IS_PT.bits(), Ordering::SeqCst);
-        } else {
-            self.flags
-                .fetch_and(!PhysicalFrameFlags::IS_PT.bits(), Ordering::SeqCst);
-        }
+    pub fn set_pt(&self, is_pt: bool) -> bool {
+        self.set_flags(PhysicalFrameFlags::IS_PT, is_pt)
+            .contains(PhysicalFrameFlags::IS_PT)
+    }
+
+    pub fn is_cow(&self) -> bool {
+        self.get_flags().contains(PhysicalFrameFlags::IS_COW)
+    }
+
+    pub fn set_cow(&self, is_cow: bool) -> bool {
+        self.set_flags(PhysicalFrameFlags::IS_COW, is_cow)
+            .contains(PhysicalFrameFlags::IS_COW)
     }
 
     /// Zero a frame.
@@ -466,8 +475,7 @@ impl Frame {
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
-        self.flags
-            .fetch_or(PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ZEROED, true);
         self.unlock();
     }
 
@@ -475,8 +483,7 @@ impl Frame {
     /// Frame.
     pub fn set_not_zero(&self) {
         self.lock();
-        self.flags
-            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ZEROED, false);
         self.unlock();
     }
 
@@ -486,37 +493,56 @@ impl Frame {
     }
 
     fn set_admitted(&self) {
-        self.flags
-            .fetch_or(PhysicalFrameFlags::ADMITTED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ADMITTED, true);
     }
 
     fn set_free(&self) {
-        self.flags
-            .fetch_and(!PhysicalFrameFlags::ALLOCATED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ALLOCATED, false);
     }
 
     fn set_allocated(&self) {
-        self.flags
-            .fetch_or(PhysicalFrameFlags::ALLOCATED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ALLOCATED, true);
     }
 
     pub fn set_kernel(&self, kernel: bool) {
-        if kernel {
-            self.flags
-                .fetch_or(PhysicalFrameFlags::KERNEL.bits(), Ordering::SeqCst);
-        } else {
-            self.flags
-                .fetch_and(!PhysicalFrameFlags::KERNEL.bits(), Ordering::SeqCst);
-        }
+        self.set_flags(PhysicalFrameFlags::KERNEL, kernel);
     }
 
     pub fn is_kernel(&self) -> bool {
-        self.flags.load(Ordering::SeqCst) & PhysicalFrameFlags::KERNEL.bits() != 0
+        self.get_flags().contains(PhysicalFrameFlags::KERNEL)
+    }
+
+    pub fn set_wired(&self, wired: bool) {
+        self.set_flags(PhysicalFrameFlags::IS_WIRED, wired);
+    }
+
+    pub fn is_wired(&self) -> bool {
+        self.get_flags().contains(PhysicalFrameFlags::IS_WIRED)
     }
 
     /// Get the current flags.
     pub fn get_flags(&self) -> PhysicalFrameFlags {
-        PhysicalFrameFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
+        PhysicalFrameFlags::from_bits_truncate(self.info.load(Ordering::SeqCst) as u8)
+    }
+
+    pub fn set_flags(&self, flags: PhysicalFrameFlags, set: bool) -> PhysicalFrameFlags {
+        let old = if set {
+            self.info.fetch_or(flags.bits() as u64, Ordering::SeqCst)
+        } else {
+            self.info
+                .fetch_and(!(flags.bits() as u64), Ordering::SeqCst)
+        };
+        PhysicalFrameFlags::from_bits_truncate(old as u8)
+    }
+
+    pub fn virtaddr(&'static self) -> VirtAddr {
+        phys_to_virt(self.pa)
+    }
+
+    pub fn as_byte_slice(&'static self) -> &'static [u8] {
+        let virt = phys_to_virt(self.pa);
+        let ptr: *const u8 = virt.as_ptr();
+        unsafe { core::slice::from_raw_parts(ptr, self.size()) }
     }
 
     /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying
@@ -536,14 +562,12 @@ impl Frame {
             let ptr: *mut u8 = virt.as_mut_ptr();
             let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
             slice.fill(0);
-            self.flags
-                .fetch_or(PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+            self.set_flags(PhysicalFrameFlags::ZEROED, true);
             self.unlock();
             return;
         }
 
-        self.flags
-            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ZEROED, false);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
@@ -559,8 +583,7 @@ impl Frame {
     /// Copy from another physical address into this frame.
     pub fn copy_contents_from_physaddr(&self, doff: usize, other: PhysAddr, len: usize) {
         self.lock();
-        self.flags
-            .fetch_and(!PhysicalFrameFlags::ZEROED.bits(), Ordering::SeqCst);
+        self.set_flags(PhysicalFrameFlags::ZEROED, false);
         let virt = phys_to_virt(self.pa);
         let ptr: *mut u8 = virt.as_mut_ptr();
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
@@ -571,6 +594,45 @@ impl Frame {
 
         slice.copy_from_slice(otherslice);
         self.unlock();
+    }
+
+    pub fn cow_frame(&'static self, alloc: &mut FrameAllocator) -> Option<FrameRef> {
+        let info = self.info.load(Ordering::SeqCst);
+        let flags = PhysicalFrameFlags::from_bits_truncate(info as u8);
+        let refcount = (info >> 32) as u32;
+
+        if !flags.contains(PhysicalFrameFlags::IS_COW) {
+            return Some(self);
+        }
+
+        // See if we can just clear the COW flag.
+        if refcount <= 1 {
+            let new = info & !(PhysicalFrameFlags::IS_COW.bits() as u64);
+            // TODO: should we try this in a loop a few times?
+            if self
+                .info
+                .compare_exchange(info, new, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Some(self);
+            }
+        }
+
+        let new_frame = alloc.try_allocate()?;
+        new_frame.copy_contents_from(self, 0, 0, self.size());
+
+        let new = info - (1 << 32);
+        if self
+            .info
+            .compare_exchange(info, new, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            alloc.abort([new_frame]);
+            return None;
+        }
+        new_frame.inc_refcount();
+
+        Some(new_frame)
     }
 }
 
@@ -588,6 +650,8 @@ bitflags::bitflags! {
         /// (internal) The frame is owned by the kernel.
         const KERNEL = (1 << 3);
         const IS_PT = (1 << 4);
+        const IS_COW = (1 << 5);
+        const IS_WIRED = (1 << 6);
 
         const LOCKED = (1 << 7);
     }
@@ -769,6 +833,7 @@ pub(super) fn raw_free_frame(frame: FrameRef) {
     }
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+    assert!(!frame.get_flags().contains(PhysicalFrameFlags::IS_WIRED));
     PFA.wait().lock().free(frame);
 }
 

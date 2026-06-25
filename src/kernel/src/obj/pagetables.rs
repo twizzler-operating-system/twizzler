@@ -1,37 +1,46 @@
 use alloc::sync::Arc;
 
 use twizzler_abi::device::CacheType;
-use twizzler_rt_abi::error::TwzError;
+use twizzler_rt_abi::error::{ObjectError, ResourceError, TwzError};
 
 use crate::{
     arch::{PhysAddr, VirtAddr},
     memory::{
-        frame::FrameRef,
-        pagetables::{Consistency, ContiguousProvider, Mapper, MappingCursor, MappingSettings},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
+        pagetables::{
+            Consistency, ContiguousProvider, Mapper, MappingCursor, MappingSettings, Table,
+        },
         tracker::{FrameAllocFlags, alloc_frame},
     },
     mutex::Mutex,
-    obj::Object,
+    obj::{Object, PageNumber},
 };
 
 pub struct ObjectPageTable {
-    mapper: Arc<Mutex<Mapper>>,
+    mapper: Mapper,
+}
+
+bitflags::bitflags! {
+    pub struct FindFrameFlags: u32 {
+        const ALLOW_NOT_ZEROED = (1 << 0);
+        const WRITE = (1 << 1);
+        const POPULATE = (1 << 2);
+    }
 }
 
 impl ObjectPageTable {
     pub fn new() -> Self {
-        let mapper = Mapper::new(
+        let mut mapper = Mapper::new(
             alloc_frame(
                 FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
             )
             .start_address(),
         );
-        Self {
-            mapper: Arc::new(Mutex::new(mapper)),
-        }
+        mapper.set_start_level(Table::top_level() - 2);
+        Self { mapper }
     }
 
-    pub fn map_page(&self, offset: u64, page: FrameRef) -> bool {
+    pub fn map_page(&mut self, offset: u64, page: FrameRef) -> bool {
         let consist = Consistency::new_full_global();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
         let mut phys = ContiguousProvider::new(
@@ -39,7 +48,7 @@ impl ObjectPageTable {
             page.size(),
             MappingSettings::default_user(),
         );
-        if let Err(e) = self.mapper.lock().map(cursor, &mut phys, consist) {
+        if let Err(e) = self.mapper.map(cursor, &mut phys, consist) {
             e.run_all();
             return false;
         }
@@ -47,17 +56,45 @@ impl ObjectPageTable {
         true
     }
 
-    pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
-        let mut guard = self.mapper.lock();
-        f(&mut guard)
+    pub fn with_mapper<R>(&mut self, f: impl FnOnce(&mut Mapper) -> R) -> R {
+        f(&mut self.mapper)
     }
 
     pub fn print_tree(&self) {
-        todo!()
+        self.mapper.print_tables();
     }
 
     pub fn count_pages(&self) -> usize {
         todo!()
+    }
+
+    fn maybe_cow_at(&mut self, offset: u64) -> Result<(), TwzError> {
+        return Ok(());
+        todo!()
+    }
+
+    pub fn with_frame<R>(
+        &mut self,
+        offset: u64,
+        flags: FindFrameFlags,
+        f: impl FnOnce(usize, Option<FrameRef>) -> R,
+    ) -> Result<R, TwzError> {
+        let cursor =
+            MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
+        if flags.contains(FindFrameFlags::WRITE) {
+            self.maybe_cow_at(offset)?;
+        }
+        let mut reader = self.mapper.readmap(cursor);
+        let map_info = reader.next().ok_or(ObjectError::NotMapped)?;
+        let frame_offset = map_info.vaddr().raw() as usize;
+        Ok(f(frame_offset, get_frame(map_info.paddr())))
+    }
+
+    pub fn get_frame(&mut self, offset: u64) -> Option<FrameRef> {
+        let cursor =
+            MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
+        let mut reader = self.mapper.readmap(cursor);
+        reader.next().and_then(|x| get_frame(x.paddr()))
     }
 }
 
@@ -69,6 +106,21 @@ impl Object {
         end: PhysAddr,
         ct: CacheType,
     ) -> Result<(), TwzError> {
-        todo!()
+        let mut pt = self.lock_page_tables();
+        let len = (end.raw() - start.raw()) as usize;
+        let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
+        let mut phys =
+            ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
+        let consist = Consistency::new_full_global();
+        if let Err(e) = pt.mapper.map(cursor, &mut phys, consist) {
+            e.run_all();
+            return Err(ObjectError::MapFailed.into());
+        }
+        Ok(())
+    }
+
+    pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {
+        let mut pt = self.lock_page_tables();
+        pt.map_page(pn.as_byte_offset() as u64, frame);
     }
 }

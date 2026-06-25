@@ -14,6 +14,7 @@ use crate::{
             kernel_context,
         },
         frame::FrameRef,
+        tracker::{FrameAllocFlags, alloc_frame},
     },
     obj::{ObjectRef, PageNumber},
     userinit::create_blank_object,
@@ -45,6 +46,7 @@ impl<Base> ControlObjectCacher<Base> {
     pub fn new(base: Base) -> Self {
         let object = create_blank_object();
         let qok = if core::mem::size_of::<Base>() > PageNumber::PAGE_SIZE {
+            object.write_base(&base).unwrap();
             let kobj = kernel_context().insert_kernel_object(ObjectContextInfo::new(
                 object.clone(),
                 Protections::READ | Protections::WRITE,
@@ -53,25 +55,17 @@ impl<Base> ControlObjectCacher<Base> {
             ));
             QuickOrKernel::Kernel(kobj)
         } else {
-            /*
-            // TODO: this should probably use the frame Page variant.
             let frame = alloc_frame(
                 FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK | FrameAllocFlags::KERNEL,
             );
-            let page = Page::new_wired(frame.start_address(), frame.size(), CacheType::WriteBack);
-            let base_ptr = unsafe {
-                let ptr = page.get_mut_to_val::<Base>(0);
-                ptr.write(base);
-                ptr
-            };
-            let page = PageRef::new(Arc::new(page), 0, 1);
-            object.add_page(PageNumber::base_page(), page, None);
+            frame.set_wired(true);
+            object.add_frame(PageNumber::base_page(), frame);
+            let base_ptr = frame.virtaddr().as_mut_ptr::<Base>();
+            unsafe { base_ptr.write(base) };
             QuickOrKernel::Quick(QuickBase {
                 base_ptr: NonNull::new(base_ptr).unwrap(),
                 base_frame: frame,
             })
-            */
-            todo!()
         };
         Self {
             object,

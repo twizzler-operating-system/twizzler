@@ -4,8 +4,9 @@ use super::{
 };
 use crate::{
     arch::{
+        VirtAddr,
         address::PhysAddr,
-        memory::pagetables::{Entry, Table},
+        memory::pagetables::{Entry, EntryFlags, Table},
     },
     obj::pagetables::ObjectPageTable,
 };
@@ -127,7 +128,7 @@ impl Mapper {
     pub fn object_map(
         &mut self,
         cursor: MappingCursor,
-        object_tables: &ObjectPageTable,
+        object_tables: &mut ObjectPageTable,
     ) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
@@ -139,12 +140,33 @@ impl Mapper {
     }
 
     pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {
-        // This function will:
-        // Search for a table at the given level that can be used to map into a view.
-        // If one is found, return its address.
-        // If one is not found, allocate a new one and return its address.
-        // If a leaf page is found where the table should be, we'll need to split it into smaller
-        // tables.
-        todo!()
+        log::info!(
+            "get_table_addr called with level {} (start_level {})",
+            level,
+            self.start_level
+        );
+        let start_level = self.start_level;
+        let mut table_phys = self.root_address();
+        let mut table = self.root_mut();
+        for _ in 0..(start_level - level) {
+            if table[0].is_present() && level > 0 && table[0].is_huge() {
+                panic!("todo: get_table_addr: huge page at level {}!", level);
+            }
+            // TODO: unwrap
+            table.populate(0, EntryFlags::intermediate()).unwrap();
+            table_phys = table[0].table_addr();
+            table = table.next_table_mut(0).unwrap();
+        }
+
+        table_phys
+    }
+
+    pub fn print_tables(&self) {
+        log::info!(
+            "=== PAGE TABLES FROM ROOT {:x} ===",
+            self.root_address().raw()
+        );
+        self.root()
+            .print_tables_recursive(self.start_level(), VirtAddr::new(0).unwrap(), 0);
     }
 }

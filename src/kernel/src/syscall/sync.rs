@@ -253,7 +253,7 @@ fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent> 
             sleep.flags,
             vaddr,
         )
-    };
+    }?;
 
     Ok(SleepEvent {
         obj,

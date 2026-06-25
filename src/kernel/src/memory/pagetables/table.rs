@@ -5,14 +5,14 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame},
         pagetables::{Mapper, MappingFlags},
         tracker::{FrameAllocFlags, try_alloc_frame},
     },
 };
 
 impl Table {
-    fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
+    pub(super) fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
             return None;
@@ -21,7 +21,7 @@ impl Table {
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
 
-    fn next_table(&self, index: usize) -> Option<&Table> {
+    pub(super) fn next_table(&self, index: usize) -> Option<&Table> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
             return None;
@@ -54,7 +54,7 @@ impl Table {
             && phys_len >= page_size
     }
 
-    fn populate(&mut self, index: usize, flags: EntryFlags) -> Option<()> {
+    pub(super) fn populate(&mut self, index: usize, flags: EntryFlags) -> Option<()> {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
@@ -196,11 +196,23 @@ impl Table {
     ) -> Option<()> {
         let index = Self::get_index(cursor.start(), level);
 
-        let max_level = object_tables.start_level() - 1;
-        let target_level = cursor.biggest_level().min(max_level) + 1;
+        let max_level = object_tables.start_level();
+        let target_level = cursor.biggest_level().min(max_level);
 
-        if level == target_level {
-            let paddr = object_tables.get_table_addr(level);
+        log::info!(
+            "object_map: level {}, target_level {}, index {}",
+            level,
+            target_level,
+            index
+        );
+
+        if level == target_level + 1 {
+            let paddr = object_tables.get_table_addr(target_level);
+            log::trace!(
+                "object_map: mapping object table at level {} to paddr {:x}",
+                level,
+                paddr
+            );
             let mut flags = EntryFlags::intermediate();
             flags.insert(EntryFlags::OBJECT_TABLE);
             self.update_entry(
@@ -212,7 +224,7 @@ impl Table {
                 level,
             );
             Some(())
-        } else if level > target_level {
+        } else if level > target_level + 1 {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
             let next_table = self.next_table_mut(index).unwrap();
@@ -393,6 +405,38 @@ impl Table {
             next_table.readmap(cursor, Self::next_level(level))
         } else {
             Err(Table::level_to_page_size(level))
+        }
+    }
+
+    pub(super) fn print_tables_recursive(&self, level: usize, vaddr: VirtAddr, indent: usize) {
+        for i in 0..Table::PAGE_TABLE_ENTRIES {
+            let entry = &self[i];
+            if entry.is_present() {
+                let entry_vaddr = vaddr.offset(i * Table::level_to_page_size(level)).unwrap();
+                let frame = get_frame(entry.addr(level));
+                log::info!(
+                    "{:indent$}[{:3}] {:16x} -> {:16x} {:?} {}:: refcount={}, {:?}",
+                    "",
+                    i,
+                    entry_vaddr.raw(),
+                    entry.addr(level),
+                    entry.flags(),
+                    if entry.is_huge() { "HUGE " } else { "" },
+                    frame.as_ref().map(|f| f.refcount()).unwrap_or(0),
+                    frame
+                        .as_ref()
+                        .map(|f| f.get_flags())
+                        .unwrap_or(PhysicalFrameFlags::empty()),
+                );
+                if !entry.is_huge() && level != Table::last_level() {
+                    let next_table = self.next_table(i).unwrap();
+                    next_table.print_tables_recursive(
+                        Self::next_level(level),
+                        entry_vaddr,
+                        indent + 2,
+                    );
+                }
+            }
         }
     }
 }

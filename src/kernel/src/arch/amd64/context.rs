@@ -107,7 +107,7 @@ impl ArchContext {
         }
     }
 
-    pub fn object_map(&self, cursor: MappingCursor, object_tables: &ObjectPageTable) {
+    pub fn object_map(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
         let ops = self.inner.lock().object_map(cursor, object_tables);
         ops.run_all();
     }
@@ -234,7 +234,7 @@ impl ArchContextInner {
     fn object_map(
         &mut self,
         cursor: MappingCursor,
-        object_tables: &ObjectPageTable,
+        object_tables: &mut ObjectPageTable,
     ) -> DeferredUnmappingOps {
         self.mapper.object_map(cursor, object_tables)
     }

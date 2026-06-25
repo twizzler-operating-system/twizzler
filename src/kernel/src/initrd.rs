@@ -3,13 +3,14 @@ use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
 use log::{debug, info};
 use twizzler_abi::{
     meta::{MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
-    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
+    object::{ObjID, Protections},
 };
 use twizzler_rt_abi::object::Nonce;
 
 use crate::{
     memory::{
         VirtAddr,
+        frame::PHYS_LEVEL_LAYOUTS,
         tracker::{FrameAllocFlags, alloc_frame},
     },
     obj::{self, ObjectRef, PageNumber},
@@ -66,25 +67,20 @@ pub fn init(modules: &[BootModule]) {
             let mut total = 0;
             let mut pagenr = 1;
             while total < data.len() {
-                /*
-                let page = Page::new(
-                    alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
-                    1,
-                );
-                let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
-                let thislen = core::cmp::min(4096, data.len() - total);
+                let frame = alloc_frame(FrameAllocFlags::KERNEL);
+                let va = frame.virtaddr().as_mut_ptr::<u8>();
+
+                let thislen = core::cmp::min(frame.size(), data.len() - total);
                 unsafe {
                     va.copy_from(data.as_ptr().add(total), thislen);
                 }
-                let page = PageRef::new(Arc::new(page), 0, 1);
-                obj.add_page(pagenr.into(), page, None);
+                obj.add_frame(pagenr.into(), frame);
+
                 total += thislen;
                 pagenr += 1;
-                */
-                todo!();
             }
 
-            let mut buffer = [0; 0x1000];
+            let mut buffer = [0; PHYS_LEVEL_LAYOUTS[0].size()];
             let meta = MetaInfo {
                 nonce: Nonce(0),
                 kuid: ObjID::new(0),
@@ -99,23 +95,13 @@ pub fn init(modules: &[BootModule]) {
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
-            /*
-            let page = Page::new(
-                alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED),
-                1,
-            );
-            let va: *mut u8 = page.as_virtaddr().as_mut_ptr();
+            let frame = alloc_frame(FrameAllocFlags::KERNEL);
+            let va = frame.virtaddr().as_mut_ptr::<u8>();
+
             unsafe {
-                va.copy_from(buffer.as_ptr(), 0x1000);
+                va.copy_from(buffer.as_ptr(), buffer.len());
             }
-            let page = PageRef::new(Arc::new(page), 0, 1);
-            obj.add_page(
-                PageNumber::from_offset(MAX_SIZE - NULLPAGE_SIZE),
-                page,
-                None,
-            );
-            */
-            todo!();
+            obj.add_frame(PageNumber::meta_page(), frame);
 
             let obj = Arc::new(obj);
             obj::register_object(obj.clone());
