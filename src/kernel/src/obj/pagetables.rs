@@ -96,6 +96,24 @@ impl ObjectPageTable {
         let mut reader = self.mapper.readmap(cursor);
         reader.next().and_then(|x| get_frame(x.paddr()))
     }
+
+    pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {
+        todo!()
+    }
+
+    pub fn setup_cow_range(
+        &mut self,
+        dest: &mut Self,
+        src_offset: u64,
+        dst_offset: u64,
+        len: usize,
+    ) -> Result<(), TwzError> {
+        todo!()
+    }
+
+    pub fn setup_zero_range(&mut self, offset: u64, len: usize) -> Result<(), TwzError> {
+        todo!()
+    }
 }
 
 impl Object {

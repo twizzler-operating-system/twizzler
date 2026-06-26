@@ -76,6 +76,15 @@ pub const PHYS_LEVEL_LAYOUTS: [Layout; NR_LEVELS] = [
     unsafe { Layout::from_size_align_unchecked(FRAME_SIZE * 512 * 512, FRAME_SIZE * 512 * 512) },
 ];
 
+pub fn max_level_for_addr(addr: usize) -> Option<usize> {
+    for (i, layout) in PHYS_LEVEL_LAYOUTS.iter().enumerate().rev() {
+        if addr.is_multiple_of(layout.align()) && addr.is_multiple_of(layout.size()) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[doc(hidden)]
 struct AllocationRegion {
     indexer: FrameIndexer,

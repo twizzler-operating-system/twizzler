@@ -21,11 +21,7 @@ use twizzler_rt_abi::{
 
 use crate::{
     arch::context::ArchContext,
-    memory::{
-        context::{Context, ContextRef, UserContext, virtmem::Slot},
-        frame::PHYS_LEVEL_LAYOUTS,
-        tracker::{FrameAllocFlags, FrameAllocator},
-    },
+    memory::context::{Context, ContextRef, UserContext, virtmem::Slot},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
     once::Once,
@@ -64,27 +60,18 @@ pub fn sys_object_create(
         return Ok(obj.id());
     }
     for src in srcs {
-        /*
         if src.id == 0 {
-            crate::obj::copy::zero_ranges(&obj, src.dest_start as usize, src.len as usize)
+            obj.zero_range(src.dest_start as usize, src.len as usize)?;
         } else {
             let so = crate::obj::lookup_object(src.id.into(), LookupFlags::empty())
                 .ok_or(ObjectError::NoSuchObject)?;
-            let mut fa = FrameAllocator::new(
-                FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
-                PHYS_LEVEL_LAYOUTS[0],
-            );
-            crate::obj::copy::copy_ranges(
-                &so,
-                src.src_start as usize,
+            so.copy_range(
                 &obj,
+                src.src_start as usize,
                 src.dest_start as usize,
                 src.len as usize,
-                &mut fa,
-            )
+            )?;
         }
-        */
-        todo!()
     }
     let meta = MetaInfo {
         nonce: Nonce(nonce),
@@ -288,7 +275,9 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
                     PagerFlags::PREFETCH,
                 );
                 let tree = obj.lock_page_tables();
-                obj.ensure_in_core(tree, PageNumber::meta_page(), &mut false);
+                let _ = obj
+                    .ensure_in_core(tree, PageNumber::meta_page(), &mut false)
+                    .inspect_err(|e| log::error!("failed to preload object {}: {}", id, e));
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());
             }
