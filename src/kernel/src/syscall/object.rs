@@ -276,7 +276,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
                 );
                 let tree = obj.lock_page_tables();
                 let _ = obj
-                    .ensure_in_core(tree, PageNumber::meta_page(), &mut false)
+                    .ensure_in_core(tree, PageNumber::meta_page(), 1, &mut false)
                     .inspect_err(|e| log::error!("failed to preload object {}: {}", id, e));
             } else {
                 return (1, TwzError::INVALID_ARGUMENT.raw());

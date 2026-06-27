@@ -54,6 +54,13 @@ impl Object {
             |frame_offset, frame| {
                 if let Some(frame) = frame {
                     let po = offset - frame_offset;
+                    log::debug!(
+                        "==> with_frame: offset {:x}, frame_offset {:x}, po {:x}, frame {:x}",
+                        offset,
+                        frame_offset,
+                        po,
+                        frame.start_address().raw()
+                    );
                     f(po, frame)
                 } else {
                     panic!(
@@ -88,6 +95,7 @@ impl Object {
 
     pub fn write_meta(&self, meta: MetaInfo) -> bool {
         self.write_at(&meta, PageNumber::meta_page().as_byte_offset())
+            .inspect_err(|e| log::warn!("failed to write metadata: {}", e))
             .is_ok()
     }
 
@@ -245,6 +253,13 @@ impl Object {
                 FindFrameFlags::POPULATE | FindFrameFlags::WRITE,
                 |po, frame| {
                     let len = core::cmp::min(len, frame.size() - po);
+                    log::debug!(
+                        "set bytes: writing {:x} bytes at offset {:x} in frame {:x} (po = {:x})",
+                        len,
+                        offset,
+                        frame.start_address().raw(),
+                        po
+                    );
                     let ptr = unsafe { frame.virtaddr().as_mut_ptr::<u8>().byte_add(po) };
                     unsafe {
                         core::ptr::write_bytes(ptr, val, len);
@@ -399,16 +414,24 @@ impl Object {
             &mut false,
         )?;
 
+        log::debug!(
+            "direct_copy: src_offset {}, dst_offset {}, len {}",
+            src_offset,
+            dst_offset,
+            len
+        );
+
         while len > 0 {
             self_pt
                 .with_frame(
                     src_offset as u64,
                     FindFrameFlags::empty(),
-                    |src_frame_offset, self_frame| {
+                    |src_frame_start, self_frame| {
                         dst_pt.with_frame(
                             dst_offset as u64,
                             FindFrameFlags::WRITE | FindFrameFlags::POPULATE,
-                            |dst_frame_offset, dst_frame| {
+                            |dst_frame_start, dst_frame| {
+                                let dst_frame_offset = dst_offset - dst_frame_start;
                                 let dst_frame = dst_frame.ok_or(TwzError::INVALID_ARGUMENT)?;
                                 let dst_ptr = unsafe {
                                     dst_frame
@@ -417,8 +440,15 @@ impl Object {
                                         .byte_add(dst_frame_offset)
                                 };
                                 let dst_frame_rem = dst_frame.size() - dst_frame_offset;
+                                log::debug!(
+                                    "found frames: src? {}, dst: {:x}, dst_frame_rem {}",
+                                    self_frame.is_some(),
+                                    dst_frame.virtaddr().raw(),
+                                    dst_frame_rem
+                                );
 
                                 let op_len = if let Some(src_frame) = self_frame {
+                                    let src_frame_offset = src_offset - src_frame_start;
                                     let src_frame_rem = src_frame.size() - src_frame_offset;
                                     let copy_len = core::cmp::min(
                                         len,
@@ -430,6 +460,13 @@ impl Object {
                                             .as_ptr::<u8>()
                                             .byte_add(src_frame_offset)
                                     };
+                                    log::debug!(
+                                        "copying {} bytes from src {:x} to dst {:x} in object {}",
+                                        copy_len,
+                                        src_ptr as usize,
+                                        dst_ptr as usize,
+                                        dst.id()
+                                    );
                                     if !src_frame.is_zeroed() || !dst_frame.is_zeroed() {
                                         unsafe {
                                             if src_frame.virtaddr() != dst_frame.virtaddr() {
@@ -445,6 +482,12 @@ impl Object {
                                 } else {
                                     // Zero destination if source is not mapped.
                                     let zero_len = core::cmp::min(len, dst_frame_rem);
+                                    log::debug!(
+                                        "zeroing {} bytes at dst offset {} in object {}",
+                                        zero_len,
+                                        dst_offset,
+                                        dst.id()
+                                    );
                                     unsafe {
                                         core::ptr::write_bytes(dst_ptr, 0, zero_len);
                                     }
@@ -459,6 +502,7 @@ impl Object {
                         )
                     },
                 )
+                .flatten()
                 .flatten()?;
         }
 
@@ -480,16 +524,34 @@ impl Object {
         assert!(dst_offset.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
         assert!(len.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
 
-        let (mut self_pt, mut dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
+        let (self_pt, dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
 
-        // TODO: invalidate src and dst.
+        let (mut self_pt, mut dst_pt) = self.ensure_both_in_core(
+            dst,
+            self_pt,
+            dst_pt,
+            PageNumber::from_offset(src_offset),
+            PageNumber::from_offset(dst_offset),
+            len / PageNumber::PAGE_SIZE,
+            &mut false,
+        )?;
+
+        self.invalidate(
+            PageNumber::from_offset(src_offset)..PageNumber::from_offset(src_offset + len),
+            super::InvalidateMode::Full,
+        );
+        dst.invalidate(
+            PageNumber::from_offset(dst_offset)..PageNumber::from_offset(dst_offset + len),
+            super::InvalidateMode::Full,
+        );
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
-        let dst_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
+        let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let level = core::cmp::min(src_level, dst_level);
         self_pt.split_to_level(src_offset as u64, level)?;
         self_pt.split_to_level((src_offset + len) as u64, level)?;
 
+        dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
 
         Ok(())
@@ -520,8 +582,8 @@ impl Object {
         if pre_copy != 0 {
             let pre_len = core::cmp::min(len, min_align - pre_copy);
             self.direct_copy(dst, src_offset, dst_offset, pre_len)?;
-            return dst.copy_range(
-                self,
+            return self.copy_range(
+                dst,
                 src_offset + pre_len,
                 dst_offset + pre_len,
                 len - pre_len,
@@ -537,33 +599,84 @@ impl Object {
                 dst_offset + len - post_len,
                 post_len,
             )?;
-            return dst.copy_range(self, src_offset, dst_offset, len - post_len);
+            return self.copy_range(dst, src_offset, dst_offset, len - post_len);
         }
 
         self.cow_copy(dst, src_offset, dst_offset, len)
     }
 
     pub fn zero_range(&self, offset: usize, len: usize) -> Result<(), TwzError> {
+        log::debug!("zero_range: offset {:x} len {:x}", offset, len);
         if len == 0 {
             return Ok(());
         }
         let pre_zero = offset % PHYS_LEVEL_LAYOUTS[0].size();
         if pre_zero != 0 {
             let pre_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size() - pre_zero);
+            log::debug!(
+                "zero_range: pre_zero {} at offset {:x}, len {:x}",
+                pre_zero,
+                offset,
+                pre_len
+            );
             self.set_bytes(offset, pre_len, 0)?;
             return self.zero_range(offset + pre_len, len - pre_len);
         }
 
         let post_zero = len % PHYS_LEVEL_LAYOUTS[0].size();
         if post_zero != 0 {
+            log::debug!(
+                "zero_range: post_zero {} at offset {:x} (len {:x})",
+                post_zero,
+                offset + len - post_zero,
+                len
+            );
             let post_len = post_zero;
             self.set_bytes(offset + len - post_len, post_len, 0)?;
             return self.zero_range(offset, len - post_len);
         }
 
         let mut pt = self.lock_page_tables();
+        self.invalidate(
+            PageNumber::from_offset(offset)..PageNumber::from_offset(offset + len),
+            super::InvalidateMode::Full,
+        );
+
+        log::debug!("zero_range: unmap for offset {:x} len {:x}", offset, len);
         pt.setup_zero_range(offset as u64, len)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use twizzler_kernel_macros::kernel_test;
+
+    #[kernel_test]
+    fn test_page_number_align_down() {
+        use super::PageNumber;
+
+        // Test aligning down with power-of-2 alignments
+        assert_eq!(PageNumber(15).align_down(1), PageNumber(15));
+        assert_eq!(PageNumber(15).align_down(2), PageNumber(14));
+        assert_eq!(PageNumber(15).align_down(4), PageNumber(12));
+        assert_eq!(PageNumber(15).align_down(8), PageNumber(8));
+        assert_eq!(PageNumber(15).align_down(16), PageNumber(0));
+
+        // Test with already aligned values
+        assert_eq!(PageNumber(16).align_down(16), PageNumber(16));
+        assert_eq!(PageNumber(32).align_down(8), PageNumber(32));
+        assert_eq!(PageNumber(64).align_down(32), PageNumber(64));
+
+        // Test with zero
+        assert_eq!(PageNumber(0).align_down(1), PageNumber(0));
+        assert_eq!(PageNumber(0).align_down(4), PageNumber(0));
+        assert_eq!(PageNumber(0).align_down(16), PageNumber(0));
+
+        // Test edge cases
+        assert_eq!(PageNumber(1).align_down(2), PageNumber(0));
+        assert_eq!(PageNumber(7).align_down(8), PageNumber(0));
+        assert_eq!(PageNumber(255).align_down(256), PageNumber(0));
     }
 }

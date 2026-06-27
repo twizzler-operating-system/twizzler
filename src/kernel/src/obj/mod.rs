@@ -29,6 +29,7 @@ use crate::{
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
     random::getrandom,
+    thread::current_thread_ref,
 };
 
 pub mod control;
@@ -41,6 +42,9 @@ pub mod pagetables;
 pub mod data;
 pub mod thread_sync;
 pub mod ties;
+
+//#[cfg(test)]
+mod tests;
 
 const OBJ_DELETED: u32 = 1;
 pub const OBJ_HAS_INTERRUPTS: u32 = 2;
@@ -322,7 +326,7 @@ impl Object {
             };
             let obj = Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
             while !obj.write_meta(meta) {
-                logln!("failed to write object metadata -- retrying");
+                panic!("failed to write object metadata");
             }
             return obj;
         }
@@ -622,37 +626,5 @@ impl DirtySet {
         if pn.0 < set.bit_len() {
             set.bit_reset(pn.0);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use twizzler_kernel_macros::kernel_test;
-
-    #[kernel_test]
-    fn test_page_number_align_down() {
-        use super::PageNumber;
-
-        // Test aligning down with power-of-2 alignments
-        assert_eq!(PageNumber(15).align_down(1), PageNumber(15));
-        assert_eq!(PageNumber(15).align_down(2), PageNumber(14));
-        assert_eq!(PageNumber(15).align_down(4), PageNumber(12));
-        assert_eq!(PageNumber(15).align_down(8), PageNumber(8));
-        assert_eq!(PageNumber(15).align_down(16), PageNumber(0));
-
-        // Test with already aligned values
-        assert_eq!(PageNumber(16).align_down(16), PageNumber(16));
-        assert_eq!(PageNumber(32).align_down(8), PageNumber(32));
-        assert_eq!(PageNumber(64).align_down(32), PageNumber(64));
-
-        // Test with zero
-        assert_eq!(PageNumber(0).align_down(1), PageNumber(0));
-        assert_eq!(PageNumber(0).align_down(4), PageNumber(0));
-        assert_eq!(PageNumber(0).align_down(16), PageNumber(0));
-
-        // Test edge cases
-        assert_eq!(PageNumber(1).align_down(2), PageNumber(0));
-        assert_eq!(PageNumber(7).align_down(8), PageNumber(0));
-        assert_eq!(PageNumber(255).align_down(256), PageNumber(0));
     }
 }

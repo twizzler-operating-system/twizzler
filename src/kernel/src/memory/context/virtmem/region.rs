@@ -240,22 +240,41 @@ impl MapRegion {
             .get_frame(page_number.as_byte_offset() as u64)
             .is_some()
         {
-            log::info!("=== CURRENT PAGE TABLES ===");
+            //log::info!("=== CURRENT PAGE TABLES ===");
             let ctx = current_memory_context().unwrap();
             ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                arch.with_mapper(|m| m.print_tables());
+                //arch.with_mapper(|m| m.print_tables());
             });
-            panic!(
-                "page {} is already mapped in object {}",
-                page_number,
-                self.object().id()
-            );
+            let map = obj_page_tree.with_mapper(|m| {
+                m.readmap(MappingCursor::new(
+                    VirtAddr::new(page_number.as_byte_offset() as u64).unwrap(),
+                    0x1000,
+                ))
+                .next()
+            });
+            if map.as_ref().is_some_and(|m| {
+                !m.settings().perms().contains(Protections::WRITE)
+                    && cause == MemoryAccessKind::Write
+            }) {
+                // TODO: unwrap
+                obj_page_tree
+                    .maybe_cow_at(page_number.as_byte_offset() as u64)
+                    .unwrap();
+                return Ok(());
+            } else {
+                panic!(
+                    "page {} is already mapped in object {}: {:?}",
+                    page_number,
+                    self.object().id(),
+                    map
+                );
+            }
         }
 
         let mut used_pager = false;
         let mut obj_page_tree =
             self.object
-                .ensure_in_core(obj_page_tree, page_number, &mut used_pager);
+                .ensure_in_core(obj_page_tree, page_number, 1, &mut used_pager);
 
         /*
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));

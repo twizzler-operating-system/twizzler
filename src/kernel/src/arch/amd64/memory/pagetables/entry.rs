@@ -31,16 +31,6 @@ impl Entry {
         Self(0)
     }
 
-    pub fn is_cow(&self) -> bool {
-        self.flags().contains(EntryFlags::COW)
-    }
-
-    pub fn set_cow(&mut self, value: bool) {
-        let mut flags = self.flags();
-        flags.set(EntryFlags::COW, value);
-        self.set_flags(flags);
-    }
-
     pub fn is_object_table(&self) -> bool {
         self.flags().contains(EntryFlags::OBJECT_TABLE)
     }
@@ -118,7 +108,6 @@ bitflags::bitflags! {
         const GLOBAL = 1 << 8;
         const AVAIL_1 = 1 << 9;
         const OBJECT_TABLE = 1 << 10;
-        const COW = 1 << 11;
         const NO_EXECUTE = 1 << 63;
     }
 }

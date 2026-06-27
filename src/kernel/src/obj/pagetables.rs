@@ -68,9 +68,13 @@ impl ObjectPageTable {
         todo!()
     }
 
-    fn maybe_cow_at(&mut self, offset: u64) -> Result<(), TwzError> {
-        return Ok(());
-        todo!()
+    pub fn maybe_cow_at(&mut self, offset: u64) -> Result<(), TwzError> {
+        let cursor =
+            MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
+        // TODO: handle invalidations?
+        self.mapper
+            .cow_at(cursor)
+            .ok_or(ResourceError::OutOfMemory.into())
     }
 
     pub fn with_frame<R>(
@@ -98,7 +102,8 @@ impl ObjectPageTable {
     }
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {
-        todo!()
+        self.mapper
+            .split_to_level(VirtAddr::new(offset).unwrap(), level)
     }
 
     pub fn setup_cow_range(
@@ -108,11 +113,17 @@ impl ObjectPageTable {
         dst_offset: u64,
         len: usize,
     ) -> Result<(), TwzError> {
-        todo!()
+        let src_cursor = MappingCursor::new(VirtAddr::new(src_offset).unwrap(), len);
+        let dst_cursor = MappingCursor::new(VirtAddr::new(dst_offset).unwrap(), len);
+        self.mapper
+            .setup_cow_range(&mut dest.mapper, src_cursor, dst_cursor)
     }
 
     pub fn setup_zero_range(&mut self, offset: u64, len: usize) -> Result<(), TwzError> {
-        todo!()
+        let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
+        let ops = self.mapper.unmap(cursor);
+        ops.run_all();
+        Ok(())
     }
 }
 

@@ -25,6 +25,13 @@ impl MappingCursor {
         Some(self)
     }
 
+    pub fn advance_until_empty(mut self, len: usize) -> Self {
+        let remaining = self.len.min(len);
+        self.start.offset(remaining).unwrap_or(self.start);
+        self.len -= remaining;
+        self
+    }
+
     /// Advance the cursor by up to `len`, so we end up aligned on len. Should the resulting address
     /// be non-canonical, `None` is returned.
     pub fn align_advance(mut self, len: usize) -> Option<Self> {

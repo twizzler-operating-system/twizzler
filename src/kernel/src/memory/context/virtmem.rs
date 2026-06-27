@@ -599,6 +599,10 @@ impl<T> KernelObjectVirtHandle<T> {
     pub fn id(&self) -> ObjID {
         self.info.object().id()
     }
+
+    pub fn object(&self) -> &ObjectRef {
+        self.info.object()
+    }
 }
 
 impl<T> Drop for KernelObjectVirtHandle<T> {

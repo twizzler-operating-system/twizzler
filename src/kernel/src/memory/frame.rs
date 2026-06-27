@@ -554,6 +554,12 @@ impl Frame {
         unsafe { core::slice::from_raw_parts(ptr, self.size()) }
     }
 
+    pub unsafe fn as_byte_slice_mut(&'static self) -> &'static mut [u8] {
+        let virt = phys_to_virt(self.pa);
+        let ptr: *mut u8 = virt.as_mut_ptr();
+        unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) }
+    }
+
     /// Copy contents of one frame into another. If the other frame is marked as zeroed, copying
     /// will not happen. Both frames are locked first.
     pub fn copy_contents_from(&self, other: &Frame, doff: usize, soff: usize, len: usize) {

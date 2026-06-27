@@ -169,6 +169,7 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
                 .ensure_in_core(
                     pt,
                     PageNumber::from_offset(pg * PageNumber::PAGE_SIZE),
+                    1,
                     &mut _up,
                 )
                 .unwrap();

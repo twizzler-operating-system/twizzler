@@ -1,3 +1,5 @@
+use twizzler_rt_abi::error::{ResourceError, TwzError};
+
 use super::{
     MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
     consistency::{Consistency, DeferredUnmappingOps},
@@ -161,6 +163,42 @@ impl Mapper {
         table_phys
     }
 
+    pub fn split_to_level(&mut self, addr: VirtAddr, level: usize) -> Result<(), TwzError> {
+        let mut consist = Consistency::new(self.root);
+        let start_level = self.start_level;
+        let root = self.root_mut();
+        root.split_to_level(&mut consist, addr, start_level, level)
+            .ok_or(ResourceError::OutOfMemory)?;
+        consist.into_deferred().run_all();
+        Ok(())
+    }
+
+    pub fn setup_cow_range(
+        &mut self,
+        dest: &mut Mapper,
+        mut src_cursor: MappingCursor,
+        mut dst_cursor: MappingCursor,
+    ) -> Result<(), TwzError> {
+        log::info!(
+            "setup_cow_range: src_cursor {:?}, dst_cursor {:?}, src_root {:x}, dst_root {:x}",
+            src_cursor,
+            dst_cursor,
+            self.root_address().raw(),
+            dest.root_address().raw()
+        );
+        let start_level = self.start_level;
+        assert!(start_level == dest.start_level);
+        let root = self.root_mut();
+        root.setup_cow_range(
+            dest.root_mut(),
+            &mut src_cursor,
+            &mut dst_cursor,
+            start_level,
+        )
+        .ok_or(ResourceError::OutOfMemory)?;
+        Ok(())
+    }
+
     pub fn print_tables(&self) {
         log::info!(
             "=== PAGE TABLES FROM ROOT {:x} ===",
@@ -168,5 +206,12 @@ impl Mapper {
         );
         self.root()
             .print_tables_recursive(self.start_level(), VirtAddr::new(0).unwrap(), 0);
+    }
+
+    pub fn cow_at(&mut self, cursor: MappingCursor) -> Option<()> {
+        let mut consist = Consistency::new(self.root);
+        let level = self.start_level;
+        let root = self.root_mut();
+        root.cow_copy(&mut consist, &cursor, level)
     }
 }
