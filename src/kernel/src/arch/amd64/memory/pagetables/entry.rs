@@ -108,6 +108,7 @@ bitflags::bitflags! {
         const GLOBAL = 1 << 8;
         const AVAIL_1 = 1 << 9;
         const OBJECT_TABLE = 1 << 10;
+        const WIRED = 1 << 11;
         const NO_EXECUTE = 1 << 63;
     }
 }
@@ -198,6 +199,11 @@ impl From<&MappingSettings> for EntryFlags {
         } else {
             EntryFlags::empty()
         };
-        p | c | f | u
+        let w = if settings.flags().contains(MappingFlags::WIRED) {
+            EntryFlags::WIRED
+        } else {
+            EntryFlags::empty()
+        };
+        p | c | f | u | w
     }
 }

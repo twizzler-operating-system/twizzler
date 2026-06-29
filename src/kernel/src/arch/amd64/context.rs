@@ -3,7 +3,10 @@ use core::arch::naked_asm;
 use twizzler_abi::object::Protections;
 
 use crate::{
-    arch::memory::pagetables::{Entry, EntryFlags},
+    arch::{
+        PhysAddr,
+        memory::pagetables::{Entry, EntryFlags},
+    },
     memory::{
         VirtAddr,
         frame::get_frame,
@@ -31,6 +34,12 @@ pub struct ArchContext {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(transparent)]
 pub struct ArchContextTarget(u64);
+
+impl ArchContextTarget {
+    pub fn paddr(&self) -> PhysAddr {
+        PhysAddr::new(self.0).unwrap()
+    }
+}
 
 static KERNEL_MAPPER: Once<Spinlock<Mapper>> = Once::new();
 

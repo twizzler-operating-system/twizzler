@@ -8,7 +8,7 @@ use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
     memory::{
-        frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::LockGuard,
@@ -16,7 +16,6 @@ use crate::{
         Object, PageNumber,
         pagetables::{FindFrameFlags, ObjectPageTable},
     },
-    pager::ensure_in_core,
 };
 
 enum ZeroOrFrame {
@@ -371,6 +370,12 @@ impl Object {
 
         guard = self.lock_page_tables();
 
+        log::info!(
+            "ensure_in_core: mapping page {} in object {} with new frame {:x}",
+            page,
+            self.id(),
+            frame.start_address().raw()
+        );
         if !guard.map_page(page.as_byte_offset() as u64, frame) {
             alloc.abort([frame]);
         }
@@ -398,6 +403,14 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
+        log::info!(
+            "direct_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
+            src_offset,
+            dst_offset,
+            len,
+            self.id(),
+            dst.id()
+        );
         let mut src_offset = src_offset;
         let mut dst_offset = dst_offset;
         let mut len = len;
@@ -520,6 +533,14 @@ impl Object {
             return Ok(());
         }
 
+        log::info!(
+            "cow_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
+            src_offset,
+            dst_offset,
+            len,
+            self.id(),
+            dst.id()
+        );
         assert!(src_offset.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
         assert!(dst_offset.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
         assert!(len.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
@@ -606,31 +627,24 @@ impl Object {
     }
 
     pub fn zero_range(&self, offset: usize, len: usize) -> Result<(), TwzError> {
-        log::debug!("zero_range: offset {:x} len {:x}", offset, len);
+        log::info!(
+            "zero_range: offset {:x} len {:x} in {}",
+            offset,
+            len,
+            self.id()
+        );
         if len == 0 {
             return Ok(());
         }
         let pre_zero = offset % PHYS_LEVEL_LAYOUTS[0].size();
         if pre_zero != 0 {
             let pre_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size() - pre_zero);
-            log::debug!(
-                "zero_range: pre_zero {} at offset {:x}, len {:x}",
-                pre_zero,
-                offset,
-                pre_len
-            );
             self.set_bytes(offset, pre_len, 0)?;
             return self.zero_range(offset + pre_len, len - pre_len);
         }
 
         let post_zero = len % PHYS_LEVEL_LAYOUTS[0].size();
         if post_zero != 0 {
-            log::debug!(
-                "zero_range: post_zero {} at offset {:x} (len {:x})",
-                post_zero,
-                offset + len - post_zero,
-                len
-            );
             let post_len = post_zero;
             self.set_bytes(offset + len - post_len, post_len, 0)?;
             return self.zero_range(offset, len - post_len);
@@ -642,7 +656,12 @@ impl Object {
             super::InvalidateMode::Full,
         );
 
-        log::debug!("zero_range: unmap for offset {:x} len {:x}", offset, len);
+        log::info!(
+            "zero_range: unmap for offset {:x} len {:x} in {}",
+            offset,
+            len,
+            self.id()
+        );
         pt.setup_zero_range(offset as u64, len)?;
 
         Ok(())

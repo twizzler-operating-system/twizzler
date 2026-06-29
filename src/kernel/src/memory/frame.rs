@@ -426,6 +426,10 @@ impl Frame {
         );
     }
 
+    fn reset_refcount(&self) {
+        self.info.fetch_and(!(0xFFFFFFFF << 32), Ordering::SeqCst);
+    }
+
     /// Get the start address of the frame.
     pub fn start_address(&self) -> PhysAddr {
         self.pa
@@ -454,7 +458,7 @@ impl Frame {
 
     pub fn dec_refcount(&self) -> u32 {
         assert!(self.refcount() > 0);
-        (self.info.fetch_sub(1 << 32, Ordering::SeqCst) >> 32) as u32
+        (self.info.fetch_sub(1 << 32, Ordering::SeqCst) >> 32) as u32 - 1
     }
 
     pub fn is_pt(&self) -> bool {
@@ -849,6 +853,9 @@ pub(super) fn raw_free_frame(frame: FrameRef) {
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     assert!(!frame.get_flags().contains(PhysicalFrameFlags::IS_WIRED));
+    frame.set_pt(false);
+    frame.set_cow(false);
+    frame.reset_refcount();
     PFA.wait().lock().free(frame);
 }
 

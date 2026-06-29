@@ -53,12 +53,16 @@ impl Consistency {
 
     /// Enqueue a page for freeing.
     pub fn free_frame(&mut self, frame: FrameRef) {
-        self.pages.push_back(frame);
+        if frame.dec_refcount() == 0 {
+            self.pages.push_back(frame);
+        }
     }
 
     /// Enqueue a page for freeing.
     pub fn free_shared_frame(&mut self, frame: FrameRef) {
-        self.shared.push_back(frame);
+        if frame.dec_refcount() == 0 {
+            self.shared.push_back(frame);
+        }
     }
 
     /// Flush the TLB invalidations.
@@ -99,13 +103,11 @@ impl Drop for DeferredUnmappingOps {
 impl DeferredUnmappingOps {
     pub fn run_all(mut self) {
         while let Some(page) = self.pages.pop_back() {
-            page.dec_refcount();
             page.set_pt(false);
             crate::memory::tracker::free_frame(page)
         }
 
         while let Some(page) = self.shared.pop_back() {
-            page.dec_refcount();
             page.set_pt(false);
             crate::memory::pagetables::free_shared_frame(page)
         }

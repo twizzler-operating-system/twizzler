@@ -8,6 +8,7 @@ bitflags::bitflags! {
         const GLOBAL = 1;
         /// The mapping is accessible by userspace.
         const USER = 2;
+        const WIRED = 4;
     }
 }
 

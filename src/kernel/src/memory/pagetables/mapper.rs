@@ -142,7 +142,7 @@ impl Mapper {
     }
 
     pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {
-        log::info!(
+        log::trace!(
             "get_table_addr called with level {} (start_level {})",
             level,
             self.start_level
@@ -179,7 +179,7 @@ impl Mapper {
         mut src_cursor: MappingCursor,
         mut dst_cursor: MappingCursor,
     ) -> Result<(), TwzError> {
-        log::info!(
+        log::trace!(
             "setup_cow_range: src_cursor {:?}, dst_cursor {:?}, src_root {:x}, dst_root {:x}",
             src_cursor,
             dst_cursor,

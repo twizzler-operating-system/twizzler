@@ -18,11 +18,12 @@ use crate::{
     arch::{
         address::VirtAddr,
         context::{ArchContext, ArchContextTarget},
+        memory::pagetables::ArchTlbMgr,
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
         PhysAddr,
-        frame::FrameRef,
+        frame::{FrameRef, max_level_for_addr},
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
@@ -262,7 +263,7 @@ impl VirtContext {
             let settings = MappingSettings::new(
                 map.settings().perms(),
                 map.settings().cache(),
-                map.settings().flags() | MappingFlags::GLOBAL,
+                map.settings().flags() | MappingFlags::GLOBAL | MappingFlags::WIRED,
             );
             let mut phys = ContiguousProvider::new(map.paddr(), map.len(), settings);
             self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
@@ -283,7 +284,7 @@ impl VirtContext {
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE | Protections::EXEC,
             CacheType::WriteBack,
-            MappingFlags::empty(),
+            MappingFlags::WIRED,
         );
         let mut phys = ContiguousProvider::new(
             PhysAddr::new(
@@ -386,23 +387,16 @@ impl UserContext for VirtContext {
         mode: obj::InvalidateMode,
     ) {
         let start = range.start.as_byte_offset();
-        let len = range.end.as_byte_offset() - start;
         let mut slots = self.regions.lock();
-        for info in slots.object_mappings(obj) {
-            let arches = self.secctx.lock();
-            for arch in arches.values() {
-                match mode {
-                    obj::InvalidateMode::Full => {
-                        arch.unmap(info.mapping_cursor(start, len));
-                    }
-                    obj::InvalidateMode::WriteProtect => {
-                        arch.change(
-                            info.mapping_cursor(start, len),
-                            &info.mapping_settings(true, self.is_kernel),
-                        );
-                    }
-                }
+        let arches = self.secctx.lock();
+        for arch in arches.values() {
+            let mut tlb = ArchTlbMgr::new(arch.target.paddr());
+            for info in slots.object_mappings(obj) {
+                let vlen = info.range.end - info.range.start;
+                let level = max_level_for_addr(vlen).unwrap_or(3);
+                tlb.enqueue(info.range.start, false, false, level);
             }
+            tlb.finish();
         }
     }
 
