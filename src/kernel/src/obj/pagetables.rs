@@ -30,12 +30,11 @@ bitflags::bitflags! {
 
 impl ObjectPageTable {
     pub fn new() -> Self {
-        let mut mapper = Mapper::new(
-            alloc_frame(
-                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
-            )
-            .start_address(),
+        let frame = alloc_frame(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
         );
+        frame.set_pt(true);
+        let mut mapper = Mapper::new(frame.start_address());
         mapper.set_start_level(Table::top_level() - 2);
         Self { mapper }
     }
@@ -68,7 +67,7 @@ impl ObjectPageTable {
         todo!()
     }
 
-    pub fn maybe_cow_at(&mut self, offset: u64) -> Result<(), TwzError> {
+    pub fn maybe_cow_at(&mut self, offset: u64) -> Result<bool, TwzError> {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         // TODO: handle invalidations?
@@ -89,9 +88,16 @@ impl ObjectPageTable {
             self.maybe_cow_at(offset)?;
         }
         let mut reader = self.mapper.readmap(cursor);
-        let map_info = reader.next().ok_or(ObjectError::NotMapped)?;
-        let frame_offset = map_info.vaddr().raw() as usize;
-        Ok(f(frame_offset, get_frame(map_info.paddr())))
+        let map_info = reader.next();
+        let frame_offset = map_info
+            .as_ref()
+            .map_or((offset as usize) & !PHYS_LEVEL_LAYOUTS[0].size(), |mi| {
+                mi.vaddr().raw() as usize
+            });
+        Ok(f(
+            frame_offset,
+            map_info.and_then(|mi| get_frame(mi.paddr())),
+        ))
     }
 
     pub fn get_frame(&mut self, offset: u64) -> Option<FrameRef> {

@@ -45,16 +45,17 @@ static KERNEL_MAPPER: Once<Spinlock<Mapper>> = Once::new();
 
 fn kernel_mapper() -> &'static Spinlock<Mapper> {
     KERNEL_MAPPER.call_once(|| {
-        let mut m = Mapper::new(
-            alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
-        );
+        let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL);
+        frame.inc_refcount();
+        frame.set_pt(true);
+        let mut m = Mapper::new(frame.start_address());
         for idx in 256..512 {
+            let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL);
+            frame.inc_refcount();
+            frame.set_pt(true);
             m.set_top_level_table(
                 idx,
-                Entry::new(
-                    alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
-                    EntryFlags::intermediate(),
-                ),
+                Entry::new(frame.start_address(), EntryFlags::intermediate()),
             );
         }
         Spinlock::new(m)
@@ -119,6 +120,19 @@ impl ArchContext {
     pub fn object_map(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
         let ops = self.inner.lock().object_map(cursor, object_tables);
         ops.run_all();
+    }
+
+    pub fn ensure_object_mapped(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
+        let mut inner = self.inner.lock();
+        if !inner.mapper.is_object_mapped(cursor) {
+            log::warn!(
+                "mapping object at cursor {:?} in context {:?}",
+                cursor,
+                self.target
+            );
+            let ops = inner.object_map(cursor, object_tables);
+            ops.run_all();
+        }
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {

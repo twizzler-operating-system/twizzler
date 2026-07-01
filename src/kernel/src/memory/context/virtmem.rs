@@ -31,7 +31,7 @@ use crate::{
         tracker::FrameAllocFlags,
     },
     mutex::Mutex,
-    obj::{self, ObjectRef, PageNumber},
+    obj::{self, ObjectRef, PageNumber, pagetables::ObjectPageTable},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
@@ -218,6 +218,17 @@ impl VirtContext {
         for arch in sctx.values() {
             arch.object_map(MappingCursor::new(info.range.start, len), &mut *pt);
         }
+    }
+
+    pub fn ensure_object_mapped(
+        &self,
+        sctxid: ObjID,
+        cursor: MappingCursor,
+        object_tables: &mut ObjectPageTable,
+    ) {
+        self.with_arch(sctxid, |arch| {
+            arch.ensure_object_mapped(cursor, object_tables);
+        });
     }
 
     pub fn print_objects(&self) {

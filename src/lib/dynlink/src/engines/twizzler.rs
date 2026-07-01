@@ -119,6 +119,7 @@ pub fn load_segments(
         &data_cmds,
         &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
     )
+    .inspect_err(|e| tracing::error!("failed to create data object: {:?}", e))
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
     let text_id = sys_object_create(
@@ -126,6 +127,7 @@ pub fn load_segments(
         &text_cmds,
         &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
     )
+    .inspect_err(|e| tracing::error!("failed to create text object: {:?}", e))
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
     //let text_id = src.id;
 

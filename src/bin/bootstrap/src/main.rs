@@ -51,6 +51,7 @@ impl ContextEngine for Engine {
                 data_id,
                 MapFlags::READ | MapFlags::WRITE,
             )
+            .inspect_err(|e| tracing::error!("failed to map text and data segments: {:?}", e))
             .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
             if data_handle.start() as usize != text_handle.start() as usize + MAX_SIZE {
@@ -73,6 +74,7 @@ impl ContextEngine for Engine {
         let id = name_resolver(&unlib.name)?;
         Ok(Backing::new(
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ)
+                .inspect_err(|e| tracing::error!("failed to map object {}: {:?}", unlib.name, e))
                 .map_err(|_err| DynlinkErrorKind::NewBackingFail)?,
             unlib.name.as_str(),
         ))

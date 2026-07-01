@@ -242,9 +242,7 @@ impl MapRegion {
         {
             //log::info!("=== CURRENT PAGE TABLES ===");
             let ctx = current_memory_context().unwrap();
-            ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                //arch.with_mapper(|m| m.print_tables());
-            });
+
             let map = obj_page_tree.with_mapper(|m| {
                 m.readmap(MappingCursor::new(
                     VirtAddr::new(page_number.as_byte_offset() as u64).unwrap(),
@@ -257,16 +255,41 @@ impl MapRegion {
                     && cause == MemoryAccessKind::Write
             }) {
                 // TODO: unwrap
-                obj_page_tree
+                let did_cow = obj_page_tree
                     .maybe_cow_at(page_number.as_byte_offset() as u64)
                     .unwrap();
+                if did_cow {
+                    self.object.invalidate(
+                        PageNumber::from_offset(0)..PageNumber::meta_page(),
+                        crate::obj::InvalidateMode::Full,
+                    );
+                }
                 return Ok(());
             } else {
-                panic!(
-                    "page {} is already mapped in object {}: {:?}",
-                    page_number,
-                    self.object().id(),
-                    map
+                let sctxid = current_thread_ref().unwrap().secctx.active_id();
+                ctx.with_arch(sctxid, |arch| {
+                    if arch.with_mapper(|m| m.is_object_mapped(MappingCursor::new(addr, PageNumber::PAGE_SIZE))) {
+                        arch.with_mapper(|m| m.print_tables());
+                        panic!(
+                            "page {} is already mapped in object {}: {:?}\npfinfo: {:?}, perms: {:?}, default_prot: {:?} flags: {:?}, addr: {:?}, ip: {:?}",
+                            page_number,
+                            self.object().id(),
+                            map,
+                            cause,
+                            perms,
+                            default_prot,
+                            pfflags,
+                            addr,
+                            ip
+                        );
+                    }
+                });
+                let cursor =
+                    MappingCursor::new(self.range.start, self.range.end - self.range.start);
+                ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree);
+                self.object.invalidate(
+                    PageNumber::from_offset(0)..PageNumber::meta_page(),
+                    crate::obj::InvalidateMode::Full,
                 );
             }
         }

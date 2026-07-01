@@ -61,7 +61,8 @@ pub fn sys_object_create(
     }
     for src in srcs {
         if src.id == 0 {
-            obj.zero_range(src.dest_start as usize, src.len as usize)?;
+            obj.zero_range(src.dest_start as usize, src.len as usize)
+                .inspect_err(|e| log::error!("failed to zero new object: {}", e))?;
         } else {
             let so = crate::obj::lookup_object(src.id.into(), LookupFlags::empty())
                 .ok_or(ObjectError::NoSuchObject)?;
@@ -70,7 +71,8 @@ pub fn sys_object_create(
                 src.src_start as usize,
                 src.dest_start as usize,
                 src.len as usize,
-            )?;
+            )
+            .inspect_err(|e| log::error!("failed to copy range from object {}: {}", src.id, e))?;
         }
     }
     let meta = MetaInfo {
@@ -82,7 +84,7 @@ pub fn sys_object_create(
         extcount: 0,
     };
     while !obj.write_meta(meta) {
-        logln!("failed to write object metadata -- retrying");
+        log::error!("failed to write object metadata -- retrying");
     }
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {

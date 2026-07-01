@@ -507,6 +507,18 @@ impl FrameAllocator {
         }
     }
 
+    pub fn precharge(&mut self, count: usize) {
+        for _ in 0..count {
+            if self.frames.is_full() {
+                return;
+            }
+            let Some(frame) = try_alloc_frame(self.flags, self.layout) else {
+                return;
+            };
+            self.frames.push(frame).unwrap();
+        }
+    }
+
     pub fn try_allocate(&mut self) -> Option<FrameRef> {
         if self.frames.len() == 0 {
             try_alloc_frame(self.flags, self.layout)

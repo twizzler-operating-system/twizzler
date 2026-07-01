@@ -309,39 +309,76 @@ impl Object {
         ),
         TwzError,
     > {
-        if self_guard
+        let self_first_is_present = self_guard
             .get_frame(self_page.as_byte_offset() as u64)
-            .is_some()
-            && other_guard
-                .get_frame(other_page.as_byte_offset() as u64)
-                .is_some()
-        {
+            .is_some();
+        let other_first_is_present = other_guard
+            .get_frame(other_page.as_byte_offset() as u64)
+            .is_some();
+        if page_count <= 1 && self_first_is_present && other_first_is_present {
             return Ok((self_guard, other_guard));
         }
 
+        let factor = if self_first_is_present && other_first_is_present {
+            0
+        } else if self_first_is_present || other_first_is_present {
+            1
+        } else {
+            2
+        };
+
+        if page_count > 1 {
+            log::trace!(
+                "ensure_both_in_core: ensuring {} pages in core for objects {} and {}, starting at {:x} and {:x}",
+                page_count,
+                self.id(),
+                other.id(),
+                self_page.as_byte_offset(),
+                other_page.as_byte_offset()
+            );
+        }
+
+        *pager_was_used = false;
         if self.use_pager() || other.use_pager() {
             todo!()
         }
 
         drop(self_guard);
         drop(other_guard);
-
         let mut alloc = FrameAllocator::new(
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-        let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+        alloc.precharge(page_count * factor);
 
         let (mut self_guard, mut other_guard) = crate::utils::lock_two(&self.tables, &other.tables);
-
-        if !self_guard.map_page(self_page.as_byte_offset() as u64, self_frame) {
-            alloc.abort([self_frame, other_frame]);
-            return Err(TwzError::INVALID_ARGUMENT);
-        }
-        if !other_guard.map_page(other_page.as_byte_offset() as u64, other_frame) {
-            alloc.abort([self_frame, other_frame]);
-            return Err(TwzError::INVALID_ARGUMENT);
+        for i in 0..page_count {
+            let self_offset = self_page.offset(i).as_byte_offset() as u64;
+            let other_offset = other_page.offset(i).as_byte_offset() as u64;
+            if self_guard.get_frame(self_offset).is_none() {
+                let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                if !self_guard.map_page(self_offset, self_frame) {
+                    alloc.abort([self_frame]);
+                    log::error!(
+                        "failed to map page at offset {:x} in object {}",
+                        self_offset,
+                        self.id()
+                    );
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+            }
+            if other_guard.get_frame(other_offset).is_none() {
+                let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                if !other_guard.map_page(other_offset, other_frame) {
+                    alloc.abort([other_frame]);
+                    log::error!(
+                        "failed to map page at offset {:x} in object {}",
+                        other_offset,
+                        other.id()
+                    );
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+            }
         }
 
         Ok((self_guard, other_guard))
@@ -354,10 +391,10 @@ impl Object {
         page_count: usize,
         pager_was_used: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
-        if guard.get_frame(page.as_byte_offset() as u64).is_some() {
+        let first_is_present = guard.get_frame(page.as_byte_offset() as u64).is_some();
+        if page_count <= 1 && first_is_present {
             return Ok(guard);
         }
-
         if self.use_pager() {
             return self.ensure_in_core_pager(guard, page, page_count, pager_was_used);
         }
@@ -366,18 +403,19 @@ impl Object {
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-
+        if !first_is_present {
+            alloc.precharge(page_count);
+        }
         guard = self.lock_page_tables();
-
-        log::info!(
-            "ensure_in_core: mapping page {} in object {} with new frame {:x}",
-            page,
-            self.id(),
-            frame.start_address().raw()
-        );
-        if !guard.map_page(page.as_byte_offset() as u64, frame) {
-            alloc.abort([frame]);
+        for i in 0..page_count {
+            let offset = page.offset(i).as_byte_offset() as u64;
+            if guard.get_frame(offset).is_none() {
+                let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                if !guard.map_page(offset, frame) {
+                    alloc.abort([frame]);
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+            }
         }
 
         Ok(guard)
@@ -423,7 +461,7 @@ impl Object {
             dst_pt,
             PageNumber::from_offset(src_offset),
             PageNumber::from_offset(dst_offset),
-            len / PageNumber::PAGE_SIZE,
+            (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
             &mut false,
         )?;
 
@@ -445,7 +483,10 @@ impl Object {
                             FindFrameFlags::WRITE | FindFrameFlags::POPULATE,
                             |dst_frame_start, dst_frame| {
                                 let dst_frame_offset = dst_offset - dst_frame_start;
-                                let dst_frame = dst_frame.ok_or(TwzError::INVALID_ARGUMENT)?;
+                                if dst_frame.is_none() {
+                                    log::error!("failed to get destination frame at offset {:x} (page {}) in object {}", dst_offset, dst_offset / PageNumber::PAGE_SIZE, dst.id());
+                                }
+                                let dst_frame = dst_frame.ok_or(ResourceError::OutOfMemory)?;
                                 let dst_ptr = unsafe {
                                     dst_frame
                                         .virtaddr()
@@ -589,8 +630,8 @@ impl Object {
         let pre_copy = src_offset % min_align;
         let pre_copy_dst = dst_offset % min_align;
 
-        if pre_copy_dst != pre_copy {
-            log::warn!(
+        if pre_copy_dst != pre_copy || true {
+            log::trace!(
                 "copy_range: src offset {} and dst offset {} are not aligned to the same boundary ({} vs {})",
                 src_offset,
                 dst_offset,
@@ -636,6 +677,7 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
+        return self.set_bytes(offset, len, 0);
         let pre_zero = offset % PHYS_LEVEL_LAYOUTS[0].size();
         if pre_zero != 0 {
             let pre_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size() - pre_zero);

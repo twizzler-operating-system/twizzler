@@ -211,24 +211,26 @@ impl Table {
         consist: &mut Consistency,
         cursor: &MappingCursor,
         level: usize,
-    ) -> Option<()> {
+    ) -> Option<bool> {
         if level < cursor.biggest_level() {
-            return Some(());
+            return Some(false);
         }
 
         let index = Self::get_index(cursor.start(), level);
+        let mut did_cow = false;
         if self[index].is_huge() && level != Self::last_level() {
             self.split_huge(index, level)?;
         } else {
             self.do_cow_copy(index, level)?;
+            did_cow = true;
         }
 
         if level > 0 {
             if let Some(next) = self.next_table_mut(index) {
-                next.cow_copy(consist, cursor, level - 1)?;
+                did_cow |= next.cow_copy(consist, cursor, level - 1)?;
             }
         }
-        Some(())
+        Some(did_cow)
     }
 
     pub(super) fn object_map(
@@ -413,7 +415,7 @@ impl Table {
         phys: &mut impl PhysAddrProvider,
     ) -> Option<()> {
         let start_index = Self::get_index(cursor.start(), level);
-        log::info!(
+        log::trace!(
             "map: level {}, start_index {}, cursor {:?}",
             level,
             start_index,
@@ -444,7 +446,7 @@ impl Table {
                 if let Some(frame) = get_frame(paddr.addr)
                     && !paddr.settings.flags().contains(MappingFlags::WIRED)
                 {
-                    log::info!(
+                    log::trace!(
                         "map: mapping frame {:x} at level {} for vaddr {:x} with flags {:?}",
                         frame.start_address().raw(),
                         level,
@@ -603,6 +605,18 @@ impl Table {
                 break;
             }
         }
+    }
+
+    pub(super) fn is_object_mapped(&self, cursor: MappingCursor, level: usize) -> bool {
+        let index = Self::get_index(cursor.start(), level);
+        let entry = &self[index];
+        if entry.is_present() && entry.is_object_table() {
+            return true;
+        } else if entry.is_present() && level != Self::last_level() {
+            let next_table = self.next_table(index).unwrap();
+            return next_table.is_object_mapped(cursor, Self::next_level(level));
+        }
+        false
     }
 
     pub(super) fn readmap(&self, cursor: &MappingCursor, level: usize) -> Result<MapInfo, usize> {

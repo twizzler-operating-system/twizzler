@@ -141,6 +141,12 @@ impl Mapper {
         })
     }
 
+    pub fn is_object_mapped(&self, cursor: MappingCursor) -> bool {
+        let level = self.start_level;
+        let root = self.root();
+        root.is_object_mapped(cursor, level)
+    }
+
     pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {
         log::trace!(
             "get_table_addr called with level {} (start_level {})",
@@ -208,7 +214,7 @@ impl Mapper {
             .print_tables_recursive(self.start_level(), VirtAddr::new(0).unwrap(), 0);
     }
 
-    pub fn cow_at(&mut self, cursor: MappingCursor) -> Option<()> {
+    pub fn cow_at(&mut self, cursor: MappingCursor) -> Option<bool> {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
         let root = self.root_mut();
