@@ -10,16 +10,12 @@ use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RUNTIME_INIT_MIN, Run
 use xmas_elf::program::SegmentData;
 
 use crate::{
-    get_boot_info,
-    initrd::get_boot_objects,
-    memory::{VirtAddr, context::UserContext},
-    obj::ObjectRef,
+    get_boot_info, initrd::get_boot_objects, memory::VirtAddr, obj::ObjectRef,
     thread::current_memory_context,
 };
 
 pub fn create_blank_object() -> ObjectRef {
     let obj = crate::obj::Object::new_kernel();
-    let obj = Arc::new(obj);
     crate::obj::register_object(obj.clone());
     obj
 }

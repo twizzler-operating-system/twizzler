@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64},
 };
 
-use twizzler_abi::{meta::MetaInfo, syscall::PinnedPage};
+use twizzler_abi::{meta::MetaInfo, pager::PagerFlags, syscall::PinnedPage};
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     },
     mutex::LockGuard,
     obj::{
-        Object, PageNumber,
+        Object, ObjectRef, PageNumber,
         pagetables::{FindFrameFlags, ObjectPageTable},
     },
 };
@@ -26,7 +26,7 @@ enum ZeroOrFrame {
 
 impl Object {
     fn do_with_frame<R>(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         flags: FindFrameFlags,
         f: impl FnOnce(usize, Option<FrameRef>) -> R,
@@ -49,7 +49,7 @@ impl Object {
     }
 
     fn with_frame<R>(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         flags: FindFrameFlags,
         f: impl FnOnce(usize, FrameRef) -> R,
@@ -80,7 +80,7 @@ impl Object {
     }
 
     fn with_optional_frame<R>(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         f: impl FnOnce(ZeroOrFrame) -> R,
     ) -> Result<R, TwzError> {
@@ -95,17 +95,21 @@ impl Object {
         })
     }
 
-    pub fn read_meta(&self) -> Option<MetaInfo> {
+    pub fn read_meta(self: &ObjectRef) -> Option<MetaInfo> {
         self.read_at(PageNumber::meta_page().as_byte_offset()).ok()
     }
 
-    pub fn write_meta(&self, meta: MetaInfo) -> bool {
+    pub fn write_meta(self: &ObjectRef, meta: MetaInfo) -> bool {
         self.write_at(&meta, PageNumber::meta_page().as_byte_offset())
             .inspect_err(|e| log::warn!("failed to write metadata: {}", e))
             .is_ok()
     }
 
-    pub fn with_ref<R, P>(&self, offset: usize, f: impl FnOnce(&P) -> R) -> Result<R, TwzError> {
+    pub fn with_ref<R, P>(
+        self: &ObjectRef,
+        offset: usize,
+        f: impl FnOnce(&P) -> R,
+    ) -> Result<R, TwzError> {
         assert!(offset.is_multiple_of(align_of::<P>()));
         self.with_frame(
             offset,
@@ -119,7 +123,7 @@ impl Object {
         )
     }
 
-    pub fn read_atomic_64(&self, offset: usize) -> Result<u64, TwzError> {
+    pub fn read_atomic_64(self: &ObjectRef, offset: usize) -> Result<u64, TwzError> {
         let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
         if aoffset != offset {
             log::warn!(
@@ -134,7 +138,7 @@ impl Object {
         })
     }
 
-    pub fn swap_atomic_64(&self, offset: usize, val: u64) -> Result<u64, TwzError> {
+    pub fn swap_atomic_64(self: &ObjectRef, offset: usize, val: u64) -> Result<u64, TwzError> {
         let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
         if aoffset != offset {
             log::warn!(
@@ -149,7 +153,7 @@ impl Object {
         })
     }
 
-    pub fn read_atomic_32(&self, offset: usize) -> Result<u32, TwzError> {
+    pub fn read_atomic_32(self: &ObjectRef, offset: usize) -> Result<u32, TwzError> {
         let aoffset = offset & !(core::mem::size_of::<u32>() - 1);
         if aoffset != offset {
             log::warn!(
@@ -164,7 +168,7 @@ impl Object {
         })
     }
 
-    pub fn swap_atomic_32(&self, offset: usize, val: u32) -> Result<u32, TwzError> {
+    pub fn swap_atomic_32(self: &ObjectRef, offset: usize, val: u32) -> Result<u32, TwzError> {
         let aoffset = offset & !(core::mem::size_of::<u32>() - 1);
         if aoffset != offset {
             log::warn!(
@@ -179,7 +183,7 @@ impl Object {
         })
     }
 
-    pub fn write_at<T>(&self, val: &T, offset: usize) -> Result<(), TwzError> {
+    pub fn write_at<T>(self: &ObjectRef, val: &T, offset: usize) -> Result<(), TwzError> {
         self.write_bytes(
             val as *const T as *const u8,
             core::mem::size_of::<T>(),
@@ -187,7 +191,7 @@ impl Object {
         )
     }
 
-    pub fn read_at<T>(&self, offset: usize) -> Result<T, TwzError> {
+    pub fn read_at<T>(self: &ObjectRef, offset: usize) -> Result<T, TwzError> {
         let mut val = core::mem::MaybeUninit::<T>::uninit();
         self.read_bytes(
             unsafe {
@@ -201,7 +205,7 @@ impl Object {
         Ok(unsafe { val.assume_init() })
     }
 
-    pub fn read_bytes(&self, slice: &mut [u8], offset: usize) -> Result<(), TwzError> {
+    pub fn read_bytes(self: &ObjectRef, slice: &mut [u8], offset: usize) -> Result<(), TwzError> {
         log::info!(
             "read_bytes: reading {} bytes at offset {:x} in object {}",
             slice.len(),
@@ -233,7 +237,12 @@ impl Object {
         Ok(())
     }
 
-    pub fn write_bytes(&self, ptr: *const u8, len: usize, offset: usize) -> Result<(), TwzError> {
+    pub fn write_bytes(
+        self: &ObjectRef,
+        ptr: *const u8,
+        len: usize,
+        offset: usize,
+    ) -> Result<(), TwzError> {
         let mut offset = offset;
         let mut slice = unsafe { core::slice::from_raw_parts(ptr, len) };
         while !slice.is_empty() {
@@ -256,7 +265,7 @@ impl Object {
         Ok(())
     }
 
-    pub fn set_bytes(&self, offset: usize, len: usize, val: u8) -> Result<(), TwzError> {
+    pub fn set_bytes(self: &ObjectRef, offset: usize, len: usize, val: u8) -> Result<(), TwzError> {
         let mut offset = offset;
         let mut len = len;
         while len > 0 {
@@ -286,16 +295,16 @@ impl Object {
         Ok(())
     }
 
-    pub fn read_base<T>(&self) -> Result<T, TwzError> {
+    pub fn read_base<T>(self: &ObjectRef) -> Result<T, TwzError> {
         self.read_at(PageNumber::base_page().as_byte_offset())
     }
 
-    pub fn write_base<T>(&self, val: &T) -> Result<(), TwzError> {
+    pub fn write_base<T>(self: &ObjectRef, val: &T) -> Result<(), TwzError> {
         self.write_at(val, PageNumber::base_page().as_byte_offset())
     }
 
     pub fn try_write_val_and_signal(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         val: u64,
         wake_count: usize,
@@ -307,8 +316,8 @@ impl Object {
     }
 
     pub fn ensure_both_in_core<'a>(
-        &'a self,
-        other: &'a Object,
+        self: &'a ObjectRef,
+        other: &'a ObjectRef,
         mut self_guard: LockGuard<'a, ObjectPageTable>,
         mut other_guard: LockGuard<'a, ObjectPageTable>,
         self_page: PageNumber,
@@ -332,7 +341,7 @@ impl Object {
             return Ok((self_guard, other_guard));
         }
 
-        let factor = if self_first_is_present && other_first_is_present {
+        let mut factor = if self_first_is_present && other_first_is_present {
             0
         } else if self_first_is_present || other_first_is_present {
             1
@@ -351,13 +360,30 @@ impl Object {
             );
         }
 
-        *pager_was_used = false;
-        if self.use_pager() || other.use_pager() {
-            todo!()
-        }
-
         drop(self_guard);
         drop(other_guard);
+        *pager_was_used = false;
+
+        if self.use_pager() {
+            let pt = self.lock_page_tables();
+            self.ensure_in_core_pager(pt, self_page, page_count, pager_was_used)?;
+            if factor >= 2 {
+                factor -= 1;
+            }
+        }
+
+        if other.use_pager() {
+            let pt = other.lock_page_tables();
+            other.ensure_in_core_pager(pt, other_page, page_count, pager_was_used)?;
+            if factor >= 2 {
+                factor -= 1;
+            }
+        }
+
+        if other.use_pager() && self.use_pager() {
+            return Ok(crate::utils::lock_two(&self.tables, &other.tables));
+        }
+
         let mut alloc = FrameAllocator::new(
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
@@ -397,7 +423,11 @@ impl Object {
         Ok((self_guard, other_guard))
     }
 
-    pub fn pin(&self, page: PageNumber, count: usize) -> Result<(Vec<PinnedPage>, u32), TwzError> {
+    pub fn pin(
+        self: &ObjectRef,
+        page: PageNumber,
+        count: usize,
+    ) -> Result<(Vec<PinnedPage>, u32), TwzError> {
         let mut pages = Vec::new();
         for i in 0..count {
             let page_offset = page.offset(i).as_byte_offset() as u64;
@@ -414,7 +444,7 @@ impl Object {
     }
 
     pub fn ensure_in_core<'a>(
-        &'a self,
+        self: &'a ObjectRef,
         mut guard: LockGuard<'a, ObjectPageTable>,
         page: PageNumber,
         page_count: usize,
@@ -451,18 +481,85 @@ impl Object {
     }
 
     pub fn ensure_in_core_pager<'a>(
-        &'a self,
-        guard: LockGuard<'a, ObjectPageTable>,
-        page: PageNumber,
-        page_count: usize,
+        self: &'a ObjectRef,
+        mut guard: LockGuard<'a, ObjectPageTable>,
+        mut page: PageNumber,
+        mut page_count: usize,
         pager_was_used: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
-        todo!()
+        log::info!(
+            "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
+            page_count,
+            self.id(),
+            page.as_byte_offset()
+        );
+        let mut reqs = heapless::Vec::<_, 16>::new();
+        while page_count > 0 {
+            let mut mapreader = guard
+                .readmap(
+                    page.as_byte_offset() as u64,
+                    page_count * PageNumber::PAGE_SIZE,
+                )
+                .coalesce();
+            let done_count = if let Some(mapinfo) = mapreader.next()
+                && mapinfo.vaddr().raw() == page.as_byte_offset() as u64
+            {
+                log::info!(
+                    "found mapping info for page {:x} in object {}: {:?}, is empty? {}",
+                    page.as_byte_offset(),
+                    self.id(),
+                    mapinfo,
+                    mapinfo.is_empty()
+                );
+                let done_count = mapinfo.len() / PageNumber::PAGE_SIZE;
+                if mapinfo.is_empty() {
+                    let map_page = PageNumber::from_offset(mapinfo.vaddr().raw() as usize);
+                    if reqs.is_empty() {
+                        reqs.push((map_page, done_count)).unwrap();
+                    } else {
+                        let (last_page, last_count) = reqs.last_mut().unwrap();
+                        if last_page.offset(*last_count) == map_page {
+                            *last_count += done_count;
+                        } else {
+                            reqs.push((map_page, done_count)).unwrap();
+                        }
+                    }
+                }
+                done_count
+            } else {
+                reqs.push((page, page_count)).unwrap();
+                page_count
+            };
+            page_count -= done_count;
+            page = page.offset(done_count);
+            if reqs.is_full() {
+                guard = crate::pager::ensure_in_core(
+                    self,
+                    guard,
+                    &reqs,
+                    PagerFlags::empty(),
+                    pager_was_used,
+                )?;
+                reqs.clear();
+            }
+        }
+
+        if !reqs.is_empty() {
+            guard = crate::pager::ensure_in_core(
+                self,
+                guard,
+                &reqs,
+                PagerFlags::empty(),
+                pager_was_used,
+            )?;
+        }
+
+        Ok(guard)
     }
 
     pub fn direct_copy(
-        &self,
-        dst: &Object,
+        self: &ObjectRef,
+        dst: &ObjectRef,
         src_offset: usize,
         dst_offset: usize,
         len: usize,
@@ -593,8 +690,8 @@ impl Object {
     }
 
     pub fn cow_copy(
-        &self,
-        dst: &Object,
+        self: &ObjectRef,
+        dst: &ObjectRef,
         src_offset: usize,
         dst_offset: usize,
         len: usize,
@@ -649,8 +746,8 @@ impl Object {
     }
 
     pub fn copy_range(
-        &self,
-        dst: &Object,
+        self: &ObjectRef,
+        dst: &ObjectRef,
         src_offset: usize,
         dst_offset: usize,
         len: usize,
@@ -696,7 +793,7 @@ impl Object {
         self.cow_copy(dst, src_offset, dst_offset, len)
     }
 
-    pub fn zero_range(&self, offset: usize, len: usize) -> Result<(), TwzError> {
+    pub fn zero_range(self: &ObjectRef, offset: usize, len: usize) -> Result<(), TwzError> {
         log::info!(
             "zero_range: offset {:x} len {:x} in {}",
             offset,

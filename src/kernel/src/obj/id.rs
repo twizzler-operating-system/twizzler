@@ -93,6 +93,10 @@ fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Pr
 }
 
 impl Object {
+    pub fn has_checked_id(&self) -> bool {
+        self.verified_id.poll().is_some()
+    }
+
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {
         *self.verified_id.call_once(|| {
             loop {

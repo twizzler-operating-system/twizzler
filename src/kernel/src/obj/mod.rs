@@ -313,7 +313,24 @@ impl Object {
         }
     }
 
-    pub fn new_kernel() -> Self {
+    pub fn new_kernel_with_id(id: ObjID) -> Arc<Self> {
+        let obj = Self::new(id, LifetimeType::Volatile, &[]);
+        let meta = MetaInfo {
+            nonce: Nonce(0),
+            kuid: 0.into(),
+            default_prot: Protections::all(),
+            flags: MetaFlags::empty(),
+            fotcount: 0,
+            extcount: 0,
+        };
+        let obj = Arc::new(obj);
+        while !obj.write_meta(meta) {
+            logln!("failed to write object metadata -- retrying");
+        }
+        obj
+    }
+
+    pub fn new_kernel() -> Arc<Self> {
         let mut bytes = [0; 16];
         if !getrandom(&mut bytes, true) {
             let meta = MetaInfo {
@@ -324,7 +341,7 @@ impl Object {
                 fotcount: 0,
                 extcount: 0,
             };
-            let obj = Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
+            let obj = Arc::new(Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]));
             while !obj.write_meta(meta) {
                 panic!("failed to write object metadata");
             }
@@ -344,6 +361,7 @@ impl Object {
             fotcount: 0,
             extcount: 0,
         };
+        let obj = Arc::new(obj);
         while !obj.write_meta(meta) {
             logln!("failed to write object metadata -- retrying");
         }
@@ -423,12 +441,6 @@ impl Drop for Object {
 pub enum InvalidateMode {
     Full,
     WriteProtect,
-}
-
-impl Default for Object {
-    fn default() -> Self {
-        Self::new_kernel()
-    }
 }
 
 impl Display for PageNumber {

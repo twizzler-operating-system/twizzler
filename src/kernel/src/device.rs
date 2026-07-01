@@ -67,7 +67,7 @@ static KSO_MANAGER: Once<KsoManager> = Once::new();
 
 fn get_kso_manager() -> &'static KsoManager {
     KSO_MANAGER.call_once(|| {
-        let root = Arc::new(crate::obj::Object::new_kernel());
+        let root = crate::obj::Object::new_kernel();
         crate::obj::register_object(root.clone());
         KsoManager {
             root,
@@ -182,9 +182,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 let obj = match lookup_object(id, LookupFlags::empty()) {
                     crate::obj::LookupResult::Found(o) => o,
                     _ => {
-                        let mut obj = Object::new_kernel();
-                        obj.id = id;
-                        let obj = Arc::new(obj);
+                        let mut obj = Object::new_kernel_with_id(id);
                         register_object(obj.clone());
                         obj
                     }
@@ -222,7 +220,7 @@ pub fn create_busroot(
     bt: BusType,
     kaction: fn(DeviceRef, cmd: u32, arg: u64, arg2: u64) -> Result<KactionValue>,
 ) -> DeviceRef {
-    let obj = Arc::new(crate::obj::Object::new_kernel());
+    let obj = crate::obj::Object::new_kernel();
     crate::obj::register_object(obj.clone());
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
@@ -250,7 +248,7 @@ pub fn create_device(
     id: DeviceId,
     kaction: fn(DeviceRef, cmd: u32, arg: u64, arg: u64) -> Result<KactionValue>,
 ) -> DeviceRef {
-    let obj = Arc::new(crate::obj::Object::new_kernel());
+    let obj = crate::obj::Object::new_kernel();
     crate::obj::register_object(obj.clone());
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
@@ -287,7 +285,7 @@ impl Device {
     }
 
     pub fn add_info<T>(&self, info: &T) {
-        let obj = Arc::new(crate::obj::Object::new_kernel());
+        let obj = crate::obj::Object::new_kernel();
         obj.write_base(info);
         crate::obj::register_object(obj.clone());
         self.inner
@@ -297,7 +295,7 @@ impl Device {
     }
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
-        let obj = Arc::new(crate::obj::Object::new_kernel());
+        let obj = crate::obj::Object::new_kernel();
         obj.map_phys(MMIO_OFFSET, start, end, ct);
         let mmio_info = MmioInfo {
             length: (end - start) as u64,

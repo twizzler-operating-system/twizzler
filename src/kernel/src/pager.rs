@@ -9,7 +9,10 @@ use twizzler_abi::{
     pager::{PagerFlags, PhysRange},
     syscall::ObjectCreate,
 };
-use twizzler_rt_abi::bindings::sync_info;
+use twizzler_rt_abi::{
+    bindings::sync_info,
+    error::{ResourceError, TwzError},
+};
 
 use crate::{
     memory::{
@@ -71,16 +74,17 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     }
 }
 
-fn get_pages_and_wait(
-    obj: &ObjectRef,
+fn get_pages_and_wait<'a>(
+    obj: &'a ObjectRef,
     page: PageNumber,
     len: usize,
     flags: PagerFlags,
-    tree: LockGuard<'_, ObjectPageTable>,
-) -> bool {
+    tree: LockGuard<'a, ObjectPageTable>,
+    used_pager: &mut bool,
+) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
-        return false;
+        return Err(ResourceError::Unavailable.into());
     }
     log::trace!(
         "{}: getting page {} from {}",
@@ -93,10 +97,12 @@ fn get_pages_and_wait(
         log::warn!("out of pager request slots");
         drop(mgr);
         schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
-        return get_pages_and_wait(obj, page, len, flags, tree);
+        return get_pages_and_wait(obj, page, len, flags, tree, used_pager);
     };
     drop(mgr);
     drop(tree);
+    // TODO: more granularity?
+    *used_pager = true;
     let mut submitted = false;
     inflight.for_each_pager_req(|pager_req| {
         submitted = true;
@@ -111,7 +117,7 @@ fn get_pages_and_wait(
             finish_blocking(guard);
         };
     }
-    submitted
+    Ok(obj.lock_page_tables())
 }
 
 fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
@@ -180,23 +186,35 @@ pub fn sync_region(
     };
 }
 
-pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: PagerFlags) -> bool {
+pub fn ensure_in_core<'a>(
+    obj: &'a ObjectRef,
+    mut guard: LockGuard<'a, ObjectPageTable>,
+    reqs: &[(PageNumber, usize)],
+    flags: PagerFlags,
+    used_pager: &mut bool,
+) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
     if !obj.use_pager() {
-        return false;
+        log::warn!(
+            "ensure_in_core called on object {} that does not use a pager",
+            obj.id()
+        );
+        return Ok(guard);
     }
 
+    let total_pages = reqs.iter().fold(0, |acc, x| acc + x.1);
+
     let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
-    let needed_additional =
-        DEFAULT_PAGER_OUTSTANDING_FRAMES.saturating_sub(avail_pager_mem.saturating_sub(len));
+    let needed_additional = DEFAULT_PAGER_OUTSTANDING_FRAMES
+        .saturating_sub(avail_pager_mem.saturating_sub(total_pages));
     let wait_for_additional =
-        avail_pager_mem.saturating_sub(len) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
+        avail_pager_mem.saturating_sub(total_pages) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::debug!(
-        "ensure in core {}: {}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
+    log::info!(
+        "ensure in core {}: {:?}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
-        start.num(),
-        len,
+        reqs,
+        total_pages,
         avail_pager_mem,
         needed_additional,
         wait_for_additional,
@@ -204,95 +222,18 @@ pub fn ensure_in_core(obj: &ObjectRef, start: PageNumber, len: usize, flags: Pag
     );
 
     if flags.contains(PagerFlags::PREFETCH) && low_mem {
-        return false;
+        return Ok(guard);
     }
 
     if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
         provide_pager_memory(needed_additional.min(512), wait_for_additional);
     }
 
-    let mut cur = start;
-    let end = start.offset(len);
-    let mut used_pager = false;
-    /*
-    let mut tree = obj.lock_page_tree();
-    while cur < end {
-        if let Some(range) = tree.get(cur) {
-            // TODO: find holes in the range
-
-            let len = range.length;
-            let start = range.start;
-            let mut holes = heapless::Vec::<_, 8>::new();
-            let off = range.holes(0, &mut holes);
-            log::trace!(
-                "page {} is in core (range {}, off = {}, holes = {:?})",
-                cur,
-                range,
-                off,
-                holes
-            );
-
-            if off < range.length {
-                if get_pages_and_wait(obj, cur.offset(0), range.length, flags, tree) {
-                    used_pager = true;
-                }
-                tree = obj.lock_page_tree();
-            } else if holes.len() > 0 {
-                for hole in holes {
-                    if get_pages_and_wait(obj, cur.offset(hole.0), hole.1, flags, tree) {
-                        used_pager = true;
-                    }
-                    tree = obj.lock_page_tree();
-                }
-            }
-
-            cur = start.offset(len);
-        } else {
-            let mut r = tree.range(cur..end);
-            let thislen = if let Some(first) = r.next() {
-                *first.0 - cur
-            } else {
-                end - cur
-            };
-            if get_pages_and_wait(obj, cur, thislen, flags, tree) {
-                used_pager = true;
-            }
-            cur = cur.offset(thislen);
-            tree = obj.lock_page_tree();
-        }
-    }
-    */
-    todo!();
-    used_pager
-}
-
-// Returns true if the pager was engaged.
-pub fn get_object_page(obj: &ObjectRef, pn: PageNumber) -> bool {
-    let max = PageNumber::from_offset(MAX_SIZE);
-    if pn >= max {
-        log::warn!("invalid page number: {:?}", pn);
-        return false;
+    for (req_page, req_len) in reqs {
+        guard = get_pages_and_wait(obj, *req_page, *req_len, flags, guard, used_pager)?;
     }
 
-    if pn.is_meta() {
-        return ensure_in_core(obj, pn, 1, PagerFlags::empty());
-    }
-
-    let chunk_size = 1024;
-
-    let mut aligned_pn = PageNumber::from((pn.num() + 1).next_multiple_of(chunk_size) - chunk_size);
-
-    let count_to_end = PageNumber::meta_page() - aligned_pn;
-    let mut chunk_count = count_to_end.min(chunk_size);
-
-    if pn.num() < chunk_size && pn.num() != 0 {
-        aligned_pn = PageNumber::base_page();
-        chunk_count -= 1;
-    }
-    if chunk_count == 0 {
-        return false;
-    }
-    ensure_in_core(obj, aligned_pn, chunk_count, PagerFlags::empty())
+    Ok(guard)
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {

@@ -270,12 +270,16 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
         }
         ObjectControlCmd::Preload => {
             if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
-                crate::pager::ensure_in_core(
-                    &obj,
-                    PageNumber::from_offset(0),
-                    MAX_SIZE / PageNumber::PAGE_SIZE,
-                    PagerFlags::PREFETCH,
-                );
+                {
+                    let guard = obj.lock_page_tables();
+                    let _ = crate::pager::ensure_in_core(
+                        &obj,
+                        guard,
+                        &[(PageNumber::from_offset(0), MAX_SIZE / PageNumber::PAGE_SIZE)],
+                        PagerFlags::PREFETCH,
+                        &mut false,
+                    );
+                }
                 let tree = obj.lock_page_tables();
                 let _ = obj
                     .ensure_in_core(tree, PageNumber::meta_page(), 1, &mut false)

@@ -246,7 +246,7 @@ impl MapRegion {
             let map = obj_page_tree.with_mapper(|m| {
                 m.readmap(MappingCursor::new(
                     VirtAddr::new(page_number.as_byte_offset() as u64).unwrap(),
-                    0x1000,
+                    PageNumber::PAGE_SIZE,
                 ))
                 .next()
             });
@@ -265,11 +265,11 @@ impl MapRegion {
                     );
                 }
                 return Ok(());
-            } else {
+            } else if map.is_some() {
                 let sctxid = current_thread_ref().unwrap().secctx.active_id();
-                ctx.with_arch(sctxid, |arch| {
+                if !page_number.is_meta() {
+                    ctx.with_arch(sctxid, |arch| {
                     if arch.with_mapper(|m| m.is_object_mapped(MappingCursor::new(addr, PageNumber::PAGE_SIZE))) {
-                        arch.with_mapper(|m| m.print_tables());
                         panic!(
                             "page {} is already mapped in object {}: {:?}\npfinfo: {:?}, perms: {:?}, default_prot: {:?} flags: {:?}, addr: {:?}, ip: {:?}",
                             page_number,
@@ -284,6 +284,7 @@ impl MapRegion {
                         );
                     }
                 });
+                }
                 let cursor =
                     MappingCursor::new(self.range.start, self.range.end - self.range.start);
                 ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree);

@@ -74,9 +74,12 @@ impl InternalThread {
     }
 
     pub fn get_name(&self, name: &mut [u8]) -> usize {
+        twizzler_abi::klog_println!("get_name called with buffer of size {}", name.len());
         let th = self.name.lock().unwrap();
+        twizzler_abi::klog_println!("get_name got mutex");
         match &*th {
             Some(n) => {
+                twizzler_abi::klog_println!("get_name got name {:p}", (*n).as_ptr());
                 let len = name.len().min(n.as_bytes_with_nul().len());
                 name[..len].copy_from_slice(&n.as_bytes_with_nul()[..len]);
                 len

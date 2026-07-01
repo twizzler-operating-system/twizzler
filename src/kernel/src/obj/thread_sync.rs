@@ -12,6 +12,7 @@ use twizzler_rt_abi::error::TwzError;
 use super::{OBJ_HAS_INTERRUPTS, Object};
 use crate::{
     interrupt::wait_for_device_interrupt,
+    obj::ObjectRef,
     syscall::sync::add_to_requeue,
     thread::{ThreadRef, current_thread_ref},
 };
@@ -155,7 +156,7 @@ impl Object {
     }
 
     pub fn setup_sleep_word(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         op: ThreadSyncOp,
         val: u64,
@@ -208,7 +209,7 @@ impl Object {
     }
 
     pub fn setup_sleep_word32(
-        &self,
+        self: &ObjectRef,
         offset: usize,
         op: ThreadSyncOp,
         val: u32,

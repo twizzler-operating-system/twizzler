@@ -165,7 +165,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::trace!(
+    log::info!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -206,30 +206,29 @@ fn pager_compl_handle_page_data(
         let pn = PageNumber::from(objpage_nr as usize);
         let pa = PhysAddr::new(physpage_nr * PageNumber::PAGE_SIZE as u64).unwrap();
 
-        // TODO: reenable multipage once the page tree bug is fixed.
-        let thiscount = (max_obj - count).min(max_phys - count).min(1);
-        todo!();
-        /*
-        let page = if flags.contains(PageFlags::WIRED) {
-            log::trace!("wiring {} pages: {}", thiscount, objpage_nr);
-            Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
-        } else {
-            if let Some(frame) = crate::memory::frame::get_frame(pa) {
-                Page::new(frame, thiscount)
-            } else {
-                log::warn!(
-                    "non-wired physical address, but not known by frame allocator: {:?}",
-                    pa
-                );
-                Page::new_wired(pa, PageNumber::PAGE_SIZE * thiscount, CacheType::WriteBack)
-            }
-        };
+        let thiscount = (max_obj - count).min(max_phys - count);
 
-        let page = PageRef::new(Arc::new(page), 0, thiscount);
-        let mut object_tree = request.obj.as_ref().unwrap().lock_page_tree();
-        object_tree.add_page(pn, page, None);
-        drop(object_tree);
-        */
+        // TODO: reenable multipage once the page tree bug is fixed.
+        for i in 0..thiscount {
+            let pn = pn.offset(i);
+            let pa = pa.offset(i * PageNumber::PAGE_SIZE).unwrap();
+            if flags.contains(PageFlags::WIRED) {
+                request
+                    .obj
+                    .as_ref()
+                    .unwrap()
+                    .map_phys(
+                        pn.as_byte_offset(),
+                        pa,
+                        pa.offset(PageNumber::PAGE_SIZE).unwrap(),
+                        CacheType::WriteBack,
+                    )
+                    .unwrap();
+            } else {
+                let frame = crate::memory::frame::get_frame(pa).unwrap();
+                request.obj.as_ref().unwrap().add_frame(pn, frame);
+            }
+        }
         count += thiscount;
     }
 

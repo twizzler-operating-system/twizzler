@@ -640,7 +640,6 @@ impl Table {
                 entry.addr(level),
                 entry.flags().settings(),
                 Self::level_to_page_size(level),
-                entry.is_object_table(),
             ))
         } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();

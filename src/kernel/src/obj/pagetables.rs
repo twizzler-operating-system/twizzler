@@ -8,7 +8,8 @@ use crate::{
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
         pagetables::{
-            Consistency, ContiguousProvider, Mapper, MappingCursor, MappingSettings, Table,
+            Consistency, ContiguousProvider, MapReader, Mapper, MappingCursor, MappingSettings,
+            Table,
         },
         tracker::{FrameAllocFlags, alloc_frame},
     },
@@ -54,6 +55,11 @@ impl ObjectPageTable {
         }
 
         true
+    }
+
+    pub fn readmap(&'_ mut self, offset: u64, len: usize) -> MapReader<'_> {
+        let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
+        self.mapper.readmap(cursor)
     }
 
     pub fn with_mapper<R>(&mut self, f: impl FnOnce(&mut Mapper) -> R) -> R {

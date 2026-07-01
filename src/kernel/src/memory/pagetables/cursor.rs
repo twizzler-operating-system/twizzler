@@ -27,7 +27,7 @@ impl MappingCursor {
 
     pub fn advance_until_empty(mut self, len: usize) -> Self {
         let remaining = self.len.min(len);
-        self.start.offset(remaining).unwrap_or(self.start);
+        self.start = self.start.offset(remaining).unwrap_or(self.start);
         self.len -= remaining;
         self
     }

@@ -103,7 +103,6 @@ pub fn init(modules: &[BootModule]) {
             }
             obj.add_frame(PageNumber::meta_page(), frame);
 
-            let obj = Arc::new(obj);
             obj::register_object(obj.clone());
 
             if name == "bootstrap" {
