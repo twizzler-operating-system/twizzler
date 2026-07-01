@@ -21,6 +21,7 @@ pub struct ObjectPageTable {
 }
 
 bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
     pub struct FindFrameFlags: u32 {
         const ALLOW_NOT_ZEROED = (1 << 0);
         const WRITE = (1 << 1);

@@ -549,6 +549,14 @@ impl Table {
                     }
                 } else {
                     get_frame(entry.table_addr()).unwrap().dec_refcount();
+                    self.update_entry(
+                        consist,
+                        idx,
+                        Entry::new_unused(),
+                        cursor.start(),
+                        false,
+                        level,
+                    );
                 }
             }
 

@@ -19,13 +19,13 @@ use twizzler_rt_abi::{
 
 use super::{MAX_OPP_VEC, ObjectPageProvider, PageFaultFlags};
 use crate::{
-    arch::VirtAddr,
+    arch::{VirtAddr, memory::pagetables::ArchTlbMgr},
     instant::Instant,
     memory::{
         FAULT_STATS,
         context::ObjectContextInfo,
-        frame::PHYS_LEVEL_LAYOUTS,
-        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable},
+        frame::{PHYS_LEVEL_LAYOUTS, max_level_for_addr},
+        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable, Table},
         tracker::{FrameAllocFlags, FrameAllocator},
     },
     mutex::Mutex,
@@ -552,29 +552,17 @@ impl MapRegion {
             MapControlCmd::Discard => {
                 todo!()
             }
-            MapControlCmd::Invalidate => {
+            MapControlCmd::Update | MapControlCmd::Invalidate => {
                 let ctx = current_memory_context().unwrap();
-                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                    let cursor = self.mapping_cursor(0, MAX_SIZE);
-                    arch.unmap(cursor);
-                });
-                Ok(0)
-            }
-            MapControlCmd::Update => {
-                let info = ObjectContextInfo {
-                    object: self.object.clone(),
-                    perms: self.prot,
-                    cache: self.cache_type,
-                    flags: self.flags,
-                };
-                //if let Some(shadow) = &self.shadow {
-                //    shadow.update(&info);
-                //}
-                let ctx = current_memory_context().unwrap();
-                ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                    let cursor = self.mapping_cursor(0, MAX_SIZE);
-                    arch.unmap(cursor);
-                });
+                let mut tlb =
+                    ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
+                        let mut tlb = ArchTlbMgr::new(arch.target.paddr());
+                        let level = max_level_for_addr(self.range.start.raw() as usize)
+                            .unwrap_or(Table::top_level());
+                        tlb.enqueue(self.range.start, false, true, level);
+                        tlb
+                    });
+                tlb.finish();
                 Ok(0)
             }
         }

@@ -418,6 +418,15 @@ impl UserContext for VirtContext {
             for arch in arches.values() {
                 arch.unmap(slot.mapping_cursor(0, MAX_SIZE));
             }
+            for arch in arches.values() {
+                let mut tlb = ArchTlbMgr::new(arch.target.paddr());
+                for info in slots.object_mappings(slot.object().id()) {
+                    let vlen = info.range.end - info.range.start;
+                    let level = max_level_for_addr(vlen).unwrap_or(3);
+                    tlb.enqueue(info.range.start, false, false, level);
+                }
+                tlb.finish();
+            }
             slot.object.remove_context(self.id.value());
         }
     }

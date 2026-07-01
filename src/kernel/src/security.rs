@@ -57,7 +57,7 @@ pub type SecurityContextRef = Arc<SecurityContext>;
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
 
 /// Information about how we want to access an object for perms checking.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct AccessInfo {
     /// The target object we're accessing
     pub target_id: ObjID,

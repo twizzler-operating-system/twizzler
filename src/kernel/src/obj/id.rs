@@ -68,6 +68,17 @@ pub fn calculate_new_id(
 fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Protections) -> bool {
     let generated = gen_id(nonce, kuid, flags, def_prot);
 
+    if id != generated && id.parts()[0] != 0x8000000000000000 {
+        logln!(
+            "verify_id: {} {:?} {:?} {:?} => {:?} :: {:?}",
+            nonce,
+            kuid,
+            flags,
+            def_prot,
+            generated,
+            id
+        );
+    }
     // logln!(
     //     "verify: {} {:?} {:?} {:?} => {:?} :: {:?}",
     //     nonce,
@@ -87,6 +98,12 @@ impl Object {
             loop {
                 let meta = self.read_meta();
                 if let Some(meta) = meta {
+                    if meta.default_prot == Protections::empty() {
+                        logln!(
+                            "check_id: object {} has empty default protections (meta = {:?}), kernel={}, pager={}, this is invalid",
+                            self.id(), meta, self.is_kernel_id(), self.use_pager()
+                        );
+                    }
                     break (
                         verify_id(
                             self.id,

@@ -8,6 +8,7 @@ use crate::{
     interrupt::{Destination, TriggerMode},
     once::Once,
     panic::is_panicing,
+    thread::current_thread_ref,
 };
 
 pub struct SerialPort {
@@ -238,6 +239,13 @@ fn do_interrupt(serial: &mut SerialPort, mut buf: &mut [u8]) -> usize {
         }
         _ => loop {
             let x = serial.receive();
+            if x == b'p' {
+                if let Some(current_thread) = current_thread_ref() {
+                    let ip = current_thread.read_ip();
+                    log::info!("Serial interrupt: IP={:#x}", ip);
+                    panic!("!!!");
+                }
+            }
             buf[0] = x;
             buf = &mut buf[1..];
             count += 1;

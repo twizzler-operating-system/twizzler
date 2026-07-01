@@ -98,25 +98,20 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 let slice = unsafe { create_user_slice::<PinnedPage>(arg, len as u64) }
                     .ok_or(ArgumentError::InvalidArgument)?;
 
-                /*
-                let (pins, token) = obj
-                    .pin(
-                        (start as usize)
-                            .try_into()
-                            .map_err(|_| ArgumentError::InvalidArgument)?,
-                        slice.len(),
-                    )
-                    .ok_or(GenericError::Internal)?;
+                let (pins, token) = obj.pin(
+                    (start as usize)
+                        .try_into()
+                        .map_err(|_| ArgumentError::InvalidArgument)?,
+                    slice.len(),
+                )?;
                 let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
 
                 for i in 0..(len as usize) {
-                    slice[i] = PinnedPage::new(pins[i].into())
+                    slice[i] = pins[i];
                 }
-                */
-                todo!()
 
-                //let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
-                //Ok(KactionValue::U64(retval))
+                let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
+                Ok(KactionValue::U64(retval))
             }
             KactionGenericCmd::GetKsoRoot => {
                 let ksom = get_kso_manager();

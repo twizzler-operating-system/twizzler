@@ -11,6 +11,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     obj::pagetables::ObjectPageTable,
+    thread::current_thread_ref,
 };
 
 /// Manager for a set of page tables. This is the primary interface for manipulating a set of page
@@ -96,8 +97,15 @@ impl Mapper {
     pub fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
+        log::trace!(
+            "unmap: cursor {:?}, root {:x}, level {}",
+            cursor,
+            self.root_address().raw(),
+            level
+        );
         let root = self.root_mut();
         root.unmap(&mut consist, cursor, level);
+        log::trace!("unmap: done");
         consist.into_deferred()
     }
 
@@ -105,8 +113,16 @@ impl Mapper {
     pub fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
+        log::trace!(
+            "change: cursor {:?}, root {:x}, level {}, settings {:?}",
+            cursor,
+            self.root_address().raw(),
+            level,
+            settings
+        );
         let root = self.root_mut();
         root.change(&mut consist, cursor, level, settings);
+        log::trace!("change: done");
     }
 
     /// Read the map of a single address (the start of the cursor). If there is a mapping at the
@@ -115,8 +131,20 @@ impl Mapper {
     /// check for a new mapping.
     pub(super) fn do_read_map(&self, cursor: &MappingCursor) -> Result<MapInfo, usize> {
         let level = self.start_level;
+        if current_thread_ref().is_some() && cursor.start().raw() == 0x3ffff000 {
+            log::trace!(
+                "read_map: cursor {:?}, root {:x}, level {}",
+                cursor,
+                self.root_address().raw(),
+                level
+            );
+        }
         let root = self.root();
-        root.readmap(cursor, level)
+        let x = root.readmap(cursor, level);
+        if current_thread_ref().is_some() && cursor.start().raw() == 0x3ffff000 {
+            log::trace!("read_map: done: {:?}", x);
+        }
+        x
     }
 
     pub fn set_start_level(&mut self, start_level: usize) {
@@ -134,9 +162,16 @@ impl Mapper {
     ) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
+        log::trace!(
+            "object_map: cursor {:?}, root {:x}, level {}",
+            cursor,
+            self.root_address().raw(),
+            level,
+        );
         let root = self.root_mut();
         object_tables.with_mapper(|mapper| {
             root.object_map(&mut consist, cursor, level, mapper);
+            log::trace!("object_map: done");
             consist.into_deferred()
         })
     }
@@ -144,7 +179,15 @@ impl Mapper {
     pub fn is_object_mapped(&self, cursor: MappingCursor) -> bool {
         let level = self.start_level;
         let root = self.root();
-        root.is_object_mapped(cursor, level)
+        log::trace!(
+            "is_object_mapped: cursor {:?}, root {:x}, level {}",
+            cursor,
+            self.root_address().raw(),
+            level
+        );
+        let x = root.is_object_mapped(cursor, level);
+        log::trace!("is_object_mapped: result {}", x);
+        x
     }
 
     pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {

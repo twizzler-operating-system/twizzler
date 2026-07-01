@@ -1,9 +1,10 @@
+use alloc::vec::Vec;
 use core::{
     panic,
     sync::atomic::{AtomicU32, AtomicU64},
 };
 
-use twizzler_abi::meta::MetaInfo;
+use twizzler_abi::{meta::MetaInfo, syscall::PinnedPage};
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
@@ -32,7 +33,13 @@ impl Object {
     ) -> Result<R, TwzError> {
         let pn = PageNumber::from_offset(offset);
         let mut pt = self.lock_page_tables();
-        if flags.contains(FindFrameFlags::POPULATE) {
+        log::info!(
+            "do_with_frame: offset {:x}, page {:x}, flags {:?}",
+            offset,
+            pn.as_byte_offset(),
+            flags
+        );
+        if flags.contains(FindFrameFlags::POPULATE) || self.use_pager() {
             let mut pager_was_used = false;
             pt = self.ensure_in_core(pt, pn, 1, &mut pager_was_used)?;
         }
@@ -82,7 +89,7 @@ impl Object {
                 let po = offset - frame_offset;
                 f(ZeroOrFrame::Frame(po, frame))
             } else {
-                let zlen = offset % PHYS_LEVEL_LAYOUTS[0].size();
+                let zlen: usize = offset - (offset % PHYS_LEVEL_LAYOUTS[0].size());
                 f(ZeroOrFrame::Zeroed(zlen))
             }
         })
@@ -195,6 +202,12 @@ impl Object {
     }
 
     pub fn read_bytes(&self, slice: &mut [u8], offset: usize) -> Result<(), TwzError> {
+        log::info!(
+            "read_bytes: reading {} bytes at offset {:x} in object {}",
+            slice.len(),
+            offset,
+            self.id()
+        );
         let mut offset = offset;
         let mut slice = slice;
         while !slice.is_empty() {
@@ -382,6 +395,22 @@ impl Object {
         }
 
         Ok((self_guard, other_guard))
+    }
+
+    pub fn pin(&self, page: PageNumber, count: usize) -> Result<(Vec<PinnedPage>, u32), TwzError> {
+        let mut pages = Vec::new();
+        for i in 0..count {
+            let page_offset = page.offset(i).as_byte_offset() as u64;
+            self.with_frame(
+                page_offset as usize,
+                FindFrameFlags::POPULATE | FindFrameFlags::WRITE,
+                |po, frame| {
+                    assert_eq!(po, 0);
+                    pages.push(PinnedPage::new(frame.start_address().raw()));
+                },
+            )?;
+        }
+        Ok((pages, 0))
     }
 
     pub fn ensure_in_core<'a>(

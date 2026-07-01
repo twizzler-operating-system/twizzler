@@ -141,6 +141,14 @@ fn check_security(
         }
         let perms = ct.secctx.search_access(&access_info, default_prot);
         if perms.provide & !perms.restrict & access_kind != access_kind {
+            log::error!(
+                "security violation: addr={:?}, cause={:?}, ip={:?}, perms={:?}, access_info={:?}",
+                addr,
+                cause,
+                ip,
+                perms,
+                access_info
+            );
             Err(UpcallInfo::SecurityViolation(SecurityViolationInfo {
                 address: addr.raw(),
                 access_kind: cause,
