@@ -68,7 +68,7 @@ pub fn calculate_new_id(
 fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Protections) -> bool {
     let generated = gen_id(nonce, kuid, flags, def_prot);
 
-    if id != generated && id.parts()[0] != 0x8000000000000000 {
+    if id != generated && id.parts()[0] != 0x8000000000000000 && id.parts()[0] != 1 {
         logln!(
             "verify_id: {} {:?} {:?} {:?} => {:?} :: {:?}",
             nonce,

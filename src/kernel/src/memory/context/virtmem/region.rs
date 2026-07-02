@@ -192,7 +192,7 @@ impl MapRegion {
             PHYS_LEVEL_LAYOUTS[0],
         );
 
-        log::debug!(
+        log::trace!(
             "map fault for {:?} at {:?} (page {}) in object {} (ip: {:?}): pn {}, is_kern {}",
             cause,
             addr,
@@ -242,6 +242,27 @@ impl MapRegion {
         {
             //log::info!("=== CURRENT PAGE TABLES ===");
             let ctx = current_memory_context().unwrap();
+            if cause == MemoryAccessKind::Write {
+                // TODO: unwrap
+                let did_cow = obj_page_tree
+                    .maybe_cow_at(page_number.as_byte_offset() as u64)
+                    .unwrap();
+                log::info!(
+                    "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
+                    page_number,
+                    self.object().id(),
+                    addr,
+                    ip,
+                    did_cow,
+                    self.object().use_pager()
+                );
+                if did_cow {
+                    self.object.invalidate(
+                        PageNumber::from_offset(0)..PageNumber::meta_page(),
+                        crate::obj::InvalidateMode::Full,
+                    );
+                }
+            }
 
             let map = obj_page_tree.with_mapper(|m| {
                 m.readmap(MappingCursor::new(
@@ -250,41 +271,9 @@ impl MapRegion {
                 ))
                 .next()
             });
-            if map.as_ref().is_some_and(|m| {
-                !m.settings().perms().contains(Protections::WRITE)
-                    && cause == MemoryAccessKind::Write
-            }) {
-                // TODO: unwrap
-                let did_cow = obj_page_tree
-                    .maybe_cow_at(page_number.as_byte_offset() as u64)
-                    .unwrap();
-                if did_cow {
-                    self.object.invalidate(
-                        PageNumber::from_offset(0)..PageNumber::meta_page(),
-                        crate::obj::InvalidateMode::Full,
-                    );
-                }
-                return Ok(());
-            } else if map.is_some() {
+
+            if map.is_some() {
                 let sctxid = current_thread_ref().unwrap().secctx.active_id();
-                if !page_number.is_meta() {
-                    ctx.with_arch(sctxid, |arch| {
-                    if arch.with_mapper(|m| m.is_object_mapped(MappingCursor::new(addr, PageNumber::PAGE_SIZE))) {
-                        panic!(
-                            "page {} is already mapped in object {}: {:?}\npfinfo: {:?}, perms: {:?}, default_prot: {:?} flags: {:?}, addr: {:?}, ip: {:?}",
-                            page_number,
-                            self.object().id(),
-                            map,
-                            cause,
-                            perms,
-                            default_prot,
-                            pfflags,
-                            addr,
-                            ip
-                        );
-                    }
-                });
-                }
                 let cursor =
                     MappingCursor::new(self.range.start, self.range.end - self.range.start);
                 ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree);
@@ -293,13 +282,12 @@ impl MapRegion {
                     crate::obj::InvalidateMode::Full,
                 );
             }
+        } else {
+            let mut used_pager = false;
+            let mut obj_page_tree =
+                self.object
+                    .ensure_in_core(obj_page_tree, page_number, 1, &mut used_pager);
         }
-
-        let mut used_pager = false;
-        let mut obj_page_tree =
-            self.object
-                .ensure_in_core(obj_page_tree, page_number, 1, &mut used_pager);
-
         /*
         let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
         log::trace!(

@@ -647,9 +647,13 @@ impl Frame {
             .is_err()
         {
             alloc.abort([new_frame]);
-            return None;
+            // TODO: pause for a bit?
+            return self.cow_frame(alloc);
         }
         new_frame.inc_refcount();
+        if self.is_pt() {
+            new_frame.set_pt(true);
+        }
 
         Some(new_frame)
     }

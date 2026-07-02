@@ -29,7 +29,8 @@ impl TraceSink {
         obj.write_base(&TraceBase {
             start: TRACE_DATA_START,
             end: AtomicU64::new(TRACE_DATA_START),
-        });
+        })
+        .unwrap();
         Ok(Self {
             prime_object: obj.clone(),
             current_object: obj,
@@ -56,7 +57,7 @@ impl TraceSink {
     }
 
     fn write(&self, entry: &(TraceEntryHead, BufferedTraceData)) -> u64 {
-        self.current_object.write_at(&entry.0, self.offset as usize);
+        let _ = self.current_object.write_at(&entry.0, self.offset as usize);
         let entry_head_len = size_of::<TraceEntryHead>();
         if entry.0.flags.contains(TraceEntryFlags::HAS_DATA) {
             let header_len = size_of::<TraceData<()>>();
@@ -76,12 +77,12 @@ impl TraceSink {
                 trace_data_header.len,
             );
             let header_ptr = addr_of!(trace_data_header);
-            self.current_object.write_bytes(
+            let _ = self.current_object.write_bytes(
                 header_ptr.cast(),
                 header_len,
                 self.offset as usize + entry_head_len,
             );
-            self.current_object.write_bytes(
+            let _ = self.current_object.write_bytes(
                 entry.1.ptr(),
                 entry.1.len(),
                 self.offset as usize + header_len + entry_head_len,
@@ -114,20 +115,19 @@ impl TraceSink {
             obj.write_base(&TraceBase {
                 start: TRACE_DATA_START,
                 end: AtomicU64::new(TRACE_DATA_START),
-            });
+            })
+            .unwrap();
 
             self.offset += self.write(&(
                 TraceEntryHead::new_next_object(id),
                 BufferedTraceData::default(),
             ));
 
-            unsafe {
-                let _ = self.current_object.try_write_val_and_signal(
-                    NULLPAGE_SIZE,
-                    self.offset,
-                    usize::MAX,
-                );
-            }
+            let _ = self.current_object.try_write_val_and_signal(
+                NULLPAGE_SIZE,
+                self.offset,
+                usize::MAX,
+            );
 
             self.current_object = obj;
             self.offset = TRACE_DATA_START;
@@ -150,10 +150,11 @@ impl TraceSink {
                 self.buffer.len(),
                 self.offset - old_offset
             );
-            unsafe {
-                self.current_object
-                    .try_write_val_and_signal(NULLPAGE_SIZE, self.offset, usize::MAX)
-            };
+            let _ = self.current_object.try_write_val_and_signal(
+                NULLPAGE_SIZE,
+                self.offset,
+                usize::MAX,
+            );
             self.buffer.clear();
             true
         } else {

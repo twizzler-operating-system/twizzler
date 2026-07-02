@@ -95,12 +95,17 @@ impl ObjectPageTable {
             self.maybe_cow_at(offset)?;
         }
         let mut reader = self.mapper.readmap(cursor);
-        let map_info = reader.next();
+        let page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
+        let mut map_info = reader.next();
+        if map_info
+            .as_ref()
+            .is_some_and(|mi| mi.vaddr().raw() != page_aligned_offset)
+        {
+            map_info = None;
+        }
         let frame_offset = map_info
             .as_ref()
-            .map_or((offset as usize) & !PHYS_LEVEL_LAYOUTS[0].size(), |mi| {
-                mi.vaddr().raw() as usize
-            });
+            .map_or(page_aligned_offset as usize, |mi| mi.vaddr().raw() as usize);
         Ok(f(
             frame_offset,
             map_info.and_then(|mi| get_frame(mi.paddr())),
@@ -111,7 +116,14 @@ impl ObjectPageTable {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         let mut reader = self.mapper.readmap(cursor);
-        reader.next().and_then(|x| get_frame(x.paddr()))
+        let page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
+        reader.next().and_then(|x| {
+            if x.vaddr().raw() == page_aligned_offset {
+                get_frame(x.paddr())
+            } else {
+                None
+            }
+        })
     }
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {

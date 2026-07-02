@@ -20,7 +20,10 @@ use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
 
 use self::thread_sync::SleepInfo;
 use crate::{
-    arch::memory::frame::FRAME_SIZE,
+    arch::{
+        PhysAddr,
+        memory::{frame::FRAME_SIZE, pagetables::ArchTlbMgr},
+    },
     idcounter::{IdCounter, SimpleId, StableId},
     memory::{
         VirtAddr,
@@ -377,6 +380,7 @@ impl Object {
     }
 
     pub fn invalidate(&self, range: core::ops::Range<PageNumber>, mode: InvalidateMode) {
+        // TODO: do this better
         let contexts = self.contexts.lock();
         for ctx in contexts.contexts.values() {
             if let Some(ctx) = ctx.0.upgrade() {
@@ -384,6 +388,9 @@ impl Object {
             }
         }
         kernel_context().invalidate_object(self.id(), &range, mode);
+        let mut tlb = ArchTlbMgr::new(PhysAddr::new(0).unwrap());
+        tlb.set_full_global();
+        tlb.finish();
     }
 
     pub fn print_page_tree(&self) {

@@ -429,6 +429,9 @@ impl UserContext for VirtContext {
             }
             slot.object.remove_context(self.id.value());
         }
+        let mut tlb = ArchTlbMgr::new(PhysAddr::new(0).unwrap());
+        tlb.set_full_global();
+        tlb.finish();
     }
 }
 

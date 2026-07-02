@@ -8,6 +8,10 @@ use twizzler_abi::{meta::MetaInfo, pager::PagerFlags, syscall::PinnedPage};
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
+    arch::{
+        PhysAddr,
+        memory::pagetables::{ArchTlbMgr, tlb_shootdown_handler},
+    },
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
         tracker::{FrameAllocFlags, FrameAllocator},
@@ -33,7 +37,7 @@ impl Object {
     ) -> Result<R, TwzError> {
         let pn = PageNumber::from_offset(offset);
         let mut pt = self.lock_page_tables();
-        log::info!(
+        log::trace!(
             "do_with_frame: offset {:x}, page {:x}, flags {:?}",
             offset,
             pn.as_byte_offset(),
@@ -206,7 +210,7 @@ impl Object {
     }
 
     pub fn read_bytes(self: &ObjectRef, slice: &mut [u8], offset: usize) -> Result<(), TwzError> {
-        log::info!(
+        log::trace!(
             "read_bytes: reading {} bytes at offset {:x} in object {}",
             slice.len(),
             offset,
@@ -394,28 +398,32 @@ impl Object {
         for i in 0..page_count {
             let self_offset = self_page.offset(i).as_byte_offset() as u64;
             let other_offset = other_page.offset(i).as_byte_offset() as u64;
-            if self_guard.get_frame(self_offset).is_none() {
-                let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                if !self_guard.map_page(self_offset, self_frame) {
-                    alloc.abort([self_frame]);
-                    log::error!(
-                        "failed to map page at offset {:x} in object {}",
-                        self_offset,
-                        self.id()
-                    );
-                    return Err(TwzError::INVALID_ARGUMENT);
+            if !self.use_pager() {
+                if self_guard.get_frame(self_offset).is_none() {
+                    let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                    if !self_guard.map_page(self_offset, self_frame) {
+                        alloc.abort([self_frame]);
+                        log::error!(
+                            "failed to map page at offset {:x} in object {}",
+                            self_offset,
+                            self.id()
+                        );
+                        return Err(TwzError::INVALID_ARGUMENT);
+                    }
                 }
             }
-            if other_guard.get_frame(other_offset).is_none() {
-                let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                if !other_guard.map_page(other_offset, other_frame) {
-                    alloc.abort([other_frame]);
-                    log::error!(
-                        "failed to map page at offset {:x} in object {}",
-                        other_offset,
-                        other.id()
-                    );
-                    return Err(TwzError::INVALID_ARGUMENT);
+            if !other.use_pager() {
+                if other_guard.get_frame(other_offset).is_none() {
+                    let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                    if !other_guard.map_page(other_offset, other_frame) {
+                        alloc.abort([other_frame]);
+                        log::error!(
+                            "failed to map page at offset {:x} in object {}",
+                            other_offset,
+                            other.id()
+                        );
+                        return Err(TwzError::INVALID_ARGUMENT);
+                    }
                 }
             }
         }
@@ -504,7 +512,7 @@ impl Object {
             let done_count = if let Some(mapinfo) = mapreader.next()
                 && mapinfo.vaddr().raw() == page.as_byte_offset() as u64
             {
-                log::info!(
+                log::trace!(
                     "found mapping info for page {:x} in object {}: {:?}, is empty? {}",
                     page.as_byte_offset(),
                     self.id(),
@@ -567,7 +575,7 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
-        log::info!(
+        log::trace!(
             "direct_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
             dst_offset,
@@ -591,7 +599,7 @@ impl Object {
             &mut false,
         )?;
 
-        log::debug!(
+        log::info!(
             "direct_copy: src_offset {}, dst_offset {}, len {}",
             src_offset,
             dst_offset,
@@ -724,15 +732,6 @@ impl Object {
             &mut false,
         )?;
 
-        self.invalidate(
-            PageNumber::from_offset(src_offset)..PageNumber::from_offset(src_offset + len),
-            super::InvalidateMode::Full,
-        );
-        dst.invalidate(
-            PageNumber::from_offset(dst_offset)..PageNumber::from_offset(dst_offset + len),
-            super::InvalidateMode::Full,
-        );
-
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let level = core::cmp::min(src_level, dst_level);
@@ -741,6 +740,15 @@ impl Object {
 
         dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
+
+        self.invalidate(
+            PageNumber::from_offset(src_offset)..PageNumber::from_offset(src_offset + len),
+            super::InvalidateMode::Full,
+        );
+        dst.invalidate(
+            PageNumber::from_offset(dst_offset)..PageNumber::from_offset(dst_offset + len),
+            super::InvalidateMode::Full,
+        );
 
         Ok(())
     }
@@ -752,11 +760,19 @@ impl Object {
         dst_offset: usize,
         len: usize,
     ) -> Result<(), TwzError> {
+        log::info!(
+            "copy_range: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
+            src_offset,
+            dst_offset,
+            len,
+            self.id(),
+            dst.id()
+        );
         let min_align = PHYS_LEVEL_LAYOUTS[0].size();
         let pre_copy = src_offset % min_align;
         let pre_copy_dst = dst_offset % min_align;
 
-        if pre_copy_dst != pre_copy || true {
+        if pre_copy_dst != pre_copy {
             log::trace!(
                 "copy_range: src offset {} and dst offset {} are not aligned to the same boundary ({} vs {})",
                 src_offset,
@@ -794,7 +810,7 @@ impl Object {
     }
 
     pub fn zero_range(self: &ObjectRef, offset: usize, len: usize) -> Result<(), TwzError> {
-        log::info!(
+        log::trace!(
             "zero_range: offset {:x} len {:x} in {}",
             offset,
             len,
@@ -803,7 +819,10 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
-        return self.set_bytes(offset, len, 0);
+        if self.use_pager() {
+            log::warn!("TODO: zero_range with pager for object {}", self.id());
+            return self.set_bytes(offset, len, 0);
+        }
         let pre_zero = offset % PHYS_LEVEL_LAYOUTS[0].size();
         if pre_zero != 0 {
             let pre_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size() - pre_zero);
@@ -824,14 +843,17 @@ impl Object {
             super::InvalidateMode::Full,
         );
 
-        log::info!(
+        log::trace!(
             "zero_range: unmap for offset {:x} len {:x} in {}",
             offset,
             len,
             self.id()
         );
         pt.setup_zero_range(offset as u64, len)?;
-
+        self.invalidate(
+            PageNumber::from_offset(offset)..PageNumber::from_offset(offset + len),
+            super::InvalidateMode::Full,
+        );
         Ok(())
     }
 }

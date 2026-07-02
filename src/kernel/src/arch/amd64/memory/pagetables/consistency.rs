@@ -42,9 +42,8 @@ fn tlb_global_inv() {
             let cr4_without_pge = cr4 & !Cr4::CR4_ENABLE_GLOBAL_PAGES;
             x86::controlregs::cr4_write(cr4_without_pge);
             x86::controlregs::cr4_write(cr4);
-        } else {
-            tlb_non_global_inv();
         }
+        tlb_non_global_inv();
     }
 }
 

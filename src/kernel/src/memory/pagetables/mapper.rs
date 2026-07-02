@@ -238,13 +238,15 @@ impl Mapper {
         let start_level = self.start_level;
         assert!(start_level == dest.start_level);
         let root = self.root_mut();
-        root.setup_cow_range(
-            dest.root_mut(),
-            &mut src_cursor,
-            &mut dst_cursor,
-            start_level,
-        )
-        .ok_or(ResourceError::OutOfMemory)?;
+        while src_cursor.remaining() > 0 && dst_cursor.remaining() > 0 {
+            root.setup_cow_range(
+                dest.root_mut(),
+                &mut src_cursor,
+                &mut dst_cursor,
+                start_level,
+            )
+            .ok_or(ResourceError::OutOfMemory)?;
+        }
         Ok(())
     }
 

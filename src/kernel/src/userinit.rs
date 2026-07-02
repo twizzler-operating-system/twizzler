@@ -27,7 +27,7 @@ fn create_name_object() -> ObjectRef {
     for (name, obj) in &boot_objects.name_map {
         init_info.add_name(KernelInitName::new(name, obj.id()));
     }
-    obj.write_base(&init_info);
+    obj.write_base(&init_info).unwrap();
     obj
 }
 

@@ -1,5 +1,3 @@
-use object::macho::N_EXT;
-
 use super::{MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, consistency::Consistency};
 use crate::{
     arch::{
@@ -8,12 +6,12 @@ use crate::{
     },
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
-        pagetables::{DeferredUnmappingOps, Mapper, MappingFlags},
+        pagetables::{Mapper, MappingFlags},
         tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame},
     },
 };
 
-const LOG_LEVEL: log::Level = log::Level::Info;
+const LOG_LEVEL: log::Level = log::Level::Debug;
 
 impl Table {
     pub(super) fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
@@ -21,7 +19,6 @@ impl Table {
         if !entry.is_present() || entry.is_huge() {
             return None;
         }
-        let paddr = entry.table_addr();
         let addr = entry.table_addr().kernel_vaddr();
         unsafe { Some(&mut *(addr.as_mut_ptr::<Table>())) }
     }
@@ -145,17 +142,20 @@ impl Table {
         Some(())
     }
 
-    pub(super) fn do_cow_copy(&mut self, index: usize, level: usize) -> Option<()> {
+    pub(super) fn do_cow_copy(&mut self, index: usize, level: usize) -> Option<bool> {
         let entry = &mut self[index];
+        if !entry.is_present() {
+            return Some(false);
+        }
         let frame = get_frame(entry.addr(level));
         if frame.is_none() {
             // TODO: this would only happen for untracked frames, but we'd still like to copy them.
             //log::warn!("do_cow_copy: no frame for entry at level {}!", level);
-            return Some(());
+            return Some(false);
         }
         let frame = frame.unwrap();
-        if !entry.is_present() || !frame.is_cow() {
-            return Some(());
+        if !frame.is_cow() {
+            return Some(false);
         }
         assert!(!entry.is_huge() || level == Self::last_level());
 
@@ -183,27 +183,33 @@ impl Table {
         );
 
         if frame.start_address() == orig_frame.start_address() {
-            return Some(());
+            // TODO: Make these changes with update entry
+            self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
+            return Some(false);
         }
 
         if level != 0 {
             assert!(frame.is_pt());
             let next_table = self.next_table_mut(index).unwrap();
             for i in 0..Table::PAGE_TABLE_ENTRIES {
-                let next_frame = get_frame(next_table[i].addr(level - 1)).unwrap();
-                let new_flags = next_table[i].flags() - EntryFlags::WRITE;
-                next_table[i].set_flags(new_flags);
-                next_frame.set_cow(true);
-                next_frame.inc_refcount();
+                if next_table[i].is_present() {
+                    let new_flags = next_table[i].flags() - EntryFlags::WRITE;
+                    next_table[i].set_flags(new_flags);
+                    if let Some(next_frame) = get_frame(next_table[i].addr(level - 1)) {
+                        next_frame.set_cow(true);
+                        next_frame.inc_refcount();
+                    }
+                }
             }
         } else {
             assert!(!frame.is_pt());
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
+        // TODO: Make these changes with update entry
         self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
 
-        Some(())
+        Some(true)
     }
 
     pub(super) fn cow_copy(
@@ -212,17 +218,23 @@ impl Table {
         cursor: &MappingCursor,
         level: usize,
     ) -> Option<bool> {
+        log::info!(
+            "cow_copy: cursor {:?}, level {}, biggest_level {}",
+            cursor,
+            level,
+            cursor.biggest_level()
+        );
         if level < cursor.biggest_level() {
-            return Some(false);
+            //return Some(false);
         }
 
         let index = Self::get_index(cursor.start(), level);
         let mut did_cow = false;
+        // TODO: stop early if we can COW a PT.
         if self[index].is_huge() && level != Self::last_level() {
             self.split_huge(index, level)?;
         } else {
-            self.do_cow_copy(index, level)?;
-            did_cow = true;
+            did_cow |= self.do_cow_copy(index, level)?;
         }
 
         if level > 0 {
@@ -328,16 +340,14 @@ impl Table {
         let src_start_index = Self::get_index(src_cursor.start(), level);
         let dst_start_index = Self::get_index(dst_cursor.start(), level);
         let count = Self::PAGE_TABLE_ENTRIES - src_start_index.max(dst_start_index);
-
-        log::log!(
-            LOG_LEVEL,
-            "setup_cow_range: level {}, src_start_index {}, dst_start_index {}, count {}",
+        log::info!(
+            "setup_cow_range: level {}, src_start_index {}, dst_start_index {}, count {} ({} remaining at this level)",
             level,
             src_start_index,
             dst_start_index,
-            count
+            count,
+            src_cursor.remaining() / Self::level_to_page_size(level)
         );
-
         for i in 0..count {
             if src_cursor.remaining() == 0 || dst_cursor.remaining() == 0 {
                 break;
@@ -348,6 +358,7 @@ impl Table {
             let src_entry = &mut self[src_index];
 
             if !src_entry.is_present() {
+                assert!(!dest[dst_index].is_present());
                 *src_cursor = src_cursor.advance_until_empty(Self::level_to_page_size(level));
                 *dst_cursor = dst_cursor.advance_until_empty(Self::level_to_page_size(level));
                 continue;
@@ -358,7 +369,9 @@ impl Table {
                 .is_aligned_to(Self::level_to_page_size(level))
                 && dst_cursor
                     .start()
-                    .is_aligned_to(Self::level_to_page_size(level));
+                    .is_aligned_to(Self::level_to_page_size(level))
+                && dst_cursor.remaining() >= Self::level_to_page_size(level)
+                && src_cursor.remaining() >= Self::level_to_page_size(level);
 
             if !is_aligned {
                 // TODO: is this safe?
@@ -369,10 +382,17 @@ impl Table {
                     level
                 );
                 assert!(!src_entry.is_huge());
+                assert!(level > 0);
                 dest.populate(dst_index, EntryFlags::intermediate())?;
 
                 let next_dest_table = dest.next_table_mut(dst_index).unwrap();
                 let next_src_table = self.next_table_mut(src_index).unwrap();
+                log::info!(
+                    "setup_cow_range: descending to level {} for src_index {}, dst_index {}",
+                    level - 1,
+                    src_index,
+                    dst_index
+                );
                 next_src_table.setup_cow_range(
                     next_dest_table,
                     src_cursor,
@@ -397,8 +417,15 @@ impl Table {
                 src_flags
             );
 
+            let dest_was_present = dest[dst_index].is_present();
+            // TODO: Make these changes with update entry
             dest[dst_index] = Entry::new(src_addr, src_flags - EntryFlags::WRITE);
             self[src_index] = Entry::new(src_addr, src_flags - EntryFlags::WRITE);
+
+            // TODO: remove this once the above is fixed
+            if !dest_was_present {
+                dest.set_count(dest.read_count() + 1);
+            }
 
             *src_cursor = src_cursor.advance_until_empty(Self::level_to_page_size(level));
             *dst_cursor = dst_cursor.advance_until_empty(Self::level_to_page_size(level));

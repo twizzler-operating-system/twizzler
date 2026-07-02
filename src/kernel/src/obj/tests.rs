@@ -40,8 +40,15 @@ fn check_slices(
 
     assert_eq!(src_slice.len(), dest_slice.len());
     if src_slice != dest_slice {
-        //sko.object().print_page_tree();
-        //dko.object().print_page_tree();
+        sko.object().print_page_tree();
+        dko.object().print_page_tree();
+        panic!(
+            "==> {} {} {:p} {:p}",
+            src_slice[0],
+            dest_slice[0],
+            src_slice.as_ptr(),
+            dest_slice.as_ptr()
+        );
     }
     assert!(src_slice == dest_slice);
 }
@@ -109,6 +116,35 @@ fn zero_ranges_and_check(dest: &ObjectRef, dest_off: usize, byte_length: usize) 
         }
     }
     assert!(dest_slice.iter().all(|x| *x == 0));
+}
+
+#[twizzler_kernel_macros::kernel_test]
+fn test_object_cow() {
+    let src = create_blank_object();
+    let dest = create_blank_object();
+
+    // Skip the null page, otherwise fill the source with pages that have different fills
+    for p in 1..255u8 {
+        let pn = PageNumber::from_offset((p as usize) * PageNumber::PAGE_SIZE);
+        let frame = alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK);
+        unsafe { frame.as_byte_slice_mut().fill(p) };
+        src.add_frame(pn, frame);
+    }
+
+    let ps = PageNumber::PAGE_SIZE;
+    copy_ranges_and_check(&src, ps, &dest, ps, ps * 250);
+    let dc = dest
+        .lock_page_tables()
+        .maybe_cow_at((ps * 100) as u64)
+        .unwrap();
+    assert!(dc);
+    dest.write_at(&0u8, ps * 100).unwrap();
+    let val: u8 = dest.read_at(ps * 100).unwrap();
+    assert_eq!(val, 0u8);
+    let val: u8 = dest.read_at(ps * 100 + 1).unwrap();
+    assert_eq!(val, 100u8);
+    let val: u8 = src.read_at(ps * 100).unwrap();
+    assert_eq!(val, 100u8);
 }
 
 #[twizzler_kernel_macros::kernel_test]

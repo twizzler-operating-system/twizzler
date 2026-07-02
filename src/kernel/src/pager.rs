@@ -210,7 +210,7 @@ pub fn ensure_in_core<'a>(
         avail_pager_mem.saturating_sub(total_pages) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
-    log::info!(
+    log::debug!(
         "ensure in core {}: {:?}, {} pages (avail = {}, needed = {}, wait = {}, is_low_mem = {})",
         obj.id(),
         reqs,

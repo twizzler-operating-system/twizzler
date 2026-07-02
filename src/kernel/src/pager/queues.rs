@@ -165,7 +165,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::info!(
+    log::trace!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,
@@ -226,6 +226,8 @@ fn pager_compl_handle_page_data(
                     .unwrap();
             } else {
                 let frame = crate::memory::frame::get_frame(pa).unwrap();
+                assert!(!frame.is_pt());
+                assert!(!frame.is_cow());
                 request.obj.as_ref().unwrap().add_frame(pn, frame);
             }
         }

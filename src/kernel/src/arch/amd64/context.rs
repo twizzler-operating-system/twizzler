@@ -125,7 +125,7 @@ impl ArchContext {
     pub fn ensure_object_mapped(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
         let mut inner = self.inner.lock();
         if !inner.mapper.is_object_mapped(cursor) {
-            log::warn!(
+            log::debug!(
                 "mapping object at cursor {:?} in context {:?}",
                 cursor,
                 self.target
