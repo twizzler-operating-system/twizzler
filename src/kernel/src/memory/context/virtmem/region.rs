@@ -181,17 +181,7 @@ impl MapRegion {
             ObjectPageProvider,
         ) -> Result<(), UpcallInfo>,
     ) -> Result<(), UpcallInfo> {
-        let mut page_number = PageNumber::from_address(addr);
-        if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
-            log::info!(
-                "no_null fault at {:x} in object {}: page_number {}, meta_page {}",
-                addr.raw(),
-                self.object().id(),
-                page_number,
-                PageNumber::meta_page()
-            );
-            page_number = page_number.offset(1);
-        }
+        let page_number = PageNumber::from_address(addr);
 
         let is_kern_obj = addr.is_kernel_object_memory();
         let mut fa = FrameAllocator::new(
@@ -386,12 +376,6 @@ impl MapRegion {
 
             let aligned = (phys_page_aligned - phys_large_aligned)
                 == (addr_page_aligned - addr_large_aligned);
-            if self.flags.contains(MapFlags::NO_NULLPAGE)
-                && !page_number.is_meta()
-                && large_diff > 0
-            {
-                large_diff -= 1;
-            }
             if page.nr_pages() > 1 {
                 log::trace!(
                     "possible bigmap {:?}: {} {}: {}, {}, {:?} {} {}",

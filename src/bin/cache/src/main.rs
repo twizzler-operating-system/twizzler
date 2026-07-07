@@ -61,7 +61,6 @@ fn do_hold(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do hold: {}", id);
     hold(id, MapFlags::READ)?;
     hold(id, MapFlags::READ | MapFlags::EXEC)?;
-    hold(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
     hold(id, MapFlags::READ | MapFlags::WRITE)?;
     hold(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())
@@ -71,7 +70,6 @@ fn do_drop(id: ObjID) -> twizzler::Result<()> {
     tracing::info!("do drop: {}", id);
     drop(id, MapFlags::READ)?;
     drop(id, MapFlags::READ | MapFlags::EXEC)?;
-    drop(id, MapFlags::READ | MapFlags::NO_NULLPAGE)?;
     drop(id, MapFlags::READ | MapFlags::WRITE)?;
     drop(id, MapFlags::READ | MapFlags::WRITE | MapFlags::PERSIST)?;
     Ok(())

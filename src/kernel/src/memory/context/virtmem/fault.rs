@@ -184,15 +184,6 @@ fn page_fault_to_region(
 
     let start_time = Instant::now();
     let mut page_number = PageNumber::from_address(addr);
-    if info.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
-        log::trace!(
-            "nonull fault: {:?}: {} {}",
-            addr,
-            page_number,
-            page_number.offset(1),
-        );
-        page_number = page_number.offset(1);
-    }
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
@@ -242,9 +233,7 @@ fn page_fault_to_region(
                 }
             }
             if !ip.is_kernel() && !addr.is_kernel() {
-                if let Some(val) = provider.peek()
-                //&& info.flags.contains(MapFlags::NO_NULLPAGE)
-                {
+                if let Some(val) = provider.peek() {
                     if val.len > 0x1000 {
                         log::trace!(
                             "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",

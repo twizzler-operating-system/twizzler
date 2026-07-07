@@ -39,9 +39,7 @@ impl RawFile {
     }
 
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
-        let handle = OUR_RUNTIME
-            .map_object(obj_id, flags | MapFlags::NO_NULLPAGE)
-            .unwrap();
+        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
         let len = if let Some(me) = handle.find_meta_ext(MEXT_SIZED) {
             me.value.load(Ordering::SeqCst)
         } else {
@@ -84,7 +82,10 @@ impl Fd for RawFile {
         }
         let copy_len = buf.len().min((len - offset) as usize);
         let data = unsafe {
-            core::slice::from_raw_parts(self.handle.start().add(offset as usize), copy_len)
+            core::slice::from_raw_parts(
+                self.handle.start().add(NULLPAGE_SIZE + offset as usize),
+                copy_len,
+            )
         };
         buf[0..copy_len].copy_from_slice(data);
         if a_offset.is_none() {
@@ -113,7 +114,7 @@ impl Fd for RawFile {
             unsafe { self.handle.set_meta_ext(me)? };
         }
         unsafe {
-            let dest = self.handle.start().add(offset as usize);
+            let dest = self.handle.start().add(NULLPAGE_SIZE + offset as usize);
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dest, write_len);
         }
         if a_offset.is_none() {

@@ -376,6 +376,7 @@ fn maybe_build_tests_dynamic<'a>(
                 "unittest-report" => None,
                 "rusqlite" => None,
                 "libsqlite3-sys" => None,
+                "libloading" => None,
                 _ => Some(p.name().to_string()),
             })
             .collect(),

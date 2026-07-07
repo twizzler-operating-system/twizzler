@@ -54,10 +54,8 @@ impl FileDesc {
         flags: MapFlags,
         create_opts: &CreateOptions,
     ) -> std::io::Result<Self> {
-        let handle = OUR_RUNTIME
-            .map_object(obj_id, flags | MapFlags::NO_NULLPAGE)
-            .unwrap();
-        let metadata_handle = handle.start().cast::<FileMetadata>();
+        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
+        let metadata_handle = unsafe { handle.start().add(NULLPAGE_SIZE).cast::<FileMetadata>() };
         if (unsafe { *metadata_handle }).magic != MAGIC_NUMBER {
             match create_opts {
                 CreateOptions::CreateKindNew => unsafe {
@@ -200,19 +198,21 @@ impl Read for FileDesc {
                 (buf.len() - bytes_read) as u64,
             );
 
-            let object_ptr = if object_window == 0 {
-                self.handle.start()
-            } else {
-                if let Some(new_handle) = self.map.get(&object_window) {
-                    new_handle.start()
+            let object_ptr = unsafe {
+                if object_window == 0 {
+                    self.handle.start()
                 } else {
-                    let obj_id =
-                        ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
-                    let flags = MapFlags::READ | MapFlags::WRITE | MapFlags::NO_NULLPAGE;
-                    let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
-                    self.map.put(object_window, handle.clone());
-                    handle.start()
+                    if let Some(new_handle) = self.map.get(&object_window) {
+                        new_handle.start()
+                    } else {
+                        let obj_id = ((*metadata_handle).direct)[(object_window - 1) as usize];
+                        let flags = MapFlags::READ | MapFlags::WRITE;
+                        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
+                        self.map.put(object_window, handle.clone());
+                        handle.start()
+                    }
                 }
+                .add(NULLPAGE_SIZE as usize)
             };
 
             unsafe {
@@ -259,11 +259,11 @@ impl Write for FileDesc {
             );
 
             let object_ptr = if object_window == 0 {
-                self.handle.start()
+                unsafe { self.handle.start().add(NULLPAGE_SIZE) }
             } else {
                 // If the object is already mapped, return it's pointer
                 if let Some(new_handle) = self.map.get(&object_window) {
-                    new_handle.start()
+                    unsafe { new_handle.start().add(NULLPAGE_SIZE) }
                 }
                 // Otherwise check the direct map, if the ID is valid then map it, otherwise create
                 // the object, store it, then map it.
@@ -271,7 +271,7 @@ impl Write for FileDesc {
                     let obj_id =
                         ((unsafe { *metadata_handle }).direct)[(object_window - 1) as usize];
 
-                    let flags = MapFlags::READ | MapFlags::WRITE | MapFlags::NO_NULLPAGE;
+                    let flags = MapFlags::READ | MapFlags::WRITE;
 
                     let mapped_id = if obj_id == 0.into() {
                         let create = ObjectCreate::new(
@@ -293,7 +293,7 @@ impl Write for FileDesc {
                     let handle = OUR_RUNTIME.map_object(mapped_id, flags).unwrap();
                     self.map.push(object_window, handle.clone());
 
-                    handle.start()
+                    unsafe { handle.start().add(NULLPAGE_SIZE) }
                 }
             };
 
