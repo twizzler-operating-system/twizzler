@@ -1,4 +1,8 @@
-use std::{io::BufRead, sync::OnceLock, time::Instant};
+use std::{
+    io::{BufRead, Read, Seek},
+    sync::OnceLock,
+    time::Instant,
+};
 
 use unittest_report::{Report, ReportInfo, TestResult};
 
@@ -64,9 +68,10 @@ fn try_bench(path: &str) {
 }
 
 fn main() {
+    println!("unittest: starting");
     try_bench("/initrd/bench_bins");
     try_bench("/initrd/bench_bin");
-    let Ok(file) = std::fs::File::open("/initrd/test_bins")
+    let Ok(mut file) = std::fs::File::open("/initrd/test_bins")
         .inspect_err(|e| eprintln!("failed to open test bins: {}", e))
     else {
         return;
@@ -76,7 +81,13 @@ fn main() {
 
     let mut reports = vec![];
     let start = Instant::now();
+    println!("unittest file len: {}", file.metadata().unwrap().len());
+    let mut v = Vec::new();
+    let data = file.read_to_end(&mut v).unwrap();
+    file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    println!("unittest: read {} bytes from test_bins", data);
     for line in std::io::BufReader::new(file).lines() {
+        println!("got line: {:?}", line);
         if let Ok(line) = &line {
             if line.contains("\u{0000}") {
                 continue;

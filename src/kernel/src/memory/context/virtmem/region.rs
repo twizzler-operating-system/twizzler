@@ -183,6 +183,13 @@ impl MapRegion {
     ) -> Result<(), UpcallInfo> {
         let mut page_number = PageNumber::from_address(addr);
         if self.flags.contains(MapFlags::NO_NULLPAGE) && !page_number.is_meta() {
+            log::info!(
+                "no_null fault at {:x} in object {}: page_number {}, meta_page {}",
+                addr.raw(),
+                self.object().id(),
+                page_number,
+                PageNumber::meta_page()
+            );
             page_number = page_number.offset(1);
         }
 

@@ -89,19 +89,24 @@ pub fn init(modules: &[BootModule]) {
                 fotcount: 0,
                 extcount: 1,
             };
+            log::debug!(
+                "[kernel::initrd]  writing meta for {} -> {:x}, len = {}",
+                name,
+                obj.id(),
+                e.data().len()
+            );
             let me = MetaExt::new(MEXT_SIZED, e.data().len() as u64);
             unsafe {
                 buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
                 buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
                     .copy_from_slice(any_as_u8_slice(&me));
             }
-            let frame = alloc_frame(FrameAllocFlags::KERNEL);
-            let va = frame.virtaddr().as_mut_ptr::<u8>();
-
-            unsafe {
-                va.copy_from(buffer.as_ptr(), buffer.len());
-            }
-            obj.add_frame(PageNumber::meta_page(), frame);
+            obj.write_bytes(
+                buffer.as_ptr(),
+                buffer.len(),
+                PageNumber::meta_page().as_byte_offset(),
+            )
+            .expect("failed to write meta");
 
             obj::register_object(obj.clone());
 
