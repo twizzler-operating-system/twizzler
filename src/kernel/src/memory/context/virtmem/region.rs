@@ -247,7 +247,7 @@ impl MapRegion {
                 let did_cow = obj_page_tree
                     .maybe_cow_at(page_number.as_byte_offset() as u64)
                     .unwrap();
-                log::info!(
+                log::trace!(
                     "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
                     page_number,
                     self.object().id(),

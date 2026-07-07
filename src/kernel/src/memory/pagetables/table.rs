@@ -218,7 +218,8 @@ impl Table {
         cursor: &MappingCursor,
         level: usize,
     ) -> Option<bool> {
-        log::info!(
+        log::log!(
+            LOG_LEVEL,
             "cow_copy: cursor {:?}, level {}, biggest_level {}",
             cursor,
             level,
@@ -340,7 +341,8 @@ impl Table {
         let src_start_index = Self::get_index(src_cursor.start(), level);
         let dst_start_index = Self::get_index(dst_cursor.start(), level);
         let count = Self::PAGE_TABLE_ENTRIES - src_start_index.max(dst_start_index);
-        log::info!(
+        log::log!(
+            LOG_LEVEL,
             "setup_cow_range: level {}, src_start_index {}, dst_start_index {}, count {} ({} remaining at this level)",
             level,
             src_start_index,
@@ -348,12 +350,12 @@ impl Table {
             count,
             src_cursor.remaining() / Self::level_to_page_size(level)
         );
-        for i in 0..count {
+        for _ in 0..count {
             if src_cursor.remaining() == 0 || dst_cursor.remaining() == 0 {
                 break;
             }
-            let src_index = src_start_index + i;
-            let dst_index = dst_start_index + i;
+            let src_index = Self::get_index(src_cursor.start(), level);
+            let dst_index = Self::get_index(dst_cursor.start(), level);
 
             let src_entry = &mut self[src_index];
 
@@ -375,7 +377,8 @@ impl Table {
 
             if !is_aligned {
                 // TODO: is this safe?
-                log::trace!(
+                log::log!(
+                    LOG_LEVEL,
                     "not aligned for this level: src_cursor {:?}, dst_cursor {:?}, level {}",
                     src_cursor,
                     dst_cursor,
@@ -387,7 +390,8 @@ impl Table {
 
                 let next_dest_table = dest.next_table_mut(dst_index).unwrap();
                 let next_src_table = self.next_table_mut(src_index).unwrap();
-                log::info!(
+                log::log!(
+                    LOG_LEVEL,
                     "setup_cow_range: descending to level {} for src_index {}, dst_index {}",
                     level - 1,
                     src_index,
@@ -407,8 +411,7 @@ impl Table {
             let src_frame = get_frame(src_addr).unwrap();
             src_frame.inc_refcount();
             src_frame.set_cow(true);
-            log::log!(
-                LOG_LEVEL,
+            log::trace!(
                 "copying entry without write: src_index {}, dst_index {}, level {}, src_addr {:x}, src_flags {:?}",
                 src_index,
                 dst_index,

@@ -239,6 +239,12 @@ impl Mapper {
         assert!(start_level == dest.start_level);
         let root = self.root_mut();
         while src_cursor.remaining() > 0 && dst_cursor.remaining() > 0 {
+            log::trace!(
+                "top level setup_cow_range: src_cursor {:?}, dst_cursor {:?}, start_level {}",
+                src_cursor,
+                dst_cursor,
+                start_level
+            );
             root.setup_cow_range(
                 dest.root_mut(),
                 &mut src_cursor,

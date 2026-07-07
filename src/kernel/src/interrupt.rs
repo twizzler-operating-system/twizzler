@@ -16,8 +16,8 @@ use crate::{
     },
     condvar::CondVar,
     memory::context::{
-        kernel_context, virtmem::KernelObjectVirtHandle, KernelMemoryContext, KernelObjectHandle,
-        ObjectContextInfo,
+        KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
+        virtmem::KernelObjectVirtHandle,
     },
     mutex::MutexLinkAdapter,
     obj::ObjectRef,
@@ -25,7 +25,7 @@ use crate::{
     processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{priority::Priority, ThreadRef},
+    thread::{ThreadRef, priority::Priority},
 };
 
 /// Set the current interrupt enable state to disabled and return the old state.
@@ -98,8 +98,10 @@ impl WakeInfo {
     pub fn wake(&self, val: u64) {
         //logln!("wake! {}", val);
         unsafe {
-            self.obj
-                .try_write_val_and_signal(self.offset, val, usize::MAX);
+            let _ = self
+                .obj
+                .try_write_val_and_signal(self.offset, val, usize::MAX)
+                .inspect_err(|e| log::error!("failed to raise interrupt: {}", e));
         }
     }
 

@@ -194,7 +194,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 } else {
                     CacheType::WriteBack
                 };
-                obj.map_phys(obj_start as usize, start, end, ct);
+                obj.map_phys(obj_start as usize, start, end, ct)?;
                 obj.invalidate(
                     PageNumber::from_offset(obj_start as usize)
                         ..PageNumber::from_offset(obj_start as usize + len),
@@ -234,7 +234,7 @@ pub fn create_busroot(
         name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Bus, bt, DeviceId::new(0));
-    obj.write_base(&info);
+    obj.write_base(&info).unwrap();
     get_device_map().lock().insert(obj.id(), device.clone());
     let ksom = get_kso_manager();
     ksom.device_roots.lock().push(device.clone());
@@ -262,7 +262,7 @@ pub fn create_device(
         name: name.to_owned(),
     });
     let info = DeviceRepr::new(KsoHdr::new(name), DeviceType::Device, bt, id);
-    obj.write_base(&info);
+    obj.write_base(&info).unwrap();
     get_device_map().lock().insert(obj.id(), device.clone());
     parent.inner.lock().children.push(device.clone());
     device
@@ -286,7 +286,7 @@ impl Device {
 
     pub fn add_info<T>(&self, info: &T) {
         let obj = crate::obj::Object::new_kernel();
-        obj.write_base(info);
+        obj.write_base(info).unwrap();
         crate::obj::register_object(obj.clone());
         self.inner
             .lock()
@@ -296,13 +296,13 @@ impl Device {
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = crate::obj::Object::new_kernel();
-        obj.map_phys(MMIO_OFFSET, start, end, ct);
+        obj.map_phys(MMIO_OFFSET, start, end, ct).unwrap();
         let mmio_info = MmioInfo {
             length: (end - start) as u64,
             cache_type: CacheType::Uncacheable,
             info,
         };
-        obj.write_base(&mmio_info);
+        obj.write_base(&mmio_info).unwrap();
         crate::obj::register_object(obj.clone());
         self.inner
             .lock()

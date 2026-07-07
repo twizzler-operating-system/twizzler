@@ -495,7 +495,7 @@ impl Object {
         mut page_count: usize,
         pager_was_used: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
-        log::info!(
+        log::debug!(
             "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
             self.id(),
@@ -599,7 +599,7 @@ impl Object {
             &mut false,
         )?;
 
-        log::info!(
+        log::debug!(
             "direct_copy: src_offset {}, dst_offset {}, len {}",
             src_offset,
             dst_offset,
@@ -708,7 +708,7 @@ impl Object {
             return Ok(());
         }
 
-        log::info!(
+        log::debug!(
             "cow_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
             dst_offset,
@@ -750,6 +750,21 @@ impl Object {
             super::InvalidateMode::Full,
         );
 
+        drop(self_pt);
+        drop(dst_pt);
+        let ok = self.obj_memcmp(dst, len, src_offset, dst_offset)?;
+        if !ok {
+            log::error!(
+                "cow_copy: memcmp failed after copy from {} to {} (src_offset {:x}, dst_offset {:x}, len {})",
+                self.id(),
+                dst.id(),
+                src_offset,
+                dst_offset,
+                len
+            );
+        }
+        assert!(ok);
+
         Ok(())
     }
 
@@ -760,7 +775,10 @@ impl Object {
         dst_offset: usize,
         len: usize,
     ) -> Result<(), TwzError> {
-        log::info!(
+        if len == 0 {
+            return Ok(());
+        }
+        log::debug!(
             "copy_range: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
             dst_offset,
@@ -785,6 +803,14 @@ impl Object {
 
         if pre_copy != 0 {
             let pre_len = core::cmp::min(len, min_align - pre_copy);
+            assert!(
+                pre_len > 0,
+                "pre_len should be greater than 0, but got {} (src_offset {:x}, dst_offset {:x}, len {})",
+                pre_len,
+                src_offset,
+                dst_offset,
+                len
+            );
             self.direct_copy(dst, src_offset, dst_offset, pre_len)?;
             return self.copy_range(
                 dst,
@@ -797,6 +823,7 @@ impl Object {
         let post_copy = len % min_align;
         if post_copy != 0 {
             let post_len = post_copy;
+            assert!(post_len > 0);
             self.direct_copy(
                 dst,
                 src_offset + len - post_len,
@@ -855,6 +882,47 @@ impl Object {
             super::InvalidateMode::Full,
         );
         Ok(())
+    }
+
+    pub fn obj_memcmp(
+        self: &ObjectRef,
+        other: &ObjectRef,
+        mut len: usize,
+        mut self_offset: usize,
+        mut other_offset: usize,
+    ) -> Result<bool, TwzError> {
+        if len == 0 {
+            return Ok(true);
+        }
+
+        while len > 0 {
+            let cmp_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size());
+            let mut self_buf = [0u8; PHYS_LEVEL_LAYOUTS[0].size()];
+            let mut other_buf = [0u8; PHYS_LEVEL_LAYOUTS[0].size()];
+
+            self.read_bytes(&mut self_buf[0..cmp_len], self_offset)?;
+            other.read_bytes(&mut other_buf[0..cmp_len], other_offset)?;
+
+            if self_buf[0..cmp_len] != other_buf[0..cmp_len] {
+                log::error!(
+                    "obj_memcmp: memcmp failed between {} and {} (self_offset {:x}, other_offset {:x}, len {}): {:?} vs {:?}",
+                    self.id(),
+                    other.id(),
+                    self_offset,
+                    other_offset,
+                    cmp_len,
+                    &self_buf[0..cmp_len],
+                    &other_buf[0..cmp_len]
+                );
+                return Ok(false);
+            }
+
+            self_offset += cmp_len;
+            other_offset += cmp_len;
+            len -= cmp_len;
+        }
+
+        Ok(true)
     }
 }
 
