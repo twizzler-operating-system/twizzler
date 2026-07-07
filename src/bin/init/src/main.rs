@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
@@ -237,6 +238,8 @@ fn main() {
     )
     .unwrap();
 
+    let start_time = Instant::now();
+
     let mut autostart = None;
     let mut start_unittest = false;
     for arg in std::env::args().skip(1) {
@@ -467,6 +470,9 @@ fn main() {
             KernelConsoleWriteFlags::empty(),
         );
     });
+
+    let end_time = Instant::now();
+    tracing::info!("finished init in {}s", (end_time - start_time).as_secs_f32());
 
     if let Some(autostart) = autostart {
         let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &autostart)
