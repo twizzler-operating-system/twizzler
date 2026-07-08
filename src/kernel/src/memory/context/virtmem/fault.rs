@@ -1,20 +1,19 @@
 use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
-    syscall::MapFlags,
     upcall::{
-        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
-        SecurityViolationInfo, UpcallInfo,
+        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryFaultInfo, SecurityViolationInfo,
+        UpcallInfo,
     },
 };
+use twizzler_rt_abi::error::ObjectError;
 
-use super::{ObjectPageProvider, PageFaultFlags, Slot, region::MapRegion};
+use super::{PageFaultFlags, Slot, region::MapRegion};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
         FAULT_STATS,
         context::{ContextRef, kernel_context},
-        pagetables::{PhysAddrProvider, SharedPageTable},
     },
     obj::PageNumber,
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
@@ -91,19 +90,10 @@ fn check_object_addr(
     cause: MemoryAccessKind,
     addr: VirtAddr,
 ) -> Result<(), UpcallInfo> {
-    if page_number.is_zero() {
+    if page_number.is_zero() || page_number.as_byte_offset() >= MAX_SIZE {
         return Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
             id,
-            ObjectMemoryError::NullPageAccess,
-            cause,
-            addr.into(),
-        )));
-    }
-
-    if page_number.as_byte_offset() >= MAX_SIZE {
-        return Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-            id,
-            ObjectMemoryError::OutOfBounds(page_number.as_byte_offset()),
+            ObjectError::NotMapped.into(),
             cause,
             addr.into(),
         )));
@@ -177,103 +167,45 @@ fn page_fault_to_region(
     flags: PageFaultFlags,
     ip: VirtAddr,
     ctx: ContextRef,
-    mut sctx_id: ObjID,
+    sctx_id: ObjID,
     info: MapRegion,
 ) -> Result<(), UpcallInfo> {
-    let id = info.object.id();
-
     let start_time = Instant::now();
-    let mut page_number = PageNumber::from_address(addr);
+    let id = info.object.id();
+    let page_number = PageNumber::from_address(addr);
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
 
-    let (id_ok, default_prot) = info.object.check_id();
+    let (_id_ok, default_prot) = info.object.check_id();
 
-    if !id_ok && !info.object().is_kernel_id() {
-        /*
-        logln!("ObjId: {:?}, default protections: {:?} ", id, default_prot);
-        logln!(
-            "id verification failed ({} {}) {:?}",
-            info.object.use_pager(),
-            info.object.is_kernel_id(),
-            info.object.id(),
-        );
-        */
-    }
+    // TODO: enforce id_ok
 
     let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
 
     // Do we need to switch contexts?
-    if perms.ctx != sctx_id && !addr.is_kernel() {
+    if perms.ctx != sctx_id {
         current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
-        sctx_id = perms.ctx;
     }
 
-    if sctx_id.raw() == 0 {
-        //logln!("perms: {:?} {:?} {:?} {:?}", addr, cause, ip, perms);
-    }
-    let mapper =
-        |spt: Option<&SharedPageTable>, offset: PageNumber, mut provider: ObjectPageProvider| {
-            // TODO: limit page count by mapping or by max?
-            let cursor = info.mapping_cursor(
-                offset.as_byte_offset(),
-                PageNumber::PAGE_SIZE * provider.page_count(),
-            );
-            if !ip.is_kernel() && !addr.is_kernel() {
-                if let Some(val) = provider.peek() {
-                    log::trace!(
-                        " ==> mapping {}: {} => {:?}, in {} ({:?})",
-                        id,
-                        offset,
-                        val,
-                        sctx_id,
-                        ctx.with_arch(sctx_id, |a| a.target)
-                    );
-                }
-            }
-            if !ip.is_kernel() && !addr.is_kernel() {
-                if let Some(val) = provider.peek() {
-                    if val.len > 0x1000 {
-                        log::trace!(
-                            "!! {}: {:?}: {:?}, {} {}: {:?} {} :: {:?} {:x}",
-                            info.object().id(),
-                            addr,
-                            offset,
-                            provider.page_count(),
-                            provider.pos,
-                            val.addr,
-                            val.len / 0x1000,
-                            cursor.start(),
-                            cursor.remaining(),
-                        );
-                    }
-                }
-            }
-
-            ctx.with_arch(sctx_id, |arch| {
-                if provider
-                    .peek()
-                    .is_some_and(|p| p.settings.perms().contains(Protections::WRITE))
-                    && arch.readmap(cursor, |x| x.count()) > 0
-                {
-                    arch.unmap(cursor);
-                }
-                arch.map(cursor, &mut provider);
-            });
-            Ok(())
-        };
-
-    info.map(
+    if let Err(e) = info.handle_fault(
         addr,
         ip,
         cause,
         flags,
+        start_time,
         perms,
         default_prot,
-        start_time,
-        mapper,
-    )
+        perms.ctx,
+    ) {
+        return Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
+            id,
+            e,
+            cause,
+            addr.into(),
+        )));
+    }
+    Ok(())
 }
 
 fn get_map_region(

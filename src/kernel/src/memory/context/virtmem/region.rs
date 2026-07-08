@@ -1,35 +1,30 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use core::{fmt::Debug, ops::Range, sync::atomic::Ordering, usize};
+use core::{ops::Range, sync::atomic::Ordering, usize};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
     device::CacheType,
-    object::{MAX_SIZE, ObjID, Protections},
+    object::{ObjID, Protections},
     syscall::{MapControlCmd, MapFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
     trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
-    upcall::{
-        MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryError, ObjectMemoryFaultInfo,
-        UpcallInfo,
-    },
+    upcall::{MemoryAccessKind, MemoryContextViolationInfo, UpcallInfo},
 };
 use twizzler_rt_abi::{
     bindings::{SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
-    error::{IoError, RawTwzError, TwzError},
+    error::{ObjectError, TwzError},
 };
 
-use super::{MAX_OPP_VEC, ObjectPageProvider, PageFaultFlags};
+use super::PageFaultFlags;
 use crate::{
-    arch::{VirtAddr, memory::pagetables::ArchTlbMgr},
+    arch::VirtAddr,
     instant::Instant,
     memory::{
         FAULT_STATS,
-        context::ObjectContextInfo,
-        frame::{PHYS_LEVEL_LAYOUTS, max_level_for_addr},
-        pagetables::{MappingCursor, MappingFlags, MappingSettings, SharedPageTable, Table},
-        tracker::{FrameAllocFlags, FrameAllocator},
+        context::{ObjectContextInfo, kernel_context},
+        pagetables::{MappingCursor, MappingFlags, MappingSettings},
     },
     mutex::Mutex,
-    obj::{ObjectRef, PageNumber},
+    obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
     security::PermsInfo,
     syscall::sync::wakeup,
     thread::{current_memory_context, current_thread_ref},
@@ -47,6 +42,7 @@ pub struct MapRegion {
     pub prot: Protections,
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
+    pub stable: Option<Arc<Mutex<ObjectPageTable>>>,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -166,28 +162,20 @@ impl MapRegion {
         &self.object
     }
 
-    pub(super) fn map(
+    pub(super) fn handle_fault(
         &self,
         addr: VirtAddr,
         ip: VirtAddr,
         cause: MemoryAccessKind,
         pfflags: PageFaultFlags,
+        start_time: Instant,
         perms: PermsInfo,
         default_prot: Protections,
-        start_time: Instant,
-        mapper: impl FnOnce(
-            Option<&SharedPageTable>,
-            PageNumber,
-            ObjectPageProvider,
-        ) -> Result<(), UpcallInfo>,
-    ) -> Result<(), UpcallInfo> {
+        sctxid: ObjID,
+    ) -> Result<(), TwzError> {
         let page_number = PageNumber::from_address(addr);
 
         let is_kern_obj = addr.is_kernel_object_memory();
-        let mut fa = FrameAllocator::new(
-            FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
-            PHYS_LEVEL_LAYOUTS[0],
-        );
 
         log::trace!(
             "map fault for {:?} at {:?} (page {}) in object {} (ip: {:?}): pn {}, is_kern {}",
@@ -199,287 +187,73 @@ impl MapRegion {
             page_number,
             is_kern_obj
         );
+        FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
 
-        /*
-        let get_page_flags = if cause == MemoryAccessKind::Write {
-            GetPageFlags::WRITE
-        } else {
-            GetPageFlags::empty()
-        };
-
-        if let Some(shadow) = &self.shadow {
-            if let Some(page) = shadow.get_page(page_number, get_page_flags) {
-                let settings = self.mapping_settings(true, is_kern_obj);
-                let settings = MappingSettings::new(
-                    // Provided permissions, restricted by mapping.
-                    (perms.provide | default_prot) & !perms.restrict & settings.perms(),
-                    settings.cache(),
-                    settings.flags(),
-                );
-                check_settings(addr, &settings, cause)
-                    .inspect_err(|_| logln!("on check_settings (shadow)"))?;
-                self.trace_fault(addr, ip, cause, pfflags, false, false, start_time);
-                return mapper(
-                    self.shared_pt.as_ref(),
-                    PageNumber::from_address(addr),
-                    ObjectPageProvider::new(heapless::Vec::<_, MAX_OPP_VEC>::from([(
-                        page, settings,
-                    )])),
-                );
-            }
-        }
-        */
-
+        let mut used_pager = false;
+        let mut all_were_present = true;
         let mut obj_page_tree = self.object.lock_page_tables();
-        //obj_page_tree.print_tree();
+        let mut invl = false;
+        let prot = perms.effective(default_prot, self.prot);
+        if !pfflags.contains(PageFaultFlags::PRESENT) {
+            obj_page_tree = self.object.ensure_in_core(
+                obj_page_tree,
+                page_number,
+                1,
+                &mut used_pager,
+                &mut all_were_present,
+            )?;
+        }
 
-        if obj_page_tree
-            .get_frame(page_number.as_byte_offset() as u64)
-            .is_some()
-        {
-            //log::info!("=== CURRENT PAGE TABLES ===");
-            let ctx = current_memory_context().unwrap();
-            if cause == MemoryAccessKind::Write {
-                // TODO: unwrap
-                let did_cow = obj_page_tree
-                    .maybe_cow_at(page_number.as_byte_offset() as u64)
-                    .unwrap();
-                log::trace!(
-                    "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
-                    page_number,
-                    self.object().id(),
+        if let Some(stable) = self.stable.as_ref() {
+            log::trace!(
+                "fault: ensuring object {} page {} is mapped in stable page tables",
+                self.object().id(),
+                page_number
+            );
+            obj_page_tree = stable.lock();
+        }
+
+        if all_were_present {
+            let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
+            let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
+            invl |= ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, prot);
+        }
+
+        if cause == MemoryAccessKind::Write {
+            if !prot.contains(Protections::WRITE) {
+                log::error!(
+                    "write fault at addr {:?} (ip: {:?}) with prot {:?} in object {}",
                     addr,
                     ip,
-                    did_cow,
-                    self.object().use_pager()
+                    prot,
+                    self.object().id()
                 );
-                if did_cow {
-                    self.object.invalidate(
-                        PageNumber::from_offset(0)..PageNumber::meta_page(),
-                        crate::obj::InvalidateMode::Full,
-                    );
-                }
+                // TODO
+                return Err(ObjectError::MapFailed.into());
             }
-
-            let map = obj_page_tree.with_mapper(|m| {
-                m.readmap(MappingCursor::new(
-                    VirtAddr::new(page_number.as_byte_offset() as u64).unwrap(),
-                    PageNumber::PAGE_SIZE,
-                ))
-                .next()
-            });
-
-            if map.is_some() {
-                let sctxid = current_thread_ref().unwrap().secctx.active_id();
-                let cursor =
-                    MappingCursor::new(self.range.start, self.range.end - self.range.start);
-                ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree);
-                self.object.invalidate(
-                    PageNumber::from_offset(0)..PageNumber::meta_page(),
-                    crate::obj::InvalidateMode::Full,
-                );
-            }
-        } else {
-            let mut used_pager = false;
-            let mut obj_page_tree =
-                self.object
-                    .ensure_in_core(obj_page_tree, page_number, 1, &mut used_pager);
-        }
-        /*
-        let mut status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
-        log::trace!(
-            "get_page for {} page {} got {:?}",
-            self.object().id(),
-            page_number,
-            status
-        );
-        if matches!(status, PageStatus::NoPage) && !self.object.use_pager() {
-            log::warn!(
-                "fallback allocate in fault to page {} in {}",
+            let did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64)?;
+            log::trace!(
+                "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
                 page_number,
-                self.object().id()
-            );
-            obj_page_tree.print_tree();
-            if let Some(frame) = fa.try_allocate() {
-                let page = Page::new(frame, 1);
-                obj_page_tree.add_page(
-                    page_number,
-                    PageRef::new(Arc::new(page), 0, 1),
-                    Some(&mut fa),
-                );
-            }
-            status = obj_page_tree.get_page(page_number, get_page_flags, Some(&mut fa));
-            if matches!(status, PageStatus::NoPage) {
-                logln!("spuriously failed to back volatile object with DRAM -- retrying fault");
-                return Ok(());
-            }
-        }
-
-        if let PageStatus::Locked(ref sleeper) = status {
-            drop(obj_page_tree);
-            sleeper.wait();
-            return self.map(
+                self.object().id(),
                 addr,
                 ip,
-                cause,
-                pfflags,
-                perms,
-                default_prot,
-                start_time,
-                mapper,
+                did_cow,
+                self.object().use_pager()
+            );
+            // TODO: try to invalidate only the COW'd page.
+            invl |= did_cow;
+        }
+
+        if invl {
+            self.object.invalidate(
+                PageNumber::from_offset(0)..PageNumber::meta_page(),
+                crate::obj::InvalidateMode::Full,
             );
         }
 
-        // Step 4: do the mapping. If the page isn't present by now, report data loss.
-        if let PageStatus::Ready(page, shared) = status {
-            let settings = self.mapping_settings(shared, is_kern_obj);
-            let settings = MappingSettings::new(
-                // Provided permissions, restricted by mapping.
-                (perms.provide | default_prot) & !perms.restrict & settings.perms(),
-                settings.cache(),
-                settings.flags(),
-            );
-            check_settings(addr, &settings, cause)?;
-            if settings.perms().contains(Protections::WRITE) {
-                if self.object().use_pager() {
-                    log::trace!(
-                        "adding persist dirty page {} to region {:?}, obj {:?}",
-                        page_number,
-                        self.range,
-                        self.object().id(),
-                    );
-                    self.object()
-                        .dirty_set()
-                        .add_dirty(page_number, page.nr_pages());
-                }
-            }
+        self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
 
-            let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
-            let large_page_number = page_number.align_down(pages_per_large);
-            let mut large_diff = page_number - large_page_number;
-
-            let phys_large_aligned = page
-                .physical_address()
-                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
-                .unwrap();
-            let addr_large_aligned = addr
-                .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
-                .unwrap();
-
-            let phys_page_aligned = page
-                .physical_address()
-                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
-                .unwrap();
-            let addr_page_aligned = addr
-                .align_down(PHYS_LEVEL_LAYOUTS[0].size() as u64)
-                .unwrap();
-
-            let aligned = (phys_page_aligned - phys_large_aligned)
-                == (addr_page_aligned - addr_large_aligned);
-            if page.nr_pages() > 1 {
-                log::trace!(
-                    "possible bigmap {:?}: {} {}: {}, {}, {:?} {} {}",
-                    ip,
-                    page_number,
-                    large_page_number,
-                    page.page_offset(),
-                    page.nr_pages(),
-                    addr,
-                    aligned,
-                    large_diff
-                );
-            }
-
-            if page.page_offset() >= large_diff
-                && large_diff > 0
-                && aligned
-                && !addr.is_kernel()
-                && !addr.is_kernel_object_memory()
-                && page.nr_pages() + large_diff >= pages_per_large
-                && false
-            {
-                FAULT_STATS.count[1].fetch_add(1, Ordering::SeqCst);
-                log::trace!(
-                    "map large page {} for page {}. phys: {:?}, diff: {}. {:?} {:?} {:?} {:?}: {}",
-                    large_page_number,
-                    page_number,
-                    page.physical_address(),
-                    large_diff,
-                    addr_page_aligned,
-                    phys_page_aligned,
-                    addr_page_aligned - addr_large_aligned,
-                    phys_page_aligned - phys_large_aligned,
-                    aligned
-                );
-                let ret = mapper(
-                    self.shared_pt.as_ref(),
-                    large_page_number,
-                    ObjectPageProvider::new(heapless::Vec::from([(
-                        page.adjust_down(large_diff),
-                        settings,
-                    )])),
-                );
-                drop(obj_page_tree);
-                if ret.is_ok() {
-                    self.trace_fault(addr, ip, cause, pfflags, used_pager, true, start_time);
-                }
-                ret
-            } else {
-                FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
-
-                let mut provider = ObjectPageProvider::new(heapless::Vec::from([(page, settings)]));
-                if cause != MemoryAccessKind::Write
-                    && !settings.perms().contains(Protections::WRITE)
-                    && false
-                {
-                    let mut pages = heapless::Vec::<_, MAX_OPP_VEC>::new();
-                    if obj_page_tree
-                        .try_get_pages(page_number, &mut pages, settings)
-                        .is_some()
-                        && !pages.is_empty()
-                    {
-                        log::trace!(
-                            "mapping multiple pages for {}: {}, {}",
-                            self.object().id(),
-                            pages.len(),
-                            pages.iter().fold(0, |acc, p| acc + p.0.nr_pages())
-                        );
-                        provider = ObjectPageProvider::new(pages);
-                    }
-                };
-
-                let ret = mapper(
-                    self.shared_pt.as_ref(),
-                    PageNumber::from_address(addr),
-                    provider,
-                );
-                drop(obj_page_tree);
-                if ret.is_ok() {
-                    self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
-                }
-                ret
-            }
-        } else {
-            log::warn!(
-                "failed to get page {} for object {} due to page fault {:x} {:?} {:?}: {:?}",
-                page_number,
-                self.object().id(),
-                addr.raw(),
-                cause,
-                pfflags,
-                status
-            );
-            Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
-                self.object().id(),
-                ObjectMemoryError::BackingFailed(RawTwzError::new(
-                    TwzError::Io(IoError::DataLoss).raw(),
-                )),
-                cause,
-                addr.raw() as usize,
-            )))
-        }
-        */
-        //todo!()
         Ok(())
     }
 
@@ -529,20 +303,25 @@ impl MapRegion {
 
                 Ok(0)
             }
-            MapControlCmd::Discard => {
-                todo!()
+            MapControlCmd::Invalidate => {
+                self.object.invalidate(
+                    PageNumber::from_offset(0)..PageNumber::meta_page(),
+                    crate::obj::InvalidateMode::Full,
+                );
+                Ok(0)
             }
-            MapControlCmd::Update | MapControlCmd::Invalidate => {
-                let ctx = current_memory_context().unwrap();
-                let mut tlb =
-                    ctx.with_arch(current_thread_ref().unwrap().secctx.active_id(), |arch| {
-                        let mut tlb = ArchTlbMgr::new(arch.target.paddr());
-                        let level = max_level_for_addr(self.range.start.raw() as usize)
-                            .unwrap_or(Table::top_level());
-                        tlb.enqueue(self.range.start, false, true, level);
-                        tlb
-                    });
-                tlb.finish();
+            MapControlCmd::Discard | MapControlCmd::Update => {
+                if let Some(stable) = self.stable.as_ref() {
+                    let mut pt = self.object().lock_page_tables();
+                    let mut stable = stable.lock();
+                    let len = self.range.end - self.range.start;
+                    stable.setup_zero_range(self.offset, len)?;
+                    pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
+                }
+                self.object.invalidate(
+                    PageNumber::from_offset(0)..PageNumber::meta_page(),
+                    crate::obj::InvalidateMode::Full,
+                );
                 Ok(0)
             }
         }
@@ -604,51 +383,3 @@ impl RegionManager {
         self.objects.keys().into_iter()
     }
 }
-
-/*
-pub struct Shadow {
-    tree: Mutex<PageRangeTree>,
-}
-
-impl Debug for Shadow {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Shadow {{..}}")
-    }
-}
-
-impl Shadow {
-    pub fn new(info: &ObjectContextInfo) -> Self {
-        let mut tree = PageRangeTree::new(info.object().id());
-        log::debug!("copy range to shadow {:?}", info.object().id());
-        copy_range_to_shadow(&info.object, 0, &mut tree, 0, MAX_SIZE);
-        Self {
-            tree: Mutex::new(tree),
-        }
-    }
-
-    pub fn update(&self, info: &ObjectContextInfo) {
-        let mut tree = self.tree.lock();
-        tree.clear();
-        copy_range_to_shadow(&info.object, 0, &mut *tree, 0, MAX_SIZE);
-    }
-
-    pub fn get_page(&self, pn: PageNumber, flags: GetPageFlags) -> Option<PageRef> {
-        match self.tree.lock().try_get_page(pn, flags) {
-            PageStatus::Ready(page_ref, _) => Some(page_ref),
-            _ => None,
-        }
-    }
-
-    pub fn with_page_tree<R>(&self, f: impl FnOnce(&mut PageRangeTree) -> R) -> R {
-        f(&mut *self.tree.lock())
-    }
-}
-
-impl From<&MapRegion> for Shadow {
-    fn from(value: &MapRegion) -> Self {
-        let info: ObjectContextInfo = value.into();
-        Shadow::new(&info)
-    }
-}
-
-*/

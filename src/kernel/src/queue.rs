@@ -164,13 +164,13 @@ impl<S: Copy, C: Copy> QueueObject<S, C> {
         );
         let mut pt = obj.lock_page_tables();
         for pg in 0..(num_bytes / PageNumber::PAGE_SIZE) {
-            let mut _up = false;
             pt = obj
                 .ensure_in_core(
                     pt,
                     PageNumber::from_offset(pg * PageNumber::PAGE_SIZE),
                     1,
-                    &mut _up,
+                    &mut false,
+                    &mut false,
                 )
                 .unwrap();
         }

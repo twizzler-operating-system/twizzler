@@ -1,12 +1,10 @@
 #[cfg(test)]
 mod test {
-    use alloc::sync::Arc;
-
     use twizzler_abi::{object::Protections, syscall::MapFlags};
     use twizzler_kernel_macros::kernel_test;
 
     use crate::memory::context::{
-        kernel_context, KernelMemoryContext, KernelObjectHandle, ObjectContextInfo,
+        KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
     };
 
     struct Foo {

@@ -29,4 +29,10 @@ impl PermsInfo {
             restrict,
         }
     }
+
+    /// Calculate the effective protections for an object given the default protections and the
+    /// protections on the mapping.
+    pub fn effective(&self, default_protect: Protections, map_prots: Protections) -> Protections {
+        (default_protect | self.provide) & !self.restrict & map_prots
+    }
 }

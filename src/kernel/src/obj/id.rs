@@ -102,12 +102,6 @@ impl Object {
             loop {
                 let meta = self.read_meta();
                 if let Some(meta) = meta {
-                    if meta.default_prot == Protections::empty() {
-                        logln!(
-                            "check_id: object {} has empty default protections (meta = {:?}), kernel={}, pager={}, this is invalid",
-                            self.id(), meta, self.is_kernel_id(), self.use_pager()
-                        );
-                    }
                     break (
                         verify_id(
                             self.id,

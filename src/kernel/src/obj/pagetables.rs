@@ -1,5 +1,3 @@
-use alloc::sync::Arc;
-
 use twizzler_abi::device::CacheType;
 use twizzler_rt_abi::error::{ObjectError, ResourceError, TwzError};
 
@@ -13,7 +11,6 @@ use crate::{
         },
         tracker::{FrameAllocFlags, alloc_frame},
     },
-    mutex::Mutex,
     obj::{Object, PageNumber},
 };
 
@@ -176,5 +173,18 @@ impl Object {
     pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {
         let mut pt = self.lock_page_tables();
         pt.map_page(pn.as_byte_offset() as u64, frame);
+    }
+
+    pub fn cow_clone_page_tables(&self) -> Result<ObjectPageTable, TwzError> {
+        let mut new_pt = ObjectPageTable::new();
+        let mut old_pt = self.lock_page_tables();
+        let level = old_pt.mapper.start_level();
+        assert_eq!(level, new_pt.mapper.start_level());
+        let cursor =
+            MappingCursor::new(VirtAddr::new(0).unwrap(), Table::level_to_page_size(level));
+        old_pt
+            .mapper
+            .setup_cow_range(&mut new_pt.mapper, cursor, cursor)?;
+        Ok(new_pt)
     }
 }

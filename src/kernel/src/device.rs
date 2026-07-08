@@ -16,7 +16,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     Result,
-    error::{ArgumentError, GenericError, ObjectError, TwzError},
+    error::{ArgumentError, ObjectError, TwzError},
 };
 
 use crate::{
@@ -182,7 +182,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 let obj = match lookup_object(id, LookupFlags::empty()) {
                     crate::obj::LookupResult::Found(o) => o,
                     _ => {
-                        let mut obj = Object::new_kernel_with_id(id);
+                        let obj = Object::new_kernel_with_id(id);
                         register_object(obj.clone());
                         obj
                     }

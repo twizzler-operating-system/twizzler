@@ -1,3 +1,4 @@
+use twizzler_abi::object::Protections;
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use super::{
@@ -19,6 +20,7 @@ use crate::{
 pub struct Mapper {
     root: PhysAddr,
     start_level: usize,
+    generation: u64,
 }
 
 impl Mapper {
@@ -27,6 +29,7 @@ impl Mapper {
         Self {
             root,
             start_level: Table::top_level(),
+            generation: 0,
         }
     }
 
@@ -47,6 +50,10 @@ impl Mapper {
         unsafe { &*(self.root.kernel_vaddr().as_ptr::<Table>()) }
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Set a top level table to a direct value. Useful for creating large regions of global memory
     /// (like the kernel's vaddr memory range). Does not perform any consistency operations.
     pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
@@ -61,6 +68,7 @@ impl Mapper {
         } else {
             root.set_count(count)
         }
+        self.generation += 1;
     }
 
     /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g.
@@ -87,6 +95,7 @@ impl Mapper {
         if root.map(&mut consist, cursor, level, phys).is_none() {
             Err(consist.into_deferred())
         } else {
+            self.generation += 1;
             Ok(())
         }
     }
@@ -106,6 +115,7 @@ impl Mapper {
         let root = self.root_mut();
         root.unmap(&mut consist, cursor, level);
         log::trace!("unmap: done");
+        self.generation += 1;
         consist.into_deferred()
     }
 
@@ -122,6 +132,7 @@ impl Mapper {
         );
         let root = self.root_mut();
         root.change(&mut consist, cursor, level, settings);
+        self.generation += 1;
         log::trace!("change: done");
     }
 
@@ -159,6 +170,7 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
+        prot: Protections,
     ) -> DeferredUnmappingOps {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
@@ -168,15 +180,37 @@ impl Mapper {
             self.root_address().raw(),
             level,
         );
+        self.generation += 1;
         let root = self.root_mut();
         object_tables.with_mapper(|mapper| {
-            root.object_map(&mut consist, cursor, level, mapper);
+            root.object_map(&mut consist, cursor, level, mapper, prot);
             log::trace!("object_map: done");
             consist.into_deferred()
         })
     }
 
-    pub fn is_object_mapped(&self, cursor: MappingCursor) -> bool {
+    pub fn with_dirty_bits(
+        &mut self,
+        cursor: MappingCursor,
+        mut f: impl FnMut(MappingCursor) -> bool,
+    ) -> bool {
+        let level = self.start_level;
+        log::trace!(
+            "with_dirty_bits: cursor {:?}, root {:x}, level {}",
+            cursor,
+            self.root_address().raw(),
+            level
+        );
+        let root = self.root_mut();
+        let d = root.with_dirty_bits(cursor, level, &mut f);
+        if d {
+            self.generation += 1;
+        }
+        log::trace!("with_dirty_bits: done");
+        d
+    }
+
+    pub fn is_object_mapped(&self, cursor: MappingCursor, prot: Protections) -> bool {
         let level = self.start_level;
         let root = self.root();
         log::trace!(
@@ -185,7 +219,7 @@ impl Mapper {
             self.root_address().raw(),
             level
         );
-        let x = root.is_object_mapped(cursor, level);
+        let x = root.is_object_mapped(cursor, level, prot);
         log::trace!("is_object_mapped: result {}", x);
         x
     }
@@ -215,6 +249,7 @@ impl Mapper {
     pub fn split_to_level(&mut self, addr: VirtAddr, level: usize) -> Result<(), TwzError> {
         let mut consist = Consistency::new(self.root);
         let start_level = self.start_level;
+        self.generation += 1;
         let root = self.root_mut();
         root.split_to_level(&mut consist, addr, start_level, level)
             .ok_or(ResourceError::OutOfMemory)?;
@@ -237,6 +272,7 @@ impl Mapper {
         );
         let start_level = self.start_level;
         assert!(start_level == dest.start_level);
+        self.generation += 1;
         let root = self.root_mut();
         while src_cursor.remaining() > 0 && dst_cursor.remaining() > 0 {
             log::trace!(
@@ -268,6 +304,7 @@ impl Mapper {
     pub fn cow_at(&mut self, cursor: MappingCursor) -> Option<bool> {
         let mut consist = Consistency::new(self.root);
         let level = self.start_level;
+        self.generation += 1;
         let root = self.root_mut();
         root.cow_copy(&mut consist, &cursor, level)
     }

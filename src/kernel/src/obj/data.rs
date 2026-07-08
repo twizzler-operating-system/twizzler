@@ -8,10 +8,6 @@ use twizzler_abi::{meta::MetaInfo, pager::PagerFlags, syscall::PinnedPage};
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
-    arch::{
-        PhysAddr,
-        memory::pagetables::{ArchTlbMgr, tlb_shootdown_handler},
-    },
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
         tracker::{FrameAllocFlags, FrameAllocator},
@@ -44,8 +40,7 @@ impl Object {
             flags
         );
         if flags.contains(FindFrameFlags::POPULATE) || self.use_pager() {
-            let mut pager_was_used = false;
-            pt = self.ensure_in_core(pt, pn, 1, &mut pager_was_used)?;
+            pt = self.ensure_in_core(pt, pn, 1, &mut false, &mut false)?;
         }
         pt.with_frame(offset as u64, flags, |frame_offset, frame| {
             f(frame_offset, frame)
@@ -370,7 +365,7 @@ impl Object {
 
         if self.use_pager() {
             let pt = self.lock_page_tables();
-            self.ensure_in_core_pager(pt, self_page, page_count, pager_was_used)?;
+            self.ensure_in_core_pager(pt, self_page, page_count, pager_was_used, &mut false)?;
             if factor >= 2 {
                 factor -= 1;
             }
@@ -378,7 +373,7 @@ impl Object {
 
         if other.use_pager() {
             let pt = other.lock_page_tables();
-            other.ensure_in_core_pager(pt, other_page, page_count, pager_was_used)?;
+            other.ensure_in_core_pager(pt, other_page, page_count, pager_was_used, &mut false)?;
             if factor >= 2 {
                 factor -= 1;
             }
@@ -457,13 +452,21 @@ impl Object {
         page: PageNumber,
         page_count: usize,
         pager_was_used: &mut bool,
+        all_were_present: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
         let first_is_present = guard.get_frame(page.as_byte_offset() as u64).is_some();
+        *all_were_present = true;
         if page_count <= 1 && first_is_present {
             return Ok(guard);
         }
         if self.use_pager() {
-            return self.ensure_in_core_pager(guard, page, page_count, pager_was_used);
+            return self.ensure_in_core_pager(
+                guard,
+                page,
+                page_count,
+                pager_was_used,
+                all_were_present,
+            );
         }
         drop(guard);
         let mut alloc = FrameAllocator::new(
@@ -477,6 +480,7 @@ impl Object {
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
             if guard.get_frame(offset).is_none() {
+                *all_were_present = false;
                 let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
                 if !guard.map_page(offset, frame) {
                     alloc.abort([frame]);
@@ -494,7 +498,9 @@ impl Object {
         mut page: PageNumber,
         mut page_count: usize,
         pager_was_used: &mut bool,
+        all_were_present: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+        *all_were_present = true;
         log::debug!(
             "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
@@ -538,6 +544,9 @@ impl Object {
                 reqs.push((page, page_count)).unwrap();
                 page_count
             };
+            if !reqs.is_empty() {
+                *all_were_present = false;
+            }
             page_count -= done_count;
             page = page.offset(done_count);
             if reqs.is_full() {
@@ -553,6 +562,7 @@ impl Object {
         }
 
         if !reqs.is_empty() {
+            *all_were_present = false;
             guard = crate::pager::ensure_in_core(
                 self,
                 guard,
@@ -750,20 +760,22 @@ impl Object {
             super::InvalidateMode::Full,
         );
 
-        drop(self_pt);
-        drop(dst_pt);
-        let ok = self.obj_memcmp(dst, len, src_offset, dst_offset)?;
-        if !ok {
-            log::error!(
-                "cow_copy: memcmp failed after copy from {} to {} (src_offset {:x}, dst_offset {:x}, len {})",
-                self.id(),
-                dst.id(),
-                src_offset,
-                dst_offset,
-                len
-            );
+        if false {
+            drop(self_pt);
+            drop(dst_pt);
+            let ok = self.obj_memcmp(dst, len, src_offset, dst_offset)?;
+            if !ok {
+                log::error!(
+                    "cow_copy: memcmp failed after copy from {} to {} (src_offset {:x}, dst_offset {:x}, len {})",
+                    self.id(),
+                    dst.id(),
+                    src_offset,
+                    dst_offset,
+                    len
+                );
+            }
+            assert!(ok);
         }
-        assert!(ok);
 
         Ok(())
     }

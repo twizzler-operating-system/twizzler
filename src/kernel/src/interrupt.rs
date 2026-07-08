@@ -96,13 +96,10 @@ pub struct WakeInfo {
 
 impl WakeInfo {
     pub fn wake(&self, val: u64) {
-        //logln!("wake! {}", val);
-        unsafe {
-            let _ = self
-                .obj
-                .try_write_val_and_signal(self.offset, val, usize::MAX)
-                .inspect_err(|e| log::error!("failed to raise interrupt: {}", e));
-        }
+        let _ = self
+            .obj
+            .try_write_val_and_signal(self.offset, val, usize::MAX)
+            .inspect_err(|e| log::error!("failed to raise interrupt: {}", e));
     }
 
     pub fn new(obj: ObjectRef, offset: usize) -> Self {

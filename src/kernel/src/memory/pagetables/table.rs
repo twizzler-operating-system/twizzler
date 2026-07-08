@@ -1,3 +1,5 @@
+use twizzler_abi::object::Protections;
+
 use super::{MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, consistency::Consistency};
 use crate::{
     arch::{
@@ -252,6 +254,7 @@ impl Table {
         cursor: MappingCursor,
         level: usize,
         object_tables: &mut Mapper,
+        prot: Protections,
     ) -> Option<()> {
         let index = Self::get_index(cursor.start(), level);
 
@@ -270,6 +273,7 @@ impl Table {
                 paddr
             );
             let mut flags = EntryFlags::intermediate();
+            flags.apply_perms(prot);
             flags.insert(EntryFlags::OBJECT_TABLE);
             self.update_entry(
                 consist,
@@ -284,7 +288,13 @@ impl Table {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
             let next_table = self.next_table_mut(index).unwrap();
-            next_table.object_map(consist, cursor, Self::next_level(level), object_tables);
+            next_table.object_map(
+                consist,
+                cursor,
+                Self::next_level(level),
+                object_tables,
+                prot,
+            );
             Some(())
         } else {
             panic!("tried to map within arch-tables for shared tables");
@@ -645,14 +655,60 @@ impl Table {
         }
     }
 
-    pub(super) fn is_object_mapped(&self, cursor: MappingCursor, level: usize) -> bool {
+    pub fn with_dirty_bits(
+        &mut self,
+        mut cursor: MappingCursor,
+        level: usize,
+        cb: &mut impl FnMut(MappingCursor) -> bool,
+    ) -> bool {
+        let start_index = Self::get_index(cursor.start(), level);
+        let mut did_clear = false;
+        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
+            let entry = &mut self[idx];
+            let is_present = entry.is_present();
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            let is_dirty = entry.flags().contains(EntryFlags::DIRTY);
+            if is_present && (is_huge || level == Self::last_level()) {
+                if is_dirty {
+                    let clear = cb(MappingCursor::new(
+                        cursor.start(),
+                        Self::level_to_page_size(level),
+                    ));
+                    if clear {
+                        entry.set_flags(entry.flags() - EntryFlags::DIRTY);
+                        did_clear |= true;
+                    }
+                }
+            } else if is_present && level != Self::last_level() {
+                let next_table = self.next_table_mut(idx).unwrap();
+                did_clear |= next_table.with_dirty_bits(cursor, Self::next_level(level), cb);
+            }
+
+            if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
+                cursor = next;
+            } else {
+                break;
+            }
+        }
+        did_clear
+    }
+
+    pub(super) fn is_object_mapped(
+        &self,
+        cursor: MappingCursor,
+        level: usize,
+        prot: Protections,
+    ) -> bool {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         if entry.is_present() && entry.is_object_table() {
+            if entry.flags().perms() & prot != prot {
+                return false;
+            }
             return true;
         } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();
-            return next_table.is_object_mapped(cursor, Self::next_level(level));
+            return next_table.is_object_mapped(cursor, Self::next_level(level), prot);
         }
         false
     }

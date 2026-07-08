@@ -5,7 +5,7 @@ use inflight::InflightManager;
 use itertools::Itertools;
 use request::ReqKind;
 use twizzler_abi::{
-    object::{MAX_SIZE, ObjID},
+    object::ObjID,
     pager::{PagerFlags, PhysRange},
     syscall::ObjectCreate,
 };

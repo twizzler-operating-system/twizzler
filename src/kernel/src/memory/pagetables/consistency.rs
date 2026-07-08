@@ -21,7 +21,6 @@ pub struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
     pages: LinkedList<FrameAdapter>,
-    shared: LinkedList<FrameAdapter>,
 }
 
 impl Consistency {
@@ -30,7 +29,6 @@ impl Consistency {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
             pages: LinkedList::new(FrameAdapter::NEW),
-            shared: LinkedList::new(FrameAdapter::NEW),
         }
     }
 
@@ -58,23 +56,13 @@ impl Consistency {
         }
     }
 
-    /// Enqueue a page for freeing.
-    pub fn free_shared_frame(&mut self, frame: FrameRef) {
-        if frame.dec_refcount() == 0 {
-            self.shared.push_back(frame);
-        }
-    }
-
     /// Flush the TLB invalidations.
     fn flush_invalidations(&mut self) {
         self.tlb.finish();
     }
 
     pub fn into_deferred(self) -> DeferredUnmappingOps {
-        DeferredUnmappingOps {
-            pages: self.pages,
-            shared: self.shared,
-        }
+        DeferredUnmappingOps { pages: self.pages }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -85,7 +73,6 @@ impl Consistency {
 
 pub struct DeferredUnmappingOps {
     pages: LinkedList<FrameAdapter>,
-    shared: LinkedList<FrameAdapter>,
 }
 
 impl Debug for DeferredUnmappingOps {
@@ -105,11 +92,6 @@ impl DeferredUnmappingOps {
         while let Some(page) = self.pages.pop_back() {
             page.set_pt(false);
             crate::memory::tracker::free_frame(page)
-        }
-
-        while let Some(page) = self.shared.pop_back() {
-            page.set_pt(false);
-            crate::memory::pagetables::free_shared_frame(page)
         }
     }
 }

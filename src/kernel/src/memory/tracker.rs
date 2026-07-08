@@ -4,7 +4,6 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use backtracer_core::Frame;
 use bitflags::bitflags;
 use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::{pager::PhysRange, thread::ExecutionState};

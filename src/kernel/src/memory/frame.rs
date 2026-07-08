@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 use core::{
     alloc::Layout,
     mem::{size_of, transmute},
-    sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};

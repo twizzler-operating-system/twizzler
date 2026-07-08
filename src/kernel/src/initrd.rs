@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, sync::Arc};
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String};
 
 use log::{debug, info};
 use twizzler_abi::{

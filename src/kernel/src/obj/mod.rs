@@ -32,7 +32,6 @@ use crate::{
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
     random::getrandom,
-    thread::current_thread_ref,
 };
 
 pub mod control;
@@ -202,13 +201,6 @@ impl Object {
         self.tables.lock()
     }
 
-    /*
-    pub fn add_page(&self, pn: PageNumber, page: PageRef, allocator: Option<&mut FrameAllocator>) {
-        let mut range_tree = self.range_tree.lock();
-        range_tree.add_page(pn, page, allocator);
-    }
-    */
-
     pub fn id(&self) -> ObjID {
         self.id
     }
@@ -218,86 +210,6 @@ impl Object {
         // implement eviction.
     }
 
-    /*
-    pub fn pin(&self, start: PageNumber, len: usize) -> Option<(Vec<PhysAddr>, u32)> {
-        log::debug!("pinning {} {}", start.0, len);
-        assert!(!self.use_pager());
-        let mut tree = self.lock_page_tree();
-
-        let mut pin_info = self.pin_info.lock();
-
-        let mut v = Vec::new();
-        // Best case scenario is to map contiguous pages for large requests
-        if len > 1 {
-            let mut rem = len;
-            let mut current = start;
-            let mut fa = if len * PageNumber::PAGE_SIZE >= PHYS_LEVEL_LAYOUTS[1].size() {
-                log::debug!("trying to allocate large DMA region ({} pages)", len);
-                FrameAllocator::new(
-                    FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
-                    PHYS_LEVEL_LAYOUTS[2],
-                )
-            } else {
-                FrameAllocator::new(
-                    FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
-                    PHYS_LEVEL_LAYOUTS[1],
-                )
-            };
-            while rem > 0 {
-                let frame = fa.try_allocate()?;
-                let page = Page::new_wired(
-                    frame.start_address(),
-                    frame.size(),
-                    CacheType::WriteCombining,
-                );
-                for i in 0..(frame.size() / PHYS_LEVEL_LAYOUTS[0].size()) {
-                    v.push(
-                        page.physical_address()
-                            .offset(i * PageNumber::PAGE_SIZE)
-                            .unwrap(),
-                    );
-                }
-                let page = PageRef::new(
-                    Arc::new(page),
-                    0,
-                    frame.size() / PHYS_LEVEL_LAYOUTS[0].size(),
-                );
-                if tree.add_page(current, page, None).is_none() {
-                    panic!("todo")
-                }
-                current = current.offset(frame.size() / PHYS_LEVEL_LAYOUTS[0].size());
-                rem = rem.saturating_sub(frame.size() / PHYS_LEVEL_LAYOUTS[0].size());
-            }
-            let id = pin_info.id_counter.next_simple();
-            let token = id.value().try_into().ok()?;
-            pin_info.pins.push(id);
-            self.invalidate(start..start.offset(len), InvalidateMode::Full);
-            return Some((v, token));
-        }
-
-        for i in 0..len {
-            // TODO: we'll need to handle failures here when we expand the paging system.
-            let p = tree.get_page(start.offset(i), GetPageFlags::empty(), None);
-            if let PageStatus::Ready(p, _) = p {
-                v.push(p.physical_address());
-            } else {
-                let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
-                let page = Page::new(frame, 1);
-                v.push(page.physical_address());
-                let page = PageRef::new(Arc::new(page), 0, 1);
-                tree.add_page(start.offset(i), page, None);
-            }
-        }
-
-        let id = pin_info.id_counter.next_simple();
-        let token = id.value().try_into().ok()?;
-        pin_info.pins.push(id);
-
-        self.invalidate(start..start.offset(len), InvalidateMode::Full);
-        Some((v, token))
-    }
-
-    */
     pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
         Self {
             id,
@@ -418,29 +330,6 @@ impl Object {
             backing: BackingType::default(),
             pages: num_pages,
         }
-    }
-}
-
-impl Drop for Object {
-    fn drop(&mut self) {
-        /*
-        let pt = self.lock_page_tree();
-        let range = pt.range(PageNumber::base_page()..PageNumber::meta_page().next());
-        let mut private_mem = 0;
-        let mut shared_mem = 0;
-        for r in range {
-            let pr = r.1.value();
-            let (p, s) = pr.estimate_memory_usage();
-            private_mem += p;
-            shared_mem += s;
-        }
-        logln!(
-            "Dropping object {} (p: {}MB, s: {}MB)",
-            self.id,
-            private_mem / (1024 * 1024),
-            shared_mem / (1024 * 1024)
-        );
-        */
     }
 }
 

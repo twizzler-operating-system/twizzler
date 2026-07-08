@@ -35,7 +35,7 @@ pub struct ObjectMemoryFaultInfo {
     /// Object ID of attempted access.
     pub object_id: ObjID,
     /// The kind of error.
-    pub error: ObjectMemoryError,
+    pub error: TwzError,
     /// The kind of memory access that caused the error.
     pub access: MemoryAccessKind,
     /// The virtual address at which the error occurred.
@@ -44,12 +44,7 @@ pub struct ObjectMemoryFaultInfo {
 
 impl ObjectMemoryFaultInfo {
     /// Construct a new upcall info for memory fault.
-    pub fn new(
-        object_id: ObjID,
-        error: ObjectMemoryError,
-        access: MemoryAccessKind,
-        addr: usize,
-    ) -> Self {
+    pub fn new(object_id: ObjID, error: TwzError, access: MemoryAccessKind, addr: usize) -> Self {
         Self {
             object_id,
             error,

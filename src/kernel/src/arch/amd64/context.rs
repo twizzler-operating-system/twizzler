@@ -12,7 +12,7 @@ use crate::{
         frame::get_frame,
         pagetables::{
             Consistency, ContiguousProvider, DeferredUnmappingOps, MapReader, Mapper,
-            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider, SharedPageTable,
+            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider,
         },
         tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
@@ -117,21 +117,34 @@ impl ArchContext {
         }
     }
 
-    pub fn object_map(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
-        let ops = self.inner.lock().object_map(cursor, object_tables);
+    pub fn object_map(
+        &self,
+        cursor: MappingCursor,
+        object_tables: &mut ObjectPageTable,
+        prot: Protections,
+    ) {
+        let ops = self.inner.lock().object_map(cursor, object_tables, prot);
         ops.run_all();
     }
 
-    pub fn ensure_object_mapped(&self, cursor: MappingCursor, object_tables: &mut ObjectPageTable) {
+    pub fn ensure_object_mapped(
+        &self,
+        cursor: MappingCursor,
+        object_tables: &mut ObjectPageTable,
+        prot: Protections,
+    ) -> bool {
         let mut inner = self.inner.lock();
-        if !inner.mapper.is_object_mapped(cursor) {
+        if !inner.mapper.is_object_mapped(cursor, prot) {
             log::debug!(
                 "mapping object at cursor {:?} in context {:?}",
                 cursor,
                 self.target
             );
-            let ops = inner.object_map(cursor, object_tables);
+            let ops = inner.object_map(cursor, object_tables, prot);
             ops.run_all();
+            true
+        } else {
+            false
         }
     }
 
@@ -258,8 +271,9 @@ impl ArchContextInner {
         &mut self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
+        prot: Protections,
     ) -> DeferredUnmappingOps {
-        self.mapper.object_map(cursor, object_tables)
+        self.mapper.object_map(cursor, object_tables, prot)
     }
 }
 

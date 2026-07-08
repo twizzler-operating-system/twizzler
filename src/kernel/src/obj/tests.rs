@@ -83,7 +83,7 @@ fn zero_ranges_and_check(dest: &ObjectRef, dest_off: usize, byte_length: usize) 
     {
         let dko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
             dest.clone(),
-            Protections::READ,
+            Protections::READ | Protections::WRITE,
             CacheType::WriteBack,
             MapFlags::empty(),
         ));

@@ -80,7 +80,6 @@ impl MappingCursor {
 
 #[cfg(test)]
 mod tests {
-    use p256::elliptic_curve::rand_core::le;
     use twizzler_kernel_macros::kernel_test;
 
     use super::*;

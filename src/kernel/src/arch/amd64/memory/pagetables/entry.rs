@@ -146,6 +146,11 @@ impl EntryFlags {
         rw | ex
     }
 
+    pub fn apply_perms(&mut self, perms: Protections) {
+        self.set(Self::WRITE, perms.contains(Protections::WRITE));
+        self.set(Self::NO_EXECUTE, !perms.contains(Protections::EXEC));
+    }
+
     /// Retrieve the [CacheType].
     pub fn cache_type(&self) -> CacheType {
         if self.contains(Self::CACHE_DISABLE) {

@@ -26,7 +26,7 @@ use crate::{
         frame::{FrameRef, max_level_for_addr},
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
-            PhysAddrProvider, PhysMapInfo, SharedPageTable, Table, ZeroPageProvider,
+            PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
         },
         tracker::FrameAllocFlags,
     },
@@ -211,12 +211,30 @@ impl VirtContext {
             .expect("cannot get arch mapper for unattached security context"))
     }
 
-    pub fn map_object(&self, info: &MapRegion) {
-        let mut pt = info.object().lock_page_tables();
+    pub fn map_object(&self, info: &MapRegion, default_prots: Protections) {
         let sctx = self.secctx.lock();
+        let sids = sctx.keys().copied().collect::<Vec<_>>();
+        drop(sctx);
+
         let len = info.range.end - info.range.start;
-        for arch in sctx.values() {
-            arch.object_map(MappingCursor::new(info.range.start, len), &mut *pt);
+        for sid in sids {
+            let Ok(sctx) = crate::security::get_sctx(sid) else {
+                continue;
+            };
+            let perms = sctx.lookup(info.object().id(), default_prots);
+            self.with_arch(sid, |arch| {
+                let mut pt = if info.stable.is_some() {
+                    info.stable.as_ref().unwrap().lock()
+                } else {
+                    info.object.lock_page_tables()
+                };
+
+                arch.object_map(
+                    MappingCursor::new(info.range.start, len),
+                    &mut *pt,
+                    perms.effective(default_prots, info.prot),
+                );
+            })
         }
     }
 
@@ -225,10 +243,11 @@ impl VirtContext {
         sctxid: ObjID,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
-    ) {
+        prot: Protections,
+    ) -> bool {
         self.with_arch(sctxid, |arch| {
-            arch.ensure_object_mapped(cursor, object_tables);
-        });
+            arch.ensure_object_mapped(cursor, object_tables, prot)
+        })
     }
 
     pub fn print_objects(&self) {
@@ -361,6 +380,13 @@ impl UserContext for VirtContext {
             object_info.prot(),
         );
 
+        let mut stable = None;
+        if object_info.flags.contains(MapFlags::STABLE) {
+            stable = Some(Arc::new(Mutex::new(
+                object_info.object().cow_clone_page_tables()?,
+            )));
+        }
+
         let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
@@ -368,10 +394,13 @@ impl UserContext for VirtContext {
             offset: 0,
             range: slot.range(),
             flags: object_info.flags,
+            stable,
         };
 
+        let (_is_ok, default_prots) = object_info.object.check_id();
+
         object_info.object().add_context(self);
-        self.map_object(&new_slot_info);
+        self.map_object(&new_slot_info, default_prots);
         let mut slots = self.regions.lock();
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
@@ -394,10 +423,9 @@ impl UserContext for VirtContext {
     fn invalidate_object(
         &self,
         obj: ObjID,
-        range: &core::ops::Range<PageNumber>,
-        mode: obj::InvalidateMode,
+        _range: &core::ops::Range<PageNumber>,
+        _mode: obj::InvalidateMode,
     ) {
-        let start = range.start.as_byte_offset();
         let mut slots = self.regions.lock();
         let arches = self.secctx.lock();
         for arch in arches.values() {
@@ -588,8 +616,10 @@ impl KernelMemoryContext for VirtContext {
             prot: info.prot(),
             cache_type: info.cache(),
             flags: info.flags,
+            stable: None,
         };
-        self.map_object(&new_slot_info);
+        let (_is_ok, default_prots) = info.object().check_id();
+        self.map_object(&new_slot_info, default_prots);
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
             info,

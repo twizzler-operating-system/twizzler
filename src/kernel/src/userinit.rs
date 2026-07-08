@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
