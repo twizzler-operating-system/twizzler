@@ -80,10 +80,19 @@ impl ObjectPageTable {
     }
 
     pub fn max_len(&self) -> usize {
-        PHYS_LEVEL_LAYOUTS[self.mapper.start_level()].size()
+        PHYS_LEVEL_LAYOUTS[self.mapper.start_level() + 1].size()
     }
 
     pub fn invalidate(&mut self, offset: u64, len: usize) {
+        log::trace!(
+            "invalidating offset {:x} len {:x} (max len {:x}) {} {} {}",
+            offset,
+            len,
+            self.max_len(),
+            self.invls.is_empty(),
+            self.invls.is_full(),
+            self.invls.iter().any(|(_, maps)| maps.is_full()),
+        );
         if self.invls.is_empty() {
             return;
         }
@@ -111,7 +120,7 @@ impl ObjectPageTable {
                     addr,
                     false,
                     true,
-                    min_level_for_len(len).unwrap_or(self.mapper.start_level()),
+                    min_level_for_len(len).unwrap_or(self.mapper.start_level() + 1),
                 );
             }
             tlb.finish();
@@ -140,7 +149,8 @@ impl ObjectPageTable {
             e.run_all();
             return false;
         }
-        self.invalidate_page(PageNumber::from_offset(offset as usize));
+        // TODO: invalidate if map changed
+        //self.invalidate_page(PageNumber::from_offset(offset as usize));
         // TODO: mark dirty
 
         true
@@ -162,7 +172,7 @@ impl ObjectPageTable {
     pub fn count_pages(&self) -> usize {
         let cursor = MappingCursor::new(
             VirtAddr::new(0).unwrap(),
-            Table::level_to_page_size(self.mapper.start_level()),
+            Table::level_to_page_size(self.mapper.start_level() + 1),
         );
         let reader = self.mapper.readmap(cursor).coalesce();
         reader.fold(0, |acc, mi| {
@@ -177,7 +187,7 @@ impl ObjectPageTable {
     pub fn get_dirty_and_reset(&mut self) -> Vec<(PageNumber, PhysAddr, usize)> {
         let cursor = MappingCursor::new(
             VirtAddr::new(0).unwrap(),
-            Table::level_to_page_size(self.mapper.start_level()),
+            Table::level_to_page_size(self.mapper.start_level() + 1),
         );
 
         fn add_to_list(dirty_list: &mut Vec<(PageNumber, PhysAddr, usize)>, mi: &MapInfo) {
@@ -342,8 +352,10 @@ impl Object {
         let old_pt = self.lock_page_tables();
         let level = old_pt.mapper.start_level();
         assert_eq!(level, new_pt.mapper.start_level());
-        let cursor =
-            MappingCursor::new(VirtAddr::new(0).unwrap(), Table::level_to_page_size(level));
+        let cursor = MappingCursor::new(
+            VirtAddr::new(0).unwrap(),
+            Table::level_to_page_size(level + 1),
+        );
         let mut old_pt = self.ensure_in_core(
             old_pt,
             PageNumber::from(0),
