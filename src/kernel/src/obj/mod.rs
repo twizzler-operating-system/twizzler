@@ -28,17 +28,13 @@ use crate::{
 };
 
 pub mod control;
-//pub mod copy;
-pub mod id;
-//pub mod pages;
-pub mod pagetables;
-//pub mod pagevec;
-//pub mod range;
 pub mod data;
+pub mod id;
+pub mod pagetables;
 pub mod thread_sync;
 pub mod ties;
 
-//#[cfg(test)]
+#[cfg(test)]
 mod tests;
 
 const OBJ_DELETED: u32 = 1;
