@@ -42,9 +42,11 @@ impl Object {
         if flags.contains(FindFrameFlags::POPULATE) || self.use_pager() {
             pt = self.ensure_in_core(pt, pn, 1, &mut false, &mut false)?;
         }
-        pt.with_frame(offset as u64, flags, |frame_offset, frame| {
+        let mut did_cow = false;
+        let r = pt.with_frame(offset as u64, flags, &mut did_cow, |frame_offset, frame| {
             f(frame_offset, frame)
-        })
+        });
+        r
     }
 
     fn with_frame<R>(
@@ -479,13 +481,24 @@ impl Object {
         guard = self.lock_page_tables();
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
-            if guard.get_frame(offset).is_none() {
+            if guard.get_mapinfo(offset).is_none() {
+                log::trace!(
+                    "filling frame at offset {:x} in object {}",
+                    offset,
+                    self.id()
+                );
                 *all_were_present = false;
                 let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
                 if !guard.map_page(offset, frame) {
+                    log::error!(
+                        "failed to map page at offset {:x} in object {}",
+                        offset,
+                        self.id()
+                    );
                     alloc.abort([frame]);
                     return Err(TwzError::INVALID_ARGUMENT);
                 }
+                assert!(guard.get_mapinfo(offset).is_some());
             }
         }
 
@@ -621,10 +634,12 @@ impl Object {
                 .with_frame(
                     src_offset as u64,
                     FindFrameFlags::empty(),
+                    &mut false,
                     |src_frame_start, self_frame| {
                         dst_pt.with_frame(
                             dst_offset as u64,
                             FindFrameFlags::WRITE | FindFrameFlags::POPULATE,
+                            &mut false,
                             |dst_frame_start, dst_frame| {
                                 let dst_frame_offset = dst_offset - dst_frame_start;
                                 if dst_frame.is_none() {
@@ -697,10 +712,9 @@ impl Object {
                                 len -= op_len;
                                 Ok::<(), TwzError>(())
                             },
-                        )
+                        ).flatten()
                     },
                 )
-                .flatten()
                 .flatten()?;
         }
 
@@ -751,14 +765,8 @@ impl Object {
         dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
 
-        self.invalidate(
-            PageNumber::from_offset(src_offset)..PageNumber::from_offset(src_offset + len),
-            super::InvalidateMode::Full,
-        );
-        dst.invalidate(
-            PageNumber::from_offset(dst_offset)..PageNumber::from_offset(dst_offset + len),
-            super::InvalidateMode::Full,
-        );
+        self_pt.invalidate(src_offset as u64, len);
+        dst_pt.invalidate(dst_offset as u64, len);
 
         if false {
             drop(self_pt);
@@ -877,10 +885,6 @@ impl Object {
         }
 
         let mut pt = self.lock_page_tables();
-        self.invalidate(
-            PageNumber::from_offset(offset)..PageNumber::from_offset(offset + len),
-            super::InvalidateMode::Full,
-        );
 
         log::trace!(
             "zero_range: unmap for offset {:x} len {:x} in {}",
@@ -889,10 +893,7 @@ impl Object {
             self.id()
         );
         pt.setup_zero_range(offset as u64, len)?;
-        self.invalidate(
-            PageNumber::from_offset(offset)..PageNumber::from_offset(offset + len),
-            super::InvalidateMode::Full,
-        );
+        pt.invalidate(offset as u64, len);
         Ok(())
     }
 

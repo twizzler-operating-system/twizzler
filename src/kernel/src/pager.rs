@@ -15,6 +15,7 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
+    arch::PhysAddr,
     memory::{
         context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
     },
@@ -158,7 +159,7 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 
 pub fn sync_region(
     region: &MapRegion,
-    dirty_set: &[(PageNumber, usize)],
+    dirty_set: &[(PageNumber, PhysAddr, usize)],
     sync_info: Option<sync_info>,
     version: u64,
 ) {

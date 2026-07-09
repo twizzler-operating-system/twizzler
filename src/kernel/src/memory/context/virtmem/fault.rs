@@ -29,6 +29,21 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
     if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
         log::trace!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
     }
+
+    if let Some(ct) = current_thread_ref() {
+        let old = ct
+            .last_pf_addr
+            .swap(addr.raw(), core::sync::atomic::Ordering::SeqCst);
+        if old == addr.raw() {
+            log::debug!(
+                "page-fault: {:?} {:?} {:?} ip={:?} (repeated fault)",
+                addr,
+                cause,
+                flags,
+                ip
+            );
+        }
+    }
 }
 
 fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {

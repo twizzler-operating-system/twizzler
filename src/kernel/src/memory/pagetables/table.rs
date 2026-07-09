@@ -659,7 +659,7 @@ impl Table {
         &mut self,
         mut cursor: MappingCursor,
         level: usize,
-        cb: &mut impl FnMut(MappingCursor) -> bool,
+        cb: &mut impl FnMut(MapInfo) -> bool,
     ) -> bool {
         let start_index = Self::get_index(cursor.start(), level);
         let mut did_clear = false;
@@ -670,10 +670,13 @@ impl Table {
             let is_dirty = entry.flags().contains(EntryFlags::DIRTY);
             if is_present && (is_huge || level == Self::last_level()) {
                 if is_dirty {
-                    let clear = cb(MappingCursor::new(
+                    let info = MapInfo::new(
                         cursor.start(),
+                        entry.addr(level),
+                        entry.flags().settings(),
                         Self::level_to_page_size(level),
-                    ));
+                    );
+                    let clear = cb(info);
                     if clear {
                         entry.set_flags(entry.flags() - EntryFlags::DIRTY);
                         did_clear |= true;

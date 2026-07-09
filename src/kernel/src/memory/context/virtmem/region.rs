@@ -192,7 +192,6 @@ impl MapRegion {
         let mut used_pager = false;
         let mut all_were_present = true;
         let mut obj_page_tree = self.object.lock_page_tables();
-        let mut invl = false;
         let prot = perms.effective(default_prot, self.prot);
         if !pfflags.contains(PageFaultFlags::PRESENT) {
             obj_page_tree = self.object.ensure_in_core(
@@ -203,6 +202,18 @@ impl MapRegion {
                 &mut all_were_present,
             )?;
         }
+
+        log::trace!(
+            "fault info: addr={:?} cause={:?} flags={:?} ip={:?} page_number={} used_pager={} all_were_present={} prot={:?}",
+            addr,
+            cause,
+            pfflags,
+            ip,
+            page_number,
+            used_pager,
+            all_were_present,
+            prot
+        );
 
         if let Some(stable) = self.stable.as_ref() {
             log::trace!(
@@ -216,7 +227,8 @@ impl MapRegion {
         if all_were_present {
             let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
             let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
-            invl |= ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, prot);
+            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, prot);
+            obj_page_tree.invalidate_full();
         }
 
         if cause == MemoryAccessKind::Write {
@@ -241,15 +253,6 @@ impl MapRegion {
                 did_cow,
                 self.object().use_pager()
             );
-            // TODO: try to invalidate only the COW'd page.
-            invl |= did_cow;
-        }
-
-        if invl {
-            self.object.invalidate(
-                PageNumber::from_offset(0)..PageNumber::meta_page(),
-                crate::obj::InvalidateMode::Full,
-            );
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
@@ -257,16 +260,33 @@ impl MapRegion {
         Ok(())
     }
 
+    pub fn invalidate(&self) {
+        if let Some(stable) = self.stable.as_ref() {
+            let mut stable = stable.lock();
+            stable.invalidate(self.offset, self.range.end - self.range.start);
+        } else {
+            self.object()
+                .lock_page_tables()
+                .invalidate(self.offset, self.range.end - self.range.start);
+        }
+    }
+
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
         match cmd {
             MapControlCmd::Sync(sync_info_ptr) => {
+                let mut pt = if let Some(stable) = self.stable.as_ref() {
+                    stable.lock()
+                } else {
+                    self.object().lock_page_tables()
+                };
                 if sync_info_ptr.is_null() {
-                    let dirty_pages = self.object().dirty_set().drain_all();
+                    let dirty_pages = pt.get_dirty_and_reset();
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
                         self.range,
                         dirty_pages
                     );
+                    drop(pt);
                     if self.object().use_pager() && !dirty_pages.is_empty() {
                         crate::pager::sync_region(self, dirty_pages.as_slice(), None, 0);
                     }
@@ -275,12 +295,13 @@ impl MapRegion {
                     let version = sync_info.release_compare;
 
                     if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
-                        let dirty_pages = self.object().dirty_set().drain_all();
+                        let dirty_pages = pt.get_dirty_and_reset();
                         log::trace!(
                             "sync region {:?} with dirty pages {:?}",
                             self.range,
                             dirty_pages
                         );
+                        drop(pt);
                         if self.object().use_pager() && !dirty_pages.is_empty() {
                             crate::pager::sync_region(
                                 self,
@@ -304,10 +325,7 @@ impl MapRegion {
                 Ok(0)
             }
             MapControlCmd::Invalidate => {
-                self.object.invalidate(
-                    PageNumber::from_offset(0)..PageNumber::meta_page(),
-                    crate::obj::InvalidateMode::Full,
-                );
+                self.invalidate();
                 Ok(0)
             }
             MapControlCmd::Discard | MapControlCmd::Update => {
@@ -318,10 +336,7 @@ impl MapRegion {
                     stable.setup_zero_range(self.offset, len)?;
                     pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
                 }
-                self.object.invalidate(
-                    PageNumber::from_offset(0)..PageNumber::meta_page(),
-                    crate::obj::InvalidateMode::Full,
-                );
+                self.invalidate();
                 Ok(0)
             }
         }

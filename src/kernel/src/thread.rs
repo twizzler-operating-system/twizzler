@@ -78,6 +78,7 @@ pub struct Thread {
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
+    pub last_pf_addr: AtomicU64,
 }
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
@@ -162,6 +163,7 @@ impl Thread {
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
             pending_message: AtomicU64::new(0),
+            last_pf_addr: AtomicU64::new(0),
         }
     }
 

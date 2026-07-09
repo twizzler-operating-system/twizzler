@@ -1,7 +1,7 @@
 use alloc::{
     boxed::Box,
-    collections::{BTreeMap, btree_map::Entry, btree_set::BTreeSet},
-    sync::{Arc, Weak},
+    collections::{BTreeMap, btree_set::BTreeSet},
+    sync::Arc,
     vec::Vec,
 };
 use core::{
@@ -9,7 +9,6 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-use bitset_core::BitSet;
 use twizzler_abi::{
     device::NUM_DEVICE_INTERRUPTS,
     meta::{MetaFlags, MetaInfo},
@@ -20,15 +19,9 @@ use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
 
 use self::thread_sync::SleepInfo;
 use crate::{
-    arch::{
-        PhysAddr,
-        memory::{frame::FRAME_SIZE, pagetables::ArchTlbMgr},
-    },
-    idcounter::{IdCounter, SimpleId, StableId},
-    memory::{
-        VirtAddr,
-        context::{Context, ContextRef, UserContext, kernel_context},
-    },
+    arch::memory::frame::FRAME_SIZE,
+    idcounter::{IdCounter, SimpleId},
+    memory::VirtAddr,
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
     random::getrandom,
@@ -53,41 +46,15 @@ pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
-    //range_tree: Mutex<range::PageRangeTree>,
     tables: Mutex<pagetables::ObjectPageTable>,
     sleep_info: Mutex<SleepInfo>,
     device_interrupt_info: Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>,
     pin_info: Mutex<PinInfo>,
-    contexts: Mutex<ContextInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
-    dirty_set: DirtySet,
 }
 
-#[derive(Default)]
-struct ContextInfo {
-    contexts: BTreeMap<u64, (Weak<Context>, usize)>,
-}
-
-impl ContextInfo {
-    fn insert(&mut self, ctx: &ContextRef) {
-        let entry = self
-            .contexts
-            .entry(ctx.id().value())
-            .or_insert_with(|| (Arc::downgrade(ctx), 0));
-        entry.1 += 1;
-    }
-
-    fn remove(&mut self, ctx: u64) {
-        if let Entry::Occupied(mut x) = self.contexts.entry(ctx) {
-            x.get_mut().1 -= 1;
-            if x.get().1 == 0 {
-                x.remove();
-            }
-        }
-    }
-}
 #[derive(Default)]
 struct PinInfo {
     id_counter: IdCounter,
@@ -217,11 +184,9 @@ impl Object {
             tables: Mutex::new(pagetables::ObjectPageTable::new()),
             sleep_info: Mutex::new(SleepInfo::new(id)),
             pin_info: Mutex::new(PinInfo::default()),
-            contexts: Mutex::new(ContextInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
             lifetime_type,
-            dirty_set: DirtySet::new(),
             device_interrupt_info: Box::new(
                 [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
             ),
@@ -283,35 +248,9 @@ impl Object {
         obj
     }
 
-    pub fn add_context(&self, ctx: &ContextRef) {
-        self.contexts.lock().insert(ctx)
-    }
-
-    pub fn remove_context(&self, id: u64) {
-        self.contexts.lock().remove(id)
-    }
-
-    pub fn invalidate(&self, range: core::ops::Range<PageNumber>, mode: InvalidateMode) {
-        // TODO: do this better
-        let contexts = self.contexts.lock();
-        for ctx in contexts.contexts.values() {
-            if let Some(ctx) = ctx.0.upgrade() {
-                ctx.invalidate_object(self.id(), &range, mode);
-            }
-        }
-        kernel_context().invalidate_object(self.id(), &range, mode);
-        let mut tlb = ArchTlbMgr::new(PhysAddr::new(0).unwrap());
-        tlb.set_full_global();
-        tlb.finish();
-    }
-
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
         self.tables.lock().print_tree();
-    }
-
-    pub fn dirty_set(&self) -> &DirtySet {
-        &self.dirty_set
     }
 
     pub fn info(&self) -> ObjectInfo {
@@ -447,10 +386,10 @@ pub fn scan_deleted() {
         let mut om = obj_manager().map.lock();
         om.extract_if(.., |_, obj| {
             if obj.is_pending_delete() {
-                let ctx = obj.contexts.lock();
+                let not_mapped = obj.lock_page_tables().map_count() == 0;
                 let pin = obj.pin_info.lock();
 
-                ctx.contexts.len() == 0 && pin.pins.len() == 0
+                not_mapped && pin.pins.len() == 0
             } else {
                 false
             }
@@ -479,60 +418,4 @@ pub fn register_object(obj: Arc<Object>) {
 
 pub fn no_exist(id: ObjID) {
     obj_manager().no_exist.lock().insert(id);
-}
-
-#[derive(Clone)]
-pub struct DirtySet {
-    set: Arc<Mutex<Vec<u8>>>,
-}
-
-impl DirtySet {
-    pub fn new() -> Self {
-        Self {
-            set: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn drain_all(&self) -> Vec<(PageNumber, usize)> {
-        let mut set = self.set.lock();
-        let mut pages: Vec<(PageNumber, usize)> = Vec::new();
-        for b in 0..set.bit_len() {
-            if set.bit_test(b) {
-                if b > 0 && set.bit_test(b - 1) {
-                    pages.last_mut().unwrap().1 += 1;
-                } else {
-                    pages.push((PageNumber::from(b), 1));
-                }
-            }
-        }
-        set.fill(0);
-        pages
-    }
-
-    fn is_dirty(&self, pn: PageNumber) -> bool {
-        let set = self.set.lock();
-        if pn.0 < set.bit_len() {
-            set.bit_test(pn.0)
-        } else {
-            false
-        }
-    }
-
-    pub fn add_dirty(&self, pn: PageNumber, num: usize) {
-        let mut set = self.set.lock();
-        if pn.0 + num > set.bit_len() {
-            let add = ((pn.0 + num) - set.bit_len()) / 8 + 1;
-            set.extend((0..add).into_iter().map(|_| 0));
-        }
-        for i in 0..num {
-            set.bit_set(pn.0 + i);
-        }
-    }
-
-    fn reset_dirty(&self, pn: PageNumber) {
-        let mut set = self.set.lock();
-        if pn.0 < set.bit_len() {
-            set.bit_reset(pn.0);
-        }
-    }
 }

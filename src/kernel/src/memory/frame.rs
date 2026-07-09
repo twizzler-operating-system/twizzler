@@ -85,6 +85,15 @@ pub fn max_level_for_addr(addr: usize) -> Option<usize> {
     None
 }
 
+pub fn min_level_for_len(len: usize) -> Option<usize> {
+    for (i, layout) in PHYS_LEVEL_LAYOUTS.iter().enumerate() {
+        if len <= layout.size() {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[doc(hidden)]
 struct AllocationRegion {
     indexer: FrameIndexer,

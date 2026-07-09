@@ -192,7 +192,7 @@ impl Mapper {
     pub fn with_dirty_bits(
         &mut self,
         cursor: MappingCursor,
-        mut f: impl FnMut(MappingCursor) -> bool,
+        mut f: impl FnMut(MapInfo) -> bool,
     ) -> bool {
         let level = self.start_level;
         log::trace!(

@@ -20,7 +20,7 @@ use crate::{
 };
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TlbInvData {
     target_cr3: u64,
     instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
@@ -274,6 +274,12 @@ impl ArchTlbMgr {
             data: TlbInvData::new(target.into()),
         };
         assert!(!this.data.has_invalidations());
+        this
+    }
+
+    pub fn new_full_global() -> Self {
+        let mut this = Self::new(PhysAddr::new(0).unwrap());
+        this.set_full_global();
         this
     }
 

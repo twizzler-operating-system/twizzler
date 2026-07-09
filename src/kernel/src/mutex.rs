@@ -135,27 +135,6 @@ impl<T> Mutex<T> {
             crate::arch::processor::spin_wait_iteration();
             if let Some(guard) = guard {
                 finish_blocking(guard);
-                let current_thread = current_thread_ref().unwrap();
-                if current_thread.mutex_link.is_linked() {
-                    log::info!("still linked");
-                    // This is rare -- it can happen if we are locking and
-                    // have (e.g.) set up a timeout. Search the list for our thread
-                    // and get rid of it.
-                    let mut queue = self.queue.lock();
-                    let mut cursor = queue.queue.front_mut();
-                    while !cursor.is_null() {
-                        if let Some(th) = cursor.get() {
-                            if th.id() == current_thread.id() {
-                                log::info!("still linked: found");
-                                cursor.remove();
-                                break;
-                            } else {
-                                cursor.move_next();
-                            }
-                        }
-                    }
-                }
-                assert!(!current_thread.mutex_link.is_linked());
             }
         }
 

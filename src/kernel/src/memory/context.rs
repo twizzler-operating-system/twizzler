@@ -6,7 +6,7 @@
 //! and kernel mappings in the higher-half on x86).
 
 use alloc::sync::Arc;
-use core::{alloc::Layout, ops::Range, ptr::NonNull};
+use core::{alloc::Layout, ptr::NonNull};
 
 use twizzler_abi::{
     device::CacheType,
@@ -16,11 +16,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::TwzError;
 
 use self::virtmem::KernelObjectVirtHandle;
-use crate::{
-    obj::{InvalidateMode, ObjectRef, PageNumber},
-    once::Once,
-    syscall::object::ObjectHandle,
-};
+use crate::{obj::ObjectRef, once::Once, syscall::object::ObjectHandle};
 
 impl ObjectHandle for ContextRef {
     type HandleType = Context;
@@ -55,8 +51,6 @@ pub trait UserContext {
     /// Lookup an object within this context. Once this function returns, no guarantees are made
     /// about if the object remains mapped as is.
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo>;
-    /// Invalidate any mappings for a particular object.
-    fn invalidate_object(&self, obj: ObjID, range: &Range<PageNumber>, mode: InvalidateMode);
     /// Remove an object from the context.
     fn remove_object(&self, info: Self::MappingInfo);
 }

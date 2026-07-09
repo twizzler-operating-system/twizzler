@@ -25,7 +25,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct SyncRegionInfo {
     pub reqs: Arc<Vec<RequestFromKernel>>,
-    //shadow: Option<Arc<Shadow>>,
     pub id: ObjID,
     pub unique_id: ObjID,
     pub sync_info: Option<sync_info>,
@@ -144,39 +143,10 @@ impl ReqKind {
 
     pub fn new_sync_region(
         object: &ObjectRef,
-        //shadow: Option<Shadow>,
-        dirty_set: &[(PageNumber, usize)],
+        pages: &[(PageNumber, PhysAddr, usize)],
         sync_info: Option<sync_info>,
         version: u64,
     ) -> Self {
-        /*
-        let mut page_tree = object.lock_page_tree();
-        let pages = dirty_set
-            .iter()
-            .flat_map(|dirty_page| {
-                let mut pages = Vec::new();
-                let mut off = 0;
-                while off < dirty_page.1 {
-                    match page_tree.try_get_page(dirty_page.0.offset(off), GetPageFlags::empty()) {
-                        crate::obj::range::PageStatus::Ready(page_ref, _) => {
-                            pages.push((
-                                dirty_page.0.offset(off),
-                                page_ref.physical_address(),
-                                page_ref.nr_pages(),
-                            ));
-                            off += page_ref.nr_pages();
-                        }
-                        _ => {
-                            logln!("warn -- no page found for page in dirty set");
-                            off += 1;
-                        }
-                    }
-                }
-                pages
-            })
-            .collect::<Vec<_>>();
-        drop(page_tree);
-
         fn consecutive_slices(
             data: &[(PageNumber, PhysAddr, usize)],
         ) -> impl Iterator<Item = &[(PageNumber, PhysAddr, usize)]> {
@@ -202,7 +172,7 @@ impl ReqKind {
         static COUNTER_1: AtomicU64 = AtomicU64::new(1);
         let unique_id = COUNTER_1.fetch_add(1, Ordering::Relaxed) as u128;
 
-        let slices = consecutive_slices(pages.as_slice()).collect::<Vec<_>>();
+        let slices = consecutive_slices(pages).collect::<Vec<_>>();
         let runs = slices.iter().enumerate().map(|(i, run)| {
             let is_last = i == slices.len() - 1;
             let first = &run[0];
@@ -240,13 +210,10 @@ impl ReqKind {
 
         ReqKind::SyncRegion(SyncRegionInfo {
             reqs: Arc::new(runs.collect()),
-            shadow: shadow.map(Arc::new),
             id: object.id(),
             unique_id: unique_id.into(),
             sync_info,
         })
-        */
-        todo!()
     }
 
     pub fn new_del(obj_id: ObjID) -> Self {

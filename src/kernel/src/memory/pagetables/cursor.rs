@@ -1,6 +1,6 @@
 use crate::{arch::address::VirtAddr, memory::pagetables::Table};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 /// A type that refers to a region within the virtual address space.
 pub struct MappingCursor {
     start: VirtAddr,

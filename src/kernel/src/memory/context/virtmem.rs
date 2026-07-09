@@ -23,7 +23,7 @@ use crate::{
     idcounter::{Id, IdCounter, StableId},
     memory::{
         PhysAddr,
-        frame::{FrameRef, max_level_for_addr},
+        frame::FrameRef,
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
@@ -31,10 +31,11 @@ use crate::{
         tracker::FrameAllocFlags,
     },
     mutex::Mutex,
-    obj::{self, ObjectRef, PageNumber, pagetables::ObjectPageTable},
+    obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
     once::Once,
     security::KERNEL_SCTX,
     spinlock::Spinlock,
+    thread::current_thread_ref,
 };
 
 pub mod fault;
@@ -203,6 +204,11 @@ impl VirtContext {
         this
     }
 
+    pub fn try_with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> Option<R> {
+        let secctx = self.secctx.lock();
+        secctx.get(&sctx).map(|arch| cb(arch))
+    }
+
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
         //let sctx = 0.into();
         let secctx = self.secctx.lock();
@@ -212,30 +218,24 @@ impl VirtContext {
     }
 
     pub fn map_object(&self, info: &MapRegion, default_prots: Protections) {
-        let sctx = self.secctx.lock();
-        let sids = sctx.keys().copied().collect::<Vec<_>>();
-        drop(sctx);
+        let sctx = current_thread_ref()
+            .map(|ct| ct.secctx.active_id())
+            .unwrap_or(KERNEL_SCTX);
 
         let len = info.range.end - info.range.start;
-        for sid in sids {
-            let Ok(sctx) = crate::security::get_sctx(sid) else {
-                continue;
-            };
+        if let Ok(sctx) = crate::security::get_sctx(sctx) {
             let perms = sctx.lookup(info.object().id(), default_prots);
-            self.with_arch(sid, |arch| {
-                let mut pt = if info.stable.is_some() {
-                    info.stable.as_ref().unwrap().lock()
-                } else {
-                    info.object.lock_page_tables()
-                };
-
-                arch.object_map(
-                    MappingCursor::new(info.range.start, len),
-                    &mut *pt,
-                    perms.effective(default_prots, info.prot),
-                );
-            })
-        }
+            let mut pt = if info.stable.is_some() {
+                info.stable.as_ref().unwrap().lock()
+            } else {
+                info.object.lock_page_tables()
+            };
+            self.try_with_arch(sctx.id(), |arch| {
+                let cursor = MappingCursor::new(info.range.start, len);
+                pt.add_invalidate(arch.target.paddr(), cursor);
+                arch.object_map(cursor, &mut *pt, perms.effective(default_prots, info.prot));
+            });
+        };
     }
 
     pub fn ensure_object_mapped(
@@ -246,6 +246,7 @@ impl VirtContext {
         prot: Protections,
     ) -> bool {
         self.with_arch(sctxid, |arch| {
+            object_tables.add_invalidate(arch.target.paddr(), cursor);
             arch.ensure_object_mapped(cursor, object_tables, prot)
         })
     }
@@ -399,7 +400,6 @@ impl UserContext for VirtContext {
 
         let (_is_ok, default_prots) = object_info.object.check_id();
 
-        object_info.object().add_context(self);
         self.map_object(&new_slot_info, default_prots);
         let mut slots = self.regions.lock();
         if slots.lookup_region(slot.start_vaddr()).is_some() {
@@ -420,43 +420,21 @@ impl UserContext for VirtContext {
         }
     }
 
-    fn invalidate_object(
-        &self,
-        obj: ObjID,
-        _range: &core::ops::Range<PageNumber>,
-        _mode: obj::InvalidateMode,
-    ) {
-        let mut slots = self.regions.lock();
-        let arches = self.secctx.lock();
-        for arch in arches.values() {
-            let mut tlb = ArchTlbMgr::new(arch.target.paddr());
-            for info in slots.object_mappings(obj) {
-                let vlen = info.range.end - info.range.start;
-                let level = max_level_for_addr(vlen).unwrap_or(3);
-                tlb.enqueue(info.range.start, false, false, level);
-            }
-            tlb.finish();
-        }
-    }
-
     fn remove_object(&self, info: Self::MappingInfo) {
         let mut slots = self.regions.lock();
         if let Some(slot) = slots.remove_region(info.start_vaddr()) {
             let arches = self.secctx.lock();
             for arch in arches.values() {
-                arch.unmap(slot.mapping_cursor(0, MAX_SIZE));
-            }
-            for arch in arches.values() {
-                let mut tlb = ArchTlbMgr::new(arch.target.paddr());
-                for info in slots.object_mappings(slot.object().id()) {
-                    let vlen = info.range.end - info.range.start;
-                    let level = max_level_for_addr(vlen).unwrap_or(3);
-                    tlb.enqueue(info.range.start, false, false, level);
+                let cursor = slot.mapping_cursor(0, MAX_SIZE);
+                arch.unmap(cursor);
+                if slot.stable.is_none() {
+                    slot.object()
+                        .lock_page_tables()
+                        .remove_invalidate(arch.target.paddr(), cursor);
                 }
-                tlb.finish();
             }
-            slot.object.remove_context(self.id.value());
         }
+        // TODO
         let mut tlb = ArchTlbMgr::new(PhysAddr::new(0).unwrap());
         tlb.set_full_global();
         tlb.finish();
@@ -480,11 +458,7 @@ impl From<&VirtContextSlot> for ObjectContextInfo {
 
 impl Drop for VirtContext {
     fn drop(&mut self) {
-        let id = self.id().value();
-        // cleanup and object's context info
-        for info in self.regions.get_mut().mappings() {
-            info.object.remove_context(id)
-        }
+        // TODO: remove appropriate invalidations from objects.
     }
 }
 

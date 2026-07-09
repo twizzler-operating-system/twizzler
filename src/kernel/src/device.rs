@@ -23,9 +23,7 @@ use crate::{
     interrupt::WakeInfo,
     memory::PhysAddr,
     mutex::Mutex,
-    obj::{
-        InvalidateMode, LookupFlags, Object, ObjectRef, PageNumber, lookup_object, register_object,
-    },
+    obj::{LookupFlags, Object, ObjectRef, lookup_object, register_object},
     once::Once,
     syscall::create_user_slice,
 };
@@ -195,11 +193,6 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                     CacheType::WriteBack
                 };
                 obj.map_phys(obj_start as usize, start, end, ct)?;
-                obj.invalidate(
-                    PageNumber::from_offset(obj_start as usize)
-                        ..PageNumber::from_offset(obj_start as usize + len),
-                    InvalidateMode::Full,
-                );
                 Ok(KactionValue::U64(0))
             }
         },
