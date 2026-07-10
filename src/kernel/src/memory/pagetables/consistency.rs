@@ -49,8 +49,12 @@ impl Consistency {
     }
 
     /// Flush a cache-line.
-    pub fn flush(&mut self, addr: VirtAddr) {
-        self.cl.flush(addr);
+    pub fn add_cache_line(&mut self, addr: VirtAddr) {
+        self.cl.add_cache_line(addr);
+    }
+
+    pub fn flush_cache(&mut self) {
+        self.cl.flush();
     }
 
     /// Enqueue a page for freeing.

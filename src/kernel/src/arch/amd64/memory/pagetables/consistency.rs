@@ -201,11 +201,19 @@ impl TlbInvData {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 // Stores an address along with a few fields, like level, is_global. Since addresses
 // here are page aligned, we have room in the bottom bits so we can pack this into a u64.
 struct InvInstruction(u64);
+
+impl core::fmt::Debug for InvInstruction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InvInstruction")
+            .field("addr", &self.addr())
+            .finish_non_exhaustive()
+    }
+}
 
 impl InvInstruction {
     const ADDR_MASK: u64 = !0xfff;
@@ -255,12 +263,12 @@ impl ArchCacheLineMgr {
     /// for the same cache line will be batched. Flushes for different cache lines will cause
     /// older requests to flush immediately, and the new request will be flushed when this
     /// object is dropped.
-    pub fn flush(&mut self, line: VirtAddr) {
+    pub fn add_cache_line(&mut self, line: VirtAddr) {
         let addr: u64 = line.into();
         let addr = addr & !(CACHE_LINE_SIZE - 1);
         if let Some(dirty) = self.dirty {
             if dirty != addr {
-                self.do_flush();
+                self.flush();
                 self.dirty = Some(addr);
             }
         } else {
@@ -268,7 +276,7 @@ impl ArchCacheLineMgr {
         }
     }
 
-    fn do_flush(&mut self) {
+    pub fn flush(&mut self) {
         if let Some(addr) = self.dirty.take() {
             unsafe {
                 core::arch::asm!("clflush [{addr}]", addr = in(reg) addr);
@@ -279,13 +287,25 @@ impl ArchCacheLineMgr {
 
 impl Drop for ArchCacheLineMgr {
     fn drop(&mut self) {
-        self.do_flush();
+        self.flush();
     }
 }
 
 /// A management object for TLB invalidations that occur during a page table operation.
+#[derive(Clone)]
 pub struct ArchTlbMgr {
     data: TlbInvData,
+}
+
+impl core::fmt::Debug for ArchTlbMgr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ArchTlbMgr")
+            .field("target", &self.data.target())
+            .field("full", &self.data.full())
+            .field("global", &self.data.global())
+            .field("instructions", &self.data.instructions())
+            .finish()
+    }
 }
 
 impl ArchTlbMgr {

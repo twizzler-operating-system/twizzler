@@ -1,6 +1,5 @@
 use alloc::vec::{self, Vec};
 
-use bitset_core::BitSet;
 use itertools::Itertools;
 use twizzler_abi::device::CacheType;
 use twizzler_rt_abi::error::TwzError;
@@ -13,7 +12,7 @@ use crate::{
             Consistency, ContiguousProvider, DeferredUnmappingOps, MapInfo, MapReader, Mapper,
             MappingCursor, MappingSettings, Table,
         },
-        tracker::{FrameAllocFlags, alloc_frame},
+        tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
     obj::{Object, ObjectRef, PageNumber},
 };
@@ -35,12 +34,26 @@ bitflags::bitflags! {
     }
 }
 
+impl Drop for ObjectPageTable {
+    fn drop(&mut self) {
+        let mut consist = Consistency::new_object_tables();
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
+        let _ = self.mapper.unmap(cursor, &mut consist);
+        self.run_consistency(consist).run_all();
+        let root_frame = get_frame(self.mapper.root_address()).expect("root frame should exist");
+        root_frame.set_pt(false);
+        root_frame.dec_refcount();
+        free_frame(root_frame);
+    }
+}
+
 impl ObjectPageTable {
     pub fn new() -> Self {
         let frame = alloc_frame(
             FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
         );
         frame.set_pt(true);
+        frame.inc_refcount();
         let mut mapper = Mapper::new(frame.start_address());
         mapper.set_start_level(Table::top_level() - 2);
         Self {
@@ -290,12 +303,12 @@ impl ObjectPageTable {
         Ok(dirty_list)
     }
 
-    pub fn maybe_cow_at(&mut self, offset: u64) -> Result<bool, TwzError> {
+    pub fn maybe_cow_at(&mut self, offset: u64, mark_dirty: bool) -> Result<bool, TwzError> {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
 
         let mut consist = Consistency::new_object_tables();
-        let did_cow = self.mapper.cow_at(cursor, &mut consist);
+        let did_cow = self.mapper.cow_at(cursor, &mut consist, mark_dirty);
 
         self.run_consistency(consist).run_all();
 
@@ -313,8 +326,7 @@ impl ObjectPageTable {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         if flags.contains(FindFrameFlags::WRITE) {
-            *did_cow = self.maybe_cow_at(offset)?;
-            // TODO: mark dirty
+            *did_cow = self.maybe_cow_at(offset, true)?;
         }
         let mut reader = self.mapper.readmap(cursor);
         let page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
@@ -430,61 +442,5 @@ impl Object {
             .setup_cow_range(&mut new_pt.mapper, cursor, cursor, &mut consist);
         old_pt.run_consistency(consist).run_all();
         r.map(|_| new_pt)
-    }
-}
-
-#[derive(Clone)]
-pub struct DirtySet {
-    set: Vec<u8>,
-}
-
-impl DirtySet {
-    pub fn new() -> Self {
-        Self { set: Vec::new() }
-    }
-
-    pub fn drain_all(&mut self) -> Vec<(PageNumber, usize)> {
-        let mut pages: Vec<(PageNumber, usize)> = Vec::new();
-        for b in 0..self.set.bit_len() {
-            if self.set.bit_test(b) {
-                if b > 0 && self.set.bit_test(b - 1) {
-                    pages.last_mut().unwrap().1 += 1;
-                } else {
-                    pages.push((PageNumber::from(b), 1));
-                }
-            }
-        }
-        self.set.fill(0);
-        pages
-    }
-
-    fn is_dirty(&self, pn: PageNumber) -> bool {
-        if pn.0 < self.set.bit_len() {
-            self.set.bit_test(pn.0)
-        } else {
-            false
-        }
-    }
-
-    pub fn add_dirty(&mut self, pn: PageNumber, num: usize) {
-        if pn.0 + num > self.set.bit_len() {
-            let add = ((pn.0 + num) - self.set.bit_len()) / 8 + 1;
-            self.set.extend((0..add).into_iter().map(|_| 0));
-        }
-        for i in 0..num {
-            self.set.bit_set(pn.0 + i);
-        }
-    }
-
-    pub fn add_dirty_cursor(&mut self, cursor: MappingCursor) {
-        let start = PageNumber::from_address(cursor.start());
-        let len = cursor.remaining() / PageNumber::PAGE_SIZE;
-        self.add_dirty(start, len);
-    }
-
-    fn reset_dirty(&mut self, pn: PageNumber) {
-        if pn.0 < self.set.bit_len() {
-            self.set.bit_reset(pn.0);
-        }
     }
 }

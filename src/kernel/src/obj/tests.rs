@@ -135,7 +135,7 @@ fn test_object_cow() {
     copy_ranges_and_check(&src, ps, &dest, ps, ps * 250);
     let dc = dest
         .lock_page_tables()
-        .maybe_cow_at((ps * 100) as u64)
+        .maybe_cow_at((ps * 100) as u64, false)
         .unwrap();
     assert!(dc);
     dest.write_at(&0u8, ps * 100).unwrap();

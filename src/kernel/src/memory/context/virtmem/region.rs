@@ -16,7 +16,7 @@ use twizzler_rt_abi::{
 
 use super::PageFaultFlags;
 use crate::{
-    arch::VirtAddr,
+    arch::{VirtAddr, memory::pagetables::ArchTlbMgr},
     instant::Instant,
     memory::{
         FAULT_STATS,
@@ -244,7 +244,7 @@ impl MapRegion {
                 // TODO
                 return Err(ObjectError::MapFailed.into());
             }
-            let did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64)?;
+            let did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
             log::trace!(
                 "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
                 page_number,
@@ -257,7 +257,6 @@ impl MapRegion {
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
-
         Ok(())
     }
 

@@ -90,6 +90,7 @@ impl Mapper {
         let root = self.root_mut();
         let r = root.map(consist, cursor, level, phys);
         self.generation += 1;
+        consist.flush_cache();
         r
     }
 
@@ -112,6 +113,7 @@ impl Mapper {
         let r = root.unmap(consist, cursor, level);
         log::trace!("unmap: done");
         self.generation += 1;
+        consist.flush_cache();
         r
     }
 
@@ -134,6 +136,7 @@ impl Mapper {
         let r = root.change(consist, cursor, level, settings);
         self.generation += 1;
         log::trace!("change: done");
+        consist.flush_cache();
         r
     }
 
@@ -175,10 +178,12 @@ impl Mapper {
         consist: &mut Consistency,
     ) -> Result<(), TwzError> {
         let level = self.start_level;
-        self.generation += 1;
         let root = self.root_mut();
-        object_tables
-            .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, settings))
+        let r = object_tables
+            .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, settings));
+        self.generation += 1;
+        consist.flush_cache();
+        r
     }
 
     pub fn with_dirty_bits(
@@ -199,6 +204,7 @@ impl Mapper {
         if d {
             self.generation += 1;
         }
+        consist.flush_cache();
         log::trace!("with_dirty_bits: done");
         Ok(d)
     }
@@ -245,9 +251,11 @@ impl Mapper {
         consist: &mut Consistency,
     ) -> Result<(), TwzError> {
         let start_level = self.start_level;
-        self.generation += 1;
         let root = self.root_mut();
-        root.split_to_level(consist, addr, start_level, level)
+        let r = root.split_to_level(consist, addr, start_level, level);
+        self.generation += 1;
+        consist.flush_cache();
+        r
     }
 
     pub fn setup_cow_range(
@@ -283,6 +291,7 @@ impl Mapper {
                 consist,
             )?;
         }
+        consist.flush_cache();
         Ok(())
     }
 
@@ -307,6 +316,7 @@ impl Mapper {
             );
             root.setup_zero_range(consist, &mut cursor, start_level)?;
         }
+        consist.flush_cache();
         Ok(())
     }
 
@@ -323,10 +333,13 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         consist: &mut Consistency,
+        mark_dirty: bool,
     ) -> Result<bool, TwzError> {
         let level = self.start_level;
         self.generation += 1;
         let root = self.root_mut();
-        root.cow_copy(consist, &cursor, level)
+        let r = root.cow_copy(consist, &cursor, level, mark_dirty);
+        consist.flush_cache();
+        r
     }
 }

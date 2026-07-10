@@ -222,6 +222,10 @@ impl VirtContext {
             .map(|ct| ct.secctx.active_id())
             .unwrap_or(KERNEL_SCTX);
 
+        if sctx != KERNEL_SCTX {
+            return;
+        }
+
         let len = info.range.end - info.range.start;
         if let Ok(sctx) = crate::security::get_sctx(sctx) {
             let perms = sctx.lookup(info.object().id(), default_prots);

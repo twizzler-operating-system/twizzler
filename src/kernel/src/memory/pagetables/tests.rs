@@ -92,7 +92,7 @@ mod test {
             MappingFlags::GLOBAL,
         );
         let mut consist = Consistency::new_full_global();
-        m.change(cur, &settings2, &mut consist);
+        m.change(cur, &settings2, &mut consist).unwrap();
         consist.tlb_mut().finish();
 
         let mut reader = m.readmap(cur);
@@ -104,7 +104,7 @@ mod test {
         assert_eq!(read.settings().flags(), settings2.flags());
 
         let mut consist = Consistency::new_full_global();
-        m.unmap(cur, &mut consist);
+        m.unmap(cur, &mut consist).unwrap();
         consist.tlb_mut().finish();
         consist.into_deferred().run_all();
 

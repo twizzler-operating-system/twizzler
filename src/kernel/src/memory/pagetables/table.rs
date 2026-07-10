@@ -101,8 +101,9 @@ impl Table {
 
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry as *const _);
-        consist.flush(entry_addr);
+        consist.add_cache_line(entry_addr);
 
+        // TODO: if we go from READ to WRITE and the same paddr, can we avoid doing this?
         if was_present {
             consist.enqueue(vaddr, was_global, was_terminal, level)
         }
@@ -155,6 +156,8 @@ impl Table {
         index: usize,
         level: usize,
         consist: &mut Consistency,
+        vaddr: VirtAddr,
+        mark_dirty: bool,
     ) -> Result<bool, TwzError> {
         let entry = &mut self[index];
         if !entry.is_present() {
@@ -162,8 +165,8 @@ impl Table {
         }
         let frame = get_frame(entry.addr(level));
         if frame.is_none() {
-            // TODO: this would only happen for untracked frames, but we'd still like to copy them.
-            //log::warn!("do_cow_copy: no frame for entry at level {}!", level);
+            // TODO: this would only happen for untracked frames, but we'd still like to copy them
+            // maybe?
             return Ok(false);
         }
         let frame = frame.unwrap();
@@ -196,8 +199,8 @@ impl Table {
         );
 
         if frame.start_address() == orig_frame.start_address() {
-            // TODO: Make these changes with update entry
-            self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
+            let entry = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
+            self.update_entry(consist, index, entry, vaddr, true, level);
             return Ok(false);
         }
 
@@ -208,19 +211,35 @@ impl Table {
                 if next_table[i].is_present() {
                     let new_flags = next_table[i].flags() - EntryFlags::WRITE;
                     next_table[i].set_flags(new_flags);
+                    // TODO: this is too many flushes.
+                    consist.add_cache_line(VirtAddr::from_ptr(&next_table[i]));
                     if let Some(next_frame) = get_frame(next_table[i].addr(level - 1)) {
                         next_frame.set_cow(true);
                         next_frame.inc_refcount();
                     }
                 }
             }
+            consist.enqueue(vaddr, false, false, level);
         } else {
             assert!(!frame.is_pt());
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        let new_flags = flags
+            | EntryFlags::WRITE
+            | if mark_dirty {
+                EntryFlags::DIRTY
+            } else {
+                EntryFlags::empty()
+            };
 
-        // TODO: Make these changes with update entry
-        self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
+        self.update_entry(
+            consist,
+            index,
+            Entry::new(frame.start_address(), new_flags),
+            vaddr,
+            true,
+            level,
+        );
 
         Ok(true)
     }
@@ -230,6 +249,7 @@ impl Table {
         consist: &mut Consistency,
         cursor: &MappingCursor,
         level: usize,
+        mark_dirty: bool,
     ) -> Result<bool, TwzError> {
         log::log!(
             LOG_LEVEL,
@@ -238,22 +258,18 @@ impl Table {
             level,
             cursor.biggest_level()
         );
-        if level < cursor.biggest_level() {
-            //return Some(false);
-        }
 
         let index = Self::get_index(cursor.start(), level);
         let mut did_cow = false;
-        // TODO: stop early if we can COW a PT.
         if self[index].is_huge() && level != Self::last_level() {
             self.split_huge(index, level, consist)?;
         } else {
-            did_cow |= self.do_cow_copy(index, level, consist)?;
+            did_cow |= self.do_cow_copy(index, level, consist, cursor.start(), mark_dirty)?;
         }
 
-        if level > 0 {
+        if level > 0 && !did_cow {
             if let Some(next) = self.next_table_mut(index) {
-                did_cow |= next.cow_copy(consist, cursor, level - 1)?;
+                did_cow |= next.cow_copy(consist, cursor, level - 1, mark_dirty)?;
             }
         }
         Ok(did_cow)
@@ -327,7 +343,7 @@ impl Table {
 
         if let Some(frame) = self.next_table_frame(index) {
             if frame.is_cow() {
-                self.do_cow_copy(index, current_level, consist)?;
+                self.do_cow_copy(index, current_level, consist, addr, false)?;
             }
         }
 
@@ -399,7 +415,6 @@ impl Table {
                 && src_cursor.remaining() >= Self::level_to_page_size(level);
 
             if !is_aligned {
-                // TODO: is this safe?
                 log::log!(
                     LOG_LEVEL,
                     "not aligned for this level: src_cursor {:?}, dst_cursor {:?}, level {}",
@@ -444,15 +459,23 @@ impl Table {
                 src_flags
             );
 
-            let dest_was_present = dest[dst_index].is_present();
-            // TODO: Make these changes with update entry
-            dest[dst_index] = Entry::new(src_addr, src_flags - EntryFlags::WRITE);
-            self[src_index] = Entry::new(src_addr, src_flags - EntryFlags::WRITE);
+            self.update_entry(
+                consist,
+                src_index,
+                Entry::new(src_addr, src_flags - EntryFlags::WRITE),
+                src_cursor.start(),
+                true,
+                level,
+            );
 
-            // TODO: remove this once the above is fixed
-            if !dest_was_present {
-                dest.set_count(dest.read_count() + 1);
-            }
+            dest.update_entry(
+                consist,
+                dst_index,
+                Entry::new(src_addr, src_flags - EntryFlags::WRITE),
+                dst_cursor.start(),
+                true,
+                level,
+            );
 
             *src_cursor = src_cursor.advance_until_empty(Self::level_to_page_size(level));
             *dst_cursor = dst_cursor.advance_until_empty(Self::level_to_page_size(level));
@@ -534,7 +557,7 @@ impl Table {
                 assert_ne!(level, Self::last_level());
                 self.populate(idx, EntryFlags::intermediate())?;
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                    self.do_cow_copy(idx, level, consist)?;
+                    self.do_cow_copy(idx, level, consist, cursor.start(), false)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.map(consist, cursor, Self::next_level(level), phys)?;
@@ -585,7 +608,7 @@ impl Table {
                 }
             } else if entry.is_present() && level != Self::last_level() {
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                    self.do_cow_copy(idx, level, consist)?;
+                    self.do_cow_copy(idx, level, consist, cursor.start(), false)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.setup_zero_range(consist, cursor, Self::next_level(level))?;
@@ -635,7 +658,7 @@ impl Table {
             } else if entry.is_present() && level != Self::last_level() {
                 if !entry.is_object_table() {
                     if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                        self.do_cow_copy(idx, level, consist)?;
+                        self.do_cow_copy(idx, level, consist, cursor.start(), false)?;
                     }
                     let next_table = self.next_table_mut(idx).unwrap();
                     next_table.unmap(consist, cursor, Self::next_level(level))?;
@@ -706,7 +729,7 @@ impl Table {
                 );
             } else if is_present && level != Self::last_level() {
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                    self.do_cow_copy(idx, level, consist)?;
+                    self.do_cow_copy(idx, level, consist, cursor.start(), false)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
                 next_table.change(consist, cursor, Self::next_level(level), settings)?;
@@ -731,7 +754,7 @@ impl Table {
         let start_index = Self::get_index(cursor.start(), level);
         let mut did_clear = false;
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
-            let entry = &mut self[idx];
+            let entry = self[idx];
             let is_present = entry.is_present();
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
             let is_dirty = entry.flags().contains(EntryFlags::DIRTY);
@@ -745,7 +768,14 @@ impl Table {
                     );
                     let clear = cb(info);
                     if clear {
-                        entry.set_flags(entry.flags() - EntryFlags::DIRTY);
+                        self.update_entry(
+                            consist,
+                            idx,
+                            Entry::new(entry.addr(level), entry.flags() - EntryFlags::DIRTY),
+                            cursor.start(),
+                            true,
+                            level,
+                        );
                         did_clear |= true;
                     }
                 }
