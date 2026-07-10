@@ -11,24 +11,19 @@ use crate::{
         VirtAddr,
         frame::get_frame,
         pagetables::{
-            Consistency, ContiguousProvider, DeferredUnmappingOps, MapReader, Mapper,
-            MappingCursor, MappingFlags, MappingSettings, PhysAddrProvider,
+            Consistency, ContiguousProvider, MapReader, Mapper, MappingCursor, MappingFlags,
+            MappingSettings, PhysAddrProvider,
         },
         tracker::{FrameAllocFlags, alloc_frame, free_frame},
     },
-    mutex::Mutex,
     obj::pagetables::ObjectPageTable,
     once::Once,
-    spinlock::Spinlock,
+    spinlock::{SpinLockGuard, Spinlock},
 };
-
-pub struct ArchContextInner {
-    mapper: Mapper,
-}
 
 pub struct ArchContext {
     pub target: ArchContextTarget,
-    inner: Mutex<ArchContextInner>,
+    inner: Spinlock<Mapper>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -74,11 +69,14 @@ impl ArchContext {
     }
 
     pub fn new() -> Self {
-        let inner = ArchContextInner::new();
-        let target = ArchContextTarget(inner.mapper.root_address().into());
+        let mut mapper = Mapper::new(
+            alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
+        );
+        setup_mapper_with_kpages(&mut mapper);
+        let target = ArchContextTarget(mapper.root_address().into());
         Self {
             target,
-            inner: Mutex::new(inner),
+            inner: Spinlock::new(mapper),
         }
     }
 
@@ -88,7 +86,7 @@ impl ArchContext {
 
     pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
         let mut inner = self.inner.lock();
-        let result = f(&mut inner.mapper);
+        let result = f(&mut inner);
         result
     }
 
@@ -105,43 +103,54 @@ impl ArchContext {
         }
     }
 
-    pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
-        let ops = if cursor.start().is_kernel() {
-            let consist = Consistency::new_full_global();
-            kernel_mapper().lock().map(cursor, phys, consist)
+    fn lock_with_consist(&self, cursor: MappingCursor) -> (Consistency, SpinLockGuard<'_, Mapper>) {
+        let consist = if cursor.start().is_kernel() {
+            Consistency::new_full_global()
         } else {
-            self.inner.lock().map(cursor, phys)
+            Consistency::new(self.target.paddr())
         };
-        if let Err(ops) = ops {
-            ops.run_all();
-        }
+        let guard = self.inner.lock();
+        (consist, guard)
+    }
+
+    pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+
+        guard.map(cursor, phys, &mut consist).unwrap();
+        consist.tlb_mut().finish();
+        drop(guard);
+        consist.into_deferred().run_all();
     }
 
     pub fn object_map(
         &self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
-        prot: Protections,
+        settings: MappingSettings,
     ) {
-        let ops = self.inner.lock().object_map(cursor, object_tables, prot);
-        ops.run_all();
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard
+            .object_map(cursor, object_tables, settings, &mut consist)
+            .unwrap();
+        consist.tlb_mut().finish();
+        drop(guard);
+        consist.into_deferred().run_all();
     }
 
     pub fn ensure_object_mapped(
         &self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
-        prot: Protections,
+        settings: MappingSettings,
     ) -> bool {
-        let mut inner = self.inner.lock();
-        if !inner.mapper.is_object_mapped(cursor, prot) {
-            log::debug!(
-                "mapping object at cursor {:?} in context {:?}",
-                cursor,
-                self.target
-            );
-            let ops = inner.object_map(cursor, object_tables, prot);
-            ops.run_all();
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        if !guard.is_object_mapped(cursor, settings) {
+            guard
+                .object_map(cursor, object_tables, settings, &mut consist)
+                .unwrap();
+            consist.tlb_mut().finish();
+            drop(guard);
+            consist.into_deferred().run_all();
             true
         } else {
             false
@@ -149,27 +158,26 @@ impl ArchContext {
     }
 
     pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
-        if cursor.start().is_kernel() {
-            kernel_mapper().lock().change(cursor, settings);
-        } else {
-            self.inner.lock().change(cursor, settings);
-        }
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard.change(cursor, settings, &mut consist).unwrap();
+        consist.tlb_mut().finish();
+        drop(guard);
+        consist.into_deferred().run_all();
     }
 
     pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = if cursor.start().is_kernel() {
-            kernel_mapper().lock().unmap(cursor)
-        } else {
-            self.inner.lock().unmap(cursor)
-        };
-        ops.run_all();
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard.unmap(cursor, &mut consist).unwrap();
+        consist.tlb_mut().finish();
+        drop(guard);
+        consist.into_deferred().run_all();
     }
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
         let r = if cursor.start().is_kernel() {
             f(kernel_mapper().lock().readmap(cursor))
         } else {
-            f(self.inner.lock().mapper.readmap(cursor))
+            f(self.inner.lock().readmap(cursor))
         };
         r
     }
@@ -197,6 +205,54 @@ unsafe extern "C-unwind" fn trap_entry() {
     panic!("hit trap entry");
 }
 
+fn setup_mapper_with_kpages(mapper: &mut Mapper) {
+    let km = kernel_mapper().lock();
+    for idx in 256..512 {
+        mapper.set_top_level_table(idx, km.get_top_level_table(idx));
+    }
+    let frame =
+        alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK);
+    let mut z = ContiguousProvider::new(
+        frame.start_address(),
+        0x1000,
+        MappingSettings::new(
+            Protections::READ | Protections::EXEC,
+            twizzler_abi::device::CacheType::WriteBack,
+            MappingFlags::USER,
+        ),
+    );
+    let mut consist = Consistency::new_full_global();
+    mapper
+        .map(
+            MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000),
+            &mut z,
+            &mut consist,
+        )
+        .unwrap();
+    consist.tlb_mut().finish();
+    consist.into_deferred().run_all();
+    let start = trampoline_trap as *const u8;
+    let len = 0x100;
+    #[allow(invalid_null_arguments)]
+    let dest = frame.start_address().kernel_vaddr().as_mut_ptr::<u8>();
+    unsafe { dest.copy_from(start, len) };
+}
+
+impl Drop for ArchContext {
+    fn drop(&mut self) {
+        // Unmap all user memory to clear any allocated page tables.
+        self.unmap(MappingCursor::new(
+            VirtAddr::start_user_memory(),
+            VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+        ));
+        // Manually free the root.
+        if let Some(frame) = get_frame(self.inner.lock().root_address()) {
+            free_frame(frame);
+        }
+    }
+}
+
+/*
 impl ArchContextInner {
     fn new() -> Self {
         let mut mapper = Mapper::new(
@@ -205,36 +261,6 @@ impl ArchContextInner {
             )
             .start_address(),
         );
-
-        let km = kernel_mapper().lock();
-        for idx in 256..512 {
-            mapper.set_top_level_table(idx, km.get_top_level_table(idx));
-        }
-        let frame = alloc_frame(
-            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
-        );
-        let mut z = ContiguousProvider::new(
-            frame.start_address(),
-            0x1000,
-            MappingSettings::new(
-                Protections::READ | Protections::EXEC,
-                twizzler_abi::device::CacheType::WriteBack,
-                MappingFlags::USER,
-            ),
-        );
-        mapper
-            .map(
-                MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000),
-                &mut z,
-                Consistency::new_full_global(),
-            )
-            .unwrap();
-        let start = trampoline_trap as *const u8;
-        let len = 0x100;
-        #[allow(invalid_null_arguments)]
-        let dest = frame.start_address().kernel_vaddr().as_mut_ptr::<u8>();
-        unsafe { dest.copy_from(start, len) };
-        Self { mapper }
     }
 
     fn map(
@@ -253,8 +279,13 @@ impl ArchContextInner {
         self.mapper.map(cursor, phys, consist)
     }
 
-    fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.mapper.change(cursor, settings);
+    fn change(
+        &mut self,
+        cursor: MappingCursor,
+        settings: &MappingSettings,
+        consist: &mut Consistency,
+    ) {
+        self.mapper.change(cursor, settings, consist);
     }
 
     fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
@@ -277,18 +308,5 @@ impl ArchContextInner {
     }
 }
 
-impl Drop for ArchContextInner {
-    fn drop(&mut self) {
-        // Unmap all user memory to clear any allocated page tables.
-        self.mapper
-            .unmap(MappingCursor::new(
-                VirtAddr::start_user_memory(),
-                VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
-            ))
-            .run_all();
-        // Manually free the root.
-        if let Some(frame) = get_frame(self.mapper.root_address()) {
-            free_frame(frame);
-        }
-    }
-}
+
+*/

@@ -8,10 +8,10 @@ mod test {
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
             pagetables::{
-                consistency::Consistency, phys_provider, Mapper, MappingCursor, MappingFlags,
-                MappingSettings, PhysMapInfo,
+                Mapper, MappingCursor, MappingFlags, MappingSettings, PhysMapInfo,
+                consistency::Consistency, phys_provider,
             },
-            tracker::{alloc_frame, FrameAllocFlags},
+            tracker::{FrameAllocFlags, alloc_frame},
         },
     };
 
@@ -73,7 +73,8 @@ mod test {
         let mut phys = StaticProvider { settings };
         let mut consist = Consistency::new_full_global();
         consist.set_full_global();
-        let _ = m.map(cur, &mut phys, consist);
+        let _ = m.map(cur, &mut phys, &mut consist);
+        consist.tlb_mut().finish();
 
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();
@@ -90,7 +91,9 @@ mod test {
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
-        m.change(cur, &settings2);
+        let mut consist = Consistency::new_full_global();
+        m.change(cur, &settings2, &mut consist);
+        consist.tlb_mut().finish();
 
         let mut reader = m.readmap(cur);
         let read = reader.nth(0).unwrap();
@@ -100,8 +103,10 @@ mod test {
         assert_eq!(read.settings().perms(), settings2.perms());
         assert_eq!(read.settings().flags(), settings2.flags());
 
-        let d = m.unmap(cur);
-        d.run_all();
+        let mut consist = Consistency::new_full_global();
+        m.unmap(cur, &mut consist);
+        consist.tlb_mut().finish();
+        consist.into_deferred().run_all();
 
         let mut reader = m.readmap(cur);
         assert_eq!(reader.next(), None);

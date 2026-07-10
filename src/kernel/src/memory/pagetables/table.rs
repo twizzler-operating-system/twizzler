@@ -1,4 +1,4 @@
-use twizzler_abi::object::Protections;
+use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use super::{MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, consistency::Consistency};
 use crate::{
@@ -58,20 +58,21 @@ impl Table {
             && phys_len >= page_size
     }
 
-    pub(super) fn populate(&mut self, index: usize, flags: EntryFlags) -> Option<()> {
+    pub(super) fn populate(&mut self, index: usize, flags: EntryFlags) -> Result<(), TwzError> {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
             let frame = try_alloc_frame(
                 FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
                 PHYS_LEVEL_LAYOUTS[0],
-            )?;
+            )
+            .ok_or(ResourceError::OutOfMemory)?;
             frame.set_pt(true);
             frame.inc_refcount();
             *entry = Entry::new(frame.start_address(), flags);
             self.set_count(count + 1);
         }
-        Some(())
+        Ok(())
     }
 
     fn update_entry(
@@ -115,10 +116,15 @@ impl Table {
         }
     }
 
-    pub(super) fn split_huge(&mut self, index: usize, level: usize) -> Option<()> {
+    pub(super) fn split_huge(
+        &mut self,
+        index: usize,
+        level: usize,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let entry = &mut self[index];
         if !entry.is_present() || !entry.is_huge() || level == 0 {
-            return Some(());
+            return Ok(());
         }
         assert_ne!(level, Self::last_level());
         let start_paddr = entry.addr(level);
@@ -134,30 +140,35 @@ impl Table {
         let next_table = self.next_table_mut(index).unwrap();
 
         for i in 0..Table::PAGE_TABLE_ENTRIES {
-            let paddr = start_paddr
-                .offset(i * Self::level_to_page_size(level))
-                .ok()?;
-            let frame = get_frame(paddr).unwrap();
-            frame.inc_refcount();
-            next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
+            if let Ok(paddr) = start_paddr.offset(i * Self::level_to_page_size(level)) {
+                if let Some(frame) = get_frame(paddr) {
+                    frame.inc_refcount();
+                    next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
+                }
+            }
         }
-        Some(())
+        Ok(())
     }
 
-    pub(super) fn do_cow_copy(&mut self, index: usize, level: usize) -> Option<bool> {
+    pub(super) fn do_cow_copy(
+        &mut self,
+        index: usize,
+        level: usize,
+        consist: &mut Consistency,
+    ) -> Result<bool, TwzError> {
         let entry = &mut self[index];
         if !entry.is_present() {
-            return Some(false);
+            return Ok(false);
         }
         let frame = get_frame(entry.addr(level));
         if frame.is_none() {
             // TODO: this would only happen for untracked frames, but we'd still like to copy them.
             //log::warn!("do_cow_copy: no frame for entry at level {}!", level);
-            return Some(false);
+            return Ok(false);
         }
         let frame = frame.unwrap();
         if !frame.is_cow() {
-            return Some(false);
+            return Ok(false);
         }
         assert!(!entry.is_huge() || level == Self::last_level());
 
@@ -170,9 +181,9 @@ impl Table {
         let frame = frame.cow_frame(alloc);
         if frame.is_none() {
             log::warn!("failed to allocate frame for COW copy at level {}", level);
-            return None;
+            return Err(ResourceError::OutOfMemory.into());
         }
-        let frame = frame?;
+        let frame = frame.ok_or(ResourceError::OutOfMemory)?;
 
         log::log!(
             LOG_LEVEL,
@@ -187,7 +198,7 @@ impl Table {
         if frame.start_address() == orig_frame.start_address() {
             // TODO: Make these changes with update entry
             self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
-            return Some(false);
+            return Ok(false);
         }
 
         if level != 0 {
@@ -211,7 +222,7 @@ impl Table {
         // TODO: Make these changes with update entry
         self[index] = Entry::new(frame.start_address(), flags | EntryFlags::WRITE);
 
-        Some(true)
+        Ok(true)
     }
 
     pub(super) fn cow_copy(
@@ -219,7 +230,7 @@ impl Table {
         consist: &mut Consistency,
         cursor: &MappingCursor,
         level: usize,
-    ) -> Option<bool> {
+    ) -> Result<bool, TwzError> {
         log::log!(
             LOG_LEVEL,
             "cow_copy: cursor {:?}, level {}, biggest_level {}",
@@ -235,9 +246,9 @@ impl Table {
         let mut did_cow = false;
         // TODO: stop early if we can COW a PT.
         if self[index].is_huge() && level != Self::last_level() {
-            self.split_huge(index, level)?;
+            self.split_huge(index, level, consist)?;
         } else {
-            did_cow |= self.do_cow_copy(index, level)?;
+            did_cow |= self.do_cow_copy(index, level, consist)?;
         }
 
         if level > 0 {
@@ -245,7 +256,7 @@ impl Table {
                 did_cow |= next.cow_copy(consist, cursor, level - 1)?;
             }
         }
-        Some(did_cow)
+        Ok(did_cow)
     }
 
     pub(super) fn object_map(
@@ -254,15 +265,15 @@ impl Table {
         cursor: MappingCursor,
         level: usize,
         object_tables: &mut Mapper,
-        prot: Protections,
-    ) -> Option<()> {
+        settings: MappingSettings,
+    ) -> Result<(), TwzError> {
         let index = Self::get_index(cursor.start(), level);
 
         let max_level = object_tables.start_level();
         let target_level = cursor.biggest_level().min(max_level);
 
         if level == target_level + 1 {
-            let paddr = object_tables.get_table_addr(target_level);
+            let paddr = object_tables.get_table_addr(target_level)?;
             let frame = get_frame(paddr).unwrap();
             frame.inc_refcount();
             assert!(frame.is_pt());
@@ -273,7 +284,8 @@ impl Table {
                 paddr
             );
             let mut flags = EntryFlags::intermediate();
-            flags.apply_perms(prot);
+            flags.apply_perms(settings.perms());
+            // TODO: set cache type
             flags.insert(EntryFlags::OBJECT_TABLE);
             self.update_entry(
                 consist,
@@ -283,7 +295,7 @@ impl Table {
                 false,
                 level,
             );
-            Some(())
+            Ok(())
         } else if level > target_level + 1 {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
@@ -293,9 +305,9 @@ impl Table {
                 cursor,
                 Self::next_level(level),
                 object_tables,
-                prot,
-            );
-            Some(())
+                settings,
+            )?;
+            Ok(())
         } else {
             panic!("tried to map within arch-tables for shared tables");
         }
@@ -307,15 +319,15 @@ impl Table {
         addr: VirtAddr,
         current_level: usize,
         target_level: usize,
-    ) -> Option<()> {
+    ) -> Result<(), TwzError> {
         if target_level == current_level {
-            return Some(());
+            return Ok(());
         }
         let index = Self::get_index(addr, current_level);
 
         if let Some(frame) = self.next_table_frame(index) {
             if frame.is_cow() {
-                self.do_cow_copy(index, current_level)?;
+                self.do_cow_copy(index, current_level, consist)?;
             }
         }
 
@@ -324,7 +336,7 @@ impl Table {
         }
 
         if self[index].is_present() && self[index].is_huge() {
-            self.split_huge(index, current_level)?;
+            self.split_huge(index, current_level, consist)?;
         } else if !self[index].is_present() {
             self.populate(index, EntryFlags::intermediate())?;
         }
@@ -336,7 +348,7 @@ impl Table {
             target_level,
         )?;
 
-        Some(())
+        Ok(())
     }
 
     pub fn setup_cow_range(
@@ -345,7 +357,8 @@ impl Table {
         src_cursor: &mut MappingCursor,
         dst_cursor: &mut MappingCursor,
         level: usize,
-    ) -> Option<()> {
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         assert!(src_cursor.remaining() == dst_cursor.remaining());
 
         let src_start_index = Self::get_index(src_cursor.start(), level);
@@ -412,6 +425,7 @@ impl Table {
                     src_cursor,
                     dst_cursor,
                     level - 1,
+                    consist,
                 )?;
                 continue;
             }
@@ -444,7 +458,7 @@ impl Table {
             *dst_cursor = dst_cursor.advance_until_empty(Self::level_to_page_size(level));
         }
 
-        Some(())
+        Ok(())
     }
 
     pub(super) fn map(
@@ -453,7 +467,7 @@ impl Table {
         mut cursor: MappingCursor,
         level: usize,
         phys: &mut impl PhysAddrProvider,
-    ) -> Option<()> {
+    ) -> Result<(), TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
         log::trace!(
             "map: level {}, start_index {}, cursor {:?}",
@@ -465,7 +479,9 @@ impl Table {
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
-            let paddr = phys.peek()?;
+            let Some(paddr) = phys.peek() else {
+                break;
+            };
             if entry.is_present() && (is_huge || level == Self::last_level()) {
                 phys.consume(Self::level_to_page_size(level));
                 if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -502,6 +518,7 @@ impl Table {
                     Entry::new(
                         paddr.addr,
                         EntryFlags::from(&paddr.settings)
+                            | EntryFlags::DIRTY
                             | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
@@ -517,10 +534,10 @@ impl Table {
                 assert_ne!(level, Self::last_level());
                 self.populate(idx, EntryFlags::intermediate())?;
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                    self.do_cow_copy(idx, level);
+                    self.do_cow_copy(idx, level, consist)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.map(consist, cursor, Self::next_level(level), phys);
+                next_table.map(consist, cursor, Self::next_level(level), phys)?;
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -529,7 +546,54 @@ impl Table {
                 break;
             }
         }
-        Some(())
+        Ok(())
+    }
+
+    pub(super) fn setup_zero_range(
+        &mut self,
+        consist: &mut Consistency,
+        cursor: &mut MappingCursor,
+        level: usize,
+    ) -> Result<(), TwzError> {
+        let start_index = Self::get_index(cursor.start(), level);
+        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
+            if cursor.remaining() == 0 {
+                break;
+            }
+            let entry = &mut self[idx];
+            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if entry.is_present() && (is_huge || level == Self::last_level()) {
+                let frame = get_frame(entry.addr(level));
+                let flags = entry.flags();
+                let mut new_entry = Entry::new_unused();
+                new_entry.set_flags(new_entry.flags() | EntryFlags::DIRTY);
+                self.update_entry(consist, idx, new_entry, cursor.start(), true, level);
+                if let Some(frame) = frame
+                    && !flags.contains(EntryFlags::WIRED)
+                {
+                    assert!(!frame.is_pt());
+                    log::log!(
+                        LOG_LEVEL,
+                        "unmap: freeing frame {:x} at level {} for vaddr {:x} with flags {:?} (entry flags {:?})",
+                        frame.start_address().raw(),
+                        level,
+                        cursor.start().raw(),
+                        frame.get_flags(),
+                        flags,
+                    );
+                    consist.free_frame(frame);
+                }
+            } else if entry.is_present() && level != Self::last_level() {
+                if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
+                    self.do_cow_copy(idx, level, consist)?;
+                }
+                let next_table = self.next_table_mut(idx).unwrap();
+                next_table.setup_zero_range(consist, cursor, Self::next_level(level))?;
+            }
+
+            *cursor = cursor.advance_until_empty(Self::level_to_page_size(level));
+        }
+        Ok(())
     }
 
     pub(super) fn unmap(
@@ -537,7 +601,7 @@ impl Table {
         consist: &mut Consistency,
         mut cursor: MappingCursor,
         level: usize,
-    ) {
+    ) -> Result<(), TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
@@ -571,10 +635,10 @@ impl Table {
             } else if entry.is_present() && level != Self::last_level() {
                 if !entry.is_object_table() {
                     if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                        self.do_cow_copy(idx, level);
+                        self.do_cow_copy(idx, level, consist)?;
                     }
                     let next_table = self.next_table_mut(idx).unwrap();
-                    next_table.unmap(consist, cursor, Self::next_level(level));
+                    next_table.unmap(consist, cursor, Self::next_level(level))?;
                     if next_table.read_count() == 0 && level != Table::top_level() {
                         // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
                         consist.free_frame(self.next_table_frame(idx).unwrap());
@@ -606,6 +670,7 @@ impl Table {
                 break;
             }
         }
+        Ok(())
     }
 
     pub(super) fn change(
@@ -614,7 +679,7 @@ impl Table {
         mut cursor: MappingCursor,
         level: usize,
         settings: &MappingSettings,
-    ) {
+    ) -> Result<(), TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
@@ -641,10 +706,10 @@ impl Table {
                 );
             } else if is_present && level != Self::last_level() {
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-                    self.do_cow_copy(idx, level);
+                    self.do_cow_copy(idx, level, consist)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
-                next_table.change(consist, cursor, Self::next_level(level), settings);
+                next_table.change(consist, cursor, Self::next_level(level), settings)?;
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -653,14 +718,16 @@ impl Table {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn with_dirty_bits(
         &mut self,
         mut cursor: MappingCursor,
         level: usize,
+        consist: &mut Consistency,
         cb: &mut impl FnMut(MapInfo) -> bool,
-    ) -> bool {
+    ) -> Result<bool, TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
         let mut did_clear = false;
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
@@ -684,7 +751,8 @@ impl Table {
                 }
             } else if is_present && level != Self::last_level() {
                 let next_table = self.next_table_mut(idx).unwrap();
-                did_clear |= next_table.with_dirty_bits(cursor, Self::next_level(level), cb);
+                did_clear |=
+                    next_table.with_dirty_bits(cursor, Self::next_level(level), consist, cb)?;
             }
 
             if let Some(next) = cursor.align_advance(Self::level_to_page_size(level)) {
@@ -693,25 +761,26 @@ impl Table {
                 break;
             }
         }
-        did_clear
+        Ok(did_clear)
     }
 
     pub(super) fn is_object_mapped(
         &self,
         cursor: MappingCursor,
         level: usize,
-        prot: Protections,
+        settings: MappingSettings,
     ) -> bool {
         let index = Self::get_index(cursor.start(), level);
         let entry = &self[index];
         if entry.is_present() && entry.is_object_table() {
-            if entry.flags().perms() & prot != prot {
+            // TODO: check cache type compatible.
+            if entry.flags().perms() & settings.perms() != settings.perms() {
                 return false;
             }
             return true;
         } else if entry.is_present() && level != Self::last_level() {
             let next_table = self.next_table(index).unwrap();
-            return next_table.is_object_mapped(cursor, Self::next_level(level), prot);
+            return next_table.is_object_mapped(cursor, Self::next_level(level), settings);
         }
         false
     }

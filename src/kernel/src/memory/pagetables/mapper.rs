@@ -1,10 +1,6 @@
-use twizzler_abi::object::Protections;
-use twizzler_rt_abi::error::{ResourceError, TwzError};
+use twizzler_rt_abi::error::TwzError;
 
-use super::{
-    MapInfo, MappingCursor, MappingSettings, PhysAddrProvider,
-    consistency::{Consistency, DeferredUnmappingOps},
-};
+use super::{MapInfo, MappingCursor, MappingSettings, PhysAddrProvider, consistency::Consistency};
 use crate::{
     arch::{
         VirtAddr,
@@ -88,23 +84,23 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-        mut consist: Consistency,
-    ) -> Result<(), DeferredUnmappingOps> {
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let level = self.start_level;
         let root = self.root_mut();
-        if root.map(&mut consist, cursor, level, phys).is_none() {
-            Err(consist.into_deferred())
-        } else {
-            self.generation += 1;
-            Ok(())
-        }
+        let r = root.map(consist, cursor, level, phys);
+        self.generation += 1;
+        r
     }
 
     #[must_use]
     /// Unmap a region from the page tables. The deferred operations must be run, and must be run
     /// AFTER unlocking any page table locks.
-    pub fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
-        let mut consist = Consistency::new(self.root);
+    pub fn unmap(
+        &mut self,
+        cursor: MappingCursor,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let level = self.start_level;
         log::trace!(
             "unmap: cursor {:?}, root {:x}, level {}",
@@ -113,15 +109,19 @@ impl Mapper {
             level
         );
         let root = self.root_mut();
-        root.unmap(&mut consist, cursor, level);
+        let r = root.unmap(consist, cursor, level);
         log::trace!("unmap: done");
         self.generation += 1;
-        consist.into_deferred()
+        r
     }
 
     /// Change a region to use new mapping settings.
-    pub fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
-        let mut consist = Consistency::new(self.root);
+    pub fn change(
+        &mut self,
+        cursor: MappingCursor,
+        settings: &MappingSettings,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let level = self.start_level;
         log::trace!(
             "change: cursor {:?}, root {:x}, level {}, settings {:?}",
@@ -131,9 +131,10 @@ impl Mapper {
             settings
         );
         let root = self.root_mut();
-        root.change(&mut consist, cursor, level, settings);
+        let r = root.change(consist, cursor, level, settings);
         self.generation += 1;
         log::trace!("change: done");
+        r
     }
 
     /// Read the map of a single address (the start of the cursor). If there is a mapping at the
@@ -170,30 +171,22 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
-        prot: Protections,
-    ) -> DeferredUnmappingOps {
-        let mut consist = Consistency::new(self.root);
+        settings: MappingSettings,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let level = self.start_level;
-        log::trace!(
-            "object_map: cursor {:?}, root {:x}, level {}",
-            cursor,
-            self.root_address().raw(),
-            level,
-        );
         self.generation += 1;
         let root = self.root_mut();
-        object_tables.with_mapper(|mapper| {
-            root.object_map(&mut consist, cursor, level, mapper, prot);
-            log::trace!("object_map: done");
-            consist.into_deferred()
-        })
+        object_tables
+            .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, settings))
     }
 
     pub fn with_dirty_bits(
         &mut self,
         cursor: MappingCursor,
         mut f: impl FnMut(MapInfo) -> bool,
-    ) -> bool {
+        consist: &mut Consistency,
+    ) -> Result<bool, TwzError> {
         let level = self.start_level;
         log::trace!(
             "with_dirty_bits: cursor {:?}, root {:x}, level {}",
@@ -202,15 +195,15 @@ impl Mapper {
             level
         );
         let root = self.root_mut();
-        let d = root.with_dirty_bits(cursor, level, &mut f);
+        let d = root.with_dirty_bits(cursor, level, consist, &mut f)?;
         if d {
             self.generation += 1;
         }
         log::trace!("with_dirty_bits: done");
-        d
+        Ok(d)
     }
 
-    pub fn is_object_mapped(&self, cursor: MappingCursor, prot: Protections) -> bool {
+    pub fn is_object_mapped(&self, cursor: MappingCursor, settings: MappingSettings) -> bool {
         let level = self.start_level;
         let root = self.root();
         log::trace!(
@@ -219,12 +212,12 @@ impl Mapper {
             self.root_address().raw(),
             level
         );
-        let x = root.is_object_mapped(cursor, level, prot);
+        let x = root.is_object_mapped(cursor, level, settings);
         log::trace!("is_object_mapped: result {}", x);
         x
     }
 
-    pub fn get_table_addr(&mut self, level: usize) -> PhysAddr {
+    pub fn get_table_addr(&mut self, level: usize) -> Result<PhysAddr, TwzError> {
         log::trace!(
             "get_table_addr called with level {} (start_level {})",
             level,
@@ -237,24 +230,24 @@ impl Mapper {
             if table[0].is_present() && level > 0 && table[0].is_huge() {
                 panic!("todo: get_table_addr: huge page at level {}!", level);
             }
-            // TODO: unwrap
-            table.populate(0, EntryFlags::intermediate()).unwrap();
+            table.populate(0, EntryFlags::intermediate())?;
             table_phys = table[0].table_addr();
             table = table.next_table_mut(0).unwrap();
         }
 
-        table_phys
+        Ok(table_phys)
     }
 
-    pub fn split_to_level(&mut self, addr: VirtAddr, level: usize) -> Result<(), TwzError> {
-        let mut consist = Consistency::new(self.root);
+    pub fn split_to_level(
+        &mut self,
+        addr: VirtAddr,
+        level: usize,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
         let start_level = self.start_level;
         self.generation += 1;
         let root = self.root_mut();
-        root.split_to_level(&mut consist, addr, start_level, level)
-            .ok_or(ResourceError::OutOfMemory)?;
-        consist.into_deferred().run_all();
-        Ok(())
+        root.split_to_level(consist, addr, start_level, level)
     }
 
     pub fn setup_cow_range(
@@ -262,6 +255,7 @@ impl Mapper {
         dest: &mut Mapper,
         mut src_cursor: MappingCursor,
         mut dst_cursor: MappingCursor,
+        consist: &mut Consistency,
     ) -> Result<(), TwzError> {
         log::trace!(
             "setup_cow_range: src_cursor {:?}, dst_cursor {:?}, src_root {:x}, dst_root {:x}",
@@ -286,8 +280,32 @@ impl Mapper {
                 &mut src_cursor,
                 &mut dst_cursor,
                 start_level,
-            )
-            .ok_or(ResourceError::OutOfMemory)?;
+                consist,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn setup_zero_range(
+        &mut self,
+        mut cursor: MappingCursor,
+        consist: &mut Consistency,
+    ) -> Result<(), TwzError> {
+        log::trace!(
+            "setup_zero_range: cursor {:?}, root {:x}",
+            cursor,
+            self.root_address().raw(),
+        );
+        let start_level = self.start_level;
+        self.generation += 1;
+        let root = self.root_mut();
+        while cursor.remaining() > 0 {
+            log::trace!(
+                "top level setup_zero_range: cursor {:?}, start_level {}",
+                cursor,
+                start_level
+            );
+            root.setup_zero_range(consist, &mut cursor, start_level)?;
         }
         Ok(())
     }
@@ -301,11 +319,14 @@ impl Mapper {
             .print_tables_recursive(self.start_level(), VirtAddr::new(0).unwrap(), 0);
     }
 
-    pub fn cow_at(&mut self, cursor: MappingCursor) -> Option<bool> {
-        let mut consist = Consistency::new(self.root);
+    pub fn cow_at(
+        &mut self,
+        cursor: MappingCursor,
+        consist: &mut Consistency,
+    ) -> Result<bool, TwzError> {
         let level = self.start_level;
         self.generation += 1;
         let root = self.root_mut();
-        root.cow_copy(&mut consist, &cursor, level)
+        root.cow_copy(consist, &cursor, level)
     }
 }

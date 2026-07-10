@@ -3,15 +3,15 @@ use alloc::vec::{self, Vec};
 use bitset_core::BitSet;
 use itertools::Itertools;
 use twizzler_abi::device::CacheType;
-use twizzler_rt_abi::error::{ObjectError, ResourceError, TwzError};
+use twizzler_rt_abi::error::TwzError;
 
 use crate::{
     arch::{PhysAddr, VirtAddr, memory::pagetables::ArchTlbMgr},
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, min_level_for_len},
         pagetables::{
-            Consistency, ContiguousProvider, MapInfo, MapReader, Mapper, MappingCursor,
-            MappingSettings, Table,
+            Consistency, ContiguousProvider, DeferredUnmappingOps, MapInfo, MapReader, Mapper,
+            MappingCursor, MappingSettings, Table,
         },
         tracker::{FrameAllocFlags, alloc_frame},
     },
@@ -137,23 +137,81 @@ impl ObjectPageTable {
         self.invalidate(0, self.max_len());
     }
 
-    pub fn map_page(&mut self, offset: u64, page: FrameRef) -> bool {
-        let consist = Consistency::new_full_global();
+    pub fn run_consistency2(&self, mut consist: Consistency, other: &Self) -> DeferredUnmappingOps {
+        let tlb = self.do_run_consistency(&mut consist);
+        let other_tlb = other.do_run_consistency(&mut consist);
+        match (tlb, other_tlb) {
+            (Some(mut tlb), Some(other_tlb)) => {
+                tlb.merge(other_tlb);
+                tlb.finish();
+            }
+            (Some(mut tlb), None) => {
+                tlb.finish();
+            }
+            (None, Some(mut other_tlb)) => {
+                other_tlb.finish();
+            }
+            (None, None) => {}
+        }
+        consist.into_deferred()
+    }
+
+    pub fn run_consistency(&self, mut consist: Consistency) -> DeferredUnmappingOps {
+        let tlb = self.do_run_consistency(&mut consist);
+        if let Some(mut tlb) = tlb {
+            tlb.finish();
+        }
+        consist.into_deferred()
+    }
+
+    pub fn do_run_consistency(&self, consist: &mut Consistency) -> Option<ArchTlbMgr> {
+        let tlb = if !consist.tlb().is_full() {
+            if consist.tlb().has_pending() {
+                let mut final_tlb: Option<ArchTlbMgr> = None;
+                'out: for (target, maps) in self.invls.iter() {
+                    if maps.is_empty() {
+                        continue;
+                    }
+
+                    consist.tlb_mut().set_target(*target);
+
+                    for map in maps.iter() {
+                        // For each map, copy, offset, and merge.
+                        let tlb = consist.tlb().apply_offset_from_map(map);
+
+                        if let Some(ref mut final_tlb) = final_tlb {
+                            final_tlb.merge(tlb);
+                        } else {
+                            final_tlb = Some(tlb);
+                        }
+
+                        if final_tlb.as_ref().unwrap().is_full() {
+                            break 'out;
+                        }
+                    }
+                }
+                final_tlb
+            } else {
+                None
+            }
+        } else {
+            Some(ArchTlbMgr::new_full_global())
+        };
+        consist.tlb_mut().reset();
+        tlb
+    }
+
+    pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
+        let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
         let mut phys = ContiguousProvider::new(
             page.start_address(),
             page.size(),
             MappingSettings::default_user(),
         );
-        if let Err(e) = self.mapper.map(cursor, &mut phys, consist) {
-            e.run_all();
-            return false;
-        }
-        // TODO: invalidate if map changed
-        //self.invalidate_page(PageNumber::from_offset(offset as usize));
-        // TODO: mark dirty
-
-        true
+        let r = self.mapper.map(cursor, &mut phys, &mut consist);
+        self.run_consistency(consist).run_all();
+        r
     }
 
     pub fn readmap(&'_ mut self, offset: u64, len: usize) -> MapReader<'_> {
@@ -184,7 +242,7 @@ impl ObjectPageTable {
         })
     }
 
-    pub fn get_dirty_and_reset(&mut self) -> Vec<(PageNumber, PhysAddr, usize)> {
+    pub fn get_dirty_and_reset(&mut self) -> Result<Vec<(PageNumber, PhysAddr, usize)>, TwzError> {
         let cursor = MappingCursor::new(
             VirtAddr::new(0).unwrap(),
             Table::level_to_page_size(self.mapper.start_level() + 1),
@@ -215,33 +273,31 @@ impl ObjectPageTable {
             }
         }
 
+        let mut consist = Consistency::new_object_tables();
         let mut dirty_list = vec::Vec::new();
-        let any = self.mapper.with_dirty_bits(cursor, |mi| {
-            add_to_list(&mut dirty_list, &mi);
-            true
-        });
-        if any {
-            if dirty_list.len() == 1 && dirty_list[0].2 == 1 {
-                self.invalidate_page(dirty_list[0].0);
-            } else {
-                self.invalidate_full();
-            }
-        }
-        dirty_list
+        let r = self.mapper.with_dirty_bits(
+            cursor,
+            |mi| {
+                add_to_list(&mut dirty_list, &mi);
+                true
+            },
+            &mut consist,
+        );
+
+        self.run_consistency(consist).run_all();
+
+        r?;
+        Ok(dirty_list)
     }
 
     pub fn maybe_cow_at(&mut self, offset: u64) -> Result<bool, TwzError> {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
-        // TODO: handle invalidations?
-        let did_cow = self
-            .mapper
-            .cow_at(cursor)
-            .ok_or(ResourceError::OutOfMemory.into());
 
-        if did_cow.is_ok_and(|dc| dc) {
-            self.invalidate_page(PageNumber::from_offset(offset as usize));
-        }
+        let mut consist = Consistency::new_object_tables();
+        let did_cow = self.mapper.cow_at(cursor, &mut consist);
+
+        self.run_consistency(consist).run_all();
 
         did_cow
     }
@@ -295,8 +351,12 @@ impl ObjectPageTable {
     }
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {
-        self.mapper
-            .split_to_level(VirtAddr::new(offset).unwrap(), level)
+        let mut consist = Consistency::new_object_tables();
+        let r = self
+            .mapper
+            .split_to_level(VirtAddr::new(offset).unwrap(), level, &mut consist);
+        self.run_consistency(consist).run_all();
+        r
     }
 
     pub fn setup_cow_range(
@@ -308,15 +368,19 @@ impl ObjectPageTable {
     ) -> Result<(), TwzError> {
         let src_cursor = MappingCursor::new(VirtAddr::new(src_offset).unwrap(), len);
         let dst_cursor = MappingCursor::new(VirtAddr::new(dst_offset).unwrap(), len);
+        let mut consist = Consistency::new_object_tables();
         self.mapper
-            .setup_cow_range(&mut dest.mapper, src_cursor, dst_cursor)
+            .setup_cow_range(&mut dest.mapper, src_cursor, dst_cursor, &mut consist)?;
+        self.run_consistency2(consist, dest).run_all();
+        Ok(())
     }
 
     pub fn setup_zero_range(&mut self, offset: u64, len: usize) -> Result<(), TwzError> {
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
-        let ops = self.mapper.unmap(cursor);
-        ops.run_all();
-        Ok(())
+        let mut consist = Consistency::new_object_tables();
+        let ops = self.mapper.setup_zero_range(cursor, &mut consist);
+        self.run_consistency(consist).run_all();
+        ops
     }
 }
 
@@ -333,18 +397,15 @@ impl Object {
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
         let mut phys =
             ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
-        let consist = Consistency::new_full_global();
-        if let Err(e) = pt.mapper.map(cursor, &mut phys, consist) {
-            e.run_all();
-            return Err(ObjectError::MapFailed.into());
-        }
-        pt.invalidate(offset as u64, end - start);
-        Ok(())
+        let mut consist = Consistency::new_object_tables();
+        let r = pt.mapper.map(cursor, &mut phys, &mut consist);
+        pt.run_consistency(consist).run_all();
+        r
     }
 
     pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {
         let mut pt = self.lock_page_tables();
-        pt.map_page(pn.as_byte_offset() as u64, frame);
+        pt.map_page(pn.as_byte_offset() as u64, frame).unwrap();
     }
 
     pub fn cow_clone_page_tables(self: &ObjectRef) -> Result<ObjectPageTable, TwzError> {
@@ -356,6 +417,7 @@ impl Object {
             VirtAddr::new(0).unwrap(),
             Table::level_to_page_size(level + 1),
         );
+        let mut consist = Consistency::new_object_tables();
         let mut old_pt = self.ensure_in_core(
             old_pt,
             PageNumber::from(0),
@@ -363,10 +425,11 @@ impl Object {
             &mut false,
             &mut false,
         )?;
-        old_pt
+        let r = old_pt
             .mapper
-            .setup_cow_range(&mut new_pt.mapper, cursor, cursor)?;
-        Ok(new_pt)
+            .setup_cow_range(&mut new_pt.mapper, cursor, cursor, &mut consist);
+        old_pt.run_consistency(consist).run_all();
+        r.map(|_| new_pt)
     }
 }
 

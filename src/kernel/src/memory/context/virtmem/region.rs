@@ -227,8 +227,9 @@ impl MapRegion {
         if all_were_present {
             let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
             let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
-            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, prot);
-            obj_page_tree.invalidate_full();
+            // TODO: is this always user?
+            let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
+            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
         }
 
         if cause == MemoryAccessKind::Write {
@@ -280,7 +281,7 @@ impl MapRegion {
                     self.object().lock_page_tables()
                 };
                 if sync_info_ptr.is_null() {
-                    let dirty_pages = pt.get_dirty_and_reset();
+                    let dirty_pages = pt.get_dirty_and_reset()?;
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
                         self.range,
@@ -295,7 +296,7 @@ impl MapRegion {
                     let version = sync_info.release_compare;
 
                     if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
-                        let dirty_pages = pt.get_dirty_and_reset();
+                        let dirty_pages = pt.get_dirty_and_reset()?;
                         log::trace!(
                             "sync region {:?} with dirty pages {:?}",
                             self.range,

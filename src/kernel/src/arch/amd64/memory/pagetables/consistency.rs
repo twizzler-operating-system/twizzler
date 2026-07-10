@@ -11,7 +11,7 @@ use crate::{
         interrupt::TLB_SHOOTDOWN_VECTOR,
     },
     interrupt::{self, Destination},
-    memory::pagetables::{trace_tlb_invalidation, trace_tlb_shootdown},
+    memory::pagetables::{MappingCursor, trace_tlb_invalidation, trace_tlb_shootdown},
     processor::{
         mp::{current_processor, with_each_active_processor},
         spin_wait_until, tls_ready,
@@ -20,7 +20,7 @@ use crate::{
 };
 
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub struct TlbInvData {
     target_cr3: u64,
     instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
@@ -75,6 +75,39 @@ impl TlbInvData {
         &self.instructions[0..(self.len as usize)]
     }
 
+    fn apply_offset(&self, map: &MappingCursor) -> Self {
+        let mut new_data = *self;
+
+        for inst in new_data.instructions.iter_mut().take(self.len as usize) {
+            let addr: u64 = inst.addr().into();
+            let new_addr = addr + map.start().raw() as u64;
+            // TODO: if the address is not covered in map, then skip this one.
+            *inst = InvInstruction::new(
+                unsafe { VirtAddr::new_unchecked(new_addr) },
+                inst.is_global(),
+                inst.is_terminal(),
+                inst.level(),
+            );
+        }
+        new_data
+    }
+
+    fn merge_ignoring_target(&mut self, other: &Self) {
+        if other.full() {
+            self.set_full();
+        }
+        if other.global() {
+            self.set_global();
+        }
+        if self.len as usize + other.len as usize > MAX_INVALIDATION_INSTRUCTIONS {
+            self.set_full();
+        } else {
+            for inst in other.instructions() {
+                self.enqueue(*inst)
+            }
+        }
+    }
+
     fn merge(&mut self, other: TlbInvData) {
         // If these two target different page tables, then there's nothing we can do but flush all.
         if other.target_cr3 != self.target_cr3 {
@@ -84,19 +117,7 @@ impl TlbInvData {
             // Otherwise, the flags are OR'd, and the instructions concatenated. Order doesn't
             // matter. If we'd have too many instructions, just fall back to full
             // invalidation.
-            if other.full() {
-                self.set_full();
-            }
-            if other.global() {
-                self.set_global();
-            }
-            if self.len as usize + other.len as usize > MAX_INVALIDATION_INSTRUCTIONS {
-                self.set_full();
-            } else {
-                for inst in other.instructions() {
-                    self.enqueue(*inst)
-                }
-            }
+            self.merge_ignoring_target(&other);
         }
     }
 
@@ -288,6 +309,27 @@ impl ArchTlbMgr {
         self.data.set_global();
     }
 
+    pub fn is_full(&self) -> bool {
+        self.data.full()
+    }
+
+    pub fn set_target(&mut self, target: PhysAddr) {
+        self.data.target_cr3 = target.into();
+    }
+
+    pub fn reset(&mut self) {
+        self.data.reset();
+    }
+
+    pub fn apply_offset_from_map(&self, map: &MappingCursor) -> Self {
+        let data = self.data.apply_offset(map);
+        Self { data }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.data.merge(other.data);
+    }
+
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
     /// is_terminal should be set iff the invalidation is for a leaf.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
@@ -299,8 +341,16 @@ impl ArchTlbMgr {
         ));
     }
 
+    pub fn has_pending(&self) -> bool {
+        self.data.has_invalidations()
+    }
+
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
+        if !tls_ready() {
+            self.reset();
+            return;
+        }
         if !self.data.has_invalidations() {
             return;
         }

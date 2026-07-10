@@ -32,6 +32,10 @@ impl Consistency {
         }
     }
 
+    pub fn new_object_tables() -> Self {
+        Self::new(PhysAddr::new(0).unwrap())
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub fn new_full_global() -> Self {
         let mut this = Self::new(unsafe { PhysAddr::new_unchecked(0) });
@@ -62,12 +66,21 @@ impl Consistency {
     }
 
     pub fn into_deferred(self) -> DeferredUnmappingOps {
+        assert!(!self.tlb.has_pending());
         DeferredUnmappingOps { pages: self.pages }
     }
 
     #[cfg(target_arch = "x86_64")]
     pub fn set_full_global(&mut self) {
         self.tlb.set_full_global();
+    }
+
+    pub fn tlb(&self) -> &ArchTlbMgr {
+        &self.tlb
+    }
+
+    pub fn tlb_mut(&mut self) -> &mut ArchTlbMgr {
+        &mut self.tlb
     }
 }
 

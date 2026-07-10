@@ -233,7 +233,12 @@ impl VirtContext {
             self.try_with_arch(sctx.id(), |arch| {
                 let cursor = MappingCursor::new(info.range.start, len);
                 pt.add_invalidate(arch.target.paddr(), cursor);
-                arch.object_map(cursor, &mut *pt, perms.effective(default_prots, info.prot));
+                let settings = MappingSettings::new(
+                    perms.effective(default_prots, info.prot),
+                    info.cache_type,
+                    MappingFlags::USER,
+                );
+                arch.object_map(cursor, &mut *pt, settings);
             });
         };
     }
@@ -243,11 +248,11 @@ impl VirtContext {
         sctxid: ObjID,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
-        prot: Protections,
+        settings: MappingSettings,
     ) -> bool {
         self.with_arch(sctxid, |arch| {
             object_tables.add_invalidate(arch.target.paddr(), cursor);
-            arch.ensure_object_mapped(cursor, object_tables, prot)
+            arch.ensure_object_mapped(cursor, object_tables, settings)
         })
     }
 

@@ -398,28 +398,28 @@ impl Object {
             if !self.use_pager() {
                 if self_guard.get_frame(self_offset).is_none() {
                     let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                    if !self_guard.map_page(self_offset, self_frame) {
+                    if let Err(e) = self_guard.map_page(self_offset, self_frame) {
                         alloc.abort([self_frame]);
                         log::error!(
                             "failed to map page at offset {:x} in object {}",
                             self_offset,
                             self.id()
                         );
-                        return Err(TwzError::INVALID_ARGUMENT);
+                        return Err(e);
                     }
                 }
             }
             if !other.use_pager() {
                 if other_guard.get_frame(other_offset).is_none() {
                     let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                    if !other_guard.map_page(other_offset, other_frame) {
+                    if let Err(e) = other_guard.map_page(other_offset, other_frame) {
                         alloc.abort([other_frame]);
                         log::error!(
                             "failed to map page at offset {:x} in object {}",
                             other_offset,
                             other.id()
                         );
-                        return Err(TwzError::INVALID_ARGUMENT);
+                        return Err(e);
                     }
                 }
             }
@@ -489,14 +489,14 @@ impl Object {
                 );
                 *all_were_present = false;
                 let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                if !guard.map_page(offset, frame) {
+                if let Err(e) = guard.map_page(offset, frame) {
                     log::error!(
                         "failed to map page at offset {:x} in object {}",
                         offset,
                         self.id()
                     );
                     alloc.abort([frame]);
-                    return Err(TwzError::INVALID_ARGUMENT);
+                    return Err(e);
                 }
                 assert!(guard.get_mapinfo(offset).is_some());
             }
@@ -765,9 +765,6 @@ impl Object {
         dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
 
-        self_pt.invalidate(src_offset as u64, len);
-        dst_pt.invalidate(dst_offset as u64, len);
-
         if false {
             drop(self_pt);
             drop(dst_pt);
@@ -893,7 +890,6 @@ impl Object {
             self.id()
         );
         pt.setup_zero_range(offset as u64, len)?;
-        pt.invalidate(offset as u64, len);
         Ok(())
     }
 
