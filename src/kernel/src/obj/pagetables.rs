@@ -256,10 +256,7 @@ impl ObjectPageTable {
     }
 
     pub fn get_dirty_and_reset(&mut self) -> Result<Vec<(PageNumber, PhysAddr, usize)>, TwzError> {
-        let cursor = MappingCursor::new(
-            VirtAddr::new(0).unwrap(),
-            Table::level_to_page_size(self.mapper.start_level() + 1),
-        );
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
 
         fn add_to_list(dirty_list: &mut Vec<(PageNumber, PhysAddr, usize)>, mi: &MapInfo) {
             fn can_append(mi: &MapInfo, item: &(PageNumber, PhysAddr, usize)) -> bool {
@@ -422,21 +419,19 @@ impl Object {
 
     pub fn cow_clone_page_tables(self: &ObjectRef) -> Result<ObjectPageTable, TwzError> {
         let mut new_pt = ObjectPageTable::new();
-        let old_pt = self.lock_page_tables();
-        let level = old_pt.mapper.start_level();
-        assert_eq!(level, new_pt.mapper.start_level());
-        let cursor = MappingCursor::new(
-            VirtAddr::new(0).unwrap(),
-            Table::level_to_page_size(level + 1),
-        );
+        let mut old_pt = self.lock_page_tables();
+        assert_eq!(old_pt.mapper.start_level(), new_pt.mapper.start_level());
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), old_pt.max_len());
         let mut consist = Consistency::new_object_tables();
-        let mut old_pt = self.ensure_in_core(
-            old_pt,
-            PageNumber::from(0),
-            cursor.remaining() / PageNumber::PAGE_SIZE,
-            &mut false,
-            &mut false,
-        )?;
+        if self.use_pager() {
+            old_pt = self.ensure_in_core(
+                old_pt,
+                PageNumber::from(0),
+                cursor.remaining() / PageNumber::PAGE_SIZE,
+                &mut false,
+                &mut false,
+            )?;
+        }
         let r = old_pt
             .mapper
             .setup_cow_range(&mut new_pt.mapper, cursor, cursor, &mut consist);

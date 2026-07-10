@@ -267,7 +267,7 @@ impl Table {
             did_cow |= self.do_cow_copy(index, level, consist, cursor.start(), mark_dirty)?;
         }
 
-        if level > 0 && !did_cow {
+        if level > 0 {
             if let Some(next) = self.next_table_mut(index) {
                 did_cow |= next.cow_copy(consist, cursor, level - 1, mark_dirty)?;
             }
@@ -380,14 +380,15 @@ impl Table {
         let src_start_index = Self::get_index(src_cursor.start(), level);
         let dst_start_index = Self::get_index(dst_cursor.start(), level);
         let count = Self::PAGE_TABLE_ENTRIES - src_start_index.max(dst_start_index);
-        log::log!(
-            LOG_LEVEL,
-            "setup_cow_range: level {}, src_start_index {}, dst_start_index {}, count {} ({} remaining at this level)",
+        log::trace!(
+            "setup_cow_range: level {}, src_start_index {}, dst_start_index {}, count {} ({} remaining at this level), cursors = src {:?}, dst {:?}",
             level,
             src_start_index,
             dst_start_index,
             count,
-            src_cursor.remaining() / Self::level_to_page_size(level)
+            src_cursor.remaining() / Self::level_to_page_size(level),
+            src_cursor,
+            dst_cursor
         );
         for _ in 0..count {
             if src_cursor.remaining() == 0 || dst_cursor.remaining() == 0 {

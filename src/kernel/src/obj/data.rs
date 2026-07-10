@@ -316,118 +316,6 @@ impl Object {
         Ok(())
     }
 
-    pub fn ensure_both_in_core<'a>(
-        self: &'a ObjectRef,
-        other: &'a ObjectRef,
-        mut self_guard: LockGuard<'a, ObjectPageTable>,
-        mut other_guard: LockGuard<'a, ObjectPageTable>,
-        self_page: PageNumber,
-        other_page: PageNumber,
-        page_count: usize,
-        pager_was_used: &mut bool,
-    ) -> Result<
-        (
-            LockGuard<'a, ObjectPageTable>,
-            LockGuard<'a, ObjectPageTable>,
-        ),
-        TwzError,
-    > {
-        let self_first_is_present = self_guard
-            .get_frame(self_page.as_byte_offset() as u64)
-            .is_some();
-        let other_first_is_present = other_guard
-            .get_frame(other_page.as_byte_offset() as u64)
-            .is_some();
-        if page_count <= 1 && self_first_is_present && other_first_is_present {
-            return Ok((self_guard, other_guard));
-        }
-
-        let mut factor = if self_first_is_present && other_first_is_present {
-            0
-        } else if self_first_is_present || other_first_is_present {
-            1
-        } else {
-            2
-        };
-
-        if page_count > 1 {
-            log::trace!(
-                "ensure_both_in_core: ensuring {} pages in core for objects {} and {}, starting at {:x} and {:x}",
-                page_count,
-                self.id(),
-                other.id(),
-                self_page.as_byte_offset(),
-                other_page.as_byte_offset()
-            );
-        }
-
-        drop(self_guard);
-        drop(other_guard);
-        *pager_was_used = false;
-
-        if self.use_pager() {
-            let pt = self.lock_page_tables();
-            self.ensure_in_core_pager(pt, self_page, page_count, pager_was_used, &mut false)?;
-            if factor >= 2 {
-                factor -= 1;
-            }
-        }
-
-        if other.use_pager() {
-            let pt = other.lock_page_tables();
-            other.ensure_in_core_pager(pt, other_page, page_count, pager_was_used, &mut false)?;
-            if factor >= 2 {
-                factor -= 1;
-            }
-        }
-
-        if other.use_pager() && self.use_pager() {
-            return Ok(crate::utils::lock_two(&self.tables, &other.tables));
-        }
-
-        let mut alloc = FrameAllocator::new(
-            FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
-            PHYS_LEVEL_LAYOUTS[0],
-        );
-        alloc.precharge(page_count * factor);
-
-        let (mut self_guard, mut other_guard) = crate::utils::lock_two(&self.tables, &other.tables);
-        for i in 0..page_count {
-            let self_offset = self_page.offset(i).as_byte_offset() as u64;
-            let other_offset = other_page.offset(i).as_byte_offset() as u64;
-            if !self.use_pager() {
-                if self_guard.get_frame(self_offset).is_none() {
-                    let self_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                    if let Err(e) = self_guard.map_page(self_offset, self_frame) {
-                        alloc.abort([self_frame]);
-                        log::error!(
-                            "failed to map page at offset {:x} in object {}",
-                            self_offset,
-                            self.id()
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-            if !other.use_pager() {
-                if other_guard.get_frame(other_offset).is_none() {
-                    let other_frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                    if let Err(e) = other_guard.map_page(other_offset, other_frame) {
-                        alloc.abort([other_frame]);
-                        log::error!(
-                            "failed to map page at offset {:x} in object {}",
-                            other_offset,
-                            other.id()
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-        }
-
-        Ok((self_guard, other_guard))
-    }
-
     pub fn pin(
         self: &ObjectRef,
         page: PageNumber,
@@ -514,6 +402,7 @@ impl Object {
         all_were_present: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
         *all_were_present = true;
+        assert!(self.use_pager());
         log::debug!(
             "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
@@ -598,7 +487,7 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
-        log::trace!(
+        log::debug!(
             "direct_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
             dst_offset,
@@ -609,18 +498,25 @@ impl Object {
         let mut src_offset = src_offset;
         let mut dst_offset = dst_offset;
         let mut len = len;
-
+        if self.use_pager() {
+            self.ensure_in_core(
+                self.lock_page_tables(),
+                PageNumber::from_offset(src_offset),
+                (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
+                &mut false,
+                &mut false,
+            )?;
+        }
+        if dst.use_pager() {
+            dst.ensure_in_core(
+                dst.lock_page_tables(),
+                PageNumber::from_offset(dst_offset),
+                (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
+                &mut false,
+                &mut false,
+            )?;
+        }
         let (mut self_pt, mut dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
-
-        (self_pt, dst_pt) = self.ensure_both_in_core(
-            dst,
-            self_pt,
-            dst_pt,
-            PageNumber::from_offset(src_offset),
-            PageNumber::from_offset(dst_offset),
-            (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
-            &mut false,
-        )?;
 
         log::debug!(
             "direct_copy: src_offset {}, dst_offset {}, len {}",
@@ -629,6 +525,10 @@ impl Object {
             len
         );
 
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         while len > 0 {
             self_pt
                 .with_frame(
@@ -636,31 +536,40 @@ impl Object {
                     FindFrameFlags::empty(),
                     &mut false,
                     |src_frame_start, self_frame| {
+                        if self_frame.is_some() {
+                            if dst_pt.get_frame(dst_offset as u64).is_none() {
+                                let frame = fa.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+                                let r = dst_pt.map_page(dst_offset as u64, frame);
+                                if r.is_err() {
+                                    fa.abort([frame]);
+                                    return r;
+                                }
+                            }
+                        }
                         dst_pt.with_frame(
                             dst_offset as u64,
-                            FindFrameFlags::WRITE | FindFrameFlags::POPULATE,
+                            FindFrameFlags::WRITE,
                             &mut false,
                             |dst_frame_start, dst_frame| {
                                 let dst_frame_offset = dst_offset - dst_frame_start;
-                                if dst_frame.is_none() {
-                                    log::error!("failed to get destination frame at offset {:x} (page {}) in object {}", dst_offset, dst_offset / PageNumber::PAGE_SIZE, dst.id());
-                                }
-                                let dst_frame = dst_frame.ok_or(ResourceError::OutOfMemory)?;
-                                let dst_ptr = unsafe {
-                                    dst_frame
-                                        .virtaddr()
-                                        .as_mut_ptr::<u8>()
-                                        .byte_add(dst_frame_offset)
+
+                                log::trace!("got frames: src_frame_start {:x}, dst_frame_start {:x}, dst_frame_offset {:x}, src_offset {:x}, dst_offset {:x}, len {}, frames = src_frame {:?}, dst_frame {:?}", src_frame_start, dst_frame_start, dst_frame_offset, src_offset, dst_offset, len, self_frame, dst_frame);
+                                let dst_ptr_info = if let Some(dst_frame) = dst_frame {
+                                    let dst_ptr = unsafe {
+                                        dst_frame
+                                            .virtaddr()
+                                            .as_mut_ptr::<u8>()
+                                            .byte_add(dst_frame_offset)
+                                    };
+                                    let dst_frame_rem = dst_frame.size() - dst_frame_offset;
+                                    Some((dst_ptr, dst_frame_rem))
+                                } else {
+                                    None
                                 };
-                                let dst_frame_rem = dst_frame.size() - dst_frame_offset;
-                                log::debug!(
-                                    "found frames: src? {}, dst: {:x}, dst_frame_rem {}",
-                                    self_frame.is_some(),
-                                    dst_frame.virtaddr().raw(),
-                                    dst_frame_rem
-                                );
 
                                 let op_len = if let Some(src_frame) = self_frame {
+                                    let (dst_ptr, dst_frame_rem) = dst_ptr_info.expect("destination frame should be present");
+                                    let dst_frame = dst_frame.expect("destination frame should be present");
                                     let src_frame_offset = src_offset - src_frame_start;
                                     let src_frame_rem = src_frame.size() - src_frame_offset;
                                     let copy_len = core::cmp::min(
@@ -694,6 +603,7 @@ impl Object {
                                     copy_len
                                 } else {
                                     // Zero destination if source is not mapped.
+                                    if let Some((dst_ptr, dst_frame_rem)) = dst_ptr_info {
                                     let zero_len = core::cmp::min(len, dst_frame_rem);
                                     log::debug!(
                                         "zeroing {} bytes at dst offset {} in object {}",
@@ -705,6 +615,7 @@ impl Object {
                                         core::ptr::write_bytes(dst_ptr, 0, zero_len);
                                     }
                                     zero_len
+                                    } else {PageNumber::PAGE_SIZE.min(len)}
                                 };
 
                                 src_offset += op_len;
@@ -744,17 +655,17 @@ impl Object {
         assert!(dst_offset.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
         assert!(len.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
 
-        let (self_pt, dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
+        if self.use_pager() {
+            self.ensure_in_core(
+                self.lock_page_tables(),
+                PageNumber::from_offset(src_offset),
+                len / PageNumber::PAGE_SIZE,
+                &mut false,
+                &mut false,
+            )?;
+        }
 
-        let (mut self_pt, mut dst_pt) = self.ensure_both_in_core(
-            dst,
-            self_pt,
-            dst_pt,
-            PageNumber::from_offset(src_offset),
-            PageNumber::from_offset(dst_offset),
-            len / PageNumber::PAGE_SIZE,
-            &mut false,
-        )?;
+        let (mut self_pt, mut dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;

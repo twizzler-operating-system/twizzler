@@ -16,7 +16,7 @@ use twizzler_rt_abi::{
 
 use super::PageFaultFlags;
 use crate::{
-    arch::{VirtAddr, memory::pagetables::ArchTlbMgr},
+    arch::VirtAddr,
     instant::Instant,
     memory::{
         FAULT_STATS,
