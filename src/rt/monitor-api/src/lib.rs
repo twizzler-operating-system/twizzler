@@ -102,7 +102,11 @@ pub fn monitor_rt_load_compartment(
 }
 
 #[secgate::gatecall]
-pub fn monitor_rt_compartment_wait(desc: Option<Descriptor>, flags: u64) -> Result<u64, TwzError> {}
+pub fn monitor_rt_compartment_wait(
+    desc: Option<Descriptor>,
+    flags: u64,
+) -> Result<(u64, u64), TwzError> {
+}
 
 #[secgate::gatecall]
 pub fn monitor_rt_drop_compartment_handle(desc: Descriptor) -> Result<(), TwzError> {}
@@ -741,9 +745,9 @@ impl CompartmentHandle {
     }
 
     pub fn wait(&self, flags: CompartmentFlags) -> CompartmentFlags {
-        CompartmentFlags::from_bits_truncate(
-            monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap(),
-        )
+        // TODO
+        let (flags, _signals) = monitor_rt_compartment_wait(self.desc(), flags.bits()).unwrap();
+        CompartmentFlags::from_bits_truncate(flags)
     }
 }
 

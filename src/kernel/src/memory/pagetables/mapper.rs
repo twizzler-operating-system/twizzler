@@ -162,6 +162,12 @@ impl Mapper {
         x
     }
 
+    pub fn is_empty_at_level(&self, cursor: &MappingCursor, level: usize) -> bool {
+        let start_level = self.start_level;
+        let root = self.root();
+        root.is_empty_at_level(cursor, level, start_level)
+    }
+
     pub fn set_start_level(&mut self, start_level: usize) {
         self.start_level = start_level;
     }
@@ -273,7 +279,6 @@ impl Mapper {
             dest.root_address().raw()
         );
         let start_level = self.start_level;
-        assert!(start_level == dest.start_level);
         self.generation += 1;
         let root = self.root_mut();
         while src_cursor.remaining() > 0 && dst_cursor.remaining() > 0 {
@@ -289,6 +294,7 @@ impl Mapper {
                 &mut dst_cursor,
                 start_level,
                 consist,
+                start_level - 1,
             )?;
         }
         consist.flush_cache();

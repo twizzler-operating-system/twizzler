@@ -65,6 +65,10 @@ impl UpcallAble for IsrContext {
     fn get_stack_top(&self) -> u64 {
         self.rsp
     }
+
+    fn get_base_pointer(&self) -> u64 {
+        self.rbp
+    }
 }
 
 impl From<UpcallFrame> for IsrContext {

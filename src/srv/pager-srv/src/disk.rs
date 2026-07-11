@@ -93,11 +93,18 @@ impl PagedDevice for Disk {
 
     async fn phys_addrs(
         &self,
+        start_obj_page: i64,
+        nr_obj_pages: u32,
         start: DevicePage,
         phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
     ) -> Result<usize> {
         let ctx = PAGER_CTX.get().unwrap();
-        let page = match ctx.data.try_alloc_page() {
+        let alloc = if start.as_hole().is_some() {
+            ctx.data.try_alloc_page().map(|p| (p, 1))
+        } else {
+            ctx.data.try_alloc_pages(start_obj_page, nr_obj_pages)
+        };
+        let (page, count) = match alloc {
             Ok(page) => page,
             Err(mw) => {
                 tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
@@ -105,16 +112,16 @@ impl PagedDevice for Disk {
                     return Ok(0);
                 }
                 tracing::info!("task out of memory, waiting");
-                block_on(mw)
+                (block_on(mw), 1)
             }
         };
-        let phys_range = PhysRange::new(page, page + PAGE);
+        let phys_range = PhysRange::new(page, page + PAGE * count as u64);
         let mut mem = PagedPhysMem::new(phys_range);
         if start.as_hole().is_some() {
             mem.set_completed();
         }
         phys_list.push(mem).unwrap();
-        Ok(1)
+        Ok(count as usize)
     }
 
     fn yield_now(&self) {

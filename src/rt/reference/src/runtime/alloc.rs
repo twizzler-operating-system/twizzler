@@ -11,6 +11,8 @@ pub use talc::LOCAL_ALLOCATOR;
 
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        //twizzler_abi::klog_println!("alloc: {} bytes, align = {}", layout.size(),
+        // layout.align());
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
         {

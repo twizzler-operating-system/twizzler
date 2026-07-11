@@ -1,4 +1,4 @@
-use alloc::vec::{self, Vec};
+use alloc::vec::Vec;
 
 use itertools::Itertools;
 use twizzler_abi::device::CacheType;
@@ -47,6 +47,36 @@ impl Drop for ObjectPageTable {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct DirtyList {
+    pages: Vec<(PageNumber, PhysAddr, usize)>,
+    frames: Vec<FrameRef>,
+}
+
+impl DirtyList {
+    pub fn pages(&self) -> &Vec<(PageNumber, PhysAddr, usize)> {
+        &self.pages
+    }
+
+    pub fn frames(&self) -> &Vec<FrameRef> {
+        &self.frames
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+}
+
+impl Drop for DirtyList {
+    fn drop(&mut self) {
+        for frame in self.frames.drain(..) {
+            if frame.dec_refcount() == 0 {
+                free_frame(frame);
+            }
+        }
+    }
+}
+
 impl ObjectPageTable {
     pub fn new() -> Self {
         let frame = alloc_frame(
@@ -55,7 +85,7 @@ impl ObjectPageTable {
         frame.set_pt(true);
         frame.inc_refcount();
         let mut mapper = Mapper::new(frame.start_address());
-        mapper.set_start_level(Table::top_level() - 2);
+        mapper.set_start_level(Table::top_level() - 1);
         Self {
             mapper,
             invls: heapless::Vec::new(),
@@ -93,7 +123,7 @@ impl ObjectPageTable {
     }
 
     pub fn max_len(&self) -> usize {
-        PHYS_LEVEL_LAYOUTS[self.mapper.start_level() + 1].size()
+        PHYS_LEVEL_LAYOUTS[self.mapper.start_level()].size()
     }
 
     pub fn invalidate(&mut self, offset: u64, len: usize) {
@@ -133,7 +163,7 @@ impl ObjectPageTable {
                     addr,
                     false,
                     true,
-                    min_level_for_len(len).unwrap_or(self.mapper.start_level() + 1),
+                    min_level_for_len(len).unwrap_or(self.mapper.start_level()),
                 );
             }
             tlb.finish();
@@ -241,10 +271,7 @@ impl ObjectPageTable {
     }
 
     pub fn count_pages(&self) -> usize {
-        let cursor = MappingCursor::new(
-            VirtAddr::new(0).unwrap(),
-            Table::level_to_page_size(self.mapper.start_level() + 1),
-        );
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
         let reader = self.mapper.readmap(cursor).coalesce();
         reader.fold(0, |acc, mi| {
             if mi.is_empty() {
@@ -255,16 +282,15 @@ impl ObjectPageTable {
         })
     }
 
-    pub fn get_dirty_and_reset(&mut self) -> Result<Vec<(PageNumber, PhysAddr, usize)>, TwzError> {
+    pub fn get_dirty_and_reset(&mut self) -> Result<DirtyList, TwzError> {
         let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
 
-        fn add_to_list(dirty_list: &mut Vec<(PageNumber, PhysAddr, usize)>, mi: &MapInfo) {
+        fn add_to_list(dirty_list: &mut DirtyList, mi: &MapInfo) {
             fn can_append(mi: &MapInfo, item: &(PageNumber, PhysAddr, usize)) -> bool {
                 if mi.is_empty() {
                     return false;
                 }
                 let pn = PageNumber::from_address(mi.vaddr());
-
                 item.0.offset(item.2) == pn
                     && item
                         .1
@@ -272,10 +298,19 @@ impl ObjectPageTable {
                         .is_ok_and(|x| x == mi.paddr())
             }
 
-            if let Some(pos) = dirty_list.iter().position(|item| can_append(mi, item)) {
-                dirty_list[pos].2 += mi.len() / PageNumber::PAGE_SIZE;
+            let frame = get_frame(mi.paddr()).expect("frame should exist");
+            assert!(frame.size() == mi.len());
+            dirty_list.frames.push(frame);
+            frame.inc_refcount();
+
+            if let Some(pos) = dirty_list
+                .pages
+                .iter()
+                .position(|item| can_append(mi, item))
+            {
+                dirty_list.pages[pos].2 += mi.len() / PageNumber::PAGE_SIZE;
             } else {
-                dirty_list.push((
+                dirty_list.pages.push((
                     PageNumber::from_address(mi.vaddr()),
                     mi.paddr(),
                     mi.len() / PageNumber::PAGE_SIZE,
@@ -284,7 +319,7 @@ impl ObjectPageTable {
         }
 
         let mut consist = Consistency::new_object_tables();
-        let mut dirty_list = vec::Vec::new();
+        let mut dirty_list = DirtyList::default();
         let r = self.mapper.with_dirty_bits(
             cursor,
             |mi| {
@@ -326,11 +361,14 @@ impl ObjectPageTable {
             *did_cow = self.maybe_cow_at(offset, true)?;
         }
         let mut reader = self.mapper.readmap(cursor);
-        let page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
+        let mut page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
         let mut map_info = reader.next();
+        if let Some(mi) = &map_info {
+            page_aligned_offset = offset & !(mi.len() as u64 - 1);
+        }
         if map_info
             .as_ref()
-            .is_some_and(|mi| mi.vaddr().raw() != page_aligned_offset)
+            .is_some_and(|mi| mi.vaddr().raw() != offset & !(mi.len() as u64 - 1))
         {
             map_info = None;
         }
@@ -353,10 +391,17 @@ impl ObjectPageTable {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         let mut reader = self.mapper.readmap(cursor);
-        let page_aligned_offset = offset & !(PHYS_LEVEL_LAYOUTS[0].size() as u64 - 1);
         reader
             .next()
-            .filter(|x| x.vaddr().raw() == page_aligned_offset)
+            .filter(|x| x.vaddr().raw() == offset & !(x.len() as u64 - 1))
+    }
+
+    pub fn is_empty_at_level(&mut self, offset: u64, level: usize) -> bool {
+        let cursor = MappingCursor::new(
+            VirtAddr::new(offset).unwrap(),
+            PHYS_LEVEL_LAYOUTS[level].size(),
+        );
+        self.mapper.is_empty_at_level(&cursor, level)
     }
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {

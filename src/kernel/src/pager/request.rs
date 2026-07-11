@@ -16,7 +16,7 @@ use crate::{
     arch::PhysAddr,
     condvar::CondVarLinkAdapter,
     instant::Instant,
-    obj::{ObjectRef, PageNumber},
+    obj::{ObjectRef, PageNumber, pagetables::DirtyList},
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
     thread::{CriticalGuard, ThreadRef, current_thread_ref},
@@ -28,6 +28,7 @@ pub struct SyncRegionInfo {
     pub id: ObjID,
     pub unique_id: ObjID,
     pub sync_info: Option<sync_info>,
+    pub dirty: Arc<DirtyList>,
 }
 
 impl PartialEq for SyncRegionInfo {
@@ -143,7 +144,7 @@ impl ReqKind {
 
     pub fn new_sync_region(
         object: &ObjectRef,
-        pages: &[(PageNumber, PhysAddr, usize)],
+        dirty: DirtyList,
         sync_info: Option<sync_info>,
         version: u64,
     ) -> Self {
@@ -172,7 +173,7 @@ impl ReqKind {
         static COUNTER_1: AtomicU64 = AtomicU64::new(1);
         let unique_id = COUNTER_1.fetch_add(1, Ordering::Relaxed) as u128;
 
-        let slices = consecutive_slices(pages).collect::<Vec<_>>();
+        let slices = consecutive_slices(dirty.pages()).collect::<Vec<_>>();
         let runs = slices.iter().enumerate().map(|(i, run)| {
             let is_last = i == slices.len() - 1;
             let first = &run[0];
@@ -213,6 +214,7 @@ impl ReqKind {
             id: object.id(),
             unique_id: unique_id.into(),
             sync_info,
+            dirty: Arc::new(dirty),
         })
     }
 

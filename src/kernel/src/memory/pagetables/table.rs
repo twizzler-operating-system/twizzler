@@ -7,7 +7,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::{
-        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
+        frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
         pagetables::{Mapper, MappingFlags},
         tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame},
     },
@@ -117,11 +117,18 @@ impl Table {
         }
     }
 
+    pub(super) fn from_frame_mut<'a>(frame: &'a Frame) -> &'a mut Table {
+        assert!(frame.is_pt());
+        let vaddr = frame.start_address().kernel_vaddr();
+        unsafe { &mut *(vaddr.as_mut_ptr::<Table>()) }
+    }
+
     pub(super) fn split_huge(
         &mut self,
         index: usize,
         level: usize,
         consist: &mut Consistency,
+        vaddr: VirtAddr,
     ) -> Result<(), TwzError> {
         let entry = &mut self[index];
         if !entry.is_present() || !entry.is_huge() || level == 0 {
@@ -130,24 +137,70 @@ impl Table {
         assert_ne!(level, Self::last_level());
         let start_paddr = entry.addr(level);
         let large_frame = get_frame(start_paddr).unwrap();
-        assert!(large_frame.size() == Self::level_to_page_size(level));
-        todo!("split_huge: handle refcounting and COW for huge pages");
-        split_frame(large_frame);
         let flags = entry.flags();
-        // TODO: this might generate spurious faults.
-        self[index].clear();
-        self.populate(index, EntryFlags::intermediate())?;
+        assert!(large_frame.size() == Self::level_to_page_size(level));
 
-        let next_table = self.next_table_mut(index).unwrap();
+        let new_table_frame = try_alloc_frame(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        )
+        .ok_or(ResourceError::OutOfMemory)?;
+        new_table_frame.set_pt(true);
+        new_table_frame.inc_refcount();
 
-        for i in 0..Table::PAGE_TABLE_ENTRIES {
-            if let Ok(paddr) = start_paddr.offset(i * Self::level_to_page_size(level)) {
-                if let Some(frame) = get_frame(paddr) {
-                    frame.inc_refcount();
-                    next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
+        let next_table = Self::from_frame_mut(new_table_frame);
+        if entry.flags().contains(EntryFlags::WRITE) {
+            let (_, len) = split_frame(large_frame);
+            assert!(
+                len == Self::level_to_page_size(level),
+                "split_frame returned unexpected length: {}",
+                len
+            );
+
+            for i in 0..Table::PAGE_TABLE_ENTRIES {
+                if let Ok(paddr) = start_paddr.offset(i * Self::level_to_page_size(level - 1)) {
+                    if let Some(frame) = get_frame(paddr) {
+                        frame.inc_refcount();
+                        next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
+                    }
                 }
             }
+            large_frame.dec_refcount();
+        } else {
+            // We can't split, so allocate and copy.
+            for i in 0..Table::PAGE_TABLE_ENTRIES {
+                let frame = try_alloc_frame(
+                    FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+                    PHYS_LEVEL_LAYOUTS[level - 1],
+                );
+                if frame.is_none() {
+                    consist.free_frame(new_table_frame);
+                    for i in 0..Table::PAGE_TABLE_ENTRIES {
+                        if next_table[i].is_present()
+                            && let Some(frame) = get_frame(entry.addr(level))
+                        {
+                            consist.free_frame(frame);
+                        }
+                    }
+                    return Err(ResourceError::OutOfMemory.into());
+                }
+                let frame = frame.unwrap();
+                frame.copy_contents_from_physaddr(
+                    0,
+                    start_paddr
+                        .offset(i * Table::level_to_page_size(level - 1))
+                        .unwrap(),
+                    frame.size(),
+                );
+                frame.inc_refcount();
+                next_table[i] = Entry::new(frame.start_address(), flags - EntryFlags::huge());
+            }
         }
+        next_table.set_count(Table::PAGE_TABLE_ENTRIES);
+
+        let new_entry = Entry::new(new_table_frame.start_address(), EntryFlags::intermediate());
+        self.update_entry(consist, index, new_entry, vaddr, true, level);
+
         Ok(())
     }
 
@@ -261,8 +314,11 @@ impl Table {
 
         let index = Self::get_index(cursor.start(), level);
         let mut did_cow = false;
+        if !self[index].is_present() {
+            return Ok(false);
+        }
         if self[index].is_huge() && level != Self::last_level() {
-            self.split_huge(index, level, consist)?;
+            self.split_huge(index, level, consist, cursor.start())?;
         } else {
             did_cow |= self.do_cow_copy(index, level, consist, cursor.start(), mark_dirty)?;
         }
@@ -288,8 +344,9 @@ impl Table {
         let max_level = object_tables.start_level();
         let target_level = cursor.biggest_level().min(max_level);
 
-        if level == target_level + 1 {
-            let paddr = object_tables.get_table_addr(target_level)?;
+        if level == target_level {
+            // Get the next table down to map into an entry.
+            let paddr = object_tables.get_table_addr(target_level - 1)?;
             let frame = get_frame(paddr).unwrap();
             frame.inc_refcount();
             assert!(frame.is_pt());
@@ -312,7 +369,7 @@ impl Table {
                 level,
             );
             Ok(())
-        } else if level > target_level + 1 {
+        } else if level > target_level {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate())?;
             let next_table = self.next_table_mut(index).unwrap();
@@ -352,7 +409,7 @@ impl Table {
         }
 
         if self[index].is_present() && self[index].is_huge() {
-            self.split_huge(index, current_level, consist)?;
+            self.split_huge(index, current_level, consist, addr)?;
         } else if !self[index].is_present() {
             self.populate(index, EntryFlags::intermediate())?;
         }
@@ -374,6 +431,7 @@ impl Table {
         dst_cursor: &mut MappingCursor,
         level: usize,
         consist: &mut Consistency,
+        max_level: usize,
     ) -> Result<(), TwzError> {
         assert!(src_cursor.remaining() == dst_cursor.remaining());
 
@@ -415,7 +473,7 @@ impl Table {
                 && dst_cursor.remaining() >= Self::level_to_page_size(level)
                 && src_cursor.remaining() >= Self::level_to_page_size(level);
 
-            if !is_aligned {
+            if !is_aligned || level > max_level {
                 log::log!(
                     LOG_LEVEL,
                     "not aligned for this level: src_cursor {:?}, dst_cursor {:?}, level {}",
@@ -442,6 +500,7 @@ impl Table {
                     dst_cursor,
                     level - 1,
                     consist,
+                    max_level,
                 )?;
                 continue;
             }
@@ -584,8 +643,11 @@ impl Table {
             if cursor.remaining() == 0 {
                 break;
             }
-            let entry = &mut self[idx];
+            let entry = self[idx];
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            if cursor.remaining() < Self::level_to_page_size(level) && is_huge {
+                self.split_huge(idx, level, consist, cursor.start())?;
+            }
             if entry.is_present() && (is_huge || level == Self::last_level()) {
                 let frame = get_frame(entry.addr(level));
                 let flags = entry.flags();
@@ -835,6 +897,33 @@ impl Table {
             next_table.readmap(cursor, Self::next_level(level))
         } else {
             Err(Table::level_to_page_size(level))
+        }
+    }
+
+    pub(super) fn is_empty_at_level(
+        &self,
+        cursor: &MappingCursor,
+        target_level: usize,
+        level: usize,
+    ) -> bool {
+        if self.read_count() == 0 {
+            return true;
+        }
+
+        let index = Self::get_index(cursor.start(), level);
+
+        if !self[index].is_present() {
+            return true;
+        }
+
+        if level == target_level {
+            return false;
+        }
+
+        if let Some(next_table) = self.next_table(index) {
+            return next_table.is_empty_at_level(cursor, target_level, Self::next_level(level));
+        } else {
+            false
         }
     }
 

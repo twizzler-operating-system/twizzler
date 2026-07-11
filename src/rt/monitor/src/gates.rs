@@ -149,7 +149,10 @@ pub fn monitor_rt_load_compartment(
 }
 
 #[secgate::entry(lib = "monitor-api")]
-pub fn monitor_rt_compartment_wait(desc: Option<Descriptor>, flags: u64) -> Result<u64, TwzError> {
+pub fn monitor_rt_compartment_wait(
+    desc: Option<Descriptor>,
+    flags: u64,
+) -> Result<(u64, u64), TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);

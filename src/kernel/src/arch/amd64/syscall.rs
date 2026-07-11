@@ -71,6 +71,10 @@ impl UpcallAble for X86SyscallContext {
     fn get_stack_top(&self) -> u64 {
         self.rsp
     }
+
+    fn get_base_pointer(&self) -> u64 {
+        self.rbp
+    }
 }
 
 impl SyscallContext for X86SyscallContext {

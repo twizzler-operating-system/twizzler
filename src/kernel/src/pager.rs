@@ -15,12 +15,14 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
-    arch::PhysAddr,
     memory::{
         context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
     },
     mutex::{LockGuard, Mutex},
-    obj::{LookupFlags, ObjectRef, PageNumber, pagetables::ObjectPageTable},
+    obj::{
+        LookupFlags, ObjectRef, PageNumber,
+        pagetables::{DirtyList, ObjectPageTable},
+    },
     once::Once,
     processor::sched::{SchedFlags, schedule},
     syscall::sync::{finish_blocking, sys_thread_sync},
@@ -159,20 +161,18 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 
 pub fn sync_region(
     region: &MapRegion,
-    dirty_set: &[(PageNumber, PhysAddr, usize)],
+    dirty: DirtyList,
     sync_info: Option<sync_info>,
     version: u64,
 ) {
-    let req = ReqKind::new_sync_region(region.object(), dirty_set, sync_info, version);
+    let req = ReqKind::new_sync_region(region.object(), dirty, sync_info, version);
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
     let Some(inflight) = mgr.add_request(req) else {
         log::warn!("out of pager request slots");
-        drop(mgr);
-        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
-        return sync_region(region, dirty_set, sync_info, version);
+        return;
     };
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {

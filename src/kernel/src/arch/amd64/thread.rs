@@ -156,6 +156,9 @@ impl Default for ArchThread {
 pub trait UpcallAble {
     fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64);
     fn get_stack_top(&self) -> u64;
+    fn get_base_pointer(&self) -> u64 {
+        0
+    }
 }
 
 fn set_upcall<T: UpcallAble + Copy>(
@@ -526,6 +529,26 @@ impl Thread {
                 Registers::Syscall(sys, _) => {
                     let sys = unsafe { &mut *sys };
                     (*sys).pc().raw()
+                }
+            };
+        }
+        frame.unwrap().rip
+    }
+
+    pub fn read_bp(&self) -> u64 {
+        let frame = &self.arch.upcall_restore_frame.borrow();
+        if frame.is_none() {
+            return match *self.arch.entry_registers.borrow() {
+                Registers::None => {
+                    return 0;
+                }
+                Registers::Interrupt(int, _) => {
+                    let int = unsafe { &mut *int };
+                    (*int).get_stack_top()
+                }
+                Registers::Syscall(sys, _) => {
+                    let sys = unsafe { &mut *sys };
+                    (*sys).get_base_pointer()
                 }
             };
         }

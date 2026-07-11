@@ -128,6 +128,8 @@ impl PagedDevice for VirtioMem {
 
     async fn phys_addrs(
         &self,
+        _obj_start_page: i64,
+        _obj_nr_pages: u32,
         start: DevicePage,
         phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
     ) -> Result<usize> {

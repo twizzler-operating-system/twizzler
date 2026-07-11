@@ -11,7 +11,7 @@ use crate::{
     memory::{
         VirtAddr,
         frame::PHYS_LEVEL_LAYOUTS,
-        tracker::{FrameAllocFlags, alloc_frame},
+        tracker::{FrameAllocFlags, FrameAllocator},
     },
     obj::{self, ObjectRef, PageNumber},
     once::Once,
@@ -66,8 +66,35 @@ pub fn init(modules: &[BootModule]) {
             let data = e.data();
             let mut total = 0;
             let mut pagenr = 1;
+            let mut small_fa = FrameAllocator::new(
+                FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
+            let mut large_fa = FrameAllocator::new(
+                FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[1],
+            );
+            let nr_frames_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
             while total < data.len() {
-                let frame = alloc_frame(FrameAllocFlags::KERNEL);
+                if pagenr & (nr_frames_per_large - 1) == 0
+                    && total + PHYS_LEVEL_LAYOUTS[1].size() <= data.len()
+                {
+                    if let Some(large_frame) = large_fa.try_allocate() {
+                        let va = large_frame.virtaddr().as_mut_ptr::<u8>();
+                        let thislen = core::cmp::min(large_frame.size(), data.len() - total);
+                        unsafe {
+                            va.copy_from(data.as_ptr().add(total), thislen);
+                        }
+                        obj.add_frame(pagenr.into(), large_frame);
+                        total += thislen;
+                        pagenr += large_frame.size() / PHYS_LEVEL_LAYOUTS[0].size();
+                        continue;
+                    }
+                }
+
+                let frame = small_fa
+                    .try_allocate()
+                    .expect("failed to allocate frame for initrd");
                 let va = frame.virtaddr().as_mut_ptr::<u8>();
 
                 let thislen = core::cmp::min(frame.size(), data.len() - total);
@@ -77,7 +104,7 @@ pub fn init(modules: &[BootModule]) {
                 obj.add_frame(pagenr.into(), frame);
 
                 total += thislen;
-                pagenr += 1;
+                pagenr += frame.size() / PHYS_LEVEL_LAYOUTS[0].size();
             }
 
             let mut buffer = [0; PHYS_LEVEL_LAYOUTS[0].size()];

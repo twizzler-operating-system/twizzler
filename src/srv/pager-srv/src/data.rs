@@ -294,6 +294,22 @@ impl PagerData {
         Err(MemoryWaiter::new(pos, self.inner.clone()))
     }
 
+    pub fn try_alloc_pages(
+        &self,
+        start: i64,
+        len: u32,
+    ) -> core::result::Result<(u64, u32), MemoryWaiter> {
+        let mut inner = self.inner.lock().unwrap();
+        // TODO: try to allocate aligned pages
+        if let Some(page) = inner.get_next_available_page() {
+            return Ok((page, 1));
+        }
+        let pos = inner.waiters.push(None);
+        tracing::debug!("memory allocation failed");
+        drop(inner);
+        Err(MemoryWaiter::new(pos, self.inner.clone()))
+    }
+
     pub fn print_stats(&self) {
         let inner = self.inner.lock().unwrap();
         inner.print_stats();

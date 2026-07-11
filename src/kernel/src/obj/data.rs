@@ -339,8 +339,8 @@ impl Object {
     pub fn ensure_in_core<'a>(
         self: &'a ObjectRef,
         mut guard: LockGuard<'a, ObjectPageTable>,
-        page: PageNumber,
-        page_count: usize,
+        mut page: PageNumber,
+        mut page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
@@ -349,6 +349,12 @@ impl Object {
         if page_count <= 1 && first_is_present {
             return Ok(guard);
         }
+        log::trace!(
+            "ensure in core: ensuring {} pages in core for object {} starting at {:x}",
+            page_count,
+            self.id(),
+            page.as_byte_offset()
+        );
         if self.use_pager() {
             return self.ensure_in_core_pager(
                 guard,
@@ -367,6 +373,31 @@ impl Object {
             alloc.precharge(page_count);
         }
         guard = self.lock_page_tables();
+
+        if page != PageNumber::meta_page()
+            && guard.is_empty_at_level(page.as_byte_offset() as u64, 1)
+        {
+            let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
+            let large_page = page.align_down(nr_pages_for_large);
+            let pre_covered = page - large_page;
+            let mut alloc = FrameAllocator::new(
+                FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
+                PHYS_LEVEL_LAYOUTS[1],
+            );
+            if let Some(large_frame) = alloc.try_allocate() {
+                guard.map_page(large_page.as_byte_offset() as u64, large_frame)?;
+                page = large_page.offset(nr_pages_for_large);
+                page_count = page_count.saturating_sub(nr_pages_for_large - pre_covered);
+
+                log::trace!(
+                    "mapped large page at offset {:x} in object {} ({} pages remaining)",
+                    large_page.as_byte_offset(),
+                    self.id(),
+                    page_count
+                );
+            };
+        }
+
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
             if guard.get_mapinfo(offset).is_none() {
@@ -409,6 +440,24 @@ impl Object {
             self.id(),
             page.as_byte_offset()
         );
+
+        if page != PageNumber::meta_page()
+            && guard.is_empty_at_level(page.as_byte_offset() as u64, 1)
+        {
+            let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
+            let large_page = page.align_down(nr_pages_for_large);
+            let pre_covered = page - large_page;
+            page = large_page;
+            page_count += pre_covered.max(nr_pages_for_large);
+            log::debug!(
+                "paging in large page at offset {:x} in object {} ({} pages, {} pages pre-covered)",
+                large_page.as_byte_offset(),
+                self.id(),
+                page_count,
+                pre_covered
+            );
+        }
+
         let mut reqs = heapless::Vec::<_, 16>::new();
         while page_count > 0 {
             let mut mapreader = guard
@@ -671,7 +720,9 @@ impl Object {
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let level = core::cmp::min(src_level, dst_level);
         self_pt.split_to_level(src_offset as u64, level)?;
-        self_pt.split_to_level((src_offset + len) as u64, level)?;
+        if len > PageNumber::PAGE_SIZE {
+            self_pt.split_to_level((src_offset + len) as u64, level)?;
+        }
 
         dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;

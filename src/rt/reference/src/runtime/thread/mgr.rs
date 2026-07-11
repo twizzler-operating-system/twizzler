@@ -51,9 +51,14 @@ impl ThreadManager {
     }
 }
 
+struct CrossThread {
+    tls: *mut Tcb<RuntimeThreadControl>,
+}
+
 #[derive(Default)]
 struct ThreadManagerInner {
     all_threads: BTreeMap<u32, InternalThread>,
+    cross_threads: BTreeMap<ObjID, CrossThread>,
     // Threads that have exited, but we haven't cleaned up yet.
     to_cleanup: Vec<InternalThread>,
     // Basic unique-ID system.
@@ -71,6 +76,7 @@ impl ThreadManagerInner {
             all_threads: BTreeMap::new(),
             to_cleanup: vec![],
             id_stack: vec![],
+            cross_threads: BTreeMap::new(),
         }
     }
 
@@ -172,6 +178,15 @@ impl ReferenceRuntime {
             })?;
         }
         let mut inner = THREAD_MGR.inner.lock();
+
+        if let Some(ct) = inner
+            .cross_threads
+            .get(&twizzler_abi::syscall::sys_thread_self_id())
+        {
+            twizzler_abi::syscall::sys_thread_settls(ct.tls as u64);
+            return Ok(());
+        }
+
         let id = inner.next_id().freeze();
         drop(inner);
         let tls = TLS_GEN_MGR
@@ -180,6 +195,12 @@ impl ReferenceRuntime {
             .unwrap();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
         libc_init_tcb(tls);
+
+        let mut inner = THREAD_MGR.inner.lock();
+        inner.cross_threads.insert(
+            twizzler_abi::syscall::sys_thread_self_id(),
+            CrossThread { tls },
+        );
         Ok(())
     }
 

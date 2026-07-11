@@ -24,6 +24,7 @@ use crate::{
     is_test_mode,
     memory::{
         context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::start_reclaim_thread,
@@ -208,10 +209,34 @@ fn pager_compl_handle_page_data(
 
         let thiscount = (max_obj - count).min(max_phys - count);
 
+        log::info!(
+            "==> {} {} {}",
+            pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size()),
+            pn.as_byte_offset()
+                .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size()),
+            thiscount
+        );
+
         // TODO: reenable multipage once the page tree bug is fixed.
         for i in 0..thiscount {
             let pn = pn.offset(i);
             let pa = pa.offset(i * PageNumber::PAGE_SIZE).unwrap();
+
+            if pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size())
+                && pn
+                    .as_byte_offset()
+                    .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
+            {
+                log::info!(
+                    "==> {} {} {} / {}",
+                    pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size()),
+                    pn.as_byte_offset()
+                        .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size()),
+                    i,
+                    thiscount
+                );
+            }
+
             if flags.contains(PageFlags::WIRED) {
                 request
                     .obj

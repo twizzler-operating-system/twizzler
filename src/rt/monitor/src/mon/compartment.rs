@@ -405,7 +405,12 @@ impl super::Monitor {
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn compartment_wait(&self, caller: ObjID, desc: Option<Descriptor>, flags: u64) -> u64 {
+    pub fn compartment_wait(
+        &self,
+        caller: ObjID,
+        desc: Option<Descriptor>,
+        flags: u64,
+    ) -> (u64, u64) {
         let Some(instance) = ({
             let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
             let comp_id = desc
@@ -413,10 +418,10 @@ impl super::Monitor {
                 .unwrap_or(Some(caller));
             comp_id
         }) else {
-            return 0;
+            return (0, 0);
         };
         self.wait_for_compartment_state_change(instance, flags);
-        self.load_compartment_flags(instance)
+        self.read_flags_and_signals(instance)
     }
 
     /// Open a handle to the n'th dependency compartment of a given compartment.
@@ -629,6 +634,17 @@ impl super::Monitor {
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
         let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
         cmp.load_compartment_flags(instance)
+    }
+
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn read_flags_and_signals(&self, instance: ObjID) -> (u64, u64) {
+        let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let flags = cmp.load_compartment_flags(instance);
+        let signals = cmp
+            .get(instance)
+            .map(|c| unsafe { &*c.comp_config_ptr() }.read_posted_signals())
+            .unwrap_or(0);
+        (flags, signals)
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]

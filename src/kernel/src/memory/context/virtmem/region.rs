@@ -288,7 +288,7 @@ impl MapRegion {
                     );
                     drop(pt);
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages.as_slice(), None, 0);
+                        crate::pager::sync_region(self, dirty_pages, None, 0);
                     }
                 } else {
                     let sync_info = unsafe { sync_info_ptr.read() };
@@ -303,12 +303,7 @@ impl MapRegion {
                         );
                         drop(pt);
                         if self.object().use_pager() && !dirty_pages.is_empty() {
-                            crate::pager::sync_region(
-                                self,
-                                dirty_pages.as_slice(),
-                                Some(sync_info),
-                                version,
-                            );
+                            crate::pager::sync_region(self, dirty_pages, Some(sync_info), version);
                         }
                     }
 

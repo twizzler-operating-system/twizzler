@@ -26,8 +26,27 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
         .total
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
-    if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
-        log::trace!("page-fault: {:?} {:?} {:?} ip={:?}", addr, cause, flags, ip);
+    if flags.contains(PageFaultFlags::USER)
+        && !ip.is_kernel()
+        && !addr.is_kernel()
+        && addr.raw() & (MAX_SIZE as u64 - 1) > 0x10000000
+    {
+        crate::interrupt::disable();
+        if ip.raw() & 0xfffff == 0xbfa09 {
+            let bp = current_thread_ref().unwrap().read_bp();
+            log::info!(
+                "page-fault: {:?} {:?} {:?} ip={:?}, bp={:x} in thread {}",
+                addr,
+                cause,
+                flags,
+                ip,
+                bp,
+                current_thread_ref().map(|c| c.id()).unwrap_or(0)
+            );
+            //crate::panic::backtrace(true, None);
+
+            //loop {}
+        }
     }
 
     if let Some(ct) = current_thread_ref() {
