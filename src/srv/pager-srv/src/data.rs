@@ -300,7 +300,56 @@ impl PagerData {
         len: u32,
     ) -> core::result::Result<(u64, u32), MemoryWaiter> {
         let mut inner = self.inner.lock().unwrap();
-        // TODO: try to allocate aligned pages
+
+        tracing::trace!(
+            "try_alloc_pages: start = {}, len = {}, avail = {}",
+            start,
+            len,
+            inner.memory.available_memory()
+        );
+        let align = start as usize * PAGE as usize;
+        if align.is_multiple_of(1024 * 1024 * 2) && len >= 512 {
+            tracing::trace!("trying full aligned alloc");
+            if let Some(page) = inner.get_next_available_pages(1024 * 1024 * 2, 512 * PAGE as usize)
+            {
+                tracing::trace!(
+                    "allocated {} aligned pages at {} (align: {})",
+                    512,
+                    page,
+                    align
+                );
+                return Ok((page, 512));
+            }
+        }
+
+        let rem = 1024 * 1024 * 2 - align % (1024 * 1024 * 2);
+        if len > 1 && rem > 0x1000 && align > 0 {
+            tracing::trace!(
+                "requesting {} pages with alignment {}, rem = {}",
+                rem as u64 / PAGE,
+                align,
+                rem
+            );
+            let thislen = rem.min(len as usize * PAGE as usize);
+            let thiscount = thislen / PAGE as usize;
+            assert!(rem.is_multiple_of(0x1000));
+            if let Some(page) = inner.get_next_available_pages(0x1000, thislen) {
+                tracing::trace!(
+                    "allocated {} pages at {} (align: {})",
+                    thiscount,
+                    page,
+                    align
+                );
+                return Ok((page, thiscount as u32));
+            }
+        }
+        if len > 1 {
+            if let Some(page) = inner.get_next_available_pages(0x1000, len as usize * PAGE as usize)
+            {
+                tracing::trace!("allocated {} pages at {} (align: {})", len, page, align);
+                return Ok((page, len));
+            }
+        }
         if let Some(page) = inner.get_next_available_page() {
             return Ok((page, 1));
         }
@@ -385,6 +434,28 @@ impl Region {
         }
     }
 
+    pub fn get_pages(&mut self, align: usize, len: usize) -> Option<u64> {
+        if self.unused_start.is_multiple_of(align as u64)
+            && self.unused_start + len as u64 <= self.end
+        {
+            let next = self.unused_start;
+            self.unused_start += len as u64;
+            return Some(next);
+        }
+
+        if self.unused_start + align as u64 + len as u64 <= self.end {
+            let next = (self.unused_start + align as u64 - 1) & !(align as u64 - 1);
+            while self.unused_start + PAGE <= next {
+                self.stack.push(self.unused_start);
+                self.unused_start += PAGE;
+            }
+            self.unused_start = next + len as u64;
+            return Some(next);
+        }
+
+        None
+    }
+
     pub fn get_page(&mut self) -> Option<u64> {
         self.stack.pop().or_else(|| {
             if self.unused_start == self.end {
@@ -427,12 +498,22 @@ impl Memory {
     }
 
     pub fn get_page(&mut self) -> Option<u64> {
-        let i = 0;
-        while i < self.regions.len() {
-            if let Some(page) = self.regions[i].get_page() {
+        while !self.regions.is_empty() {
+            if let Some(page) = self.regions[0].get_page() {
                 return Some(page);
             }
-            self.regions.swap_remove(i);
+            self.regions.swap_remove(0);
+        }
+        None
+    }
+
+    pub fn get_pages(&mut self, align: usize, len: usize) -> Option<u64> {
+        let mut i = 0;
+        while i < self.regions.len() {
+            if let Some(page) = self.regions[i].get_pages(align, len) {
+                return Some(page);
+            }
+            i += 1;
         }
         None
     }
@@ -474,6 +555,10 @@ impl PagerDataInner {
     /// Returns the page number if available, or `None` if all pages are used.
     fn get_next_available_page(&mut self) -> Option<u64> {
         self.memory.get_page()
+    }
+
+    fn get_next_available_pages(&mut self, align: usize, len: usize) -> Option<u64> {
+        self.memory.get_pages(align, len)
     }
 
     fn free_page(&mut self, page: u64) {

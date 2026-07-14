@@ -2,10 +2,9 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::Path,
-    process::Command,
 };
 
-use ext4_lwext4::OpenFlags;
+use ext4_lwext4::{mkfs, OpenFlags};
 
 use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOptions};
 
@@ -18,35 +17,11 @@ pub fn create_fresh_disk_image(triple: &Triple) -> anyhow::Result<()> {
         f.set_len(DISK_IMAGE_SIZE).unwrap();
     }
 
-    std::env::set_var(
-        "PATH",
-        format!(
-            "{}:{}",
-            std::env::var("PATH").unwrap(),
-            "/opt/homebrew/opt/e2fsprogs/sbin/"
-        ),
-    );
-    std::env::set_var(
-        "PATH",
-        format!("{}:{}", std::env::var("PATH").unwrap(), "/usr/sbin/"),
-    );
-    let fs_type = "ext2";
-    if !Command::new("mke2fs")
-        .arg("-b")
-        .arg("4096")
-        .arg("-qF")
-        .arg("-E")
-        .arg("test_fs,lazy_itable_init=0,lazy_journal_init=0")
-        .arg("-t")
-        .arg(fs_type)
-        .arg(&path)
-        .arg((DISK_IMAGE_SIZE / 4096).to_string())
-        .status()
-        .expect("failed to create disk image")
-        .success()
-    {
-        panic!("failed to run mke2fs on {}", path);
-    }
+    let device = ext4_lwext4::FileBlockDevice::open(path)?;
+    let options = mkfs::MkfsOptions {
+        ..Default::default()
+    };
+    mkfs(device, &options).unwrap();
 
     copy_sysroot(triple, true)?;
 
@@ -97,6 +72,8 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
     let mut completed_files = 0;
     let mut completed_bytes = 0;
 
+    ext4.mkdir("/sysroot", 0755).unwrap();
+
     walkdir::WalkDir::new(&sysroot)
         .into_iter()
         .try_for_each(|entry| {
@@ -109,7 +86,7 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
                 total_bytes / (1024 * 1024),
                 completed_files,
                 total_files,
-                entry.file_name().display()
+                entry.file_name().display(),
             );
             std::io::stdout().flush().unwrap();
 

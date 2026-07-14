@@ -16,7 +16,9 @@ use twizzler_rt_abi::{
 
 use crate::{
     memory::{
-        context::virtmem::region::MapRegion, frame::PHYS_LEVEL_LAYOUTS, tracker::FrameAllocFlags,
+        context::virtmem::region::MapRegion,
+        frame::{PHYS_LEVEL_LAYOUTS, get_frame},
+        tracker::FrameAllocFlags,
     },
     mutex::{LockGuard, Mutex},
     obj::{
@@ -257,6 +259,24 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
+            for i in 0..len / PHYS_LEVEL_LAYOUTS[0].size() {
+                let frame = get_frame(
+                    frame
+                        .start_address()
+                        .offset(i * PHYS_LEVEL_LAYOUTS[0].size())
+                        .unwrap(),
+                )
+                .unwrap();
+                frame.inc_refcount();
+                assert!(!frame.is_cow());
+                assert!(!frame.is_pt());
+                assert_eq!(frame.refcount(), 1);
+                assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
+                assert!(!frame.is_kernel());
+                // it is zeroed because we requested a zeroed frame, but we don't track updates from
+                // the pager.
+                assert!(!frame.is_zeroed());
+            }
             let thiscount = len / PHYS_LEVEL_LAYOUTS[0].size();
             count += thiscount;
             crate::memory::tracker::track_page_pager(thiscount);
@@ -269,6 +289,13 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
                 FrameAllocFlags::ZEROED,
                 PHYS_LEVEL_LAYOUTS[0],
             ) {
+                frame.inc_refcount();
+                assert!(!frame.is_cow());
+                assert!(!frame.is_pt());
+                assert!(frame.refcount() == 1);
+                assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
+                assert!(!frame.is_kernel());
+                assert!(!frame.is_zeroed());
                 count += 1;
                 crate::memory::tracker::track_page_pager(1);
                 ranges.push(PhysRange::new(

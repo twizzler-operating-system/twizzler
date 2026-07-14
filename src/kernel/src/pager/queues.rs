@@ -24,7 +24,7 @@ use crate::{
     is_test_mode,
     memory::{
         context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
-        frame::PHYS_LEVEL_LAYOUTS,
+        frame::{PHYS_LEVEL_LAYOUTS, merge_frame},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::start_reclaim_thread,
@@ -200,6 +200,7 @@ fn pager_compl_handle_page_data(
     let max_obj = obj_range.page_count();
     let max_phys = phys_range.page_count();
     let max = max_obj.min(max_phys);
+    let pages_per_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
     while count < max {
         let objpage_nr = obj_range.pages().nth(count).unwrap();
         let physpage_nr = phys_range.pages().nth(count).unwrap();
@@ -209,53 +210,65 @@ fn pager_compl_handle_page_data(
 
         let thiscount = (max_obj - count).min(max_phys - count);
 
-        log::info!(
-            "==> {} {} {}",
+        log::trace!(
+            "==> {} {} {} ({:x} {} ({})) {} {}",
             pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size()),
             pn.as_byte_offset()
                 .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size()),
-            thiscount
+            thiscount,
+            pa.raw(),
+            pn.num(),
+            pn.num() % 512,
+            max_obj,
+            max_phys
         );
 
-        // TODO: reenable multipage once the page tree bug is fixed.
-        for i in 0..thiscount {
-            let pn = pn.offset(i);
-            let pa = pa.offset(i * PageNumber::PAGE_SIZE).unwrap();
-
-            if pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size())
-                && pn
-                    .as_byte_offset()
-                    .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
-            {
-                log::info!(
-                    "==> {} {} {} / {}",
-                    pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size()),
-                    pn.as_byte_offset()
-                        .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size()),
-                    i,
-                    thiscount
-                );
+        let thiscount = if pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size())
+            && pn
+                .as_byte_offset()
+                .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
+            && thiscount >= pages_per_large
+            && !flags.contains(PageFlags::WIRED)
+        {
+            let frame = crate::memory::frame::get_frame(pa).unwrap();
+            assert!(!frame.is_pt());
+            assert_eq!(frame.refcount(), 1);
+            assert!(!frame.is_cow());
+            assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
+            let frame = merge_frame(frame);
+            assert!(!frame.is_pt());
+            assert_eq!(frame.refcount(), 1);
+            assert!(!frame.is_cow());
+            assert!(frame.size() == PHYS_LEVEL_LAYOUTS[1].size());
+            request.obj.as_ref().unwrap().add_frame(pn, frame);
+            if frame.dec_refcount() == 0 {
+                crate::memory::tracker::free_frame(frame);
             }
-
-            if flags.contains(PageFlags::WIRED) {
-                request
-                    .obj
-                    .as_ref()
-                    .unwrap()
-                    .map_phys(
-                        pn.as_byte_offset(),
-                        pa,
-                        pa.offset(PageNumber::PAGE_SIZE).unwrap(),
-                        CacheType::WriteBack,
-                    )
-                    .unwrap();
-            } else {
-                let frame = crate::memory::frame::get_frame(pa).unwrap();
-                assert!(!frame.is_pt());
-                assert!(!frame.is_cow());
-                request.obj.as_ref().unwrap().add_frame(pn, frame);
+            pages_per_large
+        } else if flags.contains(PageFlags::WIRED) {
+            request
+                .obj
+                .as_ref()
+                .unwrap()
+                .map_phys(
+                    pn.as_byte_offset(),
+                    pa,
+                    pa.offset(PageNumber::PAGE_SIZE).unwrap(),
+                    CacheType::WriteBack,
+                )
+                .unwrap();
+            1
+        } else {
+            let frame = crate::memory::frame::get_frame(pa).unwrap();
+            assert!(!frame.is_pt());
+            assert_eq!(frame.refcount(), 1);
+            assert!(!frame.is_cow());
+            request.obj.as_ref().unwrap().add_frame(pn, frame);
+            if frame.dec_refcount() == 0 {
+                crate::memory::tracker::free_frame(frame);
             }
-        }
+            1
+        };
         count += thiscount;
     }
 

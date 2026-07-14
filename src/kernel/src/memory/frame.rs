@@ -152,10 +152,11 @@ impl AllocationRegionLevel {
         addr: PhysAddr,
         level: u8,
         init_flags: PhysicalFrameFlags,
+        rc: u32,
     ) -> bool {
         // Safety: the frame can be reset since during admit_one we are the only ones with access to
         // the frame data.
-        unsafe { frame.reset(addr, level, init_flags) };
+        unsafe { frame.reset(addr, level, init_flags, rc) };
         frame.set_admitted();
         frame.set_free();
         if init_flags.contains(PhysicalFrameFlags::ZEROED) {
@@ -222,6 +223,44 @@ impl AllocationRegion {
         Some(frame)
     }
 
+    pub fn merge_frame(&mut self, frame: FrameRef) -> FrameRef {
+        if !self.contains(frame.start_address()) {
+            panic!("tried to split a frame within the wrong region");
+        }
+        let level = frame.get_level();
+
+        let new_frame_size = PHYS_LEVEL_LAYOUTS[level + 1].size();
+        let child_count = new_frame_size / frame.size();
+        // skip the first one for now, as that's our passed in frame.
+        for child_idx in 1..child_count {
+            let pa = frame
+                .start_address()
+                .offset(child_idx * frame.size())
+                .unwrap();
+            let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+            unsafe {
+                child.reset(
+                    pa,
+                    level as u8,
+                    frame.get_flags() & PhysicalFrameFlags::ZEROED,
+                    0,
+                )
+            };
+        }
+        let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        unsafe {
+            frame.reset(
+                frame.start_address(),
+                (level + 1) as u8,
+                frame.get_flags() & PhysicalFrameFlags::ZEROED,
+                frame.refcount(),
+            )
+        };
+        frame.set_admitted();
+        frame.set_allocated();
+        frame
+    }
+
     pub fn split_and_keep(&mut self, frame: FrameRef) -> (FrameRef, usize) {
         if !self.contains(frame.start_address()) {
             panic!("tried to split a frame within the wrong region");
@@ -245,6 +284,7 @@ impl AllocationRegion {
                     pa,
                     (level - 1) as u8,
                     frame.get_flags() & PhysicalFrameFlags::ZEROED,
+                    frame.refcount(),
                 )
             };
             child.set_admitted();
@@ -256,6 +296,7 @@ impl AllocationRegion {
                 frame.start_address(),
                 (level - 1) as u8,
                 frame.get_flags() & PhysicalFrameFlags::ZEROED,
+                frame.refcount(),
             )
         };
         frame.set_admitted();
@@ -285,6 +326,7 @@ impl AllocationRegion {
                 pa,
                 (level - 1) as u8,
                 frame.get_flags() & PhysicalFrameFlags::ZEROED,
+                frame.refcount(),
             );
         }
         let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
@@ -293,6 +335,7 @@ impl AllocationRegion {
             frame.start_address(),
             (level - 1) as u8,
             frame.get_flags() & PhysicalFrameFlags::ZEROED,
+            frame.refcount(),
         );
     }
 
@@ -352,10 +395,11 @@ impl AllocationRegion {
                         sub_addr,
                         0,
                         PhysicalFrameFlags::empty(),
+                        0,
                     )
                 };
             }
-            levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty());
+            levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty(), 0);
             cursor = cursor.offset(levels[level].alloc_size).unwrap();
         }
 
@@ -400,9 +444,9 @@ impl core::fmt::Debug for Frame {
 impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized
     // yet.
-    unsafe fn reset(&mut self, pa: PhysAddr, level: u8, init_flags: PhysicalFrameFlags) {
+    unsafe fn reset(&mut self, pa: PhysAddr, level: u8, init_flags: PhysicalFrameFlags, rc: u32) {
         self.info.store(
-            (init_flags.bits() as u64) | ((level as u64) << 8),
+            (init_flags.bits() as u64) | ((level as u64) << 8) | ((rc as u64) << 32),
             Ordering::SeqCst,
         );
         let pa_ptr = &mut self.pa as *mut _;
@@ -755,6 +799,15 @@ impl PhysicalFrameAllocator {
         }
         panic!("could not find frame region for {:?}", frame);
     }
+
+    fn merge_frame(&mut self, frame: FrameRef) -> FrameRef {
+        for reg in &mut self.regions {
+            if reg.contains(frame.start_address()) {
+                return reg.merge_frame(frame);
+            }
+        }
+        panic!("could not find frame region for {:?}", frame);
+    }
 }
 
 #[doc(hidden)]
@@ -886,6 +939,10 @@ pub fn get_frame(pa: PhysAddr) -> Option<FrameRef> {
 
 pub fn split_frame(frame: FrameRef) -> (FrameRef, usize) {
     PFA.wait().lock().split_frame(frame)
+}
+
+pub fn merge_frame(frame: FrameRef) -> FrameRef {
+    PFA.wait().lock().merge_frame(frame)
 }
 
 #[cfg(test)]

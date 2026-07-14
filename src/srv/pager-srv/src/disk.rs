@@ -47,17 +47,38 @@ impl Disk {
 }
 
 impl PagedDevice for Disk {
-    async fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
-        let phys = list
-            .iter()
-            .map(|r| {
-                (r.start..r.end)
-                    .into_iter()
-                    .step_by(PAGE_SIZE)
-                    .map(|addr| PhysInfo::new(PhysAddr(addr)))
-            })
-            .flatten()
-            .collect::<Vec<_>>();
+    async fn sequential_read(
+        &self,
+        start: u64,
+        nr_pages: usize,
+        list: &[object_store::PagedPhysMem],
+        mut inner_cursor: usize,
+    ) -> Result<usize> {
+        let mut i = 0;
+        let mut cursor = 0;
+        let mut phys = Vec::with_capacity(nr_pages);
+        while i < nr_pages && cursor < list.len() {
+            assert!(
+                inner_cursor < list[cursor].nr_pages(),
+                "inner_cursor {} is out of bounds for list[{}] with {} pages",
+                inner_cursor,
+                cursor,
+                list[cursor].nr_pages()
+            );
+            let count = std::cmp::min(nr_pages - i, list[cursor].nr_pages() - inner_cursor);
+            let start = list[cursor].range.start + (inner_cursor * PAGE_SIZE) as u64;
+
+            for j in 0..count {
+                let phys_addr = start + (j * PAGE_SIZE) as u64;
+                let phys_info = PhysInfo::new(PhysAddr(phys_addr));
+                phys.push(phys_info);
+            }
+
+            i += count;
+            inner_cursor = 0;
+            cursor += 1;
+        }
+
         let count = self
             .ctrl
             .sequential_read_async::<PAGE_SIZE>(start, phys.as_slice())
@@ -68,18 +89,27 @@ impl PagedDevice for Disk {
     async fn sequential_write(
         &self,
         start: u64,
-        list: &[object_store::PhysRange],
+        nr_pages: usize,
+        list: &[object_store::PagedPhysMem],
+        mut inner_cursor: usize,
     ) -> Result<usize> {
-        let phys = list
-            .iter()
-            .map(|r| {
-                (r.start..r.end)
-                    .into_iter()
-                    .step_by(PAGE_SIZE)
-                    .map(|addr| PhysInfo::new(PhysAddr(addr)))
-            })
-            .flatten()
-            .collect::<Vec<_>>();
+        let mut i = 0;
+        let mut cursor = 0;
+        let mut phys = Vec::with_capacity(nr_pages);
+        while i < nr_pages && cursor < list.len() {
+            assert!(inner_cursor < list[cursor].nr_pages());
+            let count = std::cmp::min(nr_pages - i, list[cursor].nr_pages() - inner_cursor);
+            let start = list[cursor].range.start + (inner_cursor * PAGE_SIZE) as u64;
+            for j in 0..count {
+                let phys_addr = start + (j * PAGE_SIZE) as u64;
+                let phys_info = PhysInfo::new(PhysAddr(phys_addr));
+                phys.push(phys_info);
+            }
+            i += count;
+            inner_cursor = 0;
+            cursor += 1;
+        }
+
         let count = self
             .ctrl
             .sequential_write_async::<PAGE_SIZE>(start, phys.as_slice())
@@ -95,33 +125,63 @@ impl PagedDevice for Disk {
         &self,
         start_obj_page: i64,
         nr_obj_pages: u32,
-        start: DevicePage,
+        pages: &[DevicePage],
         phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
-    ) -> Result<usize> {
+    ) -> Result<()> {
+        // TODO: recover these.
+        phys_list.clear();
         let ctx = PAGER_CTX.get().unwrap();
-        let alloc = if start.as_hole().is_some() {
-            ctx.data.try_alloc_page().map(|p| (p, 1))
-        } else {
-            ctx.data.try_alloc_pages(start_obj_page, nr_obj_pages)
-        };
-        let (page, count) = match alloc {
-            Ok(page) => page,
-            Err(mw) => {
-                tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
-                if !phys_list.is_empty() {
-                    return Ok(0);
+        let mut count = 0;
+        let mut inner_cursor = 0;
+        let mut pages_cursor = 0;
+        while count < nr_obj_pages && pages_cursor < pages.len() {
+            let page = &pages[pages_cursor];
+            let try_len = nr_obj_pages - count;
+            let alloc = match ctx
+                .data
+                .try_alloc_pages(start_obj_page + count as i64, try_len)
+            {
+                Ok(x) => x,
+                Err(mw) => {
+                    tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
+                    if !phys_list.is_empty() {
+                        return Ok(());
+                    }
+                    tracing::info!("task out of memory, waiting");
+                    block_on(mw);
+                    continue;
                 }
-                tracing::info!("task out of memory, waiting");
-                (block_on(mw), 1)
+            };
+            tracing::trace!(
+                "phys_addrs: start_obj_page = {}, nr_obj_pages = {}, pages_cursor = {}, inner_cursor = {}, alloc = {:x} ({} pages)",
+                start_obj_page,
+                nr_obj_pages,
+                pages_cursor,
+                inner_cursor,
+                alloc.0,
+                alloc.1
+
+            );
+
+            let range = PhysRange::new(alloc.0, alloc.0 + PAGE * alloc.1 as u64);
+            let mut mem = PagedPhysMem::new(range);
+            if page.as_hole().is_some() {
+                mem.set_completed();
             }
-        };
-        let phys_range = PhysRange::new(page, page + PAGE * count as u64);
-        let mut mem = PagedPhysMem::new(phys_range);
-        if start.as_hole().is_some() {
-            mem.set_completed();
+            if phys_list.push(mem).is_err() {
+                return Ok(());
+            }
+
+            if inner_cursor + alloc.1 as usize >= page.nr_pages() {
+                inner_cursor = 0;
+                pages_cursor += 1;
+            } else {
+                inner_cursor += alloc.1 as usize;
+            }
+
+            count += alloc.1;
         }
-        phys_list.push(mem).unwrap();
-        Ok(count as usize)
+        Ok(())
     }
 
     fn yield_now(&self) {

@@ -459,46 +459,50 @@ impl Object {
         }
 
         let mut reqs = heapless::Vec::<_, 16>::new();
-        while page_count > 0 {
-            let mut mapreader = guard
-                .readmap(
-                    page.as_byte_offset() as u64,
-                    page_count * PageNumber::PAGE_SIZE,
-                )
-                .coalesce();
-            let done_count = if let Some(mapinfo) = mapreader.next()
-                && mapinfo.vaddr().raw() == page.as_byte_offset() as u64
-            {
-                log::trace!(
-                    "found mapping info for page {:x} in object {}: {:?}, is empty? {}",
-                    page.as_byte_offset(),
-                    self.id(),
-                    mapinfo,
-                    mapinfo.is_empty()
-                );
-                let done_count = mapinfo.len() / PageNumber::PAGE_SIZE;
-                if mapinfo.is_empty() {
-                    let map_page = PageNumber::from_offset(mapinfo.vaddr().raw() as usize);
-                    if reqs.is_empty() {
-                        reqs.push((map_page, done_count)).unwrap();
+
+        let push_reqs =
+            |pn: PageNumber, len: usize, reqs: &mut heapless::Vec<(PageNumber, usize), 16>| {
+                if reqs.is_empty() {
+                    reqs.push((pn, len)).unwrap();
+                } else {
+                    let (last_page, last_count) = reqs.last_mut().unwrap();
+                    if last_page.offset(*last_count) == pn {
+                        *last_count += len;
                     } else {
-                        let (last_page, last_count) = reqs.last_mut().unwrap();
-                        if last_page.offset(*last_count) == map_page {
-                            *last_count += done_count;
-                        } else {
-                            reqs.push((map_page, done_count)).unwrap();
-                        }
+                        reqs.push((pn, len)).unwrap();
                     }
                 }
-                done_count
-            } else {
-                reqs.push((page, page_count)).unwrap();
-                page_count
             };
+
+        while page_count > 0 {
+            let done_count = if page
+                .as_byte_offset()
+                .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
+            {
+                if guard.is_empty_at_level(page.as_byte_offset() as u64, 1) {
+                    push_reqs(
+                        page,
+                        PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE,
+                        &mut reqs,
+                    );
+                    PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE
+                } else {
+                    if guard.is_empty_at_level(page.as_byte_offset() as u64, 0) {
+                        push_reqs(page, 1, &mut reqs);
+                    }
+                    1
+                }
+            } else {
+                if guard.is_empty_at_level(page.as_byte_offset() as u64, 0) {
+                    push_reqs(page, 1, &mut reqs);
+                }
+                1
+            };
+
             if !reqs.is_empty() {
                 *all_were_present = false;
             }
-            page_count -= done_count;
+            page_count = page_count.saturating_sub(done_count);
             page = page.offset(done_count);
             if reqs.is_full() {
                 guard = crate::pager::ensure_in_core(

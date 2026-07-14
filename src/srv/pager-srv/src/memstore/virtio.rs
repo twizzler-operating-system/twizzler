@@ -108,7 +108,13 @@ impl PosIo for VirtioMem {
 }
 
 impl PagedDevice for VirtioMem {
-    async fn sequential_read(&self, start: u64, list: &[object_store::PhysRange]) -> Result<usize> {
+    async fn sequential_read(
+        &self,
+        start: u64,
+        _nr_pages: usize,
+        list: &[object_store::PagedPhysMem],
+        _inner_cursor: usize,
+    ) -> Result<usize> {
         tracing::warn!("seq-read on virtio-mem");
         Ok(0)
     }
@@ -116,7 +122,9 @@ impl PagedDevice for VirtioMem {
     async fn sequential_write(
         &self,
         start: u64,
-        list: &[object_store::PhysRange],
+        _nr_pages: usize,
+        list: &[object_store::PagedPhysMem],
+        _inner_cursor: usize,
     ) -> Result<usize> {
         tracing::warn!("seq-write on virtio-mem");
         Ok(list.len())
@@ -130,43 +138,47 @@ impl PagedDevice for VirtioMem {
         &self,
         _obj_start_page: i64,
         _obj_nr_pages: u32,
-        start: DevicePage,
+        pages: &[DevicePage],
         phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
-    ) -> Result<usize> {
+    ) -> Result<()> {
+        // TODO: recover these.
+        phys_list.clear();
         // TODO: bounds check
-        let alloc_page = || {
-            let ctx = PAGER_CTX.get().unwrap();
-            let page = match ctx.data.try_alloc_page() {
-                Ok(page) => page,
-                Err(mw) => {
-                    tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
-                    if !phys_list.is_empty() {
-                        return None;
+        for start in pages {
+            let alloc_page = || {
+                let ctx = PAGER_CTX.get().unwrap();
+                let page = match ctx.data.try_alloc_page() {
+                    Ok(page) => page,
+                    Err(mw) => {
+                        tracing::debug!("OOM: (ok = {})", !phys_list.is_empty());
+                        if !phys_list.is_empty() {
+                            return None;
+                        }
+                        run_async(mw)
                     }
-                    run_async(mw)
+                };
+                let phys_range = PhysRange::new(page, page + PAGE);
+                Some(phys_range)
+            };
+            let (start, len) = match start {
+                DevicePage::Run(start, len) => (start, *len as u64),
+                DevicePage::Hole(_len) => {
+                    let page = alloc_page();
+                    if let Some(page) = page {
+                        phys_list.push(PagedPhysMem::new(page).completed());
+                        return Ok(());
+                    } else {
+                        return Ok(());
+                    }
                 }
             };
-            let phys_range = PhysRange::new(page, page + PAGE);
-            Some(phys_range)
-        };
-        let (start, len) = match start {
-            DevicePage::Run(start, len) => (start, len as u64),
-            DevicePage::Hole(_len) => {
-                let page = alloc_page();
-                if let Some(page) = page {
-                    phys_list.push(PagedPhysMem::new(page).completed());
-                    return Ok(1);
-                } else {
-                    return Ok(0);
-                }
-            }
-        };
-        let phys_range = PhysRange::new(
-            start * PAGE + self.phys_start,
-            start * PAGE + self.phys_start + len * PAGE,
-        );
-        phys_list.push(PagedPhysMem::new(phys_range).completed().wired());
-        Ok(len as usize)
+            let phys_range = PhysRange::new(
+                start * PAGE + self.phys_start,
+                start * PAGE + self.phys_start + len * PAGE,
+            );
+            phys_list.push(PagedPhysMem::new(phys_range).completed().wired());
+        }
+        Ok(())
     }
 }
 

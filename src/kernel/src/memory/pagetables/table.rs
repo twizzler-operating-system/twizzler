@@ -481,7 +481,9 @@ impl Table {
                     dst_cursor,
                     level
                 );
-                assert!(!src_entry.is_huge());
+                if src_entry.is_huge() && level != Self::last_level() {
+                    self.split_huge(src_index, level, consist, src_cursor.start())?;
+                }
                 assert!(level > 0);
                 dest.populate(dst_index, EntryFlags::intermediate())?;
 
