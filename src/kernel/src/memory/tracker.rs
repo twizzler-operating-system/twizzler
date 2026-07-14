@@ -70,6 +70,12 @@ impl MemoryTracker {
                     .is_ok();
                 if did_sub {
                     if let Some(frame) = crate::memory::frame::raw_alloc_frame(pff, layout) {
+                        assert!(
+                            frame.refcount() == 0,
+                            "allocated frame with non-zero refcount: {:?} {}",
+                            frame,
+                            frame.refcount()
+                        );
                         if flags.contains(FrameAllocFlags::KERNEL) {
                             frame.set_kernel(true);
                             self.kernel_used.fetch_add(count, Ordering::SeqCst);

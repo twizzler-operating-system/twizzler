@@ -339,7 +339,7 @@ impl VirtContext {
         let settings = MappingSettings::new(
             Protections::READ | Protections::WRITE | Protections::EXEC,
             CacheType::WriteBack,
-            MappingFlags::empty(),
+            MappingFlags::WIRED,
         );
         let mut phys = ContiguousProvider::new(
             PhysAddr::new(0).unwrap(),

@@ -159,13 +159,11 @@ impl Table {
 
             for i in 0..Table::PAGE_TABLE_ENTRIES {
                 if let Ok(paddr) = start_paddr.offset(i * Self::level_to_page_size(level - 1)) {
-                    if let Some(frame) = get_frame(paddr) {
-                        frame.inc_refcount();
+                    if let Some(_frame) = get_frame(paddr) {
                         next_table[i] = Entry::new(paddr, flags - EntryFlags::huge());
                     }
                 }
             }
-            large_frame.dec_refcount();
         } else {
             // We can't split, so allocate and copy.
             for i in 0..Table::PAGE_TABLE_ENTRIES {

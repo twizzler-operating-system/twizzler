@@ -117,6 +117,7 @@ impl AllocationRegionLevel {
     }
 
     fn free(&mut self, frame: FrameRef) {
+        assert!(frame.refcount() == 0);
         if frame.is_zeroed() {
             self.zeroed.push_back(frame);
         } else {
@@ -152,13 +153,13 @@ impl AllocationRegionLevel {
         addr: PhysAddr,
         level: u8,
         init_flags: PhysicalFrameFlags,
-        rc: u32,
     ) -> bool {
         // Safety: the frame can be reset since during admit_one we are the only ones with access to
         // the frame data.
-        unsafe { frame.reset(addr, level, init_flags, rc) };
+        unsafe { frame.reset(addr, level, init_flags, 0) };
         frame.set_admitted();
         frame.set_free();
+        assert!(frame.refcount() == 0);
         if init_flags.contains(PhysicalFrameFlags::ZEROED) {
             self.zeroed.push_back(frame);
         } else {
@@ -190,6 +191,7 @@ impl AllocationRegion {
         if !self.contains(frame.start_address()) {
             return;
         }
+        assert!(frame.refcount() == 0);
         frame.set_free();
         let level = frame.get_level();
         assert!(level < NR_LEVELS);
@@ -238,16 +240,15 @@ impl AllocationRegion {
                 .offset(child_idx * frame.size())
                 .unwrap();
             let child = unsafe { self.get_frame_mut(pa) }.unwrap();
-            unsafe {
-                child.reset(
-                    pa,
-                    level as u8,
-                    frame.get_flags() & PhysicalFrameFlags::ZEROED,
-                    0,
-                )
-            };
+            assert!(child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+            assert!(child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+            let child_flags = (frame.get_flags() & PhysicalFrameFlags::ZEROED)
+                & !(PhysicalFrameFlags::ALLOCATED | PhysicalFrameFlags::ADMITTED);
+            unsafe { child.reset(pa, level as u8, child_flags, 0) };
         }
         let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+        assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
         unsafe {
             frame.reset(
                 frame.start_address(),
@@ -279,6 +280,8 @@ impl AllocationRegion {
                 .offset(child_idx * new_frame_size)
                 .unwrap();
             let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+            assert!(!child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+            assert!(!child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
             unsafe {
                 child.reset(
                     pa,
@@ -291,6 +294,8 @@ impl AllocationRegion {
             child.set_allocated();
         }
         let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+        assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
         unsafe {
             frame.reset(
                 frame.start_address(),
@@ -311,6 +316,7 @@ impl AllocationRegion {
         }
         let level = frame.get_level();
         assert!(level > 0);
+        assert!(frame.refcount() == 0);
 
         let new_frame_size = PHYS_LEVEL_LAYOUTS[level - 1].size();
         let child_count = frame.size() / new_frame_size;
@@ -326,7 +332,6 @@ impl AllocationRegion {
                 pa,
                 (level - 1) as u8,
                 frame.get_flags() & PhysicalFrameFlags::ZEROED,
-                frame.refcount(),
             );
         }
         let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
@@ -335,7 +340,6 @@ impl AllocationRegion {
             frame.start_address(),
             (level - 1) as u8,
             frame.get_flags() & PhysicalFrameFlags::ZEROED,
-            frame.refcount(),
         );
     }
 
@@ -399,7 +403,7 @@ impl AllocationRegion {
                     )
                 };
             }
-            levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty(), 0);
+            levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty());
             cursor = cursor.offset(levels[level].alloc_size).unwrap();
         }
 
@@ -444,7 +448,15 @@ impl core::fmt::Debug for Frame {
 impl Frame {
     // Safety: must only be called once, during admit_one, when the frame has not been initialized
     // yet.
+    #[track_caller]
     unsafe fn reset(&mut self, pa: PhysAddr, level: u8, init_flags: PhysicalFrameFlags, rc: u32) {
+        if rc > 0 {
+            log::debug!(
+                "admitting frame with non-zero refcount: {}: {}",
+                rc,
+                core::panic::Location::caller()
+            );
+        }
         self.info.store(
             (init_flags.bits() as u64) | ((level as u64) << 8) | ((rc as u64) << 32),
             Ordering::SeqCst,
@@ -759,6 +771,7 @@ impl PhysicalFrameAllocator {
 
     fn alloc(&mut self, flags: PhysicalFrameFlags, layout: Layout) -> Option<FrameRef> {
         let frame = self.__do_alloc(flags, layout)?;
+        assert!(frame.refcount() == 0);
         if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
             frame.zero();
         }
@@ -921,7 +934,7 @@ pub(super) fn raw_free_frame(frame: FrameRef) {
     assert!(!frame.get_flags().contains(PhysicalFrameFlags::IS_WIRED));
     frame.set_pt(false);
     frame.set_cow(false);
-    frame.reset_refcount();
+    assert_eq!(frame.refcount(), 0);
     PFA.wait().lock().free(frame);
 }
 

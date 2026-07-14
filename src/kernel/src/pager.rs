@@ -259,6 +259,7 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
+            assert_eq!(frame.refcount(), 0);
             for i in 0..len / PHYS_LEVEL_LAYOUTS[0].size() {
                 let frame = get_frame(
                     frame
