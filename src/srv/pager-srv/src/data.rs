@@ -174,7 +174,7 @@ impl PerObject {
                 }
             })
             .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
-        if page_count >= 1024 {
+        if page_count >= 1024 * 16 {
             tracing::info!(
                 "pager starting large sync for {}: {}MB: {}",
                 self.id,
@@ -205,7 +205,7 @@ impl PerObject {
                 .unwrap();
         }
         let io_done = Instant::now();
-        if page_count >= 1024 {
+        if page_count >= 1024 * 16 {
             tracing::info!(
                 "pager finished large sync for {}: {}ms, {}ms",
                 self.id,
@@ -450,6 +450,7 @@ impl Region {
                 self.unused_start += PAGE;
             }
             self.unused_start = next + len as u64;
+            self.stack.sort_unstable_by(|a, b| b.cmp(a));
             return Some(next);
         }
 
@@ -513,9 +514,26 @@ impl Memory {
             if let Some(page) = self.regions[i].get_pages(align, len) {
                 return Some(page);
             }
-            i += 1;
+            if self.regions[i].avail() == 0 {
+                self.regions.swap_remove(i);
+            } else {
+                i += 1;
+            }
         }
         None
+    }
+
+    pub fn try_add_memory_range(&mut self, range: PhysRange) -> bool {
+        for region in &mut self.regions {
+            if region.unused_start == range.end {
+                region.unused_start = range.start;
+                return true;
+            } else if region.end == range.start {
+                region.end = range.end;
+                return true;
+            }
+        }
+        false
     }
 
     pub fn free_page(&mut self, page: u64) {
@@ -620,7 +638,15 @@ impl PagerData {
     pub fn add_memory_range(&self, range: PhysRange) {
         let mut inner = self.inner.lock().unwrap();
         tracing::debug!("add memory range: {} pages", range.pages().count());
-        inner.memory.push(Region::new(range));
+        if !inner.memory.try_add_memory_range(range) {
+            if range.page_count() >= 128 {
+                inner.memory.push(Region::new(range));
+            } else {
+                for page in range.pages() {
+                    inner.memory.free_page(page);
+                }
+            }
+        }
         for item in inner.waiters.values() {
             if let Some(waker) = item {
                 waker.wake_by_ref();

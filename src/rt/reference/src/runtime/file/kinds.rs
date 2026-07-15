@@ -8,10 +8,7 @@ use std::{
 use monitor_api::CompartmentHandle;
 use naming_core::{GetFlags, NsNodeKind};
 use secgate::TwzError;
-use twizzler_abi::{
-    object::{ObjID, Protections},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
-};
+use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
 use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
 use twizzler_rt_abi::{
     bindings::{open_info, prot_kind_ProtKind_Stream},
@@ -60,13 +57,6 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
     {
         return Err(TwzError::INVALID_ARGUMENT);
     }
-    let create = ObjectCreate::new(
-        BackingType::Normal,
-        LifetimeType::Persistent,
-        None,
-        ObjectCreateFlags::empty(),
-        Protections::all(),
-    );
     let flags = match (
         open_opt.contains(OperationOptions::OPEN_FLAG_READ),
         open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
@@ -91,11 +81,8 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             if session.get(path, GetFlags::empty()).is_ok() {
                 return Err(NamingError::AlreadyExists.into());
             }
-            (
-                sys_object_create(create, &[], &[])?,
-                true,
-                NsNodeKind::Object,
-            )
+            let node = session.get(path, GetFlags::CREATE)?;
+            (node.id, false, NsNodeKind::Object)
         }
         CreateOptions::CreateKindBind(id) => {
             if session.get(path, GetFlags::empty()).is_ok() {
@@ -104,15 +91,17 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             (id, true, NsNodeKind::Object)
         }
         CreateOptions::CreateKindEither => session
-            .get(path, get_flags)
-            .map(|x| (ObjID::from(x.id), false, x.kind))
-            .unwrap_or((
-                sys_object_create(create, &[], &[])?,
-                true,
-                NsNodeKind::Object,
-            )),
+            .get(path, get_flags | GetFlags::CREATE)
+            .map(|x| (ObjID::from(x.id), false, x.kind))?,
     };
 
+    tracing::trace!(
+        "open_path: path = {}, obj_id = {:x}, did_create = {}, kind = {:?}",
+        path,
+        obj_id,
+        did_create,
+        kind
+    );
     if did_create {
         session.put(path, obj_id)?;
     }

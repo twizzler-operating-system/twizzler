@@ -128,8 +128,7 @@ impl PagedDevice for Disk {
         pages: &[DevicePage],
         phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
     ) -> Result<()> {
-        // TODO: recover these.
-        phys_list.clear();
+        assert!(phys_list.is_empty());
         let ctx = PAGER_CTX.get().unwrap();
         let mut count = 0;
         let mut inner_cursor = 0;
@@ -192,6 +191,11 @@ impl PagedDevice for Disk {
 
     fn run_async<R: 'static>(&self, f: impl Future<Output = R>) -> R {
         run_async(f)
+    }
+
+    async fn free_phys_range(&self, _range: PhysRange) {
+        let ctx = PAGER_CTX.get().unwrap();
+        ctx.data.add_memory_range(_range);
     }
 }
 

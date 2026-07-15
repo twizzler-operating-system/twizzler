@@ -253,7 +253,7 @@ impl Ext4InodeRef {
         }
         let mut count = 0;
         let mut dblock = 0;
-        errno_to_result(unsafe {
+        let r = errno_to_result(unsafe {
             ext4_extent_get_blocks(
                 &mut self.inode,
                 block,
@@ -262,7 +262,11 @@ impl Ext4InodeRef {
                 create,
                 &mut count,
             )
-        })?;
+        });
+
+        if r.is_err() && dblock == 0 && count == 0 {
+            r?;
+        }
 
         Ok((dblock, count))
     }

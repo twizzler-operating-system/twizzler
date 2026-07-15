@@ -9,6 +9,7 @@ secgate = { workspace = true }
 monitor-api = { workspace = true }
 twizzler-rt-abi = "0.99"
 twizzler = { workspace = true }
+twizzler-abi = { path = "../../twizzler-abi" }
 tracing = { workspace = true }
 bitflags = "2"
 pager-dynamic = { path = "../../pager/pager-dynamic" }

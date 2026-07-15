@@ -4,6 +4,7 @@ use std::{
 };
 
 use pager_dynamic::{objid_to_ino, ExternalKind};
+use secgate::TwzError;
 use twizzler::object::ObjID;
 
 use super::{Namespace, NsNode, ParentInfo};
@@ -158,6 +159,20 @@ impl Namespace for ExtNamespace {
             })
         } else {
             None
+        }
+    }
+
+    fn create_file(&self, name: &str) -> Result<NsNode> {
+        let mode = libc::S_IRUSR | libc::S_IWUSR | libc::S_IRGRP | libc::S_IROTH | libc::S_IFREG;
+        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+            let file = h.create_external_file(self.id, name, None, mode)?;
+            if self.cache_ready() {
+                self.reset_cache();
+            }
+            return NsNode::obj(name, file.id.into());
+        } else {
+            tracing::warn!("failed to open handle to pager");
+            Err(TwzError::NOT_SUPPORTED)
         }
     }
 

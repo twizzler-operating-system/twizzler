@@ -217,7 +217,7 @@ impl PhysRange {
         (self.end - self.start) as usize
     }
 
-    pub fn pages(&self) -> impl Iterator<Item = u64> {
+    pub fn pages(&self) -> impl Iterator<Item = u64> + DoubleEndedIterator {
         let first_page = self.start / NULLPAGE_SIZE as u64;
         let last_page = self.end / NULLPAGE_SIZE as u64;
         first_page..last_page

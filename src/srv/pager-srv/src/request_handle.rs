@@ -74,7 +74,7 @@ async fn handle_page_data_request_task(
     }
 
     let total = req_range.page_count() as u64;
-    tracing::debug!(
+    tracing::trace!(
         "handling page data request for {}: {:?} ({} pages) (prefetch = {})",
         id,
         req_range,

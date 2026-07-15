@@ -329,6 +329,8 @@ impl ObjectPageTable {
             &mut consist,
         );
 
+        dirty_list.pages.sort_unstable_by_key(|x| x.0);
+
         self.run_consistency(consist).run_all();
 
         r?;

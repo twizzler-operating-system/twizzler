@@ -441,10 +441,10 @@ impl Object {
             page.as_byte_offset()
         );
 
+        let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
         if page != PageNumber::meta_page()
             && guard.is_empty_at_level(page.as_byte_offset() as u64, 1)
         {
-            let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
             let large_page = page.align_down(nr_pages_for_large);
             let pre_covered = page - large_page;
             page = large_page;
@@ -456,6 +456,12 @@ impl Object {
                 page_count,
                 pre_covered
             );
+        }
+
+        let remaining = nr_pages_for_large - (page.num() % nr_pages_for_large);
+        if page != PageNumber::meta_page() && remaining > page_count {
+            let extra = remaining.min(64);
+            page_count = page_count.max(extra);
         }
 
         let mut reqs = heapless::Vec::<_, 16>::new();

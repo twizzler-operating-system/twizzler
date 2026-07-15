@@ -1,5 +1,9 @@
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use core::{ops::Range, sync::atomic::Ordering, usize};
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+    usize,
+};
 
 use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
@@ -43,6 +47,7 @@ pub struct MapRegion {
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
     pub stable: Option<Arc<Mutex<ObjectPageTable>>>,
+    pub should_sync: Arc<AtomicBool>,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -288,7 +293,7 @@ impl MapRegion {
                     );
                     drop(pt);
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages, None, 0);
+                        crate::pager::sync_region(self, dirty_pages, None, 0, false);
                     }
                 } else {
                     let sync_info = unsafe { sync_info_ptr.read() };
@@ -303,17 +308,28 @@ impl MapRegion {
                         );
                         drop(pt);
                         if self.object().use_pager() && !dirty_pages.is_empty() {
-                            crate::pager::sync_region(self, dirty_pages, Some(sync_info), version);
+                            crate::pager::sync_region(
+                                self,
+                                dirty_pages,
+                                Some(sync_info),
+                                version,
+                                sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0,
+                            );
                         }
                     }
 
                     if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
-                        unsafe { sync_info.try_release() }?;
-                        let wake = ThreadSyncWake::new(
-                            ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
-                            usize::MAX,
-                        );
-                        wakeup(&wake)?;
+                        if sync_info.flags & SYNC_FLAG_DURABLE == 0 {
+                            self.should_sync.store(true, Ordering::SeqCst);
+                        }
+                        if !sync_info.release_ptr.is_null() {
+                            unsafe { sync_info.try_release() }?;
+                            let wake = ThreadSyncWake::new(
+                                ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
+                                usize::MAX,
+                            );
+                            wakeup(&wake)?;
+                        }
                     }
                 }
 

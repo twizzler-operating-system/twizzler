@@ -1,13 +1,13 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull};
+use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull, sync::atomic::AtomicBool};
 
 use region::{MapRegion, RegionManager};
 use twizzler_abi::{
     device::CacheType,
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
-    syscall::MapFlags,
+    syscall::{MapControlCmd, MapFlags},
 };
 use twizzler_rt_abi::error::{ResourceError, TwzError};
 
@@ -401,6 +401,7 @@ impl UserContext for VirtContext {
             range: slot.range(),
             flags: object_info.flags,
             stable,
+            should_sync: Arc::new(AtomicBool::new(false)),
         };
 
         let (_is_ok, default_prots) = object_info.object.check_id();
@@ -428,6 +429,12 @@ impl UserContext for VirtContext {
     fn remove_object(&self, info: Self::MappingInfo) {
         let mut slots = self.regions.lock();
         if let Some(slot) = slots.remove_region(info.start_vaddr()) {
+            drop(slots);
+            if slot.should_sync.load(core::sync::atomic::Ordering::SeqCst) {
+                if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
+                    log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
+                }
+            }
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
@@ -596,6 +603,7 @@ impl KernelMemoryContext for VirtContext {
             cache_type: info.cache(),
             flags: info.flags,
             stable: None,
+            should_sync: Arc::new(AtomicBool::new(false)),
         };
         let (_is_ok, default_prots) = info.object().check_id();
         self.map_object(&new_slot_info, default_prots);

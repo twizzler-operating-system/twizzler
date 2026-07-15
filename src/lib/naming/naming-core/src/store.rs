@@ -141,6 +141,8 @@ trait Namespace {
     }
 
     fn persist(&self) -> bool;
+
+    fn create_file(&self, name: &str) -> Result<NsNode>;
 }
 
 pub struct NameStore {
@@ -408,13 +410,20 @@ impl NameSession<'_> {
 
     pub fn get<P: AsRef<Path>>(&self, name: P, flags: GetFlags) -> Result<NsNode> {
         tracing::debug!("get {:?}: {:?}", name.as_ref(), flags);
-        let (node, _) = self.namei_exist(
+        let (node, container) = self.namei(
             None,
             name,
             Self::MAX_SYMLINK_DEREF,
             flags.contains(GetFlags::FOLLOW_SYMLINK),
         )?;
-        Ok(node)
+
+        if flags.contains(GetFlags::CREATE) {
+            if let Err(ref node_name) = node {
+                return container
+                    .create_file(node_name.to_str().ok_or(ArgumentError::InvalidArgument)?);
+            }
+        }
+        Ok(node.ok().ok_or(NamingError::NotFound)?)
     }
 
     pub fn enumerate_namespace<P: AsRef<Path>>(
@@ -477,7 +486,7 @@ impl NameSession<'_> {
     }
 
     pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
-        tracing::trace!("rename: {:?} to {:?}", old.as_ref(), new.as_ref());
+        tracing::debug!("rename: {:?} to {:?}", old.as_ref(), new.as_ref());
         // Look up the old entry (don't follow symlinks — we're moving the entry itself)
         let (old_node, old_container) =
             self.namei_exist(None, &old, Self::MAX_SYMLINK_DEREF, false)?;
@@ -536,5 +545,6 @@ bitflags! {
     #[derive(Clone, Copy, Default, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
     pub struct GetFlags: u32 {
         const FOLLOW_SYMLINK = 1;
+        const CREATE = 2;
     }
 }

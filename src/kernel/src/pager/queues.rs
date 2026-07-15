@@ -166,7 +166,7 @@ fn pager_compl_handle_page_data(
     flags: PageFlags,
 ) {
     let pcount = phys_range.page_count();
-    log::trace!(
+    log::debug!(
         "got : {} {:?} {:?} ({} pages)",
         request.obj.as_ref().unwrap().id(),
         obj_range,

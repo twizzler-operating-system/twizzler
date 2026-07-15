@@ -4,6 +4,10 @@ use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
     object::{ObjID, Object, ObjectBuilder},
 };
+use twizzler_abi::{
+    object::Protections,
+    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+};
 use twizzler_rt_abi::object::MapFlags;
 
 use super::{Namespace, NsNode, ParentInfo};
@@ -58,6 +62,25 @@ impl Namespace for NamespaceObject {
                 id, map_flags,
             )?)))),
         })
+    }
+
+    fn create_file(&self, name: &str) -> Result<NsNode> {
+        let create = ObjectCreate::new(
+            BackingType::Normal,
+            if self.persist {
+                LifetimeType::Persistent
+            } else {
+                LifetimeType::Volatile
+            },
+            None,
+            ObjectCreateFlags::empty(),
+            Protections::all(),
+        );
+        let id = sys_object_create(create, &[], &[])?;
+        let node = NsNode::obj(name, id)?;
+        // TODO
+        let _ = self.insert(node);
+        Ok(node)
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {

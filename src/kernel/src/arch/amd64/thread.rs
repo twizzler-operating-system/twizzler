@@ -396,7 +396,7 @@ impl Thread {
                 info,
                 self.arch.entry_registers.borrow()
             );
-            crate::thread::exit(UPCALL_EXIT_CODE);
+            return;
         }
 
         if sup {

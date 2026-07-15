@@ -59,7 +59,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         if !mgr.is_ready() {
             return None;
         }
-        let Some(inflight) = mgr.add_request(ReqKind::new_info(id)) else {
+        let Ok(inflight) = mgr.add_request(ReqKind::new_info(id)) else {
             log::warn!("out of pager request slots");
             drop(mgr);
             schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
@@ -97,7 +97,7 @@ fn get_pages_and_wait<'a>(
         page,
         obj.id()
     );
-    let Some(inflight) = mgr.add_request(ReqKind::new_page_data(obj.id(), page.num(), len, flags))
+    let Ok(inflight) = mgr.add_request(ReqKind::new_page_data(obj.id(), page.num(), len, flags))
     else {
         log::warn!("out of pager request slots");
         drop(mgr);
@@ -130,11 +130,14 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     if !mgr.is_ready() {
         return;
     }
-    let Some(inflight) = mgr.add_request(req.clone()) else {
-        log::warn!("out of pager request slots");
-        drop(mgr);
-        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
-        return cmd_object(req, obj);
+    let inflight = match mgr.add_request(req) {
+        Ok(x) => x,
+        Err(rk) => {
+            log::warn!("out of pager request slots");
+            drop(mgr);
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            return cmd_object(rk, obj);
+        }
     };
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
@@ -161,25 +164,29 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
     cmd_object(ReqKind::new_create(id, create, nonce), None);
 }
 
-pub fn sync_region(
-    region: &MapRegion,
-    dirty: DirtyList,
-    sync_info: Option<sync_info>,
-    version: u64,
-) {
-    let req = ReqKind::new_sync_region(region.object(), dirty, sync_info, version);
+fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
     }
-    let Some(inflight) = mgr.add_request(req) else {
-        log::warn!("out of pager request slots");
-        return;
+    let inflight = match mgr.add_request(req) {
+        Ok(x) => x,
+        Err(rk) => {
+            log::warn!("out of pager request slots");
+            drop(mgr);
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            return do_sync_region(region, rk, wait);
+        }
     };
+
     drop(mgr);
     inflight.for_each_pager_req(|pager_req| {
         queues::submit_pager_request(pager_req, Some(&region.object()), inflight.rk.clone());
     });
+
+    if !wait {
+        return;
+    }
 
     let mut mgr = inflight_mgr().lock();
     let thread = current_thread_ref().unwrap();
@@ -187,6 +194,17 @@ pub fn sync_region(
         drop(mgr);
         finish_blocking(guard);
     };
+}
+
+pub fn sync_region(
+    region: &MapRegion,
+    dirty: DirtyList,
+    sync_info: Option<sync_info>,
+    version: u64,
+    wait: bool,
+) {
+    let req = ReqKind::new_sync_region(region.object(), dirty, sync_info, version);
+    do_sync_region(region, req, wait);
 }
 
 pub fn ensure_in_core<'a>(
@@ -259,7 +277,6 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[level],
         ) {
-            assert_eq!(frame.refcount(), 0);
             for i in 0..len / PHYS_LEVEL_LAYOUTS[0].size() {
                 let frame = get_frame(
                     frame
@@ -344,7 +361,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
             let mut mgr = inflight_mgr().lock();
             let req = ReqKind::new_pager_memory(*range);
             loop {
-                if let Some(inflight) = mgr.add_request(req.clone()) {
+                if let Ok(inflight) = mgr.add_request(req.clone()) {
                     break inflight;
                 }
                 log::warn!("out of pager request slots");

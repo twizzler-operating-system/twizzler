@@ -11,8 +11,8 @@ use twizzler_abi::{
 };
 
 use super::{
-    request::{ReqKind, RequestMapAdapter},
     Request,
+    request::{ReqKind, RequestMapAdapter},
 };
 use crate::thread::{CriticalGuard, ThreadRef};
 
@@ -88,14 +88,14 @@ impl InflightManager {
         }
     }
 
-    pub fn add_request(&mut self, rk: ReqKind) -> Option<Inflight> {
+    pub fn add_request(&mut self, rk: ReqKind) -> Result<Inflight, ReqKind> {
         if let Some(req) = self.req_map.find(&rk).get() {
             log::trace!(
                 "found existing request {:?} for request {:?}",
                 req.reqkind(),
                 rk
             );
-            return Some(Inflight::new(req.id, rk, false));
+            return Ok(Inflight::new(req.id, rk, false));
         }
 
         let mut id = None;
@@ -108,7 +108,7 @@ impl InflightManager {
         }
 
         let Some(id) = id else {
-            return None;
+            return Err(rk);
         };
         let request = Request::new(id, rk.clone());
         assert!(self.requests[id].is_none());
@@ -116,7 +116,7 @@ impl InflightManager {
         let request = self.requests[id].as_ref().unwrap();
         self.req_map
             .insert(unsafe { (request as *const Request).as_ref().unwrap_unchecked() });
-        Some(Inflight::new(id, rk, true))
+        Ok(Inflight::new(id, rk, true))
     }
 
     pub fn remove_request(&mut self, rk: &ReqKind) {
