@@ -1034,6 +1034,7 @@ pub struct MonitorStats {
 #[repr(C)]
 pub struct SpaceStats {
     pub mapped: usize,
+    pub active: usize,
 }
 
 #[derive(Copy, Clone, Debug)]

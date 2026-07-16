@@ -6,7 +6,8 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
         ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        KernelConsoleSource, MapFlags, ReadClockListFlags, SysInfo, Syscall, TimeSpan,
+        InfoKind, KernelConsoleSource, MapFlags, ReadClockListFlags, Syscall, SyscallStats,
+        TimeSpan,
     },
     trace::{
         SyscallEntryEvent, SyscallExitEvent, THREAD_SYSCALL_ENTRY, THREAD_SYSCALL_EXIT,
@@ -26,10 +27,11 @@ use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     instant::Instant,
     memory::VirtAddr,
-    processor::mp::all_processors,
+    once::Once,
     random::getrandom,
+    spinlock::Spinlock,
     thread::current_thread_ref,
-    time::{TICK_SOURCES, Ticks},
+    time::{TICK_SOURCES, Ticks, TimeStatCollector},
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
@@ -39,6 +41,7 @@ use crate::{
 // TODO: move the handle stuff into its own file and make this private.
 pub mod object;
 /* TODO: move the requeue stuff into sched and make this private */
+mod stat;
 pub mod sync;
 mod thread;
 
@@ -105,22 +108,9 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
     sync::sys_thread_sync(slice, timeout)
 }
 
-fn write_sysinfo(info: &mut SysInfo) {
-    info.cpu_count = all_processors().iter().fold(0, |acc, p| {
-        acc + match &p {
-            Some(p) => {
-                if p.is_running() {
-                    1
-                } else {
-                    0
-                }
-            }
-            None => 0,
-        }
-    });
-    info.flags = 0;
-    info.version = 1;
-    info.page_size = 0x1000;
+fn write_sysinfo(info: *mut u8, kind: u64) -> Result<()> {
+    let kind: InfoKind = kind.try_into()?;
+    stat::write_sys_info_values(info, kind)
 }
 
 fn type_sys_kaction(
@@ -497,12 +487,14 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         }
         Syscall::SysInfo => {
             let ptr = context.arg0();
-            let info: Option<&mut SysInfo> = unsafe { create_user_ptr(ptr) };
+            let kind = context.arg1::<u64>();
+            let info: Option<*mut u8> = unsafe { create_user_ptr(ptr).map(|r| r as *mut _) };
             if let Some(info) = info {
-                write_sysinfo(info);
-                context.set_return_values(0u64, 0u64);
+                let result = write_sysinfo(info, kind);
+                let (code, val) = convert_result_to_codes(result, |_| (0u64, 0u64), one_err);
+                context.set_return_values(code, val);
             } else {
-                context.set_return_values(1u64, 0u64);
+                context.set_return_values(1u64, 1u64);
             }
         }
         Syscall::ThreadCtrl => {
@@ -611,6 +603,49 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     trace_syscall_exit(data, [r1, r2], (end - start).into());
 }
 
+struct SyscallTracking {
+    count: usize,
+    per_syscall_count: [usize; Syscall::NumSyscalls as usize],
+    per_syscall_stats: [TimeStatCollector; Syscall::NumSyscalls as usize],
+}
+
+static SYSSTATS: Once<Spinlock<SyscallTracking>> = Once::new();
+
+fn get_sysstats() -> &'static Spinlock<SyscallTracking> {
+    SYSSTATS.call_once(|| {
+        Spinlock::new(SyscallTracking {
+            count: 0,
+            per_syscall_count: [0; Syscall::NumSyscalls as usize],
+            per_syscall_stats: core::array::from_fn(|_| TimeStatCollector::new()),
+        })
+    })
+}
+
+fn add_syscall_stat_sample(syscall: Syscall, duration: TimeSpan) {
+    let mut stats = get_sysstats().lock();
+
+    stats.per_syscall_stats[syscall as usize].add_sample(duration);
+    stats.per_syscall_count[syscall as usize] += 1;
+    stats.count += 1;
+}
+
+fn get_syscall_stats() -> SyscallStats {
+    let stats = get_sysstats().lock();
+
+    let mut syscall_stats = SyscallStats::default();
+
+    syscall_stats.nr_syscalls = stats.count;
+    syscall_stats
+        .nr_syscalls_per_type
+        .copy_from_slice(&stats.per_syscall_count);
+
+    for (i, stat) in stats.per_syscall_stats.iter().enumerate() {
+        syscall_stats.syscall_times[i] = stat.get_stats();
+    }
+
+    syscall_stats
+}
+
 fn trace_syscall_entry(data: SyscallEntryEvent) {
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY) {
         let entry = new_trace_entry(
@@ -624,6 +659,7 @@ fn trace_syscall_entry(data: SyscallEntryEvent) {
 }
 
 fn trace_syscall_exit(entry: SyscallEntryEvent, ret: [u64; 2], duration: TimeSpan) {
+    add_syscall_stat_sample(entry.num, duration);
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT) {
         let data = SyscallExitEvent {
             entry,

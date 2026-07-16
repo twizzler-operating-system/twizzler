@@ -1,10 +1,11 @@
 use alloc::{collections::BTreeMap, sync::Arc};
+use core::sync::atomic::AtomicUsize;
 
 use log::{error, trace};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
-    syscall::MapFlags,
+    syscall::{MapFlags, SctxStats},
 };
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 pub use twizzler_security::PermsInfo;
@@ -40,6 +41,8 @@ pub struct SecCtxMgr {
 pub struct SecurityContext {
     kobj: Option<KernelObject<SecCtxBase>>,
     cache: Mutex<BTreeMap<ObjID, PermsInfo>>,
+    attached_count: AtomicUsize,
+    active_count: AtomicUsize,
 }
 
 impl core::fmt::Debug for SecurityContext {
@@ -74,6 +77,35 @@ impl SecurityContext {
         let obj = self.kobj.as_ref()?;
         let base = obj.base();
         Some(base.flags.clone())
+    }
+
+    pub fn inc_active_count(&self) {
+        self.active_count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn dec_active_count(&self) {
+        self.active_count
+            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn inc_attached_count(&self) {
+        self.attached_count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn dec_attached_count(&self) {
+        self.attached_count
+            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.active_count.load(core::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn attached_count(&self) -> usize {
+        self.attached_count
+            .load(core::sync::atomic::Ordering::SeqCst)
     }
 
     /// Lookup the permission info for an object, and maybe cache it.
@@ -186,6 +218,8 @@ impl SecurityContext {
         Self {
             kobj,
             cache: Default::default(),
+            attached_count: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
         }
     }
 
@@ -296,6 +330,8 @@ impl SecCtxMgr {
         let mut inner = self.inner.lock();
 
         if let Some(mut ctx) = inner.inactive.remove(&id) {
+            ctx.inc_active_count();
+            inner.active.dec_active_count();
             core::mem::swap(&mut ctx, &mut inner.active);
 
             *self.active_id.lock() = id;
@@ -314,6 +350,7 @@ impl SecCtxMgr {
         if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
             return Err(NamingError::AlreadyBound.into());
         }
+        sctx.inc_attached_count();
         inner.inactive.insert(sctx.id(), sctx);
         Ok(())
     }
@@ -351,6 +388,21 @@ fn global_secctx_mgr() -> &'static GlobalSecCtxMgr {
     GLOBAL_SECCTX_MGR.call_once(|| GlobalSecCtxMgr {
         contexts: Default::default(),
     })
+}
+
+pub fn get_sctx_stats() -> SctxStats {
+    let global = global_secctx_mgr().contexts.lock();
+    let mut active_count = 0;
+    let mut attached_count = 0;
+    for (_, ctx) in global.iter() {
+        active_count += ctx.active_count();
+        attached_count += ctx.attached_count();
+    }
+    SctxStats {
+        nr_sctx: global.len(),
+        nr_active: active_count,
+        nr_cached: attached_count,
+    }
 }
 
 /// Get a security contexts from the global cache.

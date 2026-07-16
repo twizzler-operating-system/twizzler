@@ -128,6 +128,7 @@ impl ArchContext {
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
     ) {
+        object_tables.inc_map_count();
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         guard
             .object_map(cursor, object_tables, settings, &mut consist)
@@ -145,6 +146,7 @@ impl ArchContext {
     ) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         if !guard.is_object_mapped(cursor, settings) {
+            object_tables.inc_map_count();
             guard
                 .object_map(cursor, object_tables, settings, &mut consist)
                 .unwrap();
@@ -165,12 +167,13 @@ impl ArchContext {
         consist.into_deferred().run_all();
     }
 
-    pub fn unmap(&self, cursor: MappingCursor) {
+    pub fn unmap(&self, cursor: MappingCursor) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
-        guard.unmap(cursor, &mut consist).unwrap();
+        let r = guard.unmap(cursor, &mut consist).unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
+        r
     }
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {

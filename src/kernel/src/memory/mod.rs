@@ -1,6 +1,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::{arch, instant::Instant, security::KERNEL_SCTX, spinlock::Spinlock, BootInfo};
+use crate::{
+    BootInfo, arch, instant::Instant, memory::context::virtmem::fault, security::KERNEL_SCTX,
+    spinlock::Spinlock,
+};
 
 pub mod allocator;
 pub mod context;
@@ -12,7 +15,7 @@ use alloc::vec::Vec;
 
 pub use arch::{PhysAddr, VirtAddr};
 use frame::NR_LEVELS;
-use tracker::{alloc_frame, print_tracker_stats, reclaim, FrameAllocFlags};
+use tracker::{FrameAllocFlags, alloc_frame, print_tracker_stats, reclaim};
 use twizzler_abi::object::NULLPAGE_SIZE;
 
 use self::context::{KernelMemoryContext, UserContext};
@@ -123,4 +126,13 @@ pub fn print_fault_stats() {
         FAULT_STATS.total.load(Ordering::SeqCst)
     );
     *start = Instant::now();
+}
+
+pub fn get_memory_stats() -> twizzler_abi::syscall::MemoryStats {
+    let mut stats = twizzler_abi::syscall::MemoryStats::default();
+    frame::fill_stats(&mut stats);
+    fault::fill_stats(&mut stats);
+    pagetables::fill_stats(&mut stats);
+    allocator::fill_stats(&mut stats);
+    stats
 }

@@ -23,6 +23,7 @@ const MAX_INVLS: usize = 4;
 pub struct ObjectPageTable {
     mapper: Mapper,
     invls: heapless::Vec<(PhysAddr, heapless::Vec<MappingCursor, MAX_INVLS>), MAX_INVL_TARGETS>,
+    map_count: usize,
 }
 
 bitflags::bitflags! {
@@ -89,13 +90,21 @@ impl ObjectPageTable {
         Self {
             mapper,
             invls: heapless::Vec::new(),
+            map_count: 0,
         }
     }
 
     pub fn map_count(&self) -> usize {
-        let root_addr = self.mapper.root_address();
-        let frame = get_frame(root_addr).expect("root frame should exist");
-        frame.refcount() as usize
+        self.map_count
+    }
+
+    pub fn inc_map_count(&mut self) {
+        self.map_count += 1;
+    }
+
+    pub fn dec_map_count(&mut self) {
+        assert!(self.map_count > 0, "map count cannot be negative");
+        self.map_count -= 1;
     }
 
     pub fn add_invalidate(&mut self, target: PhysAddr, cursor: MappingCursor) {

@@ -148,6 +148,10 @@ impl Object {
         self.flags.load(Ordering::SeqCst) & OBJ_DELETED != 0
     }
 
+    pub fn is_mapped(&self) -> bool {
+        self.lock_page_tables().map_count() > 0
+    }
+
     pub fn use_pager(&self) -> bool {
         self.lifetime_type == LifetimeType::Persistent
     }
@@ -414,4 +418,14 @@ pub fn register_object(obj: Arc<Object>) {
 
 pub fn no_exist(id: ObjID) {
     obj_manager().no_exist.lock().insert(id);
+}
+
+pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
+    let mut stats = twizzler_abi::syscall::ObjectStats::default();
+    let mgr = obj_manager().map.lock();
+    stats.nr_objects = mgr.len();
+    stats.nr_mapped = mgr.values().filter(|obj| obj.is_mapped()).count();
+    stats.nr_pending_delete = mgr.values().filter(|obj| obj.is_pending_delete()).count();
+
+    stats
 }

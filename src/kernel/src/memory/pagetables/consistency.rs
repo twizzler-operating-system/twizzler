@@ -1,4 +1,4 @@
-use core::fmt::Debug;
+use core::{fmt::Debug, sync::atomic::AtomicUsize};
 
 use intrusive_collections::LinkedList;
 use twizzler_abi::trace::{CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, TraceEntryFlags, TraceKind};
@@ -14,6 +14,34 @@ use crate::{
         new_trace_entry,
     },
 };
+
+struct TlbStats {
+    shootdowns: AtomicUsize,
+    flushes: AtomicUsize,
+}
+
+static TLB_STATS: TlbStats = TlbStats {
+    shootdowns: AtomicUsize::new(0),
+    flushes: AtomicUsize::new(0),
+};
+
+pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
+    stats.tlb_shootdown_count = TLB_STATS
+        .shootdowns
+        .load(core::sync::atomic::Ordering::SeqCst);
+    stats.tlb_flush_count = TLB_STATS.flushes.load(core::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn tlb_shootdown_inc_count(ipi: bool) {
+    TLB_STATS
+        .flushes
+        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    if ipi {
+        TLB_STATS
+            .shootdowns
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Management for consistency, wrapping any cache-line flushing, page-freeing, and TLB coherence
 /// into a single object.

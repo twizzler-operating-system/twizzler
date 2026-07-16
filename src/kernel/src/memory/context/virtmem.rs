@@ -438,11 +438,13 @@ impl UserContext for VirtContext {
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
-                arch.unmap(cursor);
+                let did_unmap = arch.unmap(cursor);
                 if slot.stable.is_none() {
-                    slot.object()
-                        .lock_page_tables()
-                        .remove_invalidate(arch.target.paddr(), cursor);
+                    let mut pt = slot.object().lock_page_tables();
+                    pt.remove_invalidate(arch.target.paddr(), cursor);
+                    if did_unmap {
+                        pt.dec_map_count();
+                    }
                 }
             }
         }
@@ -649,7 +651,9 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
             slots.remove_region(self.slot.start_vaddr());
         }
         kctx.with_arch(KERNEL_SCTX, |arch| {
-            arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE));
+            if arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE)) {
+                self.object().lock_page_tables().dec_map_count();
+            }
         });
         kernel_slot_counter()
             .lock()

@@ -101,7 +101,7 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         consist: &mut Consistency,
-    ) -> Result<(), TwzError> {
+    ) -> Result<bool, TwzError> {
         let level = self.start_level;
         log::trace!(
             "unmap: cursor {:?}, root {:x}, level {}",

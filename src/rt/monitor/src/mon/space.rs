@@ -71,6 +71,7 @@ impl Space {
     pub fn stat(&self) -> SpaceStats {
         SpaceStats {
             mapped: self.maps.len(),
+            active: self.maps.values().filter(|m| m.handle_count > 0).count(),
         }
     }
 

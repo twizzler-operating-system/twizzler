@@ -15,17 +15,20 @@
 
 // TODO: reenable priority donation, and make it cheaper.
 
-use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64};
+use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64, time::Duration};
 
 use intrusive_collections::{LinkedList, intrusive_adapter};
-use twizzler_abi::thread::ExecutionState;
+use twizzler_abi::{syscall::LockStats, thread::ExecutionState};
 
 use crate::{
     idcounter::StableId,
+    instant::Instant,
+    once::Once,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{Thread, ThreadRef, current_thread_ref, priority::Priority},
+    time::TimeStatCollector,
 };
 
 #[repr(align(64))]
@@ -35,6 +38,44 @@ struct SleepQueue {
     pri: Option<Priority>,
     owner: Option<ThreadRef>,
     owned: bool,
+}
+
+struct MutexStatCollector {
+    nr_locks: usize,
+    lock_time: TimeStatCollector,
+    hold_time: TimeStatCollector,
+}
+
+static MUTEX_STATS: Once<Spinlock<MutexStatCollector>> = Once::new();
+
+fn get_mutex_stats() -> &'static Spinlock<MutexStatCollector> {
+    MUTEX_STATS.call_once(|| {
+        Spinlock::new(MutexStatCollector {
+            nr_locks: 0,
+            lock_time: TimeStatCollector::new(),
+            hold_time: TimeStatCollector::new(),
+        })
+    })
+}
+
+fn add_hold_time_sample(sample: Duration) {
+    get_mutex_stats().lock().hold_time.add_sample(sample.into());
+}
+
+fn add_lock_time_sample(sample: Duration) {
+    let mut stats = get_mutex_stats().lock();
+    stats.nr_locks += 1;
+    stats.lock_time.add_sample(sample.into());
+}
+
+pub fn get_lock_stats() -> LockStats {
+    let stats = get_mutex_stats().lock();
+    LockStats {
+        mutex_lock_count: stats.nr_locks,
+        mutex_waiting_count: 0,
+        mutex_avg_waiting_time: stats.lock_time.get_stats(),
+        mutex_hold_time: stats.hold_time.get_stats(),
+    }
 }
 
 intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
@@ -71,6 +112,7 @@ impl<T> Mutex<T> {
     /// lock guard goes out of scope, the lock will be released.
     #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
+        let start_time = Instant::now();
         let current_thread = current_thread_ref();
         let current_donated_priority = current_thread
             .as_ref()
@@ -138,10 +180,13 @@ impl<T> Mutex<T> {
             }
         }
 
+        let end_time = Instant::now();
+        add_lock_time_sample(end_time - start_time);
         crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
+            start_time,
         }
     }
 
@@ -164,6 +209,7 @@ impl<T> Mutex<T> {
 pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,
+    start_time: Instant,
 }
 
 impl<T> core::ops::Deref for LockGuard<'_, T> {
@@ -190,6 +236,8 @@ impl<T> Drop for LockGuard<'_, T> {
             thread.remove_donated_priority();
         }
         self.lock.release();
+        let end_time = Instant::now();
+        add_hold_time_sample(end_time - self.start_time);
     }
 }
 

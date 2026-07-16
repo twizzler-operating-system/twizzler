@@ -216,6 +216,7 @@ impl ThreadMgr {
             instance,
         );
         if let Ok(ref mt) = mt {
+            self.all.insert(mt.id, mt.clone());
             if let Some(cleaner) = self.cleaner.get() {
                 cleaner.track(mt.clone());
             }

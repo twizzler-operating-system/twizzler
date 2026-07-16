@@ -45,6 +45,7 @@ use core::{
 };
 
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
+use twizzler_abi::syscall::MemoryStats;
 
 use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
@@ -903,6 +904,10 @@ static FI: Once<Vec<FrameIndexer>> = Once::new();
 pub fn init(regions: &[MemoryRegion]) {
     let pfa = PhysicalFrameAllocator::new(regions);
     let total = pfa.total();
+    log::info!(
+        "tracking {} GB of physical memory",
+        total * PHYS_LEVEL_LAYOUTS[0].size() / (1024 * 1024 * 1024)
+    );
     FI.call_once(|| pfa.regions.iter().map(|r| r.indexer.clone()).collect());
     PFA.call_once(|| Spinlock::new(pfa));
     crate::memory::tracker::init(total, total, 0);
@@ -956,6 +961,20 @@ pub fn split_frame(frame: FrameRef) -> (FrameRef, usize) {
 
 pub fn merge_frame(frame: FrameRef) -> FrameRef {
     PFA.wait().lock().merge_frame(frame)
+}
+
+pub fn fill_stats(stats: &mut MemoryStats) {
+    let pfa = PFA.wait().lock();
+    for reg in &pfa.regions {
+        stats.total_pages += reg.nr_pages;
+        for (i, level) in reg.levels.iter().enumerate() {
+            stats.levels[i].free_pages += level.free;
+            stats.levels[i].page_size = PHYS_LEVEL_LAYOUTS[i].size();
+            stats.levels[i].reserved_pages = 0;
+            stats.levels[i].lent_pages = 0;
+        }
+    }
+    stats.nr_levels = NR_LEVELS;
 }
 
 #[cfg(test)]

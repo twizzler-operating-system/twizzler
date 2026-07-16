@@ -20,3 +20,4 @@ libc = { workspace = true }
 colored = { workspace = true }
 twizzler-io = { path = "../../lib/twizzler-io" }
 clap = { workspace = true }
+humansize = "*"

@@ -42,6 +42,8 @@ struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
 
 pub struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
     inner: Spinlock<Option<KernelAllocatorInner<Ctx>>>,
+    allocated_bytes: AtomicUsize,
+    early_allocated_bytes: AtomicUsize,
 }
 
 impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
@@ -119,7 +121,12 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
             let mut inner = self.inner.lock();
 
             if inner.is_none() {
+                self.early_allocated_bytes
+                    .fetch_add(layout.size(), Ordering::SeqCst);
                 return self.early_alloc(layout);
+            } else {
+                self.allocated_bytes
+                    .fetch_add(layout.size(), Ordering::SeqCst);
             }
             let inner = inner.as_mut().unwrap();
             match layout.size() {
@@ -185,6 +192,8 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
             if ptr.is_null() {
                 return;
             }
+            self.allocated_bytes
+                .fetch_sub(layout.size(), Ordering::SeqCst);
             let nn = NonNull::new(ptr).unwrap();
             match layout.size() {
                 0..=ZoneAllocator::MAX_ALLOC_SIZE => {
@@ -207,6 +216,8 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
 #[global_allocator]
 pub static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
     inner: Spinlock::new(None),
+    allocated_bytes: AtomicUsize::new(0),
+    early_allocated_bytes: AtomicUsize::new(0),
 };
 
 pub fn init(ctx: &'static Context) {
@@ -214,4 +225,9 @@ pub fn init(ctx: &'static Context) {
         ctx,
         zone: ZoneAllocator::new(),
     });
+}
+
+pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
+    stats.late_kalloc_bytes = SLAB_ALLOCATOR.allocated_bytes.load(Ordering::SeqCst);
+    stats.early_kalloc_bytes = SLAB_ALLOCATOR.early_allocated_bytes.load(Ordering::SeqCst);
 }

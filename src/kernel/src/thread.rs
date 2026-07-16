@@ -504,3 +504,25 @@ pub fn exit(code: u64) -> ! {
     schedule(SchedFlags::PREEMPT);
     unreachable!()
 }
+
+pub fn get_thread_stats() -> twizzler_abi::syscall::ThreadStats {
+    let mut nr_threads = 0;
+    let mut nr_running = 0;
+    let mut nr_blocked = 0;
+    let mut nr_pending_exit = 0;
+    crate::processor::sched::with_each_thread(|t| {
+        nr_threads += 1;
+        match t.get_state() {
+            ExecutionState::Running => nr_running += 1,
+            ExecutionState::Sleeping => nr_blocked += 1,
+            ExecutionState::Exited => nr_pending_exit += 1,
+            _ => {}
+        }
+    });
+    twizzler_abi::syscall::ThreadStats {
+        nr_threads,
+        nr_running,
+        nr_blocked,
+        nr_pending_exit,
+    }
+}

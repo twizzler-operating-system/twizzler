@@ -687,14 +687,16 @@ impl Table {
         consist: &mut Consistency,
         mut cursor: MappingCursor,
         level: usize,
-    ) -> Result<(), TwzError> {
+    ) -> Result<bool, TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
+        let mut did_unmap = false;
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             let entry = &mut self[idx];
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
             if entry.is_present() && (is_huge || level == Self::last_level()) {
                 let frame = get_frame(entry.addr(level));
                 let flags = entry.flags();
+                did_unmap = true;
                 self.update_entry(
                     consist,
                     idx,
@@ -724,7 +726,7 @@ impl Table {
                         self.do_cow_copy(idx, level, consist, cursor.start(), false)?;
                     }
                     let next_table = self.next_table_mut(idx).unwrap();
-                    next_table.unmap(consist, cursor, Self::next_level(level))?;
+                    did_unmap |= next_table.unmap(consist, cursor, Self::next_level(level))?;
                     if next_table.read_count() == 0 && level != Table::top_level() {
                         // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
                         consist.free_frame(self.next_table_frame(idx).unwrap());
@@ -736,8 +738,10 @@ impl Table {
                             false,
                             level,
                         );
+                        did_unmap = true;
                     }
                 } else {
+                    did_unmap = true;
                     get_frame(entry.table_addr()).unwrap().dec_refcount();
                     self.update_entry(
                         consist,
@@ -756,7 +760,7 @@ impl Table {
                 break;
             }
         }
-        Ok(())
+        Ok(did_unmap)
     }
 
     pub(super) fn change(

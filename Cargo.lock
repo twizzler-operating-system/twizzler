@@ -4589,6 +4589,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df270209a7f04d62459240d890ecb792714d5db12c92937823574a09930276b4"
 
 [[package]]
+name = "no-std-moving-average"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c4b8f733db831b1c3d55d059c039fa4b167bde475da6f6f498c20160f910d29"
+dependencies = [
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "noisy_float"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6306,6 +6315,7 @@ dependencies = [
  "colored",
  "embedded-io",
  "hhmmss",
+ "humansize",
  "libc",
  "miette",
  "monitor-api",
@@ -7454,6 +7464,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "memoffset",
+ "no-std-moving-average",
  "nonoverlapping_interval_tree",
  "object",
  "p256",

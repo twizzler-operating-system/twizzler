@@ -11,21 +11,39 @@ use super::{PageFaultFlags, Slot, region::MapRegion};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
-    memory::{
-        FAULT_STATS,
-        context::{ContextRef, kernel_context},
-    },
+    memory::context::{ContextRef, kernel_context},
     obj::PageNumber,
+    once::Once,
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
+    spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref},
+    time::TimeStatCollector,
 };
+
+struct FaultStats {
+    count: usize,
+    time: TimeStatCollector,
+}
+
+static FAULT_STATS: Once<Spinlock<FaultStats>> = Once::new();
+
+fn get_fault_stats() -> &'static Spinlock<FaultStats> {
+    FAULT_STATS.call_once(|| {
+        Spinlock::new(FaultStats {
+            count: 0,
+            time: TimeStatCollector::new(),
+        })
+    })
+}
+
+pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
+    let stats_lock = get_fault_stats().lock();
+    stats.page_fault_count = stats_lock.count;
+    stats.page_fault_stats = stats_lock.time.get_stats();
+}
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    FAULT_STATS
-        .total
-        .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-
     if flags.contains(PageFaultFlags::USER)
         && !ip.is_kernel()
         && !addr.is_kernel()
@@ -280,7 +298,12 @@ pub fn do_page_fault(
 }
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
+    let start_time = Instant::now();
     let res = do_page_fault(addr, cause, flags, ip);
+    let end_time = Instant::now();
+    let mut stats = get_fault_stats().lock();
+    stats.time.add_sample((end_time - start_time).into());
+    stats.count += 1;
     if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
         log::trace!(
             "done page-fault: {:?} {:?} {:?} ip={:?}",

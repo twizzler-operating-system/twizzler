@@ -84,6 +84,7 @@ mod builtins {
     };
 
     use hhmmss::Hhmmss;
+    use humansize::BINARY;
     use miette::IntoDiagnostic;
 
     use crate::{InvokeCtx, ShellInvoke, WaitChild};
@@ -242,6 +243,300 @@ mod builtins {
         Ok(())
     }
 
+    pub fn stat(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
+        let args = &ctx.cmd.command[1..];
+        let search_args = |arg: &str| -> bool { args.iter().any(|a| a == arg) };
+        let args_empty = args.is_empty() || search_args("--all") || search_args("-a");
+        let show_mstats = args_empty || search_args("--monitor") || search_args("-M");
+        let show_sctx_stats = args_empty || search_args("--sctx") || search_args("-S");
+        let show_thread_stats = args_empty || search_args("--threads") || search_args("-t");
+        let show_mem_stats = args_empty || search_args("--memory") || search_args("-m");
+        let show_syscall_stats = args_empty || search_args("--syscalls") || search_args("-s");
+        let show_lock_stats = args_empty || search_args("--locks") || search_args("-l");
+        let show_object_stats = args_empty || search_args("--objects") || search_args("-o");
+        let verbose = search_args("--verbose") || search_args("-v");
+
+        if show_mstats {
+            if let Some(mstats) = monitor_api::stats() {
+                writeln!(ctx.stdout(), "== Monitor stats ==").into_diagnostic()?;
+                writeln!(
+                    ctx.stdout(),
+                    "  nr compartments (dynlink): {} ({})",
+                    mstats.comp_mgr.nr_compartments,
+                    mstats.dynlink.nr_comps
+                )
+                .into_diagnostic()?;
+                writeln!(
+                    ctx.stdout(),
+                    "  nr libraries             : {}",
+                    mstats.dynlink.nr_libs
+                )
+                .into_diagnostic()?;
+                writeln!(
+                    ctx.stdout(),
+                    "  nr handles (comp, lib)   : {}, {}",
+                    mstats.handles.nr_comp_handles,
+                    mstats.handles.nr_lib_handles
+                )
+                .into_diagnostic()?;
+
+                writeln!(
+                    ctx.stdout(),
+                    "  space mapped, active       : {}, {}",
+                    mstats.space.mapped,
+                    mstats.space.active,
+                )
+                .into_diagnostic()?;
+                writeln!(
+                    ctx.stdout(),
+                    "  managed threads          : {}",
+                    mstats.thread_mgr.nr_threads
+                )
+                .into_diagnostic()?;
+            }
+        }
+
+        if show_sctx_stats {
+            let sctx_stats = twizzler_abi::syscall::sys_sctx_stats();
+            writeln!(ctx.stdout(), "== Sctx stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  total                 : {}",
+                sctx_stats.nr_sctx
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  active                : {}",
+                sctx_stats.nr_active
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  cached                : {}",
+                sctx_stats.nr_cached
+            )
+            .into_diagnostic()?;
+        }
+
+        if show_thread_stats {
+            let thread_stats = twizzler_abi::syscall::sys_thread_stats();
+            writeln!(ctx.stdout(), "== Thread stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  total                 : {}",
+                thread_stats.nr_threads
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  running               : {}",
+                thread_stats.nr_running
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  blocked               : {}",
+                thread_stats.nr_blocked
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  pending exit          : {}",
+                thread_stats.nr_pending_exit
+            )
+            .into_diagnostic()?;
+        }
+
+        let format = humansize::make_format(BINARY);
+        if show_mem_stats {
+            let mem_stats = twizzler_abi::syscall::sys_memory_stats();
+            writeln!(ctx.stdout(), "== Memory stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  total bytes           : {} ({})",
+                mem_stats.total_bytes(),
+                format(mem_stats.total_bytes())
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  free bytes            : {} ({})",
+                mem_stats.free_bytes(),
+                format(mem_stats.free_bytes())
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  lent bytes            : {} ({})",
+                mem_stats.lent_bytes(),
+                format(mem_stats.lent_bytes())
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  reserved bytes        : {} ({})",
+                mem_stats.reserved_bytes(),
+                format(mem_stats.reserved_bytes())
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  kalloc bytes          : {} ({}) ({} leaked at startup)",
+                mem_stats.kalloc_bytes(),
+                format(mem_stats.kalloc_bytes()),
+                format(mem_stats.early_kalloc_bytes()),
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  inval (flush,ipi)     : {}, {}",
+                mem_stats.tlb_flush_count,
+                mem_stats.tlb_shootdown_count
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  page faults: count={} avg={}ns min={}ns max={}ns stddev={}ns, running avg={}ns",
+                mem_stats.page_fault_count,
+                mem_stats.page_fault_stats.mean.as_nanos(),
+                mem_stats.page_fault_stats.min.as_nanos(),
+                mem_stats.page_fault_stats.max.as_nanos(),
+                mem_stats.page_fault_stats.variance.as_nanos().isqrt(),
+                mem_stats.page_fault_stats.running_mean.as_nanos(),
+            )
+            .into_diagnostic()?;
+            if verbose {
+                for (i, level) in mem_stats.levels().iter().enumerate() {
+                    writeln!(ctx.stdout(), "  level {}:", i).into_diagnostic()?;
+                    writeln!(
+                        ctx.stdout(),
+                        "    page size           : {}",
+                        level.page_size
+                    )
+                    .into_diagnostic()?;
+                    writeln!(
+                        ctx.stdout(),
+                        "    free pages          : {}",
+                        level.free_pages
+                    )
+                    .into_diagnostic()?;
+                    writeln!(
+                        ctx.stdout(),
+                        "    lent pages          : {}",
+                        level.lent_pages
+                    )
+                    .into_diagnostic()?;
+                    writeln!(
+                        ctx.stdout(),
+                        "    reserved pages      : {}",
+                        level.reserved_pages
+                    )
+                    .into_diagnostic()?;
+                }
+            }
+        }
+
+        if show_syscall_stats {
+            let syscall_stats = twizzler_abi::syscall::sys_syscall_stats();
+            writeln!(ctx.stdout(), "== Syscall stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  total syscalls        : {}",
+                syscall_stats.nr_syscalls
+            )
+            .into_diagnostic()?;
+            if verbose {
+                for i in 0..twizzler_abi::syscall::Syscall::NumSyscalls as usize {
+                    let count = syscall_stats.nr_syscalls_per_type[i];
+                    if count == 0 {
+                        continue;
+                    }
+                    let sc = twizzler_abi::syscall::Syscall::from(i);
+                    let ts = &syscall_stats.syscall_times[i];
+                    writeln!(
+                        ctx.stdout(),
+                        "  {:?} count={} avg={}ns min={}ns max={}ns stddev={}ns, running avg={}ns",
+                        sc,
+                        count,
+                        ts.mean.as_nanos(),
+                        ts.min.as_nanos(),
+                        ts.max.as_nanos(),
+                        ts.variance.as_nanos().isqrt(),
+                        ts.running_mean.as_nanos(),
+                    )
+                    .into_diagnostic()?;
+                }
+            }
+        }
+
+        if show_lock_stats {
+            let lock_stats = twizzler_abi::syscall::sys_lock_stats();
+            writeln!(ctx.stdout(), "== Lock stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  mutex lock count      : {}",
+                lock_stats.mutex_lock_count
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  mutex waiting count   : {}",
+                lock_stats.mutex_waiting_count
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  mutex avg wait time   : avg={}ns min={}ns max={}ns stddev={}ns running avg={}ns",
+                lock_stats.mutex_avg_waiting_time.mean.as_nanos(),
+                lock_stats.mutex_avg_waiting_time.min.as_nanos(),
+                lock_stats.mutex_avg_waiting_time.max.as_nanos(),
+                lock_stats
+                    .mutex_avg_waiting_time
+                    .variance
+                    .as_nanos()
+                    .isqrt(),
+                lock_stats.mutex_avg_waiting_time.running_mean.as_nanos(),
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  mutex hold time       : avg={}ns min={}ns max={}ns stddev={}ns running avg={}ns",
+                lock_stats.mutex_hold_time.mean.as_nanos(),
+                lock_stats.mutex_hold_time.min.as_nanos(),
+                lock_stats.mutex_hold_time.max.as_nanos(),
+                lock_stats.mutex_hold_time.variance.as_nanos().isqrt(),
+                lock_stats.mutex_hold_time.running_mean.as_nanos(),
+            )
+            .into_diagnostic()?;
+        }
+
+        if show_object_stats {
+            let object_stats = twizzler_abi::syscall::sys_object_stats();
+            writeln!(ctx.stdout(), "== Object stats ==").into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  total objects         : {}",
+                object_stats.nr_objects
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  mapped objects        : {}",
+                object_stats.nr_mapped
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  pending delete objects: {}",
+                object_stats.nr_pending_delete
+            )
+            .into_diagnostic()?;
+        }
+
+        Ok(())
+    }
+
     pub fn help(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
         writeln!(ctx.stdout(), "Twizzler Shell 0.1").into_diagnostic()?;
         writeln!(ctx.stdout(), "This shell has basic line-editing, env vars, pipes and I/O redirection, backgrounding and jobs, and system command execution.").into_diagnostic()?;
@@ -337,6 +632,7 @@ impl ShellInvoke {
             "unset" => self.invoke_builtin(builtins::unset, ctx).map(|j| Some(j)),
             "env" => self.invoke_builtin(builtins::env, ctx).map(|j| Some(j)),
             "help" => self.invoke_builtin(builtins::help, ctx).map(|j| Some(j)),
+            "stat" => self.invoke_builtin(builtins::stat, ctx).map(|j| Some(j)),
             _ => Ok(None),
         }
     }
