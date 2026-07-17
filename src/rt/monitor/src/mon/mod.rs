@@ -20,6 +20,7 @@ use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
     syscall::{sys_thread_exit, sys_thread_send_message},
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
+    write_note,
 };
 use twizzler_rt_abi::{
     error::{GenericError, TwzError},
@@ -113,12 +114,14 @@ impl Monitor {
             MapFlags::READ | MapFlags::WRITE,
         )
         .unwrap();
+        write_note!(cc_handle.id(), "monitor-scc");
         let stack_handle = Space::safe_create_and_map_runtime_object(
             &space,
             MONITOR_INSTANCE_ID,
             MapFlags::READ | MapFlags::WRITE,
         )
         .unwrap();
+        write_note!(stack_handle.id(), "monitor-stack");
 
         let comp_config = CompConfigObject::new(cc_handle, monitor_scc);
         let mut alloc = Talc::new(ErrOnOom);
@@ -220,7 +223,9 @@ impl Monitor {
         let mon = get_monitor();
         let mut comps = mon.comp_mgr.write(ThreadKey::get().unwrap());
         // This creates a per-thread structure in the compartment.
-        let _pt = comps.get_mut(instance)?.get_per_thread(thread.id);
+        let comp = comps.get_mut(instance)?;
+        write_note!(thread.id, "thread:{}", comp.name);
+        let _pt = comp.get_per_thread(thread.id);
         Ok(thread.id)
     }
 

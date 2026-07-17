@@ -23,6 +23,7 @@ pub struct ObjectBuilder<Base: BaseType> {
     ties: Vec<object_tie>,
     name: Option<String>,
     _pd: PhantomData<Base>,
+    notes: Vec<String>,
 }
 
 impl<Base: BaseType> ObjectBuilder<Base> {
@@ -34,6 +35,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             name: None,
             src_objs: Vec::new(),
             ties: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -44,6 +46,11 @@ impl<Base: BaseType> ObjectBuilder<Base> {
         } else {
             self.spec.lt = LifetimeType::Volatile;
         }
+        self
+    }
+
+    pub fn add_note(mut self, note: impl ToString) -> Self {
+        self.notes.push(note.to_string());
         self
     }
 
@@ -98,6 +105,7 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
+        tracing::info!("creating object with spec: {:?}", self.spec);
         let id = unsafe {
             twizzler_rt_abi::bindings::twz_rt_create_object(
                 &self.spec.into(),
@@ -117,6 +125,10 @@ impl<Base: BaseType> ObjectBuilder<Base> {
             return Err(RawTwzError::new(id.err).error());
         }
         let id = id.val.into();
+        #[cfg(target_os = "twizzler")]
+        for note in &self.notes {
+            let _ = twizzler_abi::syscall::sys_object_add_note(id, note.as_bytes());
+        }
         let mut flags = MapFlags::READ | MapFlags::WRITE;
         if self.spec.lt == LifetimeType::Persistent {
             flags.insert(MapFlags::PERSIST);

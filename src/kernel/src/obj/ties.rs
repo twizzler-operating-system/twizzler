@@ -35,6 +35,10 @@ impl TiesStatic {
     pub fn lookup_object(&self, id: ObjID) -> Option<ObjectRef> {
         self.inner.lock().lookup_deleted(id)
     }
+
+    pub fn with_deleted_map<R>(&self, f: impl FnOnce(&BTreeMap<ObjID, ObjectRef>) -> R) -> R {
+        f(&self.inner.lock().pending_delete)
+    }
 }
 
 pub(super) static TIE_MGR: TiesStatic = TiesStatic::new();

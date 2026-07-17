@@ -5,6 +5,7 @@ use twizzler_abi::{
         sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
         ObjectCreateFlags, ObjectSource,
     },
+    write_note,
 };
 
 use super::{Backing, LoadDirective, LoadFlags};
@@ -112,7 +113,7 @@ pub fn load_segments(
     });
 
     let data_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, data_cmds)?;
-    let text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
+    let _text_cmds = DynlinkError::collect(DynlinkErrorKind::NewBackingFail, text_cmds)?;
 
     let data_id = sys_object_create(
         create_spec,
@@ -122,16 +123,19 @@ pub fn load_segments(
     .inspect_err(|e| tracing::error!("failed to create data object: {:?}", e))
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
 
-    let text_id = sys_object_create(
-        create_spec,
-        &text_cmds,
-        &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
-    )
-    .inspect_err(|e| tracing::error!("failed to create text object: {:?}", e))
-    .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
-    //let text_id = src.id;
+    /*
+        let text_id = sys_object_create(
+            create_spec,
+            &text_cmds,
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
+        )
+        .inspect_err(|e| tracing::error!("failed to create text object: {:?}", e))
+        .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+    */
 
-    tracing::info!(
+    let text_id = src.id;
+
+    tracing::trace!(
         "mapped segments in instance {} to {}, {}",
         instance,
         text_id,
@@ -139,5 +143,8 @@ pub fn load_segments(
     );
 
     let (text, data) = map(text_id, data_id)?;
+
+    write_note!(text_id, "text:{}:{:x}", src.full_name(), text.load_addr());
+    write_note!(data_id, "data:{}:{:x}", src.full_name(), data.load_addr());
     Ok(vec![text, data])
 }

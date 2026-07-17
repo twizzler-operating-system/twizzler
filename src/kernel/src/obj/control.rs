@@ -3,7 +3,8 @@
 //! for the base, we optimize a bit by avoiding creating a kernel object handle if the base
 //! type fits in one page.
 
-use core::ptr::NonNull;
+use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use core::{ptr::NonNull, sync::atomic::AtomicU64};
 
 use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
 
@@ -16,7 +17,8 @@ use crate::{
         frame::FrameRef,
         tracker::{FrameAllocFlags, alloc_frame},
     },
-    obj::{ObjectRef, PageNumber},
+    mutex::Mutex,
+    obj::{Object, ObjectRef, PageNumber},
     userinit::create_blank_object,
 };
 
@@ -88,5 +90,106 @@ impl<Base> ControlObjectCacher<Base> {
     /// Get the handle to the underlying object.
     pub fn object(&self) -> &ObjectRef {
         &self.object
+    }
+}
+
+impl<Base> Drop for ControlObjectCacher<Base> {
+    fn drop(&mut self) {
+        match &self.quick_or_kernel {
+            QuickOrKernel::Quick(quick) => {
+                quick.base_frame.set_wired(false);
+            }
+            QuickOrKernel::Kernel(_) => {}
+        }
+    }
+}
+
+pub struct VNotes {
+    notes: Mutex<BTreeMap<u64, Vec<u8>>>,
+    next_key: AtomicU64,
+}
+
+impl VNotes {
+    pub fn new() -> Self {
+        Self {
+            notes: Mutex::new(BTreeMap::new()),
+            next_key: AtomicU64::new(0),
+        }
+    }
+
+    pub fn find(&self, value: &[u8]) -> Option<u64> {
+        let notes = self.notes.lock();
+        for (key, note) in notes.iter() {
+            if note.as_slice() == value {
+                return Some(*key);
+            }
+        }
+        None
+    }
+
+    pub fn with_note<R>(&self, key: u64, f: impl FnOnce(&mut Vec<u8>) -> R) -> Option<R> {
+        let mut notes = self.notes.lock();
+        notes.get_mut(&key).map(f)
+    }
+
+    pub fn set(&self, key: u64, value: Vec<u8>) {
+        let mut notes = self.notes.lock();
+        notes.insert(key, value);
+    }
+
+    pub fn remove(&self, key: u64) {
+        let mut notes = self.notes.lock();
+        notes.remove(&key);
+    }
+
+    pub fn reset(&self) {
+        let mut notes = self.notes.lock();
+        notes.clear();
+    }
+
+    pub fn next_key(&self) -> u64 {
+        self.next_key
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+}
+
+impl Object {
+    pub fn add_note(&self, value: &[u8]) -> u64 {
+        let notes = self.get_notes();
+        if let Some(k) = notes.find(value) {
+            return k;
+        }
+        let key = notes.next_key();
+        notes.set(key, Vec::from(value));
+        key
+    }
+
+    pub fn get_note(&self, key: u64, buf: &mut [u8]) -> Option<usize> {
+        let notes = self.get_notes();
+        notes.with_note(key, |note| {
+            let len = core::cmp::min(buf.len(), note.len());
+            buf[..len].copy_from_slice(&note[..len]);
+            len
+        })
+    }
+
+    pub fn remove_note(&self, key: u64) {
+        let notes = self.get_notes();
+        notes.remove(key);
+    }
+
+    pub fn enumerate_notes(&self, offset: usize, max: usize) -> Vec<u64> {
+        let notes = self.get_notes();
+        let notes = notes.notes.lock();
+        notes.keys().skip(offset).take(max).copied().collect()
+    }
+
+    pub fn print_notes(&self) {
+        let notes = self.get_notes();
+        let notes = notes.notes.lock();
+        for (key, value) in notes.iter() {
+            logln!("   {}: {:?}", key, str::from_utf8(value));
+        }
     }
 }

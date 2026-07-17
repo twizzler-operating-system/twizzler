@@ -14,10 +14,11 @@ use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::{
     syscall::{
-        DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_object_remove_note, DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags,
+        ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
+    write_note,
 };
 use twizzler_rt_abi::{
     core::{CompartmentInitInfo, CtorSet, InitInfoPtrs, RuntimeInfo, RUNTIME_INIT_COMP},
@@ -74,6 +75,8 @@ impl Drop for RunComp {
         let _ = twizzler_abi::syscall::sys_object_ctrl(
             self.instance,
             ObjectControlCmd::Delete(DeleteFlags::empty()),
+            0,
+            0,
         )
         .inspect_err(|e| tracing::warn!("failed to delete instance on RunComp drop: {}", e));
         tracing::info!(
@@ -114,6 +117,10 @@ impl PerThread {
             MapFlags::READ | MapFlags::WRITE,
         )
         .ok();
+
+        if let Some(handle) = &handle {
+            write_note!(handle.id(), "comp-thread-sb:{}", instance);
+        }
 
         Self {
             simple_buffer: handle
@@ -166,6 +173,7 @@ impl RunComp {
         controller: Option<ObjID>,
         alloc: Talc<ErrOnOom>,
     ) -> Self {
+        write_note!(instance, "comp:{}", name);
         Self {
             sctx,
             is_debugging,
@@ -200,6 +208,7 @@ impl RunComp {
     /// Map an object into this compartment.
     pub fn map_object(&mut self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, TwzError> {
         self.mapped_objects.insert(info, handle.clone());
+        handle.set_map_note_key(write_note!(handle.id(), "map:{}", self.name));
         Ok(handle)
     }
 
@@ -213,6 +222,11 @@ impl RunComp {
                 self.name,
                 info
             );
+        } else {
+            let nk = x.as_ref().unwrap().get_map_note_key();
+            if nk != 0 {
+                let _ = sys_object_remove_note(info.id, nk);
+            }
         }
         x
     }
@@ -405,6 +419,7 @@ impl RunComp {
                 return None;
             }
         };
+        write_note!(mt.thread.id, "thread:{}(main)", self.name);
         self.main = Some(mt);
         self.notify_state_changed();
 

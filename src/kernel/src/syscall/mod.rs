@@ -514,12 +514,9 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         Syscall::ObjectCtrl => {
             let id = ObjID::from_parts([context.arg0(), context.arg1()]);
             let cmd = (context.arg2::<u64>(), context.arg3::<u64>()).try_into();
-            if let Ok(cmd) = cmd {
-                let (code, val) = object_ctrl(id, cmd);
-                context.set_return_values(code, val);
-            } else {
-                context.set_return_values(1u64, 0u64);
-            }
+            let result = cmd.and_then(|c| object_ctrl(id, c, context.arg4(), context.arg5()));
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
+            context.set_return_values(code, val);
             return;
         }
         Syscall::MapCtrl => {

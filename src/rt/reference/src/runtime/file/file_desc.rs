@@ -124,10 +124,15 @@ impl FileDesc {
             twizzler_rt_abi::bindings::FD_CMD_SYNC => {
                 for id in &metadata_handle.direct {
                     if id.raw() != 0 {
-                        twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync)?;
+                        twizzler_abi::syscall::sys_object_ctrl(*id, ObjectControlCmd::Sync, 0, 0)?;
                     }
                 }
-                twizzler_abi::syscall::sys_object_ctrl(self.handle.id(), ObjectControlCmd::Sync)?;
+                twizzler_abi::syscall::sys_object_ctrl(
+                    self.handle.id(),
+                    ObjectControlCmd::Sync,
+                    0,
+                    0,
+                )?;
                 Ok(())
             }
             /*

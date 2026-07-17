@@ -12,6 +12,7 @@ use monitor_api::SharedCompConfig;
 use smallstr::SmallString;
 use talc::{ErrOnOom, Talc};
 use tinyvec::TinyVec;
+use twizzler_abi::write_note;
 use twizzler_rt_abi::{
     bindings::binding_info,
     core::{CtorSet, RuntimeInfo},
@@ -425,28 +426,32 @@ impl RunCompLoader {
         controller: Option<ObjID>,
         loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> miette::Result<ObjID> {
-        let make_new_handle = |ty, id| {
+        let make_new_handle = |ty, id, name| {
             if mondebug {
                 tracing::info!(
                     "creating runtime {} object {} for compartment {}",
                     ty,
                     id,
-                    self.root_comp.name
+                    name
                 );
             }
-            Space::safe_create_and_map_runtime_object(
+            let handle = Space::safe_create_and_map_runtime_object(
                 &get_monitor().space,
                 id,
                 MapFlags::READ | MapFlags::WRITE,
-            )
+            );
+            if let Ok(ref handle) = handle {
+                write_note!(handle.id(), "{}:{}", ty, name);
+            }
+            handle
         };
         let stack = StackObject::new(
-            make_new_handle("stack", self.root_comp.sctx_id)?,
+            make_new_handle("stack", self.root_comp.sctx_id, &self.root_comp.name)?,
             DEFAULT_STACK_SIZE,
         )?;
 
         let mut root_rc = self.root_comp.build_runcomp(
-            make_new_handle("comp-config", self.root_comp.sctx_id)?,
+            make_new_handle("comp-config", self.root_comp.sctx_id, &self.root_comp.name)?,
             stack,
             is_debugging,
             controller,
@@ -460,9 +465,14 @@ impl RunCompLoader {
             .loaded_extras
             .iter()
             .map(|extra| {
-                let stack =
-                    StackObject::new(make_new_handle("stack", extra.sctx_id)?, DEFAULT_STACK_SIZE)?;
-                Ok::<_, miette::Report>((make_new_handle("comp-config", extra.sctx_id)?, stack))
+                let stack = StackObject::new(
+                    make_new_handle("stack", extra.sctx_id, &extra.name)?,
+                    DEFAULT_STACK_SIZE,
+                )?;
+                Ok::<_, miette::Report>((
+                    make_new_handle("comp-config", extra.sctx_id, &extra.name)?,
+                    stack,
+                ))
             })
             .try_collect::<Vec<_>>()?;
         // Construct the RunComps for all the extra compartments.

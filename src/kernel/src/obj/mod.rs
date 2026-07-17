@@ -23,6 +23,7 @@ use crate::{
     idcounter::{IdCounter, SimpleId},
     memory::VirtAddr,
     mutex::{LockGuard, Mutex},
+    obj::{control::VNotes, ties::TIE_MGR},
     once::{Once, OnceWait},
     random::getrandom,
     syscall::object::count_handles,
@@ -50,11 +51,16 @@ pub struct Object {
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
+    vnotes: VNotes,
 }
 
 impl Drop for Object {
     fn drop(&mut self) {
         log::info!("dropping object {}", self.id);
+
+        if self.use_pager() && self.is_pending_delete() {
+            crate::pager::del_object(self.id);
+        }
     }
 }
 
@@ -159,6 +165,10 @@ impl Object {
         self.lock_page_tables().map_count() > 0
     }
 
+    pub fn get_notes(&self) -> &VNotes {
+        &self.vnotes
+    }
+
     pub fn use_pager(&self) -> bool {
         self.lifetime_type == LifetimeType::Persistent
     }
@@ -205,6 +215,7 @@ impl Object {
             device_interrupt_info: Box::new(
                 [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
             ),
+            vnotes: VNotes::new(),
         }
     }
 
@@ -271,14 +282,13 @@ impl Object {
     }
 
     pub fn info(&self) -> ObjectInfo {
-        let num_pages = {
+        let (num_pages, maps) = {
             let page_tree = self.tables.lock();
-            page_tree.count_pages()
+            (page_tree.count_pages(), page_tree.map_count())
         };
         ObjectInfo {
             id: self.id,
-            // TODO: see self.contexts?
-            maps: 0,
+            maps,
             // TODO: see TIE_MGR
             ties_to: 0,
             ties_from: 0,
@@ -398,6 +408,34 @@ impl ObjectManager {
     }
 }
 
+pub fn print_all_objects() {
+    let mgr = obj_manager();
+    let map = mgr.map.lock();
+    logln!("=== OBJECTS === ({})", map.len());
+    let mut nn = 0;
+    for (id, obj) in map.iter() {
+        logln!("{}: {:?}", id, obj.info());
+        obj.print_notes();
+        if obj.enumerate_notes(0, 1).is_empty() {
+            nn += 1;
+        }
+    }
+    logln!("\n=== OBJECTS WITH NO NOTES === ({})\n\n", nn);
+
+    nn = 0;
+    TIE_MGR.with_deleted_map(|deleted| {
+        logln!("=== DELETED OBJECTS === ({})", deleted.len());
+        for (id, obj) in deleted.iter() {
+            logln!("{}: {:?}", id, obj.info());
+            obj.print_notes();
+            if obj.enumerate_notes(0, 1).is_empty() {
+                nn += 1;
+            }
+        }
+    });
+    logln!("\n=== DELETED OBJECTS WITH NO NOTES === ({})\n\n", nn);
+}
+
 pub fn scan_deleted() {
     let dobjs = {
         let mut om = obj_manager().map.lock();
@@ -438,6 +476,7 @@ pub fn no_exist(id: ObjID) {
 }
 
 pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
+    print_all_objects();
     let mut stats = twizzler_abi::syscall::ObjectStats::default();
     let mgr = obj_manager().map.lock();
     stats.nr_objects = mgr.len();

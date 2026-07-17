@@ -272,7 +272,7 @@ fn main() {
         SubCommand::Preload => {
             let start = std::time::Instant::now();
             let id = nh.get("/ext/rst", GetFlags::empty()).unwrap().id;
-            sys_object_ctrl(id, twizzler_abi::syscall::ObjectControlCmd::Preload).unwrap();
+            sys_object_ctrl(id, twizzler_abi::syscall::ObjectControlCmd::Preload, 0, 0).unwrap();
             let end = std::time::Instant::now();
             println!("done!: {:?}", end - start);
         }

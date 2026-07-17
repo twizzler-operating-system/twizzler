@@ -1,10 +1,15 @@
-use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+use twizzler_abi::{
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::sys_object_remove_note,
+    write_note,
+};
 use twizzler_rt_abi::object::ObjectHandle;
 
 /// A simple buffer to use for transferring bytes between compartments, using shared memory via
 /// objects underneath.
 pub struct SimpleBuffer {
     handle: ObjectHandle,
+    note_key: u64,
 }
 
 impl core::fmt::Debug for SimpleBuffer {
@@ -26,7 +31,11 @@ impl SimpleBuffer {
 
     /// Build a new SimpleBuffer from an object handle.
     pub fn new(handle: ObjectHandle) -> Self {
-        Self { handle }
+        let nk = write_note!(handle.id(), "simple-buffer");
+        Self {
+            handle,
+            note_key: nk,
+        }
     }
 
     /// Returns the maximum length of a read or write.
@@ -40,6 +49,7 @@ impl SimpleBuffer {
     }
 
     pub fn into_handle(self) -> ObjectHandle {
+        let _ = sys_object_remove_note(self.handle.id(), self.note_key);
         self.handle
     }
 

@@ -475,13 +475,12 @@ impl<'a> Drop for CriticalGuard<'a> {
     }
 }
 
-/*
 impl Drop for Thread {
     fn drop(&mut self) {
         log::info!("drop thread {}", self.objid());
+        self.control_object.object().mark_for_delete();
     }
 }
-*/
 
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.

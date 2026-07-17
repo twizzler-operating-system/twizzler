@@ -99,9 +99,9 @@ impl ReferenceRuntime {
     pub fn release_handle(&self, handle: *mut object_handle, flags: release_flags) {
         self.object_manager.lock().release(handle, flags);
         // TODO: do this less often?
-        //if self.is_monitor().is_some() {
-        self.object_manager.lock().cache.flush();
-        //}
+        if self.is_monitor().is_some() {
+            self.object_manager.lock().cache.flush();
+        }
     }
 
     pub fn object_cmd(
@@ -117,6 +117,8 @@ impl ReferenceRuntime {
                 sys_object_ctrl(
                     handle.id.into(),
                     ObjectControlCmd::Delete(DeleteFlags::empty()),
+                    0,
+                    0,
                 )?;
                 unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() }
                     .is_deleted

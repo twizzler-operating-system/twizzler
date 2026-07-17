@@ -68,7 +68,7 @@ mod gates {
 
     #[secgate::entry(lib = "")]
     pub fn preload(id: ObjID) -> Result<()> {
-        sys_object_ctrl(id, ObjectControlCmd::Preload)
+        sys_object_ctrl(id, ObjectControlCmd::Preload, 0, 0).map(|_| ())
     }
 
     #[secgate::entry(lib = "")]

@@ -13,3 +13,6 @@ equivalent = { workspace = true }
 twizzler-derive = { workspace = true }
 rand_chacha = { workspace = true }
 ahash = { workspace = true }
+
+[target.'cfg(target_os = "twizzler")'.dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi", default-features = false }

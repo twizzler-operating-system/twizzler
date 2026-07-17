@@ -235,7 +235,8 @@ impl Space {
         ) {
             Ok(mh) => Ok(mh),
             Err(me) => {
-                if let Err(e) = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()))
+                if let Err(e) =
+                    sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
                 {
                     tracing::warn!("failed to delete object {} after map failure {}", e, me);
                 }

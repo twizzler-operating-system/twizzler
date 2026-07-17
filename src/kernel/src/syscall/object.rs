@@ -55,7 +55,10 @@ pub fn sys_object_create(
     if obj.use_pager() {
         crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
-            object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
+            let _ = object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
+                .inspect_err(|e| {
+                    log::warn!("failed to delete object {} during creation: {}", id, e)
+                });
         }
         return Ok(obj.id());
     }
@@ -95,7 +98,8 @@ pub fn sys_object_create(
     );
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {
-        object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
+        let _ = object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
+            .inspect_err(|e| log::warn!("failed to delete object {} during creation: {}", id, e));
     }
     Ok(obj.id())
 }
@@ -262,48 +266,80 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
     Ok(0)
 }
 
-pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd) -> (u64, u64) {
+pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Result<u64> {
+    let obj = lookup_object(id, LookupFlags::empty()).ok_or(TwzError::NOT_FOUND);
     match cmd {
         ObjectControlCmd::Sync => {
-            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
-                crate::pager::sync_object(&obj);
-            }
+            crate::pager::sync_object(&obj?);
         }
         ObjectControlCmd::Delete(_) => {
-            let mut invoke_pager = true;
-            if let Some(obj) = lookup_object(id, LookupFlags::empty()).ok_or(()).ok() {
-                invoke_pager = obj.use_pager();
-                obj.mark_for_delete();
-            }
-            if invoke_pager {
-                crate::pager::del_object(id);
-            }
+            obj?.mark_for_delete();
             crate::obj::scan_deleted();
         }
         ObjectControlCmd::Preload => {
-            if let Some(obj) = crate::pager::lookup_object_and_wait(id) {
-                {
-                    let guard = obj.lock_page_tables();
-                    let _ = crate::pager::ensure_in_core(
-                        &obj,
-                        guard,
-                        &[(PageNumber::from_offset(0), MAX_SIZE / PageNumber::PAGE_SIZE)],
-                        PagerFlags::PREFETCH,
-                        &mut false,
-                    );
-                }
-                let tree = obj.lock_page_tables();
-                let _ = obj
-                    .ensure_in_core(tree, PageNumber::meta_page(), 1, &mut false, &mut false)
-                    .inspect_err(|e| log::error!("failed to preload object {}: {}", id, e));
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            {
+                let guard = obj.lock_page_tables();
+                crate::pager::ensure_in_core(
+                    &obj,
+                    guard,
+                    &[(PageNumber::from_offset(0), MAX_SIZE / PageNumber::PAGE_SIZE)],
+                    PagerFlags::PREFETCH,
+                    &mut false,
+                )?;
+            }
+            let tree = obj.lock_page_tables();
+            let _ = obj
+                .ensure_in_core(tree, PageNumber::meta_page(), 1, &mut false, &mut false)
+                .inspect_err(|e| log::error!("failed to preload object {}: {}", id, e))?;
+        }
+
+        ObjectControlCmd::AddNote => {
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            let value = unsafe { core::slice::from_raw_parts(arg as *const u8, arg2 as usize) };
+            let key = obj.add_note(value);
+            return Ok(key);
+        }
+
+        ObjectControlCmd::RemoveNote(key) => {
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            obj.get_notes().remove(key);
+        }
+
+        ObjectControlCmd::GetNote(key) => {
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            let buf = unsafe { core::slice::from_raw_parts_mut(arg as *mut u8, arg2 as usize) };
+            if let Some(len) = obj.get_note(key, buf) {
+                return Ok(len as u64);
             } else {
-                return (1, TwzError::INVALID_ARGUMENT.raw());
+                return Err(TwzError::NOT_FOUND);
             }
         }
 
-        _ => {}
+        ObjectControlCmd::EnumerateNotes(offset) => {
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            let buf = unsafe { core::slice::from_raw_parts_mut(arg as *mut u64, arg2 as usize) };
+            let keys = obj.enumerate_notes(offset as usize, buf.len());
+            let len = keys.len().min(buf.len());
+            buf[..len].copy_from_slice(&keys[..len]);
+            return Ok(len as u64);
+        }
+        _ => {
+            log::warn!(
+                "object_ctrl: unimplemented command {:?} for object {} (arg={}, arg2={})",
+                cmd,
+                id,
+                arg,
+                arg2
+            );
+        }
     }
-    (0, 0)
+    Ok(0)
 }
 
 pub fn map_ctrl(start: usize, _len: usize, cmd: MapControlCmd, opts: u64) -> Result<u64> {

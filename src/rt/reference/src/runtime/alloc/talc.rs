@@ -13,7 +13,10 @@ use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize};
 use secgate::get_sctx_id;
 use twizzler_abi::{
     simple_mutex::Mutex,
-    syscall::{sys_object_ctrl, CreateTieFlags, CreateTieSpec, DeleteFlags, ObjectControlCmd},
+    syscall::{
+        sys_object_add_note, sys_object_ctrl, CreateTieFlags, CreateTieSpec, DeleteFlags,
+        ObjectControlCmd,
+    },
 };
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -107,6 +110,7 @@ fn create_and_map() -> Option<(usize, ObjID)> {
             twizzler_abi::syscall::MapFlags::empty(),
         )
         .unwrap();
+        let _ = sys_object_add_note(id, b"monitor-heap");
         return Some((slot, id));
     }
 
@@ -116,8 +120,9 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE).ok();
 
-    let _ = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()))
+    let _ = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
         .inspect_err(|e| twizzler_abi::klog_println!("failed to delete heap object {}: {}", id, e));
+    let _ = sys_object_add_note(id, b"heap");
 
     if let Some(slot) = slot {
         Some((slot.slot, id))
