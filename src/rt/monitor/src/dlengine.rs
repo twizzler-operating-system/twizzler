@@ -79,12 +79,14 @@ impl Engine {
     }
 }
 
-fn get_new_sctx_instance(_sctx: ObjID) -> ObjID {
+fn get_new_sctx_instance(sctx: Option<ObjID>) -> ObjID {
     let sec_ctx = SecCtxBase::new(Protections::all(), SecCtxFlags::empty());
 
+    let mut create = ObjectCreate::default();
+    create.kuid = sctx.unwrap_or(0.into());
     let handle = crate::mon::space::Space::safe_create_and_map_object(
         get_monitor().space,
-        ObjectCreate::default(),
+        create,
         &[],
         &[],
         MapFlags::READ | MapFlags::WRITE,
@@ -107,7 +109,7 @@ impl ContextEngine for Engine {
         let instance = *load_ctx
             .set
             .entry(comp_id)
-            .or_insert_with(|| get_new_sctx_instance(1.into()));
+            .or_insert_with(|| get_new_sctx_instance(None));
         let map = |text_id, data_id| {
             #[allow(deprecated)]
             let (text_handle, data_handle) = get_monitor()

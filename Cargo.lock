@@ -1673,7 +1673,6 @@ dependencies = [
  "secgate",
  "smallstr",
  "stable-vec",
- "talc",
  "thiserror 2.0.17",
  "tinyvec",
  "tracing",

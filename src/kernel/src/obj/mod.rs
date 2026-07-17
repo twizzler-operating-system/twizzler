@@ -25,6 +25,7 @@ use crate::{
     mutex::{LockGuard, Mutex},
     once::{Once, OnceWait},
     random::getrandom,
+    syscall::object::count_handles,
 };
 
 pub mod control;
@@ -49,6 +50,12 @@ pub struct Object {
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        log::info!("dropping object {}", self.id);
+    }
 }
 
 #[derive(Default)]
@@ -177,7 +184,15 @@ impl Object {
         // implement eviction.
     }
 
+    #[track_caller]
     pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
+        log::info!(
+            "creating new object {} with lifetime {:?} and {} ties from {}",
+            id,
+            lifetime_type,
+            ties.len(),
+            core::panic::Location::caller()
+        );
         Self {
             id,
             flags: AtomicU32::new(0),
@@ -204,6 +219,7 @@ impl Object {
             extcount: 0,
         };
         let obj = Arc::new(obj);
+        log::info!("created kernel object {}", obj.id);
         while !obj.write_meta(meta) {
             logln!("failed to write object metadata -- retrying");
         }
@@ -233,6 +249,7 @@ impl Object {
             LifetimeType::Volatile,
             &[],
         );
+        log::info!("created kernel object {}", obj.id);
         let meta = MetaInfo {
             nonce: Nonce(nonce),
             kuid: 0.into(),
@@ -425,7 +442,8 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
     let mgr = obj_manager().map.lock();
     stats.nr_objects = mgr.len();
     stats.nr_mapped = mgr.values().filter(|obj| obj.is_mapped()).count();
-    stats.nr_pending_delete = mgr.values().filter(|obj| obj.is_pending_delete()).count();
+    stats.nr_handles = count_handles();
+    ties::fill_stats(&mut stats);
 
     stats
 }

@@ -86,6 +86,13 @@ pub fn sys_object_create(
     while !obj.write_meta(meta) {
         log::error!("failed to write object metadata -- retrying");
     }
+    log::info!(
+        "sys_object_create: create={:?}, srcs={}, ties={}: {:?}",
+        create,
+        srcs.len(),
+        ties.len(),
+        obj.id(),
+    );
     crate::obj::register_object(obj.clone());
     if create.flags.contains(ObjectCreateFlags::DELETE) {
         object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()));
@@ -201,6 +208,10 @@ fn get_all_handles() -> &'static Mutex<AllHandles> {
     })
 }
 
+pub fn count_handles() -> usize {
+    get_all_handles().lock().all.len()
+}
+
 pub fn get_vmcontext_from_handle(id: ObjID) -> Option<ContextRef> {
     let ah = get_all_handles();
     ah.lock().vm_contexts.get(&id).map(|x| x.item.clone())
@@ -221,6 +232,7 @@ pub fn sys_new_handle(id: ObjID, handle_type: HandleType) -> Result<u64> {
             }
             ah.pager_q_count += 1;
             crate::pager::init_pager_queue(id, ah.pager_q_count == 1);
+            ah.all.insert(id);
             return Ok(0);
         }
     };

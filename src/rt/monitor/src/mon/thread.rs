@@ -284,3 +284,9 @@ impl ManagedThreadRepr {
         unsafe { (addr as *const ThreadRepr).as_ref().unwrap() }
     }
 }
+
+impl Drop for ManagedThreadRepr {
+    fn drop(&mut self) {
+        tracing::info!("dropping ManagedThreadRepr for {}", self.handle.id());
+    }
+}

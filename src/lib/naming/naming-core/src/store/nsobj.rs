@@ -6,7 +6,10 @@ use twizzler::{
 };
 use twizzler_abi::{
     object::Protections,
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::object::MapFlags;
 
@@ -65,18 +68,29 @@ impl Namespace for NamespaceObject {
     }
 
     fn create_file(&self, name: &str) -> Result<NsNode> {
-        let create = ObjectCreate::new(
-            BackingType::Normal,
-            if self.persist {
-                LifetimeType::Persistent
-            } else {
-                LifetimeType::Volatile
-            },
-            None,
-            ObjectCreateFlags::empty(),
-            Protections::all(),
-        );
-        let id = sys_object_create(create, &[], &[])?;
+        let create = if self.persist {
+            ObjectCreate {
+                flags: ObjectCreateFlags::empty(),
+                kuid: 0.into(),
+                bt: BackingType::Normal,
+                lt: LifetimeType::Persistent,
+                def_prot: Protections::all(),
+            }
+        } else {
+            ObjectCreate {
+                flags: ObjectCreateFlags::DELETE,
+                kuid: 0.into(),
+                bt: BackingType::Normal,
+                lt: LifetimeType::Volatile,
+                def_prot: Protections::all(),
+            }
+        };
+
+        let id = sys_object_create(
+            create,
+            &[],
+            &[CreateTieSpec::new(self.id(), CreateTieFlags::empty()).into()],
+        )?;
         let node = NsNode::obj(name, id)?;
         // TODO
         let _ = self.insert(node);

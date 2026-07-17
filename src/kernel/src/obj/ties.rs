@@ -4,7 +4,7 @@ use alloc::{
 };
 use core::fmt::Debug;
 
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{object::ObjID, syscall::ObjectStats};
 
 use super::ObjectRef;
 use crate::mutex::Mutex;
@@ -92,6 +92,12 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Clone> Ties<K, V
     pub fn lookup_deleted(&self, id: K) -> Option<V> {
         self.pending_delete.get(&id).cloned()
     }
+}
+
+pub fn fill_stats(stats: &mut ObjectStats) {
+    let ties = TIE_MGR.inner.lock();
+    stats.nr_ties = ties.ties.len();
+    stats.nr_pending_delete = ties.pending_delete.len();
 }
 
 #[cfg(test)]

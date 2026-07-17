@@ -5,7 +5,10 @@ use secgate::util::{Descriptor, SimpleBuffer};
 use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
     object::Protections,
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::{bindings::NAME_DATA_MAX, error::TwzError, object::MapFlags};
 
@@ -32,7 +35,7 @@ struct SbObjects {
 
 static SB_OBJECTS: Mutex<SbObjects> = Mutex::new(SbObjects { objs: Vec::new() });
 
-pub fn get_sb_object() -> Result<ObjectHandle, TwzError> {
+pub fn get_sb_object(instance: ObjID) -> Result<ObjectHandle, TwzError> {
     let mut sbo = SB_OBJECTS.lock().unwrap();
     if sbo.objs.len() == 0 {
         drop(sbo);
@@ -42,11 +45,11 @@ pub fn get_sb_object() -> Result<ObjectHandle, TwzError> {
                 BackingType::Normal,
                 LifetimeType::Volatile,
                 None,
-                ObjectCreateFlags::empty(),
+                ObjectCreateFlags::DELETE,
                 Protections::all(),
             ),
             &[],
-            &[],
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
         )?;
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)?;
@@ -64,8 +67,8 @@ pub fn release_sb_object(obj: ObjectHandle) {
 }
 
 impl PagerClient {
-    pub fn new() -> Result<Self, TwzError> {
-        let handle = get_sb_object()?;
+    pub fn new(instance: ObjID) -> Result<Self, TwzError> {
+        let handle = get_sb_object(instance)?;
         let buffer = SimpleBuffer::new(handle);
         Ok(Self { buffer })
     }

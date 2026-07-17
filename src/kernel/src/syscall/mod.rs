@@ -317,7 +317,6 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             crate::obj::scan_deleted();
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
-            context.set_return_values(1u64, 0u64);
         }
         Syscall::Null => {
             if context.arg0::<u64>() == 0x12345678 {

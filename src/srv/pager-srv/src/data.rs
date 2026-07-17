@@ -824,7 +824,7 @@ impl PagerData {
         let mut inner = self.inner.lock().unwrap();
         inner
             .handles
-            .insert(comp, PagerClient::new()?)
+            .insert(comp, PagerClient::new(comp)?)
             .ok_or(ResourceError::OutOfResources.into())
     }
 

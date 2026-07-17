@@ -532,6 +532,24 @@ mod builtins {
                 object_stats.nr_pending_delete
             )
             .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  kernel handles        : {}",
+                object_stats.nr_handles
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  tied objects          : {}",
+                object_stats.nr_ties
+            )
+            .into_diagnostic()?;
+            writeln!(
+                ctx.stdout(),
+                "  tied objects (pending): {}",
+                object_stats.nr_ties - object_stats.nr_pending_delete
+            )
+            .into_diagnostic()?;
         }
 
         Ok(())

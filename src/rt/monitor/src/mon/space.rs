@@ -199,7 +199,7 @@ impl Space {
         }
 
         // Decrement and maybe actually unmap.
-        tracing::debug!("drop: {:?}: handle count: {}", info, item.handle_count);
+        tracing::info!("drop: {:?}: handle count: {}", info, item.handle_count);
         item.handle_count -= 1;
         if item.handle_count == 0 {
             let slot = item.addrs.slot;
@@ -219,6 +219,12 @@ impl Space {
         map_flags: MapFlags,
     ) -> miette::Result<MapHandle> {
         let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
+        tracing::info!(
+            "created object {} for mapping: {:?} {:?}",
+            id,
+            spec,
+            map_flags
+        );
 
         match Space::map(
             this,
@@ -272,9 +278,8 @@ impl Drop for UnmapOnDrop {
             Ok(_) => unsafe {
                 __monitor_release_slot(self.slot);
             },
-            Err(_e) => {
-                // TODO: once the kernel-side works properly, uncomment this.
-                //tracing::warn!("failed to unmap slot {}: {}", self.slot, e);
+            Err(e) => {
+                tracing::warn!("failed to unmap slot {}: {}", self.slot, e);
             }
         }
     }
@@ -285,6 +290,11 @@ impl Drop for UnmapOnDrop {
 pub fn early_object_map(info: MapInfo) -> MappedObjectAddrs {
     let slot = unsafe { __monitor_get_slot() }.try_into().unwrap();
 
+    twizzler_abi::klog_println!(
+        "early_object_map: mapping object {} into slot {}",
+        info.id,
+        slot
+    );
     sys_object_map(
         None,
         info.id,

@@ -4,8 +4,9 @@ use secgate::util::{Descriptor, HandleMgr, SimpleBuffer};
 use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{
-        sys_kernel_console_write, sys_object_create, BackingType, KernelConsoleSource,
-        KernelConsoleWriteFlags, LifetimeType, ObjectCreate, ObjectCreateFlags,
+        sys_kernel_console_write, sys_object_create, BackingType, CreateTieFlags, CreateTieSpec,
+        KernelConsoleSource, KernelConsoleWriteFlags, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
     },
 };
 use twizzler_rt_abi::{
@@ -25,18 +26,18 @@ impl LogClient {
 }
 
 impl LogClient {
-    fn new() -> Option<Self> {
+    fn new(instance: ObjID) -> Option<Self> {
         // Create and map a handle for the simple buffer.
         let id = sys_object_create(
             ObjectCreate::new(
                 BackingType::Normal,
                 LifetimeType::Volatile,
                 None,
-                ObjectCreateFlags::empty(),
+                ObjectCreateFlags::DELETE,
                 Protections::all(),
             ),
             &[],
-            &[],
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
         )
         .ok()?;
         let handle =
@@ -74,7 +75,8 @@ static LOGBOI: LogBoi = LogBoi {
 pub fn logboi_open_handle() -> Result<(Descriptor, ObjID), TwzError> {
     let info = secgate::get_caller().unwrap();
     let mut logger = LOGBOI.inner.lock().ok().ok_or(GenericError::Internal)?;
-    let client = LogClient::new().ok_or(ResourceError::Unavailable)?;
+    let client =
+        LogClient::new(info.source_context().unwrap()).ok_or(ResourceError::Unavailable)?;
     let id = client.sbid();
     let desc = logger
         .handles

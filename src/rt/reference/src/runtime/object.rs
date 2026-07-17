@@ -8,7 +8,7 @@ use handlecache::HandleCache;
 use tracing::warn;
 use twizzler_abi::syscall::{
     sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_read_map, CreateTieFlags,
-    CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate,
+    CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
 };
 use twizzler_rt_abi::{
     bindings::{
@@ -73,8 +73,10 @@ impl ReferenceRuntime {
 
     pub fn create_rtobj(&self) -> Result<ObjID> {
         let tie_id = monitor_api::get_comp_config().sctx;
+        let mut create = ObjectCreate::default();
+        create.flags = ObjectCreateFlags::DELETE;
         sys_object_create(
-            ObjectCreate::default(),
+            create,
             &[],
             &[CreateTieSpec::new(tie_id, CreateTieFlags::empty()).into()],
         )
@@ -96,9 +98,10 @@ impl ReferenceRuntime {
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle, flags: release_flags) {
         self.object_manager.lock().release(handle, flags);
-        if self.is_monitor().is_some() {
-            self.object_manager.lock().cache.flush();
-        }
+        // TODO: do this less often?
+        //if self.is_monitor().is_some() {
+        self.object_manager.lock().cache.flush();
+        //}
     }
 
     pub fn object_cmd(

@@ -76,6 +76,11 @@ impl Drop for RunComp {
             ObjectControlCmd::Delete(DeleteFlags::empty()),
         )
         .inspect_err(|e| tracing::warn!("failed to delete instance on RunComp drop: {}", e));
+        tracing::info!(
+            "dropping compartment {} (instance {})",
+            self.name,
+            self.instance
+        );
     }
 }
 

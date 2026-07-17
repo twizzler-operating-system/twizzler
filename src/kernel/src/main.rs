@@ -67,7 +67,10 @@ use processor::{
 use random::start_entropy_contribution_thread;
 use syscall::sync::requeue_all;
 
-use crate::{arch::PhysAddr, processor::mp::current_processor, thread::entry::start_new_init};
+use crate::{
+    arch::PhysAddr, obj::scan_deleted, processor::mp::current_processor,
+    thread::entry::start_new_init,
+};
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
 pub trait BootInfo {
@@ -233,10 +236,15 @@ pub fn idle_main() -> ! {
         "[kernel::main] processor {} entering main idle loop",
         current_processor().id
     );
+    let mut iter = 0u32;
     loop {
-        {
+        if iter % 100 == 0 {
             current_processor().cleanup_exited();
         }
+        if iter % 1000 == 0 {
+            scan_deleted();
+        }
+        iter = iter.wrapping_add(1);
         requeue_all();
         schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
         requeue_all();

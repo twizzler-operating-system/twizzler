@@ -10,7 +10,6 @@ twizzler-rt-abi = "0.99"
 secgate = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-talc = { workspace = true }
 anyhow = { workspace = true }
 petgraph = { workspace = true }
 humansize = { workspace = true }

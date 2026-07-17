@@ -131,7 +131,7 @@ pub fn load_segments(
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
     //let text_id = src.id;
 
-    tracing::trace!(
+    tracing::info!(
         "mapped segments in instance {} to {}, {}",
         instance,
         text_id,

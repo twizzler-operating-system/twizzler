@@ -180,6 +180,8 @@ pub struct ObjectStats {
     pub nr_objects: usize,
     pub nr_mapped: usize,
     pub nr_pending_delete: usize,
+    pub nr_handles: usize,
+    pub nr_ties: usize,
 }
 
 pub fn sys_object_stats() -> ObjectStats {

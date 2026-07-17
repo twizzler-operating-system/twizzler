@@ -6,9 +6,8 @@ use std::{
 };
 
 use petgraph::stable_graph::NodeIndex;
-use talc::{ErrOnOom, Talc};
 
-use crate::{context::NewCompartmentFlags, engines::Backing, library::LibraryId, tls::TlsInfo};
+use crate::{context::NewCompartmentFlags, library::LibraryId, tls::TlsInfo};
 
 mod tls;
 
@@ -20,9 +19,6 @@ pub struct Compartment {
     pub(crate) new_comp_flags: NewCompartmentFlags,
     // Library names are per-compartment.
     pub(crate) library_names: HashMap<String, NodeIndex>,
-    // We maintain an allocator, so we can alloc data within the compartment.
-    pub(super) allocator: Talc<ErrOnOom>,
-    pub(super) alloc_objects: Vec<Backing>,
 
     // Information for TLS. We store all the "active" generations.
     pub(crate) tls_info: HashMap<u64, TlsInfo>,
@@ -59,8 +55,6 @@ impl Compartment {
             id,
             new_comp_flags,
             library_names: HashMap::new(),
-            allocator: Talc::new(ErrOnOom),
-            alloc_objects: vec![],
             tls_info: HashMap::new(),
             tls_gen: 0,
         }

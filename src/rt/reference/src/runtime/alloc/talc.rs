@@ -10,7 +10,11 @@ use core::{
 };
 use std::{alloc::Allocator, mem::size_of, sync::atomic::AtomicUsize};
 
-use twizzler_abi::simple_mutex::Mutex;
+use secgate::get_sctx_id;
+use twizzler_abi::{
+    simple_mutex::Mutex,
+    syscall::{sys_object_ctrl, CreateTieFlags, CreateTieSpec, DeleteFlags, ObjectControlCmd},
+};
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
@@ -68,6 +72,17 @@ fn release_object(id: ObjID) {
 }
 
 fn create_and_map() -> Option<(usize, ObjID)> {
+    let is_mon = OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR);
+    let ties = if is_mon {
+        &[][..]
+    } else {
+        let cc = get_sctx_id();
+        assert!(
+            cc.raw() != 0,
+            "cannot create runtime object without a security context"
+        );
+        &[CreateTieSpec::new(cc, CreateTieFlags::empty()).into()][..]
+    };
     let id = sys_object_create(
         ObjectCreate::new(
             BackingType::Normal,
@@ -77,11 +92,11 @@ fn create_and_map() -> Option<(usize, ObjID)> {
             Protections::all(),
         ),
         &[],
-        &[],
+        ties,
     )
     .ok()?;
 
-    if OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR) {
+    if is_mon {
         // Map directly, avoiding complex machinery in the monitor that depends on an allocator.
         let slot = OUR_RUNTIME.allocate_slot().unwrap();
         sys_object_map(
@@ -100,6 +115,9 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     }
 
     let slot = monitor_api::monitor_rt_object_map(id, MapFlags::READ | MapFlags::WRITE).ok();
+
+    let _ = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()))
+        .inspect_err(|e| twizzler_abi::klog_println!("failed to delete heap object {}: {}", id, e));
 
     if let Some(slot) = slot {
         Some((slot.slot, id))

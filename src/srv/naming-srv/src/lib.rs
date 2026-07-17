@@ -16,7 +16,10 @@ use twizzler::{error::SecurityError, object::ObjectHandle};
 use twizzler_abi::{
     aux::KernelInitInfo,
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{sys_object_create, BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags},
+    syscall::{
+        sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
+    },
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError},
@@ -29,7 +32,7 @@ struct SbObjects {
 
 static SB_OBJECTS: Mutex<SbObjects> = Mutex::new(SbObjects { objs: Vec::new() });
 
-pub fn get_sb_object() -> Result<ObjectHandle> {
+pub fn get_sb_object(instance: ObjID) -> Result<ObjectHandle> {
     let mut sbo = SB_OBJECTS.lock().unwrap();
     if sbo.objs.len() == 0 {
         drop(sbo);
@@ -39,11 +42,11 @@ pub fn get_sb_object() -> Result<ObjectHandle> {
                 BackingType::Normal,
                 LifetimeType::Volatile,
                 None,
-                ObjectCreateFlags::empty(),
+                ObjectCreateFlags::DELETE,
                 Protections::all(),
             ),
             &[],
-            &[],
+            &[CreateTieSpec::new(instance, CreateTieFlags::empty()).into()],
         )?;
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::WRITE | MapFlags::READ)?;
@@ -66,9 +69,9 @@ struct NamespaceClient<'a> {
 }
 
 impl<'a> NamespaceClient<'a> {
-    fn new(session: NameSession<'a>) -> Option<Self> {
+    fn new(session: NameSession<'a>, instance: ObjID) -> Option<Self> {
         // Create and map a handle for the simple buffer.
-        let handle = get_sb_object().ok()?;
+        let handle = get_sb_object(instance).ok()?;
         let buffer = SimpleBuffer::new(handle);
         Some(Self { session, buffer })
     }
@@ -178,7 +181,8 @@ pub fn open_handle() -> Result<(Descriptor, ObjID)> {
     let mut binding = service.handles.lock().unwrap();
 
     let session = service.names.root_session();
-    let client = NamespaceClient::new(session).ok_or(ResourceError::Unavailable)?;
+    let client = NamespaceClient::new(session, info.source_context().unwrap())
+        .ok_or(ResourceError::Unavailable)?;
     let id = client.sbid();
 
     let desc = binding
