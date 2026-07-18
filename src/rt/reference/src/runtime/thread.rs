@@ -33,6 +33,10 @@ impl ReferenceRuntime {
         twizzler_abi::syscall::sys_info().cpu_count()
     }
 
+    pub fn gc_threads(&self) {
+        THREAD_MGR.gc();
+    }
+
     pub fn futex_wait(
         &self,
         futex: &core::sync::atomic::AtomicU32,

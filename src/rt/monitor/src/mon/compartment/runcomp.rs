@@ -119,7 +119,7 @@ impl PerThread {
         .ok();
 
         if let Some(handle) = &handle {
-            write_note!(handle.id(), "comp-thread-sb:{}", instance);
+            write_note!(handle.id(), "comp-thread-sb:{}:{}", instance, _th);
         }
 
         Self {

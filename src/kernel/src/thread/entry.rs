@@ -7,10 +7,10 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::ArgumentError;
 
-use super::{current_memory_context, current_thread_ref, priority::Priority, Thread, ThreadRef};
+use super::{Thread, ThreadRef, current_memory_context, current_thread_ref, priority::Priority};
 use crate::{
     condvar::CondVar,
-    memory::{context::Context, VirtAddr},
+    memory::{VirtAddr, context::Context},
     processor::{mp::current_processor, sched::schedule_new_thread},
     security::{SecCtxMgr, SecurityContext},
     spinlock::Spinlock,
@@ -66,7 +66,7 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
 }
 
 pub fn start_new_init() {
-    let mut thread = Thread::new(Some(Arc::new(Context::new())), None, Priority::USER);
+    let mut thread = Thread::new(Some(Context::new()), None, Priority::USER);
     thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)));
     unsafe {
         thread.init(user_init);

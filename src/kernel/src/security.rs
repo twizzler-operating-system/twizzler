@@ -14,7 +14,7 @@ use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingK
 use crate::{
     memory::context::{
         KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
-        kernel_context,
+        kernel_context, virtmem::with_each_context,
     },
     mutex::Mutex,
     obj::{LookupFlags, LookupResult, lookup_object},
@@ -43,6 +43,18 @@ pub struct SecurityContext {
     cache: Mutex<BTreeMap<ObjID, PermsInfo>>,
     attached_count: AtomicUsize,
     active_count: AtomicUsize,
+}
+
+impl Drop for SecurityContext {
+    fn drop(&mut self) {
+        log::info!("dropping SecurityContext {}", self.id());
+        if self.id() == KERNEL_SCTX {
+            return;
+        }
+        with_each_context(|ctx| {
+            ctx.unregister_sctx(self.id());
+        });
+    }
 }
 
 impl core::fmt::Debug for SecurityContext {

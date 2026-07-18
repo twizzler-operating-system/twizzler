@@ -136,6 +136,6 @@ pub fn kernel_context() -> &'static ContextRef {
     KERNEL_CONTEXT.call_once(|| {
         let c = virtmem::VirtContext::new_kernel();
         c.init_kernel_context();
-        Arc::new(c)
+        c
     })
 }

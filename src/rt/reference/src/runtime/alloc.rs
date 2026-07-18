@@ -1,6 +1,13 @@
-use std::{alloc::GlobalAlloc, ptr::NonNull, sync::atomic::Ordering};
+use std::{
+    alloc::GlobalAlloc,
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+};
 
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{object::ObjID, syscall::sys_thread_gettls};
 
 use super::{ReferenceRuntime, RuntimeState};
 
@@ -9,16 +16,66 @@ mod talc;
 
 pub use talc::LOCAL_ALLOCATOR;
 
+static COMP_NAME: OnceLock<String> = OnceLock::new();
+static COMP_NAME_READY: AtomicBool = AtomicBool::new(false);
+
+#[thread_local]
+static COMP_NAME_SKIP: AtomicBool = AtomicBool::new(false);
+
+#[allow(dead_code)]
+#[allow(unused)]
+fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
+    return;
+    if sys_thread_gettls() == 0 {
+        return;
+    }
+    if !COMP_NAME_SKIP.load(Ordering::SeqCst) {
+        COMP_NAME_SKIP.store(true, Ordering::SeqCst);
+        let comp_name = if COMP_NAME_READY.swap(true, Ordering::SeqCst) {
+            COMP_NAME.get()
+        } else {
+            let comp = monitor_api::CompartmentHandle::current();
+            if let Ok(raw) = monitor_api::monitor_rt_get_compartment_info(None) {
+                if raw.name_len == 6 {
+                    let info = comp.info();
+                    let name = info.name.clone();
+                    std::mem::forget(info);
+                    Some(COMP_NAME.get_or_init(|| name))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if comp_name.is_some_and(|s| s.as_str() == "naming") {
+            twizzler_abi::klog_println!(
+                "{:?}: alloc: {} bytes, align = {}",
+                comp_name,
+                layout.size(),
+                layout.align()
+            );
+            if !is_free {
+                let b = std::backtrace::Backtrace::force_capture();
+                for frame in b.frames().iter().take(7).enumerate() {
+                    twizzler_abi::klog_println!("frame: {:?}", frame);
+                }
+            }
+        }
+        COMP_NAME_SKIP.store(false, Ordering::SeqCst);
+    }
+}
+
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        //twizzler_abi::klog_println!("alloc: {} bytes, align = {}", layout.size(),
-        // layout.align());
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
         {
             return LOCAL_ALLOCATOR.alloc(layout);
         }
 
+        print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc
             .allocate(layout)
@@ -37,6 +94,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return LOCAL_ALLOCATOR.alloc_zeroed(layout);
         }
 
+        print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc
             .allocate_zeroed(layout)
@@ -63,6 +121,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
 
         if let Some(ptr) = NonNull::new(ptr) {
             //let start_time = Instant::now();
+            print_comp_name(layout, true);
             ferroc::TwzFerroc.deallocate(ptr, layout);
             //let end_time = Instant::now();
             //trace_runtime_alloc(ptr.addr().into(), layout, end_time - start_time, true);
@@ -79,5 +138,9 @@ impl ReferenceRuntime {
 
     pub fn get_id_from_heap_ptr(&self, ptr: *const u8) -> Option<ObjID> {
         LOCAL_ALLOCATOR.get_id_from_ptr(ptr)
+    }
+
+    pub fn heap_gc(&self) {
+        ferroc::TwzFerroc.collect(true);
     }
 }

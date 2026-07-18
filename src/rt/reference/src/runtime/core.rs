@@ -29,7 +29,7 @@ use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
-    runtime::{thread::libc_init_tcb, RuntimeState},
+    runtime::{self, thread::libc_init_tcb, RuntimeState},
     OUR_RUNTIME,
 };
 
@@ -66,6 +66,11 @@ impl ReferenceRuntime {
             preinit_println!("runtime exit before runtime ready: {}", code);
             preinit_abort();
         }
+    }
+
+    pub fn gc(&self) {
+        self.gc_threads();
+        self.heap_gc();
     }
 
     pub fn abort(&self) -> ! {
@@ -298,12 +303,12 @@ impl ReferenceRuntime {
         let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         let _start_3 = Instant::now();
-        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls) as u64);
+        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls).0 as u64);
         let _start_4 = Instant::now();
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
         let _start_5 = Instant::now();
-        libc_init_tcb(preinit_unwrap(tls));
-        self.init_core_thread(preinit_unwrap(tls));
+        libc_init_tcb(preinit_unwrap(tls).0);
+        self.init_core_thread(preinit_unwrap(tls).0);
         if !unsafe { __mlibc_entry_from_rust.is_null() } {
             let mlibc_entry_from_rust = unsafe {
                 std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(

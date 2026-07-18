@@ -11,7 +11,7 @@ use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
-    syscall::sys_thread_self_id,
+    syscall::{sys_object_stat, sys_thread_self_id},
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
@@ -24,6 +24,7 @@ use twizzler_rt_abi::{
 use super::internal::InternalThread;
 use crate::{
     runtime::{
+        alloc::LOCAL_ALLOCATOR,
         thread::{
             libc_init_tcb,
             tcb::{trampoline, TLS_GEN_MGR},
@@ -49,10 +50,24 @@ impl ThreadManager {
         let inner = self.inner.lock();
         Some(f(inner.all_threads.get(&id)?))
     }
+
+    pub fn gc(&self) {
+        let mut inner = self.inner.lock();
+        inner.scan_for_exited_cross();
+        inner.scan_for_exited_except(0);
+        inner.do_thread_gc();
+    }
 }
 
 struct CrossThread {
     tls: *mut Tcb<RuntimeThreadControl>,
+    layout: Layout,
+}
+
+impl Drop for CrossThread {
+    fn drop(&mut self) {
+        unsafe { LOCAL_ALLOCATOR.dealloc(self.tls.cast(), self.layout) };
+    }
 }
 
 #[derive(Default)]
@@ -93,6 +108,17 @@ impl ThreadManagerInner {
         );
         for th in self.to_cleanup.drain(..) {
             drop(th)
+        }
+        self.scan_for_exited_cross();
+    }
+
+    fn scan_for_exited_cross(&mut self) {
+        for (_, th) in self
+            .cross_threads
+            .extract_if(.., |id, _| sys_object_stat(*id).is_err())
+        {
+            std::mem::forget(th);
+            //drop(th);
         }
     }
 
@@ -189,7 +215,7 @@ impl ReferenceRuntime {
 
         let id = inner.next_id().freeze();
         drop(inner);
-        let tls = TLS_GEN_MGR
+        let (tls, layout) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
@@ -199,7 +225,7 @@ impl ReferenceRuntime {
         let mut inner = THREAD_MGR.inner.lock();
         inner.cross_threads.insert(
             twizzler_abi::syscall::sys_thread_self_id(),
-            CrossThread { tls },
+            CrossThread { tls, layout },
         );
         Ok(())
     }
@@ -213,7 +239,7 @@ impl ReferenceRuntime {
         }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
-        let tls = TLS_GEN_MGR
+        let (tls, _layout) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();

@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use stable_vec::StableVec;
-use twizzler_rt_abi::object::ObjID;
+use twizzler_abi::syscall::sys_object_stat;
+use twizzler_rt_abi::{core::twz_rt_gc, object::ObjID};
 
 /// A handle that can be opened and released.
 pub trait Handle {
@@ -86,6 +87,7 @@ impl<ServerData> HandleMgr<ServerData> {
         let ds: Descriptor = idx.try_into().ok()?;
         let pushed_idx = entry.push(sd);
         debug_assert_eq!(pushed_idx, idx);
+        self.gc_handles();
 
         Some(ds)
     }
@@ -93,7 +95,9 @@ impl<ServerData> HandleMgr<ServerData> {
     /// Remove a descriptor, returning the server data if present.
     pub fn remove(&mut self, comp: ObjID, ds: Descriptor) -> Option<ServerData> {
         let idx: usize = ds.try_into().ok()?;
-        self.handles.get_mut(&comp)?.remove(idx)
+        let ret = self.handles.get_mut(&comp)?.remove(idx);
+        self.gc_handles();
+        ret
     }
 
     pub fn handles(&self) -> impl Iterator<Item = (ObjID, u32, &ServerData)> {
@@ -101,6 +105,16 @@ impl<ServerData> HandleMgr<ServerData> {
             .iter()
             .map(|c| c.1.iter().map(|x| (*c.0, x.0 as u32, x.1)))
             .flatten()
+    }
+
+    pub fn gc_handles(&mut self) {
+        fn sctx_still_valid(id: &ObjID) -> bool {
+            let r = sys_object_stat(*id).is_ok();
+            r
+        }
+        self.handles
+            .retain(|id, sv| !sv.is_empty() && sctx_still_valid(id));
+        twz_rt_gc();
     }
 }
 

@@ -5,7 +5,12 @@
 //! library, really, nearly arbitrarily, so we just avoid any complex code in here
 //! that might call into std (with one exception, below).
 
-use std::{alloc::GlobalAlloc, collections::BTreeMap, panic::catch_unwind, sync::atomic::Ordering};
+use std::{
+    alloc::{GlobalAlloc, Layout},
+    collections::BTreeMap,
+    panic::catch_unwind,
+    sync::atomic::Ordering,
+};
 
 use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
@@ -76,7 +81,7 @@ impl TlsGenMgr {
         &mut self,
         mygen: Option<u64>,
         new_tcb_data: impl FnOnce() -> T,
-    ) -> Option<*mut Tcb<T>> {
+    ) -> Option<(*mut Tcb<T>, Layout)> {
         let cc = monitor_api::get_comp_config();
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         if mygen.is_some_and(|mygen| mygen == template.gen) {
@@ -93,7 +98,7 @@ impl TlsGenMgr {
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
 
-            Some(tcb)
+            Some((tcb, template.layout))
         }
     }
 

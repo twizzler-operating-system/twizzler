@@ -144,7 +144,7 @@ pub fn load_segments(
 
     let (text, data) = map(text_id, data_id)?;
 
-    write_note!(text_id, "text:{}:{:x}", src.full_name(), text.load_addr());
+    write_note!(text_id, "text:{}", src.full_name());
     write_note!(data_id, "data:{}:{:x}", src.full_name(), data.load_addr());
     Ok(vec![text, data])
 }

@@ -40,9 +40,20 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
     }
 
     unsafe fn deallocate(chunk: &mut ferroc::base::Chunk<Self>) {
+        twizzler_abi::klog_println!("dealloc: {:p} {:x}", chunk.pointer(), chunk.layout().size());
         chunk
             .handle
             .dealloc(chunk.pointer().cast::<u8>().as_ptr(), chunk.layout());
+    }
+
+    unsafe fn commit(&self, ptr: NonNull<[u8]>) -> Result<(), Self::Error> {
+        let _ = ptr;
+        Ok(())
+    }
+
+    unsafe fn decommit(&self, ptr: NonNull<[u8]>) {
+        twizzler_abi::klog_println!("decommit: {:p} {:x}", ptr, ptr.len());
+        let _ = ptr;
     }
 }
 

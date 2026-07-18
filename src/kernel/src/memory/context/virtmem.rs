@@ -178,29 +178,46 @@ impl PhysAddrProvider for ObjectPageProvider {
     }
 }
 
+static ALL_CONTEXTS: Once<Mutex<BTreeMap<u64, Arc<VirtContext>>>> = Once::new();
+
+fn get_all_contexts() -> &'static Mutex<BTreeMap<u64, Arc<VirtContext>>> {
+    ALL_CONTEXTS.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
+    let all = get_all_contexts();
+    let contexts = all.lock();
+    contexts.values().for_each(cb);
+}
+
 impl VirtContext {
     fn __new(is_kernel: bool) -> Self {
-        Self {
+        let new = Self {
             regions: Mutex::new(RegionManager::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
             secctx: Mutex::new(BTreeMap::new()),
             target_cache: Spinlock::new(BTreeMap::new()),
-        }
+        };
+        new
     }
 
     /// Construct a new context for the kernel.
-    pub fn new_kernel() -> Self {
-        let this = Self::__new(true);
+    pub fn new_kernel() -> Arc<Self> {
+        let this = Arc::new(Self::__new(true));
         this.register_sctx(KERNEL_SCTX, ArchContext::new_kernel());
+        let all = get_all_contexts();
+        all.lock().insert(this.id.value(), this.clone());
         this
     }
 
     /// Construct a new context for userspace.
-    pub fn new() -> Self {
-        let this = Self::__new(false);
+    pub fn new() -> Arc<Self> {
+        let this = Arc::new(Self::__new(false));
         // TODO: remove this once we have full support for user security contexts
         this.register_sctx(KERNEL_SCTX, ArchContext::new());
+        let all = get_all_contexts();
+        all.lock().insert(this.id.value(), this.clone());
         this
     }
 
@@ -273,6 +290,44 @@ impl VirtContext {
             return;
         }
         secctx.insert(sctx, arch);
+        // Rebuild the target cache. We have to do it this way because we cannot allocate
+        // memory while holding the target_cache lock (as it's a spinlock).
+        let mut new_target_cache = BTreeMap::new();
+        for value in secctx.iter() {
+            new_target_cache.insert(*value.0, value.1.target);
+        }
+        // Swap out the target caches, dropping the old one after the spinlock is released.
+        {
+            let mut target_cache = self.target_cache.lock();
+            core::mem::swap(&mut *target_cache, &mut new_target_cache);
+        }
+    }
+
+    pub fn unregister_sctx(&self, sctx: ObjID) {
+        let mut secctx = self.secctx.lock();
+        if !secctx.contains_key(&sctx) {
+            return;
+        }
+        let arch = secctx.remove(&sctx);
+
+        if let Some(arch) = arch {
+            let regions = self.regions.lock();
+            for region in regions.mappings() {
+                if region.range.start.raw() == 0 {
+                    continue;
+                }
+                let cursor = region.mapping_cursor(0, MAX_SIZE);
+                let did_unmap = arch.unmap(cursor);
+                if region.stable.is_none() {
+                    let mut pt = region.object().lock_page_tables();
+                    pt.remove_invalidate(arch.target.paddr(), cursor);
+                    if did_unmap {
+                        pt.dec_map_count();
+                    }
+                }
+            }
+        }
+
         // Rebuild the target cache. We have to do it this way because we cannot allocate
         // memory while holding the target_cache lock (as it's a spinlock).
         let mut new_target_cache = BTreeMap::new();

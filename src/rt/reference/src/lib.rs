@@ -15,6 +15,7 @@
 #![feature(normalize_lexically)]
 #![feature(random)]
 #![feature(io_error_inprogress)]
+#![feature(backtrace_frames)]
 
 pub(crate) mod arch;
 

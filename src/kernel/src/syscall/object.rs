@@ -165,10 +165,10 @@ pub trait ObjectHandle {
     type HandleType;
     fn create_with_handle<NewFn>(obj: ObjectRef, new: NewFn) -> Arc<Self::HandleType>
     where
-        NewFn: FnOnce(ObjectRef) -> Self::HandleType,
+        NewFn: FnOnce(ObjectRef) -> Arc<Self::HandleType>,
         Self: Sized,
     {
-        Arc::new(new(obj))
+        new(obj)
     }
 }
 
@@ -180,7 +180,7 @@ struct Handle<T: ObjectHandle> {
 impl<T: ObjectHandle + Clone> Handle<T> {
     fn new<NewFn>(id: ObjID, new: NewFn) -> Result<Self>
     where
-        NewFn: FnOnce(ObjectRef) -> T::HandleType,
+        NewFn: FnOnce(ObjectRef) -> Arc<T::HandleType>,
     {
         let obj = crate::obj::lookup_object(id, LookupFlags::empty());
         let obj = match obj {

@@ -106,6 +106,12 @@ pub unsafe extern "C-unwind" fn twz_rt_abort() {
 check_ffi_type!(twz_rt_abort);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_gc() {
+    OUR_RUNTIME.gc();
+}
+check_ffi_type!(twz_rt_gc);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_exit(code: i32) {
     OUR_RUNTIME.exit(code);
 }

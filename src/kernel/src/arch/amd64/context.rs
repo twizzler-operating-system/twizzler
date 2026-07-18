@@ -69,9 +69,10 @@ impl ArchContext {
     }
 
     pub fn new() -> Self {
-        let mut mapper = Mapper::new(
-            alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL).start_address(),
-        );
+        let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL);
+        frame.set_pt(true);
+        frame.inc_refcount();
+        let mut mapper = Mapper::new(frame.start_address());
         setup_mapper_with_kpages(&mut mapper);
         let target = ArchContextTarget(mapper.root_address().into());
         Self {
@@ -243,6 +244,7 @@ fn setup_mapper_with_kpages(mapper: &mut Mapper) {
 
 impl Drop for ArchContext {
     fn drop(&mut self) {
+        log::info!("dropping ArchContext with target {:?}", self.target);
         // Unmap all user memory to clear any allocated page tables.
         self.unmap(MappingCursor::new(
             VirtAddr::start_user_memory(),
@@ -250,66 +252,10 @@ impl Drop for ArchContext {
         ));
         // Manually free the root.
         if let Some(frame) = get_frame(self.inner.lock().root_address()) {
-            free_frame(frame);
+            frame.set_pt(false);
+            if frame.dec_refcount() == 0 {
+                free_frame(frame);
+            }
         }
     }
 }
-
-/*
-impl ArchContextInner {
-    fn new() -> Self {
-        let mut mapper = Mapper::new(
-            alloc_frame(
-                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
-            )
-            .start_address(),
-        );
-    }
-
-    fn map(
-        &mut self,
-        cursor: MappingCursor,
-        phys: &mut impl PhysAddrProvider,
-    ) -> Result<(), DeferredUnmappingOps> {
-        let consist = Consistency::new(self.mapper.root_address());
-        if cursor.start().raw() == 0 {
-            let Some(cursor) = cursor.advance(0x1000) else {
-                return Ok(());
-            };
-            phys.consume(0x1000);
-            return self.mapper.map(cursor, phys, consist);
-        }
-        self.mapper.map(cursor, phys, consist)
-    }
-
-    fn change(
-        &mut self,
-        cursor: MappingCursor,
-        settings: &MappingSettings,
-        consist: &mut Consistency,
-    ) {
-        self.mapper.change(cursor, settings, consist);
-    }
-
-    fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
-        if cursor.start().raw() == 0 {
-            let Some(cursor) = cursor.advance(0x1000) else {
-                return Consistency::new_full_global().into_deferred();
-            };
-            return self.mapper.unmap(cursor);
-        }
-        self.mapper.unmap(cursor)
-    }
-
-    fn object_map(
-        &mut self,
-        cursor: MappingCursor,
-        object_tables: &mut ObjectPageTable,
-        prot: Protections,
-    ) -> DeferredUnmappingOps {
-        self.mapper.object_map(cursor, object_tables, prot)
-    }
-}
-
-
-*/
