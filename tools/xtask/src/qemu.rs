@@ -84,6 +84,7 @@ impl QemuCommand {
         self.cmd.arg("-object").arg(mem_drive);
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
+        self.cmd.arg("-device").arg("virtio-keyboard-pci");
 
         let port = {
             let listener = match TcpListener::bind(format!("0.0.0.0:{}", DEFAULT_QEMU_PORT)) {
