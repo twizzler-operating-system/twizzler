@@ -68,8 +68,11 @@ use random::start_entropy_contribution_thread;
 use syscall::sync::requeue_all;
 
 use crate::{
-    arch::PhysAddr, obj::scan_deleted, processor::mp::current_processor,
-    thread::entry::start_new_init,
+    arch::PhysAddr,
+    obj::scan_deleted,
+    pager::check_timed_out_requests,
+    processor::mp::current_processor,
+    thread::{entry::start_new_init, locktrack::check_timed_out_mutexes},
 };
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
@@ -243,6 +246,8 @@ pub fn idle_main() -> ! {
         }
         if iter % 1000 == 0 {
             scan_deleted();
+            check_timed_out_mutexes();
+            check_timed_out_requests();
         }
         iter = iter.wrapping_add(1);
         requeue_all();

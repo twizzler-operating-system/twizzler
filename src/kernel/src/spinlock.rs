@@ -5,9 +5,12 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
-use crate::processor::{
-    sched::{schedule, SchedFlags},
-    spin_wait_until,
+use crate::{
+    processor::{
+        sched::{SchedFlags, schedule},
+        spin_wait_until,
+    },
+    thread::locktrack::with_lock_tracker,
 };
 
 pub trait RelaxStrategy {
@@ -57,9 +60,10 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
     pub fn lock(&self) -> LockGuard<'_, T, Relax> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();
+        let caller = core::panic::Location::caller();
+        with_lock_tracker(|lt| lt.intend_to_lock_spinlock(caller));
         let ticket = self.next_ticket.0.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
-        let caller = core::panic::Location::caller().clone();
         spin_wait_until(
             || {
                 if self.current.0.load(Ordering::Acquire) != ticket {
@@ -84,15 +88,15 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                 Relax::relax(iters);
             },
         );
-        self.locked_from.store(
-            core::panic::Location::caller() as *const _ as *mut _,
-            Ordering::SeqCst,
-        );
+        self.locked_from
+            .store(caller as *const _ as *mut _, Ordering::SeqCst);
+        let tracker_index = with_lock_tracker(|lt| lt.record_spinlock_lock());
         LockGuard {
             lock: self,
             interrupt_state,
             dont_unlock_on_drop: false,
             locker: core::panic::Location::caller(),
+            tracker_index,
         }
     }
 
@@ -107,6 +111,7 @@ pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     interrupt_state: bool,
     dont_unlock_on_drop: bool,
     pub locker: &'static core::panic::Location<'static>,
+    tracker_index: Option<usize>,
 }
 
 pub type SpinLockGuard<'a, T> = LockGuard<'a, T, SpinLoop>;
@@ -127,6 +132,11 @@ impl<T, Relax: RelaxStrategy> core::ops::DerefMut for LockGuard<'_, T, Relax> {
 impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
     fn drop(&mut self) {
         if !self.dont_unlock_on_drop {
+            with_lock_tracker(|lt| {
+                if let Some(index) = self.tracker_index {
+                    lt.record_spinlock_unlock(index);
+                }
+            });
             self.lock.release();
             crate::interrupt::set(self.interrupt_state);
         }
@@ -140,6 +150,10 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
 
     pub unsafe fn force_unlock(&mut self) {
         self.dont_unlock_on_drop = true;
+
+        if let Some(index) = self.tracker_index {
+            with_lock_tracker(|lt| lt.record_spinlock_unlock(index));
+        }
         self.lock.release();
     }
 

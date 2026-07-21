@@ -165,7 +165,7 @@ pub fn open(
                 binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)?;
             let id = id.id;
             let comp = CompartmentHandle::lookup_id(id.into())?;
-            Some(Arc::new(CompartmentFile::new(comp)))
+            Some(Arc::new(CompartmentFile::new(comp)?))
         }
         OpenKind::SocketConnect => {
             let addr =

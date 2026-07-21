@@ -287,6 +287,6 @@ impl ManagedThreadRepr {
 
 impl Drop for ManagedThreadRepr {
     fn drop(&mut self) {
-        tracing::info!("dropping ManagedThreadRepr for {}", self.handle.id());
+        tracing::trace!("dropping ManagedThreadRepr for {}", self.handle.id());
     }
 }

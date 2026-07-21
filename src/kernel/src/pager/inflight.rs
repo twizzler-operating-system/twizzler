@@ -88,6 +88,14 @@ impl InflightManager {
         }
     }
 
+    pub fn check_timed_out_requests(&self) {
+        for req in self.req_map.iter() {
+            if req.is_timed_out() {
+                log::warn!("request timed out: {:?}", req.reqkind());
+            }
+        }
+    }
+
     pub fn add_request(&mut self, rk: ReqKind) -> Result<Inflight, ReqKind> {
         if let Some(req) = self.req_map.find(&rk).get() {
             log::trace!(

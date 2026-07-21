@@ -18,17 +18,16 @@ use crate::{
     arch::{
         address::VirtAddr,
         context::{ArchContext, ArchContextTarget},
-        memory::pagetables::ArchTlbMgr,
     },
     idcounter::{Id, IdCounter, StableId},
     memory::{
         PhysAddr,
-        frame::FrameRef,
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
             PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
         },
-        tracker::FrameAllocFlags,
+        tracker::{FrameAllocFlags, FrameAllocator, take_or_new_frame_allocator},
     },
     mutex::Mutex,
     obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
@@ -192,11 +191,14 @@ pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
 
 impl VirtContext {
     fn __new(is_kernel: bool) -> Self {
+        let mut secctx = Mutex::new(BTreeMap::new());
+        // We ensure that the BTree never changes while we hold the lock.
+        secctx.set_safe_with_spinlocks(true);
         let new = Self {
             regions: Mutex::new(RegionManager::default()),
             is_kernel,
             id: CONTEXT_IDS.next(),
-            secctx: Mutex::new(BTreeMap::new()),
+            secctx,
             target_cache: Spinlock::new(BTreeMap::new()),
         };
         new
@@ -240,6 +242,12 @@ impl VirtContext {
             .unwrap_or(KERNEL_SCTX);
 
         let len = info.range.end - info.range.start;
+        let cursor = MappingCursor::new(info.range.start, len);
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
+            FrameAllocFlags::WAIT_OK,
+        );
         if let Ok(sctx) = crate::security::get_sctx(sctx) {
             let perms = sctx.lookup(info.object().id(), default_prots);
             let mut pt = if info.stable.is_some() {
@@ -248,14 +256,13 @@ impl VirtContext {
                 info.object.lock_page_tables()
             };
             self.try_with_arch(sctx.id(), |arch| {
-                let cursor = MappingCursor::new(info.range.start, len);
                 pt.add_invalidate(arch.target.paddr(), cursor);
                 let settings = MappingSettings::new(
                     perms.effective(default_prots, info.prot),
                     info.cache_type,
                     MappingFlags::USER,
                 );
-                arch.object_map(cursor, &mut *pt, settings);
+                arch.object_map(cursor, &mut *pt, settings, &mut fa);
             });
         };
     }
@@ -267,9 +274,14 @@ impl VirtContext {
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
     ) -> bool {
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
+            FrameAllocFlags::WAIT_OK,
+        );
         self.with_arch(sctxid, |arch| {
             object_tables.add_invalidate(arch.target.paddr(), cursor);
-            arch.ensure_object_mapped(cursor, object_tables, settings)
+            arch.ensure_object_mapped(cursor, object_tables, settings, &mut fa)
         })
     }
 
@@ -304,6 +316,10 @@ impl VirtContext {
     }
 
     pub fn unregister_sctx(&self, sctx: ObjID) {
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         let mut secctx = self.secctx.lock();
         if !secctx.contains_key(&sctx) {
             return;
@@ -317,7 +333,7 @@ impl VirtContext {
                     continue;
                 }
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
-                let did_unmap = arch.unmap(cursor);
+                let did_unmap = arch.unmap(cursor, &mut fa);
                 if region.stable.is_none() {
                     let mut pt = region.object().lock_page_tables();
                     pt.remove_invalidate(arch.target.paddr(), cursor);
@@ -349,6 +365,10 @@ impl VirtContext {
             VirtAddr::start_kernel_memory(),
             usize::MAX,
         ));
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         for map in rm.coalesce() {
             let cursor = MappingCursor::new(map.vaddr(), map.len());
             let settings = MappingSettings::new(
@@ -357,7 +377,7 @@ impl VirtContext {
                 map.settings().flags() | MappingFlags::GLOBAL | MappingFlags::WIRED,
             );
             let mut phys = ContiguousProvider::new(map.paddr(), map.len(), settings);
-            self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+            self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
         }
 
         // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This
@@ -388,7 +408,7 @@ impl VirtContext {
             settings,
         );
 
-        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
 
         let cursor = MappingCursor::new(VirtAddr::PHYS_START, PhysAddr::phys_mem_map_len());
         let settings = MappingSettings::new(
@@ -402,7 +422,7 @@ impl VirtContext {
             settings,
         );
 
-        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+        self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
     }
 
     pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {
@@ -482,6 +502,10 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         let mut slots = self.regions.lock();
         if let Some(slot) = slots.remove_region(info.start_vaddr()) {
             drop(slots);
@@ -493,7 +517,7 @@ impl UserContext for VirtContext {
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
-                let did_unmap = arch.unmap(cursor);
+                let did_unmap = arch.unmap(cursor, &mut fa);
                 if slot.stable.is_none() {
                     let mut pt = slot.object().lock_page_tables();
                     pt.remove_invalidate(arch.target.paddr(), cursor);
@@ -503,10 +527,6 @@ impl UserContext for VirtContext {
                 }
             }
         }
-        // TODO
-        let mut tlb = ArchTlbMgr::new(PhysAddr::new(0).unwrap());
-        tlb.set_full_global();
-        tlb.finish();
     }
 }
 
@@ -548,9 +568,13 @@ impl GlobalPageAlloc {
             MappingFlags::GLOBAL,
         );
         let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
 
         mapper.with_arch(KERNEL_SCTX, |arch| {
-            arch.map(cursor, &mut phys);
+            arch.map(cursor, &mut phys, &mut fa);
         });
         self.end = self.end.offset(len).unwrap();
         // Safety: the extension is backed by memory that is directly after the previous call to
@@ -568,10 +592,14 @@ impl GlobalPageAlloc {
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
 
         mapper.with_arch(KERNEL_SCTX, |arch| {
-            arch.map(cursor, &mut phys);
+            arch.map(cursor, &mut phys, &mut fa);
         });
         self.end = self.end.offset(len).unwrap();
         // Safety: the initial is backed by memory.
@@ -591,7 +619,7 @@ static GLOBAL_PAGE_ALLOC: Spinlock<GlobalPageAlloc> = Spinlock::new(GlobalPageAl
 });
 
 impl KernelMemoryContext for VirtContext {
-    fn allocate_chunk(&self, layout: core::alloc::Layout) -> NonNull<u8> {
+    fn allocate_chunk(&self, layout: core::alloc::Layout) -> Result<NonNull<u8>, TwzError> {
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
         let res = glb.alloc.allocate_first_fit(layout);
         match res {
@@ -602,9 +630,11 @@ impl KernelMemoryContext for VirtContext {
                     .next_multiple_of(Table::level_to_page_size(Table::last_level()))
                     * 2;
                 glb.extend(size, self);
-                glb.alloc.allocate_first_fit(layout).unwrap()
+                glb.alloc
+                    .allocate_first_fit(layout)
+                    .map_err(|_| ResourceError::OutOfMemory.into())
             }
-            Ok(x) => x,
+            Ok(x) => Ok(x),
         }
     }
 
@@ -621,11 +651,18 @@ impl KernelMemoryContext for VirtContext {
     }
 
     fn prep_smp(&self) {
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         self.with_arch(KERNEL_SCTX, |arch| {
-            arch.unmap(MappingCursor::new(
-                VirtAddr::start_user_memory(),
-                VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
-            ))
+            arch.unmap(
+                MappingCursor::new(
+                    VirtAddr::start_user_memory(),
+                    VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+                ),
+                &mut fa,
+            )
         });
     }
 
@@ -705,8 +742,12 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
             // since object invalidation always informs the kernel context.
             slots.remove_region(self.slot.start_vaddr());
         }
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         kctx.with_arch(KERNEL_SCTX, |arch| {
-            if arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE)) {
+            if arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE), &mut fa) {
                 self.object().lock_page_tables().dec_map_count();
             }
         });

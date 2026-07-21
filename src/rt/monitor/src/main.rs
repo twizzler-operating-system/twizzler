@@ -113,7 +113,7 @@ fn monitor_init() -> miette::Result<()> {
             .args(&["montest", "--test-threads=1"])
             .load()
             .into_diagnostic()?;
-            let mut flags = comp.info().flags;
+            let mut flags = comp.info().unwrap().flags;
             while !flags.contains(CompartmentFlags::EXITED) {
                 flags = comp.wait(flags);
             }
@@ -139,7 +139,7 @@ fn monitor_init() -> miette::Result<()> {
             .args(&args)
             .load()
             .into_diagnostic()?;
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::EXITED) {
         flags = comp.wait(flags);
     }

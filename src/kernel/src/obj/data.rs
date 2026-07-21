@@ -370,7 +370,7 @@ impl Object {
             PHYS_LEVEL_LAYOUTS[0],
         );
         if !first_is_present {
-            alloc.precharge(page_count);
+            alloc.precharge(page_count, FrameAllocFlags::WAIT_OK);
         }
         guard = self.lock_page_tables();
 

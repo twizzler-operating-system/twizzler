@@ -12,7 +12,9 @@ use crate::{
             Consistency, ContiguousProvider, DeferredUnmappingOps, MapInfo, MapReader, Mapper,
             MappingCursor, MappingSettings, Table,
         },
-        tracker::{FrameAllocFlags, alloc_frame, free_frame},
+        tracker::{
+            FrameAllocFlags, FrameAllocator, alloc_frame, free_frame, take_or_new_frame_allocator,
+        },
     },
     obj::{Object, ObjectRef, PageNumber},
 };
@@ -39,12 +41,17 @@ impl Drop for ObjectPageTable {
     fn drop(&mut self) {
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
-        let _ = self.mapper.unmap(cursor, &mut consist);
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
+        let _ = self.mapper.unmap(cursor, &mut consist, &mut fa);
         self.run_consistency(consist).run_all();
         let root_frame = get_frame(self.mapper.root_address()).expect("root frame should exist");
         root_frame.set_pt(false);
-        root_frame.dec_refcount();
-        free_frame(root_frame);
+        if root_frame.dec_refcount() == 0 {
+            free_frame(root_frame);
+        }
     }
 }
 
@@ -86,12 +93,16 @@ impl ObjectPageTable {
         frame.set_pt(true);
         frame.inc_refcount();
         let mut mapper = Mapper::new(frame.start_address());
-        mapper.set_start_level(Table::top_level() - 1);
+        mapper.set_start_level(Self::top_level());
         Self {
             mapper,
             invls: heapless::Vec::new(),
             map_count: 0,
         }
+    }
+
+    pub fn top_level() -> usize {
+        Table::top_level() - 1
     }
 
     pub fn map_count(&self) -> usize {
@@ -256,12 +267,17 @@ impl ObjectPageTable {
     pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Self::top_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
         let mut phys = ContiguousProvider::new(
             page.start_address(),
             page.size(),
             MappingSettings::default_user(),
         );
-        let r = self.mapper.map(cursor, &mut phys, &mut consist);
+        let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
         self.run_consistency(consist).run_all();
         r
     }
@@ -349,9 +365,16 @@ impl ObjectPageTable {
     pub fn maybe_cow_at(&mut self, offset: u64, mark_dirty: bool) -> Result<bool, TwzError> {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Self::top_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
 
         let mut consist = Consistency::new_object_tables();
-        let did_cow = self.mapper.cow_at(cursor, &mut consist, mark_dirty);
+        let did_cow = self
+            .mapper
+            .cow_at(cursor, &mut consist, mark_dirty, &mut fa);
 
         self.run_consistency(consist).run_all();
 
@@ -417,9 +440,21 @@ impl ObjectPageTable {
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {
         let mut consist = Consistency::new_object_tables();
-        let r = self
-            .mapper
-            .split_to_level(VirtAddr::new(offset).unwrap(), level, &mut consist);
+        let cursor = MappingCursor::new(
+            VirtAddr::new(offset).unwrap(),
+            PHYS_LEVEL_LAYOUTS[Self::top_level()].size(),
+        );
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Self::top_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
+        let r = self.mapper.split_to_level(
+            VirtAddr::new(offset).unwrap(),
+            level,
+            &mut consist,
+            &mut fa,
+        );
         self.run_consistency(consist).run_all();
         r
     }
@@ -434,16 +469,30 @@ impl ObjectPageTable {
         let src_cursor = MappingCursor::new(VirtAddr::new(src_offset).unwrap(), len);
         let dst_cursor = MappingCursor::new(VirtAddr::new(dst_offset).unwrap(), len);
         let mut consist = Consistency::new_object_tables();
-        self.mapper
-            .setup_cow_range(&mut dest.mapper, src_cursor, dst_cursor, &mut consist)?;
+        let total = src_cursor.max_number_new_tables(Self::top_level(), 0)
+            + dst_cursor.max_number_new_tables(Self::top_level(), 0);
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(total, FrameAllocFlags::WAIT_OK);
+        self.mapper.setup_cow_range(
+            &mut dest.mapper,
+            src_cursor,
+            dst_cursor,
+            &mut consist,
+            &mut fa,
+        )?;
         self.run_consistency2(consist, dest).run_all();
         Ok(())
     }
 
     pub fn setup_zero_range(&mut self, offset: u64, len: usize) -> Result<(), TwzError> {
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Self::top_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
         let mut consist = Consistency::new_object_tables();
-        let ops = self.mapper.setup_zero_range(cursor, &mut consist);
+        let ops = self.mapper.setup_zero_range(cursor, &mut consist, &mut fa);
         self.run_consistency(consist).run_all();
         ops
     }
@@ -460,10 +509,15 @@ impl Object {
         let mut pt = self.lock_page_tables();
         let len = (end.raw() - start.raw()) as usize;
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(pt.mapper.start_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
         let mut phys =
             ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
         let mut consist = Consistency::new_object_tables();
-        let r = pt.mapper.map(cursor, &mut phys, &mut consist);
+        let r = pt.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
         pt.run_consistency(consist).run_all();
         r
     }
@@ -478,6 +532,11 @@ impl Object {
         let mut old_pt = self.lock_page_tables();
         assert_eq!(old_pt.mapper.start_level(), new_pt.mapper.start_level());
         let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), old_pt.max_len());
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(old_pt.mapper.start_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
         let mut consist = Consistency::new_object_tables();
         if self.use_pager() {
             old_pt = self.ensure_in_core(
@@ -488,9 +547,13 @@ impl Object {
                 &mut false,
             )?;
         }
-        let r = old_pt
-            .mapper
-            .setup_cow_range(&mut new_pt.mapper, cursor, cursor, &mut consist);
+        let r = old_pt.mapper.setup_cow_range(
+            &mut new_pt.mapper,
+            cursor,
+            cursor,
+            &mut consist,
+            &mut fa,
+        );
         old_pt.run_consistency(consist).run_all();
         r.map(|_| new_pt)
     }

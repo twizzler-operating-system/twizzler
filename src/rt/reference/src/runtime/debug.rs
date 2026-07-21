@@ -18,15 +18,15 @@ impl ReferenceRuntime {
         if let Some(image) = current.libs().nth(n) {
             return Some((None, image));
         }
-        let Some(mut n) = n.checked_sub(current.info().nr_libs) else {
+        let Some(mut n) = n.checked_sub(current.info().ok()?.nr_libs) else {
             return None;
         };
         for dep in current.deps() {
             if let Some(image) = dep.libs().nth(n) {
-                let name = dep.info().name.clone();
+                let name = dep.info().ok()?.name.clone();
                 return Some((Some(name), image));
             }
-            n = match n.checked_sub(dep.info().nr_libs) {
+            n = match n.checked_sub(dep.info().ok()?.nr_libs) {
                 Some(rem) => rem,
                 None => return None,
             };

@@ -47,6 +47,14 @@ fn inflight_mgr() -> &'static Mutex<InflightManager> {
     INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
 }
 
+pub fn check_timed_out_requests() {
+    let mgr = inflight_mgr().lock();
+    if !mgr.is_ready() {
+        return;
+    }
+    mgr.check_timed_out_requests();
+}
+
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     loop {
         match crate::obj::lookup_object(id, LookupFlags::empty()) {

@@ -62,11 +62,26 @@ impl ThreadManager {
 struct CrossThread {
     tls: *mut Tcb<RuntimeThreadControl>,
     layout: Layout,
+    id: twizzler_rt_abi::thread::ThreadId,
+}
+
+extern "C" {
+    fn std_handle_thread_exit(
+        id: twizzler_rt_abi::thread::ThreadId,
+        my_tp: *mut u8,
+        their_tp: *mut u8,
+    );
+    fn __mlibc_handle_thread_exit(pointer: *mut u8, ret_val: i32);
 }
 
 impl Drop for CrossThread {
     fn drop(&mut self) {
-        unsafe { LOCAL_ALLOCATOR.dealloc(self.tls.cast(), self.layout) };
+        let my_tp = twizzler_abi::syscall::sys_thread_gettls() as *mut u8;
+        unsafe {
+            //__mlibc_handle_thread_exit(self.tls.cast(), 0);
+            //std_handle_thread_exit(self.id, my_tp, self.tls.cast::<u8>());
+            LOCAL_ALLOCATOR.dealloc(self.tls.cast(), self.layout);
+        }
     }
 }
 
@@ -225,7 +240,7 @@ impl ReferenceRuntime {
         let mut inner = THREAD_MGR.inner.lock();
         inner.cross_threads.insert(
             twizzler_abi::syscall::sys_thread_self_id(),
-            CrossThread { tls, layout },
+            CrossThread { tls, layout, id },
         );
         Ok(())
     }

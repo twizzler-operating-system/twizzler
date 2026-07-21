@@ -9,6 +9,7 @@ use core::{
 
 use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
 use twizzler_abi::trace::{KernelAllocationEvent, TraceEntryFlags, TraceKind};
+use twizzler_rt_abi::error::TwzError;
 
 use super::context::{Context, KernelMemoryContext};
 use crate::{
@@ -69,6 +70,7 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
         let chunk = self
             .ctx
             .allocate_chunk(Layout::from_size_align(size, size).unwrap())
+            .unwrap()
             .as_ptr();
         unsafe { &mut *(chunk as *mut ObjectPage<'static>) }
     }
@@ -78,8 +80,49 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
         let chunk = self
             .ctx
             .allocate_chunk(Layout::from_size_align(size, size).unwrap())
+            .unwrap()
             .as_ptr();
         unsafe { &mut *(chunk as *mut LargeObjectPage<'static>) }
+    }
+
+    fn allocate_chunk(&mut self, layout: Layout) -> Result<NonNull<u8>, TwzError> {
+        self.ctx.allocate_chunk(layout)
+    }
+}
+
+static FERROC_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
+    inner: Spinlock::new(None),
+    allocated_bytes: AtomicUsize::new(0),
+    early_allocated_bytes: AtomicUsize::new(0),
+};
+
+unsafe impl<Context: KernelMemoryContext> ferroc::base::BaseAlloc for KernelAllocator<Context> {
+    const IS_ZEROED: bool = false;
+
+    type Handle = NonNull<u8>;
+
+    type Error = TwzError;
+
+    fn allocate(
+        &self,
+        layout: Layout,
+        _commit: bool,
+    ) -> Result<ferroc::base::Chunk<Self>, Self::Error> {
+        let mut inner = self.inner.lock();
+        let inner = inner.as_mut().unwrap();
+
+        let ptr = inner.allocate_chunk(layout)?;
+        Ok(unsafe { ferroc::base::Chunk::new(ptr, layout, ptr) })
+    }
+
+    unsafe fn deallocate(chunk: &mut ferroc::base::Chunk<Self>) {
+        let mut inner = FERROC_ALLOCATOR.inner.lock();
+        let inner = inner.as_mut().unwrap();
+        unsafe {
+            inner
+                .ctx
+                .deallocate_chunk(chunk.layout(), chunk.pointer().cast())
+        };
     }
 }
 
@@ -165,7 +208,7 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
                         panic!("cannot allocate this layout {:?}", layout)
                     }
                 },
-                _ => inner.ctx.allocate_chunk(layout).as_ptr(),
+                _ => inner.ctx.allocate_chunk(layout).unwrap().as_ptr(),
             }
         };
         let end = Instant::now();

@@ -76,14 +76,58 @@ impl MappingCursor {
         }
         level
     }
+
+    pub fn max_number_new_tables(&self, level: usize, cutoff: usize) -> usize {
+        let mut count = 0;
+        let mut current_level = level;
+        while current_level > cutoff {
+            let size = Table::level_to_page_size(current_level);
+            let off = self.start.raw() as usize % size as usize;
+            count += (self.len + off).next_multiple_of(size) / size;
+            current_level -= 1;
+        }
+        count
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use twizzler_abi::object::MAX_SIZE;
     use twizzler_kernel_macros::kernel_test;
 
     use super::*;
     use crate::memory::frame::PHYS_LEVEL_LAYOUTS;
+
+    #[kernel_test]
+    fn test_max_number_new_tables() {
+        let level_0_size = PHYS_LEVEL_LAYOUTS[0].size() as u64;
+        let level_1_size = PHYS_LEVEL_LAYOUTS[1].size() as u64;
+        let level_2_size = PHYS_LEVEL_LAYOUTS[2].size() as u64;
+        let cursor = MappingCursor::new(
+            VirtAddr::new(level_0_size * 4).unwrap(),
+            level_0_size as usize * 3,
+        );
+        assert_eq!(cursor.max_number_new_tables(3, 0), 3);
+        assert_eq!(cursor.max_number_new_tables(2, 0), 2);
+        assert_eq!(cursor.max_number_new_tables(1, 0), 1);
+        let cursor = MappingCursor::new(
+            VirtAddr::new(level_1_size * 4).unwrap(),
+            level_1_size as usize * 2,
+        );
+        assert_eq!(cursor.max_number_new_tables(3, 0), 4);
+        assert_eq!(cursor.max_number_new_tables(2, 0), 3);
+        assert_eq!(cursor.max_number_new_tables(1, 0), 2);
+        let cursor = MappingCursor::new(
+            VirtAddr::new(level_2_size * 4).unwrap(),
+            level_2_size as usize * 4,
+        );
+        assert_eq!(cursor.max_number_new_tables(3, 0), 5 + 512 * 4);
+        assert_eq!(cursor.max_number_new_tables(2, 0), 4 + 512 * 4);
+        assert_eq!(cursor.max_number_new_tables(1, 0), 512 * 4);
+
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), MAX_SIZE);
+        assert_eq!(cursor.max_number_new_tables(3, 1), 2);
+    }
 
     #[kernel_test]
     fn test_biggest_level() {

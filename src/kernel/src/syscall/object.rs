@@ -89,7 +89,7 @@ pub fn sys_object_create(
     while !obj.write_meta(meta) {
         log::error!("failed to write object metadata -- retrying");
     }
-    log::info!(
+    log::trace!(
         "sys_object_create: create={:?}, srcs={}, ties={}: {:?}",
         create,
         srcs.len(),

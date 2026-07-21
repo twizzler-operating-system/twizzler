@@ -306,6 +306,11 @@ impl Request {
         }
     }
 
+    pub fn is_timed_out(&self) -> bool {
+        let elapsed = Instant::now() - self.start_time;
+        elapsed.as_secs() >= 2
+    }
+
     pub fn reqkind(&self) -> &ReqKind {
         &self.reqkind
     }

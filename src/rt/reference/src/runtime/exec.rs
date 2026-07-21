@@ -84,7 +84,7 @@ impl ReferenceRuntime {
         loader.env(progenv);
 
         let comp = loader.load()?;
-        let id = comp.info().id.raw();
+        let id = comp.info()?.id.raw();
         let bind_info = object_bind_info { id };
 
         self.open(

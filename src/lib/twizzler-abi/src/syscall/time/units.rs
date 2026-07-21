@@ -11,7 +11,7 @@ pub enum TimeUnitError {
     ConversionOverflow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Ord, Eq, PartialOrd)]
 #[repr(transparent)]
 pub struct Seconds(pub u64);
 
@@ -48,7 +48,7 @@ pub struct NanoSeconds(pub u64);
 #[repr(transparent)]
 pub struct PicoSeconds(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Ord, Eq, PartialOrd)]
 #[repr(transparent)]
 pub struct FemtoSeconds(pub u64);
 

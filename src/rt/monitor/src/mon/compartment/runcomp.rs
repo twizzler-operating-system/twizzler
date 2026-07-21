@@ -79,11 +79,6 @@ impl Drop for RunComp {
             0,
         )
         .inspect_err(|e| tracing::warn!("failed to delete instance on RunComp drop: {}", e));
-        tracing::info!(
-            "dropping compartment {} (instance {})",
-            self.name,
-            self.instance
-        );
     }
 }
 

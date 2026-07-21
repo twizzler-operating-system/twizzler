@@ -29,7 +29,7 @@ use super::{slot::mark_slot_reserved, thread::TLS_GEN_MGR, ReferenceRuntime};
 use crate::{
     preinit::{preinit_abort, preinit_unwrap},
     preinit_println,
-    runtime::{self, thread::libc_init_tcb, RuntimeState},
+    runtime::{thread::libc_init_tcb, RuntimeState},
     OUR_RUNTIME,
 };
 

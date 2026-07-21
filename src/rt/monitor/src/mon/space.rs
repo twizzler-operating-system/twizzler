@@ -199,7 +199,6 @@ impl Space {
         }
 
         // Decrement and maybe actually unmap.
-        tracing::info!("drop: {:?}: handle count: {}", info, item.handle_count);
         item.handle_count -= 1;
         if item.handle_count == 0 {
             let slot = item.addrs.slot;
@@ -219,7 +218,7 @@ impl Space {
         map_flags: MapFlags,
     ) -> miette::Result<MapHandle> {
         let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
-        tracing::info!(
+        tracing::trace!(
             "created object {} for mapping: {:?} {:?}",
             id,
             spec,

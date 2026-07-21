@@ -105,7 +105,6 @@ impl<Base: BaseType> ObjectBuilder<Base> {
     where
         F: FnOnce(TxObject<MaybeUninit<Base>>) -> Result<TxObject<Base>>,
     {
-        tracing::info!("creating object with spec: {:?}", self.spec);
         let id = unsafe {
             twizzler_rt_abi::bindings::twz_rt_create_object(
                 &self.spec.into(),

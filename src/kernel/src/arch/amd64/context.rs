@@ -9,12 +9,12 @@ use crate::{
     },
     memory::{
         VirtAddr,
-        frame::get_frame,
+        frame::{PHYS_LEVEL_LAYOUTS, get_frame},
         pagetables::{
             Consistency, ContiguousProvider, MapReader, Mapper, MappingCursor, MappingFlags,
             MappingSettings, PhysAddrProvider,
         },
-        tracker::{FrameAllocFlags, alloc_frame, free_frame},
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
     obj::pagetables::ObjectPageTable,
     once::Once,
@@ -114,10 +114,15 @@ impl ArchContext {
         (consist, guard)
     }
 
-    pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
+    pub fn map(
+        &self,
+        cursor: MappingCursor,
+        phys: &mut impl PhysAddrProvider,
+        fa: &mut FrameAllocator,
+    ) {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
 
-        guard.map(cursor, phys, &mut consist).unwrap();
+        guard.map(cursor, phys, &mut consist, fa).unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
@@ -128,11 +133,12 @@ impl ArchContext {
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
+        fa: &mut FrameAllocator,
     ) {
         object_tables.inc_map_count();
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         guard
-            .object_map(cursor, object_tables, settings, &mut consist)
+            .object_map(cursor, object_tables, settings, &mut consist, fa)
             .unwrap();
         consist.tlb_mut().finish();
         drop(guard);
@@ -144,12 +150,13 @@ impl ArchContext {
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
+        fa: &mut FrameAllocator,
     ) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         if !guard.is_object_mapped(cursor, settings) {
             object_tables.inc_map_count();
             guard
-                .object_map(cursor, object_tables, settings, &mut consist)
+                .object_map(cursor, object_tables, settings, &mut consist, fa)
                 .unwrap();
             consist.tlb_mut().finish();
             drop(guard);
@@ -160,17 +167,22 @@ impl ArchContext {
         }
     }
 
-    pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
+    pub fn change(
+        &self,
+        cursor: MappingCursor,
+        settings: &MappingSettings,
+        fa: &mut FrameAllocator,
+    ) {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
-        guard.change(cursor, settings, &mut consist).unwrap();
+        guard.change(cursor, settings, &mut consist, fa).unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
     }
 
-    pub fn unmap(&self, cursor: MappingCursor) -> bool {
+    pub fn unmap(&self, cursor: MappingCursor, fa: &mut FrameAllocator) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
-        let r = guard.unmap(cursor, &mut consist).unwrap();
+        let r = guard.unmap(cursor, &mut consist, fa).unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
@@ -211,11 +223,14 @@ unsafe extern "C-unwind" fn trap_entry() {
 
 fn setup_mapper_with_kpages(mapper: &mut Mapper) {
     let km = kernel_mapper().lock();
+    let mut fa = FrameAllocator::new(
+        FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+        PHYS_LEVEL_LAYOUTS[0],
+    );
     for idx in 256..512 {
         mapper.set_top_level_table(idx, km.get_top_level_table(idx));
     }
-    let frame =
-        alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK);
+    let frame = fa.try_allocate().unwrap();
     let mut z = ContiguousProvider::new(
         frame.start_address(),
         0x1000,
@@ -231,6 +246,7 @@ fn setup_mapper_with_kpages(mapper: &mut Mapper) {
             MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000),
             &mut z,
             &mut consist,
+            &mut fa,
         )
         .unwrap();
     consist.tlb_mut().finish();
@@ -244,12 +260,18 @@ fn setup_mapper_with_kpages(mapper: &mut Mapper) {
 
 impl Drop for ArchContext {
     fn drop(&mut self) {
-        log::info!("dropping ArchContext with target {:?}", self.target);
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         // Unmap all user memory to clear any allocated page tables.
-        self.unmap(MappingCursor::new(
-            VirtAddr::start_user_memory(),
-            VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
-        ));
+        self.unmap(
+            MappingCursor::new(
+                VirtAddr::start_user_memory(),
+                VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
+            ),
+            &mut fa,
+        );
         // Manually free the root.
         if let Some(frame) = get_frame(self.inner.lock().root_address()) {
             frame.set_pt(false);

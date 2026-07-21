@@ -2,8 +2,14 @@ use core::{ops::Sub, time::Duration};
 
 use super::{FemtoSeconds, NanoSeconds, Seconds, FEMTOS_PER_NANO, FEMTOS_PER_SEC, NANOS_PER_SEC};
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Ord, Eq)]
 pub struct TimeSpan(pub Seconds, pub FemtoSeconds);
+
+impl PartialOrd for TimeSpan {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.as_femtos().cmp(&other.as_femtos()))
+    }
+}
 
 impl TimeSpan {
     pub const ZERO: TimeSpan = TimeSpan(Seconds(0), FemtoSeconds(0));

@@ -35,7 +35,10 @@ use crate::{
     },
     security::SecCtxMgr,
     spinlock::Spinlock,
-    thread::flags::THREAD_MUST_EXIT,
+    thread::{
+        flags::THREAD_MUST_EXIT,
+        locktrack::{LockTracker, deregister_lock_tracker, register_lock_tracker},
+    },
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
@@ -44,6 +47,7 @@ use crate::{
 
 pub mod entry;
 mod flags;
+pub mod locktrack;
 pub mod priority;
 pub mod suspend;
 pub mod time;
@@ -79,6 +83,8 @@ pub struct Thread {
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
     pub last_pf_addr: AtomicU64,
+    lock_tracker: Arc<LockTracker>,
+    lock_tracker_index: Option<usize>,
 }
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
@@ -137,11 +143,14 @@ impl Thread {
             let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
             alloc::alloc::alloc_zeroed(layout)
         };
+        let id = ID_COUNTER.next();
+        let lock_tracker = Arc::new(LockTracker::new(id.value()));
+        let lock_tracker_index = register_lock_tracker(lock_tracker.clone());
         Self {
             arch: crate::arch::thread::ArchThread::new(),
             priority: AtomicU32::new(priority.raw()),
             stable_priority: AtomicU32::new(priority.raw()),
-            id: ID_COUNTER.next(),
+            id,
             flags: AtomicU32::new(THREAD_IN_KERNEL),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
             critical_counter: AtomicU64::new(0),
@@ -164,6 +173,8 @@ impl Thread {
             sched: ThreadSched::default(),
             pending_message: AtomicU64::new(0),
             last_pf_addr: AtomicU64::new(0),
+            lock_tracker,
+            lock_tracker_index,
         }
     }
 
@@ -477,8 +488,10 @@ impl<'a> Drop for CriticalGuard<'a> {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        log::info!("drop thread {}", self.objid());
         self.control_object.object().mark_for_delete();
+        if let Some(index) = self.lock_tracker_index {
+            deregister_lock_tracker(index);
+        }
     }
 }
 

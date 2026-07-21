@@ -27,7 +27,7 @@ use crate::{
         frame::{PHYS_LEVEL_LAYOUTS, merge_frame},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
-        tracker::start_reclaim_thread,
+        tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
     },
     obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
     once::Once,
@@ -113,13 +113,17 @@ fn pager_register_phys(phys: u64, len: u64) -> Result<(), TwzError> {
     let paddr = PhysAddr::new(phys).map_err(|_| TwzError::INVALID_ARGUMENT)?;
     let vaddr = phys_to_virt(paddr);
     let cursor = MappingCursor::new(vaddr, len as usize);
+    let mut fa = FrameAllocator::new(
+        FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+        PHYS_LEVEL_LAYOUTS[0],
+    );
     let settings = MappingSettings::new(
         Protections::READ | Protections::WRITE,
         CacheType::WriteBack,
         MappingFlags::GLOBAL,
     );
     let mut phys = ContiguousProvider::new(paddr, len as usize, settings);
-    kernel_context().with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys));
+    kernel_context().with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
     Ok(())
 }
 

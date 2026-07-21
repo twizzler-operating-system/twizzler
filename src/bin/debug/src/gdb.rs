@@ -162,7 +162,8 @@ impl From<&gdbstub_arch::x86::reg::X86_64CoreRegs> for TwzRegs {
 
 impl TwizzlerGdb {
     fn mon_main(inner: Arc<TargetInner>) {
-        let mut flags: CompartmentFlags = inner.comp.info().flags;
+        let info = inner.comp.info().unwrap();
+        let mut flags: CompartmentFlags = info.flags;
         while inner.done.load(Ordering::SeqCst) == 0 {
             if flags.contains(CompartmentFlags::EXITED) {
                 break;

@@ -37,7 +37,7 @@ fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
             let comp = monitor_api::CompartmentHandle::current();
             if let Ok(raw) = monitor_api::monitor_rt_get_compartment_info(None) {
                 if raw.name_len == 6 {
-                    let info = comp.info();
+                    let info = comp.info().unwrap();
                     let name = info.name.clone();
                     std::mem::forget(info);
                     Some(COMP_NAME.get_or_init(|| name))

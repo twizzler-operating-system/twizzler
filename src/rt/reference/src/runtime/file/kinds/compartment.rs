@@ -26,14 +26,14 @@ struct CompartmentFileInner {
 }
 
 impl CompartmentFile {
-    pub fn new(comp: CompartmentHandle) -> Self {
-        let last_state = comp.info().flags;
-        Self {
+    pub fn new(comp: CompartmentHandle) -> Result<Self> {
+        let last_state = comp.info()?.flags;
+        Ok(Self {
             inner: Arc::new(CompartmentFileInner {
                 comp,
                 last_state: Mutex::new(last_state),
             }),
-        }
+        })
     }
 }
 
@@ -45,7 +45,7 @@ impl Fd for CompartmentFile {
         _offset: Option<u64>,
         _ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        let mut current_state = self.inner.comp.info().flags;
+        let mut current_state = self.inner.comp.info()?.flags;
         if current_state.contains(CompartmentFlags::EXITED) {
             return Ok(0);
         }
@@ -80,7 +80,7 @@ impl Fd for CompartmentFile {
     }
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
-        let info = self.inner.comp.info();
+        let info = self.inner.comp.info()?;
         Ok(twizzler_rt_abi::fd::FdInfo {
             size: 0,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
@@ -111,7 +111,7 @@ impl Fd for CompartmentFile {
                 if val_len < std::mem::size_of::<u64>() {
                     Err(TwzError::INVALID_ARGUMENT)
                 } else {
-                    let info = self.inner.comp.info();
+                    let info = self.inner.comp.info()?;
                     let mut status = if info.flags.contains(CompartmentFlags::EXITED) {
                         // Lower 32 bits: exit code; upper bits: status flags.
                         STATUS_FLAG_TERMINATED | (info.exit_code & 0xffff_ffff)

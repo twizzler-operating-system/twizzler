@@ -7,6 +7,7 @@ use crate::{
         address::PhysAddr,
         memory::pagetables::{Entry, EntryFlags, Table},
     },
+    memory::tracker::FrameAllocator,
     obj::pagetables::ObjectPageTable,
     thread::current_thread_ref,
 };
@@ -85,10 +86,11 @@ impl Mapper {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         let level = self.start_level;
         let root = self.root_mut();
-        let r = root.map(consist, cursor, level, phys);
+        let r = root.map(consist, cursor, level, phys, fa);
         self.generation += 1;
         consist.flush_cache();
         r
@@ -101,6 +103,7 @@ impl Mapper {
         &mut self,
         cursor: MappingCursor,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<bool, TwzError> {
         let level = self.start_level;
         log::trace!(
@@ -110,7 +113,7 @@ impl Mapper {
             level
         );
         let root = self.root_mut();
-        let r = root.unmap(consist, cursor, level);
+        let r = root.unmap(consist, cursor, level, fa);
         log::trace!("unmap: done");
         self.generation += 1;
         consist.flush_cache();
@@ -123,6 +126,7 @@ impl Mapper {
         cursor: MappingCursor,
         settings: &MappingSettings,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         let level = self.start_level;
         log::trace!(
@@ -133,7 +137,7 @@ impl Mapper {
             settings
         );
         let root = self.root_mut();
-        let r = root.change(consist, cursor, level, settings);
+        let r = root.change(consist, cursor, level, settings, fa);
         self.generation += 1;
         log::trace!("change: done");
         consist.flush_cache();
@@ -182,11 +186,12 @@ impl Mapper {
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         let level = self.start_level;
         let root = self.root_mut();
         let r = object_tables
-            .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, settings));
+            .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, fa, settings));
         self.generation += 1;
         consist.flush_cache();
         r
@@ -229,7 +234,11 @@ impl Mapper {
         x
     }
 
-    pub fn get_table_addr(&mut self, level: usize) -> Result<PhysAddr, TwzError> {
+    pub fn get_table_addr(
+        &mut self,
+        level: usize,
+        fa: &mut FrameAllocator,
+    ) -> Result<PhysAddr, TwzError> {
         log::trace!(
             "get_table_addr called with level {} (start_level {})",
             level,
@@ -242,7 +251,7 @@ impl Mapper {
             if table[0].is_present() && level > 0 && table[0].is_huge() {
                 panic!("todo: get_table_addr: huge page at level {}!", level);
             }
-            table.populate(0, EntryFlags::intermediate())?;
+            table.populate(0, EntryFlags::intermediate(), fa)?;
             table_phys = table[0].table_addr();
             table = table.next_table_mut(0).unwrap();
         }
@@ -255,10 +264,11 @@ impl Mapper {
         addr: VirtAddr,
         level: usize,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         let start_level = self.start_level;
         let root = self.root_mut();
-        let r = root.split_to_level(consist, addr, start_level, level);
+        let r = root.split_to_level(consist, addr, start_level, level, fa);
         self.generation += 1;
         consist.flush_cache();
         r
@@ -270,6 +280,7 @@ impl Mapper {
         mut src_cursor: MappingCursor,
         mut dst_cursor: MappingCursor,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         log::trace!(
             "setup_cow_range: src_cursor {:?}, dst_cursor {:?}, src_root {:x}, dst_root {:x}",
@@ -295,6 +306,7 @@ impl Mapper {
                 start_level,
                 consist,
                 start_level - 1,
+                fa,
             )?;
         }
         consist.flush_cache();
@@ -305,6 +317,7 @@ impl Mapper {
         &mut self,
         mut cursor: MappingCursor,
         consist: &mut Consistency,
+        fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
         log::trace!(
             "setup_zero_range: cursor {:?}, root {:x}",
@@ -320,7 +333,7 @@ impl Mapper {
                 cursor,
                 start_level
             );
-            root.setup_zero_range(consist, &mut cursor, start_level)?;
+            root.setup_zero_range(consist, &mut cursor, start_level, fa)?;
         }
         consist.flush_cache();
         Ok(())
@@ -340,11 +353,12 @@ impl Mapper {
         cursor: MappingCursor,
         consist: &mut Consistency,
         mark_dirty: bool,
+        fa: &mut FrameAllocator,
     ) -> Result<bool, TwzError> {
         let level = self.start_level;
         self.generation += 1;
         let root = self.root_mut();
-        let r = root.cow_copy(consist, &cursor, level, mark_dirty);
+        let r = root.cow_copy(consist, &cursor, level, mark_dirty, fa);
         consist.flush_cache();
         r
     }

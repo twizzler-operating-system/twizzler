@@ -47,7 +47,6 @@ pub struct SecurityContext {
 
 impl Drop for SecurityContext {
     fn drop(&mut self) {
-        log::info!("dropping SecurityContext {}", self.id());
         if self.id() == KERNEL_SCTX {
             return;
         }

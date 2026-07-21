@@ -7,11 +7,12 @@ mod test {
     use crate::{
         arch::{address::VirtAddr, memory::pagetables::Table},
         memory::{
+            frame::PHYS_LEVEL_LAYOUTS,
             pagetables::{
                 Mapper, MappingCursor, MappingFlags, MappingSettings, PhysMapInfo,
                 consistency::Consistency, phys_provider,
             },
-            tracker::{FrameAllocFlags, alloc_frame},
+            tracker::{FrameAllocFlags, FrameAllocator, alloc_frame},
         },
     };
 
@@ -62,6 +63,10 @@ mod test {
             .next(),
             None
         );
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
 
         let len = page_size;
         let cur = MappingCursor::new(VirtAddr::new(0).unwrap(), len);
@@ -73,7 +78,7 @@ mod test {
         let mut phys = StaticProvider { settings };
         let mut consist = Consistency::new_full_global();
         consist.set_full_global();
-        let _ = m.map(cur, &mut phys, &mut consist);
+        let _ = m.map(cur, &mut phys, &mut consist, &mut fa);
         consist.tlb_mut().finish();
 
         let mut reader = m.readmap(cur);
@@ -92,7 +97,7 @@ mod test {
             MappingFlags::GLOBAL,
         );
         let mut consist = Consistency::new_full_global();
-        m.change(cur, &settings2, &mut consist).unwrap();
+        m.change(cur, &settings2, &mut consist, &mut fa).unwrap();
         consist.tlb_mut().finish();
 
         let mut reader = m.readmap(cur);
@@ -104,7 +109,7 @@ mod test {
         assert_eq!(read.settings().flags(), settings2.flags());
 
         let mut consist = Consistency::new_full_global();
-        m.unmap(cur, &mut consist).unwrap();
+        m.unmap(cur, &mut consist, &mut fa).unwrap();
         consist.tlb_mut().finish();
         consist.into_deferred().run_all();
 

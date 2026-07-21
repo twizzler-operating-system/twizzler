@@ -24,10 +24,15 @@ use crate::{
     idcounter::StableId,
     instant::Instant,
     once::Once,
+    pager::check_timed_out_requests,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
-    thread::{Thread, ThreadRef, current_thread_ref, priority::Priority},
+    thread::{
+        Thread, ThreadRef, current_thread_ref,
+        locktrack::{check_timed_out_mutexes, with_lock_tracker},
+        priority::Priority,
+    },
     time::TimeStatCollector,
 };
 
@@ -85,6 +90,7 @@ pub struct Mutex<T> {
     queue: Spinlock<SleepQueue>,
     cell: UnsafeCell<T>,
     locked_at: UnsafeCell<&'static Location<'static>>,
+    safe_with_spinlocks: bool,
 }
 
 impl<T> Mutex<T> {
@@ -99,7 +105,12 @@ impl<T> Mutex<T> {
             }),
             cell: UnsafeCell::new(data),
             locked_at: UnsafeCell::new(Location::caller()),
+            safe_with_spinlocks: false,
         }
+    }
+
+    pub fn set_safe_with_spinlocks(&mut self, safe: bool) {
+        self.safe_with_spinlocks = safe;
     }
 
     /// Get a mut reference to the contained data. Does not perform locking, but is safe because we
@@ -113,14 +124,29 @@ impl<T> Mutex<T> {
     #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
         let start_time = Instant::now();
+        let caller = core::panic::Location::caller();
         let current_thread = current_thread_ref();
         let current_donated_priority = current_thread
             .as_ref()
             .and_then(|t| t.get_donated_priority());
 
+        with_lock_tracker(|lt| {
+            if !self.safe_with_spinlocks {
+                assert!(
+                    lt.spinlock_count() == 0,
+                    "cannot lock mutex while holding spinlock (called from {})",
+                    caller
+                );
+            }
+            lt.intend_to_lock_mutex(caller, start_time)
+        });
+
         if let Some(ref current_thread) = current_thread {
             if current_thread.is_critical() {
-                crate::panic::backtrace(false, None);
+                panic!(
+                    "cannot lock mutex in critical context (called from {})",
+                    caller
+                );
             }
             assert!(!current_thread.is_critical());
             assert!(!current_thread.mutex_link.is_linked());
@@ -131,7 +157,17 @@ impl<T> Mutex<T> {
         loop {
             i += 1;
             if i == 1000 {
-                log::info!("mutex pause: {:?}: {}", core::panic::Location::caller(), i);
+                emerglogln!(
+                    "mutex pause: {:?}: {} ({:?})",
+                    caller,
+                    i,
+                    current_thread.as_ref().map(|t| t.is_idle_thread())
+                );
+                current_thread_ref().map(|ct| ct.print_locks());
+            }
+            if i % 10000 == 0 {
+                check_timed_out_mutexes();
+                check_timed_out_requests();
             }
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {
@@ -145,9 +181,14 @@ impl<T> Mutex<T> {
                     }
 
                     queue.owner = current_thread.cloned();
-                    unsafe { self.locked_at.get().write(Location::caller()) };
+                    unsafe { self.locked_at.get().write(caller) };
                     break;
                 } else if let Some(ref cur_owner) = queue.owner {
+                    with_lock_tracker(|lt| {
+                        lt.intended_mutex_owned_by(cur_owner.id(), unsafe {
+                            self.locked_at.get().read()
+                        });
+                    });
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
                             crate::panic::backtrace(false, None);
@@ -182,11 +223,13 @@ impl<T> Mutex<T> {
 
         let end_time = Instant::now();
         add_lock_time_sample(end_time - start_time);
+        let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
         crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
             start_time,
+            tracker_index,
         }
     }
 
@@ -210,6 +253,7 @@ pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,
     start_time: Instant,
+    tracker_index: Option<usize>,
 }
 
 impl<T> core::ops::Deref for LockGuard<'_, T> {
@@ -234,6 +278,9 @@ impl<T> Drop for LockGuard<'_, T> {
             }
         } else if let Some(thread) = current_thread_ref() {
             thread.remove_donated_priority();
+        }
+        if let Some(index) = self.tracker_index {
+            with_lock_tracker(|lt| lt.record_mutex_unlock(index));
         }
         self.lock.release();
         let end_time = Instant::now();

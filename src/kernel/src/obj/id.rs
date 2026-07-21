@@ -98,8 +98,8 @@ impl Object {
     }
 
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {
-        *self.verified_id.call_once(|| {
-            loop {
+        if self.verified_id.poll().is_none() {
+            let id = loop {
                 let meta = self.read_meta();
                 if let Some(meta) = meta {
                     break (
@@ -115,7 +115,10 @@ impl Object {
                 } else {
                     logln!("failed to read metadata");
                 }
-            }
-        })
+            };
+            *self.verified_id.call_once(|| id)
+        } else {
+            *self.verified_id.poll().unwrap()
+        }
     }
 }

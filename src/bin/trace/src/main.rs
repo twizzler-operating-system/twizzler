@@ -103,7 +103,7 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
 
     tracing::info!("compartment {} loaded, starting tracing monitor", compname);
 
-    let info = comp.info();
+    let info = comp.info().unwrap();
 
     let mut specs: Vec<_> = cli
         .events

@@ -56,8 +56,6 @@ pub struct Object {
 
 impl Drop for Object {
     fn drop(&mut self) {
-        log::info!("dropping object {}", self.id);
-
         if self.use_pager() && self.is_pending_delete() {
             crate::pager::del_object(self.id);
         }
@@ -181,6 +179,7 @@ impl Object {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
+    #[track_caller]
     pub fn lock_page_tables(&self) -> LockGuard<'_, pagetables::ObjectPageTable> {
         self.tables.lock()
     }
@@ -196,7 +195,7 @@ impl Object {
 
     #[track_caller]
     pub fn new(id: ObjID, lifetime_type: LifetimeType, ties: &[object_tie]) -> Self {
-        log::info!(
+        log::trace!(
             "creating new object {} with lifetime {:?} and {} ties from {}",
             id,
             lifetime_type,
@@ -230,7 +229,6 @@ impl Object {
             extcount: 0,
         };
         let obj = Arc::new(obj);
-        log::info!("created kernel object {}", obj.id);
         while !obj.write_meta(meta) {
             logln!("failed to write object metadata -- retrying");
         }
@@ -260,7 +258,6 @@ impl Object {
             LifetimeType::Volatile,
             &[],
         );
-        log::info!("created kernel object {}", obj.id);
         let meta = MetaInfo {
             nonce: Nonce(nonce),
             kuid: 0.into(),

@@ -100,7 +100,7 @@ pub trait KernelMemoryContext {
     /// allocations, this should be used to grab large chunks of memory to then serve pieces of
     /// using an actual allocator. Returns a pointer to the allocated memory and the size of the
     /// allocation (must be greater than layout's size).
-    fn allocate_chunk(&self, layout: Layout) -> NonNull<u8>;
+    fn allocate_chunk(&self, layout: Layout) -> Result<NonNull<u8>, TwzError>;
     /// Deallocate a previously allocated chunk.
     ///
     /// # Safety

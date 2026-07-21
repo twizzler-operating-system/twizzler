@@ -484,8 +484,10 @@ pub struct CompartmentHandle {
 
 impl CompartmentHandle {
     /// Get the compartment info.
-    pub fn info(&self) -> CompartmentInfo<'_> {
-        CompartmentInfo::from_raw(monitor_rt_get_compartment_info(self.desc).unwrap())
+    pub fn info(&self) -> Result<CompartmentInfo<'_>, TwzError> {
+        Ok(CompartmentInfo::from_raw(monitor_rt_get_compartment_info(
+            self.desc,
+        )?))
     }
 
     /// Get the descriptor for this handle, or None if the handle refers to the current compartment.
@@ -503,7 +505,7 @@ impl CompartmentHandle {
     }
 
     pub fn signal(&self, sig: u64) -> Result<(), TwzError> {
-        let target = self.info().id;
+        let target = self.info()?.id;
         monitor_rt_post_signal(Some(target), sig, PostSignalFlags::empty())
     }
 }

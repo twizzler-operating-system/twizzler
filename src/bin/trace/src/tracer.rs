@@ -384,7 +384,7 @@ pub fn start(
     specs: Vec<TraceSpec>,
     rt_trace: Option<Object<BaseWrap>>,
 ) -> miette::Result<TracingState> {
-    let state = TracingState::new(comp.info().name, specs.as_slice(), rt_trace)?;
+    let state = TracingState::new(comp.info().unwrap().name, specs.as_slice(), rt_trace)?;
 
     let tracer = Tracer {
         state: Mutex::new(state),
@@ -412,7 +412,7 @@ pub fn start(
         }
         tracer.set_state(State::Running);
 
-        let mut flags = comp.info().flags;
+        let mut flags = comp.info().unwrap().flags;
         while !flags.contains(CompartmentFlags::EXITED) {
             flags = comp.wait(flags);
         }

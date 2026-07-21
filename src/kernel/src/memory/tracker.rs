@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::{
     alloc::Layout,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use bitflags::bitflags;
@@ -16,7 +16,10 @@ use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
     once::Once,
-    processor::sched::{SchedFlags, schedule},
+    processor::{
+        sched::{SchedFlags, schedule},
+        tls_ready,
+    },
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, finish_blocking, requeue_all},
     thread::{Thread, ThreadRef, current_thread_ref, entry::start_new_kernel, priority::Priority},
@@ -500,41 +503,66 @@ const MAX_FA_FRAMES: usize = 32;
 pub struct FrameAllocator {
     flags: FrameAllocFlags,
     layout: Layout,
-    frames: heapless::Vec<FrameRef, MAX_FA_FRAMES>,
+    abort: heapless::Vec<FrameRef, MAX_FA_FRAMES>,
+    precharge: alloc::vec::Vec<FrameRef>,
+    avoid_alloc: bool,
 }
 
 impl FrameAllocator {
-    pub fn new(flags: FrameAllocFlags, layout: Layout) -> Self {
+    pub const fn new(flags: FrameAllocFlags, layout: Layout) -> Self {
         FrameAllocator {
             flags,
             layout,
-            frames: heapless::Vec::new(),
+            abort: heapless::Vec::new(),
+            precharge: alloc::vec::Vec::new(),
+            avoid_alloc: false,
         }
     }
 
-    pub fn precharge(&mut self, count: usize) {
-        for _ in 0..count {
-            if self.frames.is_full() {
-                return;
-            }
-            let Some(frame) = try_alloc_frame(self.flags, self.layout) else {
+    pub fn merge(&mut self, other: &mut Self) {
+        // Extend our precharge with abort, since we can just use them.
+        self.precharge.extend(other.abort.drain(..));
+        self.precharge.append(&mut other.precharge);
+    }
+
+    pub fn precharge(&mut self, count: usize, flags: FrameAllocFlags) {
+        if self.precharge.len() >= count {
+            return;
+        }
+        self.precharge.reserve(count);
+        let remaining = count - self.precharge.len();
+        for _ in 0..remaining {
+            let Some(frame) = try_alloc_frame(self.flags | flags, self.layout) else {
                 return;
             };
-            self.frames.push(frame).unwrap();
+            self.precharge.push(frame);
         }
     }
 
+    #[track_caller]
     pub fn try_allocate(&mut self) -> Option<FrameRef> {
-        if self.frames.len() == 0 {
-            try_alloc_frame(self.flags, self.layout)
+        if !self.abort.is_empty() {
+            return self.abort.pop();
+        }
+        if self.precharge.len() == 0 {
+            if self.avoid_alloc {
+                log::warn!(
+                    "frame allocator out of precharged frames and avoid_alloc is set, from {}",
+                    core::panic::Location::caller()
+                );
+                crate::panic::backtrace(true, None);
+                try_alloc_frame(self.flags & !FrameAllocFlags::WAIT_OK, self.layout)
+            } else {
+                try_alloc_frame(self.flags, self.layout)
+            }
         } else {
-            self.frames.pop()
+            self.precharge.pop()
         }
     }
 
     pub fn abort(&mut self, frames: impl IntoIterator<Item = FrameRef>) {
         for frame in frames {
-            if self.frames.push(frame).is_err() {
+            if self.abort.push(frame).is_err() {
                 log::warn!(
                     "frame allocator abort: too many frames to store, dropping frame {:?}",
                     frame
@@ -542,12 +570,90 @@ impl FrameAllocator {
             }
         }
     }
+
+    pub fn clear(&mut self) {
+        while let Some(frame) = self.abort.pop() {
+            free_frame(frame);
+        }
+        while let Some(frame) = self.precharge.pop() {
+            free_frame(frame);
+        }
+    }
+}
+
+#[thread_local]
+static mut TLS_FRAME_ALLOCATOR: Option<FrameAllocator> = None;
+static TLS_FRAME_ALLOCATOR_LOCK: AtomicBool = AtomicBool::new(false);
+
+fn try_lock_tls_frame_allocator() -> bool {
+    !TLS_FRAME_ALLOCATOR_LOCK.swap(true, Ordering::SeqCst)
+}
+
+fn unlock_tls_frame_allocator() {
+    TLS_FRAME_ALLOCATOR_LOCK.store(false, Ordering::SeqCst);
+}
+
+#[allow(static_mut_refs)]
+pub fn save_frame_allocator(fa: &mut FrameAllocator) -> bool {
+    if try_lock_tls_frame_allocator() {
+        unsafe {
+            if let Some(ref mut tls_fa) = TLS_FRAME_ALLOCATOR {
+                tls_fa.merge(fa);
+            } else {
+                TLS_FRAME_ALLOCATOR = Some(FrameAllocator::new(
+                    FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+                    PHYS_LEVEL_LAYOUTS[0],
+                ));
+                TLS_FRAME_ALLOCATOR.as_mut().unwrap().merge(fa);
+                TLS_FRAME_ALLOCATOR.as_mut().unwrap().avoid_alloc = true;
+            }
+        }
+        unlock_tls_frame_allocator();
+        true
+    } else {
+        false
+    }
+}
+
+#[allow(static_mut_refs)]
+pub fn take_frame_allocator() -> Option<FrameAllocator> {
+    if !tls_ready() {
+        return None;
+    }
+    if current_thread_ref().is_some_and(|ct| ct.is_critical()) {
+        log::warn!("warning -- cannot take frame allocator while in critical section");
+        return None;
+    }
+    if try_lock_tls_frame_allocator() {
+        unsafe {
+            let fa = TLS_FRAME_ALLOCATOR.take();
+            unlock_tls_frame_allocator();
+            fa
+        }
+    } else {
+        None
+    }
+}
+
+pub fn take_or_new_frame_allocator() -> FrameAllocator {
+    take_frame_allocator().unwrap_or_else(|| {
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
+        fa.avoid_alloc = true;
+        fa
+    })
 }
 
 impl Drop for FrameAllocator {
     fn drop(&mut self) {
-        for frame in self.frames.drain(..) {
-            free_frame(frame);
+        if tls_ready() && self.layout == PHYS_LEVEL_LAYOUTS[0] {
+            if !save_frame_allocator(self) {
+                self.clear();
+            }
+        } else {
+            self.clear();
         }
     }
 }

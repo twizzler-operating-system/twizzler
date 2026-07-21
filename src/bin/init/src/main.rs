@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
@@ -92,7 +91,7 @@ fn initialize_namer(bootstrap: ObjID) -> ObjID {
     .args(&["naming"])
     .load()
     .expect("failed to initialize namer");
-    let mut flags = nmcomp.info().flags;
+    let mut flags = nmcomp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = nmcomp.wait(flags);
     }
@@ -121,7 +120,7 @@ fn initialize_devmgr() {
     .args(&["devmgr"])
     .load()
     .expect("failed to initialize device manager");
-    let mut flags = devcomp.info().flags;
+    let mut flags = devcomp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = devcomp.wait(flags);
     }
@@ -148,7 +147,7 @@ fn initialize_cache() {
     .args(&["cache-srv"])
     .load()
     .expect("failed to initialize cache manager");
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = comp.wait(flags);
     }
@@ -172,7 +171,7 @@ fn initialize_display() {
     .args(&["display-srv"])
     .load()
     .expect("failed to initialize display manager");
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = comp.wait(flags);
     }
@@ -201,7 +200,7 @@ fn initialize_network() {
     .args(&["net-srv"])
     .load()
     .expect("failed to initialize network manager");
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = comp.wait(flags);
     }
@@ -222,7 +221,7 @@ fn initialize_sshd() {
             .args(&["sshd"])
             .load()
             .expect("failed to initialize ssh server");
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = comp.wait(flags);
     }
@@ -261,7 +260,7 @@ fn main() {
     .args(&["logboi"])
     .load()
     .unwrap();
-    let mut flags = lbcomp.info().flags;
+    let mut flags = lbcomp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::READY) {
         flags = lbcomp.wait(flags);
     }
@@ -410,7 +409,9 @@ fn main() {
                                 if let Some(inner) = inner.strip_suffix('t') {
                                     let parts: Vec<&str> = inner.split(';').collect();
                                     if parts.len() == 2 {
-                                        if let (Ok(r), Ok(c)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
+                                        if let (Ok(r), Ok(c)) =
+                                            (parts[0].parse::<u16>(), parts[1].parse::<u16>())
+                                        {
                                             let winsize = libc::winsize {
                                                 ws_row: r,
                                                 ws_col: c,
@@ -442,8 +443,12 @@ fn main() {
                 let mut ioc = twizzler_rt_abi::io::IoCtx::default();
                 let mut done = 0;
                 while done < out_buf.len() {
-                    done += twizzler_rt_abi::io::twz_rt_fd_pwrite(server_fd, &out_buf[done..], &mut ioc)
-                        .unwrap();
+                    done += twizzler_rt_abi::io::twz_rt_fd_pwrite(
+                        server_fd,
+                        &out_buf[done..],
+                        &mut ioc,
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -472,7 +477,10 @@ fn main() {
     });
 
     let end_time = Instant::now();
-    tracing::info!("finished init in {}s", (end_time - start_time).as_secs_f32());
+    tracing::info!(
+        "finished init in {}s",
+        (end_time - start_time).as_secs_f32()
+    );
 
     if let Some(autostart) = autostart {
         let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &autostart)
@@ -482,7 +490,7 @@ fn main() {
             .args(&[&autostart])
             .load();
         if let Ok(comp) = comp {
-            let mut flags = comp.info().flags;
+            let mut flags = comp.info().unwrap().flags;
             while !flags.contains(CompartmentFlags::EXITED) {
                 flags = comp.wait(flags);
             }
@@ -500,7 +508,7 @@ fn main() {
         shell_comp.args(["shell"]);
         let shell_comp = shell_comp.load().expect("failed to start shell");
 
-        let mut flags = shell_comp.info().flags;
+        let mut flags = shell_comp.info().unwrap().flags;
         while !flags.contains(CompartmentFlags::EXITED) {
             flags = shell_comp.wait(flags);
         }
@@ -517,7 +525,7 @@ fn run_tests() {
         .args(&["unittest"])
         .load()
         .expect("failed to start unittest");
-    let mut flags = comp.info().flags;
+    let mut flags = comp.info().unwrap().flags;
     while !flags.contains(CompartmentFlags::EXITED) {
         println!("waiting for comp state change: {:?}", flags);
         flags = comp.wait(flags);
