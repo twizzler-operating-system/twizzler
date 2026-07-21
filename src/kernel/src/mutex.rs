@@ -167,7 +167,9 @@ impl<T> Mutex<T> {
             }
             if i % 10000 == 0 {
                 check_timed_out_mutexes();
+                with_lock_tracker(|lt| lt.clear_intended_mutex());
                 check_timed_out_requests();
+                with_lock_tracker(|lt| lt.intend_to_lock_mutex(caller, start_time));
             }
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {

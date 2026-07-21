@@ -400,7 +400,7 @@ impl Object {
 
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
-            if guard.get_mapinfo(offset).is_none() {
+            if guard.is_empty_at_level(offset, 0) {
                 log::trace!(
                     "filling frame at offset {:x} in object {}",
                     offset,
@@ -417,7 +417,6 @@ impl Object {
                     alloc.abort([frame]);
                     return Err(e);
                 }
-                assert!(guard.get_mapinfo(offset).is_some());
             }
         }
 

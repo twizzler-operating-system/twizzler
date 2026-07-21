@@ -153,6 +153,10 @@ impl LockTrackerInner {
         }
     }
 
+    pub fn clear_intended_mutex(&mut self) {
+        self.intended_to_mutexlock = None;
+    }
+
     pub fn intend_to_lock_mutex(
         &mut self,
         caller: &'static core::panic::Location<'static>,
