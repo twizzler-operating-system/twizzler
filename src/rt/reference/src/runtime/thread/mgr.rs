@@ -80,19 +80,8 @@ impl Drop for CrossThread {
         let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
         let my_tp = tls as *mut u8;
         unsafe {
-            twizzler_abi::klog_println!("calling mlibc thread exit handler for thread {}", self.id);
             __mlibc_handle_thread_exit(self.tls.cast(), 0);
-            twizzler_abi::klog_println!(
-                "calling rust thread exit handler for thread {} (my_tp = {:?})",
-                self.id,
-                my_tp
-            );
             std_handle_thread_exit(self.id, my_tp, self.tls.cast::<u8>());
-            twizzler_abi::klog_println!(
-                "deallocating TLS for thread {} (tls = {:?})",
-                self.id,
-                self.tls
-            );
             LOCAL_ALLOCATOR.dealloc(self.alloc_base, self.layout);
         }
     }

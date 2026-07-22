@@ -3,11 +3,7 @@
 #![feature(thread_local)]
 #[warn(unused_variables)]
 use std::sync::Mutex;
-use std::{
-    io::ErrorKind,
-    path::PathBuf,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use std::{io::ErrorKind, path::PathBuf};
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;

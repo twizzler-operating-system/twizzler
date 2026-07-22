@@ -268,7 +268,7 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Result<CompartmentInfoRaw, TwzError> {
-        tracing::info!(
+        tracing::trace!(
             "get_compartment_info: instance = {}, thread = {}, desc = {:?}",
             instance,
             thread,

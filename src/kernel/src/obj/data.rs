@@ -395,7 +395,7 @@ impl Object {
             };
         }
 
-        log::info!(
+        log::debug!(
             "ensure_in_core: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
             self.id(),

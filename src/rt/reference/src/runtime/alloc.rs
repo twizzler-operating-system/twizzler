@@ -140,7 +140,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         }
 
         if LOCAL_ALLOCATOR.is_ptr_early_alloc(ptr) {
-            twizzler_abi::klog_println!("dealloc: {:p} {:x} (FAIL)", ptr, layout.size());
             return;
         }
 
@@ -166,6 +165,7 @@ impl ReferenceRuntime {
     }
 
     pub fn heap_gc(&self) {
+        //twizzler_abi::klog_println!("running heap GC");
         ferroc::TwzFerroc.collect(true);
     }
 }
