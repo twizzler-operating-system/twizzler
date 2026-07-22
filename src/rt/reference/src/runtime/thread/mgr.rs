@@ -63,6 +63,7 @@ struct CrossThread {
     tls: *mut Tcb<RuntimeThreadControl>,
     layout: Layout,
     id: twizzler_rt_abi::thread::ThreadId,
+    alloc_base: *mut u8,
 }
 
 extern "C" {
@@ -76,11 +77,23 @@ extern "C" {
 
 impl Drop for CrossThread {
     fn drop(&mut self) {
-        let my_tp = twizzler_abi::syscall::sys_thread_gettls() as *mut u8;
+        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
+        let my_tp = tls as *mut u8;
         unsafe {
-            //__mlibc_handle_thread_exit(self.tls.cast(), 0);
-            //std_handle_thread_exit(self.id, my_tp, self.tls.cast::<u8>());
-            LOCAL_ALLOCATOR.dealloc(self.tls.cast(), self.layout);
+            twizzler_abi::klog_println!("calling mlibc thread exit handler for thread {}", self.id);
+            __mlibc_handle_thread_exit(self.tls.cast(), 0);
+            twizzler_abi::klog_println!(
+                "calling rust thread exit handler for thread {} (my_tp = {:?})",
+                self.id,
+                my_tp
+            );
+            std_handle_thread_exit(self.id, my_tp, self.tls.cast::<u8>());
+            twizzler_abi::klog_println!(
+                "deallocating TLS for thread {} (tls = {:?})",
+                self.id,
+                self.tls
+            );
+            LOCAL_ALLOCATOR.dealloc(self.alloc_base, self.layout);
         }
     }
 }
@@ -132,8 +145,7 @@ impl ThreadManagerInner {
             .cross_threads
             .extract_if(.., |id, _| sys_object_stat(*id).is_err())
         {
-            std::mem::forget(th);
-            //drop(th);
+            drop(th);
         }
     }
 
@@ -183,13 +195,19 @@ impl<'a> Drop for IdDropper<'a> {
 }
 
 impl ReferenceRuntime {
-    pub fn init_core_thread(&self, tls: *mut Tcb<RuntimeThreadControl>) {
+    pub fn init_core_thread(
+        &self,
+        tls: *mut Tcb<RuntimeThreadControl>,
+        tls_alloc_base: *mut u8,
+        tls_layout: Layout,
+    ) {
         let thid = sys_thread_self_id();
         let thread_repr_obj = self
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .unwrap();
         (unsafe { &mut *tls }).runtime_data.set_id(1);
-        let thread = InternalThread::new(thread_repr_obj, 0, 0, 0, 1, tls);
+        let thread =
+            InternalThread::new(thread_repr_obj, 0, 0, 0, 1, tls, tls_alloc_base, tls_layout);
 
         THREAD_MGR
             .inner
@@ -230,7 +248,7 @@ impl ReferenceRuntime {
 
         let id = inner.next_id().freeze();
         drop(inner);
-        let (tls, layout) = TLS_GEN_MGR
+        let (tls, layout, alloc_base) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
@@ -240,7 +258,12 @@ impl ReferenceRuntime {
         let mut inner = THREAD_MGR.inner.lock();
         inner.cross_threads.insert(
             twizzler_abi::syscall::sys_thread_self_id(),
-            CrossThread { tls, layout, id },
+            CrossThread {
+                tls,
+                layout,
+                id,
+                alloc_base,
+            },
         );
         Ok(())
     }
@@ -254,7 +277,7 @@ impl ReferenceRuntime {
         }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
-        let (tls, _layout) = TLS_GEN_MGR
+        let (tls, tls_layout, tls_alloc_base) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
             .unwrap();
@@ -313,6 +336,8 @@ impl ReferenceRuntime {
             arg_raw,
             id.freeze(),
             tls,
+            tls_alloc_base,
+            tls_layout,
         );
         let id = thread.id;
         inner.all_threads.insert(thread.id, thread);

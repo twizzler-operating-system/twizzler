@@ -31,7 +31,7 @@ paste = "1"
 printf-compat = { workspace = true }
 naming-core = { workspace = true }
 pager-dynamic = { workspace = true }
-ferroc = { workspace = true, features = ["global"] }
+ferroc = { workspace = true, features = ["global", "libc"] }
 twizzler-io = { path = "../../lib/twizzler-io" }
 twizzler-net = { path = "../../lib/twizzler-net" }
 libc = { workspace = true }

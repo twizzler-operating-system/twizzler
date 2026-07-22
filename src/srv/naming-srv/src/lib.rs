@@ -1,8 +1,13 @@
 #![feature(linkage)]
 #![feature(io_error_more)]
+#![feature(thread_local)]
 #[warn(unused_variables)]
 use std::sync::Mutex;
-use std::{io::ErrorKind, path::PathBuf};
+use std::{
+    io::ErrorKind,
+    path::PathBuf,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;

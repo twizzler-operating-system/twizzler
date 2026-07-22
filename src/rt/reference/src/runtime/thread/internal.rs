@@ -15,7 +15,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
-use crate::runtime::{thread::MIN_STACK_ALIGN, OUR_RUNTIME};
+use crate::runtime::{alloc::LOCAL_ALLOCATOR, thread::MIN_STACK_ALIGN, OUR_RUNTIME};
 
 /// Internal representation of a thread, tracking the resources
 /// allocated for this thread.
@@ -26,6 +26,8 @@ pub struct InternalThread {
     args_box: usize,
     pub(super) id: u32,
     pub(super) tls: *mut Tcb<RuntimeThreadControl>,
+    tls_alloc_base: *mut u8,
+    tls_layout: Layout,
     name: Mutex<Option<CString>>,
 }
 
@@ -37,6 +39,8 @@ impl InternalThread {
         args_box: usize,
         id: u32,
         tls: *mut Tcb<RuntimeThreadControl>,
+        tls_alloc_base: *mut u8,
+        tls_layout: Layout,
     ) -> Self {
         Self {
             repr_handle,
@@ -46,6 +50,8 @@ impl InternalThread {
             id,
             tls,
             name: Mutex::new(None),
+            tls_alloc_base,
+            tls_layout,
         }
     }
 
@@ -102,7 +108,7 @@ impl Drop for InternalThread {
                 let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
                 drop(_args);
             }
-            tracing::debug!("TODO: drop TLS");
+            LOCAL_ALLOCATOR.dealloc(self.tls_alloc_base, self.tls_layout);
         }
     }
 }

@@ -1999,6 +1999,8 @@ name = "ferroc"
 version = "1.0.0-pre.4-twz"
 dependencies = [
  "array-macro",
+ "libc",
+ "twizzler-abi",
 ]
 
 [[package]]

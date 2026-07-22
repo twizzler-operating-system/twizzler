@@ -351,7 +351,7 @@ pub fn check_timed_out_mutexes() {
 
     let int = crate::interrupt::disable();
     let at = ALL_TRACKERS.lock();
-    emerglogln!("checking {} threads for timed out mutexes", at.len());
+    //emerglogln!("checking {} threads for timed out mutexes", at.len());
     let mut any = false;
     for th in at.iter() {
         let Some(lock_tracker) = th.as_ref() else {

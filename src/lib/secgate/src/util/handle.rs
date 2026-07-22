@@ -109,6 +109,9 @@ impl<ServerData> HandleMgr<ServerData> {
 
     pub fn gc_handles(&mut self) {
         fn sctx_still_valid(id: &ObjID) -> bool {
+            if id.raw() == 0 {
+                return true;
+            }
             let r = sys_object_stat(*id).is_ok();
             r
         }

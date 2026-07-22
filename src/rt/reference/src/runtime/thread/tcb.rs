@@ -81,7 +81,7 @@ impl TlsGenMgr {
         &mut self,
         mygen: Option<u64>,
         new_tcb_data: impl FnOnce() -> T,
-    ) -> Option<(*mut Tcb<T>, Layout)> {
+    ) -> Option<(*mut Tcb<T>, Layout, *mut u8)> {
         let cc = monitor_api::get_comp_config();
         let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
         if mygen.is_some_and(|mygen| mygen == template.gen) {
@@ -98,7 +98,7 @@ impl TlsGenMgr {
         unsafe {
             let tcb = tlsgen.template.init_new_tls_region(new, new_tcb_data());
 
-            Some((tcb, template.layout))
+            Some((tcb, template.layout, new))
         }
     }
 

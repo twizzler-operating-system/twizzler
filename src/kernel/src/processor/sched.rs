@@ -749,9 +749,11 @@ pub fn schedule(flags: SchedFlags) {
     do_schedule(flags);
     interrupt::set(istate);
     let cur = current_thread_ref().unwrap();
-    // Always check if we need to suspend before returning control.
-    cur.maybe_suspend_self();
-    cur.maybe_exit();
+
+    if flags.contains(SchedFlags::REINSERT) {
+        cur.maybe_suspend_self();
+        cur.maybe_exit();
+    }
 }
 
 pub fn needs_reschedule(ticking: bool) -> bool {

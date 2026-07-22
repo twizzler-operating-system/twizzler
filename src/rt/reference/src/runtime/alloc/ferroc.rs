@@ -57,4 +57,4 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
     }
 }
 
-ferroc::config!(pub TwzFerroc => TwzFerrocBase);
+ferroc::config!(pub TwzFerroc => TwzFerrocBase: pthread);

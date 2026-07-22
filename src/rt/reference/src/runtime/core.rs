@@ -302,13 +302,14 @@ impl ReferenceRuntime {
         let mut tg = TLS_GEN_MGR.lock();
         let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
+        let (tls, tls_layout, tls_alloc_base) = preinit_unwrap(tls);
         let _start_3 = Instant::now();
-        twizzler_abi::syscall::sys_thread_settls(preinit_unwrap(tls).0 as u64);
+        twizzler_abi::syscall::sys_thread_settls(tls as u64);
         let _start_4 = Instant::now();
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
         let _start_5 = Instant::now();
-        libc_init_tcb(preinit_unwrap(tls).0);
-        self.init_core_thread(preinit_unwrap(tls).0);
+        libc_init_tcb(tls);
+        self.init_core_thread(tls, tls_alloc_base, tls_layout);
         if !unsafe { __mlibc_entry_from_rust.is_null() } {
             let mlibc_entry_from_rust = unsafe {
                 std::mem::transmute::<_, extern "C" fn(*mut usize, *mut u8)>(

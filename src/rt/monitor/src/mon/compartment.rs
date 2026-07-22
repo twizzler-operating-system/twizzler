@@ -268,6 +268,12 @@ impl super::Monitor {
         thread: ObjID,
         desc: Option<Descriptor>,
     ) -> Result<CompartmentInfoRaw, TwzError> {
+        tracing::info!(
+            "get_compartment_info: instance = {}, thread = {}, desc = {:?}",
+            instance,
+            thread,
+            desc
+        );
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
             *self.locks.lock(ThreadKey::get().unwrap());
         let comp_id = desc
@@ -276,6 +282,12 @@ impl super::Monitor {
             .ok_or(TwzError::INVALID_ARGUMENT)?;
 
         let name = comps.get(comp_id)?.name.clone();
+        if comps.get(instance).is_err() {
+            tracing::warn!(
+                "get_compartment_info: instance {} not found in comps",
+                instance
+            );
+        }
         let pt = comps.get_mut(instance)?.get_per_thread(thread);
         let name_len = pt.write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;

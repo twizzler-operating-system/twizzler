@@ -166,7 +166,7 @@ impl<T> Mutex<T> {
                 current_thread_ref().map(|ct| ct.print_locks());
             }
             if i % 10000 == 0 {
-                check_timed_out_mutexes();
+                //check_timed_out_mutexes();
                 with_lock_tracker(|lt| lt.clear_intended_mutex());
                 check_timed_out_requests();
                 with_lock_tracker(|lt| lt.intend_to_lock_mutex(caller, start_time));

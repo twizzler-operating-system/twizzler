@@ -2,7 +2,7 @@ use std::{
     alloc::GlobalAlloc,
     ptr::NonNull,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         OnceLock,
     },
 };
@@ -67,12 +67,32 @@ fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
     }
 }
 
+fn try_switch_allocator_is_done() -> bool {
+    static SWITCHED: AtomicU32 = AtomicU32::new(0);
+    if SWITCHED.load(Ordering::Acquire) == 2 {
+        return true;
+    }
+    if SWITCHED.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) == Ok(0) {
+        LOCAL_ALLOCATOR.freeze_early_allocs();
+        SWITCHED.store(2, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
         {
-            return LOCAL_ALLOCATOR.alloc(layout);
+            let r = LOCAL_ALLOCATOR.alloc_early(layout);
+            return r;
+        }
+
+        if !try_switch_allocator_is_done() {
+            let r = LOCAL_ALLOCATOR.alloc_early(layout);
+            return r;
         }
 
         print_comp_name(layout, false);
@@ -91,7 +111,11 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
         {
-            return LOCAL_ALLOCATOR.alloc_zeroed(layout);
+            return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
+        }
+
+        if !try_switch_allocator_is_done() {
+            return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
         }
 
         print_comp_name(layout, false);
@@ -115,7 +139,8 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return LOCAL_ALLOCATOR.dealloc(ptr, layout);
         }
 
-        if LOCAL_ALLOCATOR.get_id_from_ptr(ptr).is_some() {
+        if LOCAL_ALLOCATOR.is_ptr_early_alloc(ptr) {
+            twizzler_abi::klog_println!("dealloc: {:p} {:x} (FAIL)", ptr, layout.size());
             return;
         }
 

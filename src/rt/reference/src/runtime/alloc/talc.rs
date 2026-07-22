@@ -59,10 +59,28 @@ impl LocalAllocator {
             }
         })
     }
+
+    pub fn is_ptr_early_alloc(&self, ptr: *const u8) -> bool {
+        let slot = ptr as usize / MAX_SIZE;
+        let inner = self.inner.lock();
+        inner
+            .early_talc
+            .oom_handler
+            .objects
+            .iter()
+            .any(|info| info.0 == slot)
+    }
+
+    pub fn freeze_early_allocs(&self) {
+        let mut inner = self.inner.lock();
+        inner.early_allocs_frozen = true;
+    }
 }
 
 struct LocalAllocatorInner {
     talc: Talc<RuntimeOom>,
+    early_talc: Talc<RuntimeOom>,
+    early_allocs_frozen: bool,
 }
 
 struct RuntimeOom {
@@ -217,6 +235,27 @@ unsafe impl GlobalAlloc for LocalAllocator {
     }
 }
 
+impl LocalAllocator {
+    pub fn alloc_early(&self, layout: Layout) -> *mut u8 {
+        let layout =
+            Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
+                .expect("layout alignment bump failed");
+        let mut inner = self.inner.lock();
+        let ptr = unsafe { inner.do_alloc_early(layout) };
+        ptr
+    }
+
+    pub fn alloc_zeroed_early(&self, layout: Layout) -> *mut u8 {
+        let layout =
+            Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
+                .expect("layout alignment bump failed");
+        let mut inner = self.inner.lock();
+        let ptr = unsafe { inner.do_alloc_early(layout) };
+        unsafe { ptr.write_bytes(0, layout.size()) };
+        ptr
+    }
+}
+
 impl LocalAllocatorInner {
     const fn new() -> Self {
         Self {
@@ -224,14 +263,28 @@ impl LocalAllocatorInner {
                 objects: Vec::new_in(FailAlloc),
                 list_obj: None,
             }),
+            early_talc: Talc::new(RuntimeOom {
+                objects: Vec::new_in(FailAlloc),
+                list_obj: None,
+            }),
+            early_allocs_frozen: false,
         }
     }
 
     unsafe fn do_alloc(&mut self, layout: Layout) -> *mut u8 {
+        if !self.early_allocs_frozen {
+            return self.early_talc.malloc(layout).unwrap().as_ptr();
+        }
         self.talc.malloc(layout).unwrap().as_ptr()
     }
 
     unsafe fn do_dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        if !self.early_allocs_frozen {
+            return;
+        }
         self.talc.free(NonNull::new(ptr).unwrap(), layout);
+    }
+    unsafe fn do_alloc_early(&mut self, layout: Layout) -> *mut u8 {
+        self.early_talc.malloc(layout).unwrap().as_ptr()
     }
 }

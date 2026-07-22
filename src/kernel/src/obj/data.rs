@@ -380,10 +380,7 @@ impl Object {
             let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
             let large_page = page.align_down(nr_pages_for_large);
             let pre_covered = page - large_page;
-            let mut alloc = FrameAllocator::new(
-                FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
-                PHYS_LEVEL_LAYOUTS[1],
-            );
+            let mut alloc = FrameAllocator::new(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1]);
             if let Some(large_frame) = alloc.try_allocate() {
                 guard.map_page(large_page.as_byte_offset() as u64, large_frame)?;
                 page = large_page.offset(nr_pages_for_large);
@@ -398,6 +395,12 @@ impl Object {
             };
         }
 
+        log::info!(
+            "ensure_in_core: ensuring {} pages in core for object {} starting at {:x}",
+            page_count,
+            self.id(),
+            page.as_byte_offset()
+        );
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
             if guard.is_empty_at_level(offset, 0) {
