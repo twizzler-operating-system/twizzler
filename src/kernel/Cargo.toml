@@ -42,7 +42,6 @@ heapless = { workspace = true }
 hex-literal = { workspace = true }
 twizzler-security = { workspace = true, features = ["kernel"] }
 itertools = { workspace = true }
-no-std-moving-average = "0.3"
 ferroc = { git = "https://github.com/Js2xxx/ferroc", default-features = false, features = [
 ] }
 

@@ -292,7 +292,7 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
 }
 
 fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqKind) {
-    logln!("pager returned error: {} for {:?}", err, request);
+    log::warn!("pager returned error: {} for {:?}", err, request);
     match err {
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {

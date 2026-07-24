@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 
-use no_std_moving_average::MovingAverage;
 use twizzler_abi::syscall::{ClockInfo, FEMTOS_PER_NANO, FemtoSeconds, TimeSpan, TimeStat};
 
 use crate::spinlock::Spinlock;
@@ -58,8 +57,31 @@ pub fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
     TICK_SOURCES.lock().get(0).cloned().flatten()
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct MovingAverage {
+    sum: u64,
+    count: u64,
+}
+
+impl MovingAverage {
+    // Adds a new value to the average safely
+    fn add(&mut self, value: u64) {
+        self.count += 1;
+        let current_avg = self.get();
+        if value >= current_avg {
+            self.sum += (value - current_avg) / self.count;
+        } else {
+            self.sum -= (current_avg - value) / self.count;
+        }
+    }
+
+    fn get(&self) -> u64 {
+        if self.count == 0 { 0 } else { self.sum }
+    }
+}
+
 pub struct TimeStatCollector {
-    running: MovingAverage<u64, u128, 10>,
+    running: MovingAverage,
     count: usize,
     mean: u128,
     running_mean: u128,
@@ -70,8 +92,9 @@ pub struct TimeStatCollector {
 
 impl TimeStatCollector {
     pub fn new() -> Self {
+        let running = MovingAverage::default();
         Self {
-            running: MovingAverage::new(),
+            running,
             count: 0,
             mean: 0,
             variance: 0,
@@ -86,20 +109,21 @@ impl TimeStatCollector {
         if sample > u64::MAX as u128 {
             return;
         }
-        self.running_mean = self.running.average(sample as u64) as u128;
+        self.running.add(sample as u64);
+        self.running_mean = self.running.get() as u128;
         if sample < self.min {
             self.min = sample;
         }
         if sample > self.max {
             self.max = sample;
         }
-        let old_total = self.mean * self.count as u128;
-        let old_var = self.variance * self.count as u128;
+        let old_total = self.mean.wrapping_mul(self.count as u128);
+        let old_var = self.variance.wrapping_mul(self.count as u128);
         self.count += 1;
         self.mean = (old_total + sample) / self.count as u128;
 
         let delta = sample as i128 - self.mean as i128;
-        self.variance = (old_var + (delta * delta) as u128) / self.count as u128;
+        self.variance = (old_var + delta.wrapping_mul(delta) as u128) / self.count as u128;
     }
 
     pub fn count(&self) -> usize {

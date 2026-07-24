@@ -56,10 +56,20 @@ pub fn check_timed_out_requests() {
 }
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
+    if id.raw() == 0 {
+        return None;
+    }
     loop {
-        match crate::obj::lookup_object(id, LookupFlags::empty()) {
+        let lo = crate::obj::lookup_object(id, LookupFlags::empty());
+        log::info!("lookup_object_and_wait: id = {}, result = {:?}", id, lo);
+        match lo {
             crate::obj::LookupResult::Found(arc) => return Some(arc),
             crate::obj::LookupResult::WasDeleted => return None,
+            crate::obj::LookupResult::NotFound => {
+                if crate::obj::is_no_exist(id) {
+                    return None;
+                }
+            }
             _ => {}
         }
 

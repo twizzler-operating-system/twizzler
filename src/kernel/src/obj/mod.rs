@@ -384,7 +384,7 @@ impl ObjectManager {
 
     fn lookup_object(&self, id: ObjID, _flags: LookupFlags) -> LookupResult {
         if self.no_exist.lock().contains(&id) {
-            return LookupResult::WasDeleted;
+            return LookupResult::NotFound;
         }
         if let Some(res) = self
             .map
@@ -470,6 +470,10 @@ pub fn register_object(obj: Arc<Object>) {
 
 pub fn no_exist(id: ObjID) {
     obj_manager().no_exist.lock().insert(id);
+}
+
+pub fn is_no_exist(id: ObjID) -> bool {
+    obj_manager().no_exist.lock().contains(&id)
 }
 
 pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {

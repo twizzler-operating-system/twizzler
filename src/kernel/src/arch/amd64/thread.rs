@@ -416,6 +416,10 @@ impl Thread {
         self.arch.user_fs.store(tls, Ordering::SeqCst);
     }
 
+    pub fn get_tls(&self) -> u64 {
+        self.arch.user_fs.load(Ordering::SeqCst)
+    }
+
     fn save_extended_state(&self) {
         let do_xsave = use_xsave();
         unsafe {

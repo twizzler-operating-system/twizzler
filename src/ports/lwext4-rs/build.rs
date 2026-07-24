@@ -19,6 +19,7 @@ fn main() {
         .arg("-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
         .arg("-DCMAKE_SYSTEM_NAME=Generic")
         .arg("-DLIB_ONLY=True")
+        .arg("-DCONFIG_HAVE_OWN_ERRNO=1")
         .arg(format!("-DCMAKE_SYSTEM_PROCESSOR={}", arch))
         .arg("-G")
         .arg("Ninja")

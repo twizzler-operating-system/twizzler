@@ -214,7 +214,7 @@ pub async fn handle_kernel_request(
     qid: u32,
     request: RequestFromKernel,
 ) -> Vec<CompletionToKernel> {
-    tracing::debug!("handling kernel request {:?}", request);
+    tracing::info!("handling kernel request {:?}", request);
 
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range, flags) => {

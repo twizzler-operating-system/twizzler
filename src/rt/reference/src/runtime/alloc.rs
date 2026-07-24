@@ -7,9 +7,11 @@ use std::{
     },
 };
 
+use monitor_api::THREAD_STARTED;
 use twizzler_abi::{object::ObjID, syscall::sys_thread_gettls};
 
 use super::{ReferenceRuntime, RuntimeState};
+use crate::runtime::thread::with_current_thread;
 
 mod ferroc;
 mod talc;
@@ -83,14 +85,23 @@ fn try_switch_allocator_is_done() -> bool {
 
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
+            || tls.is_null()
         {
             let r = LOCAL_ALLOCATOR.alloc_early(layout);
             return r;
         }
 
         if !try_switch_allocator_is_done() {
+            let r = LOCAL_ALLOCATOR.alloc_early(layout);
+            return r;
+        }
+
+        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        if !ts {
+            // TODO: this leaks the stuff that is allocated in libc's TLS
             let r = LOCAL_ALLOCATOR.alloc_early(layout);
             return r;
         }
@@ -108,14 +119,23 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
     }
 
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
+            || tls.is_null()
         {
             return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
         }
 
         if !try_switch_allocator_is_done() {
             return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
+        }
+
+        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        if !ts {
+            // TODO: this leaks the stuff that is allocated in libc's TLS
+            let r = LOCAL_ALLOCATOR.alloc_early(layout);
+            return r;
         }
 
         print_comp_name(layout, false);
@@ -140,6 +160,15 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         }
 
         if LOCAL_ALLOCATOR.is_ptr_early_alloc(ptr) {
+            return;
+        }
+        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
+        if tls.is_null() {
+            return;
+        }
+
+        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        if !ts {
             return;
         }
 

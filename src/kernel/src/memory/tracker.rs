@@ -526,6 +526,12 @@ impl FrameAllocator {
     }
 
     pub fn precharge(&mut self, count: usize, flags: FrameAllocFlags) {
+        if count > 16 {
+            log::warn!(
+                "frame allocator precharge: requested {} frames, which is a lot",
+                count
+            );
+        }
         if self.precharge.len() >= count {
             return;
         }

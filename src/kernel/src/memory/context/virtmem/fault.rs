@@ -304,6 +304,7 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
     let mut stats = get_fault_stats().lock();
     stats.time.add_sample((end_time - start_time).into());
     stats.count += 1;
+    drop(stats);
     if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
         log::trace!(
             "done page-fault: {:?} {:?} {:?} ip={:?}",

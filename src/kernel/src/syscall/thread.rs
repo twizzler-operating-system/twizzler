@@ -62,6 +62,9 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
         ThreadControl::SetTls => {
             current_thread_ref().unwrap().set_tls(arg);
         }
+        ThreadControl::GetTls => {
+            return [current_thread_ref().unwrap().get_tls(), 0];
+        }
         ThreadControl::Exit => {
             crate::thread::exit(arg);
         }

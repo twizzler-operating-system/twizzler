@@ -10,7 +10,10 @@ use itertools::Itertools;
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
-use twizzler::object::{MetaExt, MetaInfo, ObjID, ObjectHandle};
+use twizzler::{
+    error::ObjectError,
+    object::{MetaExt, MetaInfo, ObjID, ObjectHandle},
+};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
     pager::{
@@ -759,6 +762,11 @@ impl PagerData {
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
+        tracing::info!(
+            "lookup_object: {:?} (ino = {:?})",
+            id,
+            objid_to_ino(id.raw())
+        );
         if objid_to_ino(id.raw()).is_some() {
             return Ok(ObjectInfo::new(
                 LifetimeType::Persistent,
@@ -769,7 +777,10 @@ impl PagerData {
             ));
         }
 
-        ctx.paged_ostore(None)?.len(id.raw()).await?;
+        ctx.paged_ostore(None)?
+            .len(id.raw())
+            .await
+            .map_err(|_| ObjectError::NoSuchObject)?;
         Ok(ObjectInfo::new(
             LifetimeType::Persistent,
             BackingType::Normal,

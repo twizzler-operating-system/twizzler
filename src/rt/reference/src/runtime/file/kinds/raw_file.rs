@@ -74,7 +74,7 @@ impl RawFile {
     }
 
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
-        let handle = OUR_RUNTIME.map_object(obj_id, flags).unwrap();
+        let handle = OUR_RUNTIME.map_object(obj_id, flags)?;
         let len = if let Some(me) = handle.find_meta_ext(MEXT_SIZED) {
             me.value.load(Ordering::SeqCst)
         } else {

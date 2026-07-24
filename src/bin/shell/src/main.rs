@@ -1056,13 +1056,22 @@ fn main() {
             let prompt = format!("root@twizzler [{}]# ", cd.display());
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS_RAW)
                 .unwrap();
-            let line = match editor.readline(prompt.as_str(), &mut io) {
-                Ok(line) => line,
-                Err(_) => break,
-            };
+
+            let mut line = None;
+            let read_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(read_line) = editor.readline(prompt.as_str(), &mut io) {
+                    line = Some(read_line.to_string());
+                }
+            }));
             twizzler_rt_abi::io::twz_rt_fd_set_config(0, IO_REGISTER_TERMIOS, DEFAULT_TERMIOS)
                 .unwrap();
-            line.to_string()
+            if read_res.is_err() {
+                return;
+            }
+            let Some(line) = line else {
+                return;
+            };
+            line
         } else {
             print!("{}@{} [{}]> ", user, host, cd.display());
             stdout().flush().unwrap();
