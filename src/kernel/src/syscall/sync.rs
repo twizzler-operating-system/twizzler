@@ -1,5 +1,5 @@
 use core::{
-    sync::atomic::{AtomicU32, AtomicU64},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -272,7 +272,6 @@ pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
 }
 
 fn thread_sync_cb_timeout(thread: ThreadRef) {
-    //log::info!("thread sync timeout");
     if thread.reset_sync_sleep() {
         add_to_requeue(thread);
     }
@@ -292,6 +291,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     let guard = thread.enter_critical();
     thread.set_sync_sleep_done();
     finish_blocking(guard);
+    let _guard = thread.enter_critical();
     remove_from_requeue(&thread);
     timeout_key.release();
     thread.reset_sync_sleep();
@@ -318,9 +318,12 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
         current_thread_ref().unwrap().objid()
     );
 
-    thread.reset_sync_sleep_done();
+    let _guard = thread.enter_critical();
     thread.reset_sync_sleep();
+    thread.reset_sync_sleep_done();
     remove_from_requeue(&thread);
+    drop(_guard);
+    undo_sleep(&se);
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let done = Instant::now();
     log::trace!(
@@ -428,7 +431,7 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     let prep_done = Instant::now();
     let thread = current_thread_ref().unwrap();
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
-    let timeout_key = {
+    let (timeout_key, _guard) = {
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
@@ -445,8 +448,9 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         requeue_all();
         let guard = thread.enter_critical();
         thread.set_sync_sleep_done();
-        if should_sleep {
+        let guard = if should_sleep {
             finish_blocking(guard);
+            thread.enter_critical()
         } else {
             if thread.reset_sync_sleep() {
                 add_to_requeue(thread.clone());
@@ -457,16 +461,19 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
             } else {
                 drop(guard);
             }
-        }
-        timeout_key
+
+            thread.enter_critical()
+        };
+        (timeout_key, guard)
     };
 
     let woke_up = Instant::now();
+    thread.reset_sync_sleep();
+    thread.reset_sync_sleep_done();
+    drop(_guard);
     for op in &unsleeps {
         undo_sleep(op);
     }
-    thread.reset_sync_sleep_done();
-    thread.reset_sync_sleep();
     remove_from_requeue(&thread);
     drop(unsleeps);
 

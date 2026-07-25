@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use secgate::TwzError;
 use smoltcp::{
     phy::{Device as _, TxToken},
@@ -31,7 +33,7 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
         if !device.has_work() {
             let sleep = device.get_sleep();
             if !device.has_work() {
-                let _ = sys_thread_sync(&mut [sleep], None);
+                let _ = sys_thread_sync(&mut [sleep], Some(Duration::from_millis(100)));
             }
         }
     }
@@ -100,7 +102,8 @@ pub fn device_thread_main(
                 waitpoints[i] = wp;
             }
             if !any_ready {
-                let _ = sys_thread_sync(waitpoints.as_mut_slice(), None);
+                let _ =
+                    sys_thread_sync(waitpoints.as_mut_slice(), Some(Duration::from_millis(100)));
             }
         }
     }

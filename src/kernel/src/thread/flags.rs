@@ -13,6 +13,7 @@ pub(super) const THREAD_IS_EXITING: u32 = 32;
 pub(super) const THREAD_IS_SUSPENDED: u32 = 64;
 pub(super) const THREAD_MUST_SUSPEND: u32 = 128;
 pub(crate) const THREAD_MUST_EXIT: u32 = 256;
+pub(crate) const THREAD_MUTEX_WAIT: u32 = 512;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
@@ -65,6 +66,18 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_EXITING != 0
     }
 
+    pub fn set_mutex_wait(&self, set: bool) {
+        if set {
+            self.flags.fetch_or(THREAD_MUTEX_WAIT, Ordering::SeqCst);
+        } else {
+            self.flags.fetch_and(!THREAD_MUTEX_WAIT, Ordering::SeqCst);
+        }
+    }
+
+    pub fn get_mutex_wait(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_MUTEX_WAIT != 0
+    }
+
     pub fn set_sync_sleep(&self) {
         self.flags.fetch_or(THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
     }
@@ -79,6 +92,10 @@ impl Thread {
     pub fn set_sync_sleep_done(&self) {
         self.flags
             .fetch_or(THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+    }
+
+    pub fn has_sync_sleep_done(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_IS_SYNC_SLEEP_DONE != 0
     }
 
     pub fn reset_sync_sleep_done(&self) -> bool {

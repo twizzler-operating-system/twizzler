@@ -294,7 +294,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = true;
+const DISABLE_LOCK_TRACKING: bool = false;
 
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
     if DISABLE_LOCK_TRACKING {

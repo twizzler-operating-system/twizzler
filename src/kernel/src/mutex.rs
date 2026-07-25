@@ -199,6 +199,7 @@ impl<T> Mutex<T> {
 
                 let mut reinsert = true;
                 if let Some(thread) = current_thread {
+                    thread.set_mutex_wait(true);
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
@@ -218,7 +219,14 @@ impl<T> Mutex<T> {
             crate::arch::processor::spin_wait_iteration();
             if let Some(guard) = guard {
                 finish_blocking(guard);
+                if let Some(ct) = current_thread_ref() {
+                    assert!(ct.get_mutex_wait());
+                }
             }
+        }
+
+        if let Some(ct) = current_thread_ref() {
+            ct.set_mutex_wait(false);
         }
 
         let end_time = Instant::now();

@@ -23,18 +23,17 @@ const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
 #[secgate::entry(lib = "twizzler-net")]
 pub fn start_network() -> Result<()> {
+    if NETINFO.get().is_some() {
+        eprintln!("cannot call start_network more than once");
+        return Err(TwzError::NOT_SUPPORTED);
+    }
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::INFO)
+            .with_max_level(Level::TRACE)
             .without_time()
             .finish(),
     )
     .unwrap();
-
-    if NETINFO.get().is_some() {
-        tracing::info!("cannot call start_network more than once");
-        return Err(TwzError::NOT_SUPPORTED);
-    }
 
     let device = virtio_net::get_device();
     let _device = device.clone();
