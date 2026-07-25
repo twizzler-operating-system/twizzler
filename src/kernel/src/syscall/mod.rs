@@ -573,6 +573,17 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
+        Syscall::Enumerate => {
+            let res = object::sys_enumerate(
+                context.arg0(),
+                context.arg1(),
+                context.arg2(),
+                context.arg3(),
+            )
+            .map(|r| r as u64);
+            let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
         _ => {
             context.set_return_values(1u64, 0u64);
         }

@@ -14,7 +14,7 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
     loop {
         while let Some(mut rx) = device.get_rx() {
             let buf = rx.packet_mut();
-            if false {
+            if true {
                 let f = EthernetFrame::new_unchecked(&mut *buf);
                 let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
                 eprintln!("device thread got {}", pp);

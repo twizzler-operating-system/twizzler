@@ -1,0 +1,9 @@
+[package]
+name = "top"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { version = "0.99" }
+twizzler = { path = "../../lib/twizzler" }

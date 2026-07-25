@@ -31,7 +31,7 @@ use crate::{
         KERNEL_STACK_SIZE,
         ipi::ipi_exec,
         mp::get_processor,
-        sched::{SchedFlags, remove_thread, schedule, schedule_resched},
+        sched::{SchedFlags, remove_thread, schedule, schedule_resched, with_all_threads},
     },
     security::SecCtxMgr,
     spinlock::Spinlock,
@@ -83,6 +83,8 @@ pub struct Thread {
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
     pub last_pf_addr: AtomicU64,
+    pub last_pf_kind: AtomicU32,
+    pub last_pf_flags: AtomicU32,
     lock_tracker: Arc<LockTracker>,
     lock_tracker_index: Option<usize>,
 }
@@ -173,6 +175,8 @@ impl Thread {
             sched: ThreadSched::default(),
             pending_message: AtomicU64::new(0),
             last_pf_addr: AtomicU64::new(0),
+            last_pf_kind: AtomicU32::new(0),
+            last_pf_flags: AtomicU32::new(0),
             lock_tracker,
             lock_tracker_index,
         }
@@ -537,4 +541,19 @@ pub fn get_thread_stats() -> twizzler_abi::syscall::ThreadStats {
         nr_blocked,
         nr_pending_exit,
     }
+}
+
+pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
+    let mut count = 0;
+    with_all_threads(|all| {
+        all.values()
+            .skip(offset)
+            .take(buf.len())
+            .enumerate()
+            .for_each(|(i, t)| {
+                buf[i] = t.objid();
+                count += 1;
+            });
+    });
+    Ok(count)
 }

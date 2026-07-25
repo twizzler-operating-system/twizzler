@@ -7,7 +7,6 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use dynlink::engines::twizzler;
 use monitor_api::{RuntimeThreadControl, Tcb, THREAD_STARTED};
 use tracing::trace;
 use twizzler_abi::{
@@ -26,7 +25,7 @@ use twizzler_rt_abi::{
 use super::internal::InternalThread;
 use crate::{
     runtime::{
-        alloc::LOCAL_ALLOCATOR,
+        alloc::{LocalAllocator, LOCAL_ALLOCATOR},
         thread::{
             libc_init_tcb,
             tcb::{trampoline, TLS_GEN_MGR},
@@ -89,10 +88,9 @@ impl Drop for CrossThread {
     }
 }
 
-#[derive(Default)]
 struct ThreadManagerInner {
-    all_threads: BTreeMap<u32, InternalThread>,
-    cross_threads: BTreeMap<ObjID, CrossThread>,
+    all_threads: BTreeMap<u32, InternalThread, &'static LocalAllocator>,
+    cross_threads: BTreeMap<ObjID, CrossThread, &'static LocalAllocator>,
     // Threads that have exited, but we haven't cleaned up yet.
     to_cleanup: Vec<InternalThread>,
     // Basic unique-ID system.
@@ -107,10 +105,10 @@ impl ThreadManagerInner {
     const fn new() -> Self {
         Self {
             next_id: 2, // 0 is reserved, 1 is the core thread.
-            all_threads: BTreeMap::new(),
+            all_threads: BTreeMap::new_in(&LOCAL_ALLOCATOR),
             to_cleanup: vec![],
             id_stack: vec![],
-            cross_threads: BTreeMap::new(),
+            cross_threads: BTreeMap::new_in(&LOCAL_ALLOCATOR),
         }
     }
 
@@ -193,12 +191,6 @@ impl ReferenceRuntime {
         tls_layout: Layout,
     ) {
         let thid = sys_thread_self_id();
-        twizzler_abi::klog_println!(
-            "init_core_thread: TLS at {:p}, TLS alloc base at {:p}, TLS layout = {:?}",
-            tls,
-            tls_alloc_base,
-            tls_layout
-        );
         let thread_repr_obj = self
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .unwrap();
@@ -243,33 +235,14 @@ impl ReferenceRuntime {
             return Ok(());
         }
 
-        twizzler_abi::klog_println!(
-            "cross-compartment entry: no TLS for thread {:x}, allocating new TLS",
-            twizzler_abi::syscall::sys_thread_self_id()
-        );
         let id = inner.next_id().freeze();
-        twizzler_abi::klog_println!(
-            "cross-compartment entry: allocated new thread ID {} for thread {:x}",
-            id,
-            twizzler_abi::syscall::sys_thread_self_id()
-        );
         drop(inner);
         let (tls, layout, alloc_base) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
-        twizzler_abi::klog_println!("done allocating");
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
-        twizzler_abi::klog_println!("libcinit");
         libc_init_tcb(tls);
-
-        twizzler_abi::klog_println!(
-            "cross-compartment entry: allocated TLS at {:p}, TLS alloc base at {:p}, TLS layout = {:?}, self = {:p}",
-            tls,
-            alloc_base,
-            layout,
-            unsafe {&*tls}.self_ptr
-        );
 
         with_current_thread(|cur| {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);

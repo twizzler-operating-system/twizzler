@@ -1,12 +1,9 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 use core::{cell::UnsafeCell, sync::atomic::AtomicBool};
-
-use ferroc::heap;
 
 use crate::{
     arch::processor::spin_wait_iteration,
     instant::Instant,
-    processor::sched::with_each_thread,
     spinlock::Spinlock,
     thread::{Thread, current_thread_ref},
 };
@@ -297,7 +294,12 @@ impl LockTrackerInner {
     }
 }
 
+const DISABLE_LOCK_TRACKING: bool = true;
+
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
+    if DISABLE_LOCK_TRACKING {
+        return R::default();
+    }
     let Some(ct) = current_thread_ref() else {
         return R::default();
     };

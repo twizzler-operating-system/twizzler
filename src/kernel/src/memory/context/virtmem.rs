@@ -185,8 +185,11 @@ fn get_all_contexts() -> &'static Mutex<BTreeMap<u64, Arc<VirtContext>>> {
 
 pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
     let all = get_all_contexts();
-    let contexts = all.lock();
-    contexts.values().for_each(cb);
+    let contexts = {
+        let contexts = all.lock();
+        contexts.values().cloned().collect::<Vec<_>>()
+    };
+    contexts.iter().for_each(cb);
 }
 
 impl VirtContext {
@@ -326,12 +329,24 @@ impl VirtContext {
         }
         let arch = secctx.remove(&sctx);
 
+        drop(secctx);
+
         if let Some(arch) = arch {
+            let regions = self.regions.lock();
+            let capacity = regions.mappings().count();
+            drop(regions);
+
+            let mut region_list = alloc::vec::Vec::with_capacity(capacity);
             let regions = self.regions.lock();
             for region in regions.mappings() {
                 if region.range.start.raw() == 0 {
                     continue;
                 }
+                region_list.push(region.clone());
+            }
+            drop(regions);
+
+            for region in region_list {
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
                 let did_unmap = arch.unmap(cursor, &mut fa);
                 if region.stable.is_none() {
@@ -344,6 +359,7 @@ impl VirtContext {
             }
         }
 
+        secctx = self.secctx.lock();
         // Rebuild the target cache. We have to do it this way because we cannot allocate
         // memory while holding the target_cache lock (as it's a spinlock).
         let mut new_target_cache = BTreeMap::new();

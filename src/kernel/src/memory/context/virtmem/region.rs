@@ -196,9 +196,13 @@ impl MapRegion {
 
         let mut used_pager = false;
         let mut all_were_present = true;
-        let mut obj_page_tree = self.object.lock_page_tables();
+        let mut obj_page_tree = if let Some(stable) = self.stable.as_ref() {
+            stable.lock()
+        } else {
+            self.object.lock_page_tables()
+        };
         let prot = perms.effective(default_prot, self.prot);
-        if !pfflags.contains(PageFaultFlags::PRESENT) {
+        if !pfflags.contains(PageFaultFlags::PRESENT) && self.stable.is_none() {
             obj_page_tree = self.object.ensure_in_core(
                 obj_page_tree,
                 page_number,
@@ -220,23 +224,7 @@ impl MapRegion {
             prot
         );
 
-        if let Some(stable) = self.stable.as_ref() {
-            log::trace!(
-                "fault: ensuring object {} page {} is mapped in stable page tables",
-                self.object().id(),
-                page_number
-            );
-            obj_page_tree = stable.lock();
-        }
-
-        if all_were_present {
-            let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
-            let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
-            // TODO: is this always user?
-            let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
-            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
-        }
-
+        let mut did_cow = false;
         if cause == MemoryAccessKind::Write {
             if !prot.contains(Protections::WRITE) {
                 log::error!(
@@ -249,7 +237,7 @@ impl MapRegion {
                 // TODO
                 return Err(ObjectError::MapFailed.into());
             }
-            let did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
+            did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
             log::trace!(
                 "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
                 page_number,
@@ -259,6 +247,21 @@ impl MapRegion {
                 did_cow,
                 self.object().use_pager()
             );
+        }
+
+        if all_were_present && !did_cow {
+            log::trace!(
+                "fault: all pages were present in object {} page {} (addr {:?}) (flags = {:?})",
+                self.object().id(),
+                page_number,
+                addr,
+                pfflags
+            );
+            let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
+            let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
+            // TODO: is this always user?
+            let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
+            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);

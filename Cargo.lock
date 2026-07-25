@@ -6393,15 +6393,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
-name = "slabmalloc"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b274c61b9873a19293c96f2bf132ebc51fe21f507a91a0e5df0ba6989073b7"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "sm3"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7218,6 +7209,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
+name = "top"
+version = "0.1.0"
+dependencies = [
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7474,7 +7474,6 @@ dependencies = [
  "rand_jitter",
  "rdrand",
  "sha2",
- "slabmalloc",
  "smccc",
  "stable-vec",
  "tar-no-std",

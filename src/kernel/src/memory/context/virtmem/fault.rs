@@ -44,34 +44,17 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
 
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    if flags.contains(PageFaultFlags::USER)
-        && !ip.is_kernel()
-        && !addr.is_kernel()
-        && addr.raw() & (MAX_SIZE as u64 - 1) > 0x10000000
-    {
-        crate::interrupt::disable();
-        if ip.raw() & 0xfffff == 0xbfa09 {
-            let bp = current_thread_ref().unwrap().read_bp();
-            log::info!(
-                "page-fault: {:?} {:?} {:?} ip={:?}, bp={:x} in thread {}",
-                addr,
-                cause,
-                flags,
-                ip,
-                bp,
-                current_thread_ref().map(|c| c.id()).unwrap_or(0)
-            );
-            //crate::panic::backtrace(true, None);
-
-            //loop {}
-        }
-    }
-
     if let Some(ct) = current_thread_ref() {
-        let old = ct
+        let old_addr = ct
             .last_pf_addr
             .swap(addr.raw(), core::sync::atomic::Ordering::SeqCst);
-        if old == addr.raw() {
+        let old_flags = ct
+            .last_pf_flags
+            .swap(flags.bits(), core::sync::atomic::Ordering::SeqCst);
+        let old_kind = ct
+            .last_pf_kind
+            .swap(cause as u32, core::sync::atomic::Ordering::SeqCst);
+        if old_addr == addr.raw() && old_flags == flags.bits() && old_kind == cause as u32 {
             log::debug!(
                 "page-fault: {:?} {:?} {:?} ip={:?} (repeated fault)",
                 addr,

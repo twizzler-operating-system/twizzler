@@ -1,20 +1,20 @@
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::{
-    mem::size_of,
     panic,
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
-use slabmalloc::{AllocationError, Allocator, LargeObjectPage, ObjectPage, ZoneAllocator};
 use twizzler_abi::trace::{KernelAllocationEvent, TraceEntryFlags, TraceKind};
 use twizzler_rt_abi::error::TwzError;
 
-use super::context::{Context, KernelMemoryContext};
+use super::context::KernelMemoryContext;
 use crate::{
     instant::Instant,
-    spinlock::Spinlock,
+    memory::context::{ContextRef, kernel_context},
+    once::Once,
+    processor::tls_ready,
     thread::current_thread_ref,
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
@@ -27,31 +27,43 @@ fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)
 }
 
-const EARLY_ALLOCATION_SIZE: usize = 1024 * 1024 * 2;
+const EARLY_ALLOCATION_SIZE: usize = 1024 * 1024 * 1;
 #[repr(align(64))]
 #[derive(Copy, Clone)]
 struct AlignedU8(u8);
 
-static mut EARLY_ALLOCATION_AREA: [AlignedU8; EARLY_ALLOCATION_SIZE] =
-    [AlignedU8(0); EARLY_ALLOCATION_SIZE];
-static EARLY_ALLOCATION_PTR: AtomicUsize = AtomicUsize::new(0);
-
-struct KernelAllocatorInner<Ctx: KernelMemoryContext + 'static> {
-    ctx: &'static Ctx,
-    zone: ZoneAllocator<'static>,
+#[repr(align(64))]
+struct EarlyAllocator {
+    early_allocation_region: [AlignedU8; EARLY_ALLOCATION_SIZE],
+    early_allocation_ptr: AtomicUsize,
 }
 
-pub struct KernelAllocator<Ctx: KernelMemoryContext + 'static> {
-    inner: Spinlock<Option<KernelAllocatorInner<Ctx>>>,
-    allocated_bytes: AtomicUsize,
-    early_allocated_bytes: AtomicUsize,
-}
+static EARLY_ALLOCATOR: EarlyAllocator = EarlyAllocator {
+    early_allocation_region: [AlignedU8(0); EARLY_ALLOCATION_SIZE],
+    early_allocation_ptr: AtomicUsize::new(0),
+};
 
-impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
+impl EarlyAllocator {
     fn early_alloc(&self, layout: Layout) -> *mut u8 {
-        let start = EARLY_ALLOCATION_PTR.load(Ordering::SeqCst);
-        let start = crate::utils::align(start, layout.align());
-        EARLY_ALLOCATION_PTR.store(start + layout.size(), Ordering::SeqCst);
+        if let Some(ctx) = KERNEL_CTX.poll() {
+            return ctx.allocate_chunk(layout).unwrap().as_ptr();
+        }
+        let start = loop {
+            let current = self.early_allocation_ptr.load(Ordering::SeqCst);
+            let start = crate::utils::align(current, layout.align());
+            if self
+                .early_allocation_ptr
+                .compare_exchange(
+                    current,
+                    start + layout.size(),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                break start;
+            }
+        };
         if start + layout.size() >= EARLY_ALLOCATION_SIZE {
             panic!("out of early memory");
         }
@@ -59,44 +71,32 @@ impl<Ctx: KernelMemoryContext + 'static> KernelAllocator<Ctx> {
         // and this is then used as allocated memory. Also, at this point, there is only 1 thread.
         #[allow(static_mut_refs)]
         unsafe {
-            EARLY_ALLOCATION_AREA.as_mut_ptr().add(start) as *mut u8
+            self.early_allocation_region.as_ptr().add(start) as *mut u8
         }
     }
 }
 
-impl<Ctx: KernelMemoryContext + 'static> KernelAllocatorInner<Ctx> {
-    fn allocate_page(&mut self) -> &'static mut ObjectPage<'static> {
-        let size = size_of::<ObjectPage>();
-        let chunk = self
-            .ctx
-            .allocate_chunk(Layout::from_size_align(size, size).unwrap())
-            .unwrap()
-            .as_ptr();
-        unsafe { &mut *(chunk as *mut ObjectPage<'static>) }
+pub struct KernelAllocator {
+    allocated_bytes: AtomicUsize,
+    early_allocated_bytes: AtomicUsize,
+}
+
+static KERNEL_CTX: Once<&'static ContextRef> = Once::new();
+
+impl KernelAllocator {
+    const fn new() -> Self {
+        Self {
+            allocated_bytes: AtomicUsize::new(0),
+            early_allocated_bytes: AtomicUsize::new(0),
+        }
     }
 
-    fn allocate_large_page(&mut self) -> &'static mut LargeObjectPage<'static> {
-        let size = size_of::<LargeObjectPage>();
-        let chunk = self
-            .ctx
-            .allocate_chunk(Layout::from_size_align(size, size).unwrap())
-            .unwrap()
-            .as_ptr();
-        unsafe { &mut *(chunk as *mut LargeObjectPage<'static>) }
-    }
-
-    fn allocate_chunk(&mut self, layout: Layout) -> Result<NonNull<u8>, TwzError> {
-        self.ctx.allocate_chunk(layout)
+    fn ctx(&self) -> &'static ContextRef {
+        KERNEL_CTX.call_once(|| kernel_context())
     }
 }
 
-static FERROC_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
-    inner: Spinlock::new(None),
-    allocated_bytes: AtomicUsize::new(0),
-    early_allocated_bytes: AtomicUsize::new(0),
-};
-
-unsafe impl<Context: KernelMemoryContext> ferroc::base::BaseAlloc for KernelAllocator<Context> {
+unsafe impl ferroc::base::BaseAlloc for KernelAllocator {
     const IS_ZEROED: bool = false;
 
     type Handle = NonNull<u8>;
@@ -108,21 +108,12 @@ unsafe impl<Context: KernelMemoryContext> ferroc::base::BaseAlloc for KernelAllo
         layout: Layout,
         _commit: bool,
     ) -> Result<ferroc::base::Chunk<Self>, Self::Error> {
-        let mut inner = self.inner.lock();
-        let inner = inner.as_mut().unwrap();
-
-        let ptr = inner.allocate_chunk(layout)?;
+        let ptr = self.ctx().allocate_chunk(layout)?;
         Ok(unsafe { ferroc::base::Chunk::new(ptr, layout, ptr) })
     }
 
     unsafe fn deallocate(chunk: &mut ferroc::base::Chunk<Self>) {
-        let mut inner = FERROC_ALLOCATOR.inner.lock();
-        let inner = inner.as_mut().unwrap();
-        unsafe {
-            inner
-                .ctx
-                .deallocate_chunk(chunk.layout(), chunk.pointer().cast())
-        };
+        unsafe { kernel_context().deallocate_chunk(chunk.layout(), chunk.pointer().cast()) };
     }
 }
 
@@ -156,6 +147,74 @@ fn trace_kalloc(layout: Layout, time: Duration, is_free: bool) {
     SKIP.store(false, Ordering::SeqCst);
 }
 
+ferroc::config!(pub FerrocAllocator => KernelAllocator);
+
+struct GlobalAllocWrapper;
+
+unsafe impl GlobalAlloc for GlobalAllocWrapper {
+    #[track_caller]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let start = Instant::now();
+        let early = !tls_ready() || KERNEL_CTX.poll().is_none();
+        let inner = FerrocAllocator.base();
+
+        if early {
+            inner
+                .early_allocated_bytes
+                .fetch_add(layout.size(), Ordering::SeqCst);
+            return EARLY_ALLOCATOR.early_alloc(layout);
+        } else {
+            inner
+                .allocated_bytes
+                .fetch_add(layout.size(), Ordering::SeqCst);
+        }
+
+        let ret = if layout.size() >= ferroc::config::SLAB_SIZE {
+            inner.ctx().allocate_chunk(layout).unwrap().as_ptr()
+        } else {
+            let _guard = current_thread_ref().map(|ct| ct.enter_critical());
+            FerrocAllocator.allocate(layout).unwrap().as_ptr().cast()
+        };
+
+        let end = Instant::now();
+        if false && current_thread_ref().is_some_and(|ct| ct.id() > 10) {
+            emerglogln!(
+                "{}: alloc: {}ns from {} ({} bytes)",
+                current_thread_ref().unwrap().id(),
+                (end - start).as_nanos(),
+                core::panic::Location::caller(),
+                layout.size()
+            );
+            //crate::panic::backtrace(false, None);
+        }
+        trace_kalloc(layout, end - start, false);
+        ret
+    }
+
+    #[track_caller]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let start = Instant::zero();
+        {
+            let early = !tls_ready() || KERNEL_CTX.poll().is_none();
+            if early {
+                return;
+            }
+            if ptr.is_null() {
+                return;
+            }
+            FerrocAllocator
+                .base()
+                .allocated_bytes
+                .fetch_sub(layout.size(), Ordering::SeqCst);
+            let nn = NonNull::new(ptr).unwrap();
+            let _guard = current_thread_ref().map(|ct| ct.enter_critical());
+            unsafe { FerrocAllocator.deallocate(nn, layout) };
+        }
+        trace_kalloc(layout, Instant::zero() - start, false);
+    }
+}
+
+/*
 unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
     #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -255,22 +314,33 @@ unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<
         trace_kalloc(layout, Instant::zero() - start, false);
     }
 }
+    */
 
-#[global_allocator]
+/*
 pub static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
     inner: Spinlock::new(None),
     allocated_bytes: AtomicUsize::new(0),
     early_allocated_bytes: AtomicUsize::new(0),
 };
 
-pub fn init(ctx: &'static Context) {
-    *SLAB_ALLOCATOR.inner.lock() = Some(KernelAllocatorInner {
-        ctx,
-        zone: ZoneAllocator::new(),
-    });
+
+
+    */
+
+#[global_allocator]
+static GLOBAL_ALLOC: GlobalAllocWrapper = GlobalAllocWrapper;
+
+pub fn init(ctx: &'static ContextRef) {
+    KERNEL_CTX.call_once(|| ctx);
 }
 
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
-    stats.late_kalloc_bytes = SLAB_ALLOCATOR.allocated_bytes.load(Ordering::SeqCst);
-    stats.early_kalloc_bytes = SLAB_ALLOCATOR.early_allocated_bytes.load(Ordering::SeqCst);
+    stats.late_kalloc_bytes = FerrocAllocator
+        .base()
+        .allocated_bytes
+        .load(Ordering::SeqCst);
+    stats.early_kalloc_bytes = FerrocAllocator
+        .base()
+        .early_allocated_bytes
+        .load(Ordering::SeqCst);
 }

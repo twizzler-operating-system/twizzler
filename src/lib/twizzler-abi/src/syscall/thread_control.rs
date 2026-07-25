@@ -69,6 +69,8 @@ pub enum ThreadControl {
     SetTraceEvents = 20,
     /// Get trace events.
     GetTraceEvents = 21,
+    /// Read stats
+    GetStats = 22,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
@@ -332,6 +334,29 @@ pub fn sys_thread_set_trace_events(target: ObjID, events: u64) -> Result<(), Twz
                 target.parts()[1],
                 ThreadControl::SetTraceEvents as u64,
                 events,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+#[repr(C)]
+pub struct ThreadSchedStats {
+    pub user: u64,
+    pub system: u64,
+    pub idle: u64,
+}
+
+pub fn sys_thread_read_stats(target: ObjID, stats: &mut ThreadSchedStats) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetStats as u64,
+                stats as *mut _ as usize as u64,
             ],
         )
     };

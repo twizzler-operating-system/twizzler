@@ -8,8 +8,8 @@ use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     pager::PagerFlags,
     syscall::{
-        DeleteFlags, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd, ObjectCreate,
-        ObjectCreateFlags, ObjectInfo,
+        DeleteFlags, EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
+        ObjectCreate, ObjectCreateFlags, ObjectInfo,
     },
 };
 use twizzler_rt_abi::{
@@ -27,6 +27,7 @@ use crate::{
     once::Once,
     random::getrandom,
     security::get_sctx,
+    syscall::create_user_slice,
     thread::{current_memory_context, current_thread_ref},
 };
 
@@ -348,4 +349,15 @@ pub fn map_ctrl(start: usize, _len: usize, cmd: MapControlCmd, opts: u64) -> Res
         .lookup_slot(start / MAX_SIZE)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     map.ctrl(cmd, opts)
+}
+
+pub fn sys_enumerate(arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<usize> {
+    let kind = EnumerateKind::try_from(arg0)?;
+    let buf = unsafe { create_user_slice(arg1, arg2).ok_or(TwzError::INVALID_ARGUMENT) }?;
+    let offset = arg3 as usize;
+
+    match kind {
+        EnumerateKind::Objects => crate::obj::enumerate_objects(buf, offset),
+        EnumerateKind::Threads => crate::thread::enumerate_objects(buf, offset),
+    }
 }

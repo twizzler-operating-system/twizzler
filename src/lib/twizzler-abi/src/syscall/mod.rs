@@ -66,6 +66,7 @@ pub enum Syscall {
     MapCtrl,
     /// Manage tracing
     Ktrace,
+    Enumerate,
     NumSyscalls,
 }
 
@@ -101,7 +102,10 @@ pub use thread_control::*;
 pub use thread_sync::*;
 pub use time::*;
 pub use trace::*;
-use twizzler_rt_abi::error::{RawTwzError, TwzError};
+use twizzler_rt_abi::{
+    error::{RawTwzError, TwzError},
+    object::ObjID,
+};
 
 #[inline]
 fn convert_codes_to_result<T, E, D, F, G>(code: u64, val: u64, d: D, f: F, g: G) -> Result<T, E>
@@ -128,4 +132,46 @@ pub fn sys_debug_shutdown(code: u32) {
     unsafe {
         raw_syscall(Syscall::Null, &[0x12345678, code as u64]);
     }
+}
+
+pub enum EnumerateKind {
+    Objects,
+    Threads,
+}
+
+impl From<EnumerateKind> for u64 {
+    fn from(x: EnumerateKind) -> Self {
+        match x {
+            EnumerateKind::Objects => 0,
+            EnumerateKind::Threads => 1,
+        }
+    }
+}
+
+impl TryFrom<u64> for EnumerateKind {
+    type Error = TwzError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(EnumerateKind::Objects),
+            1 => Ok(EnumerateKind::Threads),
+            _ => Err(TwzError::INVALID_ARGUMENT),
+        }
+    }
+}
+
+pub fn sys_enumerate(
+    kind: EnumerateKind,
+    buf: &mut [ObjID],
+    offset: usize,
+) -> Result<usize, TwzError> {
+    let kind = kind.into();
+    let args = [
+        kind,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        offset as u64,
+    ];
+    let (code, val) = unsafe { raw_syscall(Syscall::Enumerate, &args) };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }

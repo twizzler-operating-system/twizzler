@@ -138,8 +138,6 @@ fn kq_handler_main(
             }
         }
 
-        twizzler_abi::klog_println!("pager-srv: received {:?} requests from kernel", tmp);
-
         for (id, req) in tmp {
             if let KernelCommand::ObjectEvict(evict) = req.cmd() {
                 // Send all per-object evict streams to one thread so they preserve order.

@@ -21,13 +21,13 @@ use twizzler_rt_abi::{
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::INFO)
+            .with_max_level(Level::TRACE)
             .without_time()
             .compact()
             .finish(),
     )
     .unwrap();
-    //tracing_log::LogTracer::init().unwrap();
+    tracing_log::LogTracer::init().unwrap();
 
     let listener = async_io::block_on(async { TcpListener::bind("0.0.0.0:5555").await.unwrap() });
 

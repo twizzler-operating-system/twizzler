@@ -1,9 +1,9 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use log::{debug, warn};
 use twizzler_abi::syscall::{Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds};
-use twizzler_rt_abi::{error::ArgumentError, Result};
+use twizzler_rt_abi::{Result, error::ArgumentError};
 
 use crate::{
     condvar::CondVar,
@@ -14,8 +14,8 @@ use crate::{
     },
     spinlock::Spinlock,
     syscall::sync::requeue_all,
-    thread::{priority::Priority, ThreadRef},
-    time::{ClockHardware, Ticks, CLOCK_OFFSET, TICK_SOURCES},
+    thread::{ThreadRef, priority::Priority},
+    time::{CLOCK_OFFSET, ClockHardware, TICK_SOURCES, Ticks},
 };
 
 // TODO: replace with NanoSeconds from twizzler-abi.
@@ -34,29 +34,19 @@ pub fn statclock(dt: Nanoseconds) {
 
 const NR_WINDOWS: usize = 1024;
 
-struct TimeoutOnce<T: Send, F: FnOnce(T)> {
-    cb: F,
-    data: T,
+struct TimeoutOnce {
+    cb: fn(ThreadRef),
+    thread: ThreadRef,
 }
 
-impl<T: Send, F: FnOnce(T)> TimeoutOnce<T, F> {
-    fn new(cb: F, data: T) -> Self {
-        Self { cb, data }
-    }
-}
-
-trait Timeout {
-    fn call(self: Box<Self>);
-}
-
-impl<T: Send, F: FnOnce(T)> Timeout for TimeoutOnce<T, F> {
-    fn call(self: Box<Self>) {
-        (self.cb)(self.data)
+impl TimeoutOnce {
+    fn new(cb: fn(ThreadRef), thread: ThreadRef) -> Self {
+        Self { cb, thread }
     }
 }
 
 struct TimeoutEntry {
-    timeout: Box<dyn Timeout + Send>,
+    timeout: TimeoutOnce,
     expire_ticks: u64,
     key: usize,
 }
@@ -75,7 +65,7 @@ impl TimeoutEntry {
     }
 
     fn call(self) {
-        self.timeout.call()
+        (self.timeout.cb)(self.timeout.thread)
     }
 }
 
@@ -163,7 +153,7 @@ impl TimeoutQueue {
         NR_WINDOWS as u64
     }
 
-    fn insert(&mut self, time: Nanoseconds, timeout: Box<dyn Timeout + Send>) -> TimeoutKey {
+    fn insert(&mut self, time: Nanoseconds, timeout: TimeoutOnce) -> TimeoutKey {
         let ticks = nano_to_ticks(time);
         let expire_ticks = self.current + ticks as usize;
         let window = expire_ticks % NR_WINDOWS;
@@ -233,13 +223,13 @@ pub fn print_info() {
 
 fn timeout_thread_set_has_work() {}
 
-pub fn register_timeout_callback<T: 'static + Send, F: FnOnce(T) + Send + 'static>(
+pub fn register_timeout_callback(
     time: Nanoseconds,
-    cb: F,
-    data: T,
+    cb: fn(ThreadRef),
+    thread: ThreadRef,
 ) -> TimeoutKey {
-    let timeout = TimeoutOnce::new(cb, data);
-    TIMEOUT_QUEUE.lock().insert(time, Box::new(timeout))
+    let timeout = TimeoutOnce::new(cb, thread);
+    TIMEOUT_QUEUE.lock().insert(time, timeout)
 }
 
 extern "C" fn soft_timeout_clock() {

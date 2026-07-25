@@ -351,7 +351,11 @@ pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
 
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     if let Some(ref timeout) = timeout {
-        log::trace!("{}: simple timed sleep", current_thread_ref().unwrap().id());
+        log::trace!(
+            "{}: simple timed sleep ({} ms)",
+            current_thread_ref().unwrap().id(),
+            timeout.as_millis()
+        );
         if ops.is_empty() {
             simple_timed_sleep(timeout);
             return Ok(0);

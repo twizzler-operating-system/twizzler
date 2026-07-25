@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
-    syscall::{ThreadControl, ThreadSpawnArgs},
+    syscall::{ThreadControl, ThreadSchedStats, ThreadSpawnArgs},
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
@@ -82,6 +82,27 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                 SwitchResult::NotAttached => [1, 1],
                 _ => [0, 0],
             };
+        }
+        ThreadControl::GetStats => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let stats_ptr = arg as usize as *mut ThreadSchedStats;
+            let stats_ptr = unsafe { stats_ptr.as_mut() }.ok_or(TwzError::INVALID_ARGUMENT);
+            if let Ok(stats_ptr) = stats_ptr {
+                stats_ptr.idle = thread.stats.idle.load(Ordering::SeqCst);
+                stats_ptr.system = thread.stats.sys.load(Ordering::SeqCst);
+                stats_ptr.user = thread.stats.user.load(Ordering::SeqCst);
+            } else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            }
+
+            return [0, 0];
         }
         ThreadControl::ReadRegisters => {
             let thread = if let Some(target) = target {

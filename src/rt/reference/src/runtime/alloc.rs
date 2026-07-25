@@ -16,7 +16,7 @@ use crate::runtime::thread::with_current_thread;
 mod ferroc;
 mod talc;
 
-pub use talc::LOCAL_ALLOCATOR;
+pub use talc::{LocalAllocator, LOCAL_ALLOCATOR};
 
 static COMP_NAME: OnceLock<String> = OnceLock::new();
 static COMP_NAME_READY: AtomicBool = AtomicBool::new(false);

@@ -440,15 +440,8 @@ impl ObjectPageTable {
 
     pub fn split_to_level(&mut self, offset: u64, level: usize) -> Result<(), TwzError> {
         let mut consist = Consistency::new_object_tables();
-        let cursor = MappingCursor::new(
-            VirtAddr::new(offset).unwrap(),
-            PHYS_LEVEL_LAYOUTS[Self::top_level()].size(),
-        );
         let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(Self::top_level(), 0),
-            FrameAllocFlags::WAIT_OK,
-        );
+        fa.precharge(Self::top_level(), FrameAllocFlags::WAIT_OK);
         let r = self.mapper.split_to_level(
             VirtAddr::new(offset).unwrap(),
             level,

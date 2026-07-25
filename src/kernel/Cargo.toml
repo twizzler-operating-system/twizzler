@@ -12,7 +12,6 @@ twizzler-kernel-macros = { workspace = true }
 bitflags = "2.4.1"
 memoffset = { workspace = true }
 xmas-elf = { workspace = true }
-slabmalloc = { workspace = true }
 nonoverlapping_interval_tree = { workspace = true }
 twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = [
     "kernel",
@@ -43,6 +42,7 @@ hex-literal = { workspace = true }
 twizzler-security = { workspace = true, features = ["kernel"] }
 itertools = { workspace = true }
 ferroc = { git = "https://github.com/Js2xxx/ferroc", default-features = false, features = [
+    "global",
 ] }
 
 [target.x86_64-unknown-none.dependencies]

@@ -525,11 +525,14 @@ impl FrameAllocator {
         self.precharge.append(&mut other.precharge);
     }
 
+    #[track_caller]
     pub fn precharge(&mut self, count: usize, flags: FrameAllocFlags) {
-        if count > 16 {
+        if count >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size() {
             log::warn!(
-                "frame allocator precharge: requested {} frames, which is a lot",
-                count
+                "frame allocator precharge: requested {} frames at {} (have {})",
+                count,
+                core::panic::Location::caller(),
+                self.precharge.len()
             );
         }
         if self.precharge.len() >= count {
@@ -618,6 +621,25 @@ pub fn save_frame_allocator(fa: &mut FrameAllocator) -> bool {
         true
     } else {
         false
+    }
+}
+
+#[allow(static_mut_refs)]
+pub fn count_precharged_frames() -> usize {
+    if !tls_ready() {
+        return 0;
+    }
+    if try_lock_tls_frame_allocator() {
+        let count = unsafe {
+            TLS_FRAME_ALLOCATOR
+                .as_ref()
+                .map(|fa| fa.precharge.len())
+                .unwrap_or(0)
+        };
+        unlock_tls_frame_allocator();
+        count
+    } else {
+        0
     }
 }
 

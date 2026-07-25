@@ -16,6 +16,7 @@
 #![feature(random)]
 #![feature(io_error_inprogress)]
 #![feature(backtrace_frames)]
+#![feature(btreemap_alloc)]
 
 pub(crate) mod arch;
 

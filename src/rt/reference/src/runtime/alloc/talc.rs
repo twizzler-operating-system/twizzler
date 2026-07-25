@@ -288,3 +288,34 @@ impl LocalAllocatorInner {
         self.early_talc.malloc(layout).unwrap().as_ptr()
     }
 }
+
+unsafe impl Allocator for LocalAllocator {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        let ptr = unsafe { self.alloc(layout) };
+        if ptr.is_null() {
+            Err(std::alloc::AllocError)
+        } else {
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new(ptr).unwrap(),
+                layout.size(),
+            ))
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: std::ptr::NonNull<u8>, layout: Layout) {
+        let ptr = ptr.as_ptr();
+        unsafe { self.dealloc(ptr, layout) };
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        let ptr = unsafe { self.alloc_zeroed(layout) };
+        if ptr.is_null() {
+            Err(std::alloc::AllocError)
+        } else {
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new(ptr).unwrap(),
+                layout.size(),
+            ))
+        }
+    }
+}

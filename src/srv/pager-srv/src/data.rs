@@ -762,7 +762,7 @@ impl PagerData {
     }
 
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
-        tracing::info!(
+        tracing::trace!(
             "lookup_object: {:?} (ino = {:?})",
             id,
             objid_to_ino(id.raw())

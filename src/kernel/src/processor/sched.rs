@@ -485,6 +485,14 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
 static ALL_THREADS: Spinlock<BTreeMap<u64, ThreadRef>> = Spinlock::new(BTreeMap::new());
 static ALL_THREADS_REPR: Spinlock<BTreeMap<ObjID, ThreadRef>> = Spinlock::new(BTreeMap::new());
 
+pub fn with_all_threads<F>(mut f: F)
+where
+    F: FnMut(&BTreeMap<u64, ThreadRef>),
+{
+    let guard = ALL_THREADS.lock();
+    f(&guard);
+}
+
 pub fn with_each_thread<F>(mut f: F)
 where
     F: FnMut(&ThreadRef),

@@ -293,7 +293,6 @@ fn main() {
             for lib in libdir {
                 let lib = lib.unwrap();
                 let lib = libpath.join(lib.file_name());
-                tracing::info!("caching library: {}", lib.display());
                 if lib
                     .file_name()
                     .is_some_and(|s| s.to_string_lossy().contains(".so"))

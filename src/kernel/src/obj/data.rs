@@ -17,6 +17,7 @@ use crate::{
         Object, ObjectRef, PageNumber,
         pagetables::{FindFrameFlags, ObjectPageTable},
     },
+    thread::current_thread_ref,
 };
 
 enum ZeroOrFrame {
@@ -336,6 +337,7 @@ impl Object {
         Ok((pages, 0))
     }
 
+    #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a ObjectRef,
         mut guard: LockGuard<'a, ObjectPageTable>,
@@ -382,6 +384,7 @@ impl Object {
             let pre_covered = page - large_page;
             let mut alloc = FrameAllocator::new(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1]);
             if let Some(large_frame) = alloc.try_allocate() {
+                *all_were_present = false;
                 guard.map_page(large_page.as_byte_offset() as u64, large_frame)?;
                 page = large_page.offset(nr_pages_for_large);
                 page_count = page_count.saturating_sub(nr_pages_for_large - pre_covered);
@@ -396,10 +399,12 @@ impl Object {
         }
 
         log::debug!(
-            "ensure_in_core: ensuring {} pages in core for object {} starting at {:x}",
+            "ensure_in_core: ensuring {} pages in core for object {} starting at {:x} {} (from {})",
             page_count,
             self.id(),
-            page.as_byte_offset()
+            page.as_byte_offset(),
+            current_thread_ref().map(|ct| ct.id()).unwrap_or(0),
+            core::panic::Location::caller()
         );
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;

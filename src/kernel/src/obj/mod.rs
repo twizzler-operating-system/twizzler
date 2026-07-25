@@ -15,7 +15,7 @@ use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     syscall::{BackingType, LifetimeType, ObjectInfo},
 };
-use twizzler_rt_abi::{bindings::object_tie, object::Nonce};
+use twizzler_rt_abi::{bindings::object_tie, error::TwzError, object::Nonce};
 
 use self::thread_sync::SleepInfo;
 use crate::{
@@ -486,4 +486,8 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
     ties::fill_stats(&mut stats);
 
     stats
+}
+
+pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
+    Err(TwzError::NOT_SUPPORTED)
 }
