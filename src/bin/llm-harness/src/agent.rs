@@ -72,6 +72,11 @@ impl<S: TokenSource, E: Effects> Agent<S, E> {
         &self.effects
     }
 
+    /// Take the effects backend back, to inspect what the run left behind.
+    pub fn into_effects(self) -> E {
+        self.effects
+    }
+
     /// Run until the model is done or the turn budget is spent.
     ///
     /// A malformed turn is fatal. A failed *effect* is not: it is recorded and

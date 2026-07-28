@@ -6,6 +6,15 @@
 
 use anyhow::Result;
 
+/// The recorded completions, baked in at build time.
+const RECORDING: &str = include_str!("../recordings/hello.json");
+
+/// Seeded into the task object on first run, then read back through `Effects`
+/// like any other object.
+const TASK: &str = "Write a greeter module and a test for it.";
+
+const TASK_OBJECT: &str = "task.md";
+
 fn main() -> Result<()> {
     println!("=== llm-harness: up ===");
     run()
@@ -13,26 +22,43 @@ fn main() -> Result<()> {
 
 #[cfg(target_os = "twizzler")]
 fn run() -> Result<()> {
-    use llm_harness::{effects::Effects, twz::DEFAULT_PREFIX, TwizzlerEffects};
+    use llm_harness::{effects::Effects, twz::DEFAULT_PREFIX, Agent, RecordedSource, TwizzlerEffects};
 
-    // Commit 3: prove the object backend round-trips before wiring the loop to it.
     let mut effects = TwizzlerEffects::new(DEFAULT_PREFIX)?;
     println!("effects: objects under {}", effects.prefix());
 
-    let payload = b"twizzler effects round-trip";
-    let h = effects.open("smoke.txt")?;
-    println!("opened smoke.txt");
-
-    effects.write(h, payload)?;
-    println!("wrote {} bytes", payload.len());
-
-    let got = effects.read(h)?;
-    println!("read back {} bytes: {:?}", got.len(), String::from_utf8_lossy(&got));
-
-    if got != payload {
-        anyhow::bail!("round-trip mismatch: wrote {payload:?}, read {got:?}");
+    // Seed the task object so there is something to read. On a later run it is
+    // already there; either way the loop only ever sees it through Effects.
+    let task_handle = effects.open(TASK_OBJECT)?;
+    if effects.read(task_handle)?.is_empty() {
+        effects.write(task_handle, TASK.as_bytes())?;
+        println!("seeded {TASK_OBJECT}");
     }
-    println!("=== llm-harness: object round-trip OK ===");
+    let task = String::from_utf8(effects.read(task_handle)?)?;
+    println!("task object: {task:?}");
+
+    let source = RecordedSource::from_json(RECORDING.as_bytes())?;
+    let mut agent = Agent::new(source, effects);
+    let stop = agent.run(&task)?;
+    println!("loop stopped: {stop:?} ({} messages)", agent.transcript().len());
+
+    println!("\neffect log:");
+    print!("{}", agent.log().render());
+
+    // Read the generated files back out of their objects, to show the writes
+    // landed somewhere real rather than just being logged.
+    println!("generated objects:");
+    let mut effects = agent.into_effects();
+    for name in ["src/greet.rs", "tests/greet.rs"] {
+        let h = effects.open(name)?;
+        let body = String::from_utf8(effects.read(h)?)?;
+        println!("--- {name} ({} bytes) ---", body.len());
+        for line in body.lines() {
+            println!("  {line}");
+        }
+    }
+
+    println!("=== llm-harness: end to end OK ===");
     Ok(())
 }
 
@@ -40,12 +66,8 @@ fn run() -> Result<()> {
 fn run() -> Result<()> {
     use llm_harness::{Agent, MemEffects, RecordedSource};
 
-    /// Stands in for the recording object that will be baked in at build time.
-    const RECORDING: &str = include_str!("../recordings/hello.json");
-    const TASK: &str = "Write a greeter module and a test for it.";
-
     let mut effects = MemEffects::new();
-    effects.preload("task.md", TASK);
+    effects.preload(TASK_OBJECT, TASK);
 
     let source = RecordedSource::from_json(RECORDING.as_bytes())?;
     let mut agent = Agent::new(source, effects);
