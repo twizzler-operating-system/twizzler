@@ -7,3 +7,11 @@ edition = "2021"
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+# The Twizzler backend only exists on Twizzler; the host build keeps the loop
+# testable with the in-memory stub.
+[target.'cfg(target_os = "twizzler")'.dependencies]
+naming = { workspace = true }
+twizzler = { workspace = true }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { workspace = true }

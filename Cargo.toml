@@ -139,6 +139,7 @@ initrd = [
     #"crate:serialecho",
     "lib:llt",
     "crate:lltest",
+    "crate:llm-harness",
 ]
 
 [workspace.metadata.third-party]

@@ -19,9 +19,15 @@ pub mod log;
 pub mod source;
 pub mod transcript;
 
+#[cfg(target_os = "twizzler")]
+pub mod twz;
+
 pub use action::Action;
 pub use agent::{Agent, Stop};
 pub use effects::{Effects, Handle, MemEffects};
 pub use log::{EffectEntry, EffectLog, Outcome};
 pub use source::{RecordedSource, TokenSource};
 pub use transcript::{Msg, Role, Transcript};
+
+#[cfg(target_os = "twizzler")]
+pub use twz::TwizzlerEffects;

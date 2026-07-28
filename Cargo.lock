@@ -4094,8 +4094,12 @@ name = "llm-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "naming",
  "serde",
  "serde_json",
+ "twizzler",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
