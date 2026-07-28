@@ -81,6 +81,7 @@ members = [
     "src/bin/async-test",
     "src/bin/lltest",
     "src/bin/lltest/llt",
+    "src/bin/llm-harness",
 ]
 
 exclude = [

@@ -1,0 +1,5 @@
+[
+  "[\n  {\n    \"action\": \"read\",\n    \"arg\": \"task.md\"\n  }\n]",
+  "[\n  {\n    \"action\": \"write\",\n    \"arg\": {\n      \"path\": \"src/greet.rs\",\n      \"body\": \"pub fn greet(name: &str) -> String {\\n    format!(\\\"hello, {name}\\\")\\n}\\n\"\n    }\n  }\n]",
+  "[\n  {\n    \"action\": \"write\",\n    \"arg\": {\n      \"path\": \"tests/greet.rs\",\n      \"body\": \"use greet::greet;\\n\\n#[test]\\nfn greets_by_name() {\\n    assert_eq!(greet(\\\"twizzler\\\"), \\\"hello, twizzler\\\");\\n}\\n\"\n    }\n  },\n  {\n    \"action\": \"done\"\n  }\n]"
+]
