@@ -173,9 +173,9 @@ impl Table {
                 );
                 if frame.is_none() {
                     consist.free_frame(new_table_frame);
-                    for i in 0..Table::PAGE_TABLE_ENTRIES {
-                        if next_table[i].is_present()
-                            && let Some(frame) = get_frame(entry.addr(level))
+                    for j in 0..i {
+                        if next_table[j].is_present()
+                            && let Some(frame) = get_frame(next_table[j].addr(level - 1))
                         {
                             consist.free_frame(frame);
                         }
@@ -193,6 +193,7 @@ impl Table {
                 frame.inc_refcount();
                 next_table[i] = Entry::new(frame.start_address(), flags - EntryFlags::huge());
             }
+            consist.free_frame(large_frame);
         }
         next_table.set_count(Table::PAGE_TABLE_ENTRIES);
 
@@ -786,11 +787,20 @@ impl Table {
             let addr = entry.addr(level);
 
             if is_present && (is_huge || level == Self::last_level()) {
+                // If this is a COW page, perform the copy before changing permissions.
+                // entry borrow ends here (last use of entry is addr above).
+                if let Some(frame) = get_frame(addr)
+                    && frame.is_cow()
+                {
+                    self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
+                }
+                // Re-read addr after potential COW copy.
+                let new_addr = self[idx].addr(level);
                 self.update_entry(
                     consist,
                     idx,
                     Entry::new(
-                        addr,
+                        new_addr,
                         EntryFlags::from(settings)
                             | if level != Self::last_level() {
                                 EntryFlags::huge()

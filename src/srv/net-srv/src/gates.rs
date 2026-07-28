@@ -88,6 +88,7 @@ fn twz_net_alloc_port(desc: secgate::util::Descriptor, port: Option<u16>) -> Res
 
 #[secgate::entry(lib = "twizzler-net")]
 fn twz_net_release_port(desc: secgate::util::Descriptor, port: u16) -> Result<()> {
+    twizzler_abi::klog_println!("twz_net_release_port: desc = {}, port = {}", desc, port);
     let handles = NETINFO
         .get()
         .ok_or(TwzError::NOT_SUPPORTED)?

@@ -85,7 +85,7 @@ members = [
     #"src/bin/lltest",
     #"src/bin/lltest/llt",
 
-    "src/ports/femto", "src/bin/top",
+    "src/ports/femto", "src/bin/top", "src/bin/otop",
 ]
 
 exclude = [

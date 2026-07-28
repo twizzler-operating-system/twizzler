@@ -11,7 +11,7 @@ use twizzler_rt_abi::error::TwzError;
 
 use super::{OBJ_HAS_INTERRUPTS, Object};
 use crate::{
-    interrupt::wait_for_device_interrupt,
+    interrupt::{remove_from_device_wait, wait_for_device_interrupt},
     obj::ObjectRef,
     syscall::sync::add_to_requeue,
     thread::{ThreadRef, current_thread_ref},
@@ -217,13 +217,13 @@ impl Object {
         flags: ThreadSyncFlags,
         vaddr: Option<&AtomicU32>,
     ) -> Result<bool, TwzError> {
+        let thread = current_thread_ref().unwrap();
         if let Some(vaddr) = vaddr {
             let cur = vaddr.load(Ordering::SeqCst);
             if !op.check(cur, val, flags) {
                 return Ok(false);
             }
         }
-        let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
 
         let cur = vaddr
@@ -243,5 +243,17 @@ impl Object {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
         sleep_info.remove(offset, thread.objid());
+
+        // TODO: I think this only works if the thread waits on one interrupt.
+        if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {
+            for i in 0..NUM_DEVICE_INTERRUPTS {
+                let di_offset = self.device_interrupt_info[i].1.load(Ordering::Acquire);
+                let di_vector = self.device_interrupt_info[i].0.load(Ordering::Acquire);
+                if di_offset as usize == offset {
+                    remove_from_device_wait(thread, di_vector as u32);
+                    break;
+                }
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use intrusive_collections::LinkedList;
+use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::{
     device::{CacheType, DeviceRepr},
     kso::{InterruptAllocateOptions, InterruptPriority},
@@ -19,13 +19,12 @@ use crate::{
         KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
         virtmem::KernelObjectVirtHandle,
     },
-    mutex::MutexLinkAdapter,
     obj::ObjectRef,
     once::Once,
     processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{ThreadRef, priority::Priority},
+    thread::{Thread, ThreadRef, priority::Priority},
 };
 
 /// Set the current interrupt enable state to disabled and return the old state.
@@ -172,11 +171,19 @@ struct GlobalInterruptState {
     ints: Vec<Interrupt>,
     device_vectors:
         [Spinlock<heapless::Vec<DeviceInterrupter, MAX_DEVICE_VECTORS>>; MAX_VECTOR + 1],
-    device_waiters: [Spinlock<LinkedList<MutexLinkAdapter>>; MAX_VECTOR + 1],
+    device_waiters: [Spinlock<LinkedList<DevIntLinkAdapter>>; MAX_VECTOR + 1],
 }
 
+intrusive_adapter!(pub DevIntLinkAdapter = ThreadRef: Thread { devint_link: intrusive_collections::linked_list::AtomicLink });
+
 impl GlobalInterruptState {
-    fn setup_device_wait(&self, thread: ThreadRef, vector: u32, ptr: *const AtomicU64) -> bool {
+    fn setup_device_wait(
+        &self,
+        thread: ThreadRef,
+        vector: u32,
+        ptr: *const AtomicU64,
+        set_sync_sleep: bool,
+    ) -> bool {
         let word = unsafe { ptr.as_ref_unchecked() };
         log::trace!(
             "thread {} in device wait vector {} (ptr = {:p}, val = {})",
@@ -191,6 +198,9 @@ impl GlobalInterruptState {
         let mut waiters = self.device_waiters[vector as usize].lock();
         if word.load(Ordering::SeqCst) != 0 {
             return false;
+        }
+        if set_sync_sleep {
+            thread.set_sync_sleep();
         }
         waiters.push_back(thread);
         true
@@ -207,7 +217,7 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
         GlobalInterruptState {
             ints: v,
             device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
-            device_waiters: [const { Spinlock::new(LinkedList::new(MutexLinkAdapter::NEW)) };
+            device_waiters: [const { Spinlock::new(LinkedList::new(DevIntLinkAdapter::NEW)) };
                 MAX_VECTOR + 1],
         }
     })
@@ -238,11 +248,16 @@ pub fn wait_for_device_interrupt(
     ptr: *const AtomicU64,
 ) -> bool {
     let gi = get_global_interrupts();
-    let res = gi.setup_device_wait(thread.clone(), number, ptr);
-    if first_wait && res {
-        thread.set_sync_sleep();
-    }
+    let res = gi.setup_device_wait(thread.clone(), number, ptr, first_wait);
     return res;
+}
+
+pub fn remove_from_device_wait(thread: &ThreadRef, number: u32) {
+    let gi = get_global_interrupts();
+    let mut waiters = gi.device_waiters[number as usize].lock();
+    if thread.devint_link.is_linked() {
+        unsafe { waiters.cursor_mut_from_ptr(&**thread).remove() };
+    }
 }
 
 const INTQUEUE_LEN: usize = 128;

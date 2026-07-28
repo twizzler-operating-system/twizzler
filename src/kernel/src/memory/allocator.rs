@@ -12,6 +12,7 @@ use twizzler_rt_abi::error::TwzError;
 use super::context::KernelMemoryContext;
 use crate::{
     instant::Instant,
+    interrupt::with_disabled,
     memory::context::{ContextRef, kernel_context},
     once::Once,
     processor::tls_ready,
@@ -109,6 +110,11 @@ unsafe impl ferroc::base::BaseAlloc for KernelAllocator {
         _commit: bool,
     ) -> Result<ferroc::base::Chunk<Self>, Self::Error> {
         let ptr = self.ctx().allocate_chunk(layout)?;
+        logln!(
+            "kernel allocator: allocated {} bytes at {:p}",
+            layout.size(),
+            ptr.as_ptr()
+        );
         Ok(unsafe { ferroc::base::Chunk::new(ptr, layout, ptr) })
     }
 
@@ -127,9 +133,6 @@ fn trace_kalloc(layout: Layout, time: Duration, is_free: bool) {
     let _guard = ct.enter_critical();
     if SKIP.swap(true, Ordering::SeqCst) {
         return;
-    }
-    if layout.size() == 56 && false && current_thread_ref().is_some() {
-        crate::panic::backtrace(false, None);
     }
     if TRACE_MGR.any_enabled(TraceKind::Kernel, twizzler_abi::trace::KERNEL_ALLOC) {
         let data = KernelAllocationEvent {
@@ -172,8 +175,10 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
         let ret = if layout.size() >= ferroc::config::SLAB_SIZE {
             inner.ctx().allocate_chunk(layout).unwrap().as_ptr()
         } else {
-            let _guard = current_thread_ref().map(|ct| ct.enter_critical());
-            FerrocAllocator.allocate(layout).unwrap().as_ptr().cast()
+            with_disabled(|| {
+                let _guard = current_thread_ref().map(|ct| ct.enter_critical());
+                FerrocAllocator.allocate(layout).unwrap().as_ptr().cast()
+            })
         };
 
         let end = Instant::now();
@@ -214,119 +219,6 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
     }
 }
 
-/*
-unsafe impl<Ctx: KernelMemoryContext + 'static> GlobalAlloc for KernelAllocator<Ctx> {
-    #[track_caller]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let start = Instant::now();
-        let ret = {
-            let mut inner = self.inner.lock();
-
-            if inner.is_none() {
-                self.early_allocated_bytes
-                    .fetch_add(layout.size(), Ordering::SeqCst);
-                return self.early_alloc(layout);
-            } else {
-                self.allocated_bytes
-                    .fetch_add(layout.size(), Ordering::SeqCst);
-            }
-            let inner = inner.as_mut().unwrap();
-            match layout.size() {
-                0..=ZoneAllocator::MAX_ALLOC_SIZE => match inner.zone.allocate(layout) {
-                    Ok(nptr) => nptr.as_ptr(),
-                    Err(AllocationError::OutOfMemory) => {
-                        if layout.size() <= ZoneAllocator::MAX_BASE_ALLOC_SIZE {
-                            let new_page = inner.allocate_page();
-                            unsafe {
-                                inner
-                                    .zone
-                                    .refill(layout, new_page)
-                                    .expect("failed to refill zone allocator");
-                            }
-                            inner
-                                .zone
-                                .allocate(layout)
-                                .expect("allocation failed after refill")
-                                .as_ptr()
-                        } else {
-                            let new_page = inner.allocate_large_page();
-                            unsafe {
-                                inner
-                                    .zone
-                                    .refill_large(layout, new_page)
-                                    .expect("failed to refill zone allocator");
-                            }
-                            inner
-                                .zone
-                                .allocate(layout)
-                                .expect("allocation failed after refill")
-                                .as_ptr()
-                        }
-                    }
-                    Err(AllocationError::InvalidLayout) => {
-                        panic!("cannot allocate this layout {:?}", layout)
-                    }
-                },
-                _ => inner.ctx.allocate_chunk(layout).unwrap().as_ptr(),
-            }
-        };
-        let end = Instant::now();
-        if false && current_thread_ref().is_some_and(|ct| ct.id() > 10) {
-            emerglogln!(
-                "{}: alloc: {}ns",
-                current_thread_ref().unwrap().id(),
-                (end - start).as_nanos()
-            );
-        }
-        trace_kalloc(layout, end - start, false);
-        ret
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let start = Instant::zero();
-        {
-            let mut inner = self.inner.lock();
-            if inner.is_none() {
-                /* freeing memory in early init. Sadly, we just have to leak it. */
-                return;
-            }
-            let inner = inner.as_mut().unwrap();
-            if ptr.is_null() {
-                return;
-            }
-            self.allocated_bytes
-                .fetch_sub(layout.size(), Ordering::SeqCst);
-            let nn = NonNull::new(ptr).unwrap();
-            match layout.size() {
-                0..=ZoneAllocator::MAX_ALLOC_SIZE => {
-                    inner
-                        .zone
-                        .deallocate(nn, layout)
-                        .expect("failed to deallocate memory");
-                }
-                _ => unsafe {
-                    inner
-                        .ctx
-                        .deallocate_chunk(layout, NonNull::new(ptr).unwrap())
-                },
-            };
-        }
-        trace_kalloc(layout, Instant::zero() - start, false);
-    }
-}
-    */
-
-/*
-pub static SLAB_ALLOCATOR: KernelAllocator<Context> = KernelAllocator {
-    inner: Spinlock::new(None),
-    allocated_bytes: AtomicUsize::new(0),
-    early_allocated_bytes: AtomicUsize::new(0),
-};
-
-
-
-    */
-
 #[global_allocator]
 static GLOBAL_ALLOC: GlobalAllocWrapper = GlobalAllocWrapper;
 
@@ -343,4 +235,8 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
         .base()
         .early_allocated_bytes
         .load(Ordering::SeqCst);
+}
+
+unsafe extern "C" fn __did_init_call(id: u64) {
+    logln!("did init {}", id);
 }

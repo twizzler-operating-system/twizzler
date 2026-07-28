@@ -19,6 +19,9 @@ impl Ticks {
 pub trait ClockHardware {
     fn read(&self) -> Ticks;
     fn info(&self) -> ClockInfo;
+    fn name(&self) -> &'static str {
+        ""
+    }
 }
 
 const MAX_CLOCKS: usize = 8;

@@ -41,8 +41,9 @@ heapless = { workspace = true }
 hex-literal = { workspace = true }
 twizzler-security = { workspace = true, features = ["kernel"] }
 itertools = { workspace = true }
-ferroc = { git = "https://github.com/Js2xxx/ferroc", default-features = false, features = [
+ferroc = { workspace = true, default-features = false, features = [
     "global",
+    "kernel",
 ] }
 
 [target.x86_64-unknown-none.dependencies]

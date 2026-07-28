@@ -71,8 +71,11 @@ pub fn net_alloc_port(desc: Descriptor, port: Option<u16>) -> Result<u16, TwzErr
 }
 
 pub fn net_release_port(desc: Descriptor, port: u16) -> Result<(), TwzError> {
+    twizzler_abi::klog_println!("() net_release_port: desc = {}, port = {}", desc, port);
     let comp = CompartmentHandle::lookup("net")?;
+    twizzler_abi::klog_println!("(2) net_release_port: desc = {}, port = {}", desc, port);
     let gate = unsafe { comp.dynamic_gate("twz_net_release_port") }?;
+    twizzler_abi::klog_println!("(3) net_release_port: desc = {}, port = {}", desc, port);
     (gate)(desc, port)
 }
 

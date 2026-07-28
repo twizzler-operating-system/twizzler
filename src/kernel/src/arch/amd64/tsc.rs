@@ -60,6 +60,9 @@ impl ClockHardware for Tsc {
     fn info(&self) -> ClockInfo {
         self.info
     }
+    fn name(&self) -> &'static str {
+        "tsc"
+    }
 }
 
 #[derive(Debug)]

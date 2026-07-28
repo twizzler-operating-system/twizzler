@@ -1250,6 +1250,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crossterm"
+version = "0.29.0"
+dependencies = [
+ "bitflags 2.9.1",
+ "derive_more",
+ "libc",
+ "mio",
+ "parking_lot",
+ "rustix 1.1.2",
+ "signal-hook",
+ "signal-hook-mio",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1984,14 +1998,6 @@ dependencies = [
  "termion",
  "twizzler-abi",
  "twizzler-rt-abi",
-]
-
-[[package]]
-name = "ferroc"
-version = "1.0.0-pre.4"
-source = "git+https://github.com/Js2xxx/ferroc#c288ff1a39450a006c56dbb9aa42aefc94cdb932"
-dependencies = [
- "array-macro",
 ]
 
 [[package]]
@@ -4333,6 +4339,7 @@ name = "mio"
 version = "1.0.4"
 dependencies = [
  "libc",
+ "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.59.0",
 ]
@@ -5088,6 +5095,16 @@ dependencies = [
  "objc2-foundation",
  "objc2-ui-kit",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "otop"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
@@ -6349,6 +6366,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "signal-hook"
+version = "0.3.17"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-mio"
+version = "0.2.4"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.4"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7212,6 +7253,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 name = "top"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "twizzler",
  "twizzler-abi",
  "twizzler-rt-abi",
@@ -7457,7 +7499,7 @@ dependencies = [
  "chacha20",
  "digest",
  "fdt",
- "ferroc 1.0.0-pre.4",
+ "ferroc",
  "heapless 0.9.2",
  "hex-literal",
  "intrusive-collections",
@@ -7593,7 +7635,7 @@ dependencies = [
  "bitflags 2.9.1",
  "dynlink",
  "elf",
- "ferroc 1.0.0-pre.4-twz",
+ "ferroc",
  "lazy_static",
  "libc",
  "lru",
@@ -9062,15 +9104,3 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
-
-[[patch.unused]]
-name = "crossterm"
-version = "0.29.0"
-
-[[patch.unused]]
-name = "signal-hook"
-version = "0.3.17"
-
-[[patch.unused]]
-name = "signal-hook-mio"
-version = "0.2.4"

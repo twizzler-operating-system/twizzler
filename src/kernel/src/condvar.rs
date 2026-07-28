@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
+use intrusive_collections::{KeyAdapter, RBTree, intrusive_adapter};
 use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadSync, ThreadSyncSleep},
@@ -10,7 +10,7 @@ use twizzler_rt_abi::error::TwzError;
 use crate::{
     spinlock::{LockGuard, RelaxStrategy, Spinlock},
     syscall::sync::{add_to_requeue, requeue_all, sys_thread_sync},
-    thread::{current_thread_ref, Thread, ThreadRef},
+    thread::{Thread, ThreadRef, current_thread_ref},
 };
 
 struct InnerCondVar {
@@ -52,6 +52,9 @@ impl CondVar {
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
         inner.queue.insert(current_thread.clone());
+        // Set sync_sleep BEFORE unlocking the mutex, so a concurrent signaler
+        // that removes us from the queue will see the flag and properly wake us.
+        current_thread.set_sync_sleep();
         drop(inner);
 
         unsafe { guard.force_unlock() };
@@ -91,9 +94,11 @@ impl CondVar {
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
         inner.queue.insert(current_thread.clone());
+        // Set sync_sleep BEFORE unlocking the mutex, so a concurrent signaler
+        // that removes us from the queue will see the flag and properly wake us.
+        current_thread.set_sync_sleep();
         drop(inner);
         let critical_guard = current_thread.enter_critical();
-        current_thread.set_sync_sleep();
         current_thread.set_sync_sleep_done();
         let res = unsafe {
             guard.force_unlock();
@@ -120,11 +125,12 @@ impl CondVar {
             }
             let mut node = inner.queue.front_mut();
             while !threads_to_wake.is_full() && !node.is_null() {
-                if node.get().unwrap().reset_sync_sleep() {
+                // Remove from queue FIRST, then try to wake. This eliminates the race
+                // where a thread is in the queue but hasn't set sync_sleep flags yet.
+                let thread = node.remove().unwrap();
+                if thread.reset_sync_sleep() {
                     // Safety: vec isn't full, checked above.
-                    unsafe { threads_to_wake.push_unchecked(node.remove().unwrap()) };
-                } else {
-                    node.move_next();
+                    unsafe { threads_to_wake.push_unchecked(thread) };
                 }
             }
 

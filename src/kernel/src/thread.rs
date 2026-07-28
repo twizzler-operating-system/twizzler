@@ -74,6 +74,7 @@ pub struct Thread {
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
+    pub devint_link: AtomicLink,
     pub memwait_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
     pub requeue_link: RBTreeAtomicLink,
@@ -168,6 +169,7 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             requeue_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
+            devint_link: AtomicLink::default(),
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
             sample_expire: Spinlock::new(None),
@@ -281,6 +283,12 @@ impl Thread {
         }
         let base = self.control_object.base();
         let old_state = base.set_state(state, code);
+
+        // Ensure the state write is globally visible before we check conditions and
+        // potentially issue a wakeup. Without this fence, on weakly-ordered architectures,
+        // the wakeup word write could be observed by another thread before the state write,
+        // causing a lost wakeup.
+        core::sync::atomic::fence(Ordering::SeqCst);
 
         // Note that since this value can be written to by userspace, we must check if we're
         // critical because we can't rely on userspace following the rules. Same for checking if
@@ -501,23 +509,24 @@ impl Drop for Thread {
 
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
-    {
-        let th = current_thread_ref().unwrap();
-        remove_thread(th.id());
-        log::debug!(
-            "thread {} ({}) exits with code {}",
-            th.id(),
-            th.objid(),
-            code
-        );
-        th.set_state_and_code(ExecutionState::Exited, code);
-        crate::interrupt::disable();
-        th.set_is_exiting();
-        th.reset_sync_sleep();
-        th.reset_sync_sleep_done();
+    let th = current_thread_ref().unwrap();
+    th.set_state_and_code(ExecutionState::Exited, code);
+    remove_thread(th.id());
+    log::debug!(
+        "thread {} ({}) exits with code {}",
+        th.id(),
+        th.objid(),
+        code
+    );
+    th.set_is_exiting();
+    th.reset_sync_sleep();
+    th.reset_sync_sleep_done();
+    // Disable interrupts for the entire exit sequence including schedule(), to
+    // prevent an IPI from rescheduling this thread between cleanup and context switch.
+    crate::interrupt::with_disabled(|| {
         crate::syscall::sync::remove_from_requeue(&th);
-    }
-    schedule(SchedFlags::PREEMPT);
+        schedule(SchedFlags::PREEMPT);
+    });
     unreachable!()
 }
 

@@ -24,6 +24,7 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
             let handles = NETINFO.get().unwrap().handles.lock().unwrap();
             for (_, _, client) in handles.handles() {
                 let mut ep = client.ep.lock().unwrap();
+                eprintln!("device thread injecting packet to client");
                 let ctx = ep.transmit(Instant::now()).unwrap();
                 ctx.consume(buf.len(), |cbuf| cbuf.copy_from_slice(buf));
             }
@@ -33,7 +34,7 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
         if !device.has_work() {
             let sleep = device.get_sleep();
             if !device.has_work() {
-                let _ = sys_thread_sync(&mut [sleep], Some(Duration::from_millis(100)));
+                let _ = sys_thread_sync(&mut [sleep], None);
             }
         }
     }
@@ -102,8 +103,7 @@ pub fn device_thread_main(
                 waitpoints[i] = wp;
             }
             if !any_ready {
-                let _ =
-                    sys_thread_sync(waitpoints.as_mut_slice(), Some(Duration::from_millis(100)));
+                let _ = sys_thread_sync(waitpoints.as_mut_slice(), None);
             }
         }
     }

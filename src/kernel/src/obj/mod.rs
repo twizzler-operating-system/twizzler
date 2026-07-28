@@ -488,6 +488,17 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
     stats
 }
 
-pub fn enumerate_objects(_buf: &mut [ObjID], _offset: usize) -> Result<usize, TwzError> {
-    Err(TwzError::NOT_SUPPORTED)
+pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
+    let mgr = obj_manager().map.lock();
+    let ids = TIE_MGR.with_deleted_map(|dm| {
+        mgr.iter()
+            .chain(dm.iter())
+            .map(|(id, _)| *id)
+            .skip(offset)
+            .take(buf.len())
+            .collect::<Vec<_>>()
+    });
+
+    buf[..ids.len()].copy_from_slice(&ids);
+    Ok(ids.len())
 }

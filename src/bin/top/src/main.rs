@@ -1,5 +1,19 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{Write, stdout},
+    time::Duration,
+};
 
+use crossterm::{
+    ExecutableCommand, QueueableCommand,
+    cursor::{Hide, MoveTo, Show},
+    event::{self, Event, KeyCode, KeyEventKind},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode, size,
+    },
+};
 use twizzler::object::TypedObject;
 use twizzler_abi::{
     object::ObjID,
@@ -8,7 +22,14 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::MapFlags};
 
+const REFRESH: Duration = Duration::from_millis(1000);
+
 fn main() {
+    enable_raw_mode().unwrap();
+    let mut out = stdout();
+    out.execute(EnterAlternateScreen).unwrap();
+    out.execute(Hide).unwrap();
+
     let mut tracker = ThreadTracker::default();
 
     loop {
@@ -16,9 +37,39 @@ fn main() {
         tracker.read_thread_names();
         tracker.read_thread_stats();
 
-        tracker.show();
+        let quit = {
+            tracker.render(&mut out).unwrap();
+            wait_for_quit(REFRESH)
+        };
 
-        std::thread::sleep(Duration::from_millis(1000));
+        if quit {
+            break;
+        }
+    }
+
+    let _ = out.execute(Show);
+    let _ = out.execute(LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+fn wait_for_quit(timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        if event::poll(deadline - now).unwrap() {
+            if let Event::Key(key) = event::read().unwrap() {
+                if key.kind == KeyEventKind::Release {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return true,
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -59,10 +110,6 @@ impl ThreadTracker {
             stats: ThreadSchedStats::default(),
         };
         self.threads.insert(id, info);
-    }
-
-    fn remove_thread(&mut self, id: &ObjID) {
-        self.threads.remove(id);
     }
 
     fn get_thread_info(&self, id: &ObjID) -> Option<&ThreadInfo> {
@@ -129,24 +176,123 @@ impl ThreadTracker {
         }
     }
 
-    fn show(&self) {
-        println!("Threads (our thread = {:?}):", sys_thread_self_id());
-        let mut sleeping = 0;
-        for thread_info in self.threads.values() {
-            if thread_info.err.is_some() {
+    fn render(&self, out: &mut impl Write) -> std::io::Result<()> {
+        let (cols, rows) = size().unwrap_or((80, 24));
+        let self_id = sys_thread_self_id();
+
+        let mut rows_by_state: BTreeMap<ExecutionState, usize> = BTreeMap::new();
+        let mut visible: Vec<&ThreadInfo> = Vec::new();
+        for t in self.threads.values() {
+            if t.err.is_some() {
                 continue;
             }
-            if thread_info.state == ExecutionState::Sleeping {
-                sleeping += 1;
-                continue;
-            }
-            let name = thread_info.name.as_deref().unwrap_or("<unknown>");
-            let (idle, system, user) = thread_info.calc_stats();
-            println!(
-                "  ID: {:?}, Name: {}, State: {:?}, Stats: idle={:.2}, system={:.2}, user={:.2}",
-                thread_info.id, name, thread_info.state, idle, system, user
-            );
+            *rows_by_state.entry(t.state).or_default() += 1;
+            visible.push(t);
         }
-        println!("Sleeping threads: {}", sleeping);
+        visible.sort_by(|a, b| {
+            b.calc_stats()
+                .2
+                .total_cmp(&a.calc_stats().2)
+                .then(a.id.cmp(&b.id))
+        });
+
+        out.queue(Clear(ClearType::All))?;
+        out.queue(MoveTo(0, 0))?;
+
+        out.queue(SetAttribute(Attribute::Bold))?;
+        out.queue(SetForegroundColor(Color::Cyan))?;
+        out.queue(Print("twiztop"))?;
+        out.queue(ResetColor)?;
+        out.queue(Print(format!(
+            "  —  {} threads, self = {:x}",
+            self.threads.len(),
+            self_id
+        )))?;
+
+        out.queue(MoveTo(0, 1))?;
+        let mut first = true;
+        for (state, count) in &rows_by_state {
+            if !first {
+                out.queue(Print("  "))?;
+            }
+            first = false;
+            out.queue(SetForegroundColor(state_color(*state)))?;
+            out.queue(Print(format!("{:?}: {}", state, count)))?;
+            out.queue(ResetColor)?;
+        }
+
+        out.queue(MoveTo(0, 3))?;
+        out.queue(SetAttribute(Attribute::Reverse))?;
+        out.queue(Print(pad(
+            &format!(
+                "{:<20}  {:<24}  {:<10}  {:>7}  {:>7}  {:>7}",
+                "ID", "NAME", "STATE", "USER%", "SYS%", "IDLE%"
+            ),
+            cols as usize,
+        )))?;
+        out.queue(SetAttribute(Attribute::Reset))?;
+
+        let body_start: u16 = 4;
+        let max_rows = rows.saturating_sub(body_start + 1) as usize;
+        for (i, t) in visible.iter().take(max_rows).enumerate() {
+            let (idle, system, user) = t.calc_stats();
+            let name = t.name.as_deref().unwrap_or("<unknown>");
+            out.queue(MoveTo(0, body_start + i as u16))?;
+
+            if t.id == self_id {
+                out.queue(SetAttribute(Attribute::Bold))?;
+            }
+            out.queue(Print(format!(
+                "{:<20.20}  {:<24.24}  ",
+                format!("{:x}", t.id),
+                name
+            )))?;
+            out.queue(SetForegroundColor(state_color(t.state)))?;
+            out.queue(Print(format!("{:<10.10}", format!("{:?}", t.state))))?;
+            out.queue(ResetColor)?;
+            out.queue(Print("  "))?;
+            out.queue(SetForegroundColor(pct_color(user)))?;
+            out.queue(Print(format!("{:>6.1}%", user * 100.0)))?;
+            out.queue(ResetColor)?;
+            out.queue(Print("  "))?;
+            out.queue(SetForegroundColor(pct_color(system)))?;
+            out.queue(Print(format!("{:>6.1}%", system * 100.0)))?;
+            out.queue(ResetColor)?;
+            out.queue(Print(format!("  {:>6.1}%", idle * 100.0)))?;
+            out.queue(SetAttribute(Attribute::Reset))?;
+        }
+
+        out.queue(MoveTo(0, rows.saturating_sub(1)))?;
+        out.queue(SetForegroundColor(Color::DarkGrey))?;
+        out.queue(Print("q/Esc: quit"))?;
+        out.queue(ResetColor)?;
+
+        out.flush()
     }
+}
+
+fn state_color(state: ExecutionState) -> Color {
+    match state {
+        ExecutionState::Running => Color::Green,
+        ExecutionState::Sleeping => Color::Blue,
+        ExecutionState::Exited => Color::DarkGrey,
+        _ => Color::Yellow,
+    }
+}
+
+fn pct_color(frac: f64) -> Color {
+    match frac {
+        f if f >= 0.75 => Color::Red,
+        f if f >= 0.40 => Color::Yellow,
+        f if f > 0.0 => Color::Green,
+        _ => Color::DarkGrey,
+    }
+}
+
+fn pad(s: &str, width: usize) -> String {
+    let mut s = s.to_string();
+    if s.len() < width {
+        s.push_str(&" ".repeat(width - s.len()));
+    }
+    s
 }

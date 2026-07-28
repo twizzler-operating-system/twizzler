@@ -1,5 +1,5 @@
 use core::{
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64},
     time::Duration,
 };
 
@@ -70,6 +70,7 @@ pub fn requeue_all() {
             .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
         {
             if let Some(t) = cursor.remove() {
+                assert!(!t.get_mutex_wait());
                 crate::processor::sched::schedule_thread(t);
             }
         } else {
@@ -79,12 +80,11 @@ pub fn requeue_all() {
 }
 
 fn do_add_to_requeue(list: &mut RBTree<RequeueLinkAdapter>, thread: ThreadRef) {
-    if thread.requeue_link.is_linked() && !list.find(&thread.objid()).is_null() {
-        // Already on the requeue list. This should be rare, as it can only really happen with a
-        // spurious wakeup while waiting for a mutex.
+    // If already on the list, skip. This can happen with spurious wakeups.
+    // The find() + insert() is protected by the caller's lock, so no TOCTOU race.
+    if !list.find(&thread.objid()).is_null() {
         return;
     }
-    assert!(!thread.requeue_link.is_linked());
     list.insert(thread);
 }
 
@@ -98,6 +98,7 @@ pub fn add_to_requeue(thread: ThreadRef) {
             core::panic::Location::caller(),
         );
         let id = thread.objid();
+        assert!(!thread.get_mutex_wait());
         crate::processor::sched::schedule_thread(thread);
         let requeue = get_requeue_list();
         let mut list = requeue.list.lock();
@@ -124,6 +125,7 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     let mut list = None;
     for thread in iter.into_iter() {
         if !thread.is_critical() && thread.reset_sync_sleep_done() {
+            assert!(!thread.get_mutex_wait());
             crate::processor::sched::schedule_thread(thread);
         } else {
             // Need to take the lock if we haven't yet.
@@ -181,6 +183,7 @@ pub fn finish_blocking(guard: CriticalGuard) {
         thread.set_state(ExecutionState::Sleeping);
         schedule(SchedFlags::YIELD | SchedFlags::PREEMPT);
         thread.set_state(ExecutionState::Running);
+        assert!(!thread.mutex_link.is_linked());
     });
     let end = Instant::now();
     trace_resume(&thread, (end - start).into());
@@ -430,8 +433,10 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
 
     let prep_done = Instant::now();
     let thread = current_thread_ref().unwrap();
+    assert!(!thread.mutex_link.is_linked());
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     let (timeout_key, _guard) = {
+        let guard = thread.enter_critical();
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
@@ -446,8 +451,8 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
             None
         };
         requeue_all();
-        let guard = thread.enter_critical();
         thread.set_sync_sleep_done();
+        assert!(!thread.mutex_link.is_linked());
         let guard = if should_sleep {
             finish_blocking(guard);
             thread.enter_critical()

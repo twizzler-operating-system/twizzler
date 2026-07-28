@@ -29,7 +29,9 @@ use crate::{
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{
-        Thread, ThreadRef, current_thread_ref, locktrack::with_lock_tracker, priority::Priority,
+        Thread, ThreadRef, current_thread_ref,
+        locktrack::{check_timed_out_mutexes, with_lock_tracker},
+        priority::Priority,
     },
     time::TimeStatCollector,
 };
@@ -41,6 +43,10 @@ struct SleepQueue {
     pri: Option<Priority>,
     owner: Option<ThreadRef>,
     owned: bool,
+    /// When true, release() has handed ownership to a waiter but that waiter
+    /// hasn't called lock() yet. Prevents the releasing thread from re-acquiring
+    /// and starving waiters (Bug #9 fairness fix).
+    handoff: bool,
 }
 
 struct MutexStatCollector {
@@ -100,6 +106,7 @@ impl<T> Mutex<T> {
                 pri: None,
                 owner: None,
                 owned: false,
+                handoff: false,
             }),
             cell: UnsafeCell::new(data),
             locked_at: UnsafeCell::new(Location::caller()),
@@ -147,7 +154,13 @@ impl<T> Mutex<T> {
                 );
             }
             assert!(!current_thread.is_critical());
-            assert!(!current_thread.mutex_link.is_linked());
+            assert!(
+                !current_thread.mutex_link.is_linked(),
+                "cannot lock mutex while waiting for another mutex (called from {}), ct = {}, owner = {}",
+                caller,
+                current_thread.id(),
+                self.queue.lock().locker
+            );
         }
 
         let int_state = crate::interrupt::disable();
@@ -191,6 +204,13 @@ impl<T> Mutex<T> {
                     });
                     if let Some(ref cur_thread) = current_thread {
                         if cur_thread.id() == cur_owner.id() {
+                            if queue.handoff {
+                                // This thread was handed ownership by release(). Clear
+                                // the handoff flag and proceed as the new owner.
+                                queue.handoff = false;
+                                unsafe { self.locked_at.get().write(caller) };
+                                break;
+                            }
                             crate::panic::backtrace(false, None);
                             panic!("this mutex is not re-entrant");
                         }
@@ -221,11 +241,13 @@ impl<T> Mutex<T> {
                 finish_blocking(guard);
                 if let Some(ct) = current_thread_ref() {
                     assert!(ct.get_mutex_wait());
+                    assert!(!ct.mutex_link.is_linked());
                 }
             }
         }
 
         if let Some(ct) = current_thread_ref() {
+            assert!(!ct.mutex_link.is_linked());
             ct.set_mutex_wait(false);
         }
 
@@ -243,13 +265,42 @@ impl<T> Mutex<T> {
 
     fn release(&self) {
         let mut queue = self.queue.lock();
-        queue.owner = None;
-        queue.owned = false;
         let g = current_thread_ref().map(|ct| ct.enter_critical());
+        if let Some(ct) = current_thread_ref() {
+            assert!(!ct.mutex_link.is_linked());
+        }
         if let Some(thread) = queue.queue.pop_front() {
+            // Hand off ownership directly to the next waiter instead of releasing.
+            // This prevents the current thread from immediately re-acquiring and
+            // starving waiters (Bug #9 fairness fix).
+            queue.owner = Some(thread.clone());
+            queue.handoff = true;
+            // queue.owned stays true
+            // Transfer the pending priority donation to the new owner, so it starts
+            // running at the correct priority immediately. This prevents priority
+            // inversion between schedule_thread() and the new owner's lock() call.
+            if let Some(ref pri) = queue.pri {
+                thread.donate_priority(pri.clone());
+            }
             schedule_thread(thread);
+            // Recalculate queue.pri for remaining waiters after popping.
+            queue.pri = if queue.queue.is_empty() {
+                None
+            } else {
+                Some(
+                    queue
+                        .queue
+                        .iter()
+                        .map(|t| t.effective_priority())
+                        .max()
+                        .unwrap(),
+                )
+            };
             drop(queue);
         } else {
+            queue.owner = None;
+            queue.owned = false;
+            queue.handoff = false;
             queue.pri = None;
         }
         drop(g);
