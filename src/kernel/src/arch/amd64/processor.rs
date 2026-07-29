@@ -228,6 +228,10 @@ pub fn get_topology() -> Vec<(usize, bool)> {
 pub struct ArchProcessor {
     wait_word: AtomicU64,
     pub(super) tlb_shootdown_info: TlbShootdownInfo,
+    /// The CR3 this processor last switched to. Used by TLB shootdown to skip IPIing
+    /// processors whose active address space can't have stale entries for the target
+    /// being invalidated. 0 is a sentinel that never matches a real page-table root.
+    pub(super) active_cr3: AtomicU64,
 }
 
 impl core::fmt::Debug for ArchProcessor {
@@ -243,6 +247,7 @@ impl Default for ArchProcessor {
         Self {
             wait_word: Default::default(),
             tlb_shootdown_info: TlbShootdownInfo::new(),
+            active_cr3: AtomicU64::new(0),
         }
     }
 }

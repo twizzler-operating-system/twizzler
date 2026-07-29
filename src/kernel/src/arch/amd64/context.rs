@@ -1,4 +1,4 @@
-use core::arch::naked_asm;
+use core::{arch::naked_asm, sync::atomic::Ordering};
 
 use twizzler_abi::object::Protections;
 
@@ -18,6 +18,7 @@ use crate::{
     },
     obj::pagetables::ObjectPageTable,
     once::Once,
+    processor::Processor,
     spinlock::{SpinLockGuard, Spinlock},
 };
 
@@ -81,8 +82,8 @@ impl ArchContext {
         }
     }
 
-    pub fn switch_to(&self) {
-        unsafe { Self::switch_to_target(&self.target) }
+    pub fn switch_to(&self, proc: Option<&Processor>) {
+        unsafe { Self::switch_to_target(&self.target, proc) }
     }
 
     pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
@@ -93,14 +94,21 @@ impl ArchContext {
 
     /// Switch to a given set of page tables.
     ///
+    /// `proc` should be the current processor, if TLS/the processor registry is up yet
+    /// (it isn't during the very early boot switch from `memory::init()`) -- passing it
+    /// explicitly keeps this low-level function from having to do its own TLS lookup.
+    ///
     /// # Safety
     /// The specified target must be a root page table that will live as long as we are switched to
     /// it.
-    pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
+    pub unsafe fn switch_to_target(tgt: &ArchContextTarget, proc: Option<&Processor>) {
         unsafe {
             if tgt.0 != x86::controlregs::cr3() {
                 x86::controlregs::cr3_write(tgt.0);
             }
+        }
+        if let Some(proc) = proc {
+            proc.arch.active_cr3.store(tgt.0, Ordering::Release);
         }
     }
 

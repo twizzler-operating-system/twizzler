@@ -15,6 +15,7 @@ use crate::{
         MappingCursor, tlb_shootdown_inc_count, trace_tlb_invalidation, trace_tlb_shootdown,
     },
     processor::{
+        Processor,
         mp::{current_processor, with_each_active_processor},
         spin_wait_until, tls_ready,
     },
@@ -75,6 +76,18 @@ impl TlbInvData {
 
     fn instructions(&self) -> &[InvInstruction] {
         &self.instructions[0..(self.len as usize)]
+    }
+
+    /// Whether `p` needs to be sent (and waited on for) this invalidation. A processor
+    /// whose active address space doesn't match our target can't hold stale entries for
+    /// it: it's either off on an unrelated context now, or it'll switch into ours later,
+    /// which does a full non-global flush via its own `mov cr3` (no PCID is in use here)
+    /// -- by then the underlying page-table write that triggered this invalidation has
+    /// already happened, so it'll walk fresh, correct PTEs. Global invalidations always
+    /// go to every processor regardless, matching the receiver-side check in
+    /// `do_invalidation`.
+    fn should_target(&self, p: &Processor) -> bool {
+        self.global() || p.arch.active_cr3.load(Ordering::Acquire) == self.target()
     }
 
     fn apply_offset(&self, map: &MappingCursor) -> Self {
@@ -385,7 +398,7 @@ impl ArchTlbMgr {
         let mut count = 0;
         // Distribute the invalidation commands
         with_each_active_processor(|p| {
-            if p.id != proc.id {
+            if p.id != proc.id && self.data.should_target(p) {
                 p.arch.tlb_shootdown_info.insert(self.data.clone());
                 count += 1;
             }
@@ -406,7 +419,7 @@ impl ArchTlbMgr {
             // Wait for each processor to report that it is done.
             with_each_active_processor(|p| {
                 let mut iters = 0;
-                if p.id != proc.id {
+                if p.id != proc.id && self.data.should_target(p) {
                     spin_wait_until(
                         || {
                             iters += 1;

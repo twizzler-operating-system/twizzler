@@ -44,7 +44,14 @@ fn main() {
 }
 
 async fn accept(listener: &TcpListener) {
-    while let Ok(conn) = listener.accept().await {
+    loop {
+        let conn = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("accept error: {}", e);
+                continue;
+            }
+        };
         tracing::info!("accepting connection from {}", conn.1);
         match sunset_server(conn.0).await {
             Ok(_) => {

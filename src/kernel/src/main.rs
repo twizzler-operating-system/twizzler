@@ -72,7 +72,7 @@ use crate::{
     obj::scan_deleted,
     pager::check_timed_out_requests,
     processor::mp::current_processor,
-    thread::{entry::start_new_init, locktrack::check_timed_out_mutexes},
+    thread::{check_orphan_threads, entry::start_new_init, locktrack::check_timed_out_mutexes},
 };
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
@@ -244,10 +244,11 @@ pub fn idle_main() -> ! {
         if iter % 100 == 0 {
             current_processor().cleanup_exited();
         }
-        if iter % 1000 == 0 {
+        if iter % 1000 == 0 && current_processor().is_bsp() {
             scan_deleted();
             check_timed_out_mutexes();
             check_timed_out_requests();
+            check_orphan_threads();
         }
         iter = iter.wrapping_add(1);
         requeue_all();

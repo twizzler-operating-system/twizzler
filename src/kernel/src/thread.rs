@@ -26,7 +26,7 @@ use crate::{
     idcounter::{Id, IdCounter},
     interrupt::Destination,
     memory::context::{ContextRef, UserContext},
-    obj::control::ControlObjectCacher,
+    obj::{ThreadSleepLinker, control::ControlObjectCacher},
     processor::{
         KERNEL_STACK_SIZE,
         ipi::ipi_exec,
@@ -74,11 +74,12 @@ pub struct Thread {
     // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
-    pub devint_link: AtomicLink,
     pub memwait_link: AtomicLink,
+    pub pager_link: AtomicLink,
     pub condvar_link: RBTreeAtomicLink,
     pub requeue_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
+    pub sync_links: ThreadSleepLinker,
     pub secctx: SecCtxMgr,
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
@@ -169,7 +170,8 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             requeue_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
-            devint_link: AtomicLink::default(),
+            pager_link: AtomicLink::default(),
+            sync_links: ThreadSleepLinker::new(),
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
             sample_expire: Spinlock::new(None),
@@ -510,6 +512,15 @@ impl Drop for Thread {
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     let th = current_thread_ref().unwrap();
+    if th.id() == 36 {
+        crate::panic::backtrace(true, None);
+    }
+    logln!(
+        "thread {} ({}) exiting with code {}",
+        th.id(),
+        th.objid(),
+        code
+    );
     th.set_state_and_code(ExecutionState::Exited, code);
     remove_thread(th.id());
     log::debug!(
@@ -521,6 +532,7 @@ pub fn exit(code: u64) -> ! {
     th.set_is_exiting();
     th.reset_sync_sleep();
     th.reset_sync_sleep_done();
+    th.sync_links.clear_all_references();
     // Disable interrupts for the entire exit sequence including schedule(), to
     // prevent an IPI from rescheduling this thread between cleanup and context switch.
     crate::interrupt::with_disabled(|| {
@@ -565,4 +577,52 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
             });
     });
     Ok(count)
+}
+
+pub fn check_orphan_threads() {
+    with_all_threads(|at| {
+        for thread in at.values() {
+            let is_mutex_linked = thread.mutex_link.is_linked();
+            let is_condvar_linked = thread.condvar_link.is_linked();
+            let is_requeue_linked = thread.requeue_link.is_linked();
+            let is_suspend_linked = thread.suspend_link.is_linked();
+            let is_sync_linked = thread.sync_links.is_linked();
+            let is_memwait_linked = thread.memwait_link.is_linked();
+            let is_sched_linked = thread.sched_link.is_linked();
+            let is_timed_wait = thread.has_timed_wait();
+            let is_pager_linked = thread.pager_link.is_linked();
+            let is_on_any_queue = is_mutex_linked
+                || is_condvar_linked
+                || is_pager_linked
+                || is_requeue_linked
+                || is_suspend_linked
+                || is_sync_linked
+                || is_memwait_linked
+                || is_timed_wait
+                || is_sched_linked;
+            if !is_on_any_queue && thread.get_state() != ExecutionState::Exited {
+                log::warn!(
+                    "thread {} ({}) is orphaned: not on any queue and not exited",
+                    thread.id(),
+                    thread.objid()
+                );
+            }
+            if thread.id() == 36 {
+                logln!(
+                    "thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={}",
+                    thread.id(),
+                    thread.objid(),
+                    is_mutex_linked,
+                    is_condvar_linked,
+                    is_requeue_linked,
+                    is_suspend_linked,
+                    is_sync_linked,
+                    is_memwait_linked,
+                    is_timed_wait,
+                    is_pager_linked,
+                    is_sched_linked
+                );
+            }
+        }
+    });
 }

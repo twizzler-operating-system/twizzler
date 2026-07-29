@@ -214,10 +214,18 @@ pub fn open(
         }
         OpenKind::SocketAccept => {
             let fd =
-                binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)?;
+                binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)
+                    .inspect_err(|e| {
+                        twizzler_abi::klog_println!(
+                            "SocketAccept: binding_ref failed (binding_len = {}): {}",
+                            binding_len,
+                            e
+                        );
+                    })?;
             let fd = fd.id as usize;
             let binding = get_fd_slots().lock().unwrap();
             let Some(fd) = binding.get(fd) else {
+                twizzler_abi::klog_println!("SocketAccept: no fd slot at index {}", fd);
                 return Err(ErrorKind::InvalidInput.into());
             };
 
@@ -225,11 +233,14 @@ pub fn open(
             let downcast = file.as_socket();
             let Some(socket) = downcast else {
                 tracing::warn!("tried to accept on a non-socket fd");
+                twizzler_abi::klog_println!("SocketAccept: fd is not a socket");
                 return Err(ErrorKind::InvalidInput.into());
             };
             drop(binding);
 
-            Some(Arc::new(SocketKind::accept(&socket)?))
+            Some(Arc::new(SocketKind::accept(&socket).inspect_err(|e| {
+                twizzler_abi::klog_println!("SocketAccept: SocketKind::accept failed: {}", e);
+            })?))
         }
         OpenKind::KernelConsole => Some(Arc::new(KernelConsoleFile::new())),
         _ => Err(ErrorKind::Unsupported)?,

@@ -1,3 +1,4 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     sync::atomic::{AtomicU32, AtomicU64},
     time::Duration,
@@ -51,13 +52,25 @@ impl<'a> KeyAdapter<'a> for RequeueLinkAdapter {
     }
 }
 
-/* TODO: make this thread-local */
-static REQUEUE: Once<Requeue> = Once::new();
+// Sharded per-CPU: each processor only ever enqueues to and drains its own shard
+// (see requeue_all()/add_to_requeue()'s callers), which avoids a single global lock
+// being contended by every wake/sleep in the system. A thread enqueued by a different
+// CPU than the one that will eventually run it is fine -- every CPU also drains its own
+// shard unconditionally on every hardtick (see clock.rs's oneshot_clock_hardtick), so
+// nothing can be stranded in a shard indefinitely even under continuous, syscall-free
+// load on the CPU that owns it.
+static REQUEUE_SHARDS: Once<Box<[Requeue]>> = Once::new();
 
-pub fn get_requeue_list() -> &'static Requeue {
-    REQUEUE.call_once(|| Requeue {
-        list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
-    })
+fn get_requeue_list() -> &'static Requeue {
+    let shards = REQUEUE_SHARDS.call_once(|| {
+        (0..=crate::processor::mp::MAX_CPU_ID)
+            .map(|_| Requeue {
+                list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    });
+    &shards[crate::processor::mp::current_processor().id as usize]
 }
 
 pub fn requeue_all() {
@@ -136,9 +149,19 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
 }
 
 pub fn remove_from_requeue(thread: &ThreadRef) {
-    let requeue = get_requeue_list();
-    let mut list = requeue.list.lock();
-    let _ = list.find_mut(&thread.objid()).remove();
+    // Unlike the other functions here, we can't assume the thread is in the current
+    // CPU's shard -- it may have been enqueued by whichever CPU last woke it. This is
+    // a cold/defensive path (by the time a thread calls this on itself, requeue_all()
+    // has by construction already removed it from wherever it was, before ever letting
+    // it run again), so scanning every shard here is fine.
+    if let Some(shards) = REQUEUE_SHARDS.poll() {
+        for shard in shards.iter() {
+            let mut list = shard.list.lock();
+            if list.find_mut(&thread.objid()).remove().is_some() {
+                return;
+            }
+        }
+    }
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
@@ -315,12 +338,6 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     let prep_done = Instant::now();
     finish_blocking(guard);
     let woke_up = Instant::now();
-    log::trace!(
-        "thread {} ({}) woke up",
-        current_thread_ref().unwrap().id(),
-        current_thread_ref().unwrap().objid()
-    );
-
     let _guard = thread.enter_critical();
     thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
@@ -355,7 +372,7 @@ pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
     Ok(count)
 }
 
-pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
+fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     if let Some(ref timeout) = timeout {
         log::trace!(
             "{}: simple timed sleep ({} ms)",
@@ -452,6 +469,10 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
         };
         requeue_all();
         thread.set_sync_sleep_done();
+        // Catch any wake() that raced in and parked us on the pending requeue
+        // list before sync_sleep_done was set above (see optimized_single_sleep,
+        // which orders these calls the same way for the single-op path).
+        requeue_all();
         assert!(!thread.mutex_link.is_linked());
         let guard = if should_sleep {
             finish_blocking(guard);
@@ -500,4 +521,25 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     } else {
         Ok(ready_count)
     }
+}
+
+pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
+    let thread = current_thread_ref().unwrap();
+    thread.sync_links.reserve(ops.len(), thread);
+    thread.set_timed_wait(timeout.is_some());
+
+    let r = do_sys_thread_sync(ops, timeout);
+    if r.is_err() {
+        log::trace!(
+            "thread {} ({}) failed thread_sync: {:?} ({:?})",
+            thread.id(),
+            thread.objid(),
+            r,
+            ops
+        );
+    }
+    thread.sync_links.reset();
+    thread.set_timed_wait(false);
+
+    r
 }

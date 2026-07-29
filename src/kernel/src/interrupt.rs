@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use intrusive_collections::{LinkedList, intrusive_adapter};
+use intrusive_collections::RBTree;
 use twizzler_abi::{
     device::{CacheType, DeviceRepr},
     kso::{InterruptAllocateOptions, InterruptPriority},
@@ -19,12 +19,12 @@ use crate::{
         KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
         virtmem::KernelObjectVirtHandle,
     },
-    obj::ObjectRef,
+    obj::{ObjectRef, thread_sync::ThreadSleepAdapter},
     once::Once,
     processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{Thread, ThreadRef, priority::Priority},
+    thread::{ThreadRef, priority::Priority},
 };
 
 /// Set the current interrupt enable state to disabled and return the old state.
@@ -171,10 +171,8 @@ struct GlobalInterruptState {
     ints: Vec<Interrupt>,
     device_vectors:
         [Spinlock<heapless::Vec<DeviceInterrupter, MAX_DEVICE_VECTORS>>; MAX_VECTOR + 1],
-    device_waiters: [Spinlock<LinkedList<DevIntLinkAdapter>>; MAX_VECTOR + 1],
+    device_waiters: [Spinlock<RBTree<ThreadSleepAdapter>>; MAX_VECTOR + 1],
 }
-
-intrusive_adapter!(pub DevIntLinkAdapter = ThreadRef: Thread { devint_link: intrusive_collections::linked_list::AtomicLink });
 
 impl GlobalInterruptState {
     fn setup_device_wait(
@@ -202,7 +200,7 @@ impl GlobalInterruptState {
         if set_sync_sleep {
             thread.set_sync_sleep();
         }
-        waiters.push_back(thread);
+        waiters.insert(thread);
         true
     }
 }
@@ -217,7 +215,7 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
         GlobalInterruptState {
             ints: v,
             device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
-            device_waiters: [const { Spinlock::new(LinkedList::new(DevIntLinkAdapter::NEW)) };
+            device_waiters: [const { Spinlock::new(RBTree::new(ThreadSleepAdapter::NEW)) };
                 MAX_VECTOR + 1],
         }
     })
@@ -255,9 +253,7 @@ pub fn wait_for_device_interrupt(
 pub fn remove_from_device_wait(thread: &ThreadRef, number: u32) {
     let gi = get_global_interrupts();
     let mut waiters = gi.device_waiters[number as usize].lock();
-    if thread.devint_link.is_linked() {
-        unsafe { waiters.cursor_mut_from_ptr(&**thread).remove() };
-    }
+    waiters.find_mut(&thread.objid()).remove();
 }
 
 const INTQUEUE_LEN: usize = 128;

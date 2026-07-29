@@ -142,6 +142,23 @@ impl MemoryTracker {
             current_thread.set_state(ExecutionState::Sleeping);
             if self.idle() == old_idle {
                 finish_blocking(guard);
+            } else {
+                // Memory became available before we decided to actually block, so we
+                // never call finish_blocking() and thus never get removed from
+                // `waiters` via the normal wake() path. Unlink ourselves here instead,
+                // otherwise we leak a strong reference into `waiters` and a later,
+                // unrelated wake() will try to reschedule us (or, if we've since
+                // exited, a stale thread).
+                //
+                // Check is_linked() while holding the same lock wake() takes to drain
+                // the list, so we can't race it: if wake() got here first, we're
+                // already unlinked and this is a no-op.
+                let mut waiters = self.waiters.lock();
+                if current_thread.memwait_link.is_linked() {
+                    unsafe {
+                        waiters.cursor_mut_from_ptr(&**current_thread).remove();
+                    }
+                }
             }
             current_thread.set_state(ExecutionState::Running);
             current_thread.reset_sync_sleep_done();

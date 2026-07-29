@@ -894,14 +894,11 @@ mod lazy_sb {
         }
 
         fn init() -> SimpleBuffer {
-            twizzler_abi::klog_println!("SBINIT");
             let id = super::monitor_rt_get_thread_simple_buffer()
                 .expect("failed to get per-thread monitor simple buffer");
-            twizzler_abi::klog_println!("SBINIT2");
             let oh =
                 twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)
                     .unwrap();
-            twizzler_abi::klog_println!("SBINIT3");
             SimpleBuffer::new(oh)
         }
 
@@ -911,14 +908,12 @@ mod lazy_sb {
         }
 
         fn write(&mut self, buf: &[u8]) -> usize {
-            twizzler_abi::klog_println!("WRITING {} bytes to SB", buf.len());
             if self.sb.get().is_none() {
                 // Unwrap-Ok: we know it's empty.
                 self.sb.set(Self::init()).unwrap();
             }
             let sb = self.sb.get_mut().unwrap();
             let r = sb.write(buf);
-            twizzler_abi::klog_println!("WROTE {} bytes to SB", r);
             r
         }
     }

@@ -32,6 +32,7 @@ use crate::{
     mutex::Mutex,
     obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
     once::Once,
+    processor::{mp::current_processor, tls_ready},
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::current_thread_ref,
@@ -459,9 +460,13 @@ impl UserContext for VirtContext {
         let target = tc
             .get(&sctx)
             .expect("tried to switch to a non-registered sctx");
+        // TLS/the processor registry isn't up yet during the very early boot switch from
+        // memory::init(); pass None in that case rather than looking up current_processor()
+        // from inside the arch-specific switch code.
+        let proc = tls_ready().then(current_processor);
         // Safety: we get the target from an ArchContext that we track.
         unsafe {
-            ArchContext::switch_to_target(target);
+            ArchContext::switch_to_target(target, proc);
         }
     }
 

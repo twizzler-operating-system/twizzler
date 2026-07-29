@@ -191,7 +191,12 @@ impl SmolTcpListener {
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
                     // creating another listener and swapping self's socket handle
                     let sock = Self::do_bind(self.local_addr).inspect_err(|e| {
-                        tracing::warn!("failed to rebind new socket after accept: {e}")
+                        tracing::warn!("failed to rebind new socket after accept: {e}");
+                        twizzler_abi::klog_println!(
+                            "failed to rebind new socket on {} after accept: {}",
+                            self.local_addr,
+                            e
+                        );
                     })?;
                     let newhandle = core.add_socket(sock.0, true);
 
@@ -208,7 +213,12 @@ impl SmolTcpListener {
                 } else if !sock.is_open() {
                     // Connection was reset?
                     if let Ok(sock) = Self::do_bind(self.local_addr).inspect_err(|e| {
-                        tracing::warn!("failed to rebind socket after detecting reset: {e}")
+                        tracing::warn!("failed to rebind socket after detecting reset: {e}");
+                        twizzler_abi::klog_println!(
+                            "failed to rebind socket on {} after detecting reset: {}",
+                            self.local_addr,
+                            e
+                        );
                     }) {
                         let newhandle = core.add_socket(sock.0, true);
                         listener.socket_handle = newhandle;

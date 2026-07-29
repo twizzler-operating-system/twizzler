@@ -14,12 +14,11 @@ use twizzler_rt_abi::bindings::sync_info;
 
 use crate::{
     arch::PhysAddr,
-    condvar::CondVarLinkAdapter,
     instant::Instant,
     obj::{ObjectRef, PageNumber, pagetables::DirtyList},
     spinlock::Spinlock,
     syscall::sync::{add_all_to_requeue, requeue_all},
-    thread::{CriticalGuard, ThreadRef, current_thread_ref},
+    thread::{CriticalGuard, Thread, ThreadRef, current_thread_ref},
 };
 
 #[derive(Debug, Clone)]
@@ -275,10 +274,12 @@ impl ReqKind {
 
 intrusive_adapter!(pub RequestMapAdapter = &'static Request : Request { link: intrusive_collections::rbtree::AtomicLink });
 
+intrusive_adapter!(pub PagerLinkAdapter = ThreadRef : Thread { pager_link: intrusive_collections::linked_list::AtomicLink });
+
 pub struct Request {
     pub id: usize,
     reqkind: ReqKind,
-    waiters: Spinlock<LinkedList<CondVarLinkAdapter>>,
+    waiters: Spinlock<LinkedList<PagerLinkAdapter>>,
     remaining_pages: AtomicUsize,
     done: AtomicBool,
     start_time: Instant,
@@ -299,7 +300,7 @@ impl Request {
             id,
             remaining_pages: AtomicUsize::new(reqkind.all_pages().count()),
             reqkind,
-            waiters: Spinlock::new(LinkedList::new(CondVarLinkAdapter::NEW)),
+            waiters: Spinlock::new(LinkedList::new(PagerLinkAdapter::NEW)),
             done: AtomicBool::new(false),
             start_time,
             link: RBTreeAtomicLink::new(),

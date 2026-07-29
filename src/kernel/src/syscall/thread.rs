@@ -149,6 +149,12 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                         thread.suspend();
                     }
                     ExecutionState::Exited => {
+                        logln!(
+                            "calling force exit on thread {} ({})",
+                            thread.id(),
+                            thread.objid()
+                        );
+                        crate::panic::backtrace(true, None);
                         thread.force_exit();
                     }
                     _ => {

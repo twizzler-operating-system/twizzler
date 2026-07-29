@@ -14,6 +14,7 @@ use crate::{
     },
     mutex::Mutex,
     once::Once,
+    processor::Processor,
     spinlock::Spinlock,
 };
 
@@ -81,19 +82,23 @@ impl ArchContext {
         Self::new_kernel()
     }
 
-    pub fn switch_to(&self) {
+    pub fn switch_to(&self, proc: Option<&Processor>) {
         unsafe {
-            Self::switch_to_target(&self.target);
+            Self::switch_to_target(&self.target, proc);
         }
     }
 
     #[allow(named_asm_labels)]
     /// Switch to a target context.
     ///
+    /// `proc` is unused on this architecture (the amd64 backend uses it to track
+    /// per-processor active-context state for targeted TLB shootdown); accepted here
+    /// only so callers shared with amd64 (e.g. `VirtContext::switch_to`) compile.
+    ///
     /// # Safety
     /// This function must be called with a target that comes from an ArchContext that lives long
     /// enough.
-    pub unsafe fn switch_to_target(tgt: &ArchContextTarget) {
+    pub unsafe fn switch_to_target(tgt: &ArchContextTarget, _proc: Option<&Processor>) {
         // TODO: If the incoming target is already the current user table, this should be a no-op.
         // Also, we don't need to set the kernel tables each time.
         // write TTBR1

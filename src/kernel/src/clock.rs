@@ -307,6 +307,10 @@ pub fn oneshot_clock_hardtick() {
     if current_processor().is_bsp() {
         sched_next_tick = Some(1);
     }
+    // This CPU's own requeue shard (syscall::sync) can only be drained by this CPU;
+    // draining it here, every hardtick, bounds how long a thread can be stuck in it to
+    // one tick period even if this CPU never idles or hits another requeue_all() call site.
+    requeue_all();
     log::trace!(
         "hardtick {} {} {:?} {:?}",
         current_processor().id,

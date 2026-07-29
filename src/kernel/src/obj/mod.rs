@@ -17,7 +17,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{bindings::object_tie, error::TwzError, object::Nonce};
 
-use self::thread_sync::SleepInfo;
+pub use self::thread_sync::{SleepInfo, ThreadSleepLinker};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId},

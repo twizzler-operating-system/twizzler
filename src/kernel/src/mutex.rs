@@ -29,9 +29,7 @@ use crate::{
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{
-        Thread, ThreadRef, current_thread_ref,
-        locktrack::{check_timed_out_mutexes, with_lock_tracker},
-        priority::Priority,
+        Thread, ThreadRef, current_thread_ref, locktrack::with_lock_tracker, priority::Priority,
     },
     time::TimeStatCollector,
 };

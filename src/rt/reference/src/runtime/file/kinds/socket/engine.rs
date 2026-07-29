@@ -219,6 +219,7 @@ impl Engine {
             let waiter = _waiter;
             let notify = _notify;
 
+            let my_id = twizzler_abi::syscall::sys_thread_self_id();
             fn check_tracking() -> bool {
                 twizzler_abi::klog_println!("a");
                 let mut core = ENGINE.core.lock().unwrap();
@@ -247,9 +248,9 @@ impl Engine {
             }
 
             loop {
-                twizzler_abi::klog_println!("polling thread: checking tracking");
+                twizzler_abi::klog_println!("polling thread {}: checking tracking", my_id);
                 while check_tracking() {}
-                twizzler_abi::klog_println!("polling thread: checking tracking done");
+                twizzler_abi::klog_println!("polling thread {}: checking tracking done", my_id);
                 let time = {
                     let mut inner = inner.lock().unwrap();
                     inner.poll(&*waiter);
@@ -283,19 +284,22 @@ impl Engine {
                 drop(core);
                 let n = notify.swap(0, Ordering::SeqCst);
                 twizzler_abi::klog_println!(
-                    "polling thread: waiting for {} waiters, time={:?}, n={}",
+                    "polling thread {}: waiting for {} waiters, time={:?}, n={}",
+                    my_id,
                     waiters.len(),
                     time,
                     n
                 );
                 if !any_ready && n == 0 {
                     twizzler_abi::klog_println!(
-                        "polling thread: waiting for {} waiters, time={:?}",
+                        "polling thread {}: waiting for {} waiters, time={:?}: {:?}",
+                        my_id,
                         waiters.len(),
-                        time
+                        time,
+                        waiters,
                     );
-                    let time = Some(Duration::from_micros(1000));
                     let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
+                    twizzler_abi::klog_println!("polling thread {}: woke up from wait", my_id);
                 }
             }
         });

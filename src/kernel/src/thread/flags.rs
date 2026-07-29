@@ -14,6 +14,7 @@ pub(super) const THREAD_IS_SUSPENDED: u32 = 64;
 pub(super) const THREAD_MUST_SUSPEND: u32 = 128;
 pub(crate) const THREAD_MUST_EXIT: u32 = 256;
 pub(crate) const THREAD_MUTEX_WAIT: u32 = 512;
+pub(crate) const THREAD_TIMED_WAIT: u32 = 1024;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
@@ -103,5 +104,17 @@ impl Thread {
             .flags
             .fetch_and(!THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
         (old & THREAD_IS_SYNC_SLEEP_DONE) != 0
+    }
+
+    pub fn set_timed_wait(&self, set: bool) {
+        if set {
+            self.flags.fetch_or(THREAD_TIMED_WAIT, Ordering::SeqCst);
+        } else {
+            self.flags.fetch_and(!THREAD_TIMED_WAIT, Ordering::SeqCst);
+        }
+    }
+
+    pub fn has_timed_wait(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_TIMED_WAIT != 0
     }
 }

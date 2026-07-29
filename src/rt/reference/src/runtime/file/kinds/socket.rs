@@ -82,13 +82,14 @@ impl SocketKind {
 
     pub fn accept(&self) -> Result<Self> {
         tracing::debug!("Accepting on socket");
-        match self {
+        let r = match self {
             SocketKind::TcpListener(listener) => listener
                 .accept(IoFlags::empty())
                 .map(|stream| SocketKind::TcpStream(Arc::new(stream.0)))
                 .map_err(Into::into),
             _ => Err(TwzError::NOT_SUPPORTED),
-        }
+        };
+        r
     }
 
     pub fn udp_connect<A: ToSocketAddrs>(&self, addr: A) -> Result<()> {
@@ -217,7 +218,7 @@ impl Fd for SocketKind {
     }
 
     fn seek(&self, _pos: std::io::SeekFrom) -> Result<usize> {
-        Err(TwzError::NOT_SUPPORTED)
+        Ok(0)
     }
 
     fn flush(&self) -> Result<()> {

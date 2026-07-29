@@ -207,10 +207,19 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
             if ptr.is_null() {
                 return;
             }
-            FerrocAllocator
-                .base()
+
+            let inner = FerrocAllocator.base();
+            inner
                 .allocated_bytes
                 .fetch_sub(layout.size(), Ordering::SeqCst);
+            if layout.size() >= ferroc::config::SLAB_SIZE {
+                unsafe {
+                    inner
+                        .ctx()
+                        .deallocate_chunk(layout, NonNull::new(ptr).unwrap())
+                };
+                return;
+            }
             let nn = NonNull::new(ptr).unwrap();
             let _guard = current_thread_ref().map(|ct| ct.enter_critical());
             unsafe { FerrocAllocator.deallocate(nn, layout) };
