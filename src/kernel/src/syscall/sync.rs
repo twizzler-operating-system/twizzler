@@ -1,4 +1,3 @@
-use alloc::{boxed::Box, vec::Vec};
 use core::{
     sync::atomic::{AtomicU32, AtomicU64},
     time::Duration,
@@ -52,25 +51,13 @@ impl<'a> KeyAdapter<'a> for RequeueLinkAdapter {
     }
 }
 
-// Sharded per-CPU: each processor only ever enqueues to and drains its own shard
-// (see requeue_all()/add_to_requeue()'s callers), which avoids a single global lock
-// being contended by every wake/sleep in the system. A thread enqueued by a different
-// CPU than the one that will eventually run it is fine -- every CPU also drains its own
-// shard unconditionally on every hardtick (see clock.rs's oneshot_clock_hardtick), so
-// nothing can be stranded in a shard indefinitely even under continuous, syscall-free
-// load on the CPU that owns it.
-static REQUEUE_SHARDS: Once<Box<[Requeue]>> = Once::new();
+/* TODO: make this thread-local */
+static REQUEUE: Once<Requeue> = Once::new();
 
 fn get_requeue_list() -> &'static Requeue {
-    let shards = REQUEUE_SHARDS.call_once(|| {
-        (0..=crate::processor::mp::MAX_CPU_ID)
-            .map(|_| Requeue {
-                list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-    });
-    &shards[crate::processor::mp::current_processor().id as usize]
+    REQUEUE.call_once(|| Requeue {
+        list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
+    })
 }
 
 pub fn requeue_all() {
@@ -149,19 +136,9 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
 }
 
 pub fn remove_from_requeue(thread: &ThreadRef) {
-    // Unlike the other functions here, we can't assume the thread is in the current
-    // CPU's shard -- it may have been enqueued by whichever CPU last woke it. This is
-    // a cold/defensive path (by the time a thread calls this on itself, requeue_all()
-    // has by construction already removed it from wherever it was, before ever letting
-    // it run again), so scanning every shard here is fine.
-    if let Some(shards) = REQUEUE_SHARDS.poll() {
-        for shard in shards.iter() {
-            let mut list = shard.list.lock();
-            if list.find_mut(&thread.objid()).remove().is_some() {
-                return;
-            }
-        }
-    }
+    let requeue = get_requeue_list();
+    let mut list = requeue.list.lock();
+    let _ = list.find_mut(&thread.objid()).remove();
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {

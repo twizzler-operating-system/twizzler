@@ -531,8 +531,22 @@ fn run_tests() {
         flags = comp.wait(flags);
     }
 
-    println!("unittests finished");
+    let exit_code = comp.info().map(|info| info.exit_code).unwrap_or_else(|e| {
+        eprintln!("failed to read unittest exit code: {}", e);
+        1
+    });
+    println!("unittests finished with code {}", exit_code);
+
+    // isa-debug-exit reports the code back to the host as (code << 1) | 1 in an 8-bit exit
+    // status, so anything above 127 aliases onto another code -- 128 would be indistinguishable
+    // from success. Clamp into the representable range, preserving zero vs. nonzero; the REPORT
+    // JSON carries the per-test detail.
+    let code = if exit_code == 0 {
+        0
+    } else {
+        exit_code.min(127) as u32
+    };
 
     #[allow(deprecated)]
-    twizzler_abi::syscall::sys_debug_shutdown(0);
+    twizzler_abi::syscall::sys_debug_shutdown(code);
 }

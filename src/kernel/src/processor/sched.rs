@@ -641,6 +641,11 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     cp.reset_rebalance();
     unsafe { set_current_thread(&thread) };
 
+    // Release our strong ref before switching (into_raw + decrement keeps the pointer usable
+    // afterward; the switch does not return on this path). Sound because the leaked
+    // `Box<ThreadRef>` self-reference -- installed in schedule_new_thread/create_idle_thread and
+    // reclaimed only by Processor::cleanup_exited once the thread has exited -- always holds
+    // another strong ref.
     let threadt = Arc::into_raw(thread);
     unsafe {
         Arc::decrement_strong_count(threadt);
@@ -717,6 +722,10 @@ fn do_schedule(flags: SchedFlags) {
     let next = processor.rq.take(false);
     if let Some(next) = next {
         if &next == cur {
+            // We took ourselves back off the queue, so we never reach switch_to (the only other
+            // caller of moving_to_active). Clear current_processor_queue here, or we stay marked
+            // as queued while actually running.
+            cur.sched.moving_to_active(processor.id);
             return;
         }
         switch_to(next, cur, flags);
@@ -825,6 +834,7 @@ pub fn schedule_maybe_preempt() {
 
 pub fn schedule_hardtick() -> Option<u64> {
     let cp = current_processor();
+    // Relaxed on purpose: a free-running counter with no other memory ordered against it.
     cp.stats.hardticks.fetch_add(1, Ordering::Relaxed);
     let resched = needs_reschedule(true);
     let cur = current_thread_ref()?;

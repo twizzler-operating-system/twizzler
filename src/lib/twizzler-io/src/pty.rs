@@ -8,11 +8,12 @@ use std::{
 };
 
 use libc::{
-    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS7, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL,
-    HUPCL, ICANON, ICRNL, IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, OCRNL, ONLCR,
-    OPOST, PARENB, VEOF, VERASE, VINTR, VKILL, VQUIT, VSTATUS, VWERASE, XTABS,
+    _POSIX_VDISABLE, B9600, BRKINT, CREAD, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, HUPCL,
+    ICANON, ICRNL, IEXTEN, IGNCR, IMAXBEL, INLCR, ISIG, ISTRIP, IXANY, IXON, NCCS, NOFLSH, OCRNL,
+    ONLCR, OPOST, VDISCARD, VEOF, VEOL, VERASE, VINTR, VKILL, VLNEXT, VMIN, VQUIT, VREPRINT,
+    VSTART, VSTATUS, VSTOP, VSUSP, VTIME, VWERASE, XTABS,
 };
-use memchr::{memchr2, memchr3, memrchr, memrchr3};
+use memchr::{memchr2, memrchr, memrchr3};
 use twizzler::{
     BaseType, Invariant,
     object::{MapFlags, ObjID, Object, ObjectBuilder, TypedObject},
@@ -240,7 +241,11 @@ impl PtyServerHandle {
 
     pub fn set_winsize(&self, winsize: libc::winsize) {
         let old = self.client_output.pty.base().read_winsize().0;
-        if old.ws_row != winsize.ws_row || old.ws_col != winsize.ws_col || old.ws_xpixel != winsize.ws_xpixel || old.ws_ypixel != winsize.ws_ypixel {
+        if old.ws_row != winsize.ws_row
+            || old.ws_col != winsize.ws_col
+            || old.ws_xpixel != winsize.ws_xpixel
+            || old.ws_ypixel != winsize.ws_ypixel
+        {
             self.client_output.pty.base().update_winsize(|_| winsize);
             if let Some(signal_handler) = self.signal_handler {
                 (signal_handler)(self, PtySignal::Winch);
@@ -274,14 +279,39 @@ impl PtyServerHandle {
 }
 
 impl PtyServerHandle {
+    /// POSIX: recognizing INTR/QUIT/SUSP discards pending input unless NOFLSH.
+    ///
+    /// This only drops what is still in the shared ring. Bytes the client has already
+    /// pulled into its canonical line buffer are on the far side of the object and
+    /// cannot be reached from here, so the flush is necessarily partial.
+    fn flush_input(&self) {
+        let mut buf = [0u8; 256];
+        let base = self.client_output.pty.base();
+        while base.client_input.read_bytes(&mut buf).unwrap_or(0) > 0 {}
+    }
+
+    fn dispatch_signal(&self, report: &WriteReport) {
+        let Some(signal) = report.posted_signal else {
+            return;
+        };
+        let noflsh = self.client_input.lock().unwrap().termios.c_lflag & NOFLSH != 0;
+        if !noflsh
+            && matches!(
+                signal,
+                PtySignal::Interrupt | PtySignal::Quit | PtySignal::Suspend
+            )
+        {
+            self.flush_input();
+        }
+        if let Some(signal_handler) = self.signal_handler {
+            (signal_handler)(self, signal);
+        }
+    }
+
     pub fn write_nb(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.update_termios();
         let report = self.client_input.lock().unwrap().write_input(buf)?;
-        if let Some(signal) = report.posted_signal
-            && let Some(signal_handler) = self.signal_handler
-        {
-            (signal_handler)(self, signal);
-        }
+        self.dispatch_signal(&report);
         if report.consumed == 0 && buf.len() > 0 {
             return Err(ErrorKind::WouldBlock.into());
         }
@@ -308,26 +338,23 @@ impl PtyServerHandle {
     }
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
-        self.update_termios();
-        let sync = self
-            .client_output
-            .pty
-            .base()
-            .client_input
-            .sync_for_avail_space();
-        let report = self.client_input.lock().unwrap().write_input(buf)?;
-        if let Some(signal) = report.posted_signal
-            && let Some(signal_handler) = self.signal_handler
-        {
-            (signal_handler)(self, signal);
-        }
-        if report.consumed == 0 && buf.len() > 0 {
+        loop {
+            self.update_termios();
+            let sync = self
+                .client_output
+                .pty
+                .base()
+                .client_input
+                .sync_for_avail_space();
+            let report = self.client_input.lock().unwrap().write_input(buf)?;
+            self.dispatch_signal(&report);
+            if report.consumed > 0 || buf.len() == 0 {
+                return Ok(report.consumed);
+            }
             if !self.is_ready(true) {
                 do_sleep(sync)?;
             }
-            return self.write_b(buf);
         }
-        Ok(report.consumed)
     }
 
     pub fn flush_b(&mut self) -> std::io::Result<()> {
@@ -337,21 +364,22 @@ impl PtyServerHandle {
 
 impl PtyServerHandle {
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.update_termios();
-        let sync = self
-            .client_output
-            .pty
-            .base()
-            .client_output
-            .sync_for_pending_data();
-        let count = self.client_output.read(buf)?;
-        if count == 0 && buf.len() > 0 {
+        loop {
+            self.update_termios();
+            let sync = self
+                .client_output
+                .pty
+                .base()
+                .client_output
+                .sync_for_pending_data();
+            let count = self.client_output.read(buf)?;
+            if count > 0 || buf.len() == 0 {
+                return Ok(count);
+            }
             if !self.is_ready(false) {
                 do_sleep(sync)?;
             }
-            return self.read_b(buf);
         }
-        Ok(count)
     }
 }
 
@@ -399,20 +427,21 @@ impl PtyClientHandle {
 
 impl PtyClientHandle {
     pub fn object(&self) -> Object<PtyBase> {
-        self.output.lock().unwrap().writer.pty.clone()
+        self.pty.clone()
     }
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
-        self.update_termios();
-        let sync = self.pty.base().client_output.sync_for_avail_space();
-        let count = self.output.lock().unwrap().write(buf)?;
-        if count == 0 && buf.len() > 0 {
+        loop {
+            self.update_termios();
+            let sync = self.pty.base().client_output.sync_for_avail_space();
+            let count = self.output.lock().unwrap().write(buf)?;
+            if count > 0 || buf.len() == 0 {
+                return Ok(count);
+            }
             if !self.is_ready(true) {
                 do_sleep(sync)?;
             }
-            return self.write_b(buf);
         }
-        Ok(count)
     }
 
     pub fn flush_b(&mut self) -> std::io::Result<()> {
@@ -431,20 +460,21 @@ impl PtyClientHandle {
     }
 
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.update_termios();
-        let sync = self.pty.base().client_input.sync_for_pending_data();
-        let res = self.input.lock().unwrap().read(buf);
-        match res {
-            Ok(c) => Ok(c),
-            Err(e) if e.kind() != ErrorKind::WouldBlock => Err(e),
-            _ => {
-                if buf.len() == 0 {
-                    return Ok(0);
+        loop {
+            self.update_termios();
+            let sync = self.pty.base().client_input.sync_for_pending_data();
+            let res = self.input.lock().unwrap().read(buf);
+            match res {
+                Ok(c) => return Ok(c),
+                Err(e) if e.kind() != ErrorKind::WouldBlock => return Err(e),
+                _ => {
+                    if buf.len() == 0 {
+                        return Ok(0);
+                    }
+                    if !self.is_ready(false) {
+                        do_sleep(sync)?;
+                    }
                 }
-                if !self.is_ready(false) {
-                    do_sleep(sync)?;
-                }
-                self.read_b(buf)
             }
         }
     }
@@ -489,45 +519,35 @@ const _CBRK: u8 = CEOL;
 const _CRPRNT: u8 = CREPRINT;
 const _CFLUSH: u8 = CDISCARD;
 
+/// Default control characters, indexed by the `V*` constants. Any slot left at
+/// `_POSIX_VDISABLE` is a character we do not recognize.
+const DEFAULT_CC: [libc::cc_t; NCCS] = {
+    let mut cc = [_POSIX_VDISABLE; NCCS];
+    cc[VINTR] = CINTR;
+    cc[VQUIT] = CQUIT;
+    cc[VERASE] = CERASE;
+    cc[VKILL] = CKILL;
+    cc[VEOF] = CEOF;
+    cc[VTIME] = CTIME;
+    cc[VMIN] = CMIN;
+    cc[VSTART] = CSTART;
+    cc[VSTOP] = CSTOP;
+    cc[VSUSP] = CSUSP;
+    cc[VEOL] = CEOL;
+    cc[VREPRINT] = CREPRINT;
+    cc[VDISCARD] = CDISCARD;
+    cc[VWERASE] = CWERASE;
+    cc[VLNEXT] = CLNEXT;
+    cc[VSTATUS] = CSTATUS;
+    cc
+};
+
 pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
     c_iflag: BRKINT | ISTRIP | ICRNL | IMAXBEL | IXON | IXANY,
     c_oflag: OPOST | ONLCR | XTABS,
-    c_cflag: CREAD | CS7 | PARENB | HUPCL,
-    c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOKE | ECHOCTL,
-    c_cc: [
-        CINTR,
-        CQUIT,
-        CERASE,
-        CKILL,
-        CEOF,
-        CTIME,
-        CMIN,
-        _POSIX_VDISABLE,
-        CSTART,
-        CSTOP,
-        CSUSP,
-        CEOL,
-        CREPRINT,
-        CDISCARD,
-        CWERASE,
-        CLNEXT,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        CSTATUS,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-    ],
+    c_cflag: CREAD | CS8 | HUPCL,
+    c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOK | ECHOKE | ECHOCTL,
+    c_cc: DEFAULT_CC,
     __c_ispeed: B9600,
     __c_ospeed: B9600,
     c_line: 0,
@@ -538,44 +558,47 @@ pub const DEFAULT_TERMIOS_RAW: libc::termios = libc::termios {
     c_oflag: 0,
     c_cflag: CREAD | CS8,
     c_lflag: 0,
-    c_cc: [
-        CINTR,
-        CQUIT,
-        CERASE,
-        CKILL,
-        CEOF,
-        CTIME,
-        CMIN,
-        _POSIX_VDISABLE,
-        CSTART,
-        CSTOP,
-        CSUSP,
-        CEOL,
-        CREPRINT,
-        CDISCARD,
-        CWERASE,
-        CLNEXT,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        CSTATUS,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-        _POSIX_VDISABLE,
-    ],
+    c_cc: DEFAULT_CC,
     __c_ispeed: B9600,
     __c_ospeed: B9600,
     c_line: 0,
 };
+
+/// Read a control character out of `c_cc`, returning `None` if it is disabled.
+///
+/// This matters because `_POSIX_VDISABLE` is `0`: searching for a disabled character
+/// naively would match every NUL byte in the stream.
+fn cc_enabled(termios: &libc::termios, idx: usize) -> Option<u8> {
+    let c = termios.c_cc[idx];
+    (c != _POSIX_VDISABLE).then_some(c)
+}
+
+/// Index of the first byte matching any of the (possibly disabled) control characters.
+fn find_cc(buf: &[u8], chars: [Option<u8>; 3]) -> Option<usize> {
+    buf.iter()
+        .position(|b| chars.iter().any(|c| *c == Some(*b)))
+}
+
+/// The signal, if any, that `b` generates. Signal generation is conditional on `ISIG`;
+/// with it clear the character must reach the reader untouched (this is what raw-mode
+/// line editors rely on to see `^C`).
+fn signal_for(termios: &libc::termios, b: u8) -> Option<PtySignal> {
+    if termios.c_lflag & ISIG == 0 || b == _POSIX_VDISABLE {
+        return None;
+    }
+    let cc = &termios.c_cc;
+    if b == cc[VINTR] {
+        Some(PtySignal::Interrupt)
+    } else if b == cc[VQUIT] {
+        Some(PtySignal::Quit)
+    } else if b == cc[VSUSP] {
+        Some(PtySignal::Suspend)
+    } else if b == cc[VSTATUS] {
+        Some(PtySignal::Status)
+    } else {
+        None
+    }
+}
 
 impl PtyBase {
     pub fn new(termios: libc::termios) -> Self {
@@ -583,7 +606,14 @@ impl PtyBase {
             termios_gen: AtomicU64::new(0),
             termios: UnsafeCell::new(termios),
             winsize_gen: AtomicU64::new(0),
-            winsize: UnsafeCell::new(libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 }),
+            // Start at a conventional size rather than 0x0: a caller that never issues
+            // TIOCSWINSZ should still see something a full-screen program can use.
+            winsize: UnsafeCell::new(libc::winsize {
+                ws_row: 24,
+                ws_col: 80,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            }),
             client_input: VolatileBuffer::new(),
             client_output: VolatileBuffer::new(),
         }
@@ -788,6 +818,7 @@ pub struct InputPoster<W: Write, E: Write> {
 pub enum PtySignal {
     Interrupt,
     Quit,
+    Suspend,
     Status,
     Winch,
 }
@@ -810,10 +841,19 @@ impl<W: Write, E: Write> InputPoster<W, E> {
     }
 
     fn maybe_echo(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+        let canon = self.termios.c_lflag & ICANON != 0;
         let echo = self.termios.c_lflag & ECHO != 0;
-        let echoe = self.termios.c_lflag & ECHOE != 0 && self.termios.c_lflag & ICANON != 0;
-        let echok = self.termios.c_lflag & ECHOK != 0 && self.termios.c_lflag & ICANON != 0;
-        let echonl = self.termios.c_lflag & ECHONL != 0 && self.termios.c_lflag & ICANON != 0;
+        let echoe = self.termios.c_lflag & ECHOE != 0 && canon;
+        // Accept either flag: ECHOK erases the line, ECHOKE erases it character-by-
+        // character. We only implement the latter rendering, but both mean "show it".
+        let echok = self.termios.c_lflag & (ECHOK | ECHOKE) != 0 && canon;
+        let echonl = self.termios.c_lflag & ECHONL != 0 && canon;
+
+        // Read the erase characters from c_cc rather than assuming the defaults, so this
+        // agrees with InputConverter::refill_linebuf when a program reassigns them.
+        let verase = cc_enabled(&self.termios, VERASE);
+        let vkill = cc_enabled(&self.termios, VKILL);
+        let vwerase = cc_enabled(&self.termios, VWERASE);
 
         if !echo && !echonl {
             return Ok(());
@@ -842,7 +882,7 @@ impl<W: Write, E: Write> InputPoster<W, E> {
 
             while cur_echo_off < self.echobuf_len {
                 let echobuf = &self.echobuf[cur_echo_off..self.echobuf_len];
-                let erase_idx = memchr3(CERASE, CKILL, CWERASE, echobuf);
+                let erase_idx = find_cc(echobuf, [verase, vkill, vwerase]);
                 let nl_idx = memchr::memchr(b'\n', echobuf);
                 let min_idx = if let Some(e) = erase_idx
                     && let Some(n) = nl_idx
@@ -863,47 +903,42 @@ impl<W: Write, E: Write> InputPoster<W, E> {
                     if idx > 0 {
                         self.echoer.write_all(&echobuf[0..idx])?;
                     }
-                    match echobuf[idx] {
-                        CERASE if echoe => {
+                    let c = echobuf[idx];
+                    if Some(c) == verase && echoe {
+                        self.echoer.write_all(&[8, b' ', 8])?;
+                        erase_chars(
+                            self,
+                            (cur_echo_off + idx).saturating_sub(1),
+                            cur_echo_off + idx,
+                        );
+                    } else if Some(c) == vkill && echok {
+                        let idx = idx + cur_echo_off;
+                        let space = memrchr(b'\n', &self.echobuf[0..idx]).unwrap_or(0);
+                        for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
                             self.echoer.write_all(&[8, b' ', 8])?;
-                            erase_chars(
-                                self,
-                                (cur_echo_off + idx).saturating_sub(1),
-                                cur_echo_off + idx,
-                            );
                         }
-                        CKILL if echok => {
-                            let idx = idx + cur_echo_off;
-                            let space = memrchr(b'\n', &self.echobuf[0..idx]).unwrap_or(0);
-                            for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
-                                self.echoer.write_all(&[8, b' ', 8])?;
-                            }
-                            if space + 1 == idx {
-                                erase_chars(self, space, idx);
-                            } else {
-                                erase_chars(self, space + 1, idx);
-                            }
+                        if space + 1 == idx {
+                            erase_chars(self, space, idx);
+                        } else {
+                            erase_chars(self, space + 1, idx);
                         }
-                        CWERASE if echoe => {
-                            let idx = idx + cur_echo_off;
-                            let space =
-                                memrchr3(b'\n', b'\t', b' ', &self.echobuf[0..idx]).unwrap_or(0);
-                            for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
-                                self.echoer.write_all(&[8, b' ', 8])?;
-                            }
-                            if space + 1 == idx {
-                                erase_chars(self, space, idx);
-                            } else {
-                                erase_chars(self, space + 1, idx);
-                            }
+                    } else if Some(c) == vwerase && echoe {
+                        let idx = idx + cur_echo_off;
+                        let space =
+                            memrchr3(b'\n', b'\t', b' ', &self.echobuf[0..idx]).unwrap_or(0);
+                        for _ in 0..(idx.saturating_sub(space + 1)).max(1) {
+                            self.echoer.write_all(&[8, b' ', 8])?;
                         }
-                        b'\n' => {
-                            self.echoer.write_all(&[echobuf[idx]])?;
-                            self.echobuf_len = 0;
+                        if space + 1 == idx {
+                            erase_chars(self, space, idx);
+                        } else {
+                            erase_chars(self, space + 1, idx);
                         }
-                        _ => {
-                            self.echoer.write_all(&[echobuf[idx]])?;
-                        }
+                    } else if c == b'\n' {
+                        self.echoer.write_all(&[c])?;
+                        self.echobuf_len = 0;
+                    } else {
+                        self.echoer.write_all(&[c])?;
                     }
                     idx + 1
                 } else {
@@ -918,41 +953,59 @@ impl<W: Write, E: Write> InputPoster<W, E> {
         Ok(())
     }
 
-    pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
-        let vintr = self.termios.c_cc[VINTR];
-        let vquit = self.termios.c_cc[VQUIT];
-        let vstatus = self.termios.c_cc[VSTATUS];
+    /// Echo the bytes we just accepted, after applying the same input mapping the client
+    /// will apply when it reads them, so what the user sees matches what the client gets.
+    fn echo_input(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        let mut off = 0;
+        while off < buf.len() {
+            let mut echobuf = [0u8; BUF_SZ];
+            let chunk = BUF_SZ.min(buf.len() - off);
+            echobuf[0..chunk].copy_from_slice(&buf[off..(off + chunk)]);
+            // input_map can shrink the data (IGNCR), so advance by the input length --
+            // advancing by the mapped length fails to make progress when it maps to zero.
+            let mapped = input_map(&self.termios, &mut echobuf[0..chunk]);
+            self.maybe_echo(&echobuf[0..mapped])?;
+            off += chunk;
+        }
+        Ok(())
+    }
 
+    /// With ECHOCTL, a signal-generating control character echoes as `^X`.
+    fn echo_signal_char(&mut self, c: u8) -> std::io::Result<()> {
+        let want = ECHO | ECHOCTL;
+        if self.termios.c_lflag & want != want {
+            return Ok(());
+        }
+        if c < 0x20 || c == 0x7f {
+            self.echoer.write_all(&[b'^', c ^ 0x40])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_input(&mut self, mut buf: &[u8]) -> std::io::Result<WriteReport> {
+        let termios = self.termios;
         let mut total = 0;
         let mut sig = None;
 
         while buf.len() > 0 && sig.is_none() {
-            let (count, skip) = if let Some(idx) = memchr3(vstatus, vintr, vquit, buf) {
-                match buf[idx] {
-                    c if c == vintr => sig = Some(PtySignal::Interrupt),
-                    c if c == vquit => sig = Some(PtySignal::Quit),
-                    c if c == vstatus => sig = Some(PtySignal::Status),
-                    _ => unreachable!(),
-                }
-                (idx, true)
-            } else {
-                (buf.len(), false)
-            };
+            let hit = buf.iter().position(|b| signal_for(&termios, *b).is_some());
+            let count = hit.unwrap_or(buf.len());
 
             let wcount = self.writer.write(&buf[0..count])?;
-            let mut ecount = 0;
-            while ecount < wcount {
-                let mut echobuf = [0; BUF_SZ];
-                let remaining = BUF_SZ.min(wcount - ecount);
-                echobuf[0..remaining].copy_from_slice(&buf[ecount..wcount]);
-                let c = input_map(&self.termios, &mut echobuf[0..remaining]);
-                self.maybe_echo(&echobuf[0..c])?;
-                ecount += c;
-            }
-
+            self.echo_input(&buf[0..wcount])?;
             total += wcount;
             buf = &buf[wcount..];
-            if skip && wcount == count {
+
+            // Only recognize the signal once everything ahead of it has been consumed.
+            // Reporting it after a short write would leave the character in place, and
+            // the caller's retry would post the same signal a second time.
+            if wcount < count {
+                break;
+            }
+            if hit.is_some() {
+                let c = buf[0];
+                self.echo_signal_char(c)?;
+                sig = signal_for(&termios, c);
                 total += 1;
                 buf = &buf[1..];
             }
@@ -969,11 +1022,34 @@ impl<W: Write, E: Write> InputPoster<W, E> {
 pub struct OutputConverter<W: Write> {
     termios: libc::termios,
     writer: W,
+    /// Tail of a translated sequence (the "\n" of a CRLF) that did not fit in the output
+    /// buffer. Emitted ahead of anything else so the sequence is not torn across calls.
+    pending: [u8; 2],
+    pending_len: usize,
 }
 
 impl<W: Write> OutputConverter<W> {
     pub fn new(termios: libc::termios, writer: W) -> Self {
-        Self { termios, writer }
+        Self {
+            termios,
+            writer,
+            pending: [0; 2],
+            pending_len: 0,
+        }
+    }
+
+    /// Push out any leftover tail. Returns false if it still does not fit, in which case
+    /// the caller must not accept new input.
+    fn flush_pending(&mut self) -> std::io::Result<bool> {
+        while self.pending_len > 0 {
+            let n = self.writer.write(&self.pending[0..self.pending_len])?;
+            if n == 0 {
+                return Ok(false);
+            }
+            self.pending.copy_within(n.., 0);
+            self.pending_len -= n;
+        }
+        Ok(true)
     }
 
     pub fn write_bytes_simple(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -981,6 +1057,10 @@ impl<W: Write> OutputConverter<W> {
     }
 
     pub fn write_bytes_processed(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
+        if !self.flush_pending()? {
+            return Ok(0);
+        }
+
         let cr_to_nl = self.termios.c_oflag & OCRNL != 0;
         let nl_to_crnl = self.termios.c_oflag & ONLCR != 0;
 
@@ -1008,12 +1088,24 @@ impl<W: Write> OutputConverter<W> {
             let thiswrite = self.writer.write(&buf[0..count])?;
             total += thiswrite;
             buf = &buf[thiswrite..];
+            // Short write: stop rather than consuming input we never wrote.
+            if thiswrite < count {
+                break;
+            }
             if let Some(extra) = extra {
-                self.writer.write_all(extra)?;
+                let n = self.writer.write(extra)?;
+                if n < extra.len() {
+                    let rest = &extra[n..];
+                    self.pending[0..rest.len()].copy_from_slice(rest);
+                    self.pending_len = rest.len();
+                }
                 // Note: we only increment by 1 here because regardless of the extra
                 // data we write, it came from 1 byte of the input buffer.
                 total += 1;
                 buf = &buf[1..];
+                if self.pending_len > 0 {
+                    break;
+                }
             }
         }
 
@@ -1026,11 +1118,15 @@ impl<W: Write> Write for OutputConverter<W> {
         if self.termios.c_oflag & OPOST != 0 {
             self.write_bytes_processed(buf)
         } else {
+            if !self.flush_pending()? {
+                return Ok(0);
+            }
             self.write_bytes_simple(buf)
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_pending()?;
         self.writer.flush()
     }
 }
@@ -1053,87 +1149,95 @@ impl<R: Read> InputConverter<R> {
         }
     }
 
-    pub fn update_termios(&mut self, termios: libc::termios) {
-        self.termios = termios;
-    }
-
     fn refill_linebuf(&mut self) -> std::io::Result<()> {
-        let linebuf = &mut self.linebuf[self.linebuf_count..];
-        let count = self.reader.read(linebuf)?;
-        let count = input_map(&self.termios, &mut linebuf[..count]);
+        let start = self.linebuf_count;
+        let count = self.reader.read(&mut self.linebuf[start..])?;
+        let count = input_map(&self.termios, &mut self.linebuf[start..(start + count)]);
+        self.linebuf_count = start + count;
 
-        let verase = self.termios.c_cc[VERASE];
-        let vwerase = self.termios.c_cc[VWERASE];
-        let vkill = self.termios.c_cc[VKILL];
+        let verase = cc_enabled(&self.termios, VERASE);
+        let vwerase = cc_enabled(&self.termios, VWERASE);
+        let vkill = cc_enabled(&self.termios, VKILL);
 
-        let count = if let Some(idx) = memchr3(verase, vwerase, vkill, &linebuf[..count]) {
-            let idx = idx + self.linebuf_count;
-
-            let rev_idx = match self.linebuf[idx] {
-                c if c == verase => {
-                    if idx > 0 {
-                        if self.linebuf[idx - 1] != b'\n' {
-                            idx - 1
-                        } else {
-                            idx
-                        }
-                    } else {
-                        0
-                    }
+        // Apply every erase character in the newly-read region, not just the first: each
+        // one removes itself plus the range it erases, so the scan resumes where it landed.
+        let mut idx = start;
+        while idx < self.linebuf_count {
+            let c = self.linebuf[idx];
+            let back_to = if Some(c) == verase {
+                if idx > 0 && self.linebuf[idx - 1] != b'\n' {
+                    idx - 1
+                } else {
+                    idx
                 }
-                c if c == vwerase => memrchr3(b'\n', b' ', b'\t', &self.linebuf[0..idx])
-                    .map(|idx| idx + 1)
-                    .unwrap_or(0),
-                c if c == vkill => memrchr(b'\n', &self.linebuf[0..idx])
-                    .map(|idx| idx + 1)
-                    .unwrap_or(0),
-                _ => panic!("invalid character"),
+            } else if Some(c) == vwerase {
+                memrchr3(b'\n', b' ', b'\t', &self.linebuf[0..idx])
+                    .map(|i| i + 1)
+                    .unwrap_or(0)
+            } else if Some(c) == vkill {
+                memrchr(b'\n', &self.linebuf[0..idx])
+                    .map(|i| i + 1)
+                    .unwrap_or(0)
+            } else {
+                idx += 1;
+                continue;
             };
 
-            self.linebuf.copy_within((idx + 1).., rev_idx);
-            self.linebuf_count = self.linebuf_count.saturating_sub((idx - rev_idx).max(1));
+            self.linebuf.copy_within((idx + 1).., back_to);
+            // The erase consumes the erased range *and* the erase character itself.
+            self.linebuf_count -= (idx + 1) - back_to;
+            idx = back_to;
+        }
 
-            count.saturating_sub((idx - rev_idx).max(1))
-        } else {
-            count
-        };
-
-        self.linebuf_count += count;
         Ok(())
     }
 
     fn drain_linebuf(&mut self, buf: &mut [u8]) -> (usize, bool) {
-        let mut count = buf.len().min(self.linebuf_count);
-        let linebuf = &self.linebuf[0..count];
+        // Search the whole buffered region, not just the first buf.len() bytes: a line
+        // longer than the caller's buffer is still a complete line, and treating it as
+        // incomplete would send read_canon back to the reader and block forever.
+        let (nl, eof) = {
+            let pending = &self.linebuf[0..self.linebuf_count];
+            let veof = cc_enabled(&self.termios, VEOF);
+            (
+                memchr::memchr(b'\n', pending),
+                veof.and_then(|c| memchr::memchr(c, pending)),
+            )
+        };
 
-        let mut end = self.linebuf_count == BUF_SZ;
-        let veof = self.termios.c_cc[VEOF];
+        // An EOF ahead of any newline terminates the line, and is itself not delivered.
+        let eof = match (nl, eof) {
+            (Some(n), Some(e)) if e >= n => None,
+            (_, e) => e,
+        };
 
-        if let Some(idx) = memchr2(b'\n', veof, linebuf) {
-            if linebuf[idx] == b'\n' {
-                count = idx + 1;
-            } else if linebuf[idx] == veof {
-                self.linebuf.copy_within((idx + 1).., idx);
-                self.linebuf_count -= 1;
-                count = idx;
-            }
-            end = true;
-        }
+        let (line_len, has_eof) = match (nl, eof) {
+            (_, Some(e)) => (e, true),
+            (Some(n), None) => (n + 1, false),
+            // No line terminator yet; only a full buffer forces a delivery.
+            (None, None) if self.linebuf_count < BUF_SZ => return (0, false),
+            (None, None) => (self.linebuf_count, false),
+        };
 
-        if end {
-            let linebuf = &self.linebuf[0..count];
-            (&mut buf[0..count]).copy_from_slice(linebuf);
-            self.linebuf.copy_within(count.., 0);
-            self.linebuf_count -= count;
-            (count, end)
+        // A short read is fine -- the rest of the line stays buffered for the next call.
+        let count = buf.len().min(line_len);
+        buf[0..count].copy_from_slice(&self.linebuf[0..count]);
+        // Drop what we delivered, and the EOF marker too once the whole line is gone.
+        // Stripping it earlier would lose the boundary for the remainder of the line.
+        let drop = if has_eof && count == line_len {
+            count + 1
         } else {
-            (0, false)
-        }
+            count
+        };
+        self.linebuf.copy_within(drop.., 0);
+        self.linebuf_count -= drop;
+        (count, true)
     }
 
     pub fn read_canon(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
         let mut total = 0;
         while buf.len() > 0 {
+            let before = self.linebuf_count;
             self.refill_linebuf()?;
             if self.linebuf_count == 0 {
                 if total == 0 {
@@ -1147,6 +1251,14 @@ impl<R: Read> InputConverter<R> {
             buf = &mut buf[count..];
             total += count;
             if end {
+                return Ok(total);
+            }
+            // Partial line and the reader had nothing new: don't spin waiting for a
+            // terminator that can only arrive on a later call.
+            if self.linebuf_count == before {
+                if total == 0 {
+                    return Err(ErrorKind::WouldBlock.into());
+                }
                 return Ok(total);
             }
         }
@@ -1223,12 +1335,8 @@ fn input_map(termios: &libc::termios, mut buf: &mut [u8]) -> usize {
                     buf = &mut buf[(idx + 1)..];
                     idx + 1
                 }
-                b'\n' if nl_to_cr && ignore_cr => {
-                    buf.copy_within((idx + 1).., idx);
-                    let newend = buf.len() - 1;
-                    buf = &mut buf[idx..newend];
-                    idx
-                }
+                // Note a translated character is not re-examined: IGNCR applies only to
+                // CRs that arrived as CRs, not to one INLCR just produced.
                 b'\n' if nl_to_cr => {
                     buf[idx] = b'\r';
                     buf = &mut buf[(idx + 1)..];
@@ -1258,12 +1366,13 @@ impl<R: Read> Read for InputConverter<R> {
     }
 }
 
-pub mod more_tests {
+#[cfg(test)]
+mod tests {
     use std::io::{Cursor, Seek};
 
     use libc::{ICANON, ICRNL, IGNCR, INLCR, OCRNL, ONLCR, VEOF, VERASE, VKILL, VWERASE, termios};
 
-    use crate::pty::{InputConverter, OutputConverter};
+    use crate::pty::{CEOF, CKILL, CWERASE, InputConverter, OutputConverter, ctrl};
 
     fn test_output_processing(oflag: u32, input: &[u8], expected: &[u8]) {
         let t = termios {
@@ -1314,10 +1423,10 @@ pub mod more_tests {
             __c_ospeed: 0,
             c_line: 0,
         };
-        t.c_cc[VEOF] = 0x4;
-        t.c_cc[VERASE] = 0x8;
-        t.c_cc[VWERASE] = 0x15;
-        t.c_cc[VKILL] = 0x17;
+        t.c_cc[VEOF] = CEOF; // ^D, 0x04
+        t.c_cc[VERASE] = ctrl(b'h'); // ^H, 0x08
+        t.c_cc[VKILL] = CKILL; // ^U, 0x15
+        t.c_cc[VWERASE] = CWERASE; // ^W, 0x17
         let mut converter = InputConverter::new(t, &mut input);
         for expected in expected {
             let mut buf = [0u8; 1024];
@@ -1326,14 +1435,16 @@ pub mod more_tests {
         }
     }
 
-    pub fn test_raw_input_processing() {
+    #[test]
+    fn test_raw_input_processing() {
         let input = b"start\ns\rend" as &[u8];
         test_input_processing(0, input, b"start\ns\rend");
 
         test_input_processing(ICRNL, input, b"start\ns\nend");
         test_input_processing(INLCR, input, b"start\rs\rend");
         test_input_processing(IGNCR, input, b"start\nsend");
-        test_input_processing(IGNCR | INLCR, input, b"startsend");
+        // INLCR turns the NL into a CR; IGNCR does not then re-examine it.
+        test_input_processing(IGNCR | INLCR, input, b"start\rsend");
         test_input_processing(IGNCR | ICRNL, input, b"start\nsend");
 
         let input = b"nothing" as &[u8];
@@ -1347,11 +1458,12 @@ pub mod more_tests {
         test_input_processing(ICRNL, input, b"\n\n");
         test_input_processing(INLCR, input, b"\r\r");
         test_input_processing(IGNCR, input, b"\n");
-        test_input_processing(IGNCR | INLCR, input, b"");
+        test_input_processing(IGNCR | INLCR, input, b"\r");
         test_input_processing(IGNCR | ICRNL, input, b"\n");
     }
 
-    pub fn test_canon_input() {
+    #[test]
+    fn test_canon_input() {
         let input = b"first\nsecond\nthird" as &[u8];
         test_canon(0, input, &[b"first\n", b"second\n"]);
 
@@ -1373,20 +1485,27 @@ pub mod more_tests {
         let input = b"test\n\x08S\n" as &[u8];
         test_canon(0, input, &[b"test\n", b"S\n"]);
 
+        // ^U (VKILL) erases back to the start of the line.
         let input = b"test words\x15S\n" as &[u8];
-        test_canon(0, input, &[b"test S\n"]);
+        test_canon(0, input, &[b"S\n"]);
 
         let input = b"test\n\x15S\n" as &[u8];
         test_canon(0, input, &[b"test\n", b"S\n"]);
 
+        // ^W (VWERASE) erases back to the start of the current word.
         let input = b"test words\x17S\n" as &[u8];
-        test_canon(0, input, &[b"S\n"]);
+        test_canon(0, input, &[b"test S\n"]);
 
         let input = b"test\n\x17S\n" as &[u8];
         test_canon(0, input, &[b"test\n", b"S\n"]);
+
+        // Successive erases each take effect, not just the first.
+        let input = b"ab\x08\x08c\n" as &[u8];
+        test_canon(0, input, &[b"c\n"]);
     }
 
-    pub fn test_output() {
+    #[test]
+    fn test_output() {
         let input = b"start\ns\rend" as &[u8];
         test_output_processing(0, input, b"start\ns\rend");
 

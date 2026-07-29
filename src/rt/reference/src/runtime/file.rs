@@ -430,6 +430,7 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
     let signal = match sig {
         PtySignal::Interrupt => libc::SIGINT,
         PtySignal::Quit => libc::SIGQUIT,
+        PtySignal::Suspend => libc::SIGTSTP,
         PtySignal::Status => libc::SIGINFO,
         PtySignal::Winch => libc::SIGWINCH,
     } as u64;

@@ -262,9 +262,24 @@ impl<const N: usize> RunQueue<N> {
         self.load.fetch_sub(1, Ordering::Release);
         if self.current_priority().class == PriorityClass::Realtime {
             if realtime.is_empty() {
-                let priority = Priority {
-                    value: MAX_PRIORITY - 1,
-                    class: PriorityClass::User,
+                // Fall back to whatever the other queues actually hold, rather than always
+                // claiming User priority -- otherwise an empty CPU keeps reporting itself busy
+                // until some later take() reaches take_timeshare/take_idle. Derived from the
+                // flags bitmask so this stays lock-free; a precise value would mean locking
+                // timeshare/idle from here, which isn't worth it on this path.
+                let f = self.flags.load(Ordering::Acquire);
+                let priority = if f & RQ_HAS_TS != 0 {
+                    Priority {
+                        value: MAX_PRIORITY - 1,
+                        class: PriorityClass::User,
+                    }
+                } else if f & RQ_HAS_IL != 0 {
+                    Priority {
+                        value: MAX_PRIORITY - 1,
+                        class: PriorityClass::Idle,
+                    }
+                } else {
+                    Priority::from_raw(0)
                 };
                 self.current_priority
                     .store(priority.raw(), Ordering::SeqCst);

@@ -1,6 +1,8 @@
 use std::{
+    collections::BTreeMap,
     os::fd::FromRawFd,
     process::{Command, Stdio},
+    sync::Mutex,
 };
 
 use async_executor::LocalExecutor;
@@ -11,12 +13,40 @@ use miette::{Context, IntoDiagnostic};
 use sunset::{ChanHandle, SignKey};
 use sunset_async::{ProgressHolder, SSHServer};
 use tracing::Level;
-use twizzler::object::{Object, RawObject};
-use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle};
+use twizzler::object::{ObjID, Object, RawObject};
+use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
+    bindings::IO_REGISTER_SIGNAL,
     fd::{RawFd, twz_rt_fd_close},
+    io::twz_rt_fd_set_config,
     object::ObjectCreate,
 };
+
+/// Maps a PTY object to the compartment fd of the shell running on it.
+///
+/// The line discipline's signal hook is a bare `fn` pointer with no captured state, so
+/// it needs somewhere to look up which session a signal belongs to.
+static SESSIONS: Mutex<BTreeMap<ObjID, RawFd>> = Mutex::new(BTreeMap::new());
+
+fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
+    let signal = match sig {
+        PtySignal::Interrupt => libc::SIGINT,
+        PtySignal::Quit => libc::SIGQUIT,
+        PtySignal::Suspend => libc::SIGTSTP,
+        PtySignal::Status => libc::SIGINFO,
+        PtySignal::Winch => libc::SIGWINCH,
+    } as u64;
+    let Some(fd) = SESSIONS.lock().unwrap().get(&server.object().id()).copied() else {
+        return;
+    };
+    let _ = twz_rt_fd_set_config(fd, IO_REGISTER_SIGNAL, signal).inspect_err(|e| {
+        tracing::warn!(
+            "failed to deliver signal {} to session shell: {}",
+            signal,
+            e
+        )
+    });
+}
 
 fn main() {
     tracing::subscriber::set_global_default(
@@ -179,7 +209,7 @@ async fn shell(
     }
 
     let netreader = async {
-        let mut server = PtyServerHandle::new(pty.id(), None).unwrap();
+        let mut server = PtyServerHandle::new(pty.id(), Some(pty_signal_handler)).unwrap();
         loop {
             let mut buf = [0; 1024];
             let count = stdin.read(&mut buf).await.unwrap();
@@ -197,7 +227,7 @@ async fn shell(
     .fuse();
 
     let netwriter = async {
-        let mut server = PtyServerHandle::new(pty.id(), None).unwrap();
+        let mut server = PtyServerHandle::new(pty.id(), Some(pty_signal_handler)).unwrap();
         loop {
             let mut buf = [0; 1024];
             let (count, buf, s) = blocking::unblock(move || {
@@ -226,6 +256,13 @@ async fn shell(
         .await
         .into_diagnostic()?;
 
+    // Route this PTY's signals at the shell we just spawned. Registered before the
+    // reader/writer futures are first polled, so no keystroke can arrive ahead of it.
+    SESSIONS
+        .lock()
+        .unwrap()
+        .insert(pty.id(), handle.id() as RawFd);
+
     twz_rt_fd_close(client_fd);
     let handle = blocking::unblock(move || {
         let _ = handle.wait();
@@ -243,6 +280,7 @@ async fn shell(
     };
 
     tracing::debug!("shell exited");
+    SESSIONS.lock().unwrap().remove(&pty.id());
     pty.handle()
         .cmd(
             twizzler_rt_abi::object::ObjectCmd::Delete,

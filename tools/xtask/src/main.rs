@@ -4,6 +4,7 @@ mod build;
 mod disk;
 mod image;
 mod qemu;
+mod test;
 mod toolchain;
 mod triple;
 
@@ -251,6 +252,8 @@ enum Commands {
     MakeImage(ImageOptions),
     #[clap(about = "Boot a disk image in Qemu.")]
     StartQemu(QemuOptions),
+    #[clap(about = "Run a system test scenario.")]
+    Test(test::TestOptions),
     #[clap(about = "Create or reset a disk image for a given target.")]
     Disk(DiskImageOptions),
 }
@@ -271,6 +274,7 @@ fn main() -> anyhow::Result<()> {
             Commands::Doc(x) => build::do_docs(x).map(|_| ()),
             Commands::MakeImage(x) => image::do_make_image(x).map(|_| ()),
             Commands::StartQemu(x) => qemu::do_start_qemu(x),
+            Commands::Test(x) => test::do_test(x),
             Commands::Disk(x) => disk::do_disk_image(x),
         }
     } else {

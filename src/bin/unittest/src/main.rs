@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use unittest_report::{Report, ReportInfo, TestResult};
+use unittest_report::{Report, ReportInfo, TestResult, TestStatus};
 
 static RESULT: OnceLock<Report> = OnceLock::new();
 
@@ -99,34 +99,55 @@ fn main() {
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
             cmd.args(["--test"]);
-            if let Ok(mut test_comp) = cmd.spawn() {
-                test_comp.wait().unwrap();
-                reports.push(TestResult {
-                    name: line.clone(),
-                    passed: true,
-                });
-            } else {
-                reports.push(TestResult {
-                    name: line.clone(),
-                    passed: false,
-                });
-            }
+            let started = Instant::now();
+            // Never unwrap the wait: a panic here would discard every result collected so far and
+            // the host would report "no report" instead of the actual failure.
+            let status = match cmd.spawn().and_then(|mut test_comp| test_comp.wait()) {
+                Ok(st) if st.success() => TestStatus::Passed,
+                Ok(st) => TestStatus::Failed {
+                    code: st.code().unwrap_or(-1),
+                },
+                Err(e) => TestStatus::SpawnFailed { err: e.to_string() },
+            };
+            println!("FINISHED {}: {}", line, status);
+            reports.push(TestResult {
+                name: line.clone(),
+                status,
+                duration: started.elapsed(),
+            });
         }
     }
     let dur = Instant::now() - start;
     println!("unittest: tests finished, waiting for status request");
-    RESULT
-        .set(Report::ready(ReportInfo {
-            time: dur,
-            tests: reports,
-        }))
-        .unwrap();
+    let info = ReportInfo {
+        time: dur,
+        tests: reports,
+    };
+    let failed = info.failed();
+    RESULT.set(Report::ready(info)).unwrap();
     heartbeat_thread.join().unwrap();
+
+    // Exit nonzero so init can hand a real code to sys_debug_shutdown; that is the backstop the
+    // host falls back on when the REPORT channel produces nothing. Only do this once the report
+    // has been delivered above.
+    if failed > 0 {
+        eprintln!("unittest: {} test binaries failed", failed);
+        std::process::exit(1);
+    }
 }
 
 fn io_heartbeat() {
     let mut buf = String::new();
-    while let Ok(_) = std::io::stdin().read_line(&mut buf) {
+    loop {
+        // Clear before reading, not after: read_line appends, and the unknown-command path used
+        // to skip the clear entirely, so a single stray console byte would corrupt every
+        // subsequent line and break the status protocol for the rest of the run.
+        buf.clear();
+        match std::io::stdin().read_line(&mut buf) {
+            // Ok(0) is EOF; looping on it would spin forever.
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
         match buf.as_str().trim() {
             "status" => {
                 if let Some(report) = RESULT.get() {
@@ -144,6 +165,5 @@ fn io_heartbeat() {
                 println!("!! unknown command: {}", buf);
             }
         }
-        buf.clear();
     }
 }

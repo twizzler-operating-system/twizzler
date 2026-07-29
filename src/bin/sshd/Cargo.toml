@@ -7,6 +7,7 @@ edition = "2024"
 twizzler-io = { path = "../../lib/twizzler-io" }
 twizzler = { path = "../../lib/twizzler" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
+libc = { workspace = true }
 tracing = "*"
 tracing-subscriber = "*"
 rand = { version = "*" }

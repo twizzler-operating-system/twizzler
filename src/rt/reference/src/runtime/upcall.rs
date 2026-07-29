@@ -46,6 +46,10 @@ pub(crate) fn upcall_def_handler(frame: &mut UpcallFrame, info: &UpcallData) {
             libc::SIGWINCH => {
                 // Ignore SIGWINCH by default to prevent crashing
             }
+            libc::SIGTSTP => {
+                // There is no job control to stop the compartment with, so ignore ^Z
+                // rather than letting it fall through to the exit below.
+            }
             _ => twizzler_abi::syscall::sys_thread_exit(128 + sig),
         },
         _ => {

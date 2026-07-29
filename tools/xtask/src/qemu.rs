@@ -32,11 +32,8 @@ pub struct RunConfig {
     pub label: String,
     /// Watch the serial console for a test report, and bound the run's wall time.
     pub monitor: bool,
-    /// How long to wait between heartbeat pokes before giving up.
+    /// How many heartbeat pokes to send before giving up on the run.
     pub heartbeat_tries: usize,
-    /// Attach the isa-debug-exit device even without `--tests`, so a guest program that calls
-    /// `sys_debug_shutdown` can end the run itself (used by the persistence scenario's autostart).
-    pub debug_exit: bool,
 }
 
 impl Default for RunConfig {
@@ -46,7 +43,6 @@ impl Default for RunConfig {
             label: "run".to_string(),
             monitor: false,
             heartbeat_tries: 20,
-            debug_exit: false,
         }
     }
 }
@@ -57,12 +53,18 @@ impl Default for RunConfig {
 pub struct RunOutcome {
     /// `None` if qemu had to be killed for exceeding its time budget.
     pub qemu_exit: Option<ExitStatus>,
+    /// The code the guest passed to `sys_debug_shutdown`, recovered from qemu's exit status.
+    /// `None` if the guest never asked to shut down (qemu exited for its own reasons, or we
+    /// killed it).
+    pub guest_code: Option<i32>,
     /// The parsed test report, if the guest produced one.
     pub report: Option<ReportInfo>,
-    /// Serial console transcript for this run.
-    pub serial_log: PathBuf,
+    /// Serial console transcript for this run, if the run captured one.
+    pub serial_log: Option<PathBuf>,
     /// Host port forwarded to the guest's ssh port.
     pub ssh_port: u16,
+    /// Why a scenario's post-boot hook failed, if it ran and failed.
+    pub hook_error: Option<String>,
 }
 
 impl RunOutcome {
@@ -76,6 +78,16 @@ impl RunOutcome {
             None => false,
         }
     }
+}
+
+/// Recover the code a guest passed to `sys_debug_shutdown` from qemu's exit status.
+///
+/// The isa-debug-exit device turns a guest write of `code` into a qemu exit status of
+/// `(code << 1) | 1`, so only odd statuses carry a guest code; anything else means qemu exited on
+/// its own terms.
+fn decode_guest_code(status: ExitStatus) -> Option<i32> {
+    let code = status.code()?;
+    (code & 1 == 1).then(|| (code - 1) / 2)
 }
 
 #[derive(Debug)]
@@ -114,7 +126,7 @@ impl QemuCommand {
         self.cmd.arg("-m").arg(&run.memory);
 
         // configure architechture specific parameters
-        self.arch_config(options, run);
+        self.arch_config();
 
         // Connect disk image
         self.cmd.arg("-drive").arg(format!(
@@ -224,7 +236,7 @@ impl QemuCommand {
         port
     }
 
-    fn arch_config(&mut self, options: &QemuOptions, run: &RunConfig) {
+    fn arch_config(&mut self) {
         let mut ovmf = get_toolchain_path().unwrap();
         match self.arch {
             Arch::X86_64 => {
@@ -233,13 +245,12 @@ impl QemuCommand {
                 self.cmd.arg("-bios").arg(ovmf);
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
 
-                // add qemu exit device for testing
-                if options.tests || options.benches || options.bench.is_some() || run.debug_exit {
-                    // x86 specific
-                    self.cmd
-                        .arg("-device")
-                        .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
-                }
+                // Attach the exit device unconditionally: without it, a guest calling
+                // sys_debug_shutdown writes to a nonexistent port and the run just hangs until it
+                // times out. Test runs are not the only ones that want to end themselves.
+                self.cmd
+                    .arg("-device")
+                    .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
 
                 let has_kvm = std::env::consts::ARCH == self.arch.to_string()
                     && Path::new("/dev/kvm").exists();
@@ -281,102 +292,194 @@ impl QemuCommand {
     }
 }
 
-pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
-    let mut run_cmd = QemuCommand::new(&cli);
-    if cli.no_build {
-        run_cmd.config(
-            &cli,
-            PathBuf::from(format!(
-                "target/kernel/{}-unknown-none/{}/disk.img",
-                cli.config.arch.to_string(),
-                cli.config.profile.to_string()
-            )),
-            &RunConfig::default(),
+/// Print a per-test table plus a summary, and list the failures again at the end so they are
+/// visible without scrolling back through the boot log.
+pub(crate) fn print_report(report: &ReportInfo) {
+    let name_width = report
+        .tests
+        .iter()
+        .map(|t| t.name.len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+
+    println!();
+    println!("{:<width$}  {:>8}  status", "test", "time", width = name_width);
+    for test in &report.tests {
+        println!(
+            "{:<width$}  {:>7}s  {}",
+            test.name,
+            format!("{:.2}", test.duration.as_secs_f64()),
+            test.status,
+            width = name_width,
         );
-    } else {
-        let image_info = crate::image::do_make_image((&cli).into())?;
-        run_cmd.config(&cli, image_info.disk_image.clone(), &RunConfig::default());
     }
 
+    let failed = report.failed();
+    let total = report.tests.len();
+    println!();
+    println!(
+        "TEST RESULTS: {} passed, {} failed, {} total -- time: {:2} seconds",
+        total - failed,
+        failed,
+        total,
+        report.time.as_millis() as f64 / 1000.0,
+    );
+
+    if failed > 0 {
+        println!("failures:");
+        for test in report.tests.iter().filter(|t| !t.status.passed()) {
+            println!("    {}: {}", test.name, test.status);
+        }
+    }
+}
+
+/// Where `--no-build` expects to find an already-built boot image.
+pub(crate) fn prebuilt_image_path(config: &crate::BuildConfig) -> PathBuf {
+    PathBuf::from(format!(
+        "target/kernel/{}-unknown-none/{}/disk.img",
+        config.arch.to_string(),
+        config.profile.to_string()
+    ))
+}
+
+fn serial_log_path(label: &str) -> PathBuf {
+    PathBuf::from("target/test-logs").join(format!("{}.log", label))
+}
+
+/// Stream qemu's serial output to our stdout and, if we have one, to a transcript file, returning
+/// the first complete test report seen.
+fn read_serial(
+    stdout: Option<std::process::ChildStdout>,
+    mut log: Option<std::fs::File>,
+) -> Option<ReportInfo> {
+    let stdout = stdout?;
+    let mut found = None;
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else {
+            continue;
+        };
+        let line = line.trim();
+        println!(" ==> {}", line);
+        if let Some(log) = log.as_mut() {
+            let _ = writeln!(log, "{}", line);
+        }
+        // Keep draining once a report has landed rather than dropping the pipe: anything the
+        // guest prints afterwards would otherwise fill it and wedge qemu.
+        if found.is_none() {
+            if let Some(rest) = line.strip_prefix("REPORT ") {
+                if let Ok(ReportStatus::Ready(report)) =
+                    unittest_report::Report::from_str(rest.trim()).map(|report| report.status)
+                {
+                    found = Some(report);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Boot `image` in qemu once and report what happened.
+///
+/// This deliberately never calls `std::process::exit`: it reports outcomes and lets the caller
+/// decide what counts as success, so that scenarios which run several boots can keep going.
+pub(crate) fn run_once(
+    options: &QemuOptions,
+    run: &RunConfig,
+    image: &Path,
+) -> anyhow::Result<RunOutcome> {
     use wait_timeout::ChildExt;
-    let timeout = cli.tests && !cli.no_test_monitor;
-    let heartbeat = cli.tests && !cli.no_test_monitor;
-    if heartbeat {
+
+    let mut run_cmd = QemuCommand::new(options);
+    let ssh_port = run_cmd.config(options, image.to_path_buf(), run);
+
+    // Only capture qemu's stdio when we plan to talk to the guest; an interactive boot needs the
+    // terminal wired straight through.
+    if run.monitor {
         run_cmd.cmd.stdin(Stdio::piped());
         run_cmd.cmd.stdout(Stdio::piped());
     }
 
     let mut child = run_cmd.cmd.spawn()?;
-
     let mut child_stdin = child.stdin.take();
     let child_stdout = child.stdout.take();
 
-    let reader_thread = std::thread::spawn(|| {
-        if let Some(child_stdout) = child_stdout {
-            let reader = BufReader::new(child_stdout);
-            let mut ret = None;
-            for line in reader.lines().into_iter() {
-                if let Ok(line) = line {
-                    println!(" ==> {}", line.trim());
-                    if line.trim().starts_with("REPORT ") {
-                        let line = line.trim().strip_prefix("REPORT ").unwrap();
-                        let report = unittest_report::Report::from_str(line.trim());
-                        if let Ok(ReportStatus::Ready(report)) = report.map(|report| report.status)
-                        {
-                            ret = Some(report);
-                            break;
-                        }
-                    }
-                }
-            }
-            ret
-        } else {
-            None
+    let serial_log = run.monitor.then(|| serial_log_path(&run.label));
+    let log_file = serial_log.as_ref().and_then(|path| {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
+        std::fs::File::create(path)
+            .inspect_err(|e| eprintln!("failed to open serial log {}: {}", path.display(), e))
+            .ok()
     });
+    let logging_to = serial_log.as_ref().filter(|_| log_file.is_some()).cloned();
 
-    let exit_status = if timeout {
-        if heartbeat {
-            let mut i = 0;
-            loop {
-                if let Some(es) = child.wait_timeout(Duration::from_secs(15))? {
-                    break Some(es);
-                }
-                child_stdin
-                    .as_mut()
-                    .unwrap()
-                    .write_all(b"status\n")
-                    .unwrap();
-                i += 1;
-                if i > 20 {
-                    break None;
-                }
+    let reader_thread = std::thread::spawn(move || read_serial(child_stdout, log_file));
+
+    let exit_status = if run.monitor {
+        let mut tries = 0;
+        loop {
+            if let Some(es) = child.wait_timeout(Duration::from_secs(15))? {
+                break Some(es);
             }
-        } else {
-            child.wait_timeout(Duration::from_secs(200))?
+            let Some(stdin) = child_stdin.as_mut() else {
+                break None;
+            };
+            if stdin.write_all(b"status\n").is_err() {
+                // qemu closed its end, so it is already on its way out; collect its status
+                // instead of calling this a timeout.
+                break child.wait_timeout(Duration::from_secs(15))?;
+            }
+            tries += 1;
+            if tries > run.heartbeat_tries {
+                break None;
+            }
         }
     } else {
         Some(child.wait()?)
     };
 
-    let Some(exit_status) = exit_status else {
+    if exit_status.is_none() {
+        // Nothing else will reap it, and the reader thread stays blocked on its pipe until it dies.
+        let _ = child.kill();
+    }
+
+    let report = reader_thread.join().ok().flatten();
+
+    Ok(RunOutcome {
+        qemu_exit: exit_status,
+        guest_code: exit_status.and_then(decode_guest_code),
+        report,
+        serial_log: logging_to,
+        ssh_port,
+        hook_error: None,
+    })
+}
+
+pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
+    let monitor = cli.tests && !cli.no_test_monitor;
+    let image = if cli.no_build {
+        prebuilt_image_path(&cli.config)
+    } else {
+        crate::image::do_make_image((&cli).into())?.disk_image
+    };
+
+    let run = RunConfig {
+        label: "start-qemu".to_string(),
+        monitor,
+        ..Default::default()
+    };
+    let outcome = run_once(&cli, &run, &image)?;
+
+    let Some(exit_status) = outcome.qemu_exit else {
         eprintln!("qemu timed out");
-        child.kill().unwrap();
         std::process::exit(34);
     };
 
-    let report = reader_thread.join().ok().flatten();
-    if let Some(report) = report {
-        let successes = report.tests.iter().filter(|t| t.passed).count();
-        let total = report.tests.len();
-        println!(
-            "TEST RESULTS: {} passed, {} failed, {} total -- time: {:2} seconds",
-            successes,
-            total - successes,
-            total,
-            report.time.as_millis() as f64 / 1000.0,
-        );
-    } else if cli.tests && !cli.no_test_monitor {
+    if let Some(report) = outcome.report {
+        print_report(&report);
+    } else if monitor {
         eprintln!("qemu didn't produce report");
         std::process::exit(34);
     }
