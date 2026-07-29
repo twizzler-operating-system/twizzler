@@ -101,15 +101,15 @@ lazy_static::lazy_static! {
 }
 
 struct Wait {
-    read: Box<AtomicU64>,
-    write: Box<AtomicU64>,
+    read: Arc<AtomicU64>,
+    write: Arc<AtomicU64>,
 }
 
 impl Wait {
     pub fn new() -> Self {
         Self {
-            read: Box::new(AtomicU64::new(1)),
-            write: Box::new(AtomicU64::new(1)),
+            read: Arc::new(AtomicU64::new(1)),
+            write: Arc::new(AtomicU64::new(1)),
         }
     }
 }
@@ -120,19 +120,24 @@ pub(crate) struct Waiters {
 }
 
 impl Waiters {
+    // Returns an owning clone of the wait word rather than just a raw pointer into it. The
+    // underlying allocation is in practice permanently stable once created (see
+    // init_waiter's comment), but callers that can retain the clone (kqueue/poll/select)
+    // should still do so -- it costs nothing and keeps this API's contract independent of
+    // that implementation detail.
     pub fn waitpoint(
         &self,
         handle: SocketHandle,
         kind: wait_kind,
-    ) -> Result<(*const AtomicU64, u64), TwzError> {
+    ) -> Result<(Arc<AtomicU64>, u64), TwzError> {
         let mut map = self.map.lock().unwrap();
         let entry = map.entry(handle).or_insert_with(|| Wait::new());
-        let ptr = match kind {
-            x if x == WAIT_READ => &*entry.read as *const _,
-            x if x == WAIT_WRITE => &*entry.write as *const _,
+        let arc = match kind {
+            x if x == WAIT_READ => entry.read.clone(),
+            x if x == WAIT_WRITE => entry.write.clone(),
             _ => return Err(TwzError::INVALID_ARGUMENT),
         };
-        Ok((ptr, 0))
+        Ok((arc, 0))
     }
 
     fn mark_waiter(&self, handle: SocketHandle, read: bool, write: bool) {
@@ -184,8 +189,20 @@ impl Waiters {
         }
     }
 
+    // Resets (rather than replaces) any existing entry for `handle`, so the underlying
+    // AtomicU64 allocation for a given handle value, once created, is never freed for the
+    // life of the process -- it is only ever reset back to Wait::new()'s initial state.
+    // This keeps a raw `*const AtomicU64` handed out for this handle (e.g. across the
+    // extern "C" twz_rt_fd_waitpoint ABI, which cannot carry an owning Arc back to its
+    // caller -- see ReferenceRuntime::fd_waitpoint) permanently valid even after `handle` is
+    // released and reused by smoltcp for an unrelated new socket. The map can only grow to
+    // the peak number of concurrently live SocketHandles, since smoltcp's SocketSet reuses
+    // freed slots rather than handing out ever-increasing handle values.
     fn init_waiter(&self, handle: SocketHandle) {
-        self.map.lock().unwrap().insert(handle, Wait::new());
+        let mut map = self.map.lock().unwrap();
+        let wait = map.entry(handle).or_insert_with(Wait::new);
+        wait.read.store(1, Ordering::SeqCst);
+        wait.write.store(1, Ordering::SeqCst);
     }
 
     fn remove_waiter(&self, handle: SocketHandle) {

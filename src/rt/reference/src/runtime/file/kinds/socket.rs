@@ -4,14 +4,16 @@ mod smoltcp;
 use std::{
     net::{SocketAddr, ToSocketAddrs},
     os::raw::c_void,
-    sync::{Arc, OnceLock},
+    sync::{atomic::AtomicU64, Arc, OnceLock},
     time::Duration,
 };
 
 use libc::S_IFSOCK;
 use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
-use twizzler_abi::syscall::ThreadSyncSleep;
+use twizzler_abi::syscall::{
+    ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+};
 use twizzler_rt_abi::{
     bindings::{
         wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER, IO_REGISTER_SOCKET_FLAGS, WAIT_READ,
@@ -22,7 +24,7 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use crate::runtime::file::{kinds::socket::smoltcp::UdpSocket, Fd};
+use crate::runtime::file::{kinds::socket::smoltcp::UdpSocket, Fd, WaitpointResult};
 
 #[derive(Clone)]
 pub enum SocketKind {
@@ -272,25 +274,25 @@ impl Fd for SocketKind {
         }
     }
 
-    fn waitpoint(&self, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
-        let sync = match self {
-            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream
-                .waitpoint(kind)
-                .map_err(Into::into)
-                .map(Into::into),
-            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener
-                .waitpoint(kind)
-                .map_err(Into::into)
-                .map(Into::into),
+    fn waitpoint(&self, kind: wait_kind) -> Result<WaitpointResult> {
+        let (arc, value): (Arc<AtomicU64>, u64) = match self {
+            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.waitpoint(kind)?,
+            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.waitpoint(kind)?,
             SocketKind::UdpSocket(udp_socket) => udp_socket
                 .get()
                 .ok_or(TwzError::INVALID_ARGUMENT)?
-                .waitpoint(kind)
-                .map_err(Into::into)
-                .map(Into::into),
+                .waitpoint(kind)?,
         };
-        let ready = self.is_ready(kind);
-        sync.map(|s| (s, ready))
+        Ok(WaitpointResult {
+            sleep: ThreadSyncSleep {
+                reference: ThreadSyncReference::Virtual(Arc::as_ptr(&arc)),
+                value,
+                op: ThreadSyncOp::Equal,
+                flags: ThreadSyncFlags::empty(),
+            },
+            ready: self.is_ready(kind),
+            keepalive: Some(arc),
+        })
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {

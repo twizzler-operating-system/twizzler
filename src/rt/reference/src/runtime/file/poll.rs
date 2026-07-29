@@ -1,3 +1,5 @@
+use std::sync::{atomic::AtomicU64, Arc};
+
 use secgate::TwzError;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::bindings::{wait_kind, WAIT_READ, WAIT_WRITE};
@@ -10,6 +12,10 @@ pub struct PollState<'a> {
     pub wps: Vec<ThreadSync>,
     pub info: Vec<(usize, wait_kind)>,
     pub ready: usize,
+    // Held alive for as long as `wps` may still be read -- see WaitpointResult::keepalive. Never
+    // read itself, only dropped, hence `allow(dead_code)`.
+    #[allow(dead_code)]
+    pub keepalives: Vec<Option<Arc<AtomicU64>>>,
 }
 
 fn events_to_wait_kind_iter(events: libc::c_short) -> impl Iterator<Item = wait_kind> {
@@ -52,6 +58,9 @@ impl<'a> PollState<'a> {
         let mut wps = Vec::with_capacity(fds.len());
         let mut info = Vec::with_capacity(fds.len());
         let mut ready = 0;
+        // Must be held alive for as long as `wps` may still be read -- see
+        // WaitpointResult::keepalive.
+        let mut keepalives = Vec::with_capacity(fds.len());
         fds.iter_mut().enumerate().try_for_each(|(idx, fd)| {
             let file_desc = slots
                 .get(fd.fd as usize)
@@ -61,14 +70,15 @@ impl<'a> PollState<'a> {
             fd.revents = 0;
             for wk in events_to_wait_kind_iter(fd.events) {
                 if let Some(wp) = file_desc.file.waitpoint(wk).ok() {
-                    if wp.1 || wp.0.ready() {
+                    if wp.ready || wp.sleep.ready() {
                         if fd.revents == 0 {
                             ready += 1;
                         }
                         fd.revents |= wait_kind_to_poll_revents(wk);
                     } else {
-                        wps.push(ThreadSync::new_sleep(wp.0));
+                        wps.push(ThreadSync::new_sleep(wp.sleep));
                         info.push((idx, wk));
+                        keepalives.push(wp.keepalive);
                     }
                 }
             }
@@ -81,6 +91,7 @@ impl<'a> PollState<'a> {
             wps,
             ready,
             info,
+            keepalives,
         })
     }
 

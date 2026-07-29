@@ -1,7 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
 use libc::{termios, winsize, S_IFCHR};
-use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_io::{
     pipe::Pipe,
     pty::{PtyClientHandle, PtyServerHandle},
@@ -14,7 +13,7 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use crate::runtime::file::Fd;
+use crate::runtime::file::{Fd, WaitpointResult};
 
 #[derive(Clone)]
 pub enum PtyHandleKind {
@@ -160,7 +159,7 @@ impl Fd for PtyHandleKind {
     fn waitpoint(
         &self,
         kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<(ThreadSyncSleep, bool)> {
+    ) -> Result<WaitpointResult> {
         let wp = match self {
             PtyHandleKind::Server(server) => server.waitpoint(kind == WAIT_WRITE),
             PtyHandleKind::Client(client) => client.waitpoint(kind == WAIT_WRITE),
@@ -169,7 +168,11 @@ impl Fd for PtyHandleKind {
             PtyHandleKind::Server(server) => server.is_ready(kind == WAIT_WRITE),
             PtyHandleKind::Client(client) => client.is_ready(kind == WAIT_WRITE),
         };
-        Ok((wp, ready))
+        Ok(WaitpointResult {
+            sleep: wp,
+            ready,
+            keepalive: None,
+        })
     }
 
     fn shutdown(&self, _sh: std::net::Shutdown) -> Result<()> {
@@ -236,11 +239,19 @@ impl Fd for Pipe {
     fn waitpoint(
         &self,
         kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<(ThreadSyncSleep, bool)> {
+    ) -> Result<WaitpointResult> {
         if kind == WAIT_WRITE {
-            Ok((self.write_waitpoint(), self.has_avail_space()))
+            Ok(WaitpointResult {
+                sleep: self.write_waitpoint(),
+                ready: self.has_avail_space(),
+                keepalive: None,
+            })
         } else {
-            Ok((self.read_waitpoint(), self.has_pending_data()))
+            Ok(WaitpointResult {
+                sleep: self.read_waitpoint(),
+                ready: self.has_pending_data(),
+                keepalive: None,
+            })
         }
     }
 

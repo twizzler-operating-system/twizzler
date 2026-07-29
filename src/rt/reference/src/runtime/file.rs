@@ -6,7 +6,7 @@ use std::{
     ops::Deref,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
 };
@@ -50,6 +50,16 @@ pub use kqueue::KqueueFile;
 
 pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
 
+/// Result of [Fd::waitpoint]. `keepalive`, when present, must be held alive by the caller for
+/// as long as `sleep`'s underlying memory may still be read (e.g. across a blocking
+/// sys_thread_sync call) -- some Fd kinds (sockets) back their wait word with a value that can
+/// otherwise be freed out from under a stale reference on handle reuse.
+pub struct WaitpointResult {
+    pub sleep: ThreadSyncSleep,
+    pub ready: bool,
+    pub keepalive: Option<Arc<AtomicU64>>,
+}
+
 pub trait Fd {
     fn read(
         &self,
@@ -89,7 +99,7 @@ pub trait Fd {
         Err(ErrorKind::Unsupported.into())
     }
 
-    fn waitpoint(&self, _kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
+    fn waitpoint(&self, _kind: wait_kind) -> Result<WaitpointResult> {
         Err(ErrorKind::Unsupported.into())
     }
 
@@ -972,7 +982,14 @@ impl ReferenceRuntime {
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        file_desc.file.waitpoint(kind)
+        // This crosses the extern "C" twz_rt_fd_waitpoint ABI (see rt-abi's io.rs), which has
+        // no way to carry an owning reference back to the caller, so `keepalive` is dropped
+        // here rather than threaded through. This is sound only because the socket engine's
+        // wait-word allocations are themselves permanently stable once created (see
+        // engine.rs's Waiters::init_waiter) -- a raw pointer into one stays valid for the
+        // life of the process even past handle reuse, independent of `keepalive`.
+        let wp = file_desc.file.waitpoint(kind)?;
+        Ok((wp.sleep, wp.ready))
     }
 
     pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {

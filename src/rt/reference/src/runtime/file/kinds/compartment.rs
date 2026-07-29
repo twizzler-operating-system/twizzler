@@ -6,14 +6,13 @@ use std::{
 
 use libc::S_IFDIR;
 use monitor_api::{CompartmentFlags, CompartmentHandle};
-use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_rt_abi::{
     bindings::{IO_REGISTER_SIGNAL, IO_REGISTER_STATUS, STATUS_FLAG_READY, STATUS_FLAG_TERMINATED},
     error::TwzError,
     Result,
 };
 
-use crate::runtime::file::Fd;
+use crate::runtime::file::{Fd, WaitpointResult};
 
 #[derive(Clone)]
 pub struct CompartmentFile {
@@ -148,7 +147,7 @@ impl Fd for CompartmentFile {
     fn waitpoint(
         &self,
         _kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<(ThreadSyncSleep, bool)> {
+    ) -> Result<WaitpointResult> {
         Err(ErrorKind::Unsupported.into())
     }
 

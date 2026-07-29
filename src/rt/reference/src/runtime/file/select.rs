@@ -134,19 +134,23 @@ impl SelectState {
                 is_ready
             };
 
-        let (fds, mut waits): (Vec<_>, Vec<_>) = self
-            .fds
-            .set
-            .iter()
-            .filter_map(|((fd, kind), fd_desc)| {
-                let (wp, fd_is_ready) = fd_desc.file.waitpoint(*kind).ok()?;
-                let wp = ThreadSync::new_sleep(wp);
-                if maybe_mark_ready(&wp, *kind, *fd, fd_is_ready) {
-                    ready += 1;
-                }
-                Some(((fd, *kind, fd_desc), wp))
-            })
-            .unzip();
+        let mut fds = Vec::new();
+        let mut waits = Vec::new();
+        // Must be held alive for as long as `waits` may still be read (through the
+        // sys_thread_sync call below) -- see WaitpointResult::keepalive.
+        let mut keepalives = Vec::new();
+        for ((fd, kind), fd_desc) in self.fds.set.iter() {
+            let Ok(wp) = fd_desc.file.waitpoint(*kind) else {
+                continue;
+            };
+            let sleep = ThreadSync::new_sleep(wp.sleep);
+            if maybe_mark_ready(&sleep, *kind, *fd, wp.ready) {
+                ready += 1;
+            }
+            fds.push((fd, *kind, fd_desc));
+            waits.push(sleep);
+            keepalives.push(wp.keepalive);
+        }
         twizzler_abi::klog_println!("SelectState::wait: initial ready={}", ready,);
 
         if ready > 0 {

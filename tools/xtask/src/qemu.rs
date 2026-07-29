@@ -2,12 +2,12 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     str::FromStr,
     time::Duration,
 };
 
-use unittest_report::ReportStatus;
+use unittest_report::{ReportInfo, ReportStatus};
 
 use crate::{
     toolchain::get_toolchain_path,
@@ -16,6 +16,67 @@ use crate::{
 };
 
 const DEFAULT_QEMU_PORT: u16 = 5555;
+
+/// Default guest memory, in the form accepted by qemu's `-m`.
+pub const DEFAULT_MEMORY: &str = "12000,slots=4,maxmem=128G";
+
+/// Knobs a test scenario can vary for a single qemu run, on top of `QemuOptions`.
+///
+/// Defaults reproduce exactly what `start-qemu` does today, so a scenario only has to name what it
+/// actually wants to change.
+#[derive(Debug, Clone)]
+pub struct RunConfig {
+    /// Value for qemu's `-m`.
+    pub memory: String,
+    /// Names the run in log files, e.g. `lowmem-3`.
+    pub label: String,
+    /// Watch the serial console for a test report, and bound the run's wall time.
+    pub monitor: bool,
+    /// How long to wait between heartbeat pokes before giving up.
+    pub heartbeat_tries: usize,
+    /// Attach the isa-debug-exit device even without `--tests`, so a guest program that calls
+    /// `sys_debug_shutdown` can end the run itself (used by the persistence scenario's autostart).
+    pub debug_exit: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            memory: DEFAULT_MEMORY.to_string(),
+            label: "run".to_string(),
+            monitor: false,
+            heartbeat_tries: 20,
+            debug_exit: false,
+        }
+    }
+}
+
+/// What happened during a single qemu run. Deliberately just data: `run_once` never decides whether
+/// a run "passed", so scenarios can apply their own criteria.
+#[derive(Debug)]
+pub struct RunOutcome {
+    /// `None` if qemu had to be killed for exceeding its time budget.
+    pub qemu_exit: Option<ExitStatus>,
+    /// The parsed test report, if the guest produced one.
+    pub report: Option<ReportInfo>,
+    /// Serial console transcript for this run.
+    pub serial_log: PathBuf,
+    /// Host port forwarded to the guest's ssh port.
+    pub ssh_port: u16,
+}
+
+impl RunOutcome {
+    /// True if qemu exited the way a passing test run exits.
+    ///
+    /// The guest signals shutdown through the isa-debug-exit device, which makes qemu exit with
+    /// `(code << 1) | 1`; the guest passes 0, so a healthy test run yields 1 rather than 0.
+    pub fn qemu_ok(&self) -> bool {
+        match self.qemu_exit {
+            Some(es) => es.success() || es.code() == Some(1),
+            None => false,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct QemuCommand {
@@ -46,12 +107,14 @@ impl QemuCommand {
         }
     }
 
-    pub fn config(&mut self, options: &QemuOptions, disk_image: PathBuf) {
+    /// Build the qemu command line. Returns the host port forwarded to the guest's ssh port, which
+    /// the network scenario needs in order to drive an ssh client at the guest.
+    pub fn config(&mut self, options: &QemuOptions, disk_image: PathBuf, run: &RunConfig) -> u16 {
         // Set up the basic stuff, memory and bios, etc.
-        self.cmd.arg("-m").arg("12000,slots=4,maxmem=128G");
+        self.cmd.arg("-m").arg(&run.memory);
 
         // configure architechture specific parameters
-        self.arch_config(options);
+        self.arch_config(options, run);
 
         // Connect disk image
         self.cmd.arg("-drive").arg(format!(
@@ -157,9 +220,11 @@ impl QemuCommand {
         println!("qemu: {:?}", self.cmd);
 
         //self.cmd.arg("-smp").arg("4,sockets=1,cores=2,threads=2");
+
+        port
     }
 
-    fn arch_config(&mut self, options: &QemuOptions) {
+    fn arch_config(&mut self, options: &QemuOptions, run: &RunConfig) {
         let mut ovmf = get_toolchain_path().unwrap();
         match self.arch {
             Arch::X86_64 => {
@@ -169,7 +234,7 @@ impl QemuCommand {
                 self.cmd.arg("-machine").arg("q35,nvdimm=on");
 
                 // add qemu exit device for testing
-                if options.tests || options.benches || options.bench.is_some() {
+                if options.tests || options.benches || options.bench.is_some() || run.debug_exit {
                     // x86 specific
                     self.cmd
                         .arg("-device")
@@ -226,10 +291,11 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
                 cli.config.arch.to_string(),
                 cli.config.profile.to_string()
             )),
+            &RunConfig::default(),
         );
     } else {
         let image_info = crate::image::do_make_image((&cli).into())?;
-        run_cmd.config(&cli, image_info.disk_image.clone());
+        run_cmd.config(&cli, image_info.disk_image.clone(), &RunConfig::default());
     }
 
     use wait_timeout::ChildExt;

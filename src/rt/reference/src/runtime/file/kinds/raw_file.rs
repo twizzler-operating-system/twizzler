@@ -12,7 +12,6 @@ use secgate::TwzError;
 use twizzler_abi::{
     meta::MetaExt,
     object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::ThreadSyncSleep,
 };
 use twizzler_rt_abi::{
     bindings::{sync_info, SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
@@ -22,7 +21,10 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use crate::{runtime::file::Fd, OUR_RUNTIME};
+use crate::{
+    runtime::file::{Fd, WaitpointResult},
+    OUR_RUNTIME,
+};
 
 const RFI_NEEDS_SYNC: u64 = 1 << 0;
 const RFI_HAS_KSYNC: u64 = 1 << 1;
@@ -232,13 +234,14 @@ impl Fd for RawFile {
     fn waitpoint(
         &self,
         _kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<(ThreadSyncSleep, bool)> {
+    ) -> Result<WaitpointResult> {
         if let Some(me) = self.handle.find_meta_ext(MEXT_SIZED) {
             let ready = self.inner.pos.load(Ordering::SeqCst) < me.value.load(Ordering::SeqCst);
-            Ok((
-                (&me.value, self.inner.pos.load(Ordering::SeqCst)).into(),
+            Ok(WaitpointResult {
+                sleep: (&me.value, self.inner.pos.load(Ordering::SeqCst)).into(),
                 ready,
-            ))
+                keepalive: None,
+            })
         } else {
             Err(ErrorKind::Unsupported.into())
         }

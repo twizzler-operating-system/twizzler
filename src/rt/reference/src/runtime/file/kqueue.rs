@@ -214,6 +214,9 @@ impl ReferenceRuntime {
         let mut wps = Vec::new();
         let mut info = Vec::new();
         let mut ready = Vec::new();
+        // Must be held alive for as long as `wps` may still be read (through the
+        // sys_thread_sync call below) -- see WaitpointResult::keepalive.
+        let mut keepalives = Vec::new();
         for (idx, entry) in snapshot.iter().enumerate() {
             let Some(wk) = filter_to_wait_kind(entry.filter) else {
                 continue;
@@ -224,11 +227,12 @@ impl ReferenceRuntime {
             let Ok(wp) = fd.file.waitpoint(wk) else {
                 continue;
             };
-            if wp.1 || wp.0.ready() {
+            if wp.ready || wp.sleep.ready() {
                 ready.push(idx);
             } else {
-                wps.push(ThreadSync::new_sleep(wp.0));
+                wps.push(ThreadSync::new_sleep(wp.sleep));
                 info.push(idx);
+                keepalives.push(wp.keepalive);
             }
         }
         drop(slots);

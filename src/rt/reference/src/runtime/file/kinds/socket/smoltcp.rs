@@ -90,7 +90,7 @@ impl SmolTcpListener {
         }
     }
 
-    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
         WAITERS.waitpoint(self.listeners.lock().unwrap()[0].socket_handle, kind)
     }
     /* each_addr():
@@ -287,7 +287,7 @@ impl SmolTcpStream {
         addr.map(|a| a.into()).unwrap_or_default()
     }
 
-    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
     }
     /* read():
@@ -524,7 +524,7 @@ impl UdpSocket {
         addr.unwrap_or_default()
     }
 
-    pub fn waitpoint(&self, kind: wait_kind) -> Result<(*const AtomicU64, u64), TwzError> {
+    pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
         WAITERS.waitpoint(self.inner.socket_handle, kind)
     }
 
