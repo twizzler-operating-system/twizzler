@@ -64,6 +64,7 @@ members = [
     #"src/bin/serialecho", "tools/serialtest",
 
     "src/bin/ptest",
+    "src/bin/kqueue_test",
     #"src/bin/sqlite_test",
 
     #"src/bin/persistent-hashmap-test",
@@ -122,6 +123,7 @@ initrd = [
 
     #"crate:sec",
     #"crate:ptest",
+    #"crate:kqueue_test",
     #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
 

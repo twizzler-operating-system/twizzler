@@ -29,7 +29,7 @@ pub fn start_network() -> Result<()> {
     }
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(Level::TRACE)
+            .with_max_level(Level::INFO)
             .without_time()
             .finish(),
     )

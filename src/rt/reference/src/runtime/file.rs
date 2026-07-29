@@ -42,8 +42,11 @@ use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
 mod kinds;
+mod kqueue;
 mod poll;
 mod select;
+
+pub use kqueue::KqueueFile;
 
 pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
 
@@ -95,6 +98,10 @@ pub trait Fd {
     }
 
     fn as_socket(&self) -> Option<&SocketKind> {
+        None
+    }
+
+    fn as_kqueue(&self) -> Option<&KqueueFile> {
         None
     }
 

@@ -70,7 +70,6 @@ impl IfaceSet {
     fn poll(&mut self, socketset: &mut SocketSet<'static>) -> bool {
         let mut ready = false;
         for iface in &mut self.ifaces {
-            twizzler_abi::klog_println!("polling iface with addr {:?}", iface.ipv4_addr());
             ready |= iface.poll(Instant::now(), &mut self.device, socketset);
         }
         ready
@@ -219,12 +218,9 @@ impl Engine {
             let waiter = _waiter;
             let notify = _notify;
 
-            let my_id = twizzler_abi::syscall::sys_thread_self_id();
             fn check_tracking() -> bool {
-                twizzler_abi::klog_println!("a");
                 let mut core = ENGINE.core.lock().unwrap();
                 for idx in 0..core.tracking.len() {
-                    twizzler_abi::klog_println!("b");
                     let item = core.tracking[idx];
                     let is_closed = match item.2 {
                         SockKind::Tcp => core.get_mutable_socket(item.0).state() == State::Closed,
@@ -233,14 +229,10 @@ impl Engine {
                                                  * is_open(), */
                     };
                     if is_closed {
-                        twizzler_abi::klog_println!("x");
                         core.release_socket(item.0);
-                        twizzler_abi::klog_println!("xx");
                         core.tracking.remove(idx);
                         drop(core);
-                        twizzler_abi::klog_println!("xxy");
                         ENGINE.return_port(item.1);
-                        twizzler_abi::klog_println!("y");
                         return true;
                     }
                 }
@@ -248,9 +240,7 @@ impl Engine {
             }
 
             loop {
-                twizzler_abi::klog_println!("polling thread {}: checking tracking", my_id);
                 while check_tracking() {}
-                twizzler_abi::klog_println!("polling thread {}: checking tracking done", my_id);
                 let time = {
                     let mut inner = inner.lock().unwrap();
                     inner.poll(&*waiter);
@@ -283,23 +273,8 @@ impl Engine {
                     .any(|iface| iface.device.has_rx_pending());
                 drop(core);
                 let n = notify.swap(0, Ordering::SeqCst);
-                twizzler_abi::klog_println!(
-                    "polling thread {}: waiting for {} waiters, time={:?}, n={}",
-                    my_id,
-                    waiters.len(),
-                    time,
-                    n
-                );
                 if !any_ready && n == 0 {
-                    twizzler_abi::klog_println!(
-                        "polling thread {}: waiting for {} waiters, time={:?}: {:?}",
-                        my_id,
-                        waiters.len(),
-                        time,
-                        waiters,
-                    );
                     let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
-                    twizzler_abi::klog_println!("polling thread {}: woke up from wait", my_id);
                 }
             }
         });

@@ -512,15 +512,6 @@ impl Drop for Thread {
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     let th = current_thread_ref().unwrap();
-    if th.id() == 36 {
-        crate::panic::backtrace(true, None);
-    }
-    logln!(
-        "thread {} ({}) exiting with code {}",
-        th.id(),
-        th.objid(),
-        code
-    );
     th.set_state_and_code(ExecutionState::Exited, code);
     remove_thread(th.id());
     log::debug!(
@@ -580,6 +571,7 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
 }
 
 pub fn check_orphan_threads() {
+    #[cfg(debug_assertions)]
     with_all_threads(|at| {
         for thread in at.values() {
             let is_mutex_linked = thread.mutex_link.is_linked();
@@ -605,22 +597,6 @@ pub fn check_orphan_threads() {
                     "thread {} ({}) is orphaned: not on any queue and not exited",
                     thread.id(),
                     thread.objid()
-                );
-            }
-            if thread.id() == 36 {
-                logln!(
-                    "thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={}",
-                    thread.id(),
-                    thread.objid(),
-                    is_mutex_linked,
-                    is_condvar_linked,
-                    is_requeue_linked,
-                    is_suspend_linked,
-                    is_sync_linked,
-                    is_memwait_linked,
-                    is_timed_wait,
-                    is_pager_linked,
-                    is_sched_linked
                 );
             }
         }

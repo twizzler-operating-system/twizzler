@@ -205,8 +205,6 @@ impl CompartmentMgr {
             return;
         };
 
-        tracing::info!("killing all threads in {}", rc.name);
-
         for thread in rc.per_thread.keys() {
             let _ = sys_thread_change_state(*thread, twizzler_abi::thread::ExecutionState::Exited);
         }
@@ -627,7 +625,7 @@ impl super::Monitor {
             let comp = comp_handles.remove(caller, desc);
 
             if let Some(comp) = comp {
-                tracing::info!(
+                tracing::trace!(
                     "dropping compartment handle for {}: {:?}",
                     caller,
                     cmgr.get(comp.instance).map(|c| c.name.clone()),

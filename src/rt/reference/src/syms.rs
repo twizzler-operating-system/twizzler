@@ -505,6 +505,43 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_poll(
 check_ffi_type!(twz_rt_fd_poll, _, _, _);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_fd_kevent(
+    kq: descriptor,
+    changelist: *const twizzler_rt_abi::bindings::kevent,
+    nchanges: usize,
+    eventlist: *mut twizzler_rt_abi::bindings::kevent,
+    nevents: usize,
+    timeout: twizzler_rt_abi::bindings::option_duration,
+) -> io_result {
+    let changelist = if changelist.is_null() {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(changelist, nchanges) }
+    };
+    let eventlist = unsafe { core::slice::from_raw_parts_mut(eventlist, nevents) };
+    match OUR_RUNTIME.kevent(
+        kq,
+        changelist,
+        eventlist,
+        if timeout.is_some != 0 {
+            Some(timeout.dur.into())
+        } else {
+            None
+        },
+    ) {
+        Ok(result) => io_result {
+            err: TwzError::SUCCESS.raw(),
+            val: result,
+        },
+        Err(e) => io_result {
+            err: e.raw(),
+            val: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_fd_kevent, _, _, _, _, _, _);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
     fd: descriptor,
     buf: *mut twizzler_rt_abi::bindings::name_entry,

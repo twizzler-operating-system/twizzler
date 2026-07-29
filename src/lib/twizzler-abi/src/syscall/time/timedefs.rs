@@ -51,7 +51,7 @@ impl TimeSpan {
             let nanos = if self.1 .0 >= other.1 .0 {
                 self.1 .0 - other.1 .0
             } else {
-                secs -= 1;
+                secs = secs.checked_sub(1)?;
                 self.1 .0 + FEMTOS_PER_SEC - other.1 .0
             };
             return Some(TimeSpan(Seconds(secs), FemtoSeconds(nanos)));

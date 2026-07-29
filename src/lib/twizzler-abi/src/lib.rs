@@ -19,6 +19,8 @@
 #![feature(rustc_attrs)]
 #![feature(linkage)]
 #![feature(test)]
+#![feature(const_try)]
+#![feature(const_trait_impl)]
 #![feature(c_variadic)]
 
 use syscall::KernelConsoleSource;

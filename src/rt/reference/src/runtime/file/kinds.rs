@@ -243,6 +243,7 @@ pub fn open(
             })?))
         }
         OpenKind::KernelConsole => Some(Arc::new(KernelConsoleFile::new())),
+        OpenKind::Kqueue => Some(Arc::new(super::KqueueFile::new())),
         _ => Err(ErrorKind::Unsupported)?,
     })
 }

@@ -48,13 +48,11 @@ fn client_thread(client: Arc<Client>) {
     let device = NETINFO.get().unwrap().device.clone();
     let tx_po = client.ep.lock().unwrap().client_tx_packet_object().clone();
     while client.active() {
-        println!("client thread waiting for packet");
         let mut ep = client.ep.lock().unwrap();
         while let Some((rx, _tx)) = ep.receive(Instant::now()) {
-            println!("client thread got packet");
             let packet = rx.packet;
             rx.consume(|buf| {
-                if true {
+                if false {
                     let f = EthernetFrame::new_unchecked(&mut *buf);
                     let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
                     eprintln!("client thread got {}", pp);

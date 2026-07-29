@@ -3939,6 +3939,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kqueue_test"
+version = "0.1.0"
+dependencies = [
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "kstring"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
