@@ -189,7 +189,10 @@ impl Waiters {
     }
 
     fn remove_waiter(&self, handle: SocketHandle) {
-        self.mark_waiter(handle, false, false);
+        // Closing must wake both a blocked reader and a blocked writer (mark_waiter(_, false,
+        // false) only ever wakes the write side -- see mark_waiter's dispatch below -- which
+        // left a reader waiting on this socket asleep forever).
+        self.mark_waiter(handle, true, true);
     }
 }
 

@@ -300,11 +300,11 @@ impl FdSlots {
     }
 
     pub fn get(&self, idx: usize) -> Option<&FileDesc> {
-        self.slots[idx].as_ref()
+        self.slots.get(idx).and_then(Option::as_ref)
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut FileDesc> {
-        self.slots[idx].as_mut()
+        self.slots.get_mut(idx).and_then(Option::as_mut)
     }
 
     pub fn remove(&mut self, idx: usize) -> Option<FileDesc> {

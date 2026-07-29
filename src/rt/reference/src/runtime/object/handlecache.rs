@@ -53,8 +53,13 @@ impl HandleCache {
         if let Some(idx) = idx {
             trace!("activate {:?} from queue pos {}", map, idx);
             let (_, handle) = self.queued.remove(idx);
-            if MapFlags::from_bits_truncate(handle.map_flags).contains(MapFlags::INDIRECT) {
-                sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0).ok()?;
+            if MapFlags::from_bits_truncate(handle.map_flags).contains(MapFlags::INDIRECT)
+                && sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0).is_err()
+            {
+                // Failed to reactivate -- don't leak the handle or leave slotmap pointing at
+                // a mapping that's in neither queued nor active.
+                self.do_remove(&handle);
+                return None;
             }
             (unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() })
                 .fot_cache

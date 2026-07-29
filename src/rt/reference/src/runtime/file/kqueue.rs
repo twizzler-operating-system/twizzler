@@ -41,6 +41,10 @@ struct KqueueEntry {
     oneshot: bool,
     fflags: u32,
     udata: *mut std::ffi::c_void,
+    // Bumped on every EV_ADD for this (ident, filter). Lets EV_ONESHOT reconciliation
+    // (see kevent()) tell a registration that fired apart from an unrelated one that
+    // happens to reuse the same (ident, filter) after a concurrent re-add.
+    token: u64,
 }
 
 // Only ever touched behind KqueueFile::entries' Mutex.
@@ -48,12 +52,14 @@ unsafe impl Send for KqueueEntry {}
 
 pub struct KqueueFile {
     entries: Mutex<Vec<KqueueEntry>>,
+    next_token: std::sync::atomic::AtomicU64,
 }
 
 impl KqueueFile {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            next_token: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -62,6 +68,7 @@ impl KqueueFile {
     /// registration that doesn't exist).
     fn apply_changes(&self, changelist: &[kevent], errors: &mut Vec<kevent>) {
         let mut entries = self.entries.lock().unwrap();
+        let slots = get_fd_slots().lock().unwrap();
         for change in changelist {
             if filter_to_wait_kind(change.filter).is_none() {
                 errors.push(error_event(change));
@@ -82,6 +89,10 @@ impl KqueueFile {
             }
 
             if change.flags & EV_ADD != 0 {
+                if slots.get(change.ident as usize).is_none() {
+                    errors.push(error_event(change));
+                    continue;
+                }
                 let entry = KqueueEntry {
                     ident: change.ident as RawFd,
                     filter: change.filter,
@@ -89,6 +100,7 @@ impl KqueueFile {
                     oneshot: change.flags & EV_ONESHOT != 0,
                     fflags: change.fflags,
                     udata: change.udata,
+                    token: self.next_token.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 };
                 match pos {
                     Some(pos) => entries[pos] = entry,
@@ -250,7 +262,7 @@ impl ReferenceRuntime {
             };
             out_count += 1;
             if entry.oneshot {
-                oneshot_fired.push((entry.ident, entry.filter));
+                oneshot_fired.push((entry.ident, entry.filter, entry.token));
             }
         }
 
@@ -258,7 +270,7 @@ impl ReferenceRuntime {
             kqf.entries
                 .lock()
                 .unwrap()
-                .retain(|e| !oneshot_fired.contains(&(e.ident, e.filter)));
+                .retain(|e| !oneshot_fired.contains(&(e.ident, e.filter, e.token)));
         }
 
         Ok(out_count)

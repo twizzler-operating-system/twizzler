@@ -518,7 +518,11 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_kevent(
     } else {
         unsafe { core::slice::from_raw_parts(changelist, nchanges) }
     };
-    let eventlist = unsafe { core::slice::from_raw_parts_mut(eventlist, nevents) };
+    let eventlist = if eventlist.is_null() {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(eventlist, nevents) }
+    };
     match OUR_RUNTIME.kevent(
         kq,
         changelist,

@@ -63,6 +63,14 @@ pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> Obje
     }
 }
 
+/// Upper bound (exclusive) on FOT indices for `handle`, derived from the actual extent of the
+/// FOT region (`meta - start`, per `new_object_handle`) rather than trusting a caller-supplied
+/// index -- `idx` can originate from data resolved out of an object's own (possibly untrusted)
+/// memory, so an unbounded `idx` must not turn into out-of-bounds pointer arithmetic.
+fn max_fot_idx(handle: &object_handle) -> u64 {
+    ((handle.meta as usize) - (handle.start as usize)) as u64 / std::mem::size_of::<FotEntry>() as u64
+}
+
 impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
     pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle> {
@@ -181,10 +189,9 @@ impl ReferenceRuntime {
     pub fn insert_fot(&self, handle: *mut object_handle, fot: *const u8) -> Result<u32> {
         //tracing::warn!("TODO: insert FOT entry");
         let handle = unsafe { &*handle };
-        // TODO: track max FOT entry
         let _meta = unsafe { &*handle.meta };
         let new_fot = unsafe { fot.cast::<FotEntry>().read() };
-        for i in 1..u32::MAX {
+        for i in 1..max_fot_idx(handle) as u32 {
             let ptr = unsafe { &mut *handle.meta.cast::<FotEntry>().sub((i + 1) as usize) };
             let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
 
@@ -222,6 +229,9 @@ impl ReferenceRuntime {
     }
 
     fn read_fot_entry(&self, handle: &object_handle, idx: u64) -> Result<FotEntry> {
+        if idx == 0 || idx >= max_fot_idx(handle) {
+            return Err(ObjectError::InvalidFote.into());
+        }
         let ptr = unsafe { &*handle.meta.cast::<FotEntry>().sub((idx + 1) as usize) };
         let flags = FotFlags::from_bits_truncate(ptr.flags.load(Ordering::SeqCst));
         if flags.contains(FotFlags::DELETED)
