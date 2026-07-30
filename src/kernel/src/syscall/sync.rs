@@ -135,10 +135,13 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     }
 }
 
-pub fn remove_from_requeue(thread: &ThreadRef) {
+/// Remove `thread` from the requeue list, returning true if it was on it -- i.e. a waker had
+/// already claimed it. A thread about to block uses that to detect a wakeup that raced in
+/// before it committed to sleeping, which `requeue_all()` cannot tell it (see below).
+pub fn remove_from_requeue(thread: &ThreadRef) -> bool {
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    let _ = list.find_mut(&thread.objid()).remove();
+    list.find_mut(&thread.objid()).remove().is_some()
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
@@ -290,10 +293,18 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
         thread_sync_cb_timeout,
         thread.clone(),
     );
-    requeue_all();
     let guard = thread.enter_critical();
     thread.set_sync_sleep_done();
-    finish_blocking(guard);
+    requeue_all();
+    // requeue_all() above cannot rescue *us*: it skips any thread that is_critical(), and we
+    // hold `guard`. So check for ourselves -- if a waker parked us on the requeue list before
+    // set_sync_sleep_done() above, that wakeup has already happened and blocking on it now
+    // would mean sleeping until some unrelated requeue_all() came along.
+    if remove_from_requeue(&thread) {
+        drop(guard);
+    } else {
+        finish_blocking(guard);
+    }
     let _guard = thread.enter_critical();
     remove_from_requeue(&thread);
     timeout_key.release();
@@ -313,7 +324,13 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     thread.set_sync_sleep_done();
     requeue_all();
     let prep_done = Instant::now();
-    finish_blocking(guard);
+    // See simple_timed_sleep: requeue_all() skips critical threads, so it can never rescue the
+    // caller. Take a wakeup that raced in ahead of set_sync_sleep_done() ourselves.
+    if remove_from_requeue(&thread) {
+        drop(guard);
+    } else {
+        finish_blocking(guard);
+    }
     let woke_up = Instant::now();
     let _guard = thread.enter_critical();
     thread.reset_sync_sleep();
@@ -446,13 +463,17 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
         };
         requeue_all();
         thread.set_sync_sleep_done();
-        // Catch any wake() that raced in and parked us on the pending requeue
-        // list before sync_sleep_done was set above (see optimized_single_sleep,
-        // which orders these calls the same way for the single-op path).
-        requeue_all();
+        // Catch any wake() that raced in and parked us on the requeue list before
+        // sync_sleep_done was set above. This has to be a self-check rather than another
+        // requeue_all(): that call skips any is_critical() thread, and we hold `guard`.
+        let woken_early = remove_from_requeue(&thread);
         assert!(!thread.mutex_link.is_linked());
         let guard = if should_sleep {
-            finish_blocking(guard);
+            if woken_early {
+                drop(guard);
+            } else {
+                finish_blocking(guard);
+            }
             thread.enter_critical()
         } else {
             if thread.reset_sync_sleep() {

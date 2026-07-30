@@ -294,7 +294,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = !cfg!(debug_assertions);
+const DISABLE_LOCK_TRACKING: bool = false;// !cfg!(debug_assertions);
 
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
     if DISABLE_LOCK_TRACKING {
@@ -324,34 +324,33 @@ static ALL_TRACKERS: Spinlock<heapless::Vec<Option<Arc<LockTracker>>, 1024>> =
     Spinlock::new(heapless::Vec::new());
 
 pub fn register_lock_tracker(tracker: Arc<LockTracker>) -> Option<usize> {
-    let int = crate::interrupt::disable();
     let mut at = ALL_TRACKERS.lock();
     let pos = at.iter().position(|t| t.is_none());
     if let Some(pos) = pos {
         at[pos] = Some(tracker);
-        crate::interrupt::set(int);
+        drop(at);
         return Some(pos);
     }
     let len = at.len();
     let result = at.push(Some(tracker));
-    crate::interrupt::set(int);
+    drop(at);
     result.ok().map(|_| len)
 }
 
 pub fn deregister_lock_tracker(index: usize) {
-    let int = crate::interrupt::disable();
     let mut at = ALL_TRACKERS.lock();
     if index < at.len() {
         assert!(at[index].as_ref().is_none_or(|x| x.held_locks() == 0));
         at[index] = None;
     }
-    crate::interrupt::set(int);
 }
 
 pub fn check_timed_out_mutexes() {
+    if DISABLE_LOCK_TRACKING {
+        return;
+    }
     let now = Instant::now();
 
-    let int = crate::interrupt::disable();
     let at = ALL_TRACKERS.lock();
     //emerglogln!("checking {} threads for timed out mutexes", at.len());
     let mut any = false;
@@ -390,5 +389,4 @@ pub fn check_timed_out_mutexes() {
         }
     }
 
-    crate::interrupt::set(int);
 }

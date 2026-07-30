@@ -450,12 +450,14 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
+        twizzler_abi::klog_println!("Closing all fds");
         for (_i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
                 let _ = fd.file.close();
                 drop(fd);
             }
         }
+        twizzler_abi::klog_println!("Closed all fds");
     }
 
     pub(crate) fn init_fds(&self) {

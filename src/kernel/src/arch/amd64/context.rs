@@ -143,14 +143,18 @@ impl ArchContext {
         settings: MappingSettings,
         fa: &mut FrameAllocator,
     ) {
-        object_tables.inc_map_count();
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
-        guard
+        let took_ref = guard
             .object_map(cursor, object_tables, settings, &mut consist, fa)
             .unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
+        // Only count a map if we actually took a new reference, so that the single dec_map_count
+        // done on unmap stays symmetric.
+        if took_ref {
+            object_tables.inc_map_count();
+        }
     }
 
     pub fn ensure_object_mapped(
@@ -162,13 +166,15 @@ impl ArchContext {
     ) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         if !guard.is_object_mapped(cursor, settings) {
-            object_tables.inc_map_count();
-            guard
+            let took_ref = guard
                 .object_map(cursor, object_tables, settings, &mut consist, fa)
                 .unwrap();
             consist.tlb_mut().finish();
             drop(guard);
             consist.into_deferred().run_all();
+            if took_ref {
+                object_tables.inc_map_count();
+            }
             true
         } else {
             false

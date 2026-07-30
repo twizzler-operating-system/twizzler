@@ -1,19 +1,19 @@
 use alloc::boxed::Box;
 use core::sync::atomic::Ordering;
 
-use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree};
+use intrusive_collections::{KeyAdapter, RBTree, intrusive_adapter};
 use twizzler_abi::{object::ObjID, thread::ExecutionState};
 
 use super::{
-    flags::{THREAD_IS_SUSPENDED, THREAD_MUST_SUSPEND},
     Thread, ThreadRef,
+    flags::{THREAD_IS_SUSPENDED, THREAD_MUST_SUSPEND},
 };
 use crate::{
     interrupt::Destination,
     once::Once,
     processor::{
         ipi::ipi_exec,
-        sched::{schedule, schedule_resched, SchedFlags},
+        sched::{SchedFlags, schedule, schedule_resched},
     },
     spinlock::Spinlock,
     syscall::sync::{add_to_requeue, requeue_all},
@@ -96,9 +96,9 @@ impl Thread {
         let mut suspended_threads = suspended_threads().lock();
         if suspended_threads.find_mut(&self.objid()).remove().is_some() {
             // Just throw it on a queue, it'll cleanup its own flag mess.
+            drop(suspended_threads);
             self.set_sync_sleep_done();
             add_to_requeue(self.clone());
-            drop(suspended_threads);
             requeue_all();
             true
         } else {
@@ -130,11 +130,13 @@ mod test {
         let incr = Arc::new(Spinlock::new(0));
         let incr2 = incr.clone();
         let exit_flag = &AtomicBool::default();
-        let test_thread = run_closure_in_new_thread(Priority::USER, move || loop {
-            if exit_flag.load(Ordering::SeqCst) {
-                break;
+        let test_thread = run_closure_in_new_thread(Priority::USER, move || {
+            loop {
+                if exit_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                *incr2.lock() += 1;
             }
-            *incr2.lock() += 1;
         });
         sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1))).unwrap();
         let cur = { *incr.lock() };

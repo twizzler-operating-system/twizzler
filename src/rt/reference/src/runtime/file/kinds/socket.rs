@@ -268,7 +268,7 @@ impl Fd for SocketKind {
         match reg {
             x if x == IO_REGISTER_ADDR => write_data(self.get_endpoint_addr(false)?, val, val_len),
             x if x == IO_REGISTER_PEER => write_data(self.get_endpoint_addr(true)?, val, val_len),
-            x if x == IO_REGISTER_SOCKET_FLAGS => write_data(self.get_socket_flags(), val, val_len),
+            x if x == IO_REGISTER_SOCKET_FLAGS => write_data(self.get_socket_flags()?, val, val_len),
 
             _ => Ok(()),
         }

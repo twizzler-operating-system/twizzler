@@ -119,13 +119,22 @@ mod tests {
             Access::BiDirectional,
             DmaOptions::default(),
         );
+        twizzler_abi::klog_println!("A");
         let mut reg = pool.allocate(0u32).unwrap();
+        twizzler_abi::klog_println!("B");
         let pin = reg.pin().unwrap();
+        twizzler_abi::klog_println!("C");
         for phys in pin {
+        twizzler_abi::klog_println!("D");
             let addr = phys.addr();
+        twizzler_abi::klog_println!("E");
             let addr: u64 = addr.into();
+        twizzler_abi::klog_println!("F");
             assert!(addr & 0xfff == 0);
+        twizzler_abi::klog_println!("G");
             assert_ne!(addr, 0);
+        twizzler_abi::klog_println!("H");
         }
+        twizzler_abi::klog_println!("I");
     }
 }

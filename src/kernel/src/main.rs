@@ -184,10 +184,6 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     clock::init();
     interrupt::init();
 
-    let lock = spinlock::Spinlock::<u32>::new(0);
-    let mut v = lock.lock();
-    *v = 2;
-
     init_threading();
 }
 

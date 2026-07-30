@@ -307,12 +307,6 @@ pub fn oneshot_clock_hardtick() {
     if current_processor().is_bsp() {
         sched_next_tick = Some(1);
     }
-    // Safety net for the requeue list: a thread can be parked on it by a waker that ran
-    // before the sleeper set sync_sleep_done (see simple_timed_sleep, which has no
-    // requeue_all() between set_sync_sleep_done() and finish_blocking()), in which case the
-    // waker's own requeue_all() skips it. Draining here every hardtick bounds how long such
-    // a thread can stay stuck to one tick period.
-    requeue_all();
     log::trace!(
         "hardtick {} {} {:?} {:?}",
         current_processor().id,

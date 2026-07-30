@@ -292,7 +292,7 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
 }
 
 fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqKind) {
-    log::warn!("pager returned error: {} for {:?}", err, request);
+    log::debug!("pager returned error: {} for {:?}", err, request);
     match err {
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
@@ -300,7 +300,10 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
                 inflight_mgr().lock().request_ready(rk);
             }
         }
-        _ => {}
+        _ => {
+            log::error!("pager returned error: {} for {:?}", err, request);
+            inflight_mgr().lock().request_ready(rk);
+        }
     }
 }
 

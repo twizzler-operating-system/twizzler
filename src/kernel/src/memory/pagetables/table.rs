@@ -328,6 +328,9 @@ impl Table {
         Ok(did_cow)
     }
 
+    /// Map an object's page tables into these tables. Returns true if a new reference to the
+    /// object table was taken, and false if an existing mapping was updated in place (e.g. a
+    /// permissions upgrade), so callers can keep the object's map count symmetric with unmap.
     pub(super) fn object_map(
         &mut self,
         consist: &mut Consistency,
@@ -336,7 +339,7 @@ impl Table {
         object_tables: &mut Mapper,
         fa: &mut FrameAllocator,
         settings: MappingSettings,
-    ) -> Result<(), TwzError> {
+    ) -> Result<bool, TwzError> {
         let index = Self::get_index(cursor.start(), level);
 
         let max_level = object_tables.start_level();
@@ -346,7 +349,6 @@ impl Table {
             // Get the next table down to map into an entry.
             let paddr = object_tables.get_table_addr(target_level - 1, fa)?;
             let frame = get_frame(paddr).unwrap();
-            frame.inc_refcount();
             assert!(frame.is_pt());
             log::log!(
                 LOG_LEVEL,
@@ -354,6 +356,33 @@ impl Table {
                 level,
                 paddr
             );
+
+            // If this object table is already mapped here, reuse its reference rather than taking
+            // a second one that unmap would never release (this is the common case for a
+            // permissions upgrade). Otherwise take a reference, releasing any table we displace.
+            let old = self[index];
+            let old_frame = if old.is_present() && old.is_object_table() {
+                get_frame(old.table_addr())
+            } else {
+                None
+            };
+            let already_mapped = old_frame.is_some_and(|old| old.start_address() == paddr);
+            if !already_mapped {
+                frame.inc_refcount();
+                if let Some(old_frame) = old_frame {
+                    // Shouldn't happen: the slot should have been unmapped first, and whichever
+                    // object owns old_frame now has a stale map count.
+                    log::warn!(
+                        "object_map: replacing object table {:x} with {:x} at level {}",
+                        old_frame.start_address().raw(),
+                        paddr,
+                        level
+                    );
+                    old_frame.dec_refcount();
+                }
+            }
+            let took_ref = !already_mapped;
+
             let mut flags = EntryFlags::intermediate();
             flags.apply_perms(settings.perms());
             // TODO: set cache type
@@ -366,7 +395,7 @@ impl Table {
                 false,
                 level,
             );
-            Ok(())
+            Ok(took_ref)
         } else if level > target_level {
             assert_ne!(level, Self::last_level());
             self.populate(index, EntryFlags::intermediate(), fa)?;
@@ -378,8 +407,7 @@ impl Table {
                 object_tables,
                 fa,
                 settings,
-            )?;
-            Ok(())
+            )
         } else {
             panic!("tried to map within arch-tables for shared tables");
         }

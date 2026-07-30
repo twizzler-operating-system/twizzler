@@ -9,7 +9,7 @@ use twizzler_rt_abi::error::TwzError;
 
 use crate::{
     spinlock::{LockGuard, RelaxStrategy, Spinlock},
-    syscall::sync::{add_to_requeue, requeue_all, sys_thread_sync},
+    syscall::sync::{add_to_requeue, remove_from_requeue, requeue_all, sys_thread_sync},
     thread::{Thread, ThreadRef, current_thread_ref},
 };
 
@@ -102,7 +102,18 @@ impl CondVar {
         current_thread.set_sync_sleep_done();
         let res = unsafe {
             guard.force_unlock();
-            crate::syscall::sync::finish_blocking(critical_guard);
+            requeue_all();
+            // requeue_all() above cannot rescue *us*: it skips any thread that is_critical(), and
+            // we hold `critical_guard`. Worse, a signaler that claimed us before
+            // set_sync_sleep_done() ran couldn't take the fast path in add_to_requeue() either. So
+            // check for ourselves -- if a signaler parked us on the requeue list, that wakeup has
+            // already happened, and blocking on it now would mean sleeping until some unrelated
+            // requeue_all() came along.
+            if remove_from_requeue(current_thread) {
+                drop(critical_guard);
+            } else {
+                crate::syscall::sync::finish_blocking(critical_guard);
+            }
             guard.force_relock()
         };
         let current_thread = current_thread_ref().unwrap();
@@ -119,22 +130,24 @@ impl CondVar {
         let critical_guard = current_thread_ref().unwrap().enter_critical();
         loop {
             let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
-            let mut inner = self.inner.lock();
-            if inner.queue.is_empty() {
-                break;
-            }
-            let mut node = inner.queue.front_mut();
-            while !threads_to_wake.is_full() && !node.is_null() {
-                // Remove from queue FIRST, then try to wake. This eliminates the race
-                // where a thread is in the queue but hasn't set sync_sleep flags yet.
-                let thread = node.remove().unwrap();
-                if thread.reset_sync_sleep() {
-                    // Safety: vec isn't full, checked above.
-                    unsafe { threads_to_wake.push_unchecked(thread) };
+            {
+                let mut inner = self.inner.lock();
+                let mut node = inner.queue.front_mut();
+                while !threads_to_wake.is_full() && !node.is_null() {
+                    if node.get().is_some_and(|t| t.reset_sync_sleep()) {
+                        let thread = node.remove().unwrap();
+                        // Safety: vec isn't full, checked above.
+                        unsafe { threads_to_wake.push_unchecked(thread) };
+                    } else {
+                        // Someone else already claimed this thread's wakeup; leave it in the
+                        // queue for them and keep looking.
+                        node.move_next();
+                    }
                 }
             }
-
-            drop(inner);
+            if threads_to_wake.is_empty() {
+                break;
+            }
             for t in threads_to_wake {
                 add_to_requeue(t);
             }

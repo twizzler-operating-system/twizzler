@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use intrusive_collections::{intrusive_adapter, LinkedList};
+use intrusive_collections::{LinkedList, intrusive_adapter};
 
 use super::{
     sched::{DEFAULT_TIMESLICE_TICKS, MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS},
@@ -10,9 +10,8 @@ use crate::{
     clock::get_current_ticks,
     spinlock::{GenericSpinlock, LockGuard, SpinLoop},
     thread::{
-        current_thread_ref,
-        priority::{Priority, PriorityClass, MAX_PRIORITY},
-        Thread, ThreadRef,
+        Thread, ThreadRef, current_thread_ref,
+        priority::{MAX_PRIORITY, Priority, PriorityClass},
     },
 };
 

@@ -502,11 +502,15 @@ impl UserContext for VirtContext {
 
         let (_is_ok, default_prots) = object_info.object.check_id();
 
-        self.map_object(&new_slot_info, default_prots);
+        // Check the slot is free before mapping, and hold the lock across the map: otherwise a
+        // racing insert can clobber our object table entry, and a Busy return leaves behind a
+        // mapping plus the map count taken for it, which keeps the object from ever being reaped.
+        // Lock order (regions -> object page tables -> secctx) matches insert_kernel_object.
         let mut slots = self.regions.lock();
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
         }
+        self.map_object(&new_slot_info, default_prots);
         slots.insert_region(new_slot_info);
         Ok(())
     }

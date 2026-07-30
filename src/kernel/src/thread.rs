@@ -571,7 +571,7 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
 }
 
 pub fn check_orphan_threads() {
-    #[cfg(debug_assertions)]
+    //#[cfg(debug_assertions)]
     with_all_threads(|at| {
         for thread in at.values() {
             let is_mutex_linked = thread.mutex_link.is_linked();

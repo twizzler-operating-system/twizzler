@@ -180,6 +180,8 @@ impl Mapper {
         self.start_level
     }
 
+    /// Map an object's page tables in. Returns true if a new reference to the object table was
+    /// taken (see [Table::object_map]).
     pub fn object_map(
         &mut self,
         cursor: MappingCursor,
@@ -187,7 +189,7 @@ impl Mapper {
         settings: MappingSettings,
         consist: &mut Consistency,
         fa: &mut FrameAllocator,
-    ) -> Result<(), TwzError> {
+    ) -> Result<bool, TwzError> {
         let level = self.start_level;
         let root = self.root_mut();
         let r = object_tables
