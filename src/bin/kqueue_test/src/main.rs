@@ -48,6 +48,10 @@ fn add_read_event(ident: RawFd, extra_flags: u16) -> kevent {
     }
 }
 
+// These run both ways: as libtest cases under `--test` (which is how `unittest` reports them
+// individually), and from `main()` when the binary is run standalone. A plain `#[test]` would
+// remove them from the non-test build and leave `main()` calling nothing.
+#[cfg_attr(test, test)]
 fn test_basic_read_ready() {
     println!("test_basic_read_ready");
     let (read_fd, write_fd) = make_pipe();
@@ -73,6 +77,7 @@ fn test_basic_read_ready() {
     assert_eq!(&buf[0..len], b"hi");
 }
 
+#[cfg_attr(test, test)]
 fn test_oneshot_removed_after_firing() {
     println!("test_oneshot_removed_after_firing");
     let (read_fd, write_fd) = make_pipe();
@@ -95,6 +100,7 @@ fn test_oneshot_removed_after_firing() {
     assert_eq!(n, 0, "oneshot registration should not fire a second time");
 }
 
+#[cfg_attr(test, test)]
 fn test_delete_removes_registration() {
     println!("test_delete_removes_registration");
     let (read_fd, write_fd) = make_pipe();
@@ -124,6 +130,8 @@ fn test_delete_removes_registration() {
     assert_eq!(n, 0, "deleted registration should not fire");
 }
 
+// Under `--test` libtest supplies its own entry point, so this one is unused there.
+#[cfg(not(test))]
 fn main() {
     test_basic_read_ready();
     test_oneshot_removed_after_firing();

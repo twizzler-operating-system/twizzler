@@ -871,12 +871,26 @@ pub fn schedule_resched() {
 
 #[thread_local]
 static STAT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Wall-clock statticks. The BSP broadcasts each statclock tick to every CPU, so only the BSP
+/// increments this -- otherwise it would advance once per CPU per tick. Unlike the per-CPU
+/// STAT_COUNTER, this stays comparable across a thread migration.
+static STAT_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Current wall-clock stattick count, the time basis for `ThreadStats`.
+pub fn current_stat_ticks() -> u64 {
+    STAT_TICKS.load(Ordering::SeqCst)
+}
+
 const PRINT_STATS: bool = false;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
     let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
     let cp = current_processor();
+    if cp.is_bsp() {
+        STAT_TICKS.fetch_add(1, Ordering::SeqCst);
+    }
     let cur = current_thread_ref();
     if let Some(cur) = cur {
         if !cur.is_critical() && cur.is_in_user() && cur.get_mutex_count() == 0 {
@@ -895,10 +909,14 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                 cur.stats.sys.fetch_add(1, Ordering::SeqCst);
             }
 
-            //TODO user vs sys
-            let diff = cur.stats.last.load(Ordering::SeqCst);
-            cur.stats.idle.store(diff, Ordering::SeqCst);
-            cur.stats.last.store(s, Ordering::SeqCst);
+            // Statticks since we last saw this thread running. The current one is already
+            // charged to user/sys above; the rest is time it wasn't scheduled. This keeps
+            // idle+user+sys equal to elapsed statticks, which is what `top` divides by.
+            let now = current_stat_ticks();
+            let last = cur.stats.last.swap(now, Ordering::SeqCst);
+            cur.stats
+                .idle
+                .fetch_add(now.saturating_sub(last).saturating_sub(1), Ordering::SeqCst);
         }
     }
 

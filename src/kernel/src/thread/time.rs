@@ -10,6 +10,17 @@ pub struct ThreadStats {
     pub last: AtomicU64,
 }
 
+impl ThreadStats {
+    /// Start accounting at `now` (statticks), so a thread's first sample doesn't charge it for
+    /// all the time before it existed.
+    pub fn new(now: u64) -> Self {
+        Self {
+            last: AtomicU64::new(now),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ThreadSched {
     pub last_cpu: AtomicI32,

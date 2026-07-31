@@ -434,22 +434,46 @@ pub fn print_all_objects() {
 }
 
 pub fn scan_deleted() {
+    // Never take a per-object lock while holding the global map lock. An object's page-table lock
+    // can be held by a thread that is asleep waiting on the userspace pager, and blocking on it
+    // here would stall every lookup_object() in the kernel -- including the ones the pager request
+    // handler needs to service that very wait. So: pick candidates using only the cheap test,
+    // release the map lock, then evaluate the blocking predicate.
+    let candidates = {
+        let om = obj_manager().map.lock();
+        om.iter()
+            .filter(|(_, obj)| obj.is_pending_delete())
+            .map(|(id, obj)| (*id, obj.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut deletable = Vec::new();
+    for (id, obj) in candidates {
+        let not_mapped = obj.lock_page_tables().map_count() == 0;
+        if not_mapped && obj.pin_info.lock().pins.len() == 0 {
+            deletable.push((id, obj));
+        }
+    }
+
     let dobjs = {
         let mut om = obj_manager().map.lock();
-        om.extract_if(.., |_, obj| {
-            if obj.is_pending_delete() {
-                let not_mapped = obj.lock_page_tables().map_count() == 0;
-                let pin = obj.pin_info.lock();
-
-                not_mapped && pin.pins.len() == 0
-            } else {
-                false
+        let mut dobjs = Vec::new();
+        for (id, obj) in deletable {
+            // Re-check under the map lock: the entry may have been replaced or resurrected while
+            // we were evaluating it unlocked.
+            let unchanged = om
+                .get(&id)
+                .is_some_and(|cur| Arc::ptr_eq(cur, &obj) && cur.is_pending_delete());
+            if unchanged {
+                om.remove(&id);
+                dobjs.push(obj);
             }
-        })
-        .collect::<Vec<_>>()
+        }
+        dobjs
     };
+
     for dobj in dobjs {
-        ties::TIE_MGR.delete_object(dobj.1);
+        ties::TIE_MGR.delete_object(dobj);
     }
 }
 

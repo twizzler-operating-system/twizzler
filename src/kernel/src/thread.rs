@@ -160,7 +160,7 @@ impl Thread {
             critical_counter: AtomicU64::new(0),
             switch_lock: AtomicU64::new(0),
             donated_priority: AtomicU32::new(u32::MAX),
-            stats: ThreadStats::default(),
+            stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             memory_context: ctx,
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::default()),

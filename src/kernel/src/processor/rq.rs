@@ -124,14 +124,13 @@ impl<const N: usize> PriorityQueue<N> {
     fn insert(&mut self, th: ThreadRef) {
         let priority = th.effective_priority();
         let q = if priority.class == PriorityClass::User {
-            // This must be a user thread getting a deadline boost.
-            N - 1
+            // A user thread getting a deadline boost: lowest realtime slot, so it beats
+            // timeshare/idle without cutting ahead of genuine realtime work.
+            0
         } else {
             priority.value as usize / (MAX_PRIORITY as usize / N)
         };
-        if q > 8 {
-            logln!("{} ==> {}", q, priority.value);
-        }
+        assert!(q < N, "priority value {} out of range", priority.value);
         self.queues[q].push_back(th);
         self.count += 1;
     }
@@ -140,7 +139,8 @@ impl<const N: usize> PriorityQueue<N> {
         if self.count == 0 {
             return None;
         }
-        for q in 0..N {
+        // Descending: a higher bucket index is higher priority (see insert/highest_priority).
+        for q in (0..N).rev() {
             if let Some(th) = self.queues[q].pop_front() {
                 self.count -= 1;
                 return Some(th);
@@ -412,5 +412,92 @@ impl<const N: usize> RunQueue<N> {
 
     pub fn movable(&self) -> u32 {
         self.movable.load(Ordering::Acquire)
+    }
+}
+
+mod test {
+    use alloc::{sync::Arc, vec::Vec};
+
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::{NR_QUEUES, PriorityQueue};
+    use crate::thread::{
+        Thread, ThreadRef,
+        priority::{MAX_PRIORITY, Priority, PriorityClass},
+    };
+
+    const BUCKET_WIDTH: u16 = MAX_PRIORITY / NR_QUEUES as u16;
+
+    fn thread_at(class: PriorityClass, value: u16) -> ThreadRef {
+        Arc::new(Thread::new(None, None, Priority { class, value }))
+    }
+
+    fn drain(pq: &mut PriorityQueue<NR_QUEUES>) -> Vec<Priority> {
+        let mut out = Vec::new();
+        while let Some(th) = pq.take() {
+            out.push(th.effective_priority());
+        }
+        out
+    }
+
+    #[kernel_test]
+    fn test_priority_queue_take_is_descending() {
+        let mut pq = PriorityQueue::<NR_QUEUES>::new();
+        // One thread per bucket, inserted scrambled so the result can't come from insert order.
+        let insert_order: [u16; NR_QUEUES] = [3, 0, 7, 5, 1, 6, 2, 4];
+        for b in insert_order {
+            pq.insert(thread_at(PriorityClass::Realtime, b * BUCKET_WIDTH));
+        }
+        assert_eq!(pq.highest_priority(), Some(7 * BUCKET_WIDTH));
+
+        let got: Vec<u16> = drain(&mut pq).iter().map(|p| p.value).collect();
+        let expected: Vec<u16> = (0..NR_QUEUES as u16)
+            .rev()
+            .map(|b| b * BUCKET_WIDTH)
+            .collect();
+        assert_eq!(got, expected);
+        assert!(pq.is_empty());
+    }
+
+    #[kernel_test]
+    fn test_priority_queue_deadline_boost_is_lowest() {
+        let mut pq = PriorityQueue::<NR_QUEUES>::new();
+        // Boosted thread inserted first, so a FIFO regression would surface it first.
+        pq.insert(thread_at(PriorityClass::User, MAX_PRIORITY / 2));
+        pq.insert(thread_at(PriorityClass::Realtime, MAX_PRIORITY / 2));
+        pq.insert(thread_at(PriorityClass::Realtime, MAX_PRIORITY - 1));
+
+        let got = drain(&mut pq);
+        assert_eq!(got.len(), 3);
+        assert_eq!(
+            got[0],
+            Priority {
+                class: PriorityClass::Realtime,
+                value: MAX_PRIORITY - 1
+            }
+        );
+        assert_eq!(
+            got[1],
+            Priority {
+                class: PriorityClass::Realtime,
+                value: MAX_PRIORITY / 2
+            }
+        );
+        assert_eq!(got[2].class, PriorityClass::User);
+    }
+
+    #[kernel_test]
+    fn test_priority_queue_fifo_within_bucket() {
+        let mut pq = PriorityQueue::<NR_QUEUES>::new();
+        // Both values land in the same bucket, so only arrival order can break the tie.
+        let first = thread_at(PriorityClass::Realtime, MAX_PRIORITY / 2);
+        let second = thread_at(PriorityClass::Realtime, MAX_PRIORITY / 2 + 1);
+        let (first_id, second_id) = (first.id(), second.id());
+        pq.insert(first);
+        pq.insert(second);
+
+        assert_eq!(pq.take().unwrap().id(), first_id);
+        assert_eq!(pq.take().unwrap().id(), second_id);
+        assert!(pq.take().is_none());
     }
 }

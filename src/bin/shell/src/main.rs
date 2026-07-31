@@ -81,13 +81,18 @@ mod builtins {
     use std::{
         fs::File,
         io::{BufReader, BufWriter, Write},
+        time::Duration,
     };
 
-    use hhmmss::Hhmmss;
     use humansize::BINARY;
     use miette::IntoDiagnostic;
 
     use crate::{InvokeCtx, ShellInvoke, WaitChild};
+
+    fn hhmmss(dur: Duration) -> String {
+        let s = dur.as_secs();
+        format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+    }
 
     pub struct BuiltinCtx<'a> {
         pub stdin: File,
@@ -123,7 +128,7 @@ mod builtins {
                 ctx.stdout(),
                 "{:3.3} {} {} {}",
                 job.id,
-                dur.hhmmss(),
+                hhmmss(dur),
                 ty,
                 job.name
             )

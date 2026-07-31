@@ -4,8 +4,9 @@ MAC_PACKAGES=(
             "qemu"
             "e2fsprogs"
             "ninja"
+            "cmake"
             "zstd"
-) 
+)
 DEBIAN_PKGS=(
     qemu-system
     qemu-utils

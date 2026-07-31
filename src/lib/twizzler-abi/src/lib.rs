@@ -95,10 +95,6 @@ extern crate test;
 
 #[cfg(test)]
 mod tester {
-    #[test]
-    fn fail() {
-        assert_eq!(1, 2);
-    }
     use core::sync::atomic::AtomicU64;
 
     use crate::{

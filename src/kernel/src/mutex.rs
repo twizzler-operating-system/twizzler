@@ -47,6 +47,31 @@ struct SleepQueue {
     handoff: bool,
 }
 
+impl SleepQueue {
+    /// Remove and return the highest-priority waiter, breaking ties in arrival order so that
+    /// equal-priority waiters keep FIFO behavior.
+    fn pop_highest_priority(&mut self) -> Option<ThreadRef> {
+        // Recomputed from the list rather than read from `pri`: a donation can raise a waiter's
+        // effective priority after `pri` was last written.
+        let best = self.queue.iter().map(|t| t.effective_priority()).max()?;
+        let mut cursor = self.queue.front_mut();
+        loop {
+            let take = match cursor.get() {
+                Some(t) => t.effective_priority() >= best,
+                None => break,
+            };
+            if take {
+                return cursor.remove();
+            }
+            cursor.move_next();
+        }
+        // A donation raced the scan above, so nothing matched the snapshot. Fall back to FIFO:
+        // returning None here would mark the mutex unowned while waiters are still queued,
+        // stranding them asleep forever.
+        self.queue.pop_front()
+    }
+}
+
 struct MutexStatCollector {
     nr_locks: usize,
     lock_time: TimeStatCollector,
@@ -270,7 +295,7 @@ impl<T> Mutex<T> {
             assert!(!ct.mutex_link.is_linked());
             ct.dec_mutex_count();
         }
-        if let Some(thread) = queue.queue.pop_front() {
+        if let Some(thread) = queue.pop_highest_priority() {
             // Hand off ownership directly to the next waiter instead of releasing.
             // This prevents the current thread from immediately re-acquiring and
             // starving waiters (Bug #9 fairness fix).
@@ -401,6 +426,7 @@ mod test {
     use super::Mutex;
     use crate::{
         processor::mp::NR_CPUS,
+        spinlock::Spinlock,
         syscall::sync::sys_thread_sync,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
         utils::quick_random,
@@ -445,5 +471,59 @@ mod test {
                 assert_eq!(val, nr_threads * INNER_ITER);
             }
         }
+    }
+
+    /// Block until `n` threads are queued on `lock`'s wait list, so waiter arrival order is
+    /// established by observation rather than by guessing at sleep durations.
+    fn wait_for_waiters<T>(lock: &Mutex<T>, n: usize) {
+        for _ in 0..10000 {
+            let queued = {
+                let queue = lock.queue.lock();
+                queue.queue.iter().count()
+            };
+            if queued >= n {
+                return;
+            }
+            let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(1)));
+        }
+        panic!("waiters never blocked on the mutex");
+    }
+
+    #[kernel_test]
+    fn test_mutex_priority_handoff() {
+        let lock = Arc::new(Mutex::new(0u32));
+        let order: Arc<Spinlock<Vec<u32>>> = Arc::new(Spinlock::new(Vec::new()));
+
+        let guard = lock.lock();
+
+        // Queue the low-priority waiter first, so FIFO order and priority order disagree.
+        let bg = {
+            let (lock, order) = (lock.clone(), order.clone());
+            run_closure_in_new_thread(Priority::BACKGROUND, move || {
+                let _g = lock.lock();
+                order.lock().push(1u32);
+            })
+        };
+        wait_for_waiters(&lock, 1);
+
+        let rt = {
+            let (lock, order) = (lock.clone(), order.clone());
+            run_closure_in_new_thread(Priority::REALTIME, move || {
+                let _g = lock.lock();
+                order.lock().push(2u32);
+            })
+        };
+        wait_for_waiters(&lock, 2);
+
+        drop(guard);
+        bg.1.wait();
+        rt.1.wait();
+
+        let order = order.lock();
+        assert_eq!(
+            &order[..],
+            &[2u32, 1][..],
+            "release() must hand off to the realtime waiter before the background one"
+        );
     }
 }

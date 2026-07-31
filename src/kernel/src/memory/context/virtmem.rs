@@ -539,12 +539,15 @@ impl UserContext for VirtContext {
                     log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
                 }
             }
+            let mut pt = slot
+                .stable
+                .is_none()
+                .then(|| slot.object().lock_page_tables());
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
                 let did_unmap = arch.unmap(cursor, &mut fa);
-                if slot.stable.is_none() {
-                    let mut pt = slot.object().lock_page_tables();
+                if let Some(pt) = pt.as_mut() {
                     pt.remove_invalidate(arch.target.paddr(), cursor);
                     if did_unmap {
                         pt.dec_map_count();

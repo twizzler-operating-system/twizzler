@@ -265,7 +265,9 @@ pub fn ensure_in_core<'a>(
     }
 
     if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
+        drop(guard);
         provide_pager_memory(needed_additional.min(512), wait_for_additional);
+        guard = obj.lock_page_tables();
     }
 
     for (req_page, req_len) in reqs {
