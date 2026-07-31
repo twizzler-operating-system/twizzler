@@ -98,6 +98,7 @@ fn main() {
             let line = &format!("/initrd/{}", line);
             println!("STARTING {}", line);
             let mut cmd = std::process::Command::new(line);
+            cmd.env("TWZ_TEST_MODE", "1");
             cmd.args(["--test"]);
             let started = Instant::now();
             // Never unwrap the wait: a panic here would discard every result collected so far and

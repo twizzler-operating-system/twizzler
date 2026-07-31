@@ -29,7 +29,7 @@ use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, endpoint, io_ctx, iovec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP,
-        FD_CMD_SYNC, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        FD_CMD_DUP2, FD_CMD_SYNC, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
@@ -450,14 +450,12 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
-        twizzler_abi::klog_println!("Closing all fds");
         for (_i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
                 let _ = fd.file.close();
                 drop(fd);
             }
         }
-        twizzler_abi::klog_println!("Closed all fds");
     }
 
     pub(crate) fn init_fds(&self) {
@@ -916,6 +914,53 @@ impl ReferenceRuntime {
             }
             return Ok(());
         }
+
+        if cmd == FD_CMD_DUP2 {
+            if arg.is_null() || ret.is_null() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            let to = unsafe { arg.cast::<RawFd>().read() };
+            let Ok(to_idx) = usize::try_from(to) else {
+                return Err(TwzError::INVALID_ARGUMENT);
+            };
+            if to_idx >= MAX_FD {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            // Duplicating onto itself is a no-op, but still had to validate the source above.
+            if to == fd {
+                unsafe { ret.cast::<RawFd>().write(to) };
+                return Ok(());
+            }
+
+            let file = file_desc
+                .file
+                .dup()
+                .unwrap_or_else(|| file_desc.file.clone());
+            let dup_file = file.clone();
+            let mut nfd = file_desc.clone();
+            nfd.file = file;
+            let b = **nfd.binding;
+            nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
+
+            // Whatever occupied the target descriptor is closed, as dup2 requires. Release the
+            // slot lock before closing it, matching Self::close.
+            let replaced = binding.insert(to_idx, nfd);
+            drop(binding);
+            if let Some(replaced) = replaced {
+                // ...but only when it is not the very object we just duplicated. Fd::dup()
+                // returns None for most kinds, so duplicates share a single Arc, and
+                // Fd::close() shuts that shared object down for every descriptor referring to
+                // it. Closing here would therefore break the canonical save-and-restore
+                // sequence `saved = dup(1); ...; dup2(saved, 1)`, where the descriptor being
+                // displaced is backed by the same object as the duplicate replacing it.
+                if !Arc::ptr_eq(&replaced.file, &dup_file) {
+                    let _ = replaced.file.close();
+                }
+            }
+            unsafe { ret.cast::<RawFd>().write(to) };
+            return Ok(());
+        }
+
         file_desc.fd_cmd(cmd, arg, ret)
     }
 

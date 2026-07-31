@@ -18,7 +18,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     core::{
-        BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, ExitCode, RuntimeInfo,
+        auxv, BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, ExitCode, RuntimeInfo,
         RUNTIME_INIT_COMP, RUNTIME_INIT_MONITOR,
     },
     info::SystemInfo,
@@ -155,6 +155,11 @@ impl ReferenceRuntime {
                     }
                 }
                 entry_stack.push(0);
+                // The aux vector is not optional: a libc finds it by walking past the envp
+                // terminator and reading pairs until AT_NULL, so omitting it means getauxval()
+                // walks off the end of this Vec. See twizzler_rt_abi::core::auxv.
+                entry_stack
+                    .extend_from_slice(&auxv::entries(self.sysinfo().page_size));
                 self.init_for_compartment(init_info, entry_stack.as_mut_ptr());
                 std::mem::forget(entry_stack);
             }

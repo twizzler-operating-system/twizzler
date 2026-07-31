@@ -879,7 +879,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     let cp = current_processor();
     let cur = current_thread_ref();
     if let Some(cur) = cur {
-        if !cur.is_critical() && cur.is_in_user() {
+        if !cur.is_critical() && cur.is_in_user() && cur.get_mutex_count() == 0 {
             cp.cleanup_exited();
             // TODO: need to call this much more rarely, and not from within a scheduler tick.
             //TRACE_MGR.process_async_and_maybe_flush();

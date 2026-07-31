@@ -303,6 +303,12 @@ pub fn oneshot_clock_hardtick() {
         None
     };
 
+    // Backstop for the requeue list. A waker can only park a thread there when it can't schedule
+    // it directly (the target is critical, or hasn't set sync_sleep_done yet), and the waker's own
+    // requeue_all() skips it for the same reason. The sleeper's claim_own_wakeup() covers the
+    // common case, but draining every hardtick bounds how long anything can sit there if some
+    // path doesn't -- without it, a single missed drain stalls that thread indefinitely.
+    requeue_all();
     let mut sched_next_tick = schedule_hardtick();
     if current_processor().is_bsp() {
         sched_next_tick = Some(1);

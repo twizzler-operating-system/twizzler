@@ -7,7 +7,7 @@ use twizzler_abi::{
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
 use twizzler_rt_abi::{
-    core::{BasicAux, BasicReturn, RUNTIME_INIT_MIN, RuntimeInfo},
+    core::{BasicAux, BasicReturn, RUNTIME_INIT_MIN, RuntimeInfo, auxv},
     info::SystemInfo,
     time::Monotonicity,
 };
@@ -150,25 +150,34 @@ impl MinimalRuntime {
                     )
                 };
                 let rt_info = rt_info.as_ref().unwrap();
+                // Layout: [argc, argv..., NULL, envp..., NULL, auxv..., AT_NULL, 0]. A libc
+                // walks this by counting argc arguments, expecting a NULL, then scanning envp
+                // to its NULL, then reading aux pairs until AT_NULL -- so each terminator must
+                // appear exactly once and the aux vector must be present and terminated.
                 let mut entry_stack = Vec::new();
                 entry_stack.push(rt_info.argc);
                 if !rt_info.args.is_null() {
                     for arg in core::slice::from_raw_parts(rt_info.args, rt_info.argc) {
                         entry_stack.push(*arg as usize);
                     }
-                } else {
-                    entry_stack.push(0);
                 }
                 entry_stack.push(0);
                 if !rt_info.envp.is_null() {
-                    for env in core::slice::from_raw_parts(rt_info.envp, rt_info.argc) {
-                        entry_stack.push(*env as usize);
+                    // envp is NULL-terminated and has no relation to argc; walk it rather than
+                    // reading argc entries from it.
+                    let mut envp = rt_info.envp;
+                    while !(*envp).is_null() {
+                        entry_stack.push(*envp as usize);
+                        envp = envp.add(1);
                     }
-                } else {
-                    entry_stack.push(0);
                 }
                 entry_stack.push(0);
+                entry_stack.extend_from_slice(&auxv::entries(self.sysinfo().page_size));
                 mlibc_entry_from_rust(entry_stack.as_mut_ptr(), core::ptr::null_mut());
+                // mlibc stashes this pointer in its entryStack global and dereferences it for
+                // the lifetime of the process (every getauxval() call re-walks it), so it must
+                // outlive this scope.
+                core::mem::forget(entry_stack);
             }
         }
 

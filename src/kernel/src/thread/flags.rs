@@ -59,6 +59,7 @@ impl Thread {
     pub fn is_in_user(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_IN_KERNEL == 0
     }
+
     pub fn set_is_exiting(&self) {
         self.flags.fetch_or(THREAD_IS_EXITING, Ordering::SeqCst);
     }
@@ -116,5 +117,21 @@ impl Thread {
 
     pub fn has_timed_wait(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_TIMED_WAIT != 0
+    }
+
+    pub fn inc_mutex_count(&self) {
+        let r = self.mutex_count.fetch_add(1, Ordering::SeqCst);
+        if r > 1000 {
+            panic!("mutex count exceeded 1000");
+        }
+    }
+
+    pub fn dec_mutex_count(&self) {
+        assert!(self.mutex_count.load(Ordering::SeqCst) > 0);
+        self.mutex_count.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub fn get_mutex_count(&self) -> u32 {
+        self.mutex_count.load(Ordering::SeqCst)
     }
 }

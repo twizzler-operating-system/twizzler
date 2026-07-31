@@ -71,7 +71,6 @@ pub struct Thread {
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
     pub upcall_target: Spinlock<Option<UpcallTarget>>,
-    // TODO: consider reusing one of these for the others.
     pub sched_link: AtomicLink,
     pub mutex_link: AtomicLink,
     pub memwait_link: AtomicLink,
@@ -87,6 +86,7 @@ pub struct Thread {
     pub last_pf_addr: AtomicU64,
     pub last_pf_kind: AtomicU32,
     pub last_pf_flags: AtomicU32,
+    mutex_count: AtomicU32,
     lock_tracker: Arc<LockTracker>,
     lock_tracker_index: Option<usize>,
 }
@@ -181,6 +181,7 @@ impl Thread {
             last_pf_addr: AtomicU64::new(0),
             last_pf_kind: AtomicU32::new(0),
             last_pf_flags: AtomicU32::new(0),
+            mutex_count: AtomicU32::new(0),
             lock_tracker,
             lock_tracker_index,
         }
@@ -599,6 +600,20 @@ pub fn check_orphan_threads() {
                     thread.objid()
                 );
             }
+            log::trace!(
+                "[kernel::thread] thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={}",
+                thread.id(),
+                thread.objid(),
+                is_mutex_linked,
+                is_condvar_linked,
+                is_requeue_linked,
+                is_suspend_linked,
+                is_sync_linked,
+                is_memwait_linked,
+                is_timed_wait,
+                is_pager_linked,
+                is_sched_linked
+            );
         }
     });
 }

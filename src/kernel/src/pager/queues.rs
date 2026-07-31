@@ -21,6 +21,7 @@ use super::{
 use crate::{
     arch::{PhysAddr, memory::phys_to_virt},
     idcounter::{IdCounter, SimpleId},
+    instant::Instant,
     is_test_mode,
     memory::{
         context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
@@ -312,23 +313,20 @@ pub(super) fn pager_compl_handler_main() {
 
     let mut count = 0;
     let mut elapsed = 0;
-    let mut last_ticks;
-    let mut current_ticks = None;
+    let mut last_ticks: Option<Instant> = None;
     let current_thread = current_thread_ref().unwrap();
     loop {
-        last_ticks = current_ticks;
-        current_ticks = crate::time::bench_clock().map(|bc| bc.read());
+        let current_ticks = Instant::now();
         assert!(!current_thread.is_critical());
         let completion = sender.queue.recv_completion();
         assert!(!current_thread.is_critical());
 
         count += 1;
 
-        if let Some(current_ticks) = current_ticks {
-            if let Some(last_ticks) = last_ticks {
-                elapsed += (current_ticks.as_nanos() - last_ticks.as_nanos()) as u64;
-            }
+        if let Some(last_ticks) = last_ticks {
+            elapsed += (current_ticks - last_ticks).as_nanos() as u64;
         }
+        last_ticks = Some(current_ticks);
 
         if elapsed >= NANOS_PER_SEC {
             log::trace!(

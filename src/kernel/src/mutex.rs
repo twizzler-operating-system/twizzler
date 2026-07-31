@@ -247,6 +247,7 @@ impl<T> Mutex<T> {
         if let Some(ct) = current_thread_ref() {
             assert!(!ct.mutex_link.is_linked());
             ct.set_mutex_wait(false);
+            ct.inc_mutex_count();
         }
 
         let end_time = Instant::now();
@@ -263,9 +264,11 @@ impl<T> Mutex<T> {
 
     fn release(&self) {
         let mut queue = self.queue.lock();
+
         let g = current_thread_ref().map(|ct| ct.enter_critical());
         if let Some(ct) = current_thread_ref() {
             assert!(!ct.mutex_link.is_linked());
+            ct.dec_mutex_count();
         }
         if let Some(thread) = queue.queue.pop_front() {
             // Hand off ownership directly to the next waiter instead of releasing.

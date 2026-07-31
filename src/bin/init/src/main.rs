@@ -333,8 +333,10 @@ fn main() {
     initialize_sshd();
 
     if start_unittest {
+        std::env::set_var("TWZ_TEST_MODE", "1");
         // Load and wait for tests to complete
         run_tests();
+        std::env::remove_var("TWZ_TEST_MODE");
     }
 
     let utils = [

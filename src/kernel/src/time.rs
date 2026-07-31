@@ -56,10 +56,6 @@ where
     }
 }
 
-pub fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
-    TICK_SOURCES.lock().get(0).cloned().flatten()
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct MovingAverage {
     sum: u64,

@@ -566,6 +566,17 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(_name: *const c_char, _len: usize
 check_ffi_type!(twz_rt_fd_mkns, _, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
+    _name: *const c_char,
+    _len: usize,
+    _target: *const c_char,
+    _target_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
     _name: *const c_char,
     _len: usize,

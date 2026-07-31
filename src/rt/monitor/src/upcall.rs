@@ -20,6 +20,13 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
                 unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(frame, flags) };
             }
             _ => {
+                let bt = std::backtrace::Backtrace::force_capture();
+                twizzler_abi::klog_println!(
+                    "monitor upcall handler failed: {:?} {:?}\n{}",
+                    frame,
+                    info,
+                    bt
+                );
                 twizzler_abi::syscall::sys_thread_exit(101);
             }
         }

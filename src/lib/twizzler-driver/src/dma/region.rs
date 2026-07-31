@@ -129,6 +129,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
         if self.backing.is_some() {
             return Ok(());
         }
+
         let mut pins = Vec::new();
         let len = self.nr_pages();
         pins.resize(len, PinnedPage::new(0));
@@ -136,7 +137,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
         // The kaction call here compresses start and len into a u64, and returns the token and len
         // in the return u64. This is all because of the limited registers in a syscall.
         let start = (self.offset / DMA_PAGE_SIZE) as u64;
-        let ptr = (&pins).as_ptr() as u64;
+        let ptr = pins.as_mut_ptr() as u64;
         let res = sys_kaction(
             KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
             Some(self.dma_object().object().id()),
@@ -157,6 +158,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
 
         let backing: Result<Vec<_>, _> = pins
             .iter()
+            .take(len)
             .map(|p| p.physical_address().try_into().map(|pa| PhysInfo::new(pa)))
             .collect();
 
@@ -230,10 +232,7 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
     /// Caller must ensure that no device is using the information from any active pins for this
     /// region.
     pub unsafe fn release_pin(&mut self) {
-        if let Some((_, token)) = self.backing {
-            super::object::release_pin(self.dma_object().object().id(), token);
-            self.backing = None;
-        }
+        // TODO
     }
 
     /// Get a reference to the DMA memory.
@@ -419,14 +418,6 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
 
 impl<'a, T: DeviceSync> Drop for DmaRegion<T> {
     fn drop(&mut self) {
-        if let Some((_, token)) = self.backing.as_ref() {
-            self.dma_object()
-                .releasable_pins
-                .lock()
-                .unwrap()
-                .push(*token);
-        }
-
         if let Some((ado, range)) = self.pool.take() {
             ado.free(range);
         }

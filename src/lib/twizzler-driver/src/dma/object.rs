@@ -82,9 +82,9 @@ pub(crate) fn release_pin(id: ObjID, token: u32) {
 
 impl Drop for DmaObject {
     fn drop(&mut self) {
-        let pins = self.releasable_pins.lock().unwrap();
-        for pin in &*pins {
-            release_pin(self.object().id(), *pin);
+        let mut pins = self.releasable_pins.lock().unwrap();
+        for pin in pins.drain(..) {
+            release_pin(self.object().id(), pin);
         }
     }
 }

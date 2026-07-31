@@ -149,7 +149,7 @@ impl SlotAllocatorInner {
         for pf in &self.singles_aux {
             let index = self.singles.binary_search(pf).unwrap();
             let old_a = self.singles.remove(index);
-            let old_b = self.singles.remove(index + 1);
+            let old_b = self.singles.remove(index);
             assert_eq!(old_a + 1, old_b);
             assert_eq!(old_a, *pf);
             assert_eq!(old_a % 2, 0);

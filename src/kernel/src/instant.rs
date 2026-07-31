@@ -5,13 +5,17 @@ use twizzler_abi::syscall::TimeSpan;
 
 use crate::{
     once::Once,
-    time::{bench_clock, ClockHardware, Ticks, TICK_SOURCES},
+    time::{ClockHardware, Ticks, TICK_SOURCES},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Instant(TimeSpan);
 
 static BENCH_CLOCK: Once<Arc<dyn ClockHardware + Send + Sync>> = Once::new();
+
+fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
+    TICK_SOURCES.lock().get(0).cloned().flatten()
+}
 
 fn get_bench() -> Option<&'static Arc<dyn ClockHardware + Send + Sync>> {
     if bench_clock().is_none() {

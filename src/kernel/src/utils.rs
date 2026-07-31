@@ -2,11 +2,11 @@ use alloc::vec::Vec;
 use core::fmt::Display;
 
 use crate::{
+    instant::Instant,
     is_bench_mode,
     mutex::{LockGuard, Mutex},
     processor::mp::current_processor,
     spinlock::{self, GenericSpinlock, RelaxStrategy},
-    time::bench_clock,
 };
 
 pub fn align<T: From<usize> + Into<usize>>(val: T, align: usize) -> T {
@@ -118,15 +118,13 @@ where
         f();
     }
 
-    let clock = bench_clock().unwrap();
-
     for _ in 0..iterations {
-        let start = clock.read();
+        let start = Instant::now();
         f();
 
-        let end = clock.read();
+        let end = Instant::now();
 
-        times.push(((end.value - start.value) * end.rate).as_nanos() as u64);
+        times.push((end - start).as_nanos() as u64);
     }
 
     let total_ns: u64 = times.iter().sum();
@@ -158,17 +156,15 @@ where
     // 1 second
     let target_duration_ns = 1_000_000_000_u64;
 
-    let clock = bench_clock().unwrap();
-
     // scale till we figure out proper iterations
     loop {
-        let start = clock.read();
+        let start = Instant::now();
         for _ in 0..iterations {
             f();
         }
 
-        let end = clock.read();
-        let duration = ((end.value - start.value) * end.rate).as_nanos() as u64;
+        let end = Instant::now();
+        let duration = (end - start).as_nanos() as u64;
 
         if duration >= target_duration_ns / 10 {
             iterations = (iterations * target_duration_ns) / duration;

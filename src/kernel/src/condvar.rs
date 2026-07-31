@@ -9,7 +9,7 @@ use twizzler_rt_abi::error::TwzError;
 
 use crate::{
     spinlock::{LockGuard, RelaxStrategy, Spinlock},
-    syscall::sync::{add_to_requeue, remove_from_requeue, requeue_all, sys_thread_sync},
+    syscall::sync::{add_to_requeue, claim_own_wakeup, requeue_all, sys_thread_sync},
     thread::{Thread, ThreadRef, current_thread_ref},
 };
 
@@ -109,7 +109,7 @@ impl CondVar {
             // check for ourselves -- if a signaler parked us on the requeue list, that wakeup has
             // already happened, and blocking on it now would mean sleeping until some unrelated
             // requeue_all() came along.
-            if remove_from_requeue(current_thread) {
+            if claim_own_wakeup(current_thread) {
                 drop(critical_guard);
             } else {
                 crate::syscall::sync::finish_blocking(critical_guard);
@@ -130,24 +130,24 @@ impl CondVar {
         let critical_guard = current_thread_ref().unwrap().enter_critical();
         loop {
             let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
-            {
-                let mut inner = self.inner.lock();
-                let mut node = inner.queue.front_mut();
-                while !threads_to_wake.is_full() && !node.is_null() {
-                    if node.get().is_some_and(|t| t.reset_sync_sleep()) {
-                        let thread = node.remove().unwrap();
-                        // Safety: vec isn't full, checked above.
-                        unsafe { threads_to_wake.push_unchecked(thread) };
-                    } else {
-                        // Someone else already claimed this thread's wakeup; leave it in the
-                        // queue for them and keep looking.
-                        node.move_next();
-                    }
-                }
-            }
-            if threads_to_wake.is_empty() {
+            let mut inner = self.inner.lock();
+            if inner.queue.is_empty() {
                 break;
             }
+            let mut node = inner.queue.front_mut();
+            while !threads_to_wake.is_full() && !node.is_null() {
+                // Remove from the queue FIRST, then try to claim. A waiter can legitimately be
+                // queued with sync_sleep already clear -- wait_waiters() blocks in
+                // sys_thread_sync(), which clears the flag on its way out, and only unlinks
+                // itself afterwards. Leaving such a node in place would let a signal find
+                // nothing but stale entries and wake no one.
+                let thread = node.remove().unwrap();
+                if thread.reset_sync_sleep() {
+                    // Safety: vec isn't full, checked above.
+                    unsafe { threads_to_wake.push_unchecked(thread) };
+                }
+            }
+            drop(inner);
             for t in threads_to_wake {
                 add_to_requeue(t);
             }
