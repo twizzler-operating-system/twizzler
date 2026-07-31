@@ -65,6 +65,7 @@ members = [
 
     "src/bin/ptest",
     "src/bin/kqueue_test",
+    "src/bin/memhog-test",
     #"src/bin/sqlite_test",
 
     #"src/bin/persistent-hashmap-test",
