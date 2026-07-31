@@ -67,6 +67,55 @@ fn try_bench(path: &str) {
     println!("unittest: benches finished in {:?}", dur);
 }
 
+/// Spawn `/initrd/<name>` with `args` and `envs`, and turn the result into a `TestResult`. Shared
+/// by the `#[test]`-binary loop and the standalone-program loop: both are just "run a binary,
+/// grade it by exit status."
+fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
+    let path = format!("/initrd/{}", name);
+    println!("STARTING {}", path);
+    let mut cmd = std::process::Command::new(&path);
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let started = Instant::now();
+    // Never unwrap the wait: a panic here would discard every result collected so far and
+    // the host would report "no report" instead of the actual failure.
+    let status = match cmd.spawn().and_then(|mut test_comp| test_comp.wait()) {
+        Ok(st) if st.success() => TestStatus::Passed,
+        Ok(st) => TestStatus::Failed {
+            code: st.code().unwrap_or(-1),
+        },
+        Err(e) => TestStatus::SpawnFailed { err: e.to_string() },
+    };
+    println!("FINISHED {}: {}", path, status);
+    TestResult {
+        name: path,
+        status,
+        duration: started.elapsed(),
+    }
+}
+
+/// Parse `/initrd/standalone_test_bins`: one entry per line, `<binary-name> [arg]...`. Missing
+/// file just means no standalone programs were opted in (`[workspace.metadata] test-programs`),
+/// not an error.
+fn read_standalone_entries(path: &str) -> Vec<(String, Vec<String>)> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return vec![];
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .filter_map(|line| line.ok())
+        .filter(|line| !line.contains('\u{0000}') && line.is_ascii() && !line.trim().is_empty())
+        .map(|line| {
+            let mut tokens = line.split_whitespace().map(String::from);
+            let name = tokens.next().unwrap_or_default();
+            let args = tokens.collect();
+            (name, args)
+        })
+        .collect()
+}
+
 fn main() {
     println!("unittest: starting");
     try_bench("/initrd/bench_bins");
@@ -95,29 +144,15 @@ fn main() {
             if !line.is_ascii() {
                 continue;
             }
-            let line = &format!("/initrd/{}", line);
-            println!("STARTING {}", line);
-            let mut cmd = std::process::Command::new(line);
-            cmd.env("TWZ_TEST_MODE", "1");
-            cmd.args(["--test"]);
-            let started = Instant::now();
-            // Never unwrap the wait: a panic here would discard every result collected so far and
-            // the host would report "no report" instead of the actual failure.
-            let status = match cmd.spawn().and_then(|mut test_comp| test_comp.wait()) {
-                Ok(st) if st.success() => TestStatus::Passed,
-                Ok(st) => TestStatus::Failed {
-                    code: st.code().unwrap_or(-1),
-                },
-                Err(e) => TestStatus::SpawnFailed { err: e.to_string() },
-            };
-            println!("FINISHED {}: {}", line, status);
-            reports.push(TestResult {
-                name: line.clone(),
-                status,
-                duration: started.elapsed(),
-            });
+            reports.push(run_one(line, &["--test"], &[("TWZ_TEST_MODE", "1")]));
         }
     }
+
+    for (name, args) in read_standalone_entries("/initrd/standalone_test_bins") {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        reports.push(run_one(&name, &args, &[]));
+    }
+
     let dur = Instant::now() - start;
     println!("unittest: tests finished, waiting for status request");
     let info = ReportInfo {

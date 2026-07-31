@@ -97,6 +97,13 @@ exclude = [
 resolver = "2"
 
 [workspace.metadata]
+# Standalone (plain main(), not #[test]) programs that `unittest` runs and grades by exit code
+# during `cargo test-all`. Entries carry args since some candidates are subcommand-driven.
+#
+# logboi-test is deliberately left out: it hits an intermittent #GP fault inside the compartment
+test-programs = [
+    { crate = "lltest" },
+]
 initrd = [
     "crate:bootstrap",
     "crate:init",

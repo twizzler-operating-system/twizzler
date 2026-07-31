@@ -185,44 +185,65 @@ pub fn enumerate_clocks() {
         // saves reference to tsc clock source into global array
         crate::time::register_clock(super::tsc::Tsc::new());
     } else {
-        todo!("running on processor that does not have a TSC");
+        panic!("unsupported CPU: no TSC, which the kernel requires as a clock source");
     }
 }
 
+/// Derive this CPU's path through the topology tree, from coarsest grouping to finest. Each
+/// entry is the index of the containing node at that level, paired with whether that level
+/// groups SMT threads.
 pub fn get_topology() -> Vec<(usize, bool)> {
     let cpuid = x86::cpuid::CpuId::new();
-    let bitsinfo = cpuid
-        .get_extended_topology_info()
-        .expect("TODO: implement support for deriving topology without this feature");
-    let mut levels = alloc::vec![];
+
+    let Some(bitsinfo) = cpuid.get_extended_topology_info() else {
+        // No CPUID leaf 0xb. Fall back to the legacy initial APIC ID, which gives each CPU its
+        // own node but no grouping information.
+        let id = cpuid
+            .get_feature_info()
+            .map_or(0, |fi| fi.initial_local_apic_id() as usize);
+        return alloc::vec![(id, false)];
+    };
+
+    // Each level reports a cumulative shift: shifting the x2APIC ID right by shifts[i] yields the
+    // ID of the entity one level above level i, so shifts[0] (past the SMT bits) yields the core.
+    let mut shifts: Vec<u32> = alloc::vec![];
     let mut smt_level = None;
     let mut id = 0;
     for bi in bitsinfo {
-        levels.resize(
-            core::cmp::max(bi.level_number() as usize + 1, levels.len()),
-            0,
-        );
-        levels[bi.level_number() as usize] = bi.shift_right_for_next_apic_id();
+        let level = bi.level_number() as usize;
+        shifts.resize(core::cmp::max(level + 1, shifts.len()), 0);
+        shifts[level] = bi.shift_right_for_next_apic_id();
         if bi.level_type() == x86::cpuid::TopologyType::SMT && bi.processors() > 1 {
-            smt_level = Some(bi.level_number());
+            smt_level = Some(level);
         }
-        id = bi.x2apic_id(); //TODO: is this okay to use?
+        id = bi.x2apic_id();
     }
-    if levels.len() != 2 {
-        unimplemented!("more extensible topo information");
+
+    topo_path(&shifts, smt_level, id)
+}
+
+/// Build the topology path from the per-level cumulative APIC ID shifts reported by CPUID leaf
+/// 0xb. Split out from [get_topology] so it can be tested against topologies we cannot boot.
+fn topo_path(shifts: &[u32], smt_level: Option<usize>, id: u32) -> Vec<(usize, bool)> {
+    // Walk levels coarsest-first, omitting the outermost (a single package adds no grouping).
+    // Levels contributing no ID bits are skipped so we don't nest a node with an identical
+    // cpuset; that test is on the shifts rather than the IDs, so every CPU agrees on the shape
+    // of the path even though the indices differ.
+    let mut path = alloc::vec![];
+    for i in (1..shifts.len()).rev() {
+        if shifts[i] == shifts[i - 1] {
+            continue;
+        }
+        path.push(((id >> shifts[i - 1]) as usize, false));
     }
-    let lowest_is_smt = smt_level.is_some() && smt_level.unwrap() == 0;
-    let logical_bits = levels[0];
-    let core_bits = levels[1];
-    let core_id = id >> (core_bits - logical_bits);
-    //let thread_id = id & ((1 << logical_bits) - 1);
-    if logical_bits == 0 {
-        alloc::vec![(core_id as usize, lowest_is_smt)]
-    } else if logical_bits == core_bits {
-        alloc::vec![(0, false), (0, lowest_is_smt)]
-    } else {
-        alloc::vec![(core_id as usize, false), (0, lowest_is_smt)]
+    if path.is_empty() {
+        path.push((0, false));
     }
+    // SMT siblings share one thread node beneath their core.
+    if smt_level == Some(0) {
+        path.push((0, true));
+    }
+    path
 }
 
 pub struct ArchProcessor {
@@ -353,4 +374,88 @@ pub fn get_bsp_id(
 
 pub fn spin_wait_iteration() {
     tlb_shootdown_handler();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::topo_path;
+
+    /// A single CPU reports no meaningful levels, and collapses to one flat node.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_single_cpu() {
+        assert_eq!(topo_path(&[0, 0], None, 0), alloc::vec![(0, false)]);
+    }
+
+    /// Four cores, no SMT: each core is its own node, no thread level.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_no_smt() {
+        for id in 0..4u32 {
+            assert_eq!(
+                topo_path(&[0, 2], None, id),
+                alloc::vec![(id as usize, false)]
+            );
+        }
+    }
+
+    /// Two threads by two cores: siblings share a core node and a thread node.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_smt_two_cores() {
+        let paths: alloc::vec::Vec<_> = (0..4u32)
+            .map(|id| topo_path(&[1, 2], Some(0), id))
+            .collect();
+        assert_eq!(paths[0], alloc::vec![(0, false), (0, true)]);
+        assert_eq!(paths[0], paths[1]);
+        assert_eq!(paths[2], alloc::vec![(1, false), (0, true)]);
+        assert_eq!(paths[2], paths[3]);
+    }
+
+    /// Two threads by four cores. The old code shifted by (core_bits - logical_bits) == 2 here,
+    /// which grouped pairs of cores together instead of SMT siblings.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_smt_four_cores() {
+        for id in 0..8u32 {
+            assert_eq!(
+                topo_path(&[1, 3], Some(0), id),
+                alloc::vec![((id >> 1) as usize, false), (0, true)]
+            );
+        }
+        // Siblings share a core; neighbours across a core boundary do not.
+        assert_eq!(
+            topo_path(&[1, 3], Some(0), 4),
+            topo_path(&[1, 3], Some(0), 5)
+        );
+        assert_ne!(
+            topo_path(&[1, 3], Some(0), 5),
+            topo_path(&[1, 3], Some(0), 6)
+        );
+    }
+
+    /// Three levels (SMT, core, die) used to hit the unimplemented!().
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_three_levels() {
+        assert_eq!(
+            topo_path(&[1, 3, 5], Some(0), 107),
+            alloc::vec![(13, false), (53, false), (0, true)]
+        );
+    }
+
+    /// A level contributing no ID bits is skipped rather than nesting a redundant node.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_degenerate_level_skipped() {
+        assert_eq!(
+            topo_path(&[1, 2, 2], Some(0), 7),
+            alloc::vec![(3, false), (0, true)]
+        );
+    }
+
+    /// Every CPU must derive the same path length, or the topology tree is inconsistent.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_uniform_depth() {
+        for shifts in [[0u32, 2, 2], [1, 3, 5], [1, 2, 2], [0, 0, 0]] {
+            let len = topo_path(&shifts, Some(0), 0).len();
+            for id in 1..64u32 {
+                assert_eq!(topo_path(&shifts, Some(0), id).len(), len);
+            }
+        }
+    }
 }

@@ -364,7 +364,6 @@ fn maybe_build_tests_dynamic<'a>(
                 "twizzler-derive" => None,
                 "tiny_http" => None,
                 "test-tiny-http" => None,
-                "object-store" => None,
                 "montest-lib" => None,
                 "naming" => None,
                 //"naming-core" => None,

@@ -97,7 +97,9 @@ fn feature_info_frequency() -> Result<u64, TscError> {
         // core crystal clock frequency.
         let feature = match cpuid.get_feature_info() {
             Some(x) => x,
-            None => unimplemented!(),
+            // No feature info, so we cannot identify the crystal frequency. Fall back to PIT
+            // calibration rather than failing the boot.
+            None => return Err(TscError::CpuFeatureNotSupported),
         };
 
         // for certian Xeon processors, we can use a core

@@ -123,14 +123,14 @@ pub fn init() {
     let model = if let InterruptModel::Apic(model) = model.unwrap().0 {
         model
     } else {
-        unimplemented!("failed to parse model")
+        panic!("unsupported platform: ACPI reports a non-APIC interrupt model");
     };
     /* TODO: unsure if it's safe to skip this if the interrupt model reports not having the PICs */
     //if model.also_has_legacy_pics {
     disable_pic();
     //}
     if model.io_apics.is_empty() {
-        unimplemented!("no IOAPIC found");
+        panic!("unsupported platform: ACPI MADT reports no IOAPIC, kernel requires at least one");
     }
     for ioapic in model.io_apics.iter() {
         let ioapic = IOApic::new(

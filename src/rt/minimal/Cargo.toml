@@ -13,7 +13,6 @@ talc = { workspace = true }
 bitset-core = { workspace = true }
 cfg-if = { workspace = true }
 num_enum = { workspace = true }
-thiserror = { package = "thiserror-no-std", version = "2.0", default-features = false }
 stable-vec = { workspace = true }
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 lru = { workspace = true }

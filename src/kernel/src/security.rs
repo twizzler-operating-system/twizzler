@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::AtomicUsize;
 
-use log::{error, trace};
+use log::{error, trace, warn};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -189,7 +189,7 @@ impl SecurityContext {
         for entry in results {
             match entry.item_type {
                 CtxMapItemType::Del => {
-                    todo!("Delegations not supported yet for lookup")
+                    warn!("ignoring unsupported delegation entry: {entry:#?}");
                 }
 
                 CtxMapItemType::Cap => {

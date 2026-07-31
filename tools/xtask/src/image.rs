@@ -222,6 +222,64 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             assert!(!cli.tests && !cli.benches && !cli.bench.is_some());
         }
 
+        // Standalone (plain main(), not #[test]) programs opted into `unittest` via
+        // `[workspace.metadata] test-programs` in the root Cargo.toml. Unlike the #[test]
+        // binaries above, these are ordinary Userspace-collection binaries, so they are not
+        // auto-added to the initrd by virtue of being compiled -- push each one in explicitly, or
+        // `unittest` will try to spawn a name that isn't there and every entry reports
+        // SpawnFailed.
+        if cli.tests {
+            if let Some(test_programs) = comp
+                .borrow_user_workspace()
+                .custom_metadata()
+                .and_then(|v| v.get("test-programs"))
+            {
+                let mut testlist = String::new();
+                for item in test_programs
+                    .as_array()
+                    .expect("test-programs specification must be an array")
+                {
+                    let crate_name = item
+                        .get("crate")
+                        .and_then(|v| v.as_str())
+                        .expect("test-programs entry missing string `crate` key");
+                    let args = item
+                        .get("args")
+                        .map(|v| {
+                            v.as_array()
+                                .expect("test-programs `args` must be an array")
+                                .iter()
+                                .map(|s| {
+                                    s.as_str()
+                                        .expect("test-programs `args` entries must be strings")
+                                })
+                        })
+                        .into_iter()
+                        .flatten();
+
+                    for path in get_crate_initrd_files(comp, crate_name)? {
+                        let already_present = initrd_files
+                            .iter()
+                            .any(|p| p.file_name() == path.file_name());
+                        if !already_present {
+                            initrd_files.push(path);
+                        }
+                    }
+
+                    testlist += crate_name;
+                    for arg in args {
+                        testlist += " ";
+                        testlist += arg;
+                    }
+                    testlist += "\n";
+                }
+                let test_file_path = get_genfile_path(comp, "standalone_test_bins");
+                let mut file = File::create(&test_file_path)?;
+                file.write_all(testlist.as_bytes())?;
+                initrd_files.push(test_file_path);
+            }
+        }
+
         let montest = comp
             .borrow_user_test_compilation()
             .as_ref()

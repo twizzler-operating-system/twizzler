@@ -297,6 +297,6 @@ pub fn lapic_interrupt(irq: u16) {
         LAPIC_ERR_VECTOR => panic!("LAPIC error"),
         LAPIC_TIMER_VECTOR => crate::clock::oneshot_clock_hardtick(),
         LAPIC_RESCHED_VECTOR => crate::processor::sched::schedule_resched(),
-        _ => unimplemented!(),
+        _ => emerglogln!("[x86::apic] ignoring unexpected LAPIC interrupt {}", irq),
     }
 }

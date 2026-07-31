@@ -51,7 +51,9 @@ impl BootInfo for LimineBootInfo {
     fn get_system_table(&self, table: BootInfoSystemTable) -> PhysAddr {
         match table {
             BootInfoSystemTable::Rsdp => PhysAddr::new(self.rsdp.unwrap()).unwrap(),
-            BootInfoSystemTable::Efi => todo!(),
+            BootInfoSystemTable::Efi => {
+                panic!("EFI system table is not supported on this platform")
+            }
         }
     }
 

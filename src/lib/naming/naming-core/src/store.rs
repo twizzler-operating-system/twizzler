@@ -18,6 +18,8 @@ use crate::{Result, MAX_KEY_SIZE};
 
 mod ext;
 mod nsobj;
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(C)]
@@ -466,11 +468,21 @@ impl NameSession<'_> {
         let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
         match node.kind {
             NsNodeKind::Namespace => {
-                self.working_ns = Some(self.open_namespace(
-                    node.id,
-                    container.persist(),
-                    Some(ParentInfo::new(container, node.name()?)),
-                )?);
+                self.working_ns = Some(if node.id == container.id() {
+                    // A self-reference (".", or a path ending in it): namei resolves this
+                    // without ever moving `namespace` off `container`, so `container` already
+                    // *is* the target with its real parent chain intact. Rebuilding it via
+                    // `open_namespace`/`ParentInfo::new(container, ..)` below would instead stamp
+                    // a bogus self-referential parent onto a fresh instance, breaking any
+                    // subsequent ".." lookup.
+                    container
+                } else {
+                    self.open_namespace(
+                        node.id,
+                        container.persist(),
+                        Some(ParentInfo::new(container, node.name()?)),
+                    )?
+                });
                 Ok(())
             }
             _ => Err(NamingError::WrongNameKind.into()),

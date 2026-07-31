@@ -233,7 +233,7 @@ impl KernelConsoleInner {
 
 impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     fn read_buffer_bytes(&self, _slice: &mut [u8]) -> Result<usize> {
-        todo!()
+        Err(TwzError::NOT_SUPPORTED)
     }
 
     fn read_bytes(
