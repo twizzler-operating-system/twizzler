@@ -19,10 +19,11 @@ pub enum Scenario {
     Lowmem,
 }
 
-/// The lowest `-m` size (in MB) the suite is known to complete under, found by hand-bisecting
-/// `cargo test-all --scenario lowmem --memory {4096,2048,1024,512}` on 2026-07-31. 512 hung (the
-/// suite needs more than one `memhog-test` round's worth of headroom to make progress); 1024
-/// completed cleanly and repeatably.
+/// Default guest memory (in MB) for `--scenario lowmem`.
+///
+/// UNVERIFIED PLACEHOLDER: this has not actually been bisected yet (no `--scenario lowmem` run has
+/// completed at all). Use `--memory {4096,2048,1024,512}` to find the real floor per testplan.md's
+/// Chunk 3, then replace this comment with the actual result.
 const LOWMEM_DEFAULT_MB: u32 = 1024;
 
 /// Low-memory boots are much slower (heavier reclaim/pager traffic); give the suite roughly 3x the

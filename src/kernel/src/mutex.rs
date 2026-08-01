@@ -158,17 +158,6 @@ impl<T> Mutex<T> {
             .as_ref()
             .and_then(|t| t.get_donated_priority());
 
-        with_lock_tracker(|lt| {
-            if !self.safe_with_spinlocks {
-                assert!(
-                    lt.spinlock_count() == 0,
-                    "cannot lock mutex while holding spinlock (called from {})",
-                    caller
-                );
-            }
-            lt.intend_to_lock_mutex(caller, start_time)
-        });
-
         if let Some(ref current_thread) = current_thread {
             if current_thread.is_critical() {
                 panic!(
@@ -184,7 +173,19 @@ impl<T> Mutex<T> {
                 current_thread.id(),
                 self.queue.lock().locker
             );
+            current_thread.inc_mutex_count();
         }
+
+        with_lock_tracker(|lt| {
+            if !self.safe_with_spinlocks {
+                assert!(
+                    lt.spinlock_count() == 0,
+                    "cannot lock mutex while holding spinlock (called from {})",
+                    caller
+                );
+            }
+            lt.intend_to_lock_mutex(caller, start_time)
+        });
 
         let int_state = crate::interrupt::disable();
         let mut i = 0;
@@ -272,7 +273,6 @@ impl<T> Mutex<T> {
         if let Some(ct) = current_thread_ref() {
             assert!(!ct.mutex_link.is_linked());
             ct.set_mutex_wait(false);
-            ct.inc_mutex_count();
         }
 
         let end_time = Instant::now();
@@ -291,10 +291,7 @@ impl<T> Mutex<T> {
         let mut queue = self.queue.lock();
 
         let g = current_thread_ref().map(|ct| ct.enter_critical());
-        if let Some(ct) = current_thread_ref() {
-            assert!(!ct.mutex_link.is_linked());
-            ct.dec_mutex_count();
-        }
+
         if let Some(thread) = queue.pop_highest_priority() {
             // Hand off ownership directly to the next waiter instead of releasing.
             // This prevents the current thread from immediately re-acquiring and
@@ -322,12 +319,16 @@ impl<T> Mutex<T> {
                         .unwrap(),
                 )
             };
-            drop(queue);
         } else {
             queue.owner = None;
             queue.owned = false;
             queue.handoff = false;
             queue.pri = None;
+        }
+        drop(queue);
+        if let Some(ct) = current_thread_ref() {
+            assert!(!ct.mutex_link.is_linked());
+            ct.dec_mutex_count();
         }
         drop(g);
     }

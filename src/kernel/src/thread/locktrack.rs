@@ -215,8 +215,12 @@ impl LockTrackerInner {
     }
 
     pub fn record_spinlock_unlock(&mut self, index: usize) {
-        assert!(index < self.spinlocks.len(), "invalid spinlock index");
-        self.spinlocks.remove(index);
+        // Clear the slot rather than removing it: guards hold the index they were given at lock
+        // time, and locks are not always released in LIFO order (see utils::spinlock_two), so
+        // shifting the vector would leave outstanding guards pointing at the wrong entry.
+        if let Some(lock) = self.spinlocks.get_mut(index) {
+            *lock = None;
+        }
         self.try_compact();
     }
 

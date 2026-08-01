@@ -18,10 +18,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::TwzError;
 
-use self::{
-    flags::{THREAD_IN_KERNEL, THREAD_PROC_IDLE},
-    priority::Priority,
-};
+use self::{flags::THREAD_PROC_IDLE, priority::Priority};
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt::Destination,
@@ -87,6 +84,10 @@ pub struct Thread {
     pub last_pf_kind: AtomicU32,
     pub last_pf_flags: AtomicU32,
     mutex_count: AtomicU32,
+    /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
+    /// executing in userspace. A counter rather than a flag because a fault taken while already
+    /// in the kernel must not report a return to user when only the inner handler finishes.
+    kernel_depth: AtomicU32,
     lock_tracker: Arc<LockTracker>,
     lock_tracker_index: Option<usize>,
 }
@@ -155,7 +156,7 @@ impl Thread {
             priority: AtomicU32::new(priority.raw()),
             stable_priority: AtomicU32::new(priority.raw()),
             id,
-            flags: AtomicU32::new(THREAD_IN_KERNEL),
+            flags: AtomicU32::new(0),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
             critical_counter: AtomicU64::new(0),
             switch_lock: AtomicU64::new(0),
@@ -182,6 +183,8 @@ impl Thread {
             last_pf_kind: AtomicU32::new(0),
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
+            // Threads start executing in the kernel; jump_to_user() performs the matching exit.
+            kernel_depth: AtomicU32::new(1),
             lock_tracker,
             lock_tracker_index,
         }

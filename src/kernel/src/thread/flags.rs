@@ -6,7 +6,6 @@ use super::{Thread, current_thread_ref};
 
 pub(super) const THREAD_PROC_IDLE: u32 = 1;
 pub(super) const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
-pub(super) const THREAD_IN_KERNEL: u32 = 4;
 pub(super) const THREAD_IS_SYNC_SLEEP: u32 = 8;
 pub(super) const THREAD_IS_SYNC_SLEEP_DONE: u32 = 16;
 pub(super) const THREAD_IS_EXITING: u32 = 32;
@@ -18,7 +17,7 @@ pub(crate) const THREAD_TIMED_WAIT: u32 = 1024;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
-        thread.flags.fetch_or(THREAD_IN_KERNEL, Ordering::SeqCst);
+        thread.kernel_depth.fetch_add(1, Ordering::SeqCst);
 
         if thread.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 {
             // TODO
@@ -29,7 +28,20 @@ pub fn enter_kernel() {
 
 pub fn exit_kernel() {
     if let Some(thread) = current_thread_ref() {
-        thread.flags.fetch_and(!THREAD_IN_KERNEL, Ordering::SeqCst);
+        // Saturate rather than wrap: an unbalanced exit must not leave the thread looking like
+        // it is deeply nested in the kernel, which would wedge it in kernel state forever.
+        let prev = thread
+            .kernel_depth
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |d| {
+                Some(d.saturating_sub(1))
+            })
+            .unwrap();
+        // Only the outermost exit actually returns to userspace. A nested fault unwinding back
+        // into a syscall must not run any of the below, or it tears down priority donation and
+        // delivers upcalls while the outer kernel entry is still executing.
+        if prev > 1 {
+            return;
+        }
         thread.remove_donated_priority();
         if thread.arch.has_upcall_restore_frame() {
             return;
@@ -57,7 +69,7 @@ impl Thread {
 
     #[inline]
     pub fn is_in_user(&self) -> bool {
-        self.flags.load(Ordering::SeqCst) & THREAD_IN_KERNEL == 0
+        self.kernel_depth.load(Ordering::SeqCst) == 0
     }
 
     pub fn set_is_exiting(&self) {
