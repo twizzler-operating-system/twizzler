@@ -81,16 +81,13 @@ members = [
     "src/bin/async-test",
     "src/bin/lltest",
     "src/bin/lltest/llt",
-<<<<<<< HEAD
     "src/bin/hello",
     "src/bin/llm-harness",
-=======
     #"src/bin/async-test",
     #"src/bin/lltest",
     #"src/bin/lltest/llt",
 
     "src/ports/femto",
->>>>>>> main
 ]
 
 exclude = [
@@ -148,12 +145,9 @@ initrd = [
     #"crate:serialecho",
     "lib:llt",
     "crate:lltest",
-<<<<<<< HEAD
     "crate:hello",
     "crate:llm-harness",
-=======
     "crate:femto",
->>>>>>> main
 ]
 
 [workspace.metadata.third-party]
