@@ -62,6 +62,8 @@
 
               e2fsprogs
               llvmPackages.lld
+
+              python314
             ];
             env = {
               RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";

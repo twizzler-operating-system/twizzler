@@ -1,0 +1,16 @@
+.direnv
+.twizbox
+
+# local defaults embedded into the binary at compile time (see build.rs) --
+# real values live here on disk only, never in git
+/local/
+/pythoncalc/
+
+# macOS AppleDouble resource-fork files that sneak in via non-native copies/archives
+._*
+
+
+# Added by cargo
+
+/target
+
