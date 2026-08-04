@@ -52,6 +52,7 @@ members = [
     #"src/ports/candle-test",
 
     "src/bin/sec",
+    "src/bin/decent-twizbox",
 
     #"src/bin/etl_twizzler",
     #"src/bin/test-tiny-http",
@@ -145,7 +146,8 @@ initrd = [
     "lib:llt",
     "crate:lltest",
     "crate:femto",
-    "crate:net-test"
+    "crate:net-test",
+    "crate:twizbox"
 ]
 
 [workspace.metadata.third-party]
@@ -355,7 +357,7 @@ debug = true
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 
 [patch.crates-io]
-ring = { git = "https://github.com/suri-codes/ring-twizzler.git", branch = "twizzler" }
+ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
 getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
 # Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
 getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
