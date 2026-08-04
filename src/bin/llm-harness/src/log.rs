@@ -9,6 +9,10 @@ use crate::action::Action;
 pub enum Outcome {
     Ok { bytes: usize },
     Error { message: String },
+    /// Not a model action outcome — a harness-generated marker for why the
+    /// run ended, so the log alone can distinguish "completed" from "gave
+    /// up" without reading console output.
+    Stopped { reason: String },
 }
 
 impl Outcome {
@@ -36,11 +40,21 @@ impl EffectLog {
     }
 
     pub fn record(&mut self, action: &Action, outcome: Outcome) {
+        self.push(action.kind(), action.target(), outcome);
+    }
+
+    /// Record a harness-generated event that isn't a model action, e.g. why
+    /// the run stopped.
+    pub fn record_event(&mut self, kind: &str, target: &str, outcome: Outcome) {
+        self.push(kind, target, outcome);
+    }
+
+    fn push(&mut self, kind: &str, target: &str, outcome: Outcome) {
         let seq = self.entries.len() as u64;
         self.entries.push(EffectEntry {
             seq,
-            action: action.kind().to_string(),
-            target: action.target().to_string(),
+            action: kind.to_string(),
+            target: target.to_string(),
             outcome,
         });
     }
@@ -64,6 +78,7 @@ impl EffectLog {
             let outcome = match &e.outcome {
                 Outcome::Ok { bytes } => format!("ok ({bytes} bytes)"),
                 Outcome::Error { message } => format!("error: {message}"),
+                Outcome::Stopped { reason } => format!("stopped: {reason}"),
             };
             out.push_str(&format!(
                 "{:>3}  {:<5}  {:<24}  {}\n",
@@ -106,6 +121,22 @@ mod tests {
         assert_eq!(targets, vec!["a", "b", "c"]);
 
         assert!(!log.iter().last().unwrap().outcome.is_ok());
+    }
+
+    #[test]
+    fn record_event_appends_a_harness_generated_entry() {
+        let mut log = EffectLog::new();
+        log.record(&Action::Read("a".into()), Outcome::Ok { bytes: 1 });
+        log.record_event(
+            "stop",
+            "",
+            Outcome::Stopped {
+                reason: "turn budget exhausted".into(),
+            },
+        );
+        let last = log.iter().last().unwrap();
+        assert_eq!(last.action, "stop");
+        assert!(!last.outcome.is_ok());
     }
 
     #[test]

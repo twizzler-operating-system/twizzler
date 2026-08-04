@@ -11,15 +11,18 @@ use anyhow::{anyhow, Result};
 ///
 /// The inner value is backend-defined: an index for the stub, an object ID for
 /// Twizzler. Callers only pass it back to the `Effects` that produced it.
+/// Constructors are public so the trait can be implemented outside this crate;
+/// only convention (not the type system) stops handles from one backend being
+/// passed to another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Handle(u128);
 
 impl Handle {
-    pub(crate) fn from_raw(raw: u128) -> Self {
+    pub fn from_raw(raw: u128) -> Self {
         Self(raw)
     }
 
-    pub(crate) fn raw(self) -> u128 {
+    pub fn raw(self) -> u128 {
         self.0
     }
 }
@@ -27,7 +30,14 @@ impl Handle {
 pub trait Effects {
     fn read(&mut self, h: Handle) -> Result<Vec<u8>>;
     fn write(&mut self, h: Handle, b: &[u8]) -> Result<()>;
-    fn open(&mut self, name: &str) -> Result<Handle>;
+
+    /// Resolve an existing object by name. Errs if no such object exists —
+    /// reading a name that was never written must never fabricate an empty
+    /// object.
+    fn open_read(&mut self, name: &str) -> Result<Handle>;
+
+    /// Resolve an object by name, creating an empty one if it does not exist.
+    fn open_write(&mut self, name: &str) -> Result<Handle>;
 }
 
 /// In-memory stub. Host-side tests only.
@@ -92,8 +102,14 @@ impl Effects for MemEffects {
         Ok(())
     }
 
-    /// Opens by name, creating an empty object if it does not exist.
-    fn open(&mut self, name: &str) -> Result<Handle> {
+    fn open_read(&mut self, name: &str) -> Result<Handle> {
+        self.names
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow!("no such object: {name}"))
+    }
+
+    fn open_write(&mut self, name: &str) -> Result<Handle> {
         Ok(self.alloc(name))
     }
 }
@@ -105,23 +121,23 @@ mod tests {
     #[test]
     fn open_write_read_round_trip() {
         let mut e = MemEffects::new();
-        let h = e.open("a.rs").unwrap();
+        let h = e.open_write("a.rs").unwrap();
         e.write(h, b"hello").unwrap();
         assert_eq!(e.read(h).unwrap(), b"hello");
         assert_eq!(e.get("a.rs").unwrap(), b"hello");
     }
 
     #[test]
-    fn open_is_stable_for_a_name() {
+    fn open_write_is_stable_for_a_name() {
         let mut e = MemEffects::new();
-        assert_eq!(e.open("x").unwrap(), e.open("x").unwrap());
-        assert_ne!(e.open("x").unwrap(), e.open("y").unwrap());
+        assert_eq!(e.open_write("x").unwrap(), e.open_write("x").unwrap());
+        assert_ne!(e.open_write("x").unwrap(), e.open_write("y").unwrap());
     }
 
     #[test]
     fn write_replaces_rather_than_appends() {
         let mut e = MemEffects::new();
-        let h = e.open("x").unwrap();
+        let h = e.open_write("x").unwrap();
         e.write(h, b"long content").unwrap();
         e.write(h, b"short").unwrap();
         assert_eq!(e.read(h).unwrap(), b"short");
@@ -131,8 +147,23 @@ mod tests {
     fn preload_is_readable() {
         let mut e = MemEffects::new();
         e.preload("task.md", "do the thing");
-        let h = e.open("task.md").unwrap();
+        let h = e.open_read("task.md").unwrap();
         assert_eq!(e.read(h).unwrap(), b"do the thing");
+    }
+
+    #[test]
+    fn open_read_errors_on_a_name_that_was_never_written() {
+        let mut e = MemEffects::new();
+        assert!(e.open_read("does_not_exist.rs").is_err());
+        // And critically, the miss must not have created it.
+        assert!(e.names().is_empty());
+    }
+
+    #[test]
+    fn open_write_creates_on_miss_but_open_read_does_not() {
+        let mut e = MemEffects::new();
+        let h = e.open_write("a.rs").unwrap();
+        assert_eq!(e.open_read("a.rs").unwrap(), h);
     }
 
     #[test]

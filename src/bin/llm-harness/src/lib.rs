@@ -4,8 +4,9 @@
 //! depends on is a trait so the backing implementation can change without the
 //! loop noticing:
 //!
-//! - [`source::TokenSource`] — where model turns come from. Today only
-//!   [`source::RecordedSource`] (completions baked in at build time).
+//! - [`source::TokenSource`] — where model turns come from:
+//!   [`source::RecordedSource`] (completions baked in at build time) or, on
+//!   the host, [`source::LiveSource`] (a live Ollama server).
 //! - [`effects::Effects`] — the only route to the outside world. Today only
 //!   [`effects::MemEffects`] (in-memory, host tests); `TwizzlerEffects` lands
 //!   in a later commit.
@@ -28,6 +29,9 @@ pub use effects::{Effects, Handle, MemEffects};
 pub use log::{EffectEntry, EffectLog, Outcome};
 pub use source::{RecordedSource, TokenSource};
 pub use transcript::{Msg, Role, Transcript};
+
+#[cfg(not(target_os = "twizzler"))]
+pub use source::LiveSource;
 
 #[cfg(target_os = "twizzler")]
 pub use twz::TwizzlerEffects;

@@ -6,13 +6,16 @@
 //!
 //! This is the only file in the crate that knows Twizzler exists.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use naming::{dynamic_naming_factory, DynamicNamingHandle, GetFlags};
 use twizzler::{
     collections::vec::{Vec as TwzVec, VecObject, VecObjectAlloc},
     object::{Object, ObjectBuilder},
 };
-use twizzler_rt_abi::object::{MapFlags, ObjID};
+use twizzler_rt_abi::{
+    error::TwzError,
+    object::{MapFlags, ObjID},
+};
 
 use crate::effects::{Effects, Handle};
 
@@ -52,10 +55,27 @@ impl TwizzlerEffects {
         })
     }
 
-    /// Flatten a logical path onto the prefix. `src/greet.rs` becomes
-    /// `/data/llm-harness-src_greet.rs`.
-    fn path(&self, name: &str) -> String {
-        format!("{}{}", self.prefix, name.trim_start_matches('/').replace('/', "_"))
+    /// Flatten a logical path onto the prefix, in the root namespace (see the
+    /// module doc). `src/greet.rs` becomes `llm-harness-src%2Fgreet.rs`.
+    ///
+    /// `/` is percent-encoded rather than replaced with a filler character so
+    /// the mapping stays injective — `src/greet.rs` and `src_greet.rs` must
+    /// not collide on one object. `.` and `..` path components are rejected
+    /// outright: they are meaningless once flattened, and silently accepting
+    /// them here would be a foot-gun for any future backend that maps names
+    /// onto a real hierarchical filesystem instead.
+    fn path(&self, name: &str) -> Result<String> {
+        let stripped = name.strip_prefix('/').unwrap_or(name);
+        if stripped.is_empty() {
+            bail!("empty object name");
+        }
+        for part in stripped.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                bail!("invalid object name {name:?}: empty, '.', or '..' path component");
+            }
+        }
+        let escaped = stripped.replace('%', "%25").replace('/', "%2F");
+        Ok(format!("{}{}", self.prefix, escaped))
     }
 
     pub fn prefix(&self) -> &str {
@@ -69,12 +89,31 @@ impl TwizzlerEffects {
 }
 
 impl Effects for TwizzlerEffects {
-    /// Resolve a name to its object, creating an empty one if it is new.
-    fn open(&mut self, name: &str) -> Result<Handle> {
-        let path = self.path(name);
+    /// Resolve an existing object by name. Errs if it does not exist — a
+    /// naming-service hiccup, permission error, or malformed path is
+    /// propagated rather than silently treated as "not found and safe to
+    /// recreate," which would orphan whatever the name used to point at.
+    fn open_read(&mut self, name: &str) -> Result<Handle> {
+        let path = self.path(name)?;
+        match self.namer.get(&path, GetFlags::empty()) {
+            Ok(node) => Ok(Handle::from_raw(node.id.raw())),
+            Err(e) if e == TwzError::NOT_FOUND => Err(anyhow!("no such object: {name}")),
+            Err(e) => Err(anyhow!("resolve {path}: {e:?}")),
+        }
+    }
 
-        if let Ok(node) = self.namer.get(&path, GetFlags::empty()) {
-            return Ok(Handle::from_raw(node.id.raw()));
+    /// Resolve a name to its object, creating an empty one only if the
+    /// lookup specifically reports "not found." Any other error (naming
+    /// hiccup, permission issue, malformed path) is propagated instead of
+    /// falling through to create-and-rebind, which would orphan the
+    /// previous object and hand the caller a silent empty file.
+    fn open_write(&mut self, name: &str) -> Result<Handle> {
+        let path = self.path(name)?;
+
+        match self.namer.get(&path, GetFlags::empty()) {
+            Ok(node) => return Ok(Handle::from_raw(node.id.raw())),
+            Err(e) if e == TwzError::NOT_FOUND => {}
+            Err(e) => return Err(anyhow!("resolve {path}: {e:?}")),
         }
 
         let blob: Blob = twz("create object", VecObject::new(ObjectBuilder::default()))?;

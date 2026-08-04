@@ -15,3 +15,8 @@ naming = { workspace = true }
 twizzler = { workspace = true }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-runtime = { workspace = true }
+
+# LiveSource talks to a local Ollama server; only meaningful where we have a
+# real socket, i.e. off the Twizzler target.
+[target.'cfg(not(target_os = "twizzler"))'.dependencies]
+reqwest = { workspace = true, features = ["blocking", "json"] }

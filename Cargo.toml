@@ -81,6 +81,7 @@ members = [
     "src/bin/async-test",
     "src/bin/lltest",
     "src/bin/lltest/llt",
+    "src/bin/hello",
     "src/bin/llm-harness",
 ]
 
@@ -139,6 +140,7 @@ initrd = [
     #"crate:serialecho",
     "lib:llt",
     "crate:lltest",
+    "crate:hello",
     "crate:llm-harness",
 ]
 
