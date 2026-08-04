@@ -15,9 +15,6 @@
 [submodule "src/srv/pager-srv/object-store"]
 	path = src/srv/pager-srv/object-store
 	url = ../../twizzler-operating-system/object-store.git
-[submodule "toolchain/src/mlibc"]
-	path = toolchain/src/mlibc
-	url = ../../twizzler-operating-system/mlibc.git
 [submodule "src/ports/lwext4-rs/lwext4"]
 	path = src/ports/lwext4-rs/lwext4
 	url = ../../twizzler-operating-system/lwext4.git
@@ -86,3 +83,15 @@
 [submodule "src/ports/rust_libloading"]
 	path = src/ports/rust_libloading
 	url = ../../dbittman/rust_libloading.git
+[submodule "src/ports/termion"]
+	path = src/ports/termion
+	url = https://github.com/cosdet/termion-twiz
+	branch = femto-twiz
+[submodule "src/ports/femto"]
+	path = src/ports/femto
+	url = https://github.com/cosdet/femto
+	branch = twizzler
+[submodule "toolchain/src/mlibc"]
+	path = toolchain/src/mlibc
+	url = https://github.com/cosdet/mlibc-twiz.git
+	branch = twizzler

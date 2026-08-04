@@ -363,20 +363,86 @@ fn main() {
     assert_eq!(client_fd, 2);
     let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
 
-    std::thread::spawn(move || loop {
-        let mut buf = [0; 1024];
-        let count = twizzler_abi::syscall::sys_kernel_console_read(
+    std::thread::spawn(move || {
+        twizzler_abi::syscall::sys_kernel_console_write(
             twizzler_abi::syscall::KernelConsoleSource::Console,
-            &mut buf,
-            KernelConsoleReadFlags::empty(),
-        )
-        .unwrap();
-        //tracing::info!("Read {} bytes from console: {:?}", count, &buf[0..count]);
-        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
-        let mut done = 0;
-        while done < count {
-            done += twizzler_rt_abi::io::twz_rt_fd_pwrite(server_fd, &buf[done..count], &mut ioc)
-                .unwrap();
+            b"\x1b[18t",
+            KernelConsoleWriteFlags::empty(),
+        );
+
+        let mut ansi_buf = Vec::new();
+        let mut intercept_mode = false;
+
+        loop {
+            let mut buf = [0; 1024];
+            let count = twizzler_abi::syscall::sys_kernel_console_read(
+                twizzler_abi::syscall::KernelConsoleSource::Console,
+                &mut buf,
+                KernelConsoleReadFlags::empty(),
+            )
+            .unwrap();
+
+            // State machine to intercept \x1b[18t ANSI handshakes for terminal size.
+            let mut out_buf = Vec::new();
+            for &b in &buf[0..count] {
+                if !intercept_mode {
+                    if b == b'\x1b' {
+                        intercept_mode = true;
+                        ansi_buf.clear();
+                        ansi_buf.push(b);
+                    } else {
+                        out_buf.push(b);
+                    }
+                } else {
+                    ansi_buf.push(b);
+                    if ansi_buf.len() == 3 {
+                        if ansi_buf[1] != b'[' || ansi_buf[2] != b'8' {
+                            out_buf.extend_from_slice(&ansi_buf);
+                            intercept_mode = false;
+                        }
+                    } else if ansi_buf.len() > 3 {
+                        if b == b't' {
+                            let s = String::from_utf8_lossy(&ansi_buf);
+                            if let Some(inner) = s.strip_prefix("\x1b[8;") {
+                                if let Some(inner) = inner.strip_suffix('t') {
+                                    let parts: Vec<&str> = inner.split(';').collect();
+                                    if parts.len() == 2 {
+                                        if let (Ok(r), Ok(c)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
+                                            let winsize = libc::winsize {
+                                                ws_row: r,
+                                                ws_col: c,
+                                                ws_xpixel: 0,
+                                                ws_ypixel: 0,
+                                            };
+                                            unsafe {
+                                                let _ = twizzler_rt_abi::bindings::twz_rt_fd_set_config(
+                                                    server_fd,
+                                                    twizzler_rt_abi::bindings::IO_REGISTER_WINSIZE,
+                                                    &winsize as *const _ as *const core::ffi::c_void,
+                                                    std::mem::size_of::<libc::winsize>(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            intercept_mode = false;
+                        } else if ansi_buf.len() > 32 {
+                            out_buf.extend_from_slice(&ansi_buf);
+                            intercept_mode = false;
+                        }
+                    }
+                }
+            }
+
+            if !out_buf.is_empty() {
+                let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+                let mut done = 0;
+                while done < out_buf.len() {
+                    done += twizzler_rt_abi::io::twz_rt_fd_pwrite(server_fd, &out_buf[done..], &mut ioc)
+                        .unwrap();
+                }
+            }
         }
     });
 
@@ -388,6 +454,16 @@ fn main() {
         twizzler_abi::syscall::sys_kernel_console_write(
             twizzler_abi::syscall::KernelConsoleSource::Console,
             &buf[0..count],
+            KernelConsoleWriteFlags::empty(),
+        );
+    });
+
+    std::thread::spawn(move || loop {
+        // Occasional polling to get & update terminal size. A temporary fix.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        twizzler_abi::syscall::sys_kernel_console_write(
+            twizzler_abi::syscall::KernelConsoleSource::Console,
+            b"\x1b[18t",
             KernelConsoleWriteFlags::empty(),
         );
     });

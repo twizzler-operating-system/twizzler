@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, path::Path, process::Command};
+use std::{fs::File, io::Write, path::{Path, PathBuf}, process::Command};
 
 use crate::{
     toolchain::{
@@ -26,59 +26,12 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
-    let mut cf = File::create(&cross_file)?;
-    let cross_file = Path::new(&cross_file).canonicalize()?;
-
-    let llvm_bin_path = install_path.join("bin").canonicalize()?;
-    writeln!(&mut cf, "[binaries]")?;
-    for tool in [
-        ("c", "clang"),
-        ("cpp", "clang++"),
-        ("ar", "llvm-ar"),
-        ("strip", "llvm-strip"),
-    ] {
-        let path = llvm_bin_path.join(tool.1);
-        writeln!(&mut cf, "{} = '{}'", tool.0, path.display())?;
-    }
-
-    writeln!(&mut cf, "[built-in options]")?;
-    for tool in ["c_args", "c_link_args", "cpp_args", "cpp_link_args"] {
-        write!(
-            &mut cf,
-            "{} = ['-B{}', '-isysroot', '{}', '--sysroot', '{}', '-target', '{}', ",
-            tool,
-            llvm_bin_path.display(),
-            mlibc_sysroot.display(),
-            mlibc_sysroot.display(),
-            triple,
-        )?;
-        if tool == "c_link_args" || tool == "cpp_link_args" {
-            write!(&mut cf, "'-z', 'norelro'",)?;
-        }
-        writeln!(&mut cf, "]")?;
-    }
-
-    writeln!(&mut cf, "[properties]")?;
-    writeln!(&mut cf, "sys_root = '{}'", mlibc_sysroot.display())?;
-
-    writeln!(&mut cf, "[host_machine]")?;
-    writeln!(&mut cf, "system = 'twizzler'")?;
-    writeln!(
-        &mut cf,
-        "cpu_family = '{}'",
-        triple.to_string().split("-").next().unwrap()
-    )?;
-    writeln!(
-        &mut cf,
-        "cpu = '{}'",
-        triple.to_string().split("-").next().unwrap()
-    )?;
-    writeln!(&mut cf, "endian = 'little'")?;
-    drop(cf);
+    let cross_file = write_cross_file(&install_path, &mlibc_sysroot, triple, Path::new(&cross_file))?;
 
     let _ = std::fs::remove_dir_all(&build_dir);
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=true")
@@ -96,7 +49,8 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         ))?;
     }
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("compile")
         .arg("-C")
         .arg(&build_dir)
@@ -105,7 +59,8 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         Err(std::io::Error::other("failed to build libc headers"))?;
     }
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("install")
         .arg("-q")
         .arg("-C")
@@ -133,18 +88,21 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
     std::fs::create_dir_all(&install_path)?;
     std::fs::create_dir_all(&build_dir)?;
     std::fs::create_dir_all(&mlibc_sysroot)?;
-    let _install_path = install_path.canonicalize()?;
+    let install_path = install_path.canonicalize()?;
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let cross_file = write_cross_file(&install_path, &mlibc_sysroot, triple, Path::new(&cross_file))?;
+
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=false")
         .arg("-Ddefault_library=both")
         .arg("-Dlibgcc_dependency=true")
         .arg("-Duse_freestnd_hdrs=enabled")
-        .arg(format!("--cross-file={}", cross_file))
+        .arg(format!("--cross-file={}", cross_file.display()))
         .arg("--buildtype=debugoptimized")
         .arg(&build_dir)
         .arg(&mlibc_src)
@@ -153,7 +111,8 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Err(std::io::Error::other("failed to setup meson for libc"))?;
     }
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("compile")
         .arg("-C")
         .arg(&build_dir)
@@ -162,7 +121,8 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Err(std::io::Error::other("failed to build libc"))?;
     }
 
-    let status = Command::new("toolchain/install/python/bin/meson")
+    let status = Command::new("python3")
+        .arg("toolchain/install/python/bin/meson")
         .arg("install")
         .arg("-q")
         .arg("-C")
@@ -321,4 +281,62 @@ fn build_libcxxabi(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     //
 
     Ok(())
+}
+
+fn write_cross_file(
+    install_path: &Path,
+    mlibc_sysroot: &Path,
+    triple: &Triple,
+    cross_file: &Path,
+) -> anyhow::Result<PathBuf> {
+    let mut cf = File::create(cross_file)?;
+    let cross_file_canon = cross_file.canonicalize()?;
+
+    let llvm_bin_path = install_path.join("bin").canonicalize()?;
+    writeln!(&mut cf, "[binaries]")?;
+    for tool in [
+        ("c", "clang"),
+        ("cpp", "clang++"),
+        ("ar", "llvm-ar"),
+        ("strip", "llvm-strip"),
+    ] {
+        let path = llvm_bin_path.join(tool.1);
+        writeln!(&mut cf, "{} = '{}'", tool.0, path.display())?;
+    }
+
+    writeln!(&mut cf, "[built-in options]")?;
+    for tool in ["c_args", "c_link_args", "cpp_args", "cpp_link_args"] {
+        write!(
+            &mut cf,
+            "{} = ['-B{}', '-isysroot', '{}', '--sysroot', '{}', '-target', '{}', ",
+            tool,
+            llvm_bin_path.display(),
+            mlibc_sysroot.display(),
+            mlibc_sysroot.display(),
+            triple,
+        )?;
+        if tool == "c_link_args" || tool == "cpp_link_args" {
+            write!(&mut cf, "'-z', 'norelro'",)?;
+        }
+        writeln!(&mut cf, "]")?;
+    }
+
+    writeln!(&mut cf, "[properties]")?;
+    writeln!(&mut cf, "sys_root = '{}'", mlibc_sysroot.display())?;
+
+    writeln!(&mut cf, "[host_machine]")?;
+    writeln!(&mut cf, "system = 'twizzler'")?;
+    writeln!(
+        &mut cf,
+        "cpu_family = '{}'",
+        triple.to_string().split("-").next().unwrap()
+    )?;
+    writeln!(
+        &mut cf,
+        "cpu = '{}'",
+        triple.to_string().split("-").next().unwrap()
+    )?;
+    writeln!(&mut cf, "endian = 'little'")?;
+
+    Ok(cross_file_canon)
 }
