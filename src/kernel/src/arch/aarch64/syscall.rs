@@ -5,7 +5,7 @@
 ///
 /// "Procedure Call Standard for the Arm® 64-bit Architecture (AArch64)":
 ///     https://github.com/ARM-software/abi-aa/releases/download/2023Q1/aapcs64.pdf
-use arm64::registers::{ELR_EL1, SPSR_EL1, SP_EL0};
+use arm64::registers::{ELR_EL1, SP_EL0, SPSR_EL1};
 use registers::interfaces::Writeable;
 use twizzler_abi::upcall::UpcallFrame;
 

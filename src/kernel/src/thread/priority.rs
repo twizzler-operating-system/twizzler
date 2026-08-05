@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use super::{current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY, Thread};
+use super::{Thread, current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY};
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

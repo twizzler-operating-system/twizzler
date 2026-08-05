@@ -7,8 +7,9 @@
 /// D17.2.97 of the "Arm Architecture Reference Manual"
 use arm64::registers::MAIR_EL1;
 use registers::{
+    LocalRegisterCopy,
     interfaces::{Readable, Writeable},
-    register_bitfields, LocalRegisterCopy,
+    register_bitfields,
 };
 use twizzler_abi::device::CacheType;
 
@@ -113,11 +114,7 @@ impl MemoryAttributeManager {
         // we assume we keep an up to date copy of the MAIR register
         // we assume (for now) that the index is in bounds
         let attr = self.mair[index as usize];
-        if attr.is_valid() {
-            Some(attr)
-        } else {
-            None
-        }
+        if attr.is_valid() { Some(attr) } else { None }
     }
 
     // map a requested memory type to an index

@@ -1,9 +1,9 @@
 /// The `ClockHardware` interface for the CNTP_EL0 timer
 /// This timer is local to a single core, and timestamps
 /// are synchronized to a global system timer count
-use arm64::registers::{CNTFRQ_EL0, CNTPCT_EL0, CNTP_CTL_EL0, CNTP_TVAL_EL0};
+use arm64::registers::{CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_TVAL_EL0, CNTPCT_EL0};
 use registers::interfaces::{ReadWriteable, Readable, Writeable};
-use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan, FEMTOS_PER_SEC};
+use twizzler_abi::syscall::{ClockFlags, ClockInfo, FEMTOS_PER_SEC, FemtoSeconds, TimeSpan};
 
 use crate::time::{ClockHardware, Ticks};
 

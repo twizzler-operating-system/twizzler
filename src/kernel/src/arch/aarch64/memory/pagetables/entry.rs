@@ -1,6 +1,6 @@
 use twizzler_abi::{device::CacheType, object::Protections};
 
-use super::mair::{memory_attr_manager, AttributeIndex};
+use super::mair::{AttributeIndex, memory_attr_manager};
 use crate::{
     arch::address::PhysAddr,
     memory::pagetables::{MappingFlags, MappingSettings},

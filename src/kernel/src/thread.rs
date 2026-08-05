@@ -349,6 +349,59 @@ impl Thread {
         self.id.value()
     }
 
+    /// DIAG (multiputbug): dump the faulting thread's instruction bytes, stack top, and frame
+    /// chain. The kernel shares the user address space here and neither SMAP nor SMEP is
+    /// enabled, so these reads are direct. Every read is clamped to stay inside a page/slot we
+    /// know is mapped, so this cannot itself fault.
+    fn dump_fault_context(ip: u64, sp: u64, bp: u64, cx: u64) {
+        const SLOT_MASK: u64 = !0x3fff_ffff;
+        let page = ip & !0xfff;
+        let start = if ip - page >= 8 { ip - 8 } else { page };
+        let len = core::cmp::min(24, page + 0x1000 - start) as usize;
+        let mut bytes = [0u8; 24];
+        for i in 0..len {
+            bytes[i] = unsafe { (start as *const u8).add(i).read_volatile() };
+        }
+        log::warn!(
+            "fault-diag: {} bytes at {:x} (rip {:x}): {:02x?}",
+            len,
+            start,
+            ip,
+            &bytes[..len]
+        );
+
+        let mut stack = [0u64; 8];
+        for i in 0..8 {
+            stack[i] = unsafe { (sp as *const u64).add(i).read_volatile() };
+        }
+        log::warn!("fault-diag: stack at rsp {:x}: {:x?}", sp, stack);
+
+        // For the ferroc free-list fault, rcx is the `Shard`. Dumping its header identifies the
+        // size class (`obj_size`), which says whether the corrupt link was an interior pointer
+        // or an overflow from the preceding block.
+        if cx != 0 && cx % 8 == 0 && cx < 0x0000_8000_0000_0000 {
+            let mut words = [0u64; 12];
+            for i in 0..12 {
+                words[i] = unsafe { (cx as *const u64).add(i).read_volatile() };
+            }
+            log::warn!("fault-diag: words at rcx {:x}: {:x?}", cx, words);
+        }
+
+        let mut fp = bp;
+        for depth in 0..8 {
+            if fp == 0 || fp % 8 != 0 || (fp & SLOT_MASK) != (sp & SLOT_MASK) {
+                break;
+            }
+            let next = unsafe { (fp as *const u64).read_volatile() };
+            let ret = unsafe { (fp as *const u64).add(1).read_volatile() };
+            log::warn!("fault-diag: frame {}: fp {:x} ret {:x}", depth, fp, ret);
+            if next <= fp {
+                break;
+            }
+            fp = next;
+        }
+    }
+
     #[track_caller]
     pub fn send_upcall(self: &ThreadRef, info: UpcallInfo) {
         if !self.is_current_thread() {
@@ -370,6 +423,14 @@ impl Thread {
             );
             //crate::panic::backtrace(true, None);
             //loop {}
+            if let Ok(regs) = self.read_registers() {
+                Self::dump_fault_context(
+                    regs.frame.rip,
+                    regs.frame.rsp,
+                    regs.frame.rbp,
+                    regs.frame.rcx,
+                );
+            }
         }
 
         let Some(upcall_target) = *self.upcall_target.lock() else {

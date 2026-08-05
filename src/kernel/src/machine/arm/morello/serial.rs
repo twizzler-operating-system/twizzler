@@ -6,8 +6,8 @@ use crate::{
     arch::memory::mmio::MMIO_ALLOCATOR,
     interrupt::{Destination, TriggerMode},
     memory::{
-        pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
         PhysAddr,
+        pagetables::{ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings},
     },
 };
 

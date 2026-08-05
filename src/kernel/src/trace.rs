@@ -3,7 +3,7 @@ use twizzler_abi::trace::{TraceEntryFlags, TraceEntryHead, TraceKind};
 use crate::{
     instant::Instant,
     processor::mp::current_processor,
-    thread::{current_thread_ref, ThreadRef},
+    thread::{ThreadRef, current_thread_ref},
 };
 
 pub mod buffered_trace_data;

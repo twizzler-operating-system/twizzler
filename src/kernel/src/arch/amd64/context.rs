@@ -6,6 +6,7 @@ use crate::{
     arch::{
         PhysAddr,
         memory::pagetables::{Entry, EntryFlags},
+        processor::CR3_IN_TRANSITION,
     },
     memory::{
         VirtAddr,
@@ -16,7 +17,6 @@ use crate::{
         },
         tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
-    arch::processor::CR3_IN_TRANSITION,
     obj::pagetables::ObjectPageTable,
     once::Once,
     processor::Processor,

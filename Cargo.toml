@@ -66,6 +66,7 @@ members = [
     "src/bin/ptest",
     "src/bin/kqueue_test",
     "src/bin/memhog-test",
+    "src/bin/hmrepro",
     #"src/bin/sqlite_test",
 
     #"src/bin/persistent-hashmap-test",
@@ -127,6 +128,7 @@ initrd = [
     #"crate:trace",
     #"crate:gfxtest",
     "crate:shell",
+    "crate:hmrepro",
     #"crate:sshd",
 
     #"crate:sec",

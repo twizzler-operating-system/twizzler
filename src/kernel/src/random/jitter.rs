@@ -2,7 +2,7 @@ use rand_core::TryRngCore;
 // see https://docs.rs/rand_jitter/0.4.0/rand_jitter/struct.JitterRng.html#example
 use rand_jitter::JitterRng;
 
-use super::{register_entropy_source, EntropySource};
+use super::{EntropySource, register_entropy_source};
 use crate::time::TICK_SOURCES;
 pub fn get_nstime() -> u64 {
     let ticks = { TICK_SOURCES.lock()[0].as_ref().unwrap().read() };

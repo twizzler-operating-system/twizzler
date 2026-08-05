@@ -1,7 +1,7 @@
 use fdt::Fdt;
 use twizzler_abi::device::{CacheType, MmioInfo};
 
-use crate::{arch::BootInfoSystemTable, once::Once, BootInfo};
+use crate::{BootInfo, arch::BootInfoSystemTable, once::Once};
 
 // We use device tree to describe the hardware on this machine
 static FDT: Once<Fdt<'static>> = Once::new();

@@ -15,10 +15,10 @@ pub fn interrupt_controller() -> &'static GICv2 {
         use crate::{
             arch::memory::mmio::mmio_allocator,
             memory::{
+                PhysAddr,
                 pagetables::{
                     ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
                 },
-                PhysAddr,
             },
         };
 

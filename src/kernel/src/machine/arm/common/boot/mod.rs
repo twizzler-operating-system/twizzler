@@ -4,7 +4,7 @@ mod psci;
 
 use core::str::FromStr;
 
-use arm64::registers::{Readable, PAR_EL1};
+use arm64::registers::{PAR_EL1, Readable};
 use twizzler_abi::upcall::MemoryAccessKind;
 
 use crate::memory::{PhysAddr, VirtAddr};

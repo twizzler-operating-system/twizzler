@@ -298,7 +298,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = false;// !cfg!(debug_assertions);
+const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions);
 
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
     if DISABLE_LOCK_TRACKING {
@@ -392,5 +392,4 @@ pub fn check_timed_out_mutexes() {
             lock_tracker.unlock();
         }
     }
-
 }

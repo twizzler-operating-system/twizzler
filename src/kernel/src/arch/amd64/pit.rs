@@ -73,11 +73,7 @@ pub fn wait_ns(ns: u64) {
         while count > 64 {
             let thiscount = if 0xffff > count {
                 let tc = count + 64;
-                if tc > 0xffff {
-                    0xffff
-                } else {
-                    tc
-                }
+                if tc > 0xffff { 0xffff } else { tc }
             } else {
                 0xffff
             };

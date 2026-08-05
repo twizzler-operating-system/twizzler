@@ -1,6 +1,6 @@
 use p256::ecdsa::{
-    signature::{self, Signer, Verifier},
     Signature, SigningKey, VerifyingKey,
+    signature::{self, Signer, Verifier},
 };
 use sha2::{Digest, Sha256};
 

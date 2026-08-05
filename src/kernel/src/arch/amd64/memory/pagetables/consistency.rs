@@ -9,12 +9,12 @@ use crate::{
     arch::{
         address::{PhysAddr, VirtAddr},
         interrupt::TLB_SHOOTDOWN_VECTOR,
+        processor::CR3_IN_TRANSITION,
     },
     interrupt::{self, Destination},
     memory::pagetables::{
         MappingCursor, tlb_shootdown_inc_count, trace_tlb_invalidation, trace_tlb_shootdown,
     },
-    arch::processor::CR3_IN_TRANSITION,
     processor::{
         Processor,
         mp::{current_processor, with_each_active_processor},

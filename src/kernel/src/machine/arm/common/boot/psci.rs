@@ -8,7 +8,7 @@ use arm64::registers::{MAIR_EL1, SCTLR_EL1, SPSR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_
 use smccc::psci::cpu_on;
 use twizzler_abi::upcall::MemoryAccessKind;
 
-use super::{translate, BootArgs};
+use super::{BootArgs, translate};
 use crate::{machine::info::devicetree, memory::VirtAddr, processor::Processor};
 
 // According to Section 6.4 the MMU and caches are disabled

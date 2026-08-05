@@ -5,7 +5,7 @@ use twizzler_abi::syscall::TimeSpan;
 
 use crate::{
     once::Once,
-    time::{ClockHardware, Ticks, TICK_SOURCES},
+    time::{ClockHardware, TICK_SOURCES, Ticks},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]

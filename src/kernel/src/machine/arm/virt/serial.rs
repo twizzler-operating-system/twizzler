@@ -5,10 +5,10 @@ use crate::{
     arch::memory::mmio::mmio_allocator,
     interrupt::{Destination, TriggerMode},
     memory::{
+        PhysAddr,
         pagetables::{
             Consistency, ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
         },
-        PhysAddr,
     },
     once::Once,
 };

@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use intrusive_collections::LinkedList;
 
 use super::rq::SchedLinkAdapter;
-use crate::thread::{priority::MAX_PRIORITY, ThreadRef};
+use crate::thread::{ThreadRef, priority::MAX_PRIORITY};
 
 pub(super) struct TimeshareQueue<const N: usize> {
     count: usize,

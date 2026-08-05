@@ -1,4 +1,4 @@
-use super::local::{get_lapic, LAPIC_ICRLO, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_STATUS_PEND};
+use super::local::{LAPIC_ICRLO, LAPIC_ICRLO_ASSERT, LAPIC_ICRLO_STATUS_PEND, get_lapic};
 use crate::{interrupt::Destination, processor};
 
 const DEST_SHORT_NONE: u32 = 0;

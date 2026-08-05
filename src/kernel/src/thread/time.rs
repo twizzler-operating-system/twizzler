@@ -55,11 +55,7 @@ impl ThreadSched {
 
     pub fn pinned_to(&self) -> Option<u32> {
         let cpu = self.pinned_cpu.load(Ordering::Acquire);
-        if cpu >= 0 {
-            Some(cpu as u32)
-        } else {
-            None
-        }
+        if cpu >= 0 { Some(cpu as u32) } else { None }
     }
 
     pub fn pay_ticks(&self, ticks: u64, allowed: u64) -> bool {
@@ -83,20 +79,12 @@ impl ThreadSched {
     pub fn moving_to_active(&self, cpu: u32) -> Option<u32> {
         self.current_processor_queue.store(-1, Ordering::Release);
         let old = self.last_cpu.swap(cpu as i32, Ordering::SeqCst);
-        if old == -1 {
-            None
-        } else {
-            Some(old as u32)
-        }
+        if old == -1 { None } else { Some(old as u32) }
     }
 
     pub fn current_cpu_rq(&self) -> Option<u32> {
         let cpu = self.current_processor_queue.load(Ordering::Acquire);
-        if cpu >= 0 {
-            Some(cpu as u32)
-        } else {
-            None
-        }
+        if cpu >= 0 { Some(cpu as u32) } else { None }
     }
 
     /// Returns Some((cpu, pinned)), if either the thread is pinned or has a last cpu (in which case

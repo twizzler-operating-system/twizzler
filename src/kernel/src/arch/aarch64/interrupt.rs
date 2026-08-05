@@ -8,8 +8,8 @@ use registers::interfaces::Readable;
 use twizzler_abi::kso::{InterruptAllocateOptions, InterruptPriority};
 
 use super::{
-    cntp::{cntp_interrupt_handler, PhysicalTimer},
-    exception::{exception_handler, restore_stack_pointer, save_stack_pointer, ExceptionContext},
+    cntp::{PhysicalTimer, cntp_interrupt_handler},
+    exception::{ExceptionContext, exception_handler, restore_stack_pointer, save_stack_pointer},
 };
 use crate::{
     interrupt::{Destination, DynamicInterrupt, PinPolarity, TriggerMode},

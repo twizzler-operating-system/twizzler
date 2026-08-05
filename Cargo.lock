@@ -3319,6 +3319,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hmrepro"
+version = "0.1.0"
+dependencies = [
+ "naming-core",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

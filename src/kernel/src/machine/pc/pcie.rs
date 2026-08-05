@@ -3,14 +3,14 @@ use alloc::{collections::BTreeMap, format, vec::Vec};
 use memoffset::offset_of;
 use twizzler_abi::{
     device::{
-        bus::pcie::{
-            get_bar, PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader,
-            PcieInfo, PcieKactionSpecific,
-        },
         BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, NUM_DEVICE_INTERRUPTS,
+        bus::pcie::{
+            PcieBridgeHeader, PcieDeviceHeader, PcieDeviceInfo, PcieFunctionHeader, PcieInfo,
+            PcieKactionSpecific, get_bar,
+        },
     },
-    kso::{unpack_kaction_int_pri_and_opts, KactionValue},
-    object::{ObjID, NULLPAGE_SIZE},
+    kso::{KactionValue, unpack_kaction_int_pri_and_opts},
+    object::{NULLPAGE_SIZE, ObjID},
 };
 use twizzler_rt_abi::error::{ArgumentError, GenericError, ObjectError, ResourceError};
 use volatile::map_field;
@@ -172,11 +172,11 @@ fn register_device(
     );
 
     for bar in bars.iter().enumerate() {
-        if bar.1 .0 != 0 {
+        if bar.1.0 != 0 {
             dev.add_mmio(
-                PhysAddr::new(bar.1 .0).unwrap(),
-                PhysAddr::new(bar.1 .0 + bar.1 .1 as u64).unwrap(),
-                if bar.1 .2 != 0 {
+                PhysAddr::new(bar.1.0).unwrap(),
+                PhysAddr::new(bar.1.0 + bar.1.1 as u64).unwrap(),
+                if bar.1.2 != 0 {
                     CacheType::WriteThrough
                 } else {
                     CacheType::Uncacheable
