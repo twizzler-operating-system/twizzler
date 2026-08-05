@@ -56,6 +56,10 @@ pub struct VirtContext {
     is_kernel: bool,
 }
 
+/// The kernel context's page-table root, cached at boot so that the thread-switch path can reach
+/// it without taking any lock. See [`VirtContext::switch_to_kernel_context`].
+static KERNEL_ARCH_TARGET: Once<ArchContextTarget> = Once::new();
+
 static CONTEXT_IDS: IdCounter = IdCounter::new();
 
 struct KernelSlotCounter {
@@ -212,9 +216,35 @@ impl VirtContext {
     pub fn new_kernel() -> Arc<Self> {
         let this = Arc::new(Self::__new(true));
         this.register_sctx(KERNEL_SCTX, ArchContext::new_kernel());
+        // Cache the root now, while we're safely outside the thread-switch path.
+        KERNEL_ARCH_TARGET.call_once(|| {
+            *this
+                .target_cache
+                .lock()
+                .get(&KERNEL_SCTX)
+                .expect("kernel sctx just registered")
+        });
         let all = get_all_contexts();
         all.lock().insert(this.id.value(), this.clone());
         this
+    }
+
+    /// Switch the calling processor to the kernel page tables.
+    ///
+    /// Deliberately lock-free, because the thread-switch path calls this: going through
+    /// `switch_to` would take `target_cache`, nesting a spinlock acquisition inside the switch
+    /// (which the lock tracker's single intent slot cannot represent, `locktrack.rs:192`) and
+    /// serialising every processor that goes idle on one lock. A no-op during very early boot,
+    /// before the kernel context exists -- there is nothing to switch away from yet.
+    pub fn switch_to_kernel_context() {
+        let Some(target) = KERNEL_ARCH_TARGET.poll() else {
+            return;
+        };
+        let proc = tls_ready().then(current_processor);
+        // Safety: the kernel context's root outlives every thread, and is never freed.
+        unsafe {
+            ArchContext::switch_to_target(target, proc);
+        }
     }
 
     /// Construct a new context for userspace.

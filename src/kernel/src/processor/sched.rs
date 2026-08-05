@@ -671,7 +671,6 @@ fn rq_has_higher<const N: usize>(thread: &ThreadRef, rq: &RunQueue<N>, eq: bool)
 fn do_schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
-    cur.enter_critical();
 
     if cur.is_exiting() {
         processor.push_exited(cur.clone());

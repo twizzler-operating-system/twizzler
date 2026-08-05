@@ -335,6 +335,7 @@ impl<T> Mutex<T> {
 }
 
 /// Manages a reference to the data controlled by a mutex.
+#[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,

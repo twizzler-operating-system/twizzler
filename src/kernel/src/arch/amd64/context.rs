@@ -16,6 +16,7 @@ use crate::{
         },
         tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
+    arch::processor::CR3_IN_TRANSITION,
     obj::pagetables::ObjectPageTable,
     once::Once,
     processor::Processor,
@@ -102,6 +103,18 @@ impl ArchContext {
     /// The specified target must be a root page table that will live as long as we are switched to
     /// it.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget, proc: Option<&Processor>) {
+        // Advertise the transition *before* touching cr3. From the cr3 write onwards this
+        // processor can cache entries for `tgt`, but it would still be advertising the old
+        // root until the store below -- a shootdown for `tgt` landing in that window would
+        // read the stale value, skip us, and free page-table pages out from under a live
+        // walk. CR3_IN_TRANSITION matches every target, so we're covered for both roots
+        // across the whole switch. The SeqCst store lowers to a locked op, which also keeps
+        // it from being reordered after the cr3 write.
+        if let Some(proc) = proc {
+            proc.arch
+                .active_cr3
+                .store(CR3_IN_TRANSITION, Ordering::SeqCst);
+        }
         unsafe {
             if tgt.0 != x86::controlregs::cr3() {
                 x86::controlregs::cr3_write(tgt.0);

@@ -1,8 +1,6 @@
 use core::{fmt, mem};
-use crate::{
-    marker::Invariant,
-    ptr::RefSliceMut
-};
+
+use crate::{marker::Invariant, ptr::RefSliceMut};
 
 /// Single tag in a control group.
 #[derive(Copy, Clone, PartialEq, Eq)]

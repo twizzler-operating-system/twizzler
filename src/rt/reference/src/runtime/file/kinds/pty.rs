@@ -108,8 +108,8 @@ impl Fd for PtyHandleKind {
                 Ok(())
             }
             IO_REGISTER_WINSIZE => {
-                if val_len < size_of::<winsize>() {                     
-                        return Err(TwzError::INVALID_ARGUMENT);                             
+                if val_len < size_of::<winsize>() {
+                    return Err(TwzError::INVALID_ARGUMENT);
                 }
                 let winsize = match self {
                     PtyHandleKind::Server(pty_server_handle) => pty_server_handle.get_winsize(),
@@ -139,15 +139,15 @@ impl Fd for PtyHandleKind {
                 Ok(())
             }
             IO_REGISTER_WINSIZE => {
-                if val_len < size_of::<winsize>() {                     
-                        return Err(TwzError::INVALID_ARGUMENT);                             
+                if val_len < size_of::<winsize>() {
+                    return Err(TwzError::INVALID_ARGUMENT);
                 }
                 match self {
                     PtyHandleKind::Server(pty_server_handle) => {
-                        pty_server_handle.set_winsize(unsafe {val.cast::<winsize>().read() })
+                        pty_server_handle.set_winsize(unsafe { val.cast::<winsize>().read() })
                     }
                     PtyHandleKind::Client(pty_client_handle) => {
-                        pty_client_handle.set_winsize(unsafe {val.cast::<winsize>().read() })
+                        pty_client_handle.set_winsize(unsafe { val.cast::<winsize>().read() })
                     }
                 }
                 Ok(())
@@ -156,10 +156,7 @@ impl Fd for PtyHandleKind {
         }
     }
 
-    fn waitpoint(
-        &self,
-        kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<WaitpointResult> {
+    fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
         let wp = match self {
             PtyHandleKind::Server(server) => server.waitpoint(kind == WAIT_WRITE),
             PtyHandleKind::Client(client) => client.waitpoint(kind == WAIT_WRITE),
@@ -236,10 +233,7 @@ impl Fd for Pipe {
         Err(std::io::ErrorKind::Unsupported.into())
     }
 
-    fn waitpoint(
-        &self,
-        kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<WaitpointResult> {
+    fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
         if kind == WAIT_WRITE {
             Ok(WaitpointResult {
                 sleep: self.write_waitpoint(),

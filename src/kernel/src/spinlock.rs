@@ -106,6 +106,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
     }
 }
 
+#[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     lock: &'a GenericSpinlock<T, Relax>,
     interrupt_state: bool,

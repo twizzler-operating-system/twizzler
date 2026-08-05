@@ -160,6 +160,7 @@ impl<T> SimpleLock<T> {
     }
 }
 
+#[must_use = "a dropped guard releases immediately; bind it to a variable"]
 struct SimpleGuard<'a, T> {
     lock: &'a SimpleLock<T>,
     int: bool,

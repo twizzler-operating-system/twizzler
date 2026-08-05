@@ -130,13 +130,14 @@ pub fn get_devices(spec: DriverSpec) -> Result<ObjID, TwzError> {
                 if device.is_bus() && device.bus_type() == BusType::Pcie {
                     for child in device.children() {
                         unsafe {
-
-                        let Some(info) =  child.get_info::<PcieDeviceInfo>(0)  else {continue;};
-                        if info.get_data().device_id == device_code
-                            && info.get_data().vendor_id == vendor_code
-                        {
-                            ids.push(child.id());
-                        }
+                            let Some(info) = child.get_info::<PcieDeviceInfo>(0) else {
+                                continue;
+                            };
+                            if info.get_data().device_id == device_code
+                                && info.get_data().vendor_id == vendor_code
+                            {
+                                ids.push(child.id());
+                            }
                         }
                     }
                 }

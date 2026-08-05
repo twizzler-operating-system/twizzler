@@ -68,7 +68,8 @@ pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> Obje
 /// index -- `idx` can originate from data resolved out of an object's own (possibly untrusted)
 /// memory, so an unbounded `idx` must not turn into out-of-bounds pointer arithmetic.
 fn max_fot_idx(handle: &object_handle) -> u64 {
-    ((handle.meta as usize) - (handle.start as usize)) as u64 / std::mem::size_of::<FotEntry>() as u64
+    ((handle.meta as usize) - (handle.start as usize)) as u64
+        / std::mem::size_of::<FotEntry>() as u64
 }
 
 impl ReferenceRuntime {

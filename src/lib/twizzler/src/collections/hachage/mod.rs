@@ -1,12 +1,11 @@
 pub type DefaultHashBuilder = ahash::RandomState;
 
-pub mod raw;
-mod control;
 mod benches;
+mod control;
 pub mod map;
+pub mod raw;
 
-pub use map::{PersistentHashMap, PHMsession};
-
+pub use map::{PHMsession, PersistentHashMap};
 use raw::HashTableAlloc;
 pub type PersistentHashMapBase<K, V, S = DefaultHashBuilder, A = HashTableAlloc> =
     raw::RawTable<(K, V), S, A>;

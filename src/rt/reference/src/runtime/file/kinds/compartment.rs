@@ -144,10 +144,7 @@ impl Fd for CompartmentFile {
         }
     }
 
-    fn waitpoint(
-        &self,
-        _kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<WaitpointResult> {
+    fn waitpoint(&self, _kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
         Err(ErrorKind::Unsupported.into())
     }
 

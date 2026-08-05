@@ -158,8 +158,7 @@ impl ReferenceRuntime {
                 // The aux vector is not optional: a libc finds it by walking past the envp
                 // terminator and reading pairs until AT_NULL, so omitting it means getauxval()
                 // walks off the end of this Vec. See twizzler_rt_abi::core::auxv.
-                entry_stack
-                    .extend_from_slice(&auxv::entries(self.sysinfo().page_size));
+                entry_stack.extend_from_slice(&auxv::entries(self.sysinfo().page_size));
                 self.init_for_compartment(init_info, entry_stack.as_mut_ptr());
                 std::mem::forget(entry_stack);
             }

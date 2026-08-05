@@ -239,4 +239,3 @@ fn gen_coreutils_app<T: uucore::Args>(util_map: &UtilityMap<T>) -> Command {
     }
     command
 }
-

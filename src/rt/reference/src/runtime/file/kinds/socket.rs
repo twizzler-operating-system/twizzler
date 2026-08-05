@@ -11,9 +11,7 @@ use std::{
 use libc::S_IFSOCK;
 use secgate::TwzError;
 pub use smoltcp::{dns, SmolTcpListener, SmolTcpStream};
-use twizzler_abi::syscall::{
-    ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
-};
+use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep};
 use twizzler_rt_abi::{
     bindings::{
         wait_kind, IO_REGISTER_ADDR, IO_REGISTER_PEER, IO_REGISTER_SOCKET_FLAGS, WAIT_READ,
@@ -268,7 +266,9 @@ impl Fd for SocketKind {
         match reg {
             x if x == IO_REGISTER_ADDR => write_data(self.get_endpoint_addr(false)?, val, val_len),
             x if x == IO_REGISTER_PEER => write_data(self.get_endpoint_addr(true)?, val, val_len),
-            x if x == IO_REGISTER_SOCKET_FLAGS => write_data(self.get_socket_flags()?, val, val_len),
+            x if x == IO_REGISTER_SOCKET_FLAGS => {
+                write_data(self.get_socket_flags()?, val, val_len)
+            }
 
             _ => Ok(()),
         }

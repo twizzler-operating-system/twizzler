@@ -621,24 +621,26 @@ fn unlock_tls_frame_allocator() {
 
 #[allow(static_mut_refs)]
 pub fn save_frame_allocator(fa: &mut FrameAllocator) -> bool {
-    if try_lock_tls_frame_allocator() {
-        unsafe {
-            if let Some(ref mut tls_fa) = TLS_FRAME_ALLOCATOR {
-                tls_fa.merge(fa);
-            } else {
-                TLS_FRAME_ALLOCATOR = Some(FrameAllocator::new(
-                    FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
-                    PHYS_LEVEL_LAYOUTS[0],
-                ));
-                TLS_FRAME_ALLOCATOR.as_mut().unwrap().merge(fa);
-                TLS_FRAME_ALLOCATOR.as_mut().unwrap().avoid_alloc = true;
+    crate::interrupt::with_disabled(|| {
+        if try_lock_tls_frame_allocator() {
+            unsafe {
+                if let Some(ref mut tls_fa) = TLS_FRAME_ALLOCATOR {
+                    tls_fa.merge(fa);
+                } else {
+                    TLS_FRAME_ALLOCATOR = Some(FrameAllocator::new(
+                        FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+                        PHYS_LEVEL_LAYOUTS[0],
+                    ));
+                    TLS_FRAME_ALLOCATOR.as_mut().unwrap().merge(fa);
+                    TLS_FRAME_ALLOCATOR.as_mut().unwrap().avoid_alloc = true;
+                }
             }
+            unlock_tls_frame_allocator();
+            true
+        } else {
+            false
         }
-        unlock_tls_frame_allocator();
-        true
-    } else {
-        false
-    }
+    })
 }
 
 #[allow(static_mut_refs)]
@@ -646,18 +648,20 @@ pub fn count_precharged_frames() -> usize {
     if !tls_ready() {
         return 0;
     }
-    if try_lock_tls_frame_allocator() {
-        let count = unsafe {
-            TLS_FRAME_ALLOCATOR
-                .as_ref()
-                .map(|fa| fa.precharge.len())
-                .unwrap_or(0)
-        };
-        unlock_tls_frame_allocator();
-        count
-    } else {
-        0
-    }
+    crate::interrupt::with_disabled(|| {
+        if try_lock_tls_frame_allocator() {
+            let count = unsafe {
+                TLS_FRAME_ALLOCATOR
+                    .as_ref()
+                    .map(|fa| fa.precharge.len())
+                    .unwrap_or(0)
+            };
+            unlock_tls_frame_allocator();
+            count
+        } else {
+            0
+        }
+    })
 }
 
 #[allow(static_mut_refs)]
@@ -669,15 +673,17 @@ pub fn take_frame_allocator() -> Option<FrameAllocator> {
         log::warn!("warning -- cannot take frame allocator while in critical section");
         return None;
     }
-    if try_lock_tls_frame_allocator() {
-        unsafe {
-            let fa = TLS_FRAME_ALLOCATOR.take();
-            unlock_tls_frame_allocator();
-            fa
+    crate::interrupt::with_disabled(|| {
+        if try_lock_tls_frame_allocator() {
+            unsafe {
+                let fa = TLS_FRAME_ALLOCATOR.take();
+                unlock_tls_frame_allocator();
+                fa
+            }
+        } else {
+            None
         }
-    } else {
-        None
-    }
+    })
 }
 
 pub fn take_or_new_frame_allocator() -> FrameAllocator {

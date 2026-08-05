@@ -317,7 +317,7 @@ extern "C" fn soft_interrupt_waker() {
                 handle_interrupt(ints[i]);
             }
         } else {
-            INT_THREAD_CONDVAR.wait(iq);
+            let _ = INT_THREAD_CONDVAR.wait(iq);
         }
     }
 }

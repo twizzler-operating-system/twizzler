@@ -21,7 +21,7 @@ use crate::{
     mutex::Mutex,
     once::Once,
     spinlock::Spinlock,
-    thread::{current_thread_ref, entry::start_new_kernel, priority::Priority, ThreadRef},
+    thread::{ThreadRef, current_thread_ref, entry::start_new_kernel, priority::Priority},
 };
 
 #[derive(Debug)]
@@ -353,7 +353,7 @@ extern "C" fn kthread_trace_writer() {
         let mut sig = TRACE_MGR.has_work.lock();
         log::trace!("ktrace thread: {} {}", did_work, *sig);
         if !*sig && !did_work {
-            TRACE_MGR.cv.wait(sig);
+            let _ = TRACE_MGR.cv.wait(sig);
         } else {
             *sig = false;
         }

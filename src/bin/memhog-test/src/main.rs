@@ -34,7 +34,11 @@ fn hog_round() {
 
     for (i, chunk) in chunks.iter().enumerate() {
         for (j, b) in chunk.iter().enumerate() {
-            assert_eq!(*b, pattern_byte(i, j), "corruption in chunk {i} at byte {j}");
+            assert_eq!(
+                *b,
+                pattern_byte(i, j),
+                "corruption in chunk {i} at byte {j}"
+            );
         }
     }
     // `chunks` drops here, freeing everything before the next round starts.

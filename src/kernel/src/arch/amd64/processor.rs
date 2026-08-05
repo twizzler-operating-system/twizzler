@@ -255,6 +255,11 @@ pub struct ArchProcessor {
     pub(super) active_cr3: AtomicU64,
 }
 
+/// Published in [`ArchProcessor::active_cr3`] while a processor is partway through switching
+/// page tables, during which it may hold entries for either the old or the new root. Matches
+/// every shootdown target, so such a processor is always conservatively included.
+pub(super) const CR3_IN_TRANSITION: u64 = u64::MAX;
+
 impl core::fmt::Debug for ArchProcessor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ArchProcessor")
@@ -310,30 +315,36 @@ pub fn halt_and_wait() {
     let proc = current_processor();
     let mwait_info = has_mwait();
     if let Some(mwait_info) = mwait_info {
-        {
-            if mwait_info.break_on_int {
-                unsafe { core::arch::asm!("cli") };
-            }
-            {
-                unsafe {
-                    core::arch::asm!("monitor", "mfence", in("rax") &proc.arch.wait_word, in("rcx") 0, in("rdx") 0);
-                }
-                if proc.has_work() {
-                    return;
-                }
-            }
+        // cli/monitor/re-check/mwait is the race-free idle sequence: an interrupt arriving
+        // after the has_work() check below stays pending and still breaks us out of mwait,
+        // since ECX=1 asks for interrupts as a break event even while masked.
+        if mwait_info.break_on_int {
+            unsafe { core::arch::asm!("cli") };
+        }
+        unsafe {
+            core::arch::asm!("monitor", "mfence", in("rax") &proc.arch.wait_word, in("rcx") 0, in("rdx") 0);
+        }
+        if !proc.has_work() {
             unsafe {
                 core::arch::asm!("mwait", in("rax") 0, in("rcx") 1);
             }
         }
-    } else {
-        {
-            if proc.has_work() {
-                return;
-            }
+        // Every path out of here must re-enable interrupts. Whatever broke us out of mwait is
+        // still only *pending* while masked, so returning with cli set leaves this processor
+        // deaf for the rest of the idle loop -- it never takes the timer, and never runs the
+        // TLB shootdown handler, stalling every shootdown that targets it.
+        if mwait_info.break_on_int {
+            unsafe { core::arch::asm!("sti") };
         }
+    } else {
+        if proc.has_work() {
+            return;
+        }
+        // sti and hlt must stay adjacent so the interrupt window opens no earlier than the
+        // halt; a wakeup landing between them would otherwise be lost. Return with interrupts
+        // enabled, for the same reason as above.
         unsafe {
-            core::arch::asm!("sti", "hlt", "cli");
+            core::arch::asm!("sti", "hlt");
         }
     }
 }

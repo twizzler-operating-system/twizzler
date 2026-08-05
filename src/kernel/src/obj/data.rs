@@ -565,7 +565,7 @@ impl Object {
         let mut dst_offset = dst_offset;
         let mut len = len;
         if self.use_pager() {
-            self.ensure_in_core(
+            let _ = self.ensure_in_core(
                 self.lock_page_tables(),
                 PageNumber::from_offset(src_offset),
                 (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
@@ -574,7 +574,7 @@ impl Object {
             )?;
         }
         if dst.use_pager() {
-            dst.ensure_in_core(
+            let _ = dst.ensure_in_core(
                 dst.lock_page_tables(),
                 PageNumber::from_offset(dst_offset),
                 (len.saturating_sub(1) / PageNumber::PAGE_SIZE) + 2,
@@ -722,7 +722,7 @@ impl Object {
         assert!(len.is_multiple_of(PHYS_LEVEL_LAYOUTS[0].size()));
 
         if self.use_pager() {
-            self.ensure_in_core(
+            let _ = self.ensure_in_core(
                 self.lock_page_tables(),
                 PageNumber::from_offset(src_offset),
                 len / PageNumber::PAGE_SIZE,

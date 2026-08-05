@@ -6,7 +6,7 @@
 use clap::{Args, ValueEnum};
 
 use crate::{
-    qemu::{self, print_report, RunConfig},
+    qemu::{self, print_report, KvmOptions, RunConfig},
     BuildConfig, QemuOptions,
 };
 
@@ -48,8 +48,13 @@ pub struct TestOptions {
         help = "Additional options to pass to Qemu. May be specified multiple times."
     )]
     pub qemu_options: Vec<String>,
-    #[clap(long, help = "Don't build anything, just run against the current image")]
+    #[clap(
+        long,
+        help = "Don't build anything, just run against the current image"
+    )]
     pub no_build: bool,
+    #[clap(flatten)]
+    pub kvm: KvmOptions,
     #[clap(
         long,
         help = "Override the scenario's guest memory size in MB (currently only read by --scenario lowmem; used to bisect the memory floor)"
@@ -76,6 +81,7 @@ impl TestOptions {
             gdb: 0,
             no_build: self.no_build,
             no_test_monitor: false,
+            kvm: self.kvm.clone(),
         }
     }
 }
@@ -140,7 +146,11 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
     print_report(&report);
 
     if !report.all_passed() {
-        eprintln!("FAILED: {} of {} tests failed", report.failed(), report.tests.len());
+        eprintln!(
+            "FAILED: {} of {} tests failed",
+            report.failed(),
+            report.tests.len()
+        );
         std::process::exit(33);
     }
 

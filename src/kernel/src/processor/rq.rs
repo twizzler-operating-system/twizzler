@@ -44,6 +44,7 @@ pub struct RunQueue<const N: usize> {
     last_tick: AtomicU64,
 }
 
+#[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct SchedLockGuard<'a, T> {
     pub(super) queue: LockGuard<'a, T, SpinLoop>,
 }

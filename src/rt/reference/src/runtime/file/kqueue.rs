@@ -4,8 +4,8 @@ use secgate::TwzError;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     bindings::{
-        kevent, kevent_filter, wait_kind, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE,
-        EV_DISABLE, EV_ENABLE, EV_ERROR, EV_ONESHOT, WAIT_READ, WAIT_WRITE,
+        kevent, kevent_filter, wait_kind, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, EV_DISABLE,
+        EV_ENABLE, EV_ERROR, EV_ONESHOT, WAIT_READ, WAIT_WRITE,
     },
     error::ArgumentError,
     fd::{FdFlags, FdInfo, FdKind, RawFd},
@@ -13,7 +13,10 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use crate::runtime::{file::get_fd_slots, file::Fd, ReferenceRuntime};
+use crate::runtime::{
+    file::{get_fd_slots, Fd},
+    ReferenceRuntime,
+};
 
 fn filter_to_wait_kind(filter: kevent_filter) -> Option<wait_kind> {
     if filter == EVFILT_READ {
@@ -100,7 +103,9 @@ impl KqueueFile {
                     oneshot: change.flags & EV_ONESHOT != 0,
                     fflags: change.fflags,
                     udata: change.udata,
-                    token: self.next_token.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    token: self
+                        .next_token
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 };
                 match pos {
                     Some(pos) => entries[pos] = entry,

@@ -99,14 +99,12 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return r;
         }
 
-
         let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
         if !ts {
             // TODO: this leaks the stuff that is allocated in libc's TLS
             let r = LOCAL_ALLOCATOR.alloc_early(layout);
             return r;
         }
-
 
         print_comp_name(layout, false);
         //let start_time = Instant::now();
@@ -134,7 +132,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
         }
 
- 
         let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
         if !ts {
             // TODO: this leaks the stuff that is allocated in libc's TLS
@@ -142,7 +139,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return r;
         }
 
-  
         print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc

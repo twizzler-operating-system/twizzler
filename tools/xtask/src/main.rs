@@ -11,6 +11,7 @@ mod triple;
 use std::{fmt::Display, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use qemu::KvmOptions;
 use toolchain::ToolchainCommands;
 use tracing::Level;
 use triple::{Arch, Machine, Triple};
@@ -222,6 +223,8 @@ struct QemuOptions {
     no_build: bool,
     #[clap(long, help = "Don't monitor testing system")]
     no_test_monitor: bool,
+    #[clap(flatten)]
+    kvm: KvmOptions,
 }
 
 impl From<&QemuOptions> for ImageOptions {

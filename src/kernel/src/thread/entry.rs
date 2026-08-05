@@ -116,7 +116,7 @@ impl<F, R> KthreadClosure<F, R> {
                 // we initialize the MaybeUninit.
                 return unsafe { guard.1.assume_init_read() };
             }
-            self.signal.wait(guard);
+            let _ = self.signal.wait(guard);
         }
     }
 }

@@ -181,7 +181,7 @@ impl<T> OnceWait<T> {
             || {
                 let guard = self.lock.lock();
                 if self.poll().is_none() {
-                    self.cv.wait(guard);
+                    let _ = self.cv.wait(guard);
                 }
             },
         )

@@ -3,7 +3,7 @@
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::bindings::{dl_phdr_info, loaded_image, loaded_image_id, object_handle};
 
-use super::{phdrs::PHDR_INFO, MinimalRuntime};
+use super::{MinimalRuntime, phdrs::PHDR_INFO};
 
 const NAME: &'static core::ffi::CStr = c"<main>";
 impl MinimalRuntime {

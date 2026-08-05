@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use clap::Args;
 use unittest_report::{ReportInfo, ReportStatus};
 
 use crate::{
@@ -42,7 +43,12 @@ impl Default for RunConfig {
             memory: DEFAULT_MEMORY.to_string(),
             label: "run".to_string(),
             monitor: false,
-            heartbeat_tries: 20,
+            // Overridable because the cap is wall-clock, not progress-based: emulated (non-KVM)
+            // runs are far slower than the default allows for.
+            heartbeat_tries: std::env::var("TWZ_HEARTBEAT_TRIES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
         }
     }
 }
@@ -90,6 +96,57 @@ fn decode_guest_code(status: ExitStatus) -> Option<i32> {
     (code & 1 == 1).then(|| (code - 1) / 2)
 }
 
+/// The KVM flags, shared by every subcommand that boots qemu.
+#[derive(Args, Debug, Clone, Default)]
+pub struct KvmOptions {
+    #[clap(
+        long,
+        conflicts_with = "disable_kvm",
+        help = "Force KVM acceleration on. Default: use KVM if the host supports it."
+    )]
+    enable_kvm: bool,
+    #[clap(
+        long,
+        help = "Force KVM acceleration off. Default: use KVM if the host supports it."
+    )]
+    disable_kvm: bool,
+}
+
+impl KvmOptions {
+    pub fn mode(&self) -> KvmMode {
+        match (self.enable_kvm, self.disable_kvm) {
+            (true, _) => KvmMode::Enabled,
+            (_, true) => KvmMode::Disabled,
+            _ => KvmMode::Auto,
+        }
+    }
+}
+
+/// Whether to run the guest under KVM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvmMode {
+    /// Use KVM if the host can support it.
+    Auto,
+    /// Use KVM regardless of what we detect.
+    Enabled,
+    /// Never use KVM.
+    Disabled,
+}
+
+impl KvmMode {
+    /// Resolve to an actual decision for a guest of `arch`. KVM can only run a guest of the host's
+    /// own architecture, and needs /dev/kvm present.
+    fn resolve(self, arch: Arch) -> bool {
+        match self {
+            KvmMode::Enabled => true,
+            KvmMode::Disabled => false,
+            KvmMode::Auto => {
+                std::env::consts::ARCH == arch.to_string() && Path::new("/dev/kvm").exists()
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct QemuCommand {
     cmd: Command,
@@ -126,7 +183,7 @@ impl QemuCommand {
         self.cmd.arg("-m").arg(&run.memory);
 
         // configure architechture specific parameters
-        self.arch_config();
+        self.arch_config(options.kvm.mode());
 
         // Connect disk image
         self.cmd.arg("-drive").arg(format!(
@@ -236,7 +293,7 @@ impl QemuCommand {
         port
     }
 
-    fn arch_config(&mut self) {
+    fn arch_config(&mut self, kvm: KvmMode) {
         let mut ovmf = get_toolchain_path().unwrap();
         match self.arch {
             Arch::X86_64 => {
@@ -252,10 +309,7 @@ impl QemuCommand {
                     .arg("-device")
                     .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
 
-                let has_kvm = std::env::consts::ARCH == self.arch.to_string()
-                    && Path::new("/dev/kvm").exists();
-
-                if has_kvm {
+                if kvm.resolve(self.arch) {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
@@ -304,7 +358,12 @@ pub(crate) fn print_report(report: &ReportInfo) {
         .max(4);
 
     println!();
-    println!("{:<width$}  {:>8}  status", "test", "time", width = name_width);
+    println!(
+        "{:<width$}  {:>8}  status",
+        "test",
+        "time",
+        width = name_width
+    );
     for test in &report.tests {
         println!(
             "{:<width$}  {:>7}s  {}",

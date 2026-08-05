@@ -79,4 +79,3 @@ fn run_debug_program(run_cli: &RunCli) -> miette::Result<()> {
 fn test1() {
     twizzler_abi::klog_println!("IN TEST 1");
 }
-

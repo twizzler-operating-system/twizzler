@@ -14,9 +14,11 @@ use crate::{
     memory::pagetables::{
         MappingCursor, tlb_shootdown_inc_count, trace_tlb_invalidation, trace_tlb_shootdown,
     },
+    arch::processor::CR3_IN_TRANSITION,
     processor::{
         Processor,
         mp::{current_processor, with_each_active_processor},
+        sched::CpuSet,
         spin_wait_until, tls_ready,
     },
     thread::current_thread_ref,
@@ -85,9 +87,14 @@ impl TlbInvData {
     /// -- by then the underlying page-table write that triggered this invalidation has
     /// already happened, so it'll walk fresh, correct PTEs. Global invalidations always
     /// go to every processor regardless, matching the receiver-side check in
-    /// `do_invalidation`.
+    /// `do_invalidation`. A processor midway through a page-table switch publishes
+    /// `CR3_IN_TRANSITION`, which matches here, because it may hold entries for either root.
     fn should_target(&self, p: &Processor) -> bool {
-        self.global() || p.arch.active_cr3.load(Ordering::Acquire) == self.target()
+        if self.global() {
+            return true;
+        }
+        let active = p.arch.active_cr3.load(Ordering::Acquire);
+        active == CR3_IN_TRANSITION || active == self.target()
     }
 
     fn apply_offset(&self, map: &MappingCursor) -> Self {
@@ -396,10 +403,21 @@ impl ArchTlbMgr {
         let proc = current_processor();
 
         let mut count = 0;
-        // Distribute the invalidation commands
+        // Our caller's page-table writes must be visible to any processor that we then decide
+        // *not* to target. Those writes and the `active_cr3` loads below form a store->load
+        // pair, the one reordering x86 permits, so without this fence we could observe a
+        // processor's pre-switch cr3 while it observes our pre-unmap PTEs -- and we would skip
+        // it. Pairs with the SeqCst store in `ArchContext::switch_to_target`.
+        core::sync::atomic::fence(Ordering::SeqCst);
+        // Distribute the invalidation commands, recording exactly who we sent to. `should_target`
+        // reads each processor's active cr3, which can change underneath us, so the wait below has
+        // to use the set we actually sent to rather than re-evaluating the predicate against a
+        // cr3 that has since moved on.
+        let mut targets = CpuSet::empty();
         with_each_active_processor(|p| {
             if p.id != proc.id && self.data.should_target(p) {
                 p.arch.tlb_shootdown_info.insert(self.data.clone());
+                targets.insert(p.id);
                 count += 1;
             }
         });
@@ -413,38 +431,47 @@ impl ArchTlbMgr {
         self.data.do_invalidation();
 
         if count > 0 {
-            // Ensure we don't wait too long -- TODO: this is because this TLB shootdown algorithm
-            // is Not Great (tm) and should be improved (targeted shootdown, pcid tracking, ...)
-            const MAX_ITERS: usize = 5000;
-            // Wait for each processor to report that it is done.
+            // Wait for every targeted processor to report that it is done. This wait must not be
+            // bounded: our caller frees the unmapped frames -- page table pages included -- as soon
+            // as we return, so giving up early lets a processor that still holds stale entries walk
+            // recycled memory. It cannot deadlock, because spin_wait_until services our own
+            // incoming shootdowns on every pass.
+            //
+            // Resend periodically rather than on every pass: a processor that had interrupts
+            // disabled when the broadcast went out needs another nudge, but hammering its APIC only
+            // delays the acknowledgement we're waiting for.
+            // TODO: targeted shootdown and pcid tracking would cut how often we get here at all.
+            const RESEND_INTERVAL: usize = 4096;
+            const WARN_INTERVAL: usize = 1 << 22;
             with_each_active_processor(|p| {
-                let mut iters = 0;
-                if p.id != proc.id && self.data.should_target(p) {
-                    spin_wait_until(
-                        || {
-                            iters += 1;
-                            if iters >= MAX_ITERS / 2 {
-                                super::super::super::apic::send_ipi(
-                                    Destination::Single(p.id),
-                                    TLB_SHOOTDOWN_VECTOR,
-                                );
-                            }
-                            if p.arch.tlb_shootdown_info.is_finished() || iters >= MAX_ITERS {
-                                if iters == MAX_ITERS {
-                                    logln!(
-                                        "warning -- TLB shootdown pause on CPUs {} -> {}",
-                                        proc.id,
-                                        p.id
-                                    );
-                                }
-                                Some(())
-                            } else {
-                                None
-                            }
-                        },
-                        || {},
-                    );
+                if !targets.contains(p.id) {
+                    return;
                 }
+                let mut iters: usize = 0;
+                spin_wait_until(
+                    || {
+                        if p.arch.tlb_shootdown_info.is_finished() {
+                            return Some(());
+                        }
+                        iters += 1;
+                        if iters % RESEND_INTERVAL == 0 {
+                            super::super::super::apic::send_ipi(
+                                Destination::Single(p.id),
+                                TLB_SHOOTDOWN_VECTOR,
+                            );
+                        }
+                        if iters % WARN_INTERVAL == 0 {
+                            logln!(
+                                "warning -- TLB shootdown stalled on CPUs {} -> {} ({} iterations)",
+                                proc.id,
+                                p.id,
+                                iters
+                            );
+                        }
+                        None
+                    },
+                    || {},
+                );
             });
         }
         drop(_guard);

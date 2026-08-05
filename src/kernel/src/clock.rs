@@ -242,7 +242,7 @@ extern "C" fn soft_timeout_clock() {
             timeout.call();
             requeue_all();
         } else {
-            TIMEOUT_THREAD_CONDVAR.wait(tq);
+            let _ = TIMEOUT_THREAD_CONDVAR.wait(tq);
         }
     }
 }

@@ -231,10 +231,7 @@ impl Fd for RawFile {
         Err(ErrorKind::Unsupported.into())
     }
 
-    fn waitpoint(
-        &self,
-        _kind: twizzler_rt_abi::bindings::wait_kind,
-    ) -> Result<WaitpointResult> {
+    fn waitpoint(&self, _kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
         if let Some(me) = self.handle.find_meta_ext(MEXT_SIZED) {
             let ready = self.inner.pos.load(Ordering::SeqCst) < me.value.load(Ordering::SeqCst);
             Ok(WaitpointResult {

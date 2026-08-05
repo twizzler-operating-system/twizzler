@@ -22,7 +22,7 @@ use self::{flags::THREAD_PROC_IDLE, priority::Priority};
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt::Destination,
-    memory::context::{ContextRef, UserContext},
+    memory::context::{ContextRef, UserContext, virtmem::VirtContext},
     obj::{ThreadSleepLinker, control::ControlObjectCacher},
     processor::{
         KERNEL_STACK_SIZE,
@@ -206,6 +206,17 @@ impl Thread {
             if let Some(ref ctx) = self.memory_context {
                 // We have to use active_id here to avoid a mutex.
                 ctx.switch_to(self.secctx.active_id());
+            } else {
+                // Threads with no memory context of their own (the idle thread, kernel
+                // threads) must not be left running on the outgoing thread's page tables.
+                // That context can be dropped while we sit on it -- ArchContext::drop frees
+                // the root page table without checking whether any CPU still has it in cr3 --
+                // and once the frame is recycled every translation, including the fault
+                // handler's own, resolves through garbage. Switching to the kernel context
+                // keeps us on tables that outlive any user context. This is cheap in the
+                // common case: switch_to_target skips the cr3 write when it's unchanged, so
+                // back-to-back idle switches don't pay for it.
+                VirtContext::switch_to_kernel_context();
             }
         }
         self.arch_switch_to(current)
@@ -493,6 +504,7 @@ impl Ord for Thread {
     }
 }
 
+#[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct CriticalGuard<'a> {
     thread: &'a Thread,
     loc: &'static core::panic::Location<'static>,

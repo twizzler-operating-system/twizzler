@@ -282,7 +282,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
                 .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
             {
                 let guard = obj.lock_page_tables();
-                crate::pager::ensure_in_core(
+                let _ = crate::pager::ensure_in_core(
                     &obj,
                     guard,
                     &[(PageNumber::from_offset(0), MAX_SIZE / PageNumber::PAGE_SIZE)],
