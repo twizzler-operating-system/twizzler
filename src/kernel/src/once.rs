@@ -6,6 +6,14 @@ use core::{
 
 use crate::{condvar::CondVar, processor::spin_wait_until, spinlock::Spinlock};
 
+/// One-time lazy initialization where waiters **spin**.
+///
+/// Use this when any caller may be in a context that cannot sleep: interrupt handlers, early boot
+/// before threading, the allocator and memory tracker, the scheduler, or anything reached from
+/// inside `Mutex::lock` itself. Because waiters spin without yielding, a waiter that can starve
+/// the initializer deadlocks on a uniprocessor -- see [`Once::wait`].
+///
+/// When every caller can sleep, prefer [`OnceWait`], whose waiters block instead.
 pub struct Once<T> {
     status: AtomicU32,
     data: UnsafeCell<MaybeUninit<T>>,
@@ -90,7 +98,23 @@ impl<T> Once<T> {
         }
     }
 
+    /// Whether the data is initialized, without ever waiting.
+    ///
+    /// Unlike [`Self::poll`], this never spins: it returns false while another thread is still
+    /// running the initializer. Callers that must not block on someone else's initialization --
+    /// notably anything running on the idle thread -- have to use this. See the deadlock note on
+    /// [`Self::wait`].
+    pub fn is_complete(&self) -> bool {
+        self.status.load(Ordering::SeqCst) == COMPLETE
+    }
+
     /// Wait until the data is ready (someone calls call_once).
+    ///
+    /// This spins without yielding, so the waiter must not be able to starve the initializer. On a
+    /// uniprocessor that means never waiting on an initializer running at a lower priority: the
+    /// waiter stays runnable forever and the initializer is never scheduled again. Use
+    /// [`Self::is_complete`] from contexts that cannot make that guarantee, or [`OnceWait`] when
+    /// every caller can sleep -- see the note on this type.
     pub fn wait(&self) -> &T {
         spin_wait_until(|| self.poll(), || {})
     }
@@ -107,6 +131,15 @@ impl<T> Drop for Once<T> {
     }
 }
 
+/// One-time lazy initialization where waiters **block** on a condvar.
+///
+/// Prefer this to [`Once`] whenever every caller can sleep, which in practice means anything
+/// guarding a sleeping `Mutex`: a blocked waiter is not runnable, so it cannot starve the
+/// initializer no matter their relative priorities or how many cpus there are. That is the failure
+/// [`Once`] is subject to.
+///
+/// Not usable from interrupt context, early boot, the allocator, or the scheduler -- those need
+/// [`Once`].
 pub struct OnceWait<T> {
     ready: AtomicBool,
     lock: Spinlock<bool>,
@@ -143,16 +176,22 @@ impl<T> OnceWait<T> {
             if *guard {
                 drop(guard);
                 return self.wait();
-            } else {
-                *guard = true;
-                // We will initialize this Once.
-                // SAFETY: We are the only ones who can access the UnsafeCell, here, since we
-                // succeeded in locking with *guard == false.
-                unsafe {
-                    (*self.data.get()).as_mut_ptr().write(f());
-                }
             }
+            *guard = true;
+            // Release before running the initializer. It may allocate, and allocation can sleep
+            // (alloc_frame with WAIT_OK waits on a condvar) -- sleeping while holding a spinlock
+            // is the hazard mutex.rs warns about. The in-progress flag keeps other callers out.
+            drop(guard);
+            // SAFETY: We are the only ones who can access the UnsafeCell, here, since we
+            // succeeded in locking with *guard == false and set it before releasing.
+            unsafe {
+                (*self.data.get()).as_mut_ptr().write(f());
+            }
+            // Publish under the lock: wait() checks poll() while holding it and then sleeps, so
+            // storing outside would open a lost-wakeup window between that check and the sleep.
+            let guard = self.lock.lock();
             self.ready.store(true, Ordering::SeqCst);
+            drop(guard);
             self.cv.signal();
         }
         // SAFETY: Data will never change, since the status is COMPLETE, and the data is
@@ -162,6 +201,11 @@ impl<T> OnceWait<T> {
 
     unsafe fn force_get(&self) -> &T {
         unsafe { &*(*self.data.get()).as_ptr() }
+    }
+
+    /// Whether the data is initialized, without waiting.
+    pub fn is_complete(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
     }
 
     /// If the data is not ready, then return None, or return Some if the data is ready.

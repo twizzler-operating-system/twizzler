@@ -26,6 +26,23 @@ struct InternalThread {
     int_id: u32,
 }
 
+impl Drop for InternalThread {
+    fn drop(&mut self) {
+        // The kernel does not delete a repr object whose id it handed to userspace via sys_spawn
+        // (see Thread::drop in the kernel), because doing so races the spawner's map. We own it,
+        // so we delete it -- otherwise every spawned thread leaks one object.
+        let id = self.repr.id();
+        let _ = twizzler_abi::syscall::sys_object_ctrl(
+            id,
+            twizzler_abi::syscall::ObjectControlCmd::Delete(
+                twizzler_abi::syscall::DeleteFlags::empty(),
+            ),
+            0,
+            0,
+        );
+    }
+}
+
 use rustc_alloc::{collections::btree_map::BTreeMap, sync::Arc};
 static THREAD_SLOTS: Mutex<BTreeMap<u32, Arc<InternalThread>>> = Mutex::new(BTreeMap::new());
 static THREAD_ID_COUNTER: IdCounter = IdCounter::new_one();

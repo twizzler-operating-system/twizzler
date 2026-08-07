@@ -4,6 +4,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     str::FromStr,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -71,6 +75,39 @@ pub struct RunOutcome {
     pub ssh_port: u16,
     /// Why a scenario's post-boot hook failed, if it ran and failed.
     pub hook_error: Option<String>,
+    /// Set when we concluded the guest was dead and stopped it ourselves, rather than letting the
+    /// run burn its whole wall-clock budget producing nothing.
+    pub guest_death: Option<GuestDeath>,
+}
+
+/// How we decided a guest had died.
+#[derive(Debug, Clone, Copy)]
+pub enum GuestDeath {
+    /// A panic marker was seen on the console.
+    Panicked,
+    /// The console went silent for this long. Covers panics whose text was garbled by concurrent
+    /// cpus as well as guests that wedge without panicking at all.
+    Silent(Duration),
+}
+
+impl GuestDeath {
+    pub fn describe(&self) -> String {
+        match self {
+            GuestDeath::Panicked => "guest kernel panicked".to_string(),
+            GuestDeath::Silent(d) => format!(
+                "guest console silent for {}s (hung, or a panic whose text was garbled)",
+                d.as_secs()
+            ),
+        }
+    }
+
+    /// Process exit code, kept distinct from 33 (tests reported failures) and 34 (timed out).
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            GuestDeath::Panicked => 35,
+            GuestDeath::Silent(_) => 36,
+        }
+    }
 }
 
 impl RunOutcome {
@@ -406,15 +443,52 @@ fn serial_log_path(label: &str) -> PathBuf {
     PathBuf::from("target/test-logs").join(format!("{}.log", label))
 }
 
+/// Markers that mean the guest kernel is dead. `panic.rs` prints `[error] panicked at ...` first,
+/// then the lock dump, the backtrace, and finally the test-mode banner. The banner claims the
+/// machine is resetting, but the handler only halts the panicking cpu, so nothing ever resets it.
+///
+/// This is a *fast path only*, and an unreliable one: the emergency console cannot take a lock (it
+/// has to be callable from critical sections and from the panic handler itself), so on a
+/// multi-cpu panic these lines come out interleaved character by character with whatever another
+/// cpu is printing, and no contiguous substring survives. An observed smp4 panic produced
+/// `!!k! eTErSTn MeODlE /PAsNIrC c--/ RmESeETmTIoNGr`, matching neither marker. The silence
+/// watchdog below is the mechanism that actually has to be correct.
+const GUEST_DEAD_MARKERS: [&str; 2] = ["[error] panicked at", "TEST MODE PANIC"];
+
+/// How long to keep draining serial output after a marker matches, so the lock dump and backtrace
+/// that follow the first panic line still make it into the transcript.
+const PANIC_DRAIN: Duration = Duration::from_secs(30);
+
+/// How long the serial console may stay completely silent before we call the run dead.
+///
+/// A halted guest emits nothing, which is the one signal that cannot be garbled by interleaving.
+/// This catches panics whose text was shredded, and equally catches guests that wedge without
+/// panicking at all. Override with `TWZ_SILENCE_TIMEOUT` (seconds) if a genuinely quiet phase
+/// trips it; `0` disables it.
+fn silence_timeout() -> Option<Duration> {
+    let secs = std::env::var("TWZ_SILENCE_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(180u64);
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
 /// Stream qemu's serial output to our stdout and, if we have one, to a transcript file, returning
 /// the first complete test report seen.
+///
+/// `panicked` is raised as soon as a death marker goes by, and `last_line` is bumped on every line,
+/// so the waiter can stop a run that has died instead of waiting out the heartbeat budget.
 fn read_serial(
     stdout: Option<std::process::ChildStdout>,
     mut log: Option<std::fs::File>,
+    panicked: Arc<AtomicBool>,
+    last_line: Arc<AtomicU64>,
+    started: std::time::Instant,
 ) -> Option<ReportInfo> {
     let stdout = stdout?;
     let mut found = None;
     for line in BufReader::new(stdout).lines() {
+        last_line.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
         let Ok(line) = line else {
             continue;
         };
@@ -423,12 +497,15 @@ fn read_serial(
         if let Some(log) = log.as_mut() {
             let _ = writeln!(log, "{}", line);
         }
+        if GUEST_DEAD_MARKERS.iter().any(|m| line.contains(m)) {
+            panicked.store(true, Ordering::SeqCst);
+        }
         // Keep draining once a report has landed rather than dropping the pipe: anything the
         // guest prints afterwards would otherwise fill it and wedge qemu.
         if found.is_none() {
             if let Some(rest) = line.strip_prefix("REPORT ") {
                 if let Ok(ReportStatus::Ready(report)) =
-                    unittest_report::Report::from_str(rest.trim()).map(|report| report.status)
+                    unittest_report::Report::from_prefix(rest.trim()).map(|report| report.status)
                 {
                     found = Some(report);
                 }
@@ -474,21 +551,73 @@ pub(crate) fn run_once(
     });
     let logging_to = serial_log.as_ref().filter(|_| log_file.is_some()).cloned();
 
-    let reader_thread = std::thread::spawn(move || read_serial(child_stdout, log_file));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let last_line = Arc::new(AtomicU64::new(0));
+    let started = std::time::Instant::now();
+    let reader_panicked = panicked.clone();
+    let reader_last_line = last_line.clone();
+    let reader_thread = std::thread::spawn(move || {
+        read_serial(
+            child_stdout,
+            log_file,
+            reader_panicked,
+            reader_last_line,
+            started,
+        )
+    });
 
+    let mut death: Option<GuestDeath> = None;
     let exit_status = if run.monitor {
+        // Poll at a finer grain than the heartbeat so a dead guest is noticed promptly, but keep
+        // counting tries in heartbeat-sized units: `heartbeat_tries` is the run's wall-clock budget
+        // and callers tune it per configuration.
+        const POLL: Duration = Duration::from_secs(1);
+        const HEARTBEAT: Duration = Duration::from_secs(15);
+        let silence_timeout = silence_timeout();
         let mut tries = 0;
+        let mut since_heartbeat = Duration::ZERO;
+        let mut died_at: Option<std::time::Instant> = None;
         loop {
-            if let Some(es) = child.wait_timeout(Duration::from_secs(15))? {
+            if let Some(es) = child.wait_timeout(POLL)? {
                 break Some(es);
             }
+
+            // A guest that has stopped talking has stopped running. This is the check that has to
+            // work, because the textual markers do not survive concurrent cpus printing.
+            if let Some(limit) = silence_timeout {
+                let quiet = started
+                    .elapsed()
+                    .saturating_sub(Duration::from_millis(last_line.load(Ordering::SeqCst)));
+                if quiet >= limit {
+                    death = Some(GuestDeath::Silent(quiet));
+                    break None;
+                }
+            }
+
+            if panicked.load(Ordering::SeqCst) {
+                // Give the panic path time to finish spilling its lock dump and backtrace, then
+                // stop: it is never coming back on its own.
+                death = Some(GuestDeath::Panicked);
+                let died_at = *died_at.get_or_insert_with(std::time::Instant::now);
+                if died_at.elapsed() >= PANIC_DRAIN {
+                    break None;
+                }
+                continue;
+            }
+
+            since_heartbeat += POLL;
+            if since_heartbeat < HEARTBEAT {
+                continue;
+            }
+            since_heartbeat = Duration::ZERO;
+
             let Some(stdin) = child_stdin.as_mut() else {
                 break None;
             };
             if stdin.write_all(b"status\n").is_err() {
                 // qemu closed its end, so it is already on its way out; collect its status
                 // instead of calling this a timeout.
-                break child.wait_timeout(Duration::from_secs(15))?;
+                break child.wait_timeout(HEARTBEAT)?;
             }
             tries += 1;
             if tries > run.heartbeat_tries {
@@ -513,6 +642,7 @@ pub(crate) fn run_once(
         serial_log: logging_to,
         ssh_port,
         hook_error: None,
+        guest_death: death,
     })
 }
 
@@ -530,6 +660,11 @@ pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
         ..Default::default()
     };
     let outcome = run_once(&cli, &run, &image)?;
+
+    if let Some(death) = outcome.guest_death {
+        eprintln!("FAILED: {}", death.describe());
+        std::process::exit(death.exit_code());
+    }
 
     let Some(exit_status) = outcome.qemu_exit else {
         eprintln!("qemu timed out");

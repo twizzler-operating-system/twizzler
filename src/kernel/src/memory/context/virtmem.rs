@@ -385,6 +385,9 @@ impl VirtContext {
                     pt.remove_invalidate(arch.target.paddr(), cursor);
                     if did_unmap {
                         pt.dec_map_count();
+                        if pt.map_count() == 0 {
+                            region.object().note_last_unmap();
+                        }
                     }
                 }
             }
@@ -564,6 +567,7 @@ impl UserContext for VirtContext {
         let mut slots = self.regions.lock();
         if let Some(slot) = slots.remove_region(info.start_vaddr()) {
             drop(slots);
+            fault::note_unmap(info.raw(), slot.object());
             if slot.should_sync.load(core::sync::atomic::Ordering::SeqCst) {
                 if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
                     log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
@@ -581,6 +585,9 @@ impl UserContext for VirtContext {
                     pt.remove_invalidate(arch.target.paddr(), cursor);
                     if did_unmap {
                         pt.dec_map_count();
+                        if pt.map_count() == 0 {
+                            slot.object().note_last_unmap();
+                        }
                     }
                 }
             }
@@ -806,7 +813,13 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         );
         kctx.with_arch(KERNEL_SCTX, |arch| {
             if arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE), &mut fa) {
-                self.object().lock_page_tables().dec_map_count();
+                let mut pt = self.object().lock_page_tables();
+                pt.dec_map_count();
+                let last = pt.map_count() == 0;
+                drop(pt);
+                if last {
+                    self.object().note_last_unmap();
+                }
             }
         });
         kernel_slot_counter()

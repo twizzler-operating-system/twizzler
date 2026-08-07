@@ -171,6 +171,8 @@ impl TlbInvData {
             return;
         }
         let our_cr3 = unsafe { x86::controlregs::cr3() };
+        // Re-enabling these needs emerglogln, not logln: this runs from inside `GenericSpinlock`'s
+        // spin, where taking the console lock deadlocks a cpu against itself.
         /*
         logln!(
             "invalidation started on CPU {}: target = {:x} ({}) {} {}",
@@ -582,8 +584,13 @@ impl TlbShootdownInfo {
             let mut iters = 0;
             while self.lock.swap(true, Ordering::Acquire) {
                 iters += 1;
-                if iters > 1000 {
-                    log::warn!("TLB complete pause");
+                // emerglogln, not log::warn, and once rather than per iteration. This runs from
+                // two contexts that must not take the console spinlock: the IPI handler, which can
+                // interrupt a cpu already holding it, and `spin_wait_iteration` from inside
+                // `GenericSpinlock::lock`'s spin -- where, if the lock being waited for *is* the
+                // console lock, taking a second ticket on it deadlocks the cpu against itself.
+                if iters == 1001 {
+                    emerglogln!("TLB complete pause");
                 }
                 core::hint::spin_loop();
             }

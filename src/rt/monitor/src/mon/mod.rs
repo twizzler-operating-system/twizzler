@@ -41,6 +41,17 @@ pub(crate) mod space;
 pub mod stat;
 pub(crate) mod thread;
 
+/// Take the calling thread's happylock key, failing instead of panicking if it already holds one.
+///
+/// happylock hands each thread exactly one key, so the monitor's locks are not re-entrant. A gate
+/// call arriving from a thread that already holds the key has to fail: the case that matters is a
+/// monitor panic, whose backtrace walk re-enters through `get_image_info` -> the library and
+/// compartment getters below. Unwrapping there turns a diagnosable panic into
+/// "panicked while processing panic. aborting." with no stack at all.
+pub(crate) fn reentrant_key() -> Result<ThreadKey, TwzError> {
+    ThreadKey::get().ok_or(GenericError::WouldBlock.into())
+}
+
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
 /// We split the state into the following components: 'space', managing the virtual memory space and
 /// mapping objects, 'thread_mgr', which manages all threads owned by the monitor (typically, all

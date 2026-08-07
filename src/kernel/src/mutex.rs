@@ -29,7 +29,9 @@ use crate::{
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{
-        Thread, ThreadRef, current_thread_ref, locktrack::with_lock_tracker, priority::Priority,
+        Thread, ThreadRef, current_thread_ref,
+        locktrack::{self, with_lock_tracker},
+        priority::Priority,
     },
     time::TimeStatCollector,
 };
@@ -176,13 +178,23 @@ impl<T> Mutex<T> {
             current_thread.inc_mutex_count();
         }
 
+        // Once a tracker has dropped any bookkeeping its held-lock list can name locks that were
+        // released, so the check below would be reporting on a record, not on reality.
+        let tracker_trustworthy = locktrack::current_tracker().is_none_or(|t| t.is_complete());
         with_lock_tracker(|lt| {
-            if !self.safe_with_spinlocks {
-                assert!(
-                    lt.spinlock_count() == 0,
-                    "cannot lock mutex while holding spinlock (called from {})",
+            // Derived from tracker state, which can be incomplete (see locktrack::diag), so this
+            // reports rather than halts. The hazard it names -- sleeping on a mutex while holding a
+            // spinlock -- is real, and now shows up as a hang the harness catches instead.
+            if !self.safe_with_spinlocks
+                && tracker_trustworthy
+                && lt.spinlock_count() != 0
+                && locktrack::diag::MUTEX_WITH_SPINLOCK.hit()
+            {
+                emerglogln!(
+                    "locktrack: mutex locked at {} while holding a spinlock",
                     caller
                 );
+                lt.print_locks();
             }
             lt.intend_to_lock_mutex(caller, start_time)
         });

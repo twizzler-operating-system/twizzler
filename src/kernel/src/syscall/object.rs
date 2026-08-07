@@ -8,7 +8,7 @@ use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     pager::PagerFlags,
     syscall::{
-        DeleteFlags, EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
+        EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
         ObjectCreate, ObjectCreateFlags, ObjectInfo,
     },
 };
@@ -24,7 +24,7 @@ use crate::{
     memory::context::{Context, ContextRef, UserContext, virtmem::Slot},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
-    once::Once,
+    once::OnceWait,
     random::getrandom,
     security::get_sctx,
     syscall::create_user_slice,
@@ -56,10 +56,7 @@ pub fn sys_object_create(
     if obj.use_pager() {
         crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
-            let _ = object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
-                .inspect_err(|e| {
-                    log::warn!("failed to delete object {} during creation: {}", id, e)
-                });
+            obj.set_delete_on_last_unmap();
         }
         return Ok(obj.id());
     }
@@ -98,9 +95,12 @@ pub fn sys_object_create(
         obj.id(),
     );
     crate::obj::register_object(obj.clone());
+    // Deliberately not an immediate delete: `object_ctrl`'s Delete marks the object *and* runs
+    // scan_deleted() inline, and a brand-new object has no mappings and no pins, so it was
+    // reap-eligible before its creator could map it. The flag means "delete on last unmap", so
+    // record that and let the unmap path decide.
     if create.flags.contains(ObjectCreateFlags::DELETE) {
-        let _ = object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
-            .inspect_err(|e| log::warn!("failed to delete object {} during creation: {}", id, e));
+        obj.set_delete_on_last_unmap();
     }
     Ok(obj.id())
 }
@@ -119,11 +119,25 @@ pub fn sys_object_map(
     };
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
-        crate::obj::LookupResult::WasDeleted => return Err(ObjectError::NoSuchObject.into()),
+        crate::obj::LookupResult::WasDeleted => {
+            log::warn!(
+                "sys_object_map: object {} was deleted ({})",
+                id,
+                crate::obj::describe_missing(id)
+            );
+            return Err(ObjectError::NoSuchObject.into());
+        }
         crate::obj::LookupResult::Found(obj) => obj,
         _ => match crate::pager::lookup_object_and_wait(id) {
             Some(obj) => obj,
-            None => return Err(ObjectError::NoSuchObject.into()),
+            None => {
+                log::warn!(
+                    "sys_object_map: object {} not found ({})",
+                    id,
+                    crate::obj::describe_missing(id)
+                );
+                return Err(ObjectError::NoSuchObject.into());
+            }
         },
     };
     // TODO
@@ -201,7 +215,7 @@ struct AllHandles {
     vm_contexts: BTreeMap<ObjID, Handle<ContextRef>>,
 }
 
-static ALL_HANDLES: Once<Mutex<AllHandles>> = Once::new();
+static ALL_HANDLES: OnceWait<Mutex<AllHandles>> = OnceWait::new();
 
 fn get_all_handles() -> &'static Mutex<AllHandles> {
     ALL_HANDLES.call_once(|| {

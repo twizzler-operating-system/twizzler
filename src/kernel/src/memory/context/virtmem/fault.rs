@@ -20,6 +20,67 @@ use crate::{
     time::TimeStatCollector,
 };
 
+/// DIAG (Mode B): the last few (slot, object) pairs removed from any context. A
+/// `MemoryContextViolation` says only that a slot has no region; what we need to know is whether
+/// it *had* one, and which object, which is otherwise unrecoverable once the region is gone.
+const UNMAP_HIST_LEN: usize = 32;
+const UNMAP_NOTE_LEN: usize = 48;
+
+#[derive(Clone, Copy)]
+struct UnmapRecord {
+    slot: usize,
+    id: ObjID,
+    note: [u8; UNMAP_NOTE_LEN],
+    note_len: usize,
+}
+
+static UNMAP_HIST: Spinlock<([UnmapRecord; UNMAP_HIST_LEN], usize)> = Spinlock::new((
+    [UnmapRecord {
+        slot: 0,
+        id: ObjID::new(0),
+        note: [0; UNMAP_NOTE_LEN],
+        note_len: 0,
+    }; UNMAP_HIST_LEN],
+    0,
+));
+
+pub(super) fn note_unmap(slot: usize, obj: &crate::obj::ObjectRef) {
+    let mut note = [0u8; UNMAP_NOTE_LEN];
+    let note_len = obj.get_notes().summarize(&mut note);
+    let mut hist = UNMAP_HIST.lock();
+    let idx = hist.1 % UNMAP_HIST_LEN;
+    hist.0[idx] = UnmapRecord {
+        slot,
+        id: obj.id(),
+        note,
+        note_len,
+    };
+    hist.1 += 1;
+}
+
+fn report_unmap_history(slot: usize) {
+    let hist = UNMAP_HIST.lock();
+    let total = hist.1;
+    for i in 0..UNMAP_HIST_LEN.min(total) {
+        let rec = hist.0[(total - 1 - i) % UNMAP_HIST_LEN];
+        if rec.slot == slot {
+            log::error!(
+                "fault-diag: slot {:x} last held object {} ({}), unmapped {} unmaps ago",
+                rec.slot,
+                rec.id,
+                core::str::from_utf8(&rec.note[..rec.note_len]).unwrap_or("<non-utf8 note>"),
+                i
+            );
+            return;
+        }
+    }
+    log::error!(
+        "fault-diag: slot {:x} not in the last {} unmaps",
+        slot,
+        UNMAP_HIST_LEN.min(total)
+    );
+}
+
 struct FaultStats {
     count: usize,
     time: TimeStatCollector,
@@ -298,6 +359,23 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
         );
     }
     if let Err(upcall) = res {
+        if let UpcallInfo::MemoryContextViolation(_) = upcall
+            && let Ok(slot) = TryInto::<Slot>::try_into(addr)
+        {
+            report_unmap_history(slot.raw());
+        }
+        if !flags.contains(PageFaultFlags::USER) {
+            // The upcall is queued onto the thread's user entry frame, so it does nothing for a
+            // fault taken in the kernel: this handler returns to the faulting kernel instruction,
+            // which faults again. There is no unwind path, so name the culprit loudly — the bound
+            // in `send_upcall` is what actually stops it.
+            log::error!(
+                "kernel-mode fault at ip {:?} on unresolvable address {:?} ({:?}) cannot be unwound",
+                ip,
+                addr,
+                cause
+            );
+        }
         current_thread_ref().unwrap().send_upcall(upcall);
     }
 }

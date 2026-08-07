@@ -12,6 +12,9 @@ pub struct Unmapper {
 #[derive(Copy, Clone, Debug)]
 pub enum UnmapCommand {
     SpaceUnmap(MapInfo),
+    /// Unmap one specific slot, owned outright by the handle that enqueued it. Not routed through
+    /// the MapInfo-keyed table, which cannot represent more than one mapping per object.
+    SlotUnmap(usize),
 }
 
 impl Unmapper {
@@ -30,6 +33,9 @@ impl Unmapper {
                                     UnmapCommand::SpaceUnmap(info) => {
                                         let mut space = monitor.space.lock().unwrap();
                                         space.handle_drop(info);
+                                    }
+                                    UnmapCommand::SlotUnmap(slot) => {
+                                        drop(super::UnmapOnDrop::new(slot));
                                     }
                                 }
                             })
@@ -61,6 +67,16 @@ impl Unmapper {
         // call to clean_call above panics. In any case, handle this gracefully.
         if self.sender.send(UnmapCommand::SpaceUnmap(info)).is_err() {
             tracing::warn!("failed to enqueue Unmap {:?} onto cleaner thread", info);
+        }
+    }
+
+    /// Enqueue a slot to be unmapped.
+    pub(super) fn background_unmap_slot(&self, slot: usize) {
+        if self.sender.send(UnmapCommand::SlotUnmap(slot)).is_err() {
+            tracing::warn!(
+                "failed to enqueue Unmap of slot {} onto cleaner thread",
+                slot
+            );
         }
     }
 }

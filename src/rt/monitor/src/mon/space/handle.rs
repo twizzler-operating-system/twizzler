@@ -17,6 +17,10 @@ pub struct MapHandleInner {
     info: MapInfo,
     map: MappedObjectAddrs,
     map_note_key: AtomicU64,
+    /// True if this handle is the sole owner of its slot (see `Space::map_pair`), in which case
+    /// dropping it unmaps that slot directly instead of going through the shared, MapInfo-keyed
+    /// reference count in `Space::maps`.
+    exclusive: bool,
 }
 
 /// A shared map handle.
@@ -29,6 +33,17 @@ impl MapHandleInner {
             info,
             map,
             map_note_key: AtomicU64::new(0),
+            exclusive: false,
+        }
+    }
+
+    /// Create a map handle that solely owns its slot.
+    pub(crate) fn new_exclusive(info: MapInfo, map: MappedObjectAddrs) -> Self {
+        Self {
+            info,
+            map,
+            map_note_key: AtomicU64::new(0),
+            exclusive: true,
         }
     }
 
@@ -81,7 +96,11 @@ impl Drop for MapHandleInner {
         // Toss this work onto a background thread.
         let monitor = get_monitor();
         if let Some(unmapper) = monitor.unmapper.get() {
-            unmapper.background_unmap_info(self.info);
+            if self.exclusive {
+                unmapper.background_unmap_slot(self.map.slot);
+            } else {
+                unmapper.background_unmap_info(self.info);
+            }
         }
     }
 }

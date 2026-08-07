@@ -639,6 +639,10 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         cp.current_priority.store(0, Ordering::SeqCst);
     }
     cp.reset_rebalance();
+    // From here until this cpu wins `thread`'s switch_lock inside `__do_switch`, `thread` is
+    // current on this cpu *and* still current on the cpu switching away from it. Don't charge lock
+    // bookkeeping to it from both.
+    crate::thread::locktrack::enter_switch_window();
     unsafe { set_current_thread(&thread) };
 
     // Release our strong ref before switching (into_raw + decrement keeps the pointer usable

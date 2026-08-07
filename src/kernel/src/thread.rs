@@ -22,7 +22,13 @@ use self::{flags::THREAD_PROC_IDLE, priority::Priority};
 use crate::{
     idcounter::{Id, IdCounter},
     interrupt::Destination,
-    memory::context::{ContextRef, UserContext, virtmem::VirtContext},
+    memory::{
+        VirtAddr,
+        context::{
+            ContextRef, UserContext,
+            virtmem::{Slot, VirtContext},
+        },
+    },
     obj::{ThreadSleepLinker, control::ControlObjectCacher},
     processor::{
         KERNEL_STACK_SIZE,
@@ -80,10 +86,15 @@ pub struct Thread {
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
+    /// Upcalls generated since the thread last returned to userspace. See `send_upcall`.
+    pub upcalls_since_user: AtomicU32,
     pub last_pf_addr: AtomicU64,
     pub last_pf_kind: AtomicU32,
     pub last_pf_flags: AtomicU32,
     mutex_count: AtomicU32,
+    /// Consecutive orphan scans that found this thread on no queue. Written only by the scanning
+    /// cpu. See `check_orphan_threads`.
+    offqueue_scans: AtomicU32,
     /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
     /// executing in userspace. A counter rather than a flag because a fault taken while already
     /// in the kernel must not report a return to user when only the inner handler finishes.
@@ -120,8 +131,32 @@ pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     unsafe { (*CURRENT_THREAD.get().as_mut().unwrap_unchecked()).as_ref() }
 }
 
-pub unsafe fn set_current_thread(thread: &ThreadRef) {
+pub unsafe fn set_current_thread(thread: &Thread) {
+    locktrack::diag::note_threading_up();
     let ptr = CURRENT_THREAD.get();
+    // Hand THREAD_ACTIVE_RUNNING from the outgoing thread to the incoming one. This is the only
+    // place a cpu's current thread changes, so the flag stays exactly as accurate as CURRENT_THREAD
+    // is. The outgoing thread keeps executing on its own stack for a little longer (the caller
+    // switches registers after this returns), but it has already been queued or parked by then, so
+    // the orphan scan still finds it linked into something.
+    let old = current_thread_ref();
+    if !old.is_some_and(|old| core::ptr::eq(&**old, thread)) {
+        if let Some(old) = old {
+            old.set_active_running(false);
+        }
+        // DIAG: the incoming thread is already some cpu's current thread. That is the cross-cpu
+        // producer of Mode A's stale-intent/orphan-record pairs: two cpus charging bookkeeping to
+        // one thread's tracker, which is also what makes `lock_or_skip` contend and drop records.
+        // A cpu that has picked up a thread the previous cpu has not finished switching away from
+        // reports here too -- that is the same finding, seen from the other end.
+        //
+        // Counted, never printed: this is the middle of a context switch, and `emerglogln` writes
+        // the uart synchronously. The count reaches the console via `diag::print_counters`.
+        if thread.is_active_running() {
+            locktrack::diag::THREAD_CURRENT_ON_TWO_CPUS.count_only();
+        }
+    }
+    thread.set_active_running(true);
     unsafe {
         let r = thread.self_reference.get().as_ref().unwrap_unchecked();
         ptr.write(*r);
@@ -179,8 +214,10 @@ impl Thread {
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
             pending_message: AtomicU64::new(0),
+            upcalls_since_user: AtomicU32::new(0),
             last_pf_addr: AtomicU64::new(0),
             last_pf_kind: AtomicU32::new(0),
+            offqueue_scans: AtomicU32::new(0),
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
@@ -201,6 +238,10 @@ impl Thread {
         self.control_object.object().id()
     }
 
+    pub fn lock_tracker(&self) -> &LockTracker {
+        &self.lock_tracker
+    }
+
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
@@ -219,6 +260,10 @@ impl Thread {
                 VirtContext::switch_to_kernel_context();
             }
         }
+        // Prologue done, and it is the only part of the switch that takes a tracked lock.
+        // `arch_switch_to` takes none, so the attribution window closes here -- on the same cpu
+        // that opened it, in straight-line code, rather than depending on where a thread resumes.
+        locktrack::leave_switch_window();
         self.arch_switch_to(current)
     }
 
@@ -349,37 +394,59 @@ impl Thread {
         self.id.value()
     }
 
+    /// True if `addr` lies in a region currently mapped in this thread's memory context.
+    ///
+    /// Reading an unmapped user address from the kernel faults, and the kernel-mode fault path
+    /// has no way to unwind: it resolves to `send_upcall`, which returns to the faulting kernel
+    /// instruction, which faults again. Every diagnostic read must therefore be checked first.
+    fn diag_addr_mapped(addr: u64) -> bool {
+        let Ok(va) = VirtAddr::new(addr) else {
+            return false;
+        };
+        if va.is_kernel() {
+            return false;
+        }
+        let Ok(slot): Result<Slot, _> = va.try_into() else {
+            return false;
+        };
+        current_memory_context().is_some_and(|ctx| ctx.lookup_object(slot).is_some())
+    }
+
     /// DIAG (multiputbug): dump the faulting thread's instruction bytes, stack top, and frame
     /// chain. The kernel shares the user address space here and neither SMAP nor SMEP is
-    /// enabled, so these reads are direct. Every read is clamped to stay inside a page/slot we
-    /// know is mapped, so this cannot itself fault.
+    /// enabled, so these reads are direct — but only ever to addresses that resolve to a mapped
+    /// region, since the faulting address itself is by definition not one of those.
     fn dump_fault_context(ip: u64, sp: u64, bp: u64, cx: u64) {
         const SLOT_MASK: u64 = !0x3fff_ffff;
         let page = ip & !0xfff;
         let start = if ip - page >= 8 { ip - 8 } else { page };
         let len = core::cmp::min(24, page + 0x1000 - start) as usize;
-        let mut bytes = [0u8; 24];
-        for i in 0..len {
-            bytes[i] = unsafe { (start as *const u8).add(i).read_volatile() };
+        if Self::diag_addr_mapped(start) {
+            let mut bytes = [0u8; 24];
+            for i in 0..len {
+                bytes[i] = unsafe { (start as *const u8).add(i).read_volatile() };
+            }
+            log::warn!(
+                "fault-diag: {} bytes at {:x} (rip {:x}): {:02x?}",
+                len,
+                start,
+                ip,
+                &bytes[..len]
+            );
         }
-        log::warn!(
-            "fault-diag: {} bytes at {:x} (rip {:x}): {:02x?}",
-            len,
-            start,
-            ip,
-            &bytes[..len]
-        );
 
-        let mut stack = [0u64; 8];
-        for i in 0..8 {
-            stack[i] = unsafe { (sp as *const u64).add(i).read_volatile() };
+        if Self::diag_addr_mapped(sp) {
+            let mut stack = [0u64; 8];
+            for i in 0..8 {
+                stack[i] = unsafe { (sp as *const u64).add(i).read_volatile() };
+            }
+            log::warn!("fault-diag: stack at rsp {:x}: {:x?}", sp, stack);
         }
-        log::warn!("fault-diag: stack at rsp {:x}: {:x?}", sp, stack);
 
         // For the ferroc free-list fault, rcx is the `Shard`. Dumping its header identifies the
         // size class (`obj_size`), which says whether the corrupt link was an interior pointer
         // or an overflow from the preceding block.
-        if cx != 0 && cx % 8 == 0 && cx < 0x0000_8000_0000_0000 {
+        if cx != 0 && cx % 8 == 0 && Self::diag_addr_mapped(cx) {
             let mut words = [0u64; 12];
             for i in 0..12 {
                 words[i] = unsafe { (cx as *const u64).add(i).read_volatile() };
@@ -389,7 +456,11 @@ impl Thread {
 
         let mut fp = bp;
         for depth in 0..8 {
-            if fp == 0 || fp % 8 != 0 || (fp & SLOT_MASK) != (sp & SLOT_MASK) {
+            if fp == 0
+                || fp % 8 != 0
+                || (fp & SLOT_MASK) != (sp & SLOT_MASK)
+                || !Self::diag_addr_mapped(fp)
+            {
                 break;
             }
             let next = unsafe { (fp as *const u64).read_volatile() };
@@ -409,6 +480,23 @@ impl Thread {
         }
         if self.is_critical() {
             panic!("tried to signal upcall in critical section");
+        }
+
+        // A fault taken by the kernel while it is already handling a fault cannot be unwound: the
+        // upcall is queued onto the thread's *user* entry frame, so this handler returns to the
+        // kernel instruction that faulted and faults again, forever. Bound it: the counter is
+        // reset every time the thread actually reaches userspace (`exit_kernel`), so anything
+        // past a handful of upcalls without an intervening return is that livelock.
+        const MAX_UPCALLS_WITHOUT_RETURN: u32 = 8;
+        if self.upcalls_since_user.fetch_add(1, Ordering::SeqCst) >= MAX_UPCALLS_WITHOUT_RETURN {
+            log::error!(
+                "thread {}: {} upcalls generated without returning to userspace, killing thread. \
+                 last: {:?}",
+                self.id(),
+                MAX_UPCALLS_WITHOUT_RETURN,
+                info,
+            );
+            exit(UPCALL_EXIT_CODE);
         }
 
         if info.number() != UpcallInfo::Mailbox(0).number() {
@@ -579,7 +667,13 @@ impl<'a> Drop for CriticalGuard<'a> {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        self.control_object.object().mark_for_delete();
+        // Only delete the repr if userspace never got its id. `sys_spawn` returns the id with no
+        // reference held on it, so deleting here races the spawner's map: the thread can run, exit
+        // and be reaped before the spawner ever sees the object, and its map then fails with
+        // NoSuchObject. For those threads the spawner owns the object and deletes it explicitly.
+        if !self.is_repr_user_owned() {
+            self.control_object.object().mark_for_delete();
+        }
         if let Some(index) = self.lock_tracker_index {
             deregister_lock_tracker(index);
         }
@@ -647,6 +741,11 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
     Ok(count)
 }
 
+/// Consecutive scans a thread must be found on no queue before it is called orphaned. The scan runs
+/// from the bsp idle loop, so these are separated by real time -- a wake-path handoff is a few
+/// instructions and cannot survive one, let alone three.
+const ORPHAN_SCANS: u32 = 3;
+
 pub fn check_orphan_threads() {
     //#[cfg(debug_assertions)]
     with_all_threads(|at| {
@@ -660,6 +759,10 @@ pub fn check_orphan_threads() {
             let is_sched_linked = thread.sched_link.is_linked();
             let is_timed_wait = thread.has_timed_wait();
             let is_pager_linked = thread.pager_link.is_linked();
+            // Running on a cpu is the tenth way to be legitimately off every queue, and it was the
+            // one this check could not see -- which made it fire on healthy threads at smp >= 2 and
+            // never at smp1. See THREAD_ACTIVE_RUNNING.
+            let is_active_running = thread.is_active_running();
             let is_on_any_queue = is_mutex_linked
                 || is_condvar_linked
                 || is_pager_linked
@@ -668,16 +771,29 @@ pub fn check_orphan_threads() {
                 || is_sync_linked
                 || is_memwait_linked
                 || is_timed_wait
-                || is_sched_linked;
-            if !is_on_any_queue && thread.get_state() != ExecutionState::Exited {
-                log::warn!(
-                    "thread {} ({}) is orphaned: not on any queue and not exited",
-                    thread.id(),
-                    thread.objid()
-                );
+                || is_sched_linked
+                || is_active_running;
+            // Being off every queue for an instant is normal: every wake path unlinks a thread from
+            // where it was sleeping and only then pushes it onto a run queue (`wake_n` ->
+            // `add_to_requeue`, `requeue_all` -> `schedule_thread`, `Mutex::release`,
+            // `MemoryTracker::wake`, `unsuspend_thread`), and a scan can land in that gap. A lost
+            // thread, by contrast, stays lost. So require the condition to persist across scans
+            // rather than tagging all seven handoffs. Only this cpu writes the counter.
+            if is_on_any_queue || thread.get_state() == ExecutionState::Exited {
+                thread.offqueue_scans.store(0, Ordering::Relaxed);
+            } else {
+                let scans = thread.offqueue_scans.fetch_add(1, Ordering::Relaxed) + 1;
+                if scans >= ORPHAN_SCANS {
+                    log::warn!(
+                        "thread {} ({}) is orphaned: not on any queue and not exited, for {} scans",
+                        thread.id(),
+                        thread.objid(),
+                        scans,
+                    );
+                }
             }
             log::trace!(
-                "[kernel::thread] thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={}",
+                "[kernel::thread] thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={} active_running={}",
                 thread.id(),
                 thread.objid(),
                 is_mutex_linked,
@@ -688,7 +804,8 @@ pub fn check_orphan_threads() {
                 is_memwait_linked,
                 is_timed_wait,
                 is_pager_linked,
-                is_sched_linked
+                is_sched_linked,
+                is_active_running
             );
         }
     });

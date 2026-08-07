@@ -1,4 +1,9 @@
-use std::{fs::File, io::Write, path::{Path, PathBuf}, process::Command};
+use std::{
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::{
     toolchain::{
@@ -26,7 +31,12 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
-    let cross_file = write_cross_file(&install_path, &mlibc_sysroot, triple, Path::new(&cross_file))?;
+    let cross_file = write_cross_file(
+        &install_path,
+        &mlibc_sysroot,
+        triple,
+        Path::new(&cross_file),
+    )?;
 
     let _ = std::fs::remove_dir_all(&build_dir);
 
@@ -92,7 +102,12 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
     let mlibc_sysroot = mlibc_sysroot.canonicalize()?;
     let build_dir = build_dir.canonicalize()?;
 
-    let cross_file = write_cross_file(&install_path, &mlibc_sysroot, triple, Path::new(&cross_file))?;
+    let cross_file = write_cross_file(
+        &install_path,
+        &mlibc_sysroot,
+        triple,
+        Path::new(&cross_file),
+    )?;
 
     let status = Command::new("python3")
         .arg("toolchain/install/python/bin/meson")

@@ -1,5 +1,10 @@
 use alloc::{boxed::Box, sync::Arc};
-use core::{cell::UnsafeCell, sync::atomic::AtomicBool};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, AtomicU64},
+};
+
+use twizzler_abi::thread::ExecutionState;
 
 use crate::{
     arch::processor::spin_wait_iteration,
@@ -8,10 +13,196 @@ use crate::{
     thread::{Thread, current_thread_ref},
 };
 
+/// Counters for lock-bookkeeping anomalies. Observation only, and every report is rate limited so
+/// a hot mismatch cannot flood the console and change timing.
+pub mod diag {
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+    /// Per-site report budget. Counting continues past it; only printing stops.
+    const REPORT_BUDGET: u32 = 16;
+
+    pub struct Counter {
+        name: &'static str,
+        count: AtomicU64,
+        reported: AtomicU32,
+    }
+
+    impl Counter {
+        pub const fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                count: AtomicU64::new(0),
+                reported: AtomicU32::new(0),
+            }
+        }
+
+        /// Count an event, and return whether the caller should print details for it.
+        pub fn hit(&self) -> bool {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            if self.reported.load(Ordering::Relaxed) >= REPORT_BUDGET {
+                return false;
+            }
+            self.reported.fetch_add(1, Ordering::Relaxed) < REPORT_BUDGET
+        }
+
+        /// Count without ever asking to print. For probes on paths where the console write itself
+        /// would be the intrusive part -- the context switch, principally.
+        pub fn count_only(&self) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        pub fn count(&self) -> u64 {
+            self.count.load(Ordering::Relaxed)
+        }
+
+        pub fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    /// Set once any thread has been made current, i.e. once threading is really up. Before that,
+    /// having no current thread is just early boot and says nothing -- and there is enough of it to
+    /// exhaust a report budget on its own, so the probe below has to skip it.
+    static THREADING_UP: AtomicBool = AtomicBool::new(false);
+
+    /// Called from `set_current_thread`. Read-mostly on purpose: an unconditional store would
+    /// bounce this cache line between cpus on every context switch.
+    pub fn note_threading_up() {
+        if !THREADING_UP.load(Ordering::Relaxed) {
+            THREADING_UP.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn threading_up() -> bool {
+        THREADING_UP.load(Ordering::Relaxed)
+    }
+
+    /// A tracker call was dropped on the floor because there was no current thread, once threading
+    /// was up. If this happens between an acquire and its release, the release is silently lost and
+    /// the next acquire on that thread trips the "already set" assert.
+    pub static NO_CURRENT_THREAD: Counter =
+        Counter::new("locktrack call with no current thread (post-threading)");
+    /// A spinlock guard was dropped while a different thread was current than at acquisition.
+    pub static SPINLOCK_GUARD_CROSSED: Counter = Counter::new("spinlock guard crossed threads");
+    /// A scheduler-lock guard was dropped while a different thread was current than at acquisition,
+    /// so `enter_critical_unguarded` and `exit_critical` were charged to different threads.
+    pub static SCHED_GUARD_CROSSED: Counter = Counter::new("sched guard crossed threads");
+
+    /// A `LockTracker`'s own flag was contended, i.e. two cpus wanted one thread's tracker. Should
+    /// be near zero: the only cross-cpu acquirer is `check_timed_out_mutexes` on the bsp.
+    pub static TRACKER_CONTENDED: Counter = Counter::new("tracker lock contended");
+    /// A tracker could not be acquired, so that piece of bookkeeping was dropped. Losing a record
+    /// makes the tracker's view incomplete; corrupting it would make the tracker lie.
+    pub static TRACKER_SKIPPED: Counter = Counter::new("tracker unavailable, bookkeeping skipped");
+    /// An intent was still set when a new one was recorded. Replaced rather than fatal.
+    pub static STALE_INTENT_REPLACED: Counter = Counter::new("stale intent replaced");
+    /// A lock was recorded with no matching intent outstanding.
+    pub static ORPHAN_RECORD: Counter = Counter::new("lock recorded with no intent");
+    /// A thread was torn down still holding tracked locks.
+    pub static HELD_LOCKS_AT_EXIT: Counter = Counter::new("tracker freed with locks held");
+    /// A mutex was taken while the tracker believed a spinlock was held.
+    pub static MUTEX_WITH_SPINLOCK: Counter = Counter::new("mutex taken with spinlock held");
+    /// A tracker was unlocked by someone other than its recorded owner -- the direct consequence of
+    /// the stall branch above, and the thing that actually corrupts tracker state.
+    pub static TRACKER_UNLOCK_BY_NONOWNER: Counter = Counter::new("tracker unlocked by non-owner");
+
+    /// The current thread changed between `intend_to_lock_spinlock` and `record_spinlock_lock`
+    /// inside a single `GenericSpinlock::lock`. The intent is then stranded on the outgoing thread
+    /// forever -- and the *next* spinlock that thread takes trips "already set". This is the window
+    /// `SPINLOCK_GUARD_CROSSED` cannot see, because the guard's thread is captured after the
+    /// record.
+    pub static INTENT_RECORD_CROSSED: Counter =
+        Counter::new("spinlock intent/record crossed thread or cpu");
+
+    /// A thread blocked on something with unbounded latency -- a pager round trip, or a wait for
+    /// reclaimed memory -- while holding a sleeping mutex. Every contender for that mutex then
+    /// inherits the whole latency of the block, which is what Mode E looks like from outside.
+    pub static BLOCK_WITH_MUTEX_HELD: Counter =
+        Counter::new("blocked on pager/memory while holding a mutex");
+
+    /// A thread was made current on one cpu while already current on another. Two cpus then charge
+    /// bookkeeping to one tracker, which both contends `lock_or_skip` (dropping records) and lets
+    /// one cpu's intent be displaced by the other's -- the cross-cpu producer of Mode A's pairs.
+    pub static THREAD_CURRENT_ON_TWO_CPUS: Counter =
+        Counter::new("thread made current on a second cpu");
+
+    /// A mutex-wait record outlived the wait it described: the thread it belongs to is not in
+    /// `Mutex::lock` (it acquired and lost the record, or it died mid-wait). Reported instead of
+    /// being counted as a stuck lock -- see `check_timed_out_mutexes`.
+    pub static STALE_MUTEX_INTENT: Counter =
+        Counter::new("stale mutex intent seen by timeout scan");
+
+    static ALL: [&Counter; 14] = [
+        &NO_CURRENT_THREAD,
+        &SPINLOCK_GUARD_CROSSED,
+        &SCHED_GUARD_CROSSED,
+        &INTENT_RECORD_CROSSED,
+        &TRACKER_CONTENDED,
+        &TRACKER_SKIPPED,
+        &TRACKER_UNLOCK_BY_NONOWNER,
+        &STALE_INTENT_REPLACED,
+        &ORPHAN_RECORD,
+        &HELD_LOCKS_AT_EXIT,
+        &MUTEX_WITH_SPINLOCK,
+        &BLOCK_WITH_MUTEX_HELD,
+        &STALE_MUTEX_INTENT,
+        &THREAD_CURRENT_ON_TWO_CPUS,
+    ];
+
+    /// Token identifying who holds a `LockTracker`'s flag: cpu in the high 16 bits (biased by one
+    /// so a valid token is never `NO_OWNER`), thread id in the low 48.
+    pub const NO_OWNER: u64 = 0;
+
+    pub fn owner_token() -> u64 {
+        let cpu = (this_cpu() as u64).wrapping_add(1) & 0xffff;
+        (cpu << 48) | (this_thread() & 0x0000_ffff_ffff_ffff)
+    }
+
+    /// `(cpu, thread)` for a token, for printing. Cpu comes back as `u32::MAX` when unknown.
+    pub fn split_token(token: u64) -> (u32, u64) {
+        let cpu = ((token >> 48) & 0xffff).wrapping_sub(1);
+        (cpu as u32, token & 0x0000_ffff_ffff_ffff)
+    }
+
+    /// Cpu we are on, or `u32::MAX` before per-cpu state exists.
+    pub fn this_cpu() -> u32 {
+        if crate::processor::tls_ready() {
+            crate::current_processor().id
+        } else {
+            u32::MAX
+        }
+    }
+
+    /// Id of the current thread, or `u64::MAX` if there isn't one.
+    pub fn this_thread() -> u64 {
+        super::current_thread_ref()
+            .map(|t| t.id())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Printed alongside every kernel panic, so a panicking run always says whether any of the
+    /// attribution hazards above actually occurred before it died.
+    pub fn print_counters() {
+        if ALL.iter().all(|c| c.count() == 0) {
+            return;
+        }
+        emerglogln!("== locktrack diagnostics:");
+        for c in ALL {
+            emerglogln!("  {}: {}", c.name(), c.count());
+        }
+    }
+}
+
 pub struct LockTrackerInner {
     mutexes: heapless::Vec<Option<Lock>, 16>,
     spinlocks: heapless::Vec<Option<Lock>, 16>,
     intended_to_mutexlock: Option<Lock>,
+    /// The one spinlock this thread is currently trying to take.
+    ///
+    /// Deliberately a single slot, not a stack: taking a spinlock while spinning for another is
+    /// always a bug, so a second intent arriving here is a finding, not a case to model. It is how
+    /// Mode A was found -- `spin_wait_until` polls TLB shootdowns from inside the spin, and
+    /// `TlbShootdownInfo::complete` warned through the console lock from there.
     intended_to_spinlock: Option<Lock>,
     id: u64,
 }
@@ -20,6 +211,14 @@ pub struct LockTracker {
     inner: Box<UnsafeCell<LockTrackerInner>>,
     lock: AtomicBool,
     id: u64,
+    /// DIAG: who holds `lock`, as a `diag::owner_token()`. Reporting only.
+    owner: AtomicU64,
+    /// Set the first time a piece of bookkeeping is dropped for this thread. From then on the
+    /// tracker's view is known-incomplete: a lock it shows as held may have been released, and an
+    /// intent it shows may have been satisfied. Anything that draws a *conclusion* from tracker
+    /// state has to check this first -- reporting off an incomplete tracker is how Mode E was
+    /// manufactured.
+    incomplete: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -28,11 +227,28 @@ pub struct Lock {
     locked: bool,
     time: Instant,
     owner: Option<(u64, &'static core::panic::Location<'static>)>,
+    /// DIAG: cpu this record was made on. Differing from the observing cpu means the entry
+    /// outlived a context switch.
+    cpu: u32,
 }
 
 impl Lock {
     pub fn caller(&self) -> &'static core::panic::Location<'static> {
         self.caller
+    }
+
+    pub fn cpu(&self) -> u32 {
+        self.cpu
+    }
+
+    pub fn time(&self) -> Instant {
+        self.time
+    }
+
+    /// Age in milliseconds, or `None` if the record predates a working clock (`Instant::zero()`,
+    /// which spinlock intents use).
+    fn age_ms(&self, now: Instant) -> Option<u128> {
+        now.checked_sub_instant(&self.time).map(|d| d.as_millis())
     }
 
     pub fn new(caller: &'static core::panic::Location<'static>, time: Instant) -> Self {
@@ -41,6 +257,7 @@ impl Lock {
             locked: true,
             time,
             owner: None,
+            cpu: diag::this_cpu(),
         }
     }
 
@@ -59,30 +276,65 @@ impl LockTracker {
             inner: Box::new(UnsafeCell::new(LockTrackerInner::new(id))),
             lock: AtomicBool::new(false),
             id,
+            owner: AtomicU64::new(diag::NO_OWNER),
+            incomplete: AtomicBool::new(false),
         }
+    }
+
+    /// False once any bookkeeping for this thread has been dropped; see [`Self::incomplete`].
+    pub fn is_complete(&self) -> bool {
+        !self.incomplete.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn note_incomplete(&self) {
+        self.incomplete
+            .store(true, core::sync::atomic::Ordering::Relaxed);
     }
 
     pub unsafe fn inner(&self) -> &mut LockTrackerInner {
         unsafe { &mut *self.inner.get() }
     }
 
-    pub fn lock(&self) -> &mut LockTrackerInner {
-        assert!(!crate::interrupt::get());
+    /// Acquire this tracker, or give up. Bookkeeping is diagnostic: dropping a record leaves the
+    /// tracker's view incomplete, but forcing the lock would let two cpus into one tracker and make
+    /// it lie -- which is strictly worse, and is what the old `self.unlock()` here did.
+    pub fn lock_or_skip(&self) -> Option<&mut LockTrackerInner> {
+        if crate::interrupt::get() {
+            diag::TRACKER_SKIPPED.hit();
+            self.note_incomplete();
+            return None;
+        }
         let mut iter = 0;
         while self.lock.swap(true, core::sync::atomic::Ordering::Acquire) {
-            spin_wait_iteration();
-            if iter == 10000 {
-                emerglogln!("locktracker lock pause");
-                self.unlock();
-                crate::panic::backtrace(false, None);
+            if iter == 0 {
+                diag::TRACKER_CONTENDED.hit();
             }
+            if iter >= 10000 {
+                self.note_incomplete();
+                if diag::TRACKER_SKIPPED.hit() {
+                    let (ocpu, othread) =
+                        diag::split_token(self.owner.load(core::sync::atomic::Ordering::Relaxed));
+                    emerglogln!(
+                        "locktrack: tracker {} busy (cpu {} thread {}), skipping",
+                        self.id,
+                        ocpu,
+                        othread,
+                    );
+                }
+                return None;
+            }
+            spin_wait_iteration();
             iter += 1;
         }
-        unsafe { &mut *self.inner.get() }
+        self.owner
+            .store(diag::owner_token(), core::sync::atomic::Ordering::Relaxed);
+        Some(unsafe { &mut *self.inner.get() })
     }
 
     pub fn try_lock(&self) -> Option<&mut LockTrackerInner> {
         if !self.lock.swap(true, core::sync::atomic::Ordering::Acquire) {
+            self.owner
+                .store(diag::owner_token(), core::sync::atomic::Ordering::Relaxed);
             Some(unsafe { &mut *self.inner.get() })
         } else {
             None
@@ -90,6 +342,24 @@ impl LockTracker {
     }
 
     pub fn unlock(&self) {
+        // DIAG: an unlock from anyone but the recorded owner means the flag no longer protects the
+        // inner state. No path does this deliberately any more, so a hit here is a real finding.
+        let recorded = self
+            .owner
+            .swap(diag::NO_OWNER, core::sync::atomic::Ordering::Relaxed);
+        let current = diag::owner_token();
+        if recorded != current && diag::TRACKER_UNLOCK_BY_NONOWNER.hit() {
+            let (ocpu, othread) = diag::split_token(recorded);
+            let (ccpu, cthread) = diag::split_token(current);
+            emerglogln!(
+                "locktrack: tracker {} unlocked by cpu {} thread {}, but owned by cpu {} thread {}",
+                self.id,
+                ccpu,
+                cthread,
+                ocpu,
+                othread,
+            );
+        }
         self.lock
             .store(false, core::sync::atomic::Ordering::Release);
     }
@@ -103,27 +373,42 @@ impl LockTracker {
 
     pub fn held_locks(&self) -> usize {
         let int = crate::interrupt::disable();
-        let inner = self.lock();
-        let count = inner.mutex_count() + inner.spinlock_count();
-        self.unlock();
+        let count = match self.lock_or_skip() {
+            Some(inner) => {
+                let count = inner.mutex_count() + inner.spinlock_count();
+                self.unlock();
+                count
+            }
+            None => 0,
+        };
         crate::interrupt::set(int);
         count
     }
 
     pub fn mutex_count(&self) -> usize {
         let int = crate::interrupt::disable();
-        let inner = self.lock();
-        let count = inner.mutex_count();
-        self.unlock();
+        let count = match self.lock_or_skip() {
+            Some(inner) => {
+                let count = inner.mutex_count();
+                self.unlock();
+                count
+            }
+            None => 0,
+        };
         crate::interrupt::set(int);
         count
     }
 
     pub fn spinlock_count(&self) -> usize {
         let int = crate::interrupt::disable();
-        let inner = self.lock();
-        let count = inner.spinlock_count();
-        self.unlock();
+        let count = match self.lock_or_skip() {
+            Some(inner) => {
+                let count = inner.spinlock_count();
+                self.unlock();
+                count
+            }
+            None => 0,
+        };
         crate::interrupt::set(int);
         count
     }
@@ -159,17 +444,31 @@ impl LockTrackerInner {
         caller: &'static core::panic::Location<'static>,
         time: Instant,
     ) {
-        assert!(
-            self.intended_to_mutexlock.is_none(),
-            "intended to lock mutex already set to {:?} (from {})",
-            self.intended_to_mutexlock.as_ref(),
-            caller
-        );
+        if let Some(stale) = self.intended_to_mutexlock.take() {
+            if diag::STALE_INTENT_REPLACED.hit() {
+                emerglogln!(
+                    "locktrack: tracker {} stale mutex intent {} (cpu {}) replaced by {}",
+                    self.id,
+                    stale.caller(),
+                    stale.cpu(),
+                    caller,
+                );
+            }
+        }
         self.intended_to_mutexlock = Some(Lock::new(caller, time));
     }
 
     pub fn record_mutex_lock(&mut self) -> Option<usize> {
-        let lock = self.intended_to_mutexlock.take().unwrap();
+        let Some(lock) = self.intended_to_mutexlock.take() else {
+            if diag::ORPHAN_RECORD.hit() {
+                emerglogln!(
+                    "locktrack: mutex recorded with no intent on tracker {} (cpu {})",
+                    self.id,
+                    diag::this_cpu(),
+                );
+            }
+            return None;
+        };
         let len = self.mutexes.len();
         self.mutexes.push(Some(lock)).ok().map(|_| len)
     }
@@ -189,15 +488,36 @@ impl LockTrackerInner {
     }
 
     pub fn intend_to_lock_spinlock(&mut self, caller: &'static core::panic::Location<'static>) {
-        assert!(
-            self.intended_to_spinlock.is_none(),
-            "intended to lock spinlock already set"
-        );
+        if let Some(stale) = self.intended_to_spinlock.take() {
+            // Two acquisitions outstanding on one thread. Either bookkeeping was lost, or -- the
+            // Mode A case -- something took a spinlock from inside another's spin, which is never
+            // correct. Was fatal; reported since Layer 1, because halting on it destroys the
+            // evidence needed to tell those two apart.
+            if diag::STALE_INTENT_REPLACED.hit() {
+                emerglogln!(
+                    "locktrack: tracker {} stale spinlock intent {} (cpu {}) replaced by {} (cpu {})",
+                    self.id,
+                    stale.caller(),
+                    stale.cpu(),
+                    caller,
+                    diag::this_cpu(),
+                );
+            }
+        }
         self.intended_to_spinlock = Some(Lock::new(caller, Instant::zero()));
     }
 
     pub fn record_spinlock_lock(&mut self) -> Option<usize> {
-        let lock = self.intended_to_spinlock.take().unwrap();
+        let Some(lock) = self.intended_to_spinlock.take() else {
+            if diag::ORPHAN_RECORD.hit() {
+                emerglogln!(
+                    "locktrack: spinlock recorded with no intent on tracker {} (cpu {})",
+                    self.id,
+                    diag::this_cpu(),
+                );
+            }
+            return None;
+        };
         let len = self.spinlocks.len();
         self.spinlocks.push(Some(lock)).ok().map(|_| len)
     }
@@ -245,15 +565,28 @@ impl LockTrackerInner {
     }
 
     pub fn print_locks(&self) {
+        self.print_locks_at(None);
+    }
+
+    /// `now`, when given, adds each held mutex's age -- how long this thread has had it. A stuck
+    /// lock is only identifiable from a dump if you can tell a lock taken microseconds ago from one
+    /// held for seconds.
+    pub fn print_locks_at(&self, now: Option<Instant>) {
         emerglogln!("== LockTracker for thread {}:", self.id);
         if self.mutex_count() > 0 {
             emerglogln!("Mutexes held:");
             for (i, lock) in self.mutexes.iter().enumerate() {
                 if let Some(lock) = lock {
-                    if lock.is_locked() {
-                        emerglogln!("  {}: {} (locked)", i, lock.caller());
+                    let state = if lock.is_locked() {
+                        "locked"
                     } else {
-                        emerglogln!("  {}: {} (unlocked)", i, lock.caller());
+                        "unlocked"
+                    };
+                    match now.and_then(|now| lock.age_ms(now)) {
+                        Some(age) => {
+                            emerglogln!("  {}: {} ({}, held {} ms)", i, lock.caller(), state, age)
+                        }
+                        None => emerglogln!("  {}: {} ({})", i, lock.caller(), state),
                     }
                 }
             }
@@ -271,24 +604,23 @@ impl LockTrackerInner {
             }
         }
 
-        if self.intended_to_mutexlock.is_some() {
-            let lock = self.intended_to_mutexlock.as_ref().unwrap();
-            if lock.owner.is_some() {
-                emerglogln!(
+        if let Some(lock) = self.intended_to_mutexlock.as_ref() {
+            match lock.owner.as_ref() {
+                Some((id, at)) => emerglogln!(
                     "Intend to lock mutex: {} (owned by thread {} at {})",
                     lock.caller(),
-                    lock.owner.as_ref().unwrap().0,
-                    lock.owner.as_ref().unwrap().1
-                );
-            } else {
-                emerglogln!("Intend to lock mutex: {}", lock.caller());
+                    id,
+                    at
+                ),
+                None => emerglogln!("Intend to lock mutex: {}", lock.caller()),
             }
         }
 
-        if self.intended_to_spinlock.is_some() {
+        if let Some(lock) = self.intended_to_spinlock.as_ref() {
             emerglogln!(
-                "Intend to lock spinlock: {}",
-                self.intended_to_spinlock.as_ref().unwrap().caller()
+                "Intend to lock spinlock: {} (recorded on cpu {})",
+                lock.caller(),
+                lock.cpu()
             );
         }
     }
@@ -296,21 +628,141 @@ impl LockTrackerInner {
     pub fn mutex_wait_time(&self) -> Option<Instant> {
         self.intended_to_mutexlock.as_ref().map(|l| l.time)
     }
+
+    /// The mutex this thread is currently waiting for: where it is being taken, and (if the wait
+    /// has seen a holder) who holds it and where they took it.
+    pub fn intended_mutex(
+        &self,
+    ) -> Option<(
+        &'static core::panic::Location<'static>,
+        Option<(u64, &'static core::panic::Location<'static>)>,
+    )> {
+        self.intended_to_mutexlock
+            .as_ref()
+            .map(|l| (l.caller(), l.owner))
+    }
+
+    fn log_held_mutexes(&self) {
+        for lock in self.mutexes.iter().flatten() {
+            if lock.is_locked() {
+                emerglogln!("    holding mutex from {}", lock.caller());
+            }
+        }
+    }
 }
 
-const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions);
+const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions) or test mode;
 
+#[track_caller]
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
-    if DISABLE_LOCK_TRACKING {
+    if DISABLE_LOCK_TRACKING || in_switch_window() {
         return R::default();
     }
     let Some(ct) = current_thread_ref() else {
+        // DIAG: this is the silent-drop path. An acquire recorded with a current thread and a
+        // release that lands here leaves the acquire outstanding forever. Only interesting once
+        // per-cpu state exists; before that, having no current thread is just early boot.
+        if diag::threading_up() && diag::NO_CURRENT_THREAD.hit() {
+            emerglogln!(
+                "locktrack: no current thread at {} (cpu {})",
+                core::panic::Location::caller(),
+                diag::this_cpu()
+            );
+        }
         return R::default();
     };
+    with_tracker(ct.lock_tracker(), f)
+}
+
+/// Report, rate-limited, that the current thread is about to block on `what` -- something with
+/// unbounded latency, i.e. a pager round trip or a wait for reclaimed memory -- while holding a
+/// sleeping mutex. Diagnostic only; blocking here is legal, but every contender for that mutex now
+/// waits for the same thing this thread is waiting for.
+pub fn warn_if_blocking_with_mutexes(what: &str) {
+    if DISABLE_LOCK_TRACKING {
+        return;
+    }
+    let Some(tracker) = current_tracker() else {
+        return;
+    };
+    if !tracker.is_complete() {
+        return;
+    }
+    with_tracker(tracker, |lt| {
+        if lt.mutex_count() == 0 {
+            return;
+        }
+        if !diag::BLOCK_WITH_MUTEX_HELD.hit() {
+            return;
+        }
+        emerglogln!(
+            "locktrack: thread {} blocking on {} while holding {} mutex(es):",
+            lt.id,
+            what,
+            lt.mutex_count(),
+        );
+        lt.log_held_mutexes();
+    });
+}
+
+/// Per-cpu -- TLS is per-cpu in this kernel -- set while this cpu has installed a thread as current
+/// but has not yet won its `switch_lock`.
+///
+/// In that window the thread is still current on the cpu switching away from it, so both cpus would
+/// charge one `LockTracker`: they contend it, `lock_or_skip` drops records, and one cpu's intent is
+/// displaced by the other's. That is Mode A's second producer. The register handoff itself is
+/// serialized by `switch_lock`, so this is purely an attribution problem, and the window is not
+/// worth attributing: the only locks in it are `SecCtxMgr::active_id` and `VirtContext::switch_to`,
+/// both short and non-blocking.
+#[thread_local]
+static IN_SWITCH: core::cell::Cell<bool> = core::cell::Cell::new(false);
+
+/// Called by `sched::switch_to` immediately before it installs the incoming thread as current.
+pub fn enter_switch_window() {
+    if crate::processor::tls_ready() {
+        IN_SWITCH.set(true);
+    }
+}
+
+/// Called on whichever cpu a thread resumes on, once the switch has completed. Every resume path
+/// must call it: the normal one (returning from `switch_thread`) and the entry points a
+/// freshly-created thread starts at, which never return through `switch_to`.
+pub fn leave_switch_window() {
+    if crate::processor::tls_ready() {
+        IN_SWITCH.set(false);
+    }
+}
+
+fn in_switch_window() -> bool {
+    crate::processor::tls_ready() && IN_SWITCH.get()
+}
+
+/// The tracker to charge work on this cpu to. Callers pairing an acquire with a release capture
+/// this once and pass it to [`with_tracker`] for both halves.
+pub fn current_tracker() -> Option<&'static LockTracker> {
+    if DISABLE_LOCK_TRACKING || in_switch_window() {
+        return None;
+    }
+    current_thread_ref().map(|ct| ct.lock_tracker())
+}
+
+/// Run `f` against a specific tracker, rather than whichever thread happens to be current now.
+pub fn with_tracker<R: Default>(
+    tracker: &LockTracker,
+    f: impl FnOnce(&mut LockTrackerInner) -> R,
+) -> R {
+    if DISABLE_LOCK_TRACKING {
+        return R::default();
+    }
     let int = crate::interrupt::disable();
-    let inner = ct.lock_tracker.lock();
-    let r = f(inner);
-    ct.lock_tracker.unlock();
+    let r = match tracker.lock_or_skip() {
+        Some(inner) => {
+            let r = f(inner);
+            tracker.unlock();
+            r
+        }
+        None => R::default(),
+    };
     crate::interrupt::set(int);
     r
 }
@@ -344,16 +796,54 @@ pub fn register_lock_tracker(tracker: Arc<LockTracker>) -> Option<usize> {
 pub fn deregister_lock_tracker(index: usize) {
     let mut at = ALL_TRACKERS.lock();
     if index < at.len() {
-        assert!(at[index].as_ref().is_none_or(|x| x.held_locks() == 0));
+        if let Some(t) = at[index].as_ref() {
+            let held = t.held_locks();
+            if held != 0 && diag::HELD_LOCKS_AT_EXIT.hit() {
+                emerglogln!(
+                    "locktrack: tracker {} freed with {} locks held",
+                    index,
+                    held
+                );
+            }
+        }
         at[index] = None;
     }
 }
+
+/// Every live thread, as `(id, state, is_inside_Mutex::lock, is_idle)`.
+///
+/// Taken as a snapshot for two reasons. `ALL_THREADS` -> `ALL_TRACKERS` is a real lock order
+/// (dropping the last `ThreadRef` inside `remove_thread` runs `Thread::drop`, which deregisters a
+/// tracker), so the scan must not hold `ALL_TRACKERS` and reach for `ALL_THREADS`. And this runs on
+/// the idle thread, where allocating is a bad idea -- hence the fixed capacity, at the price of
+/// truncating on a system with more than `MAX_SNAPSHOT` threads.
+fn thread_snapshot() -> heapless::Vec<(u64, ExecutionState, bool, bool), MAX_SNAPSHOT> {
+    let mut v = heapless::Vec::new();
+    crate::processor::sched::with_all_threads(|threads| {
+        for (id, thread) in threads.iter() {
+            if v.push((
+                *id,
+                thread.get_state(),
+                thread.get_mutex_wait(),
+                thread.is_idle_thread(),
+            ))
+            .is_err()
+            {
+                break;
+            }
+        }
+    });
+    v
+}
+
+const MAX_SNAPSHOT: usize = 256;
 
 pub fn check_timed_out_mutexes() {
     if DISABLE_LOCK_TRACKING {
         return;
     }
     let now = Instant::now();
+    let threads = thread_snapshot();
 
     let at = ALL_TRACKERS.lock();
     //emerglogln!("checking {} threads for timed out mutexes", at.len());
@@ -366,14 +856,71 @@ pub fn check_timed_out_mutexes() {
             emerglogln!("failed to lock lock tracker for thread {}", lock_tracker.id,);
             continue;
         };
-        if lt
-            .mutex_wait_time()
-            .is_some_and(|t| (now - t).as_millis() > 1000)
+        if let Some(waited) = lt.mutex_wait_time().map(|t| (now - t).as_millis())
+            && waited > 1000
         {
-            emerglogln!(
-                "Thread {} has been waiting on a mutex for more than 1 second",
-                lock_tracker.id,
-            );
+            // An intent record only means "waiting" if the thread is actually inside
+            // `Mutex::lock`. A record that outlived its acquisition -- or one belonging to a
+            // thread that died mid-wait, which is what a halted cpu in a kernel panic leaves
+            // behind -- otherwise reports as a stuck lock forever, once per pass, naming whoever
+            // happened to hold it last. That is all Mode E ever was.
+            let live = threads.iter().find(|(id, ..)| *id == lock_tracker.id);
+            let waiting = match live {
+                Some((_, _, mutex_wait, _)) => *mutex_wait,
+                // Absent from a *truncated* snapshot says nothing, so report rather than dismiss.
+                None => threads.len() == MAX_SNAPSHOT,
+            };
+            if !waiting || !lock_tracker.is_complete() {
+                if diag::STALE_MUTEX_INTENT.hit() {
+                    match (live, lt.intended_mutex()) {
+                        (Some((_, state, ..)), Some((caller, _))) => emerglogln!(
+                            "locktrack: stale mutex intent on thread {} ({:?}{}), {} ms old, at {}",
+                            lock_tracker.id,
+                            state,
+                            if lock_tracker.is_complete() {
+                                ""
+                            } else {
+                                ", tracker incomplete"
+                            },
+                            waited,
+                            caller,
+                        ),
+                        _ => emerglogln!(
+                            "locktrack: stale mutex intent on dead thread {}, {} ms old",
+                            lock_tracker.id,
+                            waited,
+                        ),
+                    }
+                }
+                lock_tracker.unlock();
+                continue;
+            }
+            match lt.intended_mutex() {
+                Some((caller, Some((owner, owner_at)))) => emerglogln!(
+                    "Thread {} has waited {} ms for the mutex at {}, held by thread {} ({:?}) taken at {}",
+                    lock_tracker.id,
+                    waited,
+                    caller,
+                    owner,
+                    threads
+                        .iter()
+                        .find(|(id, ..)| *id == owner)
+                        .map(|(_, state, ..)| *state)
+                        .unwrap_or(ExecutionState::Exited),
+                    owner_at,
+                ),
+                Some((caller, None)) => emerglogln!(
+                    "Thread {} has waited {} ms for the mutex at {} (no holder seen)",
+                    lock_tracker.id,
+                    waited,
+                    caller,
+                ),
+                None => emerglogln!(
+                    "Thread {} has been waiting on a mutex for {} ms",
+                    lock_tracker.id,
+                    waited,
+                ),
+            }
             any = true;
         }
         lock_tracker.unlock();
@@ -388,8 +935,69 @@ pub fn check_timed_out_mutexes() {
                 emerglogln!("failed to lock lock tracker for thread {}", lock_tracker.id,);
                 continue;
             };
-            lt.print_locks();
+            lt.print_locks_at(Some(now));
             lock_tracker.unlock();
         }
+        // A holder that is Sleeping is blocked on something while holding the lock; one that is
+        // Running is either on-cpu or spinning. The lock dumps cannot tell those apart, and it is
+        // the first question a stuck lock raises.
+        emerglogln!("== thread states:");
+        for (id, state, mutex_wait, idle) in threads.iter() {
+            emerglogln!(
+                "  thread {}: {:?}{}{}",
+                id,
+                state,
+                if *mutex_wait {
+                    " (waiting on mutex)"
+                } else {
+                    ""
+                },
+                if *idle { " (idle)" } else { "" },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::panic::Location;
+
+    use super::{LockTrackerInner, diag};
+
+    /// Two outstanding spinlock intents on one thread must be reported, not accommodated.
+    ///
+    /// Taking a spinlock while spinning for another is always wrong, so the single intent slot is
+    /// the detector, and this is the shape it detects: Mode A was `spin_wait_until` polling TLB
+    /// shootdowns from inside a spin, where the shootdown code warned through the console lock.
+    /// The second acquire displaces the first's intent (`STALE_INTENT_REPLACED`) and the first then
+    /// records against nothing (`ORPHAN_RECORD`) -- the 1:1 pairing that named the bug.
+    #[twizzler_kernel_macros::kernel_test]
+    fn nested_spinlock_intent_is_reported() {
+        let stale_before = diag::STALE_INTENT_REPLACED.count();
+        let orphan_before = diag::ORPHAN_RECORD.count();
+
+        let mut lt = LockTrackerInner::new(u64::MAX);
+        lt.intend_to_lock_spinlock(Location::caller());
+        lt.intend_to_lock_spinlock(Location::caller());
+        assert_eq!(diag::STALE_INTENT_REPLACED.count(), stale_before + 1);
+
+        assert!(lt.record_spinlock_lock().is_some());
+        assert!(lt.record_spinlock_lock().is_none());
+        assert_eq!(diag::ORPHAN_RECORD.count(), orphan_before + 1);
+    }
+
+    /// The ordinary case, for contrast: one intent, one record, nothing reported.
+    #[twizzler_kernel_macros::kernel_test]
+    fn unnested_spinlock_intent_is_silent() {
+        let stale_before = diag::STALE_INTENT_REPLACED.count();
+        let orphan_before = diag::ORPHAN_RECORD.count();
+
+        let mut lt = LockTrackerInner::new(u64::MAX);
+        lt.intend_to_lock_spinlock(Location::caller());
+        assert!(lt.record_spinlock_lock().is_some());
+        assert_eq!(lt.spinlock_count(), 1);
+
+        assert_eq!(diag::STALE_INTENT_REPLACED.count(), stale_before);
+        assert_eq!(diag::ORPHAN_RECORD.count(), orphan_before);
     }
 }

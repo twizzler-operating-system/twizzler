@@ -21,9 +21,14 @@ struct SchedSpinlock<T>(GenericSpinlock<T, SpinLoop>);
 
 impl<T> SchedSpinlock<T> {
     fn lock(&self) -> SchedLockGuard<'_, T> {
-        current_thread_ref().map(|c| c.enter_critical_unguarded());
+        // The matching decrement in drop() goes to this same thread, not whoever is current by
+        // then: a guard held across a context switch would otherwise unbalance both threads.
+        let critical = current_thread_ref().map(|c| {
+            c.enter_critical_unguarded();
+            &**c
+        });
         let queue = self.0.lock();
-        SchedLockGuard { queue }
+        SchedLockGuard { queue, critical }
     }
 }
 
@@ -47,6 +52,8 @@ pub struct RunQueue<const N: usize> {
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct SchedLockGuard<'a, T> {
     pub(super) queue: LockGuard<'a, T, SpinLoop>,
+    /// Thread charged the critical-count increment at lock time.
+    critical: Option<&'static crate::thread::Thread>,
 }
 
 impl<T> core::ops::Deref for SchedLockGuard<'_, T> {
@@ -64,7 +71,20 @@ impl<T> core::ops::DerefMut for SchedLockGuard<'_, T> {
 
 impl<T> Drop for SchedLockGuard<'_, T> {
     fn drop(&mut self) {
-        current_thread_ref().map(|c| c.exit_critical(self.queue.locker));
+        use crate::thread::locktrack::diag;
+        if let Some(critical) = self.critical {
+            // DIAG: means the guard was held across a context switch.
+            if diag::this_thread() != critical.id() && diag::SCHED_GUARD_CROSSED.hit() {
+                emerglogln!(
+                    "locktrack: sched lock {} entered critical on thread {}, dropped while thread {} current (cpu {})",
+                    self.queue.locker,
+                    critical.id(),
+                    diag::this_thread(),
+                    diag::this_cpu(),
+                );
+            }
+            critical.exit_critical(self.queue.locker);
+        }
     }
 }
 

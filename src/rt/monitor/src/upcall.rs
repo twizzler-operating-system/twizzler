@@ -9,6 +9,9 @@ use crate::mon::get_monitor;
 #[thread_local]
 static IN_UPCALL_HANDLER: AtomicBool = AtomicBool::new(false);
 
+/// Exit code for a thread killed by an unhandled fault in its own compartment.
+const UPCALL_EXIT_CODE: u64 = 137;
+
 pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
     let _nested = IN_UPCALL_HANDLER.swap(true, Ordering::SeqCst);
 
@@ -19,13 +22,25 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
                 IN_UPCALL_HANDLER.store(false, Ordering::SeqCst);
                 unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(frame, flags) };
             }
-            _ => {
-                let bt = std::backtrace::Backtrace::force_capture();
+            // Deliberate: the compartment is not being debugged, so the faulting thread is not
+            // resumed. Report the faulting frame; capturing the monitor's own backtrace here says
+            // nothing about the fault, since it is always the same upcall plumbing.
+            Ok(None) => {
                 twizzler_abi::klog_println!(
-                    "monitor upcall handler failed: {:?} {:?}\n{}",
+                    "unhandled fault, thread {}: {:?} at ip {:#x} sp {:#x}",
+                    info.thread_id,
+                    info.info,
+                    frame.ip(),
+                    frame.sp()
+                );
+                twizzler_abi::syscall::sys_thread_exit(UPCALL_EXIT_CODE);
+            }
+            Err(e) => {
+                twizzler_abi::klog_println!(
+                    "monitor upcall handler failed: {:?} {:?} {:?}",
+                    e,
                     frame,
-                    info,
-                    bt
+                    info
                 );
                 twizzler_abi::syscall::sys_thread_exit(101);
             }

@@ -21,10 +21,14 @@ pub enum Scenario {
 
 /// Default guest memory (in MB) for `--scenario lowmem`.
 ///
-/// UNVERIFIED PLACEHOLDER: this has not actually been bisected yet (no `--scenario lowmem` run has
-/// completed at all). Use `--memory {4096,2048,1024,512}` to find the real floor per testplan.md's
-/// Chunk 3, then replace this comment with the actual result.
-const LOWMEM_DEFAULT_MB: u32 = 1024;
+/// Measured, not guessed, but the floor is still not established: at 1024 the *bootloader* dies
+/// before the kernel ever runs (`PANIC: High memory allocator: Out of memory`, loading the initrd),
+/// so no run at that size tested anything. 2048 boots and reaches the kernel test suite, then
+/// wedges in the frame allocator during `test_condvar` -- 5 free frames of 287 395, kernel holding
+/// 99% of them, one waiter, no forward progress and no panic (exit 36). That wedge is a real defect
+/// of its own, not a memory-size choice; see stabilitybugs.md. Bisecting the floor properly needs
+/// it fixed first.
+const LOWMEM_DEFAULT_MB: u32 = 2048;
 
 /// Low-memory boots are much slower (heavier reclaim/pager traffic); give the suite roughly 3x the
 /// default run's wait budget before calling it a hang.
@@ -130,6 +134,13 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
 
     if let Some(log) = &outcome.serial_log {
         println!("serial log: {}", log.display());
+    }
+
+    // A dead guest is its own outcome, and a more useful one than "no report": the run did not
+    // exhaust its budget, it died, and we stopped it.
+    if let Some(death) = outcome.guest_death {
+        eprintln!("FAILED: {}", death.describe());
+        std::process::exit(death.exit_code());
     }
 
     // A run that produced no report tells us nothing, whether it timed out or died early. Treat

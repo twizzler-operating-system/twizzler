@@ -87,3 +87,17 @@ impl FromStr for Report {
         serde_json::from_str(s)
     }
 }
+
+impl Report {
+    /// Parse a report from the start of `s`, ignoring anything following the JSON value.
+    ///
+    /// The report shares the guest console with the kernel log, and a kernel line can splice
+    /// itself in before the report's newline — one stray byte then makes `from_str` reject an
+    /// otherwise complete report, and a run that passed every test is recorded as producing none.
+    pub fn from_prefix(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::Deserializer::from_str(s)
+            .into_iter::<Self>()
+            .next()
+            .unwrap_or_else(|| serde_json::from_str::<Self>(""))
+    }
+}

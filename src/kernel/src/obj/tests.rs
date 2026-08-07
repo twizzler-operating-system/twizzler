@@ -225,3 +225,38 @@ fn test_object_copy() {
     // Make sure we didn't overwrite the first copy.
     check_slices(&src, second_page + abit, &dest, second_page + abit, ps);
 }
+
+/// An object created with `ObjectCreateFlags::DELETE` must survive until its creator has had a
+/// chance to map it. The flag means "delete when the last mapping goes away", but a brand-new
+/// object has no mappings, so a reap pass running between the create syscall returning and the
+/// creator's map would otherwise take it -- and `scan_deleted` runs on every unmap syscall.
+#[twizzler_kernel_macros::kernel_test]
+fn delete_flagged_object_survives_until_mapped() {
+    use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
+
+    use crate::{
+        obj::{LookupFlags, LookupResult, lookup_object, scan_deleted},
+        syscall::object::sys_object_create,
+    };
+
+    let create = ObjectCreate::new(
+        BackingType::Normal,
+        LifetimeType::Volatile,
+        None,
+        ObjectCreateFlags::DELETE,
+        Protections::all(),
+    );
+    let id = sys_object_create(&create, &[], &[]).unwrap();
+
+    // Stand in for any other cpu unmapping something in this window.
+    scan_deleted();
+
+    assert!(
+        matches!(
+            lookup_object(id, LookupFlags::empty()),
+            LookupResult::Found(_)
+        ),
+        "DELETE-flagged object {} was reaped before it was ever mapped",
+        id
+    );
+}

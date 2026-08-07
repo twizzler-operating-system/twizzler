@@ -10,7 +10,7 @@ use crate::{
         sched::{SchedFlags, schedule},
         spin_wait_until,
     },
-    thread::locktrack::with_lock_tracker,
+    thread::locktrack,
 };
 
 pub trait RelaxStrategy {
@@ -61,7 +61,14 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();
         let caller = core::panic::Location::caller();
-        with_lock_tracker(|lt| lt.intend_to_lock_spinlock(caller));
+        // Resolved once: intent, record and release must all land on the same tracker, and the
+        // current thread is not stable across a context switch.
+        let tracker = locktrack::current_tracker();
+        let intent_thread = locktrack::diag::this_thread();
+        let intent_cpu = locktrack::diag::this_cpu();
+        if let Some(tracker) = tracker {
+            locktrack::with_tracker(tracker, |lt| lt.intend_to_lock_spinlock(caller));
+        }
         let ticket = self.next_ticket.0.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
         spin_wait_until(
@@ -90,13 +97,32 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         );
         self.locked_from
             .store(caller as *const _ as *mut _, Ordering::SeqCst);
-        let tracker_index = with_lock_tracker(|lt| lt.record_spinlock_lock());
+        // DIAG: interrupts are off for all of lock(), so neither should change across the spin.
+        let record_thread = locktrack::diag::this_thread();
+        let record_cpu = locktrack::diag::this_cpu();
+        if (record_thread != intent_thread || record_cpu != intent_cpu)
+            && locktrack::diag::INTENT_RECORD_CROSSED.hit()
+        {
+            emerglogln!(
+                "locktrack: spinlock {} intent on thread {} cpu {}, record on thread {} cpu {} (ints {})",
+                caller,
+                intent_thread,
+                intent_cpu,
+                record_thread,
+                record_cpu,
+                if crate::interrupt::get() { "on" } else { "off" },
+            );
+        }
+        let tracker_index =
+            tracker.and_then(|t| locktrack::with_tracker(t, |lt| lt.record_spinlock_lock()));
         LockGuard {
             lock: self,
             interrupt_state,
             dont_unlock_on_drop: false,
             locker: core::panic::Location::caller(),
+            tracker,
             tracker_index,
+            locked_thread: intent_thread,
         }
     }
 
@@ -112,7 +138,11 @@ pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     interrupt_state: bool,
     dont_unlock_on_drop: bool,
     pub locker: &'static core::panic::Location<'static>,
+    /// Captured at lock time, so `tracker_index` always indexes the tracker it came from.
+    tracker: Option<&'static locktrack::LockTracker>,
     tracker_index: Option<usize>,
+    /// DIAG: thread current at acquisition, for reporting only.
+    locked_thread: u64,
 }
 
 pub type SpinLockGuard<'a, T> = LockGuard<'a, T, SpinLoop>;
@@ -133,11 +163,10 @@ impl<T, Relax: RelaxStrategy> core::ops::DerefMut for LockGuard<'_, T, Relax> {
 impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
     fn drop(&mut self) {
         if !self.dont_unlock_on_drop {
-            with_lock_tracker(|lt| {
-                if let Some(index) = self.tracker_index {
-                    lt.record_spinlock_unlock(index);
-                }
-            });
+            self.check_thread_crossing();
+            if let (Some(tracker), Some(index)) = (self.tracker, self.tracker_index) {
+                locktrack::with_tracker(tracker, |lt| lt.record_spinlock_unlock(index));
+            }
             self.lock.release();
             crate::interrupt::set(self.interrupt_state);
         }
@@ -145,6 +174,20 @@ impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
 }
 
 impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
+    /// DIAG: a guard released while a different thread is current than at acquisition.
+    fn check_thread_crossing(&self) {
+        let now = locktrack::diag::this_thread();
+        if now != self.locked_thread && locktrack::diag::SPINLOCK_GUARD_CROSSED.hit() {
+            emerglogln!(
+                "locktrack: spinlock {} locked by thread {}, released by thread {} (cpu {})",
+                self.locker,
+                self.locked_thread,
+                now,
+                locktrack::diag::this_cpu(),
+            );
+        }
+    }
+
     pub fn get_lock(&self) -> &GenericSpinlock<T, Relax> {
         self.lock
     }
@@ -152,8 +195,8 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
     pub unsafe fn force_unlock(&mut self) {
         self.dont_unlock_on_drop = true;
 
-        if let Some(index) = self.tracker_index {
-            with_lock_tracker(|lt| lt.record_spinlock_unlock(index));
+        if let (Some(tracker), Some(index)) = (self.tracker, self.tracker_index) {
+            locktrack::with_tracker(tracker, |lt| lt.record_spinlock_unlock(index));
         }
         self.lock.release();
     }

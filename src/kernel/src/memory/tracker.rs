@@ -133,6 +133,7 @@ impl MemoryTracker {
         let Some(current_thread) = current_thread_ref() else {
             panic!("warning -- cannot wait on memory before threading initialized");
         };
+        crate::thread::locktrack::warn_if_blocking_with_mutexes("memory alloc");
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
         self.waiters.lock().push_back(current_thread.clone());

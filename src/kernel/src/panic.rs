@@ -157,6 +157,7 @@ fn panic(info: &PanicInfo) -> ! {
     if let Some(current_thread) = current_thread_ref() {
         current_thread.print_locks();
     }
+    crate::thread::locktrack::diag::print_counters();
 
     emerglogln!("starting backtrace...");
 

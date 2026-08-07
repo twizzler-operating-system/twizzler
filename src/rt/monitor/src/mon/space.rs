@@ -104,12 +104,28 @@ impl Space {
                     return Err(res.unwrap_err());
                 };
 
-                let map = MappedObject {
-                    addrs: MappedObjectAddrs::new(slot),
-                    handle_count: 0,
-                };
-                guard.maps.insert(info, map);
-                // Unwrap-Ok: just inserted.
+                // The lock was dropped across the map syscall, so another thread may have mapped
+                // this same object meanwhile. Inserting over it would strand that thread's
+                // handles on a slot the table no longer names, and lose their references: the
+                // first handle to drop would take the count to zero and unmap the surviving
+                // slot out from under the others. Keep whichever mapping got there first.
+                if guard.maps.contains_key(&info) {
+                    let _ = sys_object_unmap(None, slot, UnmapFlags::empty()).inspect_err(|e| {
+                        tracing::warn!("failed to unmap redundant mapping of {:?}: {}", info, e)
+                    });
+                    unsafe {
+                        __monitor_release_slot(slot);
+                    }
+                } else {
+                    guard.maps.insert(
+                        info,
+                        MappedObject {
+                            addrs: MappedObjectAddrs::new(slot),
+                            handle_count: 0,
+                        },
+                    );
+                }
+                // Unwrap-Ok: present either way.
                 guard.maps.get_mut(&info).unwrap()
             }
         };
@@ -162,26 +178,23 @@ impl Space {
             return Err(res.unwrap_err());
         };
 
-        let map = MappedObject {
-            addrs: MappedObjectAddrs::new(one),
-            handle_count: 0,
-        };
-        let map2 = MappedObject {
-            addrs: MappedObjectAddrs::new(two),
-            handle_count: 0,
-        };
-        self.maps.insert(info, map);
-        self.maps.insert(info2, map2);
-        // Unwrap-Ok: just inserted.
-        let item = self.maps.get_mut(&info).unwrap();
-        item.handle_count += 1;
-        let addrs = item.addrs;
-        let item2 = self.maps.get_mut(&info2).unwrap();
-        item2.handle_count += 1;
-        let addrs2 = item2.addrs;
+        // Deliberately NOT recorded in `maps`. That table is keyed by MapInfo alone and holds one
+        // slot per object, but a pair mapping is tied to *this* load: the text must sit adjacent
+        // to this load's data object, so the same object gets a different pair per compartment
+        // (dynlink's engine uses the source object itself as the text object, so every compartment
+        // that loads a library pair-maps the same id). Inserting here would replace the previous
+        // load's entry, orphaning its handles from the table and leaving one reference count for
+        // two live mappings — after which the first handle to drop unmaps the *other* load's slot
+        // while it is still relocating. These handles own their slots outright instead.
         Ok((
-            Arc::new(MapHandleInner::new(info, addrs)),
-            Arc::new(MapHandleInner::new(info2, addrs2)),
+            Arc::new(MapHandleInner::new_exclusive(
+                info,
+                MappedObjectAddrs::new(one),
+            )),
+            Arc::new(MapHandleInner::new_exclusive(
+                info2,
+                MappedObjectAddrs::new(two),
+            )),
         ))
     }
 
@@ -270,6 +283,12 @@ impl Space {
 /// the caller probably had to hold a lock to call these functions.
 pub(crate) struct UnmapOnDrop {
     slot: usize,
+}
+
+impl UnmapOnDrop {
+    pub(crate) fn new(slot: usize) -> Self {
+        Self { slot }
+    }
 }
 
 impl Drop for UnmapOnDrop {

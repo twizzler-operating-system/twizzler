@@ -41,6 +41,10 @@ mod tests;
 
 const OBJ_DELETED: u32 = 1;
 pub const OBJ_HAS_INTERRUPTS: u32 = 2;
+/// Created with `ObjectCreateFlags::DELETE`: delete once the last mapping goes away. Distinct from
+/// `OBJ_DELETED`, which means a delete has actually been requested -- an object carrying only this
+/// flag is still live, and in particular is still live before it has ever been mapped.
+const OBJ_DELETE_ON_LAST_UNMAP: u32 = 4;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
@@ -175,7 +179,24 @@ impl Object {
         self.id.parts()[0] == 1
     }
 
+    /// Record that this object should be deleted once its last mapping goes away.
+    pub fn set_delete_on_last_unmap(&self) {
+        self.flags
+            .fetch_or(OBJ_DELETE_ON_LAST_UNMAP, Ordering::SeqCst);
+    }
+
+    /// Called after a mapping is torn down and the map count has reached zero. Objects created
+    /// with `ObjectCreateFlags::DELETE` become deletable exactly here -- not at creation, where
+    /// they have no mappings only because the creator has not mapped them yet.
+    pub fn note_last_unmap(&self) {
+        if self.flags.load(Ordering::SeqCst) & OBJ_DELETE_ON_LAST_UNMAP != 0 {
+            self.mark_for_delete();
+        }
+    }
+
+    #[track_caller]
     pub fn mark_for_delete(&self) {
+        record_delete(self.id, core::panic::Location::caller());
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
@@ -474,6 +495,85 @@ pub fn scan_deleted() {
 
     for dobj in dobjs {
         ties::TIE_MGR.delete_object(dobj);
+    }
+}
+
+/// Ring of the most recent `mark_for_delete` calls, so that a failed lookup can say whether the id
+/// it was handed used to exist and who killed it. Diagnostic only.
+///
+/// Lock-free on purpose: `scan_deleted` runs on every unmap syscall, so a lock here would
+/// serialize the exact teardown path the races under investigation run through, and perturb what
+/// it is meant to observe. Torn or stale reads only ever cost a missed report.
+struct DeleteSlot {
+    /// Low 64 bits of the id; ids are random, so this is enough to identify one. 0 means empty.
+    id_lo: AtomicU64,
+    loc: core::sync::atomic::AtomicPtr<core::panic::Location<'static>>,
+}
+
+impl DeleteSlot {
+    const fn new() -> Self {
+        Self {
+            id_lo: AtomicU64::new(0),
+            loc: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        }
+    }
+}
+
+const DELETE_RING_LEN: usize = 64;
+static DELETE_RING: [DeleteSlot; DELETE_RING_LEN] = [const { DeleteSlot::new() }; DELETE_RING_LEN];
+static DELETE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn record_delete(id: ObjID, loc: &'static core::panic::Location<'static>) {
+    let idx = (DELETE_SEQ.fetch_add(1, Ordering::Relaxed) as usize) % DELETE_RING_LEN;
+    let slot = &DELETE_RING[idx];
+    // Invalidate before overwriting, so a reader never pairs a new id with an old location.
+    slot.id_lo.store(0, Ordering::Relaxed);
+    slot.loc.store(loc as *const _ as *mut _, Ordering::Relaxed);
+    slot.id_lo.store(id.raw() as u64, Ordering::Release);
+}
+
+/// If this id was marked for delete recently, report how many marks ago and from where.
+fn lookup_delete(id: ObjID) -> Option<(usize, &'static core::panic::Location<'static>)> {
+    let want = id.raw() as u64;
+    if want == 0 {
+        return None;
+    }
+    let seq = DELETE_SEQ.load(Ordering::Relaxed) as usize;
+    for back in 1..=DELETE_RING_LEN {
+        let slot = &DELETE_RING[seq.wrapping_sub(back) % DELETE_RING_LEN];
+        if slot.id_lo.load(Ordering::Acquire) == want {
+            let loc = slot.loc.load(Ordering::Relaxed);
+            if !loc.is_null() {
+                // Safety: only ever stores &'static Location values.
+                return Some((back, unsafe { &*loc }));
+            }
+        }
+    }
+    None
+}
+
+/// Describe why a lookup of `id` may have failed, for diagnostics on the miss path.
+pub fn describe_missing(id: ObjID) -> DeleteInfo {
+    DeleteInfo {
+        no_exist: is_no_exist(id),
+        deleted: lookup_delete(id),
+    }
+}
+
+pub struct DeleteInfo {
+    no_exist: bool,
+    deleted: Option<(usize, &'static core::panic::Location<'static>)>,
+}
+
+impl Display for DeleteInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.no_exist {
+            write!(f, "marked non-existent by the pager; ")?;
+        }
+        match self.deleted {
+            Some((back, loc)) => write!(f, "marked for delete {} deletes ago, from {}", back, loc),
+            None => write!(f, "not in the recent delete ring"),
+        }
     }
 }
 

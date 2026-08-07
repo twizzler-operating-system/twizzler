@@ -275,7 +275,7 @@ impl super::Monitor {
             desc
         );
         let (_, ref mut comps, ref dynlink, _, ref comphandles) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *self.locks.lock(super::reentrant_key()?);
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
@@ -356,7 +356,7 @@ impl super::Monitor {
         caller: ObjID,
         compartment: ObjID,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(super::reentrant_key()?);
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
         ch.insert(
@@ -446,7 +446,7 @@ impl super::Monitor {
     ) -> Result<Descriptor, TwzError> {
         let dep = {
             let (_, ref mut comps, _, _, ref mut comphandles) =
-                *self.locks.lock(ThreadKey::get().unwrap());
+                *self.locks.lock(super::reentrant_key()?);
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -468,7 +468,7 @@ impl super::Monitor {
     ) -> Result<ThreadInfo, TwzError> {
         let dep = {
             let (_, ref mut comps, _, _, ref mut comphandles) =
-                *self.locks.lock(ThreadKey::get().unwrap());
+                *self.locks.lock(super::reentrant_key()?);
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -619,9 +619,18 @@ impl super::Monitor {
     /// Drop a compartment handle.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn drop_compartment_handle(&self, caller: ObjID, desc: Descriptor) {
+        // See Monitor::drop_library_handle: reached from a panicking thread's backtrace walk,
+        // which still holds the key. Leaking the descriptor beats aborting the panic.
+        let Ok(key) = super::reentrant_key() else {
+            tracing::warn!(
+                "skipping drop of compartment handle {} for {}: monitor locks already held by this thread",
+                desc,
+                caller
+            );
+            return;
+        };
         let comps = {
-            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
-                *self.locks.lock(ThreadKey::get().unwrap());
+            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) = *self.locks.lock(key);
             let comp = comp_handles.remove(caller, desc);
 
             if let Some(comp) = comp {

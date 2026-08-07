@@ -25,7 +25,7 @@ use crate::{
         LookupFlags, ObjectRef, PageNumber,
         pagetables::{DirtyList, ObjectPageTable},
     },
-    once::Once,
+    once::OnceWait,
     processor::sched::{SchedFlags, schedule},
     syscall::sync::{finish_blocking, sys_thread_sync},
     thread::current_thread_ref,
@@ -41,13 +41,21 @@ pub use request::Request;
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
 pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 16;
 
-static INFLIGHT_MGR: Once<Mutex<InflightManager>> = Once::new();
+static INFLIGHT_MGR: OnceWait<Mutex<InflightManager>> = OnceWait::new();
 
 fn inflight_mgr() -> &'static Mutex<InflightManager> {
     INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
 }
 
 pub fn check_timed_out_requests() {
+    // Runs on the idle thread. Calling inflight_mgr() here would let the *lowest priority* thread
+    // in the system become the Once initializer; a higher-priority thread reaching
+    // inflight_mgr() while that is in flight spins in Once::poll without yielding, and on a
+    // uniprocessor the idle thread then never runs again -- a silent, permanent boot hang right
+    // after "pager ready". Nothing here needs to force initialization.
+    if !INFLIGHT_MGR.is_complete() {
+        return;
+    }
     let mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return;
@@ -92,6 +100,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
+            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             finish_blocking(guard);
         };
     }
@@ -137,6 +146,7 @@ fn get_pages_and_wait<'a>(
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
+            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             finish_blocking(guard);
         };
     }
@@ -166,6 +176,7 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
+        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
         finish_blocking(guard);
     };
 }
@@ -210,6 +221,7 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
+        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
         finish_blocking(guard);
     };
 }
@@ -322,25 +334,33 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
                 frame.start_address().raw(),
                 frame.start_address().offset(len).unwrap().raw(),
             ));
+        } else if let Some(frame) =
+            crate::memory::tracker::try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[0])
+        {
+            frame.inc_refcount();
+            assert!(!frame.is_cow());
+            assert!(!frame.is_pt());
+            assert!(frame.refcount() == 1);
+            assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
+            assert!(!frame.is_kernel());
+            assert!(!frame.is_zeroed());
+            count += 1;
+            crate::memory::tracker::track_page_pager(1);
+            ranges.push(PhysRange::new(
+                frame.start_address().raw(),
+                frame.start_address().offset(frame.size()).unwrap().raw(),
+            ));
         } else {
-            if let Some(frame) = crate::memory::tracker::try_alloc_frame(
-                FrameAllocFlags::ZEROED,
-                PHYS_LEVEL_LAYOUTS[0],
-            ) {
-                frame.inc_refcount();
-                assert!(!frame.is_cow());
-                assert!(!frame.is_pt());
-                assert!(frame.refcount() == 1);
-                assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
-                assert!(!frame.is_kernel());
-                assert!(!frame.is_zeroed());
-                count += 1;
-                crate::memory::tracker::track_page_pager(1);
-                ranges.push(PhysRange::new(
-                    frame.start_address().raw(),
-                    frame.start_address().offset(frame.size()).unwrap().raw(),
-                ));
-            }
+            // Neither allocator can satisfy us right now. Donate what we have: retrying here
+            // advances nothing, and since neither allocator logs, spinning produces a completely
+            // silent hang -- the Ready handler never builds its CompletionToPager and the pager
+            // handshake never finishes.
+            log::warn!(
+                "no frames available to donate to pager: got {} of {} requested",
+                count,
+                min_frames
+            );
+            break;
         }
     }
     ranges.sort_unstable_by_key(|r| r.start);
@@ -405,6 +425,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
             let thread = current_thread_ref().unwrap();
             if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
                 drop(mgr);
+                crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
                 finish_blocking(guard);
             };
         }

@@ -482,6 +482,11 @@ impl RunComp {
                 info.thread_id,
                 info.info
             );
+            // The faulting thread is about to exit without ever reaching the normal exit paths, so
+            // nothing else would mark this compartment dead. Without this, anyone in
+            // `compartment_wait` (init, and the test runner behind it) blocks forever and the
+            // fault surfaces as an orphaned-thread hang instead of a failed compartment.
+            self.set_flag(COMP_EXITED);
             None
         };
         Ok(flags)

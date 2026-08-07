@@ -24,7 +24,7 @@ use crate::{
     memory::PhysAddr,
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef, lookup_object, register_object},
-    once::Once,
+    once::OnceWait,
     syscall::create_user_slice,
 };
 
@@ -44,7 +44,7 @@ pub struct Device {
 
 pub type DeviceRef = Arc<Device>;
 
-static DEVICES: Once<Mutex<BTreeMap<ObjID, DeviceRef>>> = Once::new();
+static DEVICES: OnceWait<Mutex<BTreeMap<ObjID, DeviceRef>>> = OnceWait::new();
 
 fn get_device_map() -> &'static Mutex<BTreeMap<ObjID, DeviceRef>> {
     DEVICES.call_once(|| Mutex::new(BTreeMap::new()))
@@ -61,7 +61,7 @@ impl KsoManager {
     }
 }
 
-static KSO_MANAGER: Once<KsoManager> = Once::new();
+static KSO_MANAGER: OnceWait<KsoManager> = OnceWait::new();
 
 fn get_kso_manager() -> &'static KsoManager {
     KSO_MANAGER.call_once(|| {

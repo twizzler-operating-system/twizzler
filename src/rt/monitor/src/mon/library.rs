@@ -3,7 +3,6 @@ use dynlink::{
     library::{AllowedGates, LibraryId, UnloadedLibrary},
     symbol::LookupFlags,
 };
-use happylock::ThreadKey;
 use monitor_api::LibraryInfoRaw;
 use secgate::util::Descriptor;
 use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
@@ -32,7 +31,7 @@ impl Monitor {
         desc: Descriptor,
     ) -> Result<LibraryInfoRaw, TwzError> {
         let (_, ref mut comps, ref dynlink, ref libhandles, _) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *self.locks.lock(super::reentrant_key()?);
         let handle = libhandles
             .lookup(instance, desc)
             .ok_or(ArgumentError::InvalidArgument)?;
@@ -80,7 +79,7 @@ impl Monitor {
         num: usize,
     ) -> Result<Descriptor, TwzError> {
         let (_, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *self.locks.lock(super::reentrant_key()?);
         let comp_id = comp
             .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
             .unwrap_or(Some(caller))
@@ -110,7 +109,7 @@ impl Monitor {
         id: Option<ObjID>,
     ) -> Result<(Descriptor, usize), TwzError> {
         let (_, ref mut comps, ref mut dynlink, ref mut handles, _) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *self.locks.lock(super::reentrant_key()?);
         let rc = comps.get_mut(caller)?;
         let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
         let name = std::str::from_utf8(&name_bytes)
@@ -172,9 +171,13 @@ impl Monitor {
     /// Drop a library handle.
     pub fn drop_library_handle(&self, caller: ObjID, desc: Descriptor) {
         //tracing::info!("drop: {}", desc);
-        self.library_handles
-            .write(ThreadKey::get().unwrap())
-            .remove(caller, desc);
+        // Reached from a panicking thread's backtrace walk, which drops the handles it opened
+        // while still holding the key. Leaking the descriptor beats aborting the panic.
+        let Ok(key) = super::reentrant_key() else {
+            tracing::warn!("skipping drop of library handle {} for {}: monitor locks already held by this thread", desc, caller);
+            return;
+        };
+        self.library_handles.write(key).remove(caller, desc);
     }
 
     /// Look up a symbol by name in the given library (or all libs in the caller's compartment
@@ -188,7 +191,7 @@ impl Monitor {
         name_len: usize,
     ) -> Result<usize, TwzError> {
         let (_, ref mut comps, ref dynlink, ref libhandles, _) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *self.locks.lock(super::reentrant_key()?);
         let rc = comps.get_mut(caller)?;
         let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
         let name = std::str::from_utf8(&name_bytes).map_err(|_| ArgumentError::InvalidArgument)?;

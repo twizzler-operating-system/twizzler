@@ -61,6 +61,10 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
         thread.init(user_new_start);
     }
     let id = thread.control_object.object().id();
+    // Must be set before the thread can run: from here on the repr object belongs to the caller,
+    // which deletes it when done. Otherwise a thread that exits before the caller maps the id
+    // would take the object with it.
+    thread.set_repr_user_owned();
     schedule_new_thread(thread);
     Ok(id)
 }

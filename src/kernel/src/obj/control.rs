@@ -127,6 +127,24 @@ impl VNotes {
         None
     }
 
+    /// Copy the first couple of note values into `buf`, '|'-separated, returning the length
+    /// written. Notes are how userspace labels what an object is for (`heap`, `text:<lib>`,
+    /// `map:<comp>`, …), which is the only identification available once an object is gone.
+    pub fn summarize(&self, buf: &mut [u8]) -> usize {
+        let notes = self.notes.lock();
+        let mut len = 0;
+        for note in notes.values().take(2) {
+            for b in note.iter().chain(b"|".iter()) {
+                if len == buf.len() {
+                    return len;
+                }
+                buf[len] = *b;
+                len += 1;
+            }
+        }
+        len
+    }
+
     pub fn with_note<R>(&self, key: u64, f: impl FnOnce(&mut Vec<u8>) -> R) -> Option<R> {
         let mut notes = self.notes.lock();
         notes.get_mut(&key).map(f)

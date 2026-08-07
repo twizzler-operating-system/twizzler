@@ -9,7 +9,10 @@ use dynlink::{compartment::Compartment, tls::TlsRegion};
 use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
-    syscall::{sys_spawn, sys_thread_exit, ThreadSyncSleep, UpcallTargetSpawnOption},
+    syscall::{
+        sys_object_ctrl, sys_spawn, sys_thread_exit, DeleteFlags, ObjectControlCmd,
+        ThreadSyncSleep, UpcallTargetSpawnOption,
+    },
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
 };
@@ -171,6 +174,9 @@ impl ThreadMgr {
                 instance,
             )?
         };
+        // We own this repr object from here: the kernel no longer deletes it when the thread dies
+        // (see Thread::drop), so every path out of here has to either hand it to a
+        // ManagedThreadRepr, which deletes it on drop, or delete it directly.
         let repr = Space::map(
             &get_monitor().space,
             MapInfo {
@@ -178,7 +184,14 @@ impl ThreadMgr {
                 flags: MapFlags::READ,
             },
         )
-        .unwrap();
+        .inspect_err(|e| {
+            tracing::error!(
+                "failed to map repr object {} of newly spawned thread: {}",
+                id,
+                e
+            );
+            delete_repr(id);
+        })?;
         Ok(Arc::new(ManagedThreadInner {
             id,
             super_tid,
@@ -268,6 +281,14 @@ impl Drop for ManagedThreadInner {
 /// A thread managed by the monitor.
 pub type ManagedThread = Arc<ManagedThreadInner>;
 
+/// Delete a thread repr object. The kernel creates these but leaves their lifetime to whoever
+/// called `sys_spawn`, so the monitor has to do this explicitly or they accumulate forever.
+fn delete_repr(id: ObjID) {
+    if let Err(e) = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0) {
+        tracing::warn!("failed to delete thread repr object {}: {}", id, e);
+    }
+}
+
 /// An owned handle to a thread's repr object.
 pub(crate) struct ManagedThreadRepr {
     handle: MapHandle,
@@ -288,5 +309,10 @@ impl ManagedThreadRepr {
 impl Drop for ManagedThreadRepr {
     fn drop(&mut self) {
         tracing::trace!("dropping ManagedThreadRepr for {}", self.handle.id());
+        // Deliberately on handle drop rather than where the cleaner detects the exit, so that
+        // every path that lets go of a thread -- cleaner reap, ThreadMgr removal, teardown --
+        // releases the object. The unmap is deferred to the Unmapper, but ordering does not
+        // matter: Delete only marks, and the kernel reaps once the last mapping is gone.
+        delete_repr(self.handle.id());
     }
 }

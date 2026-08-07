@@ -18,7 +18,7 @@ use crate::{
     },
     mutex::Mutex,
     obj::{LookupFlags, LookupResult, lookup_object},
-    once::Once,
+    once::OnceWait,
     spinlock::Spinlock,
     thread::current_memory_context,
 };
@@ -393,7 +393,7 @@ struct GlobalSecCtxMgr {
     contexts: Mutex<BTreeMap<ObjID, SecurityContextRef>>,
 }
 
-static GLOBAL_SECCTX_MGR: Once<GlobalSecCtxMgr> = Once::new();
+static GLOBAL_SECCTX_MGR: OnceWait<GlobalSecCtxMgr> = OnceWait::new();
 
 fn global_secctx_mgr() -> &'static GlobalSecCtxMgr {
     GLOBAL_SECCTX_MGR.call_once(|| GlobalSecCtxMgr {
