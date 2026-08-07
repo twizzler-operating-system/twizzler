@@ -69,6 +69,16 @@ fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
     }
 }
 
+/// DIAG (Mode L), diagnostic only -- set to `usize::MAX` to disable and restore normal routing.
+///
+/// ferroc classes a request as `Large` above `MEDIUM_MAX` (32 KiB) and up to `LARGE_MAX`
+/// (~1.875 MiB), packing it into a 4 MiB slab and finding a block's owning slab by masking the
+/// pointer to `SLAB_SIZE`. memhog's 1 MiB chunks land squarely on that path. Routing everything
+/// above `MEDIUM_MAX` to talc instead bisects the allocator: if Mode L survives, ferroc's large
+/// path is not responsible. Size-based so `dealloc` routes identically without needing to know
+/// where a pointer came from.
+const DIAG_TALC_ABOVE: usize = 32 << 10;
+
 fn try_switch_allocator_is_done() -> bool {
     static SWITCHED: AtomicU32 = AtomicU32::new(0);
     if SWITCHED.load(Ordering::Acquire) == 2 {
@@ -106,6 +116,12 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return r;
         }
 
+        if layout.size() > DIAG_TALC_ABOVE {
+            let r = LOCAL_ALLOCATOR.alloc(layout);
+            ferroc::note_alloc(r as usize, layout.size());
+            return r;
+        }
+
         ferroc::check_shard_free();
         print_comp_name(layout, false);
         //let start_time = Instant::now();
@@ -116,6 +132,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             .cast::<u8>();
 
         ferroc::record_alloc(r as usize, layout.size());
+        ferroc::note_alloc(r as usize, layout.size());
         //let end_time = Instant::now();
         //trace_runtime_alloc(r.addr(), layout, end_time - start_time, false);
         r
@@ -141,6 +158,12 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return r;
         }
 
+        if layout.size() > DIAG_TALC_ABOVE {
+            let r = LOCAL_ALLOCATOR.alloc_zeroed(layout);
+            ferroc::note_alloc(r as usize, layout.size());
+            return r;
+        }
+
         print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc
@@ -148,6 +171,8 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             .map(|nn| nn.as_ptr())
             .unwrap_or(core::ptr::null_mut())
             .cast::<u8>();
+
+        ferroc::note_alloc(r as usize, layout.size());
 
         //let end_time = Instant::now();
         //trace_runtime_alloc(r.addr(), layout, end_time - start_time, false);
@@ -177,6 +202,13 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return;
         }
 
+        // Mirrors the routing in `alloc`; must stay after the early-alloc check above, since those
+        // pointers are deliberately leaked rather than freed.
+        if layout.size() > DIAG_TALC_ABOVE {
+            ferroc::note_free(ptr as usize, layout.size());
+            return LOCAL_ALLOCATOR.dealloc(ptr, layout);
+        }
+
         if let Some(ptr) = NonNull::new(ptr) {
             // DIAG (multiputbug): this pointer is about to be freed into ferroc. `dealloc`
             // routes by pointer slot (`is_ptr_early_alloc`) while `alloc` routes by runtime
@@ -191,6 +223,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
                 );
             }
             ferroc::record_free(ptr.as_ptr() as usize, layout.size(), true);
+            ferroc::note_free(ptr.as_ptr() as usize, layout.size());
             //let start_time = Instant::now();
             print_comp_name(layout, true);
             ferroc::TwzFerroc.deallocate(ptr, layout);

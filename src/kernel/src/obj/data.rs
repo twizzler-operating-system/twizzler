@@ -553,6 +553,16 @@ impl Object {
         if len == 0 {
             return Ok(());
         }
+        if len >= (64 << 10) {
+            log::info!(
+                "BIGCOPY direct_copy: {} +{:x} => {} +{:x} len {:x}",
+                self.id(),
+                src_offset,
+                dst.id(),
+                dst_offset,
+                len
+            );
+        }
         log::debug!(
             "direct_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
@@ -709,6 +719,16 @@ impl Object {
             return Ok(());
         }
 
+        if len >= (64 << 10) {
+            log::info!(
+                "BIGCOPY cow_copy: {} +{:x} => {} +{:x} len {:x}",
+                self.id(),
+                src_offset,
+                dst.id(),
+                dst_offset,
+                len
+            );
+        }
         log::debug!(
             "cow_copy: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",
             src_offset,
@@ -773,6 +793,19 @@ impl Object {
     ) -> Result<(), TwzError> {
         if len == 0 {
             return Ok(());
+        }
+        // DIAG (Mode L): userspace sees a heap block's tail holding another block's bytes at the
+        // identical offset -- the shape of `memcpy(dst+D, src+D, len-D)`. This is the only
+        // byte-granular inter-object copier, so make a large one impossible to miss at Info.
+        if len >= (64 << 10) {
+            log::info!(
+                "BIGCOPY copy_range: {} +{:x} => {} +{:x} len {:x}",
+                self.id(),
+                src_offset,
+                dst.id(),
+                dst_offset,
+                len
+            );
         }
         log::debug!(
             "copy_range: src_offset {:x}, dst_offset {:x}, len {} ({} => {})",

@@ -131,6 +131,63 @@ pub fn check_shard_free() {
     IN_CHECK.store(false, Ordering::SeqCst);
 }
 
+/// DIAG (Mode L): every large live allocation, so each new one can be checked against them.
+/// Mode L shows a block's tail holding another block's bytes at the identical offset, and the
+/// test's own check found no overlap among *its* chunks -- but it cannot see allocations made by
+/// the runtime or by other threads. This widens the check to every allocation in the process.
+/// Allocation-free by construction: it runs inside the allocator.
+const LIVE_MAX: usize = 2048;
+const LARGE_ALLOC: usize = 64 << 10;
+static LIVE_PTR: [AtomicUsize; LIVE_MAX] = [const { AtomicUsize::new(0) }; LIVE_MAX];
+static LIVE_LEN: [AtomicUsize; LIVE_MAX] = [const { AtomicUsize::new(0) }; LIVE_MAX];
+static OVERLAP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn note_alloc(ptr: usize, len: usize) {
+    if ptr == 0 || len < LARGE_ALLOC {
+        return;
+    }
+    let mut slot = usize::MAX;
+    for i in 0..LIVE_MAX {
+        let p = LIVE_PTR[i].load(Ordering::SeqCst);
+        if p == 0 {
+            if slot == usize::MAX {
+                slot = i;
+            }
+            continue;
+        }
+        let l = LIVE_LEN[i].load(Ordering::SeqCst);
+        if ptr < p.wrapping_add(l) && p < ptr.wrapping_add(len) {
+            if OVERLAP_COUNT.fetch_add(1, Ordering::SeqCst) < 16 {
+                twizzler_abi::klog_println!(
+                    "FERROC-OVERLAP: new {:x}+{:x} overlaps live {:x}+{:x} (tcb {:x})",
+                    ptr,
+                    len,
+                    p,
+                    l,
+                    tcb()
+                );
+            }
+        }
+    }
+    if slot != usize::MAX {
+        LIVE_PTR[slot].store(ptr, Ordering::SeqCst);
+        LIVE_LEN[slot].store(len, Ordering::SeqCst);
+    }
+}
+
+pub fn note_free(ptr: usize, len: usize) {
+    if ptr == 0 || len < LARGE_ALLOC {
+        return;
+    }
+    for i in 0..LIVE_MAX {
+        if LIVE_PTR[i].load(Ordering::SeqCst) == ptr {
+            LIVE_PTR[i].store(0, Ordering::SeqCst);
+            LIVE_LEN[i].store(0, Ordering::SeqCst);
+            return;
+        }
+    }
+}
+
 /// True if `ptr` falls inside a chunk we gave ferroc. Returns true when the registry has
 /// overflowed, so an over-long run degrades to "no opinion" rather than false alarms.
 pub fn ptr_in_ferroc_chunk(ptr: usize) -> bool {
