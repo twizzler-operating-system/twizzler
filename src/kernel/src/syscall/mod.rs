@@ -320,6 +320,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         }
         Syscall::Null => {
             if context.arg0::<u64>() == 0x12345678 {
+                crate::thread::locktrack::diag::print_counters(true);
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(

@@ -103,7 +103,10 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_EXITING != 0
     }
 
-    /// See [`THREAD_ACTIVE_RUNNING`]. Only `set_current_thread` may call these.
+    /// See [`THREAD_ACTIVE_RUNNING`]. Two callers only: `set_current_thread` sets it, and
+    /// `switch_thread` clears it for the outgoing thread before `__do_switch` releases that
+    /// thread's `switch_lock` -- the flag must go down before the thread becomes takeable, or a cpu
+    /// that legitimately picks it up sees it still marked running.
     pub(super) fn set_active_running(&self, set: bool) {
         if set {
             self.flags.fetch_or(THREAD_ACTIVE_RUNNING, Ordering::SeqCst);

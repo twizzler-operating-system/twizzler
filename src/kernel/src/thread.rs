@@ -70,6 +70,10 @@ pub struct Thread {
     /// Set the first time this thread is switched to. Until then it has never executed, so it
     /// cannot be any cpu's current thread, which is what makes early publication safe for it.
     has_run: AtomicBool,
+    /// Bumped every time a sync sleep ends. A timeout callback captures this when it is registered
+    /// and does nothing if it no longer matches, which is what makes a callback that is already
+    /// past `soft_advance` -- and so beyond the reach of `TimeoutKey::release` -- harmless.
+    sync_sleep_gen: AtomicU64,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
@@ -137,11 +141,10 @@ pub fn current_thread_ref() -> Option<&'static ThreadRef> {
 pub unsafe fn set_current_thread(thread: &Thread) {
     locktrack::diag::note_threading_up();
     let ptr = CURRENT_THREAD.get();
-    // Hand THREAD_ACTIVE_RUNNING from the outgoing thread to the incoming one. This is the only
-    // place a cpu's current thread changes, so the flag stays exactly as accurate as CURRENT_THREAD
-    // is. The outgoing thread keeps executing on its own stack for a little longer (the caller
-    // switches registers after this returns), but it has already been queued or parked by then, so
-    // the orphan scan still finds it linked into something.
+    // Raise THREAD_ACTIVE_RUNNING for the incoming thread. Ordinarily its predecessor dropped its
+    // own mark in `switch_thread` before the register switch, so the clear below is a no-op; it
+    // stays for the paths that reach here without a switch (`create_idle_thread`, and a thread that
+    // has never run publishing itself), where this cpu's outgoing thread still carries the mark.
     let old = current_thread_ref();
     if !old.is_some_and(|old| core::ptr::eq(&**old, thread)) {
         if let Some(old) = old {
@@ -150,8 +153,10 @@ pub unsafe fn set_current_thread(thread: &Thread) {
         // DIAG: the incoming thread is already some cpu's current thread. That is the cross-cpu
         // producer of Mode A's stale-intent/orphan-record pairs: two cpus charging bookkeeping to
         // one thread's tracker, which is also what makes `lock_or_skip` contend and drop records.
-        // A cpu that has picked up a thread the previous cpu has not finished switching away from
-        // reports here too -- that is the same finding, seen from the other end.
+        //
+        // A cpu handing a thread away drops the mark before `__do_switch` makes it takeable, so
+        // this no longer fires for the ordinary deschedule/pick-up handoff -- which it did, at
+        // 1-2 per smp2/smp4 run, against an invariant `switch_lock` was holding the whole time.
         //
         // Counted, never printed: this is the middle of a context switch, and `emerglogln` writes
         // the uart synchronously. The count reaches the console via `diag::print_counters`.
@@ -199,6 +204,7 @@ impl Thread {
             critical_counter: AtomicU64::new(0),
             switch_lock: AtomicU64::new(0),
             has_run: AtomicBool::new(false),
+            sync_sleep_gen: AtomicU64::new(0),
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             memory_context: ctx,
@@ -248,6 +254,23 @@ impl Thread {
         self.control_object.object().id()
     }
 
+    /// Token identifying the sleep a timeout callback was registered for. Capture it at
+    /// registration and re-check it in the callback; see [`Thread::end_sync_sleep`].
+    pub fn sync_sleep_gen(&self) -> u64 {
+        self.sync_sleep_gen.load(Ordering::SeqCst)
+    }
+
+    /// Retire every timeout callback outstanding against this thread's current sleep, by making the
+    /// token they captured stale. One atomic store is the whole cancellation: `TimeoutKey::release`
+    /// cannot stop a callback that `soft_advance` has already pulled off the queue, and until this
+    /// existed such a callback went on to consume the sleep flags and requeue a thread that was by
+    /// then running -- which surfaced later as "attempted to insert an object that is already
+    /// linked" from the run queue. Call it before releasing the key, so no window is left where the
+    /// callback can still see itself as current.
+    pub fn end_sync_sleep(&self) {
+        self.sync_sleep_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
     pub fn lock_tracker(&self) -> &LockTracker {
         &self.lock_tracker
     }
@@ -274,6 +297,14 @@ impl Thread {
         // `arch_switch_to` takes none, so the attribution window closes here -- on the same cpu
         // that opened it, in straight-line code, rather than depending on where a thread resumes.
         locktrack::leave_switch_window();
+        // Give up the outgoing thread's running mark *before* the switch, because `__do_switch`
+        // releases its `switch_lock` before acquiring ours -- the moment that store lands, another
+        // cpu may take this thread. Clearing it below, where `set_current_thread` otherwise would,
+        // is too late: that runs only once this cpu has resumed `self`, so a cpu that legitimately
+        // won the lock in between finds the thread still marked running and reports
+        // THREAD_CURRENT_ON_TWO_CPUS against an invariant that was never broken. The thread is
+        // already queued or parked at this point, so the orphan scan still finds it linked.
+        current.set_active_running(false);
         self.arch_switch_to(current);
         // Reached only once `current` has been resumed, which on amd64 means `__do_switch` has won
         // its switch_lock. This cpu now owns it and no other cpu still calls it current, so this is
@@ -708,6 +739,10 @@ pub fn exit(code: u64) -> ! {
         code
     );
     th.set_is_exiting();
+    // A thread can exit with a timeout still outstanding against it -- the callback holds a
+    // ThreadRef, so it will run. Retire it here for the same reason the sleep paths do, rather than
+    // relying on `schedule_thread_on_cpu`'s is_exiting() check to catch it downstream.
+    th.end_sync_sleep();
     th.reset_sync_sleep();
     th.reset_sync_sleep_done();
     th.sync_links.clear_all_references();

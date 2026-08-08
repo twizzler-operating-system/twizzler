@@ -210,8 +210,12 @@ pub mod diag {
 
     /// Printed alongside every kernel panic, so a panicking run always says whether any of the
     /// attribution hazards above actually occurred before it died.
-    pub fn print_counters() {
-        if ALL.iter().all(|c| c.count() == 0) {
+    ///
+    /// `always` forces the report even when every counter is zero. Shutdown passes it: a run that
+    /// finishes cleanly has to state on the record that the counters were zero, since silence there
+    /// is indistinguishable from a build without the instrumentation.
+    pub fn print_counters(always: bool) {
+        if !always && ALL.iter().all(|c| c.count() == 0) {
             return;
         }
         emerglogln!("== locktrack diagnostics:");

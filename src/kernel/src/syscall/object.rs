@@ -31,6 +31,33 @@ use crate::{
     thread::{current_memory_context, current_thread_ref},
 };
 
+/// The calling thread's memory context, as an error rather than a panic -- these are all reachable
+/// straight from userspace.
+///
+/// It logs because the two ways it can fail want different fixes and the count alone cannot tell
+/// them apart. `Some(id)` means the thread exists but was built with no context, which is permanent
+/// (the field is written once, in `Thread::new`) and belongs to whoever spawned it. `None` means
+/// there was no current thread at all during a syscall, which should be impossible -- though
+/// `NO_CURRENT_THREAD` shows post-boot windows with no current thread do occur.
+fn current_vmc() -> Result<ContextRef> {
+    current_memory_context().ok_or_else(|| {
+        // `objid` and the idle flag are what distinguish the two remaining explanations. Since
+        // `start_new_user` refuses to build a context-less user thread, a thread reported here is
+        // expected to be a kernel or idle thread -- which would mean the syscall's caller is *not*
+        // the thread named as current, rather than that the caller lacks a context.
+        let cur = current_thread_ref();
+        log::warn!(
+            "syscall needing a memory context ran without one (current thread: {:?}, objid: {:?}, \
+             idle: {:?}, flags: {:?})",
+            cur.map(|t| t.id()),
+            cur.map(|t| t.objid()),
+            cur.map(|t| t.is_idle_thread()),
+            cur.map(|t| t.flags.load(core::sync::atomic::Ordering::SeqCst)),
+        );
+        TwzError::NOT_SUPPORTED
+    })
+}
+
 fn new_nonce() -> Result<u128> {
     let mut bytes = [0; 16];
     if !getrandom(&mut bytes, false) {
@@ -115,7 +142,7 @@ pub fn sys_object_map(
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
     } else {
-        current_memory_context().unwrap()
+        current_vmc()?
     };
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
@@ -149,7 +176,7 @@ pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64> {
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?
     } else {
-        current_memory_context().unwrap()
+        current_vmc()?
     };
     vm.remove_object(Slot::try_from(slot).map_err(|_| ArgumentError::InvalidArgument)?);
     Ok(0)
@@ -157,7 +184,7 @@ pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64> {
 
 pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
     let vm = if handle.raw() == 0 {
-        current_memory_context().unwrap()
+        current_vmc()?
     } else {
         get_vmcontext_from_handle(handle).ok_or(ArgumentError::InvalidArgument)?
     };
@@ -274,7 +301,7 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
     let sctx = get_sctx(id)?;
 
     let current_thread = current_thread_ref().unwrap();
-    let current_context = current_memory_context().unwrap();
+    let current_context = current_vmc()?;
     current_context.register_sctx(sctx.id(), ArchContext::new());
     current_thread.secctx.attach(sctx)?;
 
@@ -358,8 +385,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
 }
 
 pub fn map_ctrl(start: usize, _len: usize, cmd: MapControlCmd, opts: u64) -> Result<u64> {
-    let map = current_memory_context()
-        .ok_or(TwzError::NOT_SUPPORTED)?
+    let map = current_vmc()?
         .lookup_slot(start / MAX_SIZE)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     map.ctrl(cmd, opts)

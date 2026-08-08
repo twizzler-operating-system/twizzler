@@ -295,7 +295,14 @@ pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
     Ok(obj.wakeup_word(offset, wake.count))
 }
 
-fn thread_sync_cb_timeout(thread: ThreadRef) {
+fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
+    // The sleep we were registered for is over, so this timeout has no one to wake. Bail before
+    // touching the sleep flags: they belong to whatever the thread is doing now, and consuming them
+    // here is what used to schedule an already-running thread. Reached whenever the thread woke for
+    // another reason after `soft_advance` dequeued us, which is past the point `release` can help.
+    if thread.sync_sleep_gen() != sleep_gen {
+        return;
+    }
     if thread.reset_sync_sleep() {
         add_to_requeue(thread);
     }
@@ -310,6 +317,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
         timeout.as_nanos() as u64,
         thread_sync_cb_timeout,
         thread.clone(),
+        thread.sync_sleep_gen(),
     );
     let guard = thread.enter_critical();
     thread.set_sync_sleep_done();
@@ -324,6 +332,10 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
         finish_blocking(guard);
     }
     let _guard = thread.enter_critical();
+    // Before anything else, and before releasing the key: retiring the token is the only thing that
+    // stops a callback already past `soft_advance`, and it has to happen while the sleep flags are
+    // still ours to protect.
+    thread.end_sync_sleep();
     remove_from_requeue(&thread);
     timeout_key.release();
     thread.reset_sync_sleep();
@@ -473,6 +485,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
                     timeout.as_nanos() as u64,
                     thread_sync_cb_timeout,
                     thread.clone(),
+                    thread.sync_sleep_gen(),
                 )
             });
             timeout_key
@@ -511,6 +524,9 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     };
 
     let woke_up = Instant::now();
+    // See simple_timed_sleep: retire any outstanding timeout callback before touching the flags it
+    // would otherwise consume.
+    thread.end_sync_sleep();
     thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
     drop(_guard);

@@ -250,6 +250,11 @@ def config_of(run: str) -> str:
     return run.split("-", 1)[1] if "-" in run else run
 
 
+def quadrant_of(config: str) -> str:
+    """`debug-nokvm-smp1` -> `debug-nokvm`: the profile/accel pair that sets a run's cost tier."""
+    return config.rsplit("-smp", 1)[0]
+
+
 def sweep_schedule(pid: int) -> Optional[List[str]]:
     """Every run this sweep will work through, rebuilt from its command line."""
     if many is None:
@@ -277,22 +282,21 @@ def sweep_schedule(pid: int) -> Optional[List[str]]:
         return None
 
 
-SUMMARY_RE = re.compile(r"^round \d+\s+(\S+)\s+(?:PASS|FAIL)\s+([\d.]+)m")
+SUMMARY_RE = re.compile(r"^round \d+\s+(\S+)\s+(PASS|FAIL)\s+([\d.]+)m")
 
 
-def historical_durations() -> Dict[str, List[float]]:
-    """Per-configuration run times recorded by previous sweeps.
+def historical_durations() -> Dict[str, List[Tuple[float, bool]]]:
+    """Per-configuration `(minutes, passed)` recorded by previous sweeps.
 
     Round 1 is when an ETA is most useful and when a sweep knows least about itself, and the spread
     between configurations is two orders of magnitude (a release+KVM run is under a minute, a
     debug+TCG one an hour) -- so an average over "whatever has finished so far" is not a usable
     stand-in for a configuration with no sample yet. Old numbers from the same machine are.
 
-    Failed runs count too, deliberately: the question is when the sweep ends, and a configuration
-    that reliably panics three minutes in does take three minutes. It does make the estimate for a
-    flaky configuration jumpy, since a panic and a hang are nothing alike in length.
+    Whether the run passed is kept, because a failure is a *lower bound* on a healthy run, not a
+    sample of one -- see `pick_estimate`.
     """
-    out: Dict[str, List[float]] = {}
+    out: Dict[str, List[Tuple[float, bool]]] = {}
     if not RESULTS_ROOT.is_dir():
         return out
     for entry in RESULTS_ROOT.iterdir():
@@ -302,17 +306,54 @@ def historical_durations() -> Dict[str, List[float]]:
             continue
         for line in text.splitlines():
             if m := SUMMARY_RE.match(line):
-                out.setdefault(m.group(1), []).append(float(m.group(2)))
+                out.setdefault(m.group(1), []).append(
+                    (float(m.group(3)), m.group(2) == "PASS")
+                )
     return out
 
 
-def estimates(sweep: "Sweep", history: Dict[str, List[float]]) -> Dict[str, float]:
+def pick_estimate(samples: List[Tuple[float, bool]]) -> float:
+    """How long a run of this configuration should be expected to take.
+
+    Not the mean, and passes outrank failures. Both corrections exist because the sweeps this
+    history comes from are the ones that were finding crashes, and the sweeps it is used on are the
+    ones checking the crashes are gone:
+
+    - A crash is a lower bound. `debug-nokvm-smp2`'s whole history was two runs that panicked at 3.0m
+      and 4.0m, giving a 3.5m estimate for a configuration whose healthy run takes an hour -- and
+      `debug-nokvm-smp1`, which had one passing run, was estimated correctly at 60m. So prefer
+      passing samples whenever any exist.
+    - A capped run (heartbeat/silence timeout) is censored, not measured; it says "at least this".
+
+    Taking the max of whatever survives keeps the failure direction safe: an ETA that reads high
+    wastes patience, one that reads low says a sweep is nearly done when it has an hour left.
+    """
+    passes = [m for m, ok in samples if ok]
+    return max(passes) if passes else max(m for m, _ in samples)
+
+
+def estimates(sweep: "Sweep", history: Dict[str, List[Tuple[float, bool]]]) -> Dict[str, float]:
     """Minutes a run of each configuration takes: this sweep's own numbers first, history second."""
-    est = {name: sum(v) / len(v) for name, v in history.items()}
-    own: Dict[str, List[float]] = {}
-    for _verdict, name, mins, _summary in sweep.done:
-        own.setdefault(config_of(name), []).append(float(mins))
-    est.update({name: sum(v) / len(v) for name, v in own.items()})
+    own: Dict[str, List[Tuple[float, bool]]] = {}
+    for verdict, name, mins, _summary in sweep.done:
+        own.setdefault(config_of(name), []).append((float(mins), verdict == "PASS"))
+    # This sweep's own numbers replace history rather than joining it: they are the only ones taken
+    # from this tree, at this concurrency.
+    effective = {name: v for name, v in history.items() if v}
+    effective.update({name: v for name, v in own.items() if v})
+    est = {name: pick_estimate(v) for name, v in effective.items()}
+
+    # A configuration with no passing sample anywhere still has siblings. Cost is set by profile and
+    # accel -- the tiering many.py schedules by -- far more than by cpu count, so borrow the
+    # quadrant's slowest healthy run rather than trusting a crash time. Without this,
+    # `debug-nokvm-smp2` reads 4m off two panics while `debug-nokvm-smp1` correctly reads 60m.
+    healthy: Dict[str, float] = {}
+    for name, v in effective.items():
+        if any(ok for _mins, ok in v):
+            healthy[quadrant_of(name)] = max(healthy.get(quadrant_of(name), 0.0), est[name])
+    for name, v in effective.items():
+        if not any(ok for _mins, ok in v):
+            est[name] = max(est[name], healthy.get(quadrant_of(name), 0.0))
     return est
 
 

@@ -35,13 +35,22 @@ pub fn statclock(dt: Nanoseconds) {
 const NR_WINDOWS: usize = 1024;
 
 struct TimeoutOnce {
-    cb: fn(ThreadRef),
+    cb: fn(ThreadRef, u64),
     thread: ThreadRef,
+    /// The sleep this callback belongs to. `soft_advance` removes an entry from the queue before
+    /// the callback runs, so from that moment `TimeoutKey::release` can no longer stop it; the
+    /// callback checks this against the thread's current value instead and does nothing if the
+    /// sleep it was registered for has since ended.
+    sleep_gen: u64,
 }
 
 impl TimeoutOnce {
-    fn new(cb: fn(ThreadRef), thread: ThreadRef) -> Self {
-        Self { cb, thread }
+    fn new(cb: fn(ThreadRef, u64), thread: ThreadRef, sleep_gen: u64) -> Self {
+        Self {
+            cb,
+            thread,
+            sleep_gen,
+        }
     }
 }
 
@@ -65,7 +74,7 @@ impl TimeoutEntry {
     }
 
     fn call(self) {
-        (self.timeout.cb)(self.timeout.thread)
+        (self.timeout.cb)(self.timeout.thread, self.timeout.sleep_gen)
     }
 }
 
@@ -223,12 +232,15 @@ pub fn print_info() {
 
 fn timeout_thread_set_has_work() {}
 
+/// Register `cb` to fire after `time`. `sleep_gen` is the caller's [`Thread::sync_sleep_gen`] at
+/// registration: the callback is handed it back and must ignore the timeout if it has moved on.
 pub fn register_timeout_callback(
     time: Nanoseconds,
-    cb: fn(ThreadRef),
+    cb: fn(ThreadRef, u64),
     thread: ThreadRef,
+    sleep_gen: u64,
 ) -> TimeoutKey {
-    let timeout = TimeoutOnce::new(cb, thread);
+    let timeout = TimeoutOnce::new(cb, thread, sleep_gen);
     TIMEOUT_QUEUE.lock().insert(time, timeout)
 }
 

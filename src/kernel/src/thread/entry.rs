@@ -5,7 +5,7 @@ use twizzler_abi::{
     object::ObjID,
     syscall::{ThreadSpawnArgs, ThreadSpawnFlags, UpcallTargetSpawnOption},
 };
-use twizzler_rt_abi::error::ArgumentError;
+use twizzler_rt_abi::error::{ArgumentError, TwzError};
 
 use super::{Thread, ThreadRef, current_memory_context, current_thread_ref, priority::Priority};
 use crate::{
@@ -40,7 +40,12 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
         let vmc = get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?;
         Thread::new(Some(vmc), Some(args), Priority::USER)
     } else {
-        Thread::new(current_memory_context(), Some(args), Priority::USER)
+        // `memory_context` is written once, at construction, and never again -- so a user thread
+        // built without one can never make a syscall that needs a context, for its whole life.
+        // Refuse here instead: `sys_object_readmap` unwrapping this same None killed the kernel in
+        // round2-debug-nokvm-smp4, from a thread that was already broken when it was spawned.
+        let ctx = current_memory_context().ok_or(TwzError::NOT_SUPPORTED)?;
+        Thread::new(Some(ctx), Some(args), Priority::USER)
     };
     log::trace!("started user thread ID {}", thread.id());
     match args.upcall_target {
