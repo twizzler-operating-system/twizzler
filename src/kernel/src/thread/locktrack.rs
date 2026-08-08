@@ -132,7 +132,31 @@ pub mod diag {
     pub static STALE_MUTEX_INTENT: Counter =
         Counter::new("stale mutex intent seen by timeout scan");
 
-    static ALL: [&Counter; 14] = [
+    /// A mutex was released while a different thread was current than the one charged with its
+    /// `inc_mutex_count`. Since the charge now rides the guard the count still lands on the right
+    /// thread, so this is informational -- but it is the condition that used to underflow, and it
+    /// names whichever of the switch window, a `None` current thread, or a guard crossing threads
+    /// is actually occurring.
+    pub static MUTEX_COUNT_CROSSED: Counter =
+        Counter::new("mutex charged to one thread, released while another was current");
+    /// `dec_mutex_count` ran with the count already at zero. Absorbed rather than fatal: the
+    /// count's only consumer gates `cleanup_exited`, so a wrong value defers a cleanup -- it does
+    /// not make anything unsafe.
+    pub static MUTEX_COUNT_UNDERFLOW: Counter = Counter::new("mutex count decremented at zero");
+
+    /// `maybe_suspend_self` was reached with a `ThreadRef` that is not the current thread. Only the
+    /// running thread can suspend itself, so the call is skipped; `THREAD_MUST_SUSPEND` stays set
+    /// and the next `schedule(REINSERT)` retries it.
+    pub static SUSPEND_SELF_NOT_CURRENT: Counter =
+        Counter::new("maybe_suspend_self called on a non-current thread");
+
+    /// A mutex was owned by an exited thread with a handoff pending, i.e. `release` gave it to a
+    /// waiter that died before taking it. Reclaimed by the next locker; without that it is a
+    /// permanent hang for everyone behind it.
+    pub static MUTEX_HANDOFF_TO_DEAD: Counter =
+        Counter::new("mutex handed off to a thread that exited");
+
+    static ALL: [&Counter; 18] = [
         &NO_CURRENT_THREAD,
         &SPINLOCK_GUARD_CROSSED,
         &SCHED_GUARD_CROSSED,
@@ -147,6 +171,10 @@ pub mod diag {
         &BLOCK_WITH_MUTEX_HELD,
         &STALE_MUTEX_INTENT,
         &THREAD_CURRENT_ON_TWO_CPUS,
+        &MUTEX_COUNT_CROSSED,
+        &MUTEX_COUNT_UNDERFLOW,
+        &SUSPEND_SELF_NOT_CURRENT,
+        &MUTEX_HANDOFF_TO_DEAD,
     ];
 
     /// Token identifying who holds a `LockTracker`'s flag: cpu in the high 16 bits (biased by one

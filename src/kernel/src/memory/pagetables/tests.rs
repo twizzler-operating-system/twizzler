@@ -109,7 +109,7 @@ mod test {
         assert_eq!(read.settings().flags(), settings2.flags());
 
         let mut consist = Consistency::new_full_global();
-        m.unmap(cur, &mut consist, &mut fa).unwrap();
+        m.unmap(cur, &mut consist, &mut fa, &mut None).unwrap();
         consist.tlb_mut().finish();
         consist.into_deferred().run_all();
 

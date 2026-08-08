@@ -639,11 +639,22 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         cp.current_priority.store(0, Ordering::SeqCst);
     }
     cp.reset_rebalance();
-    // From here until this cpu wins `thread`'s switch_lock inside `__do_switch`, `thread` is
-    // current on this cpu *and* still current on the cpu switching away from it. Don't charge lock
-    // bookkeeping to it from both.
     crate::thread::locktrack::enter_switch_window();
-    unsafe { set_current_thread(&thread) };
+    // Do NOT publish `thread` as current here. `do_schedule`'s REINSERT branch can already have
+    // queued it on another cpu, so publishing before this cpu owns it makes two cpus report the
+    // same current thread for the whole prologue -- the cross-cpu producer behind the stale lock
+    // intents, the mutex_count underflow and the `maybe_suspend_self` identity assert. A thread
+    // that has run before is published by `switch_thread` once `__do_switch` has won its
+    // switch_lock. Waiting for that lock *here* would deadlock: `__do_switch` releases the
+    // outgoing lock before acquiring the incoming one, and this would hold-and-wait.
+    //
+    // A thread that has never run is the exception, and must be published here: it is on exactly
+    // one run queue and has never been current anywhere, so no second cpu can be calling it
+    // current -- and it jumps straight to its entry point out of `__do_switch` rather than
+    // returning into `switch_thread`.
+    if !thread.mark_run() {
+        unsafe { set_current_thread(&thread) };
+    }
 
     // Release our strong ref before switching (into_raw + decrement keeps the pointer usable
     // afterward; the switch does not return on this path). Sound because the leaked
@@ -768,11 +779,21 @@ pub fn schedule(flags: SchedFlags) {
 
     do_schedule(flags);
     interrupt::set(istate);
-    let cur = current_thread_ref().unwrap();
 
     if flags.contains(SchedFlags::REINSERT) {
-        cur.maybe_suspend_self();
-        cur.maybe_exit();
+        // Resolving the current thread and then suspending it must not straddle an
+        // interrupt-enabled gap: a preemption in between changes who is current, and
+        // `maybe_suspend_self` is only meaningful for the thread actually executing. `suspend()`
+        // takes the same precaution for the same reason.
+        interrupt::with_disabled(|| {
+            if let Some(cur) = current_thread_ref() {
+                cur.maybe_suspend_self();
+            }
+        });
+        // Left outside: this can call `exit()`, which must not run with interrupts masked.
+        if let Some(cur) = current_thread_ref() {
+            cur.maybe_exit();
+        }
     }
 }
 

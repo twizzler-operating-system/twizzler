@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -20,7 +20,7 @@ use crate::{
     QemuOptions,
 };
 
-const DEFAULT_QEMU_PORT: u16 = 5555;
+pub const DEFAULT_QEMU_PORT: u16 = 5555;
 
 /// Default guest memory, in the form accepted by qemu's `-m`.
 pub const DEFAULT_MEMORY: &str = "12000,slots=4,maxmem=128G";
@@ -39,6 +39,9 @@ pub struct RunConfig {
     pub monitor: bool,
     /// How many heartbeat pokes to send before giving up on the run.
     pub heartbeat_tries: usize,
+    /// Where to write the transcript. Defaults to `target/test-logs/<label>.log`; set it when the
+    /// caller wants the log to land somewhere of its own rather than in the shared directory.
+    pub serial_log: Option<PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -53,6 +56,7 @@ impl Default for RunConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20),
+            serial_log: None,
         }
     }
 }
@@ -228,13 +232,31 @@ impl QemuCommand {
             disk_image.as_path().display()
         ));
 
-        let disk_image_path = format!(
-            "target/disk-{}.img",
-            options.config.twz_triple().to_string()
-        );
-        if !std::fs::exists(&disk_image_path).unwrap() {
-            crate::disk::create_fresh_disk_image(&options.config.twz_triple()).unwrap();
-        }
+        // qemu takes a write lock on this, so two runs sharing one image is a hard conflict, not a
+        // race that usually works. `--disk-image` is how concurrent runs each get a private copy;
+        // the shared per-triple image stays the default for interactive development.
+        let disk_image_path = match &options.disk_image {
+            Some(path) => {
+                if !path.is_file() {
+                    panic!(
+                        "--disk-image {} does not exist; copy one from target/disk-<triple>.img \
+                         (creating a fresh one here would lack the built /sysroot/pkg contents)",
+                        path.display()
+                    );
+                }
+                path.display().to_string()
+            }
+            None => {
+                let path = format!(
+                    "target/disk-{}.img",
+                    options.config.twz_triple().to_string()
+                );
+                if !std::fs::exists(&path).unwrap() {
+                    crate::disk::create_fresh_disk_image(&options.config.twz_triple()).unwrap();
+                }
+                path
+            }
+        };
 
         let nvme_drive = format!("file={},if=none,id=nvme", disk_image_path);
         self.cmd
@@ -254,21 +276,25 @@ impl QemuCommand {
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
+        // Probe for a free port by binding it and letting it go; qemu binds it moments later. That
+        // gap is only safe because concurrent runs are given distinct ports (`--ssh-port`) rather
+        // than all racing for the default.
         let port = {
-            let listener = match TcpListener::bind(format!("0.0.0.0:{}", DEFAULT_QEMU_PORT)) {
-                Ok(l) => l,
-                Err(_) => {
+            let dynamic = || {
+                TcpListener::bind("0.0.0.0:0").unwrap_or_else(|e| {
+                    panic!("Port allocation for Qemu failed! {}", e);
+                })
+            };
+            let listener = if options.ssh_port == 0 {
+                dynamic()
+            } else {
+                TcpListener::bind(format!("0.0.0.0:{}", options.ssh_port)).unwrap_or_else(|_| {
                     println!(
-                        "Failed to allocate default port {} on host, dynamically assigning.",
-                        DEFAULT_QEMU_PORT
+                        "Failed to allocate port {} on host, dynamically assigning.",
+                        options.ssh_port
                     );
-                    match TcpListener::bind("0.0.0.0:0") {
-                        Ok(l) => l,
-                        Err(e) => {
-                            panic!("Port allocation for Qemu failed! {}", e);
-                        }
-                    }
-                }
+                    dynamic()
+                })
             };
 
             listener
@@ -473,6 +499,63 @@ fn silence_timeout() -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
+/// How long to keep reading after asking the monitor for cpu state, so its reply reaches the
+/// transcript before we kill qemu.
+const MONITOR_DRAIN: Duration = Duration::from_secs(5);
+
+/// How long to let the register dump arrive before we read the stack pointers out of it.
+const REGISTER_DRAIN: Duration = Duration::from_secs(2);
+
+/// Stack words to read per cpu. Enough to cover several frames of kernel stack without burying the
+/// transcript.
+const STACK_WORDS: usize = 64;
+
+/// Pull the value out of every `RSP=<hex>` on a line of monitor output.
+///
+/// The stack has to be asked for by literal address: HMP rejects `x/64gx $rsp` with "unknown
+/// register" on this target, so the address comes from parsing `info registers -a` instead of from
+/// an expression qemu evaluates for us.
+fn scrape_rsp(line: &str) -> Option<u64> {
+    let rest = line.split("RSP=").nth(1)?;
+    let hex: String = rest.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    u64::from_str_radix(&hex, 16).ok()
+}
+
+/// Ask qemu's monitor what every vcpu is doing, and let the reply land in the transcript.
+///
+/// This is the only diagnostic that survives *any* wedge, because it needs no cooperation from the
+/// guest: it works when a cpu is spinning with interrupts masked, when the console lock is held, and
+/// when every cpu is halted waiting on a wakeup that never came. Those three are exactly what a
+/// silent hang cannot otherwise distinguish, and `info registers -a` separates them at a glance --
+/// all cpus halted means a lost wakeup, one cpu with a kernel RIP means a spin, and the RIP names
+/// the code. Symbolize with
+/// `addr2line -fe target/kernel/x86_64-unknown-none/<profile>/twizzler-kernel <rip>`.
+///
+/// `-serial mon:stdio` multiplexes the monitor onto the same stdio as the guest console, so getting
+/// at it means sending the mux escape (Ctrl-A c) to move input focus first. Output is captured
+/// without extra work: the reader thread is already streaming everything qemu writes.
+///
+/// Done in two passes, because the stack has to be asked for by literal address: the first pass
+/// dumps registers, the reader thread scrapes the stack pointers out of it, and the second pass
+/// reads each one. Stacks matter because RIP on its own is often not enough -- a spinning cpu's RIP
+/// lands in a spin helper, which says that it is spinning without saying who asked it to, and the
+/// return addresses still on the stack are what name the caller.
+fn dump_guest_state(stdin: &mut std::process::ChildStdin, rsps: &Mutex<Vec<u64>>) {
+    const MUX_TO_MONITOR: &[u8] = b"\x01c";
+    rsps.lock().map(|mut r| r.clear()).ok();
+    let _ = stdin.write_all(MUX_TO_MONITOR);
+    let _ = stdin.write_all(b"\ninfo registers -a\n");
+    let _ = stdin.flush();
+    std::thread::sleep(REGISTER_DRAIN);
+
+    let stacks: Vec<u64> = rsps.lock().map(|r| r.clone()).unwrap_or_default();
+    for rsp in stacks {
+        let _ = stdin.write_all(format!("x/{}gx 0x{:x}\n", STACK_WORDS, rsp).as_bytes());
+    }
+    let _ = stdin.flush();
+    std::thread::sleep(MONITOR_DRAIN);
+}
+
 /// Stream qemu's serial output to our stdout and, if we have one, to a transcript file, returning
 /// the first complete test report seen.
 ///
@@ -483,6 +566,7 @@ fn read_serial(
     mut log: Option<std::fs::File>,
     panicked: Arc<AtomicBool>,
     last_line: Arc<AtomicU64>,
+    rsps: Arc<Mutex<Vec<u64>>>,
     started: std::time::Instant,
 ) -> Option<ReportInfo> {
     let stdout = stdout?;
@@ -494,6 +578,11 @@ fn read_serial(
         };
         let line = line.trim();
         println!(" ==> {}", line);
+        // Monitor register dumps are the only thing that prints RSP=, and dump_guest_state
+        // clears this immediately before asking, so whatever lands here is the current dump.
+        if let Some(rsp) = scrape_rsp(line) {
+            let _ = rsps.lock().map(|mut r| r.push(rsp));
+        }
         if let Some(log) = log.as_mut() {
             let _ = writeln!(log, "{}", line);
         }
@@ -540,7 +629,9 @@ pub(crate) fn run_once(
     let mut child_stdin = child.stdin.take();
     let child_stdout = child.stdout.take();
 
-    let serial_log = run.monitor.then(|| serial_log_path(&run.label));
+    let serial_log = run
+        .monitor
+        .then(|| run.serial_log.clone().unwrap_or_else(|| serial_log_path(&run.label)));
     let log_file = serial_log.as_ref().and_then(|path| {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -554,14 +645,17 @@ pub(crate) fn run_once(
     let panicked = Arc::new(AtomicBool::new(false));
     let last_line = Arc::new(AtomicU64::new(0));
     let started = std::time::Instant::now();
+    let rsps: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
     let reader_panicked = panicked.clone();
     let reader_last_line = last_line.clone();
+    let reader_rsps = rsps.clone();
     let reader_thread = std::thread::spawn(move || {
         read_serial(
             child_stdout,
             log_file,
             reader_panicked,
             reader_last_line,
+            reader_rsps,
             started,
         )
     });
@@ -590,6 +684,9 @@ pub(crate) fn run_once(
                     .saturating_sub(Duration::from_millis(last_line.load(Ordering::SeqCst)));
                 if quiet >= limit {
                     death = Some(GuestDeath::Silent(quiet));
+                    if let Some(stdin) = child_stdin.as_mut() {
+                        dump_guest_state(stdin, &rsps);
+                    }
                     break None;
                 }
             }
@@ -621,6 +718,11 @@ pub(crate) fn run_once(
             }
             tries += 1;
             if tries > run.heartbeat_tries {
+                // The budget can run out on a guest that is wedged but not silent (a livelock that
+                // keeps logging), and on one that is silent but whose silence budget is the larger
+                // of the two -- which is how the `pager ready` hang currently ends. Same evidence
+                // is wanted either way.
+                dump_guest_state(stdin, &rsps);
                 break None;
             }
         }

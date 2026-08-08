@@ -3,7 +3,7 @@ use core::{
     alloc::Layout,
     cell::UnsafeCell,
     fmt::Debug,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     u32,
 };
 
@@ -67,6 +67,9 @@ pub struct Thread {
     pub critical_counter: AtomicU64,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
+    /// Set the first time this thread is switched to. Until then it has never executed, so it
+    /// cannot be any cpu's current thread, which is what makes early publication safe for it.
+    has_run: AtomicBool,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
     pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
@@ -195,6 +198,7 @@ impl Thread {
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
             critical_counter: AtomicU64::new(0),
             switch_lock: AtomicU64::new(0),
+            has_run: AtomicBool::new(false),
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             memory_context: ctx,
@@ -234,6 +238,12 @@ impl Thread {
         thread
     }
 
+    /// Mark this thread as having executed, returning whether it already had. A thread that has
+    /// not run yet exists on exactly one run queue and has never been current anywhere.
+    pub fn mark_run(&self) -> bool {
+        self.has_run.swap(true, Ordering::SeqCst)
+    }
+
     pub fn objid(&self) -> ObjID {
         self.control_object.object().id()
     }
@@ -264,7 +274,13 @@ impl Thread {
         // `arch_switch_to` takes none, so the attribution window closes here -- on the same cpu
         // that opened it, in straight-line code, rather than depending on where a thread resumes.
         locktrack::leave_switch_window();
-        self.arch_switch_to(current)
+        self.arch_switch_to(current);
+        // Reached only once `current` has been resumed, which on amd64 means `__do_switch` has won
+        // its switch_lock. This cpu now owns it and no other cpu still calls it current, so this is
+        // the first point at which publishing is safe -- `switch_to` deliberately does not.
+        // (A thread that has never run does not come through here at all; it publishes itself from
+        // `new_thread_entry`.)
+        unsafe { set_current_thread(current) };
     }
 
     pub fn do_critical<F, T>(&self, f: F) -> T

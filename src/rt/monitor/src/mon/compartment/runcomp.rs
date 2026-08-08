@@ -482,6 +482,28 @@ impl RunComp {
                 info.thread_id,
                 info.info
             );
+            // The kernel already prints the faulting rip and an unwound frame list, but every
+            // address in it is a bare virtual address, which says nothing without knowing what is
+            // mapped where. Dump this compartment's object map so those addresses can be
+            // attributed to an object (and thence a library, via the libname map) after the fact.
+            // This is the last thing that runs before the compartment is marked dead, so it is the
+            // only chance to record it.
+            tracing::warn!(
+                "  fault ip {:#x} sp {:#x} bp {:#x}",
+                frame.ip(),
+                frame.sp(),
+                frame.bp()
+            );
+            for (info, handle) in self.mapped_objects.iter() {
+                let addrs = handle.addrs();
+                tracing::warn!(
+                    "  mapped {} {:?} start {:#x} meta {:#x}",
+                    info.id,
+                    info.flags,
+                    addrs.start,
+                    addrs.meta
+                );
+            }
             // The faulting thread is about to exit without ever reaching the normal exit paths, so
             // nothing else would mark this compartment dead. Without this, anyone in
             // `compartment_wait` (init, and the test runner behind it) blocks forever and the

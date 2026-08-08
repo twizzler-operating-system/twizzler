@@ -48,6 +48,9 @@ pub struct MapRegion {
     pub range: Range<VirtAddr>,
     pub stable: Option<Arc<Mutex<ObjectPageTable>>>,
     pub should_sync: Arc<AtomicBool>,
+    /// Set once this region has been taken out of its [RegionManager] and unmapped. Shared across
+    /// clones, since the fault path works from a clone taken before the removal.
+    pub removed: Arc<AtomicBool>,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -257,6 +260,15 @@ impl MapRegion {
                 addr,
                 pfflags
             );
+            // This region is a clone taken before the regions lock was dropped, so it may have been
+            // unmapped since. remove_object publishes that under the same page tables we hold here,
+            // so checking now is what stops a fault from re-installing a mapping that was just torn
+            // down -- which would leave the object reachable after unmap and its map count raised
+            // with nothing left to lower it. Returning Ok refaults, and finds no region.
+            if self.removed.load(Ordering::SeqCst) {
+                self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
+                return Ok(());
+            }
             let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
             let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
             // TODO: is this always user?

@@ -11,7 +11,7 @@ mod triple;
 use std::{fmt::Display, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use qemu::KvmOptions;
+use qemu::{KvmOptions, DEFAULT_QEMU_PORT};
 use toolchain::ToolchainCommands;
 use tracing::Level;
 use triple::{Arch, Machine, Triple};
@@ -225,6 +225,19 @@ struct QemuOptions {
     no_test_monitor: bool,
     #[clap(flatten)]
     kvm: KvmOptions,
+    #[clap(
+        long,
+        help = "Use this ext4 disk (nvme + virtio-pmem) instead of the shared target/disk-<triple>.img. \
+                Point concurrent runs at private copies; qemu takes a write lock on it."
+    )]
+    disk_image: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Host port to forward to the guest's ssh port. 0 allocates one dynamically. \
+                Concurrent runs must not share a port.",
+        default_value_t = DEFAULT_QEMU_PORT
+    )]
+    ssh_port: u16,
 }
 
 impl From<&QemuOptions> for ImageOptions {

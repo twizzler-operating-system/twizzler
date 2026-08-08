@@ -179,8 +179,14 @@ impl Thread {
     }
 
     pub fn dec_mutex_count(&self) {
-        assert!(self.mutex_count.load(Ordering::SeqCst) > 0);
-        self.mutex_count.fetch_sub(1, Ordering::SeqCst);
+        if self
+            .mutex_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |c| c.checked_sub(1))
+            .is_err()
+            && crate::thread::locktrack::diag::MUTEX_COUNT_UNDERFLOW.hit()
+        {
+            emerglogln!("mutex count decremented at zero on thread {}", self.id());
+        }
     }
 
     pub fn get_mutex_count(&self) -> u32 {

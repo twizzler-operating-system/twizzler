@@ -77,7 +77,10 @@ fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
 /// above `MEDIUM_MAX` to talc instead bisects the allocator: if Mode L survives, ferroc's large
 /// path is not responsible. Size-based so `dealloc` routes identically without needing to know
 /// where a pointer came from.
-const DIAG_TALC_ABOVE: usize = 32 << 10;
+/// Currently **disabled** (normal ferroc routing). Set to `32 << 10` to re-run the bisect. Result
+/// on record: Mode L still reproduces with large allocations served by talc, so ferroc's large
+/// path is not responsible.
+const DIAG_TALC_ABOVE: usize = usize::MAX;
 
 fn try_switch_allocator_is_done() -> bool {
     static SWITCHED: AtomicU32 = AtomicU32::new(0);

@@ -209,11 +209,32 @@ impl ArchContext {
 
     pub fn unmap(&self, cursor: MappingCursor, fa: &mut FrameAllocator) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
-        let r = guard.unmap(cursor, &mut consist, fa).unwrap();
+        let r = guard.unmap(cursor, &mut consist, fa, &mut None).unwrap();
         consist.tlb_mut().finish();
         drop(guard);
         consist.into_deferred().run_all();
         r
+    }
+
+    /// Unmap an object mapping, returning true if doing so released this context's reference to
+    /// `obj_table` -- the table [Self::object_map] installed for that object. That, and not "did we
+    /// unmap anything", is the question the object's map count needs answered: the entry at this
+    /// address can belong to a different object, in which case the count must not move.
+    pub fn unmap_object(
+        &self,
+        cursor: MappingCursor,
+        obj_table: Option<PhysAddr>,
+        fa: &mut FrameAllocator,
+    ) -> bool {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        let mut released = None;
+        let _ = guard
+            .unmap(cursor, &mut consist, fa, &mut released)
+            .unwrap();
+        consist.tlb_mut().finish();
+        drop(guard);
+        consist.into_deferred().run_all();
+        obj_table.is_some() && released == obj_table
     }
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {

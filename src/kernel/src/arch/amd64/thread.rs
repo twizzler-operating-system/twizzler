@@ -287,9 +287,7 @@ where
         .load(Ordering::SeqCst);
 
     unsafe {
-        let flags = x86::controlregs::xcr0();
-        let upper = flags.bits() as u64 >> 32;
-        let lower = flags.bits() as u64 & 0xFFFFFFFF;
+        let (lower, upper) = xsave_mask();
         // We still need to save the fpu registers / sse state.
         if use_xsave() {
             core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
@@ -311,6 +309,22 @@ where
 
     regs.set_upcall(target_addr, frame_start, data_start, stack_start);
     true
+}
+
+/// The `xsave`/`xrstor` state-component bitmap (EDX:EAX), as enabled in XCR0 by
+/// `processor::init`.
+///
+/// Both instructions must use the *same* mask. They did not: the save used XCR0 while the restore
+/// hardcoded 7 (x87 | SSE | AVX), so every component above bit 2 was saved and then never
+/// restored, leaking between threads. That was live in both configurations -- the kernel enables
+/// the MPX bits when the cpu reports them (qemu's TCG `-cpu max` does) and the AVX-512 bits on
+/// hardware that has them -- and latent only because current userspace uses neither. Deriving the
+/// mask in one place is the point: this drifted apart once already.
+pub(super) fn xsave_mask() -> (u64, u64) {
+    // Safe: XCR0 is readable whenever CR4.OSXSAVE is set, which `processor::init` does on every
+    // cpu before any thread runs, and callers are all gated on `use_xsave()`.
+    let bits = unsafe { x86::controlregs::xcr0() }.bits() as u64;
+    (bits & 0xFFFFFFFF, bits >> 32)
 }
 
 pub(super) fn use_xsave() -> bool {
@@ -423,9 +437,7 @@ impl Thread {
     fn save_extended_state(&self) {
         let do_xsave = use_xsave();
         unsafe {
-            let flags = x86::controlregs::xcr0();
-            let upper = flags.bits() as u64 >> 32;
-            let lower = flags.bits() as u64 & 0xFFFFFFFF;
+            let (lower, upper) = xsave_mask();
 
             if do_xsave {
                 core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
@@ -441,7 +453,8 @@ impl Thread {
         unsafe {
             if self.arch.xsave_inited.load(Ordering::SeqCst) {
                 if do_xsave {
-                    core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") 7, in("rdx") 0);
+                    let (lower, upper) = xsave_mask();
+                    core::arch::asm!("xrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
                 } else {
                     core::arch::asm!("fxrstor [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
                 }
@@ -472,20 +485,16 @@ impl Thread {
         }
 
         old_thread.save_extended_state();
-        self.restore_extended_state();
+        // A thread that has never run has nothing saved and will not return from `__do_switch`
+        // to restore itself, so give it a fresh fpu here. It cannot be running elsewhere, so
+        // there is nothing to race.
+        if !self.arch.xsave_inited.load(Ordering::SeqCst) {
+            unsafe { super::processor::init_fpu_state() };
+        }
 
         let old_stack_save = old_thread.arch.rsp.get();
         let new_stack_save = self.arch.rsp.get();
         assert!(old_thread.switch_lock.load(Ordering::SeqCst) != 0);
-        let new_sp = unsafe { new_stack_save.read() } as usize as *const u64;
-        let new_rip = unsafe { new_sp.add(7).read() };
-        if false && new_rip == 0 {
-            log::warn!(
-                "tried to switch to a zero RIP task ({} -> {})",
-                old_thread.id(),
-                self.id()
-            );
-        }
         unsafe {
             __do_switch(
                 new_stack_save,
@@ -494,6 +503,16 @@ impl Thread {
                 core::intrinsics::transmute(&old_thread.switch_lock),
             );
         }
+        // Reached only when `old_thread` is resumed. `__do_switch` returns holding its
+        // switch_lock, which is the first moment this thread's saved extended state is ours to
+        // read: the cpu we took it from writes `xsave_region` and only then releases that lock.
+        // Restoring the *incoming* thread's state before the switch instead -- which is what
+        // this did -- races that cpu, because `do_schedule`'s REINSERT branch can queue a thread
+        // onto another cpu while it is still running here. The general-purpose registers were
+        // safe (`__do_switch` loads them under the lock); the extended state was not, so a
+        // migrating thread resumed with correct addresses and the SIMD registers it had at its
+        // *previous* deschedule. Measured at 8-32 occurrences per suite run before this changed.
+        old_thread.restore_extended_state();
     }
 
     pub unsafe fn init_va(&mut self, jmptarget: u64) {

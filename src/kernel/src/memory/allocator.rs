@@ -221,8 +221,10 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
                 return;
             }
             let nn = NonNull::new(ptr).unwrap();
-            let _guard = current_thread_ref().map(|ct| ct.enter_critical());
-            unsafe { FerrocAllocator.deallocate(nn, layout) };
+            with_disabled(|| {
+                let _guard = current_thread_ref().map(|ct| ct.enter_critical());
+                unsafe { FerrocAllocator.deallocate(nn, layout) };
+            });
         }
         trace_kalloc(layout, Instant::zero() - start, false);
     }

@@ -45,7 +45,7 @@ impl Drop for ObjectPageTable {
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let _ = self.mapper.unmap(cursor, &mut consist, &mut fa);
+        let _ = self.mapper.unmap(cursor, &mut consist, &mut fa, &mut None);
         self.run_consistency(consist).run_all();
         let root_frame = get_frame(self.mapper.root_address()).expect("root frame should exist");
         root_frame.set_pt(false);
@@ -107,6 +107,13 @@ impl ObjectPageTable {
 
     pub fn map_count(&self) -> usize {
         self.map_count
+    }
+
+    /// The table a context's page tables point at for this object, i.e. what [Mapper::object_map]
+    /// installs and what unmapping releases. `None` if this object has never been mapped. Used to
+    /// tell an unmap of *our* mapping from an unmap of whatever else ended up at that address.
+    pub fn context_table_addr(&self) -> Option<PhysAddr> {
+        self.mapper.peek_table_addr(Self::top_level() - 1)
     }
 
     pub fn inc_map_count(&mut self) {

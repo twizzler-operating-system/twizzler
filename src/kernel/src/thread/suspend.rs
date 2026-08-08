@@ -60,7 +60,23 @@ impl Thread {
 
     /// Consider suspending ourselves. If someone called [Self::suspend], then we will.
     pub fn maybe_suspend_self(self: &ThreadRef) {
-        assert_eq!(self.id(), current_thread_ref().unwrap().id());
+        // Only the running thread can put itself to sleep: everything below -- the suspend-list
+        // insert, the `schedule()` that does not return until someone unsuspends us, the state
+        // writes -- is written for `self` being the thread executing this code. If who is current
+        // changed under the caller, skip rather than halt: THREAD_MUST_SUSPEND stays set, so the
+        // next `schedule(REINSERT)` on the right thread does the suspend instead.
+        let is_current = current_thread_ref().is_some_and(|cur| cur.objid() == self.objid());
+        if !is_current {
+            if crate::thread::locktrack::diag::SUSPEND_SELF_NOT_CURRENT.hit() {
+                emerglogln!(
+                    "maybe_suspend_self on thread {} while {:?} is current (cpu {})",
+                    self.id(),
+                    current_thread_ref().map(|c| c.id()),
+                    crate::thread::locktrack::diag::this_cpu()
+                );
+            }
+            return;
+        }
         if self.flags.load(Ordering::SeqCst) & THREAD_MUST_SUSPEND == 0 {
             return;
         }

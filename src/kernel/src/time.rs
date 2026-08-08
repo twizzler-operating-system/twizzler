@@ -116,13 +116,35 @@ impl TimeStatCollector {
         if sample > self.max {
             self.max = sample;
         }
-        let old_total = self.mean.wrapping_mul(self.count as u128);
-        let old_var = self.variance.wrapping_mul(self.count as u128);
-        self.count += 1;
-        self.mean = (old_total + sample) / self.count as u128;
+        // Mean and variance are re-derived from `stat * count`, which does not fit u128 for large
+        // samples: at the cap above, delta^2 alone is ~3.4e38 fs^2, and `variance * count` reaches
+        // it far sooner. Drop the sample rather than wrap -- these are diagnostics, and a wrapped
+        // accumulator poisons every value derived from it afterwards. min/max/running are
+        // unaffected and stay updated.
+        let count = self.count as u128;
+        let Some(old_total) = self.mean.checked_mul(count) else {
+            return;
+        };
+        let Some(old_var) = self.variance.checked_mul(count) else {
+            return;
+        };
+        let Some(total) = old_total.checked_add(sample) else {
+            return;
+        };
 
-        let delta = sample as i128 - self.mean as i128;
-        self.variance = (old_var + delta.wrapping_mul(delta) as u128) / self.count as u128;
+        let new_count = count + 1;
+        let new_mean = total / new_count;
+        let delta = sample as i128 - new_mean as i128;
+        let Some(delta_sq) = delta.checked_mul(delta) else {
+            return;
+        };
+        let Some(var) = old_var.checked_add(delta_sq as u128) else {
+            return;
+        };
+
+        self.count += 1;
+        self.mean = new_mean;
+        self.variance = var / new_count;
     }
 
     pub fn count(&self) -> usize {

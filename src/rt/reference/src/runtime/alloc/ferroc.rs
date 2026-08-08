@@ -68,7 +68,16 @@ pub fn record_free(ptr: usize, len: usize, to_ferroc: bool) {
 #[inline(never)]
 fn print_frames() {
     let mut fp: usize;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp) };
+    // Frame-pointer register is per-arch; the walk below matches both layouts, which store the
+    // saved fp and return address as the first two words of the frame record.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) fp)
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("mov {}, x29", out(reg) fp)
+    };
     for _ in 0..12 {
         if fp == 0 || fp % 8 != 0 || fp >= NONCANONICAL {
             break;

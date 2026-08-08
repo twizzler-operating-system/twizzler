@@ -206,7 +206,9 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
             // Restore the sse registers. These don't get restored by the isr return path, so we
             // have to do it ourselves.
             if use_xsave() {
-                core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") 7, in("rdx") 0);
+                // Same mask the matching `xsave` in `arch_queue_upcall` used; see `xsave_mask`.
+                let (lower, upper) = crate::arch::thread::xsave_mask();
+                core::arch::asm!("xrstor [{}]", in(reg) up_frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
                 super::processor::init_fpu_state();
             } else {
                 core::arch::asm!("fxrstor [{}]", in(reg) up_frame.xsave_region.as_ptr());

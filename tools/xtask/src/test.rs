@@ -3,6 +3,8 @@
 //! `start-qemu` stays the interactive development path; this drives named scenarios on top of the
 //! same [`crate::qemu::run_once`] primitive and decides pass/fail itself.
 
+use std::path::PathBuf;
+
 use clap::{Args, ValueEnum};
 
 use crate::{
@@ -64,6 +66,34 @@ pub struct TestOptions {
         help = "Override the scenario's guest memory size in MB (currently only read by --scenario lowmem; used to bisect the memory floor)"
     )]
     pub memory: Option<u32>,
+    #[clap(
+        long,
+        help = "Boot this image instead of the one in the build tree. Implies --no-build. Pair with \
+                --disk-image to run entirely off private copies, leaving the build tree free."
+    )]
+    pub boot_image: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Name this run in the serial log (target/test-logs/<label>.log). Defaults to the \
+                scenario name, which collides between concurrent runs."
+    )]
+    pub label: Option<String>,
+    #[clap(
+        long,
+        help = "Write the serial transcript here instead of into the shared target/test-logs."
+    )]
+    pub serial_log: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Use this ext4 disk (nvme + virtio-pmem) instead of the shared target/disk-<triple>.img."
+    )]
+    pub disk_image: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Host port to forward to the guest's ssh port. 0 allocates one dynamically.",
+        default_value_t = crate::qemu::DEFAULT_QEMU_PORT
+    )]
+    pub ssh_port: u16,
 }
 
 impl TestOptions {
@@ -83,10 +113,19 @@ impl TestOptions {
             // Leave the gdb serial port unbound; scenarios are run unattended, and binding it
             // would collide between concurrent runs.
             gdb: 0,
-            no_build: self.no_build,
+            // An explicit boot image is by definition already built.
+            no_build: self.no_build || self.boot_image.is_some(),
             no_test_monitor: false,
             kvm: self.kvm.clone(),
+            disk_image: self.disk_image.clone(),
+            ssh_port: self.ssh_port,
         }
+    }
+
+    /// Names the run's serial log. Scenarios default to their own name, which is fine for one run
+    /// at a time and collides the moment two run concurrently.
+    fn label(&self, scenario: &str) -> String {
+        self.label.clone().unwrap_or_else(|| scenario.to_string())
     }
 }
 
@@ -100,8 +139,9 @@ pub(crate) fn do_test(cli: TestOptions) -> anyhow::Result<()> {
 /// Boot the test-enabled image and report what the guest's test suite said.
 fn run_default(cli: &TestOptions) -> anyhow::Result<()> {
     let run = RunConfig {
-        label: "default".to_string(),
+        label: cli.label("default"),
         monitor: true,
+        serial_log: cli.serial_log.clone(),
         ..Default::default()
     };
     run_and_report(cli, run)
@@ -113,9 +153,10 @@ fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
     let mb = cli.memory.unwrap_or(LOWMEM_DEFAULT_MB);
     let run = RunConfig {
         memory: format!("{mb},slots=4,maxmem=128G"),
-        label: "lowmem".to_string(),
+        label: cli.label("lowmem"),
         monitor: true,
         heartbeat_tries: LOWMEM_HEARTBEAT_TRIES,
+        serial_log: cli.serial_log.clone(),
     };
     run_and_report(cli, run)
 }
@@ -124,10 +165,15 @@ fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
 /// that just runs the normal test suite under a different `RunConfig`.
 fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
     let options = cli.qemu_options(true);
-    let image = if options.no_build {
-        qemu::prebuilt_image_path(&options.config)
-    } else {
-        crate::image::do_make_image((&options).into())?.disk_image
+    let image = match &cli.boot_image {
+        Some(path) => {
+            if !path.is_file() {
+                anyhow::bail!("--boot-image {} does not exist", path.display());
+            }
+            path.clone()
+        }
+        None if options.no_build => qemu::prebuilt_image_path(&options.config),
+        None => crate::image::do_make_image((&options).into())?.disk_image,
     };
 
     let mut outcome = qemu::run_once(&options, &run, &image)?;

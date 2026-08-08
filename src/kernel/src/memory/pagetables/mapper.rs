@@ -98,12 +98,14 @@ impl Mapper {
 
     #[must_use]
     /// Unmap a region from the page tables. The deferred operations must be run, and must be run
-    /// AFTER unlocking any page table locks.
+    /// AFTER unlocking any page table locks. `released` reports an object page table whose
+    /// reference this unmap dropped (see [Table::unmap]).
     pub fn unmap(
         &mut self,
         cursor: MappingCursor,
         consist: &mut Consistency,
         fa: &mut FrameAllocator,
+        released: &mut Option<PhysAddr>,
     ) -> Result<bool, TwzError> {
         let level = self.start_level;
         log::trace!(
@@ -113,7 +115,7 @@ impl Mapper {
             level
         );
         let root = self.root_mut();
-        let r = root.unmap(consist, cursor, level, fa);
+        let r = root.unmap(consist, cursor, level, fa, released);
         log::trace!("unmap: done");
         self.generation += 1;
         consist.flush_cache();
@@ -259,6 +261,19 @@ impl Mapper {
         }
 
         Ok(table_phys)
+    }
+
+    /// The address [Self::get_table_addr] would return for `level`, without allocating anything.
+    /// `None` if that table does not exist yet.
+    pub fn peek_table_addr(&self, level: usize) -> Option<PhysAddr> {
+        let mut table_phys = self.root_address();
+        let mut table = self.root();
+        for _ in 0..(self.start_level.checked_sub(level)?) {
+            let next = table.next_table(0)?;
+            table_phys = table[0].table_addr();
+            table = next;
+        }
+        Some(table_phys)
     }
 
     pub fn split_to_level(

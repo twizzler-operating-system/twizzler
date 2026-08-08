@@ -717,12 +717,18 @@ impl Table {
         Ok(())
     }
 
+    /// Unmap a range. `released` collects the address of an object page table whose reference this
+    /// unmap dropped, so callers can tell "we released *this* object's table" from the much weaker
+    /// "something was unmapped" -- the entry at an address may belong to a different object than
+    /// the caller expects. Only the last one is kept, which is all a single-region unmap can
+    /// produce; callers unmapping wider ranges (context teardown) ignore it.
     pub(super) fn unmap(
         &mut self,
         consist: &mut Consistency,
         mut cursor: MappingCursor,
         level: usize,
         fa: &mut FrameAllocator,
+        released: &mut Option<PhysAddr>,
     ) -> Result<bool, TwzError> {
         let start_index = Self::get_index(cursor.start(), level);
         let mut did_unmap = false;
@@ -762,7 +768,8 @@ impl Table {
                         self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
                     }
                     let next_table = self.next_table_mut(idx).unwrap();
-                    did_unmap |= next_table.unmap(consist, cursor, Self::next_level(level), fa)?;
+                    did_unmap |=
+                        next_table.unmap(consist, cursor, Self::next_level(level), fa, released)?;
                     if next_table.read_count() == 0 && level != Table::top_level() {
                         // Unwrap-Ok: The entry is present, and not a leaf, so it must be a table.
                         consist.free_frame(self.next_table_frame(idx).unwrap());
@@ -778,6 +785,7 @@ impl Table {
                     }
                 } else {
                     did_unmap = true;
+                    *released = Some(entry.table_addr());
                     get_frame(entry.table_addr()).unwrap().dec_refcount();
                     self.update_entry(
                         consist,

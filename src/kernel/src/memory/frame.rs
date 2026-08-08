@@ -647,7 +647,13 @@ impl Frame {
             let ptr: *mut u8 = virt.as_mut_ptr();
             let slice = unsafe { core::slice::from_raw_parts_mut(ptr.add(doff), len) };
             slice.fill(0);
-            self.set_flags(PhysicalFrameFlags::ZEROED, true);
+            // ZEROED describes the whole frame, so only a whole-frame zero may claim it. Setting
+            // it after zeroing a sub-range leaves stale bytes outside that range while the
+            // allocator's `alloc` skips `zero()` on the strength of the flag, handing out a
+            // "fresh" frame still holding its previous tenant's data.
+            if doff == 0 && len == self.size() {
+                self.set_flags(PhysicalFrameFlags::ZEROED, true);
+            }
             self.unlock();
             return;
         }

@@ -24,7 +24,6 @@ use crate::{
     idcounter::StableId,
     instant::Instant,
     once::Once,
-    pager::check_timed_out_requests,
     processor::sched::schedule_thread,
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
@@ -177,6 +176,12 @@ impl<T> Mutex<T> {
             );
             current_thread.inc_mutex_count();
         }
+        // The thread charged with the count above. `release` decrements *this* thread rather than
+        // whoever is current at drop time: those are two independent resolutions of
+        // `current_thread_ref()`, and they diverge across the switch window (where a thread is
+        // current on two cpus at once), when one side has no current thread at all, and whenever a
+        // guard crosses threads. Same reason `tracker_index` rides the guard.
+        let charged = current_thread.cloned();
 
         // Once a tracker has dropped any bookkeeping its held-lock list can name locks that were
         // released, so the check below would be reporting on a record, not on reality.
@@ -212,12 +217,14 @@ impl<T> Mutex<T> {
                 );
                 current_thread_ref().map(|ct| ct.print_locks());
             }
-            if i % 10000 == 0 {
-                //check_timed_out_mutexes();
-                with_lock_tracker(|lt| lt.clear_intended_mutex());
-                check_timed_out_requests();
-                with_lock_tracker(|lt| lt.intend_to_lock_mutex(caller, start_time));
-            }
+            // Nothing may be called from here that takes another lock. This loop runs with
+            // interrupts disabled for its whole duration, and the calling thread is mid-acquisition
+            // of `self` -- so acquiring a second mutex here either trips `lock`'s own "cannot lock
+            // mutex while waiting for another mutex" assert or wedges the cpu with interrupts
+            // masked. `check_timed_out_requests()` used to run here and does exactly that
+            // (`inflight_mgr().lock()`); it is a timeout sweep the idle thread already drives, so
+            // a contended waiter is the wrong place to drive it from. `check_timed_out_mutexes()`
+            // above was commented out for the same reason.
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             let _reinsert = {
                 let mut queue = self.queue.lock();
@@ -239,7 +246,11 @@ impl<T> Mutex<T> {
                         });
                     });
                     if let Some(ref cur_thread) = current_thread {
-                        if cur_thread.id() == cur_owner.id() {
+                        // Compare by objid, not `id()`: the latter comes from `IdCounter`, which
+                        // recycles, so a stale owner naming a dead thread whose id was handed to
+                        // the caller would read as re-entrancy. objid is the thread's control
+                        // object and is never reused.
+                        if cur_thread.objid() == cur_owner.objid() {
                             if queue.handoff {
                                 // This thread was handed ownership by release(). Clear
                                 // the handoff flag and proceed as the new owner.
@@ -250,6 +261,25 @@ impl<T> Mutex<T> {
                             crate::panic::backtrace(false, None);
                             panic!("this mutex is not re-entrant");
                         }
+                    }
+                    // `release` hands ownership straight to a waiter rather than unlocking, so a
+                    // handoff target that dies before consuming it (force-exit, for one) leaves
+                    // the mutex owned forever by a thread that will never take it, and every
+                    // later locker sleeps behind it. Nothing else can notice: there is no
+                    // back-pointer from a thread to the mutexes handed to it, so the exit path
+                    // cannot clean this up. Reclaim it here instead.
+                    if queue.handoff && cur_owner.get_state() == ExecutionState::Exited {
+                        if locktrack::diag::MUTEX_HANDOFF_TO_DEAD.hit() {
+                            emerglogln!(
+                                "reclaiming mutex handed off to exited thread {} (locked at {})",
+                                cur_owner.id(),
+                                unsafe { self.locked_at.get().read() }
+                            );
+                        }
+                        queue.handoff = false;
+                        queue.owner = current_thread.cloned();
+                        unsafe { self.locked_at.get().write(caller) };
+                        break;
                     }
                 }
 
@@ -296,10 +326,11 @@ impl<T> Mutex<T> {
             prev_donated_priority: current_donated_priority,
             start_time,
             tracker_index,
+            charged,
         }
     }
 
-    fn release(&self) {
+    fn release(&self, charged: Option<&ThreadRef>) {
         let mut queue = self.queue.lock();
 
         let g = current_thread_ref().map(|ct| ct.enter_critical());
@@ -338,8 +369,21 @@ impl<T> Mutex<T> {
             queue.pri = None;
         }
         drop(queue);
-        if let Some(ct) = current_thread_ref() {
-            assert!(!ct.mutex_link.is_linked());
+        if let Some(ct) = charged {
+            let cur = current_thread_ref().map(|c| c.id());
+            if cur == Some(ct.id()) {
+                assert!(!ct.mutex_link.is_linked());
+            } else if locktrack::diag::MUTEX_COUNT_CROSSED.hit() {
+                // Deliberately not an assert: this is the case that used to underflow, and the
+                // point of charging `ct` is that it is now harmless. `mutex_link` is only known
+                // quiet for the thread doing the releasing, so the check above stays scoped to it.
+                emerglogln!(
+                    "mutex charged to thread {} released while {:?} was current (cpu {})",
+                    ct.id(),
+                    cur,
+                    locktrack::diag::this_cpu()
+                );
+            }
             ct.dec_mutex_count();
         }
         drop(g);
@@ -353,6 +397,9 @@ pub struct LockGuard<'a, T> {
     prev_donated_priority: Option<Priority>,
     start_time: Instant,
     tracker_index: Option<usize>,
+    /// Thread charged with `inc_mutex_count` at acquisition, decremented at release regardless of
+    /// who is current then.
+    charged: Option<ThreadRef>,
 }
 
 impl<T> core::ops::Deref for LockGuard<'_, T> {
@@ -381,7 +428,7 @@ impl<T> Drop for LockGuard<'_, T> {
         if let Some(index) = self.tracker_index {
             with_lock_tracker(|lt| lt.record_mutex_unlock(index));
         }
-        self.lock.release();
+        self.lock.release(self.charged.as_ref());
         let end_time = Instant::now();
         add_hold_time_sample(end_time - self.start_time);
     }

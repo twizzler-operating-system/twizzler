@@ -379,11 +379,15 @@ impl VirtContext {
 
             for region in region_list {
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
-                let did_unmap = arch.unmap(cursor, &mut fa);
-                if region.stable.is_none() {
-                    let mut pt = region.object().lock_page_tables();
+                let mut pt = region
+                    .stable
+                    .is_none()
+                    .then(|| region.object().lock_page_tables());
+                let obj_table = pt.as_ref().and_then(|pt| pt.context_table_addr());
+                let released = arch.unmap_object(cursor, obj_table, &mut fa);
+                if let Some(pt) = pt.as_mut() {
                     pt.remove_invalidate(arch.target.paddr(), cursor);
-                    if did_unmap {
+                    if released {
                         pt.dec_map_count();
                         if pt.map_count() == 0 {
                             region.object().note_last_unmap();
@@ -531,6 +535,7 @@ impl UserContext for VirtContext {
             flags: object_info.flags,
             stable,
             should_sync: Arc::new(AtomicBool::new(false)),
+            removed: Arc::new(AtomicBool::new(false)),
         };
 
         let (_is_ok, default_prots) = object_info.object.check_id();
@@ -565,31 +570,54 @@ impl UserContext for VirtContext {
             PHYS_LEVEL_LAYOUTS[0],
         );
         let mut slots = self.regions.lock();
-        if let Some(slot) = slots.remove_region(info.start_vaddr()) {
-            drop(slots);
-            fault::note_unmap(info.raw(), slot.object());
-            if slot.should_sync.load(core::sync::atomic::Ordering::SeqCst) {
-                if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
-                    log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
-                }
-            }
-            let mut pt = slot
-                .stable
-                .is_none()
-                .then(|| slot.object().lock_page_tables());
+        let Some(slot) = slots.remove_region(info.start_vaddr()) else {
+            return;
+        };
+        fault::note_unmap(info.raw(), slot.object());
+
+        // Tear the mapping down while still holding the regions lock: insert_object claims a free
+        // slot under it and maps immediately (see there), so releasing it here would let another
+        // object be mapped into this slot and then have its entry removed by the unmap below.
+        // Lock order (regions -> object page tables -> secctx) matches insert_object.
+        {
+            // Whichever page tables the fault path would use for this region -- taking the same
+            // one is what makes the `removed` store below and that path's check of it ordered.
+            let mut pt = if let Some(stable) = slot.stable.as_ref() {
+                stable.lock()
+            } else {
+                slot.object().lock_page_tables()
+            };
+            // An in-flight fault now either mapped before us, and the unmap below undoes it, or
+            // sees this and does not map at all. See MapRegion::handle_fault.
+            slot.removed
+                .store(true, core::sync::atomic::Ordering::SeqCst);
+
+            // Stable regions map a private clone of the object's tables, and never took a count
+            // against the object (see map_object), so there is nothing to give back for them.
+            let counted = slot.stable.is_none();
+            let obj_table = counted.then(|| pt.context_table_addr()).flatten();
             let arches = self.secctx.lock();
             for arch in arches.values() {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
-                let did_unmap = arch.unmap(cursor, &mut fa);
-                if let Some(pt) = pt.as_mut() {
+                let released = arch.unmap_object(cursor, obj_table, &mut fa);
+                if counted {
                     pt.remove_invalidate(arch.target.paddr(), cursor);
-                    if did_unmap {
+                    if released {
                         pt.dec_map_count();
                         if pt.map_count() == 0 {
                             slot.object().note_last_unmap();
                         }
                     }
                 }
+            }
+        }
+        drop(slots);
+
+        // After the unmap, not before: syncing can block on the pager, and dirty state lives in the
+        // object's own page tables, which unmapping a context's reference to them does not touch.
+        if slot.should_sync.load(core::sync::atomic::Ordering::SeqCst) {
+            if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
+                log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
             }
         }
     }
@@ -763,6 +791,7 @@ impl KernelMemoryContext for VirtContext {
             flags: info.flags,
             stable: None,
             should_sync: Arc::new(AtomicBool::new(false)),
+            removed: Arc::new(AtomicBool::new(false)),
         };
         let (_is_ok, default_prots) = info.object().check_id();
         self.map_object(&new_slot_info, default_prots);
@@ -801,27 +830,40 @@ impl<T> KernelObjectVirtHandle<T> {
 impl<T> Drop for KernelObjectVirtHandle<T> {
     fn drop(&mut self) {
         let kctx = kernel_context();
-        {
+        let region = {
             let mut slots = kctx.regions.lock();
             // We don't need to tell the object that it's no longer mapped in the kernel context,
             // since object invalidation always informs the kernel context.
-            slots.remove_region(self.slot.start_vaddr());
-        }
+            slots.remove_region(self.slot.start_vaddr())
+        };
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        kctx.with_arch(KERNEL_SCTX, |arch| {
-            if arch.unmap(MappingCursor::new(self.start_addr(), MAX_SIZE), &mut fa) {
-                let mut pt = self.object().lock_page_tables();
-                pt.dec_map_count();
-                let last = pt.map_count() == 0;
-                drop(pt);
-                if last {
-                    self.object().note_last_unmap();
-                }
-            }
+        let mut pt = self.object().lock_page_tables();
+        // Under the page tables, as in VirtContext::remove_object: a fault holding a clone of this
+        // region must not re-map it behind the unmap below.
+        if let Some(region) = &region {
+            region
+                .removed
+                .store(true, core::sync::atomic::Ordering::SeqCst);
+        }
+        let obj_table = pt.context_table_addr();
+        let released = kctx.with_arch(KERNEL_SCTX, |arch| {
+            arch.unmap_object(
+                MappingCursor::new(self.start_addr(), MAX_SIZE),
+                obj_table,
+                &mut fa,
+            )
         });
+        let last = released && {
+            pt.dec_map_count();
+            pt.map_count() == 0
+        };
+        drop(pt);
+        if last {
+            self.object().note_last_unmap();
+        }
         kernel_slot_counter()
             .lock()
             .kernel_slots_nums
