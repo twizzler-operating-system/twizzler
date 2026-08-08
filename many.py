@@ -420,6 +420,8 @@ def summarize(output: List[str], exit_code: int) -> str:
         return "guest kernel panicked"
     if exit_code == 36:
         return "guest went silent (hung or garbled panic)"
+    if exit_code == 37:
+        return "guest livelocked (printing, but nothing new)"
     if exit_code == 34:
         return "no test report (timeout or early exit)"
     return f"no test report (exit {exit_code})"

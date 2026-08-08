@@ -3,7 +3,7 @@ use core::{
     alloc::Layout,
     cell::UnsafeCell,
     fmt::Debug,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     u32,
 };
 
@@ -65,6 +65,10 @@ pub struct Thread {
     pub flags: AtomicU32,
     pub sched: ThreadSched,
     pub critical_counter: AtomicU64,
+    /// Caller that took `critical_counter` from 0 to 1, as a `&'static Location` pointer (0 =
+    /// none). Diagnostic only: Mode C surfaces at whichever mutex a thread with a leaked count
+    /// happens to take next, which never names the entry that leaked it. This does.
+    critical_origin: AtomicUsize,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
     /// Set the first time this thread is switched to. Until then it has never executed, so it
@@ -126,6 +130,69 @@ impl Debug for Thread {
 #[thread_local]
 static CURRENT_THREAD: UnsafeCell<*const ThreadRef> = UnsafeCell::new(core::ptr::null());
 
+/// Offset of `CURRENT_THREAD` from the thread pointer, computed once and identical on every cpu
+/// (one ELF TLS template, so one layout). Zero means "not computed yet"; no TLS variable sits at
+/// the thread pointer itself under either variant.
+static CURRENT_THREAD_TPOFF: AtomicUsize = AtomicUsize::new(0);
+
+/// Compute and cache the offset. Interrupts are off because the two halves -- the variable's
+/// address and this cpu's thread pointer -- must come from the *same* cpu, which is the very
+/// property `read_current_thread_ptr` exists to guarantee.
+#[cfg(target_arch = "x86_64")]
+#[cold]
+fn init_current_thread_tpoff() -> usize {
+    let int = crate::interrupt::disable();
+    let off = (CURRENT_THREAD.get() as usize).wrapping_sub(crate::arch::processor::tls_base());
+    CURRENT_THREAD_TPOFF.store(off, Ordering::Relaxed);
+    crate::interrupt::set(int);
+    off
+}
+
+/// Read this cpu's current-thread pointer in a single instruction.
+///
+/// The obvious `*CURRENT_THREAD.get()` is **not** safe against preemption, and this was the defect
+/// behind Mode C and its two sibling mutex panics. Taking the address of a `#[thread_local]` makes
+/// the compiler materialize `thread_pointer + offset` into a general register -- in a debug build
+/// it then spills that register to the stack and dereferences it several calls later. A general
+/// register survives migration; the thread pointer does not. So a thread preempted inside that
+/// window and resumed on another cpu completes the load against the *previous* cpu's TLS block and
+/// gets whatever thread that cpu has since picked up. Everything downstream is then charged to a
+/// thread running somewhere else: a critical count (Mode C), a mutex's recorded owner, a wait-list
+/// membership.
+///
+/// A segment-relative load has no such window: the base comes from the segment register, which is
+/// cpu state and is correct wherever the instruction retires, and an instruction is indivisible
+/// with respect to interrupts. Disabling interrupts around the Rust version would also work, but it
+/// costs far more on the kernel's hottest path and it silently depends on the interrupt asm
+/// carrying a memory clobber strong enough to stop the load moving across it.
+#[inline]
+fn read_current_thread_ptr() -> *const ThreadRef {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut off = CURRENT_THREAD_TPOFF.load(Ordering::Relaxed);
+        if core::intrinsics::unlikely(off == 0) {
+            off = init_current_thread_tpoff();
+        }
+        let p: *const ThreadRef;
+        core::arch::asm!(
+            "mov {p}, fs:[{off}]",
+            p = lateout(reg) p,
+            off = in(reg) off,
+            options(nostack, readonly, preserves_flags),
+        );
+        p
+    }
+    // No segment override to lean on: read the pointer with interrupts off so the thread cannot
+    // migrate between materializing the address and loading through it.
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe {
+        let int = crate::interrupt::disable();
+        let p = *CURRENT_THREAD.get();
+        crate::interrupt::set(int);
+        p
+    }
+}
+
 #[inline]
 pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
@@ -135,7 +202,7 @@ pub fn current_thread_ref() -> Option<&'static ThreadRef> {
         }
     }
     core::sync::atomic::fence(Ordering::Acquire);
-    unsafe { (*CURRENT_THREAD.get().as_mut().unwrap_unchecked()).as_ref() }
+    unsafe { read_current_thread_ptr().as_ref() }
 }
 
 pub unsafe fn set_current_thread(thread: &Thread) {
@@ -202,6 +269,7 @@ impl Thread {
             flags: AtomicU32::new(0),
             kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
             critical_counter: AtomicU64::new(0),
+            critical_origin: AtomicUsize::new(0),
             switch_lock: AtomicU64::new(0),
             has_run: AtomicBool::new(false),
             sync_sleep_gen: AtomicU64::new(0),
@@ -314,14 +382,29 @@ impl Thread {
         unsafe { set_current_thread(current) };
     }
 
+    #[track_caller]
     pub fn do_critical<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&Self) -> T,
     {
-        self.critical_counter.fetch_add(1, Ordering::SeqCst);
+        self.note_critical_enter(core::panic::Location::caller());
         let res = f(self);
         self.critical_counter.fetch_sub(1, Ordering::SeqCst);
         res
+    }
+
+    /// Increment the critical counter, remembering who took it off zero.
+    fn note_critical_enter(&self, loc: &'static core::panic::Location<'static>) {
+        if self.critical_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.critical_origin
+                .store(loc as *const _ as usize, Ordering::SeqCst);
+        }
+    }
+
+    /// The caller that took this thread's critical counter off zero, if it is still nonzero.
+    pub fn critical_origin(&self) -> Option<&'static core::panic::Location<'static>> {
+        let p = self.critical_origin.load(Ordering::SeqCst);
+        (p != 0).then(|| unsafe { &*(p as *const core::panic::Location<'static>) })
     }
 
     #[inline]
@@ -345,16 +428,15 @@ impl Thread {
     //#[inline]
     #[track_caller]
     pub fn enter_critical(&self) -> CriticalGuard<'_> {
-        self.critical_counter.fetch_add(1, Ordering::SeqCst);
-        CriticalGuard {
-            thread: self,
-            loc: core::panic::Location::caller(),
-        }
+        let loc = core::panic::Location::caller();
+        self.note_critical_enter(loc);
+        CriticalGuard { thread: self, loc }
     }
 
     #[inline]
+    #[track_caller]
     pub fn enter_critical_unguarded(&self) {
-        self.critical_counter.fetch_add(1, Ordering::SeqCst);
+        self.note_critical_enter(core::panic::Location::caller());
     }
 
     pub fn maybe_reschedule_thread(&self) {

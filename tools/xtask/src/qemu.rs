@@ -92,6 +92,10 @@ pub enum GuestDeath {
     /// The console went silent for this long. Covers panics whose text was garbled by concurrent
     /// cpus as well as guests that wedge without panicking at all.
     Silent(Duration),
+    /// The console kept talking but stopped saying anything new for this long, while flooding.
+    /// The silence watchdog cannot see this one, and it is how a livelocked guest burns a full
+    /// heartbeat budget.
+    Livelocked(Duration),
 }
 
 impl GuestDeath {
@@ -102,6 +106,10 @@ impl GuestDeath {
                 "guest console silent for {}s (hung, or a panic whose text was garbled)",
                 d.as_secs()
             ),
+            GuestDeath::Livelocked(d) => format!(
+                "guest printed nothing new for {}s while flooding the console (livelock)",
+                d.as_secs()
+            ),
         }
     }
 
@@ -110,6 +118,7 @@ impl GuestDeath {
         match self {
             GuestDeath::Panicked => 35,
             GuestDeath::Silent(_) => 36,
+            GuestDeath::Livelocked(_) => 37,
         }
     }
 }
@@ -499,6 +508,80 @@ fn silence_timeout() -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
+/// How long the guest may print without printing anything *new* before we call it livelocked.
+///
+/// The silence watchdog is blind to a guest that wedges while still logging -- an observed one grew
+/// a 21MB transcript of one repeated fault line, and a later one burned a full 15-minute budget
+/// repeating `failed to lock lock tracker`. Deliberately generous, and paired with the flood
+/// threshold below, because a slow-but-working guest legitimately repeats a line for a while.
+/// Override with `TWZ_PROGRESS_TIMEOUT` (seconds); `0` disables it.
+fn progress_timeout() -> Option<Duration> {
+    let secs = std::env::var("TWZ_PROGRESS_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600u64);
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+/// Repeated lines needed within the progress window before repetition counts as a livelock rather
+/// than as a quiet phase.
+///
+/// Sized against both observed livelocks, which differ by four orders of magnitude in rate: Mode B
+/// produced 21MB of one line, while the tracker-lock hang repeats *slowly* -- session 7's sighting
+/// was 164 repeats across a whole 15-minute budget, and session 8 caught two more at ~17 repeats
+/// over several minutes. A threshold sized off the flooding case would miss the slow one entirely,
+/// which is the one that has actually been costing budgets. The staleness window does the real
+/// work; this only has to exceed what a healthy run repeats, and a healthy `debug-nokvm-smp4`
+/// transcript repeats `REPORT {"status":"Pending"}` 62 times *in total*, at most 28 consecutively.
+const FLOOD_LINES: u64 = 64;
+
+/// Distinct recent lines remembered when deciding whether a line is new. Large enough that a short
+/// cycle of a few repeating messages is still recognized as repetition, small enough that a run's
+/// whole history is not held in memory.
+const NOVELTY_WINDOW: usize = 512;
+
+/// Shared progress state: when the guest last said something new, and how many lines it has
+/// repeated since. Cloned into the reader thread and polled by the waiter.
+#[derive(Clone)]
+struct Progress {
+    last_new: Arc<AtomicU64>,
+    repeats: Arc<AtomicU64>,
+}
+
+/// Rolling record of what the guest has said lately, so "still printing" can be distinguished from
+/// "still making progress".
+struct Novelty {
+    recent: std::collections::VecDeque<u64>,
+    seen: std::collections::HashSet<u64>,
+}
+
+impl Novelty {
+    fn new() -> Self {
+        Self {
+            recent: std::collections::VecDeque::with_capacity(NOVELTY_WINDOW),
+            seen: std::collections::HashSet::with_capacity(NOVELTY_WINDOW),
+        }
+    }
+
+    /// Record a line, returning true if it is not one of the last `NOVELTY_WINDOW` distinct lines.
+    fn is_new(&mut self, line: &str) -> bool {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        line.hash(&mut h);
+        let key = h.finish();
+        if !self.seen.insert(key) {
+            return false;
+        }
+        self.recent.push_back(key);
+        if self.recent.len() > NOVELTY_WINDOW {
+            if let Some(old) = self.recent.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        true
+    }
+}
+
 /// How long to keep reading after asking the monitor for cpu state, so its reply reaches the
 /// transcript before we kill qemu.
 const MONITOR_DRAIN: Duration = Duration::from_secs(5);
@@ -524,8 +607,8 @@ fn scrape_rsp(line: &str) -> Option<u64> {
 /// Ask qemu's monitor what every vcpu is doing, and let the reply land in the transcript.
 ///
 /// This is the only diagnostic that survives *any* wedge, because it needs no cooperation from the
-/// guest: it works when a cpu is spinning with interrupts masked, when the console lock is held, and
-/// when every cpu is halted waiting on a wakeup that never came. Those three are exactly what a
+/// guest: it works when a cpu is spinning with interrupts masked, when the console lock is held,
+/// and when every cpu is halted waiting on a wakeup that never came. Those three are exactly what a
 /// silent hang cannot otherwise distinguish, and `info registers -a` separates them at a glance --
 /// all cpus halted means a lost wakeup, one cpu with a kernel RIP means a spin, and the RIP names
 /// the code. Symbolize with
@@ -566,17 +649,27 @@ fn read_serial(
     mut log: Option<std::fs::File>,
     panicked: Arc<AtomicBool>,
     last_line: Arc<AtomicU64>,
+    progress: Progress,
     rsps: Arc<Mutex<Vec<u64>>>,
     started: std::time::Instant,
 ) -> Option<ReportInfo> {
     let stdout = stdout?;
     let mut found = None;
+    let mut novelty = Novelty::new();
     for line in BufReader::new(stdout).lines() {
         last_line.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
         let Ok(line) = line else {
             continue;
         };
         let line = line.trim();
+        if novelty.is_new(line) {
+            progress
+                .last_new
+                .store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+            progress.repeats.store(0, Ordering::SeqCst);
+        } else {
+            progress.repeats.fetch_add(1, Ordering::SeqCst);
+        }
         println!(" ==> {}", line);
         // Monitor register dumps are the only thing that prints RSP=, and dump_guest_state
         // clears this immediately before asking, so whatever lands here is the current dump.
@@ -629,9 +722,11 @@ pub(crate) fn run_once(
     let mut child_stdin = child.stdin.take();
     let child_stdout = child.stdout.take();
 
-    let serial_log = run
-        .monitor
-        .then(|| run.serial_log.clone().unwrap_or_else(|| serial_log_path(&run.label)));
+    let serial_log = run.monitor.then(|| {
+        run.serial_log
+            .clone()
+            .unwrap_or_else(|| serial_log_path(&run.label))
+    });
     let log_file = serial_log.as_ref().and_then(|path| {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -646,15 +741,21 @@ pub(crate) fn run_once(
     let last_line = Arc::new(AtomicU64::new(0));
     let started = std::time::Instant::now();
     let rsps: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let progress = Progress {
+        last_new: Arc::new(AtomicU64::new(0)),
+        repeats: Arc::new(AtomicU64::new(0)),
+    };
     let reader_panicked = panicked.clone();
     let reader_last_line = last_line.clone();
     let reader_rsps = rsps.clone();
+    let reader_progress = progress.clone();
     let reader_thread = std::thread::spawn(move || {
         read_serial(
             child_stdout,
             log_file,
             reader_panicked,
             reader_last_line,
+            reader_progress,
             reader_rsps,
             started,
         )
@@ -668,6 +769,7 @@ pub(crate) fn run_once(
         const POLL: Duration = Duration::from_secs(1);
         const HEARTBEAT: Duration = Duration::from_secs(15);
         let silence_timeout = silence_timeout();
+        let progress_timeout = progress_timeout();
         let mut tries = 0;
         let mut since_heartbeat = Duration::ZERO;
         let mut died_at: Option<std::time::Instant> = None;
@@ -684,6 +786,22 @@ pub(crate) fn run_once(
                     .saturating_sub(Duration::from_millis(last_line.load(Ordering::SeqCst)));
                 if quiet >= limit {
                     death = Some(GuestDeath::Silent(quiet));
+                    if let Some(stdin) = child_stdin.as_mut() {
+                        dump_guest_state(stdin, &rsps);
+                    }
+                    break None;
+                }
+            }
+
+            // A guest can wedge without going quiet: it repeats one fault or one warning forever.
+            // Requiring a flood as well as staleness keeps a slow phase that legitimately repeats a
+            // line -- a pending report, say -- from being called dead.
+            if let Some(limit) = progress_timeout {
+                let stale = started.elapsed().saturating_sub(Duration::from_millis(
+                    progress.last_new.load(Ordering::SeqCst),
+                ));
+                if stale >= limit && progress.repeats.load(Ordering::SeqCst) >= FLOOD_LINES {
+                    death = Some(GuestDeath::Livelocked(stale));
                     if let Some(stdin) = child_stdin.as_mut() {
                         dump_guest_state(stdin, &rsps);
                     }

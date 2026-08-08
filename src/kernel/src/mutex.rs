@@ -15,7 +15,12 @@
 
 // TODO: reenable priority donation, and make it cheaper.
 
-use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicU64, time::Duration};
+use core::{
+    cell::UnsafeCell,
+    panic::Location,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use intrusive_collections::{LinkedList, intrusive_adapter};
 use twizzler_abi::{syscall::LockStats, thread::ExecutionState};
@@ -161,9 +166,18 @@ impl<T> Mutex<T> {
 
         if let Some(ref current_thread) = current_thread {
             if current_thread.is_critical() {
+                // The count is almost never this call site's doing -- Mode C is a leaked
+                // enter_critical surfacing at whichever mutex the thread takes next -- so name the
+                // caller that took the counter off zero, which is the one worth reading.
                 panic!(
-                    "cannot lock mutex in critical context (called from {})",
-                    caller
+                    "cannot lock mutex in critical context (called from {}), thread {}, count {}, critical since {}",
+                    caller,
+                    current_thread.id(),
+                    current_thread.critical_counter.load(Ordering::SeqCst),
+                    current_thread
+                        .critical_origin()
+                        .map(|l| l as &dyn core::fmt::Display)
+                        .unwrap_or(&"<unknown>"),
                 );
             }
             assert!(!current_thread.is_critical());
@@ -259,7 +273,24 @@ impl<T> Mutex<T> {
                                 break;
                             }
                             crate::panic::backtrace(false, None);
-                            panic!("this mutex is not re-entrant");
+                            // Two hypotheses reach this line and the message has to separate
+                            // them: the thread really did lock twice, or `lock()` recorded the
+                            // wrong owner because `current_thread_ref()` named the wrong thread
+                            // at acquisition. In the second the "owner" never ran the acquiring
+                            // code, so it is not on the wait list and `locked_at` names a site
+                            // this thread has not reached in this call.
+                            panic!(
+                                "this mutex is not re-entrant: thread {} ({}) at {}, owner recorded at {} (owner state {:?}, on wait list: {}, this thread on wait list: {}, owned {}, handoff {})",
+                                cur_thread.id(),
+                                cur_thread.objid(),
+                                caller,
+                                unsafe { self.locked_at.get().read() },
+                                cur_owner.get_state(),
+                                cur_owner.mutex_link.is_linked(),
+                                cur_thread.mutex_link.is_linked(),
+                                queue.owned,
+                                queue.handoff,
+                            );
                         }
                     }
                     // `release` hands ownership straight to a waiter rather than unlocking, so a

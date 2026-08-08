@@ -2,7 +2,41 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::UpcallInfo;
 
-use super::{Thread, current_thread_ref};
+use super::{Thread, current_thread_ref, locktrack::diag};
+
+/// A thread crossing the user/kernel boundary must not hold a critical count: user code cannot be
+/// in a critical section, so a nonzero count at either edge is a leak from some earlier kernel
+/// entry. Mode C is that leak surfacing later, at whatever mutex the thread next takes, which never
+/// names the path that caused it -- `critical_origin` does.
+fn report_leaked_critical(thread: &Thread, when: &str, counter: &diag::Counter) {
+    // Only user threads: a kernel thread reaches these hooks through an interrupt or fault, where
+    // being critical at depth 0 is legitimate. Kernel and idle threads are exactly the ones with no
+    // memory context.
+    if thread.memory_context.is_none() || !thread.is_critical() {
+        return;
+    }
+    if !counter.hit() {
+        return;
+    }
+    let count = thread.critical_counter.load(Ordering::SeqCst);
+    match thread.critical_origin() {
+        Some(loc) => emerglogln!(
+            "locktrack: thread {} ({}) is {} with critical count {}, taken off zero at {}",
+            thread.id(),
+            thread.objid(),
+            when,
+            count,
+            loc,
+        ),
+        None => emerglogln!(
+            "locktrack: thread {} ({}) is {} with critical count {}, origin unknown",
+            thread.id(),
+            thread.objid(),
+            when,
+            count,
+        ),
+    }
+}
 
 pub(super) const THREAD_PROC_IDLE: u32 = 1;
 pub(super) const THREAD_HAS_DONATED_PRIORITY: u32 = 2;
@@ -28,7 +62,9 @@ pub(crate) const THREAD_ACTIVE_RUNNING: u32 = 4096;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
-        thread.kernel_depth.fetch_add(1, Ordering::SeqCst);
+        if thread.kernel_depth.fetch_add(1, Ordering::SeqCst) == 0 {
+            report_leaked_critical(&thread, "entering kernel", &diag::CRITICAL_LEAK_AT_ENTRY);
+        }
 
         if thread.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 {
             // TODO
@@ -53,6 +89,7 @@ pub fn exit_kernel() {
         if prev > 1 {
             return;
         }
+        report_leaked_critical(&thread, "returning to user", &diag::CRITICAL_LEAK_AT_EXIT);
         thread.upcalls_since_user.store(0, Ordering::SeqCst);
         thread.remove_donated_priority();
         if thread.arch.has_upcall_restore_frame() {

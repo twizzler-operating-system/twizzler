@@ -7,11 +7,10 @@ use std::{
     },
 };
 
-use monitor_api::THREAD_STARTED;
+use monitor_api::{RuntimeThreadControl, THREAD_STARTED};
 use twizzler_abi::{object::ObjID, syscall::sys_thread_gettls};
 
 use super::{ReferenceRuntime, RuntimeState};
-use crate::runtime::thread::with_current_thread;
 
 mod ferroc;
 mod talc;
@@ -98,7 +97,8 @@ fn try_switch_allocator_is_done() -> bool {
 
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
+        let tls =
+            unsafe { dynlink::tls::get_current_thread_control_block::<RuntimeThreadControl>() };
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
             || tls.is_null()
@@ -112,7 +112,11 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return r;
         }
 
-        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        // Reuse the control block fetched and null-checked above rather than reading the thread
+        // pointer a second time: this is the hottest path in the runtime, and a null block has
+        // already been routed to the early allocator, which is the right answer for a thread with
+        // no usable TLS (not yet installed, or freed underneath us).
+        let ts = unsafe { (*tls).runtime_data.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0 };
         if !ts {
             // TODO: this leaks the stuff that is allocated in libc's TLS
             let r = LOCAL_ALLOCATOR.alloc_early(layout);
@@ -142,7 +146,8 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
     }
 
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
+        let tls =
+            unsafe { dynlink::tls::get_current_thread_control_block::<RuntimeThreadControl>() };
         if !self.state().contains(RuntimeState::READY)
             || self.state().contains(RuntimeState::IS_MONITOR)
             || tls.is_null()
@@ -154,7 +159,11 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
         }
 
-        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        // Reuse the control block fetched and null-checked above rather than reading the thread
+        // pointer a second time: this is the hottest path in the runtime, and a null block has
+        // already been routed to the early allocator, which is the right answer for a thread with
+        // no usable TLS (not yet installed, or freed underneath us).
+        let ts = unsafe { (*tls).runtime_data.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0 };
         if !ts {
             // TODO: this leaks the stuff that is allocated in libc's TLS
             let r = LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
@@ -195,12 +204,17 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         if LOCAL_ALLOCATOR.is_ptr_early_alloc(ptr) {
             return;
         }
-        let tls = unsafe { dynlink::tls::get_current_thread_control_block::<()>() };
+        let tls =
+            unsafe { dynlink::tls::get_current_thread_control_block::<RuntimeThreadControl>() };
         if tls.is_null() {
             return;
         }
 
-        let ts = with_current_thread(|cur| cur.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0);
+        // Reuse the control block fetched and null-checked above rather than reading the thread
+        // pointer a second time: this is the hottest path in the runtime, and a null block has
+        // already been routed to the early allocator, which is the right answer for a thread with
+        // no usable TLS (not yet installed, or freed underneath us).
+        let ts = unsafe { (*tls).runtime_data.flags.load(Ordering::SeqCst) & THREAD_STARTED != 0 };
         if !ts {
             return;
         }

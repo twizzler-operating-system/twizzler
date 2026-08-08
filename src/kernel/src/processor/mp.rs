@@ -113,6 +113,9 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         }
     }
     crate::processor::sched::set_cpu_topology(cpu_topo_root);
+    // Every cpu waited for above has run `arch::processor::init`, so no cpu can be executing
+    // without a thread pointer from here on. Lets `tls_ready` stop reading an MSR per call.
+    crate::processor::note_all_tls_ready();
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
     crate::memory::prep_smp();
 }

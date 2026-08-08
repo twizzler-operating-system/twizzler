@@ -16,16 +16,30 @@ use dynlink::tls::Tcb;
 use monitor_api::{RuntimeThreadControl, TlsTemplateInfo, THREAD_STARTED};
 use twizzler_abi::simple_mutex::Mutex;
 
-use crate::runtime::alloc::LOCAL_ALLOCATOR;
+use crate::runtime::alloc::{LocalAllocator, LOCAL_ALLOCATOR};
+
+/// Run a closure using the current thread's control struct, if this thread has a usable one.
+///
+/// The thread control block is found through the self-pointer at the thread pointer, so a thread
+/// whose TLS has not been installed, or whose TLS region was freed and its memory reused, reads
+/// that pointer as null. Returning `None` rather than unwrapping matters most for the allocator,
+/// which calls this on every allocation: a panic there is unrecoverable, and the caller has a
+/// correct fallback (treat the thread as not-yet-started and use the early allocator).
+///
+/// This cannot cover a thread pointer that is *itself* null -- reading `%fs:0` then faults rather
+/// than yielding null, and nothing in userspace can test for it without asking the kernel.
+pub(crate) fn try_with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> Option<R> {
+    let tp: &Tcb<RuntimeThreadControl> =
+        unsafe { dynlink::tls::get_current_thread_control_block().as_ref()? };
+    Some(f(&tp.runtime_data))
+}
 
 /// Run a closure using the current thread's control struct as the argument.
+///
+/// Panics if there is no usable control block. Use [`try_with_current_thread`] anywhere a panic is
+/// worse than a degraded answer.
 pub(crate) fn with_current_thread<R, F: FnOnce(&RuntimeThreadControl) -> R>(f: F) -> R {
-    let tp: &mut Tcb<RuntimeThreadControl> = unsafe {
-        dynlink::tls::get_current_thread_control_block()
-            .as_mut()
-            .unwrap()
-    };
-    f(&tp.runtime_data)
+    try_with_current_thread(f).expect("thread control block pointer is null")
 }
 
 // Entry point for threads.
@@ -54,9 +68,13 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
     twizzler_abi::syscall::sys_thread_exit(code);
 }
 
-#[derive(Default)]
 pub(crate) struct TlsGenMgr {
-    map: BTreeMap<u64, TlsGen>,
+    /// Deliberately allocator-parameterized: `get_next_tls_info` runs inside
+    /// `cross_compartment_entry`'s window, where the thread pointer is zero, and a `BTreeMap` on
+    /// the global allocator would allocate a node through `ReferenceRuntime::alloc` -- which
+    /// reads the thread control block and would fault. `LocalAllocator` reaches talc directly
+    /// and touches no thread-local state.
+    map: BTreeMap<u64, TlsGen, &'static LocalAllocator>,
 }
 
 pub(crate) struct TlsGen {
@@ -67,7 +85,7 @@ pub(crate) struct TlsGen {
 unsafe impl Send for TlsGen {}
 
 pub(crate) static TLS_GEN_MGR: Mutex<TlsGenMgr> = Mutex::new(TlsGenMgr {
-    map: BTreeMap::new(),
+    map: BTreeMap::new_in(&LOCAL_ALLOCATOR),
 });
 
 impl TlsGenMgr {

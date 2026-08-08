@@ -156,7 +156,21 @@ pub mod diag {
     pub static MUTEX_HANDOFF_TO_DEAD: Counter =
         Counter::new("mutex handed off to a thread that exited");
 
-    static ALL: [&Counter; 18] = [
+    /// A thread entered the kernel from userspace already holding a critical count, i.e. some
+    /// earlier kernel entry leaked one. This is Mode C's cause, caught at the first point after the
+    /// leak where the count is provably wrong -- a user thread cannot be critical while running
+    /// user code.
+    pub static CRITICAL_LEAK_AT_ENTRY: Counter =
+        Counter::new("entered kernel from user with a critical count held");
+    /// Same check on the way out: the outermost `exit_kernel` is about to return to userspace with
+    /// the count nonzero. Fires one syscall earlier than the entry probe and names the syscall that
+    /// leaked it, rather than the next one to notice.
+    pub static CRITICAL_LEAK_AT_EXIT: Counter =
+        Counter::new("returning to user with a critical count held");
+
+    static ALL: [&Counter; 20] = [
+        &CRITICAL_LEAK_AT_ENTRY,
+        &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
         &SPINLOCK_GUARD_CROSSED,
         &SCHED_GUARD_CROSSED,

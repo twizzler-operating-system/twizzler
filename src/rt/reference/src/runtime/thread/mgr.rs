@@ -16,7 +16,7 @@ use twizzler_abi::{
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, NamingError, TwzError},
+    error::{ArgumentError, NamingError, ObjectError, TwzError},
     object::MapFlags,
     thread::ThreadSpawnArgs,
     Result,
@@ -65,6 +65,28 @@ struct CrossThread {
     layout: Layout,
     id: twizzler_rt_abi::thread::ThreadId,
     alloc_base: *mut u8,
+}
+
+impl CrossThread {
+    /// Whether this thread is done with its TLS region.
+    ///
+    /// This has to be answered without calling into the monitor: the only way to read a thread's
+    /// `ExecutionState` is to map its repr, and outside the monitor `map_object` is a gate call --
+    /// which cannot be made from `cross_compartment_entry` (it wedges the compartment) and so
+    /// cannot be made while the thread is known alive. What is left is the existence of the
+    /// repr object, which the kernel deletes only once the thread is gone.
+    ///
+    /// The narrowing that matters: **only** `NoSuchObject` counts as death. The previous test was
+    /// `sys_object_stat(id).is_err()`, so a permissions failure, or any future error, silently
+    /// freed a live thread's TLS -- and a thread that keeps running on a freed region reads its
+    /// control block back as zero once the allocator reuses the memory, which is a fault at a
+    /// small negative address inside whatever thread-local it touches next.
+    fn is_exited(id: ObjID) -> bool {
+        match sys_object_stat(id) {
+            Err(TwzError::Object(ObjectError::NoSuchObject)) => true,
+            Err(_) | Ok(_) => false,
+        }
+    }
 }
 
 extern "C" {
@@ -132,7 +154,7 @@ impl ThreadManagerInner {
     fn scan_for_exited_cross(&mut self) {
         for (_, th) in self
             .cross_threads
-            .extract_if(.., |id, _| sys_object_stat(*id).is_err())
+            .extract_if(.., |id, _| CrossThread::is_exited(*id))
         {
             drop(th);
         }
@@ -205,6 +227,24 @@ impl ReferenceRuntime {
             .insert(thread.id, thread);
     }
 
+    /// Re-point this thread at *this* compartment's TLS on entry through a gate.
+    ///
+    /// # The zero-TLS window
+    ///
+    /// The thread arrives holding the *caller* compartment's thread pointer, which must not be used
+    /// for anything -- reading through it is a cross-compartment access -- so it is zeroed
+    /// immediately and stays zero until this compartment's region is installed below.
+    ///
+    /// **Nothing called between those two `sys_thread_settls` calls may touch thread-local storage,
+    /// directly or indirectly.** With the thread pointer at zero, `mov {}, fs:0` -- how the control
+    /// block is found -- reads linear address 0 and faults; there is no null to test for, because
+    /// the read *is* the fault. That rules out the global allocator, which reads the control block
+    /// on every allocation, and so rules out any collection that allocates through it.
+    ///
+    /// What the window is allowed: syscalls, `simple_mutex::Mutex` (thread-sync, no TLS),
+    /// `klog_println!`, and `LOCAL_ALLOCATOR`'s methods, which reach talc directly. `TLS_GEN_MGR`'s
+    /// map is allocator-parameterized for exactly this reason, and `next_id()` is `freeze`d so its
+    /// `Drop` cannot push to a `Vec`.
     pub fn cross_compartment_entry(&self) -> Result<()> {
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
@@ -248,9 +288,12 @@ impl ReferenceRuntime {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
         });
 
-        let mut inner = THREAD_MGR.inner.lock();
-        inner.cross_threads.insert(
-            twizzler_abi::syscall::sys_thread_self_id(),
+        // Mapped here, while the thread is demonstrably alive (it is us), so that the GC scan can
+        // read its execution state later instead of inferring death from a failed stat.
+        let self_id = twizzler_abi::syscall::sys_thread_self_id();
+
+        THREAD_MGR.inner.lock().cross_threads.insert(
+            self_id,
             CrossThread {
                 tls,
                 layout,

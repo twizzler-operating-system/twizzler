@@ -160,8 +160,29 @@ impl Processor {
     }
 }
 
+/// Set once every cpu has installed its thread pointer, after which no cpu can be running with TLS
+/// unset and the per-cpu check below is unnecessary.
+static ALL_TLS_READY: AtomicBool = AtomicBool::new(false);
+
+/// Called when the last secondary has come up. `boot_all_secondaries` waits for each processor's
+/// `running` flag, which `secondary_entry` sets only after `arch::processor::init` has installed
+/// its thread pointer, so by the time it returns the claim holds for every cpu.
+pub fn note_all_tls_ready() {
+    ALL_TLS_READY.store(true, Ordering::Release);
+}
+
+/// Whether this cpu can safely touch thread-local storage.
+///
+/// The per-cpu answer costs an `rdmsr` (the thread pointer lives in `IA32_FS_BASE` and there is
+/// nowhere cheaper to read it from before TLS exists), and `current_thread_ref` -- one of the
+/// hottest functions in the kernel -- calls this on every invocation. Once every cpu has a thread
+/// pointer the answer is permanently yes for all of them, so a plain global load replaces the MSR
+/// read for the whole life of the system; the MSR path survives only for boot.
 #[inline]
 pub fn tls_ready() -> bool {
+    if core::intrinsics::likely(ALL_TLS_READY.load(Ordering::Relaxed)) {
+        return true;
+    }
     crate::arch::processor::tls_ready()
 }
 

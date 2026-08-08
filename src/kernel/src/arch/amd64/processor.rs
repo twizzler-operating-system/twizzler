@@ -365,7 +365,13 @@ impl Processor {
 }
 
 pub fn tls_ready() -> bool {
-    unsafe { x86::msr::rdmsr(x86::msr::IA32_FS_BASE) != 0 }
+    tls_base() != 0
+}
+
+/// This cpu's thread pointer. Only for computing a TLS offset once at startup -- everything else
+/// should reach thread-local data through a segment-relative access, which cannot go stale.
+pub fn tls_base() -> usize {
+    unsafe { x86::msr::rdmsr(x86::msr::IA32_FS_BASE) as usize }
     //unsafe { x86::bits64::segmentation::rdfsbase() != 0 }
 }
 
