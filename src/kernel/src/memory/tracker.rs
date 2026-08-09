@@ -15,7 +15,7 @@ use super::{
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
-    once::Once,
+    once::{Once, OnceWait},
     processor::{
         sched::{SchedFlags, schedule},
         tls_ready,
@@ -35,7 +35,12 @@ pub struct MemoryTracker {
     reclaimed: AtomicUsize,
     waiting: AtomicUsize,
     pager_outstanding: AtomicUsize,
-    reclaim: Once<ReclaimThread>,
+    /// `OnceWait`, not `Once`: `Once::poll` spins while the initializer is `RUNNING`, and the
+    /// callers below reach it from places that cannot spin -- `trigger_reclaim` runs inside
+    /// `MemoryTracker::wait`'s `enter_critical()` and on every `try_alloc_frame`, and the reclaim
+    /// thread polls this while its own creator is still inside `call_once`. `OnceWait::poll`
+    /// returns `None` instead of spinning, which is what those callers actually want.
+    reclaim: OnceWait<ReclaimThread>,
     waiters: Spinlock<LinkedList<LinkAdapter>>,
 }
 intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { memwait_link: intrusive_collections::linked_list::AtomicLink });
@@ -392,17 +397,15 @@ pub fn start_reclaim_thread() {
         .start_reclaim_thread();
 }
 
+/// Hand frames to the reclaim thread.
+///
+/// Blocks until that thread exists, so it must not be called from the allocator, a critical
+/// section, or an interrupt. (Previously this spun on `Once::poll` and then `unwrap`ed, i.e. it
+/// panicked outright if reclaim had not been started.)
 pub fn reclaim(frames: impl IntoIterator<Item = FrameRef>) {
-    TRACKER
-        .poll()
-        .unwrap()
-        .reclaim
-        .poll()
-        .unwrap()
-        .state
-        .lock()
-        .extend(frames);
-    TRACKER.poll().unwrap().reclaim.poll().unwrap().cv.signal();
+    let rt = TRACKER.poll().unwrap().reclaim.wait();
+    rt.state.lock().extend(frames);
+    rt.cv.signal();
 }
 
 bitflags! {
@@ -440,7 +443,9 @@ impl ReclaimThread {
 #[allow(unused_variables)]
 fn reclaim_main() {
     let tracker = TRACKER.poll().unwrap();
-    let rt = tracker.reclaim.poll().unwrap();
+    // Blocks rather than spins: this thread is made runnable by `ReclaimThread::new()`, which has
+    // not yet returned to `call_once`, so the value is never ready on the first look.
+    let rt = tracker.reclaim.wait();
     let mut state = rt.state.lock();
     current_thread_ref()
         .unwrap()
@@ -511,7 +516,7 @@ pub fn init(total: usize, idle: usize, kern: usize) {
         idle: AtomicUsize::new(idle),
         total: AtomicUsize::new(total),
         pager_outstanding: AtomicUsize::new(0),
-        reclaim: Once::new(),
+        reclaim: OnceWait::new(),
         waiters: Spinlock::new(LinkedList::new(LinkAdapter::NEW)),
     });
 }
@@ -546,7 +551,9 @@ impl FrameAllocator {
     #[track_caller]
     pub fn precharge(&mut self, count: usize, flags: FrameAllocFlags) {
         if count >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size() {
-            log::warn!(
+            // debug!, not warn!: this fires ~1600 times a sweep on healthy runs, which drowns real
+            // warnings in grep-based triage. Raise it again if it ever correlates with a failure.
+            log::debug!(
                 "frame allocator precharge: requested {} frames at {} (have {})",
                 count,
                 core::panic::Location::caller(),

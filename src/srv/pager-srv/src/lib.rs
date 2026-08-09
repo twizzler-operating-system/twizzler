@@ -39,6 +39,7 @@ mod physrw;
 mod request_handle;
 mod stats;
 mod threads;
+mod watchdog;
 
 /***
  * Tracing Init
@@ -144,6 +145,8 @@ static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let (rq, sq, data) = pager_init(q1, q2);
+    // After pager_init, which installs the tracing subscriber the watchdog reports through.
+    watchdog::start();
     let sq = Arc::new(sq);
     init_pr_mgr(sq);
     #[allow(unused_variables)]

@@ -14,6 +14,24 @@ pub struct SerialPort {
     port: u16,
 }
 
+/// Cycles to wait for the uart to accept a byte before dropping it.
+///
+/// A byte at 115200 baud is ~87us, so this is a ~500x margin at any plausible tsc rate and cannot
+/// trip on a working port. It exists because the unbounded version of this wait is a silent-hang
+/// generator: `_print_normal` calls it with interrupts disabled while holding the console lock, so
+/// a uart that stops asserting OUTPUT_EMPTY -- which host-side backpressure on qemu's chardev can
+/// cause under a loaded sweep -- pins that cpu at 100%, blocks every other cpu that tries to print,
+/// and produces exactly the signature this document calls a boot hang: no panic, no further output,
+/// a transcript ending on a complete line, and nothing for the guest-state dump to find.
+///
+/// Dropping console bytes can corrupt the `REPORT` protocol the harness parses. That is the right
+/// trade: it only happens where the alternative is a machine that never comes back.
+const TX_TIMEOUT_CYCLES: u64 = 100_000_000;
+
+/// Set when a send times out, so a stuck port degrades to dropped output rather than making every
+/// subsequent byte pay the full timeout.
+static TX_STUCK: AtomicBool = AtomicBool::new(false);
+
 bitflags::bitflags! {
     /// Line status flags
     struct LineStsFlags: u8 {
@@ -97,12 +115,38 @@ impl SerialPort {
     }
 
     pub fn send(&mut self, byte: u8) {
+        if !self.wait_for_tx() {
+            // Drop it. See TX_TIMEOUT_CYCLES: the alternative is not "output arrives late", it is
+            // the whole machine wedging silently.
+            return;
+        }
         unsafe {
-            while !self.line_sts().contains(LineStsFlags::OUTPUT_EMPTY) {
-                core::hint::spin_loop();
-            }
             self.write_reg(Self::DATA, byte);
         }
+    }
+
+    /// Wait for the transmit holding register to drain, giving up rather than spinning forever.
+    ///
+    /// Returns false if the byte should be dropped.
+    fn wait_for_tx(&mut self) -> bool {
+        // Already known stuck: look once, and do not pay the timeout again per byte. A port that
+        // comes back clears the flag here, so this recovers on its own.
+        if TX_STUCK.load(Ordering::Relaxed) {
+            if self.line_sts().contains(LineStsFlags::OUTPUT_EMPTY) {
+                TX_STUCK.store(false, Ordering::Relaxed);
+                return true;
+            }
+            return false;
+        }
+        let start = unsafe { x86::time::rdtsc() };
+        while !self.line_sts().contains(LineStsFlags::OUTPUT_EMPTY) {
+            if unsafe { x86::time::rdtsc() }.wrapping_sub(start) > TX_TIMEOUT_CYCLES {
+                TX_STUCK.store(true, Ordering::Relaxed);
+                return false;
+            }
+            core::hint::spin_loop();
+        }
+        true
     }
 
     pub fn receive(&mut self) -> u8 {

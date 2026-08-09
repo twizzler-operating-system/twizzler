@@ -8,6 +8,27 @@ use unittest_report::{Report, ReportInfo, TestResult, TestStatus};
 
 static RESULT: OnceLock<Report> = OnceLock::new();
 
+/// Directories a test binary may live in, in search order.
+///
+/// `#[test]` binaries are staged on the disk (`xtask`'s `TEST_DIR_ON_DISK`) rather than in the
+/// initrd, because the initrd is read whole through UEFI block I/O at boot whether or not a test
+/// runs. Standalone `test-programs` are ordinary userspace binaries and land in `bin/`. `/initrd`
+/// stays last as the fallback: an image built before the move still works, and so does a boot where
+/// the disk never came up -- running the suite the slow way beats reporting 50 spawn failures.
+const SEARCH_DIRS: &[&str] = &["/pkg/twizzler/test", "/pkg/twizzler/bin", "/initrd"];
+
+/// First directory in [`SEARCH_DIRS`] that actually holds `name`.
+///
+/// Falls back to the primary location when nothing matches, so the spawn error names where the
+/// binary was supposed to be rather than wherever the search happened to end.
+fn resolve(name: &str) -> String {
+    SEARCH_DIRS
+        .iter()
+        .map(|dir| format!("{}/{}", dir, name))
+        .find(|path| std::fs::metadata(path).is_ok())
+        .unwrap_or_else(|| format!("{}/{}", SEARCH_DIRS[0], name))
+}
+
 fn try_bench(path: &str) {
     let Ok(file) = std::fs::File::open(path) else {
         return;
@@ -23,31 +44,23 @@ fn try_bench(path: &str) {
                 continue;
             }
             println!("STARTING {}", line);
+            // Benches are matched by name prefix rather than looked up exactly, so this searches
+            // the same directories as `resolve` instead of just the initrd. A directory that does
+            // not exist is skipped: `/pkg/twizzler/test` is absent on an image built before the
+            // tests moved onto the disk.
             let mut possibles = Vec::new();
-            for exe in std::fs::read_dir("/initrd").unwrap() {
-                if exe
-                    .as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(line)
-                {
-                    possibles.push(format!(
-                        "/initrd/{}",
-                        exe.as_ref().unwrap().file_name().to_string_lossy()
-                    ));
-                }
-                if exe
-                    .as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(&line.replace("-", "_"))
-                {
-                    possibles.push(format!(
-                        "/initrd/{}",
-                        exe.as_ref().unwrap().file_name().to_string_lossy()
-                    ));
+            let underscored = line.replace("-", "_");
+            for dir in SEARCH_DIRS {
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    continue;
+                };
+                for exe in entries.flatten() {
+                    let exe = exe.file_name().to_string_lossy().into_owned();
+                    // One `if` per prefix, as this was written, double-pushes every name that has
+                    // no dash to replace -- and then runs that benchmark twice.
+                    if exe.starts_with(line.as_str()) || exe.starts_with(&underscored) {
+                        possibles.push(format!("{}/{}", dir, exe));
+                    }
                 }
             }
             for (i, exe) in possibles.iter().enumerate() {
@@ -67,11 +80,11 @@ fn try_bench(path: &str) {
     println!("unittest: benches finished in {:?}", dur);
 }
 
-/// Spawn `/initrd/<name>` with `args` and `envs`, and turn the result into a `TestResult`. Shared
-/// by the `#[test]`-binary loop and the standalone-program loop: both are just "run a binary,
-/// grade it by exit status."
+/// Spawn `name` with `args` and `envs`, and turn the result into a `TestResult`. Shared by the
+/// `#[test]`-binary loop and the standalone-program loop: both are just "run a binary, grade it by
+/// exit status." See [`resolve`] for where `name` is looked up.
 fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
-    let path = format!("/initrd/{}", name);
+    let path = resolve(name);
     println!("STARTING {}", path);
     let mut cmd = std::process::Command::new(&path);
     cmd.args(args);
@@ -126,7 +139,9 @@ fn main() {
         return;
     };
 
-    let heartbeat_thread = std::thread::spawn(|| io_heartbeat());
+    // Detached: it answers the host's liveness polls while the suite runs, but nothing waits on it
+    // -- see the report push below.
+    std::thread::spawn(|| io_heartbeat());
 
     let mut reports = vec![];
     let start = Instant::now();
@@ -154,14 +169,22 @@ fn main() {
     }
 
     let dur = Instant::now() - start;
-    println!("unittest: tests finished, waiting for status request");
+    println!("unittest: tests finished");
     let info = ReportInfo {
         time: dur,
         tests: reports,
     };
     let failed = info.failed();
     RESULT.set(Report::ready(info)).unwrap();
-    heartbeat_thread.join().unwrap();
+
+    // Push the report as soon as it exists rather than waiting to be asked. The host polls
+    // `status` once per heartbeat (15s), so waiting for it idled every run for half that on
+    // average. `io_heartbeat` still answers polls, and the host keeps the first REPORT it sees, so
+    // a poll racing this line just produces a duplicate.
+    println!(
+        "REPORT {}",
+        serde_json::to_string(RESULT.get().unwrap()).unwrap()
+    );
 
     // Exit nonzero so init can hand a real code to sys_debug_shutdown; that is the backstop the
     // host falls back on when the REPORT channel produces nothing. Only do this once the report

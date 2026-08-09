@@ -18,7 +18,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
-use crate::{helpers::PAGE, threads::spawn_async, PagerContext};
+use crate::{helpers::PAGE, threads::spawn_async, watchdog, PagerContext};
 
 async fn handle_page_data_request_task(
     ctx: &'static PagerContext,
@@ -168,6 +168,7 @@ async fn handle_page_data_request(
     id: ObjID,
     req_range: ObjectRange,
     flags: PagerFlags,
+    req: RequestFromKernel,
 ) -> Vec<CompletionToKernel> {
     tracing::debug!(
         "{}: {:?} {} pages",
@@ -175,7 +176,9 @@ async fn handle_page_data_request(
         req_range,
         req_range.pages().count()
     );
+    // Detached: the caller's `Work` ends when this returns, so the task needs its own.
     spawn_async(async move {
+        let _work = watchdog::begin("pagedata-task", qid, req);
         handle_page_data_request_task(ctx, qid, id, req_range, flags).await;
     });
     vec![]
@@ -189,6 +192,8 @@ async fn handle_sync_region(
     ctx: &'static PagerContext,
     id: u32,
     info: ObjectEvictInfo,
+    req: RequestFromKernel,
+    work: &watchdog::Work,
 ) -> CompletionToKernel {
     tracing::trace!("sync request: {:?}", info);
     if !info.flags.contains(ObjectEvictFlags::SYNC) {
@@ -199,13 +204,16 @@ async fn handle_sync_region(
     }
 
     if info.flags.contains(ObjectEvictFlags::FENCE) {
+        // Detached: the caller's `Work` ends when this returns, so the task needs its own.
         spawn_async(async move {
-            let comp = ctx.data.sync_region(ctx, &info).await;
+            let work = watchdog::begin("sync-task", id, req);
+            let comp = ctx.data.sync_region(ctx, &info, &work).await;
+            work.phase("notify-kernel");
             ctx.notify_kernel(id, comp);
         });
         CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
     } else {
-        ctx.data.sync_region(ctx, &info).await
+        ctx.data.sync_region(ctx, &info, work).await
     }
 }
 
@@ -213,28 +221,39 @@ pub async fn handle_kernel_request(
     ctx: &'static PagerContext,
     qid: u32,
     request: RequestFromKernel,
+    work: &watchdog::Work,
 ) -> Vec<CompletionToKernel> {
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range, flags) => {
-            return handle_page_data_request(ctx, qid, obj_id, range, flags).await;
+            work.phase("pagedata:spawn");
+            return handle_page_data_request(ctx, qid, obj_id, range, flags, request).await;
         }
-        KernelCommand::ObjectInfoReq(obj_id) => match object_info_req(ctx, obj_id).await {
-            Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
-            Err(e) => KernelCompletionData::Error(e.into()),
-        },
+        KernelCommand::ObjectInfoReq(obj_id) => {
+            work.phase("info:lookup");
+            match object_info_req(ctx, obj_id).await {
+                Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
+                Err(e) => KernelCompletionData::Error(e.into()),
+            }
+        }
         KernelCommand::ObjectDel(obj_id) => match ctx.paged_ostore(None) {
-            Ok(po) => match po.delete_object(obj_id.raw()).await {
-                Ok(_) => {
-                    let _ = po.flush().await;
-                    KernelCompletionData::Okay
+            Ok(po) => {
+                work.phase("del:delete");
+                match po.delete_object(obj_id.raw()).await {
+                    Ok(_) => {
+                        work.phase("del:flush");
+                        let _ = po.flush().await;
+                        KernelCompletionData::Okay
+                    }
+                    Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
                 }
-                Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
-            },
+            }
             Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
         },
         KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
             Ok(po) => {
+                work.phase("create:delete-existing");
                 let _ = po.delete_object(id.raw()).await;
+                work.phase("create:create");
                 match po.create_object(id.raw()).await {
                     Ok(_) => {
                         let mut buffer = [0; 0x1000];
@@ -256,12 +275,14 @@ pub async fn handle_kernel_request(
                             buffer[0..size_of::<MetaInfo>()]
                                 .copy_from_slice(any_as_u8_slice(&meta));
                         }
+                        work.phase("create:write-meta");
                         ctx.paged_ostore(None)
                             .unwrap()
                             .write_object(id.raw(), 0, &buffer)
                             .await
                             .unwrap();
 
+                        work.phase("create:read-back");
                         ctx.paged_ostore(None)
                             .unwrap()
                             .read_object(id.raw(), 0, &mut buffer)
@@ -287,7 +308,8 @@ pub async fn handle_kernel_request(
             KernelCompletionData::Okay
         }
         KernelCommand::ObjectEvict(info) => {
-            return vec![handle_sync_region(ctx, qid, info).await];
+            work.phase("evict");
+            return vec![handle_sync_region(ctx, qid, info, request, work).await];
         }
     };
 

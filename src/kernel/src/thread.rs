@@ -165,7 +165,10 @@ fn init_current_thread_tpoff() -> usize {
 /// with respect to interrupts. Disabling interrupts around the Rust version would also work, but it
 /// costs far more on the kernel's hottest path and it silently depends on the interrupt asm
 /// carrying a memory clobber strong enough to stop the load moving across it.
-#[inline]
+// The x86 body is one segment-relative load, and this sits on the path the comment above calls the
+// kernel's hottest. `#[inline]` alone would not survive opt-level 0, where only LLVM's
+// always-inliner runs.
+#[inline(always)]
 fn read_current_thread_ptr() -> *const ThreadRef {
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -193,7 +196,7 @@ fn read_current_thread_ptr() -> *const ThreadRef {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
     unsafe {

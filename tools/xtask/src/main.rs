@@ -25,8 +25,27 @@ struct Cli {
 
 #[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Profile {
+    /// Cargo's `dev`, where the root manifest optimizes dependencies but leaves workspace crates
+    /// unoptimized. This is the one the debug configurations in `many.py` build.
     Debug,
     Release,
+    /// `dev` with every one of those overrides reset to `opt-level = 0`, for when the thing being
+    /// investigated is codegen itself and dependencies need to be unoptimized too.
+    FullDebug,
+}
+
+impl Profile {
+    /// The cargo profile to request, or `None` to take cargo's default (`dev`).
+    ///
+    /// Also the build directory name, via `Display` -- which is why `Debug` maps to `debug`: that
+    /// is where cargo puts `dev` output.
+    fn requested(&self) -> Option<&'static str> {
+        match self {
+            Profile::Debug => None,
+            Profile::Release => Some("release"),
+            Profile::FullDebug => Some("full-debug"),
+        }
+    }
 }
 
 impl Display for Profile {
@@ -34,6 +53,7 @@ impl Display for Profile {
         let str = match self {
             Profile::Debug => "debug",
             Profile::Release => "release",
+            Profile::FullDebug => "full-debug",
         };
         write!(f, "{str}")
     }

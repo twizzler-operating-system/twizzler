@@ -94,16 +94,20 @@ impl PerObject {
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
+        work: &crate::watchdog::Work,
     ) -> (usize, CompletionToKernel) {
         let start = Instant::now();
         let pages = {
+            work.phase("sync:lock");
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             while inner.syncing {
                 tracing::info!("waiting for syncing {:?}", info);
+                work.phase("sync:wait-for-other-sync");
                 self.inner.0.wait_no_relock(inner).await;
                 inner = self.inner.1.lock().await;
             }
+            work.phase("sync:collect-pages");
             inner.syncing = true;
             let mut pages = inner
                 .drain_pending_syncs(info.version, info.uniq_id.raw())
@@ -186,6 +190,7 @@ impl PerObject {
             );
         }
         let reqs_done = Instant::now();
+        work.phase("sync:page-out");
         let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
             Err(e) => {
                 let mut inner = self.inner.1.lock().await;
@@ -216,6 +221,7 @@ impl PerObject {
                 (io_done - reqs_done).as_millis(),
             );
         }
+        work.phase("sync:relock");
         let mut inner = self.inner.1.lock().await;
         inner.syncing = false;
         self.inner.0.notify_one();
@@ -238,11 +244,13 @@ impl PerObject {
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
+        work: &crate::watchdog::Work,
     ) -> (usize, CompletionToKernel) {
         tracing::debug!("push pending sync: {:?}", info);
         if info.flags.contains(ObjectEvictFlags::FENCE) {
-            self.do_sync_region(ctx, info).await
+            self.do_sync_region(ctx, info, work).await
         } else {
+            work.phase("track:lock");
             let mut inner = self.inner.1.lock().await;
             inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             (
@@ -794,13 +802,14 @@ impl PagerData {
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
+        work: &crate::watchdog::Work,
     ) -> CompletionToKernel {
         let po = {
             let mut inner = self.inner.lock().unwrap();
             inner.get_per_object(info.obj_id).clone()
         };
 
-        let (count, compl) = po.sync_region(ctx, info).await;
+        let (count, compl) = po.sync_region(ctx, info, work).await;
         if count > 0 {
             let mut inner = self.inner.lock().unwrap();
             inner.recent_stats.write_pages(info.obj_id, count);

@@ -10,6 +10,11 @@ use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOption
 
 const DISK_IMAGE_SIZE: u64 = 1024 * 1024 * 1024 * 100; // 100 GB
 
+/// Where `copy_twizzler_build` stages the `#[test]` binaries. The guest reaches these as
+/// `/pkg/twizzler/test`, via the `/pkg -> /ext/sysroot/pkg` symlink `init` sets up; keep this in
+/// step with the first entry of `unittest`'s `SEARCH_DIRS`.
+const TEST_DIR_ON_DISK: &str = "/sysroot/pkg/twizzler/test";
+
 pub fn create_fresh_disk_image(triple: &Triple) -> anyhow::Result<()> {
     let path = format!("target/disk-{}.img", triple);
     println!("Creating disk image for {}", triple);
@@ -220,6 +225,39 @@ pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyh
         let mut src_file = File::open(&cd.path)?;
 
         std::io::copy(&mut src_file, &mut dest_file).unwrap();
+    }
+
+    // The `#[test]` binaries go on the disk rather than into the initrd. The initrd is read whole
+    // through UEFI block I/O at boot (~90MB/s) whether or not a test ever runs; the disk is
+    // demand-paged, so only the binaries actually spawned cost anything. Their own directory keeps
+    // them out of PATH and out of the way of the real programs in bin/.
+    if let Some(test_comp) = build.borrow_user_test_compilation().as_ref() {
+        for dir in [
+            "/sysroot",
+            "/sysroot/pkg",
+            "/sysroot/pkg/twizzler",
+            TEST_DIR_ON_DISK,
+        ] {
+            ext4.mkdir(dir, 0o755).unwrap();
+        }
+        for test in test_comp.tests.iter() {
+            let dest = Path::new(TEST_DIR_ON_DISK).join(test.path.file_name().unwrap());
+            let dest = dest.to_str().unwrap();
+
+            if ext4.exists(dest) {
+                ext4.remove(dest).unwrap();
+            }
+
+            let mut dest_file = ext4
+                .open(
+                    dest,
+                    OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+                )
+                .unwrap();
+            let mut src_file = File::open(&test.path)?;
+
+            std::io::copy(&mut src_file, &mut dest_file).unwrap();
+        }
     }
 
     Ok(())

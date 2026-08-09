@@ -28,7 +28,9 @@ impl RelaxStrategy for Reschedule {
 }
 pub struct SpinLoop {}
 impl RelaxStrategy for SpinLoop {
-    #[inline]
+    // Empty, and called once per iteration of the spin loop -- at opt-level 0 that is a call
+    // instruction per iteration for a function that does nothing.
+    #[inline(always)]
     fn relax(_iters: usize) {}
 }
 

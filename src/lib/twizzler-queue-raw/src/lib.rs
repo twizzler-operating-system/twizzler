@@ -142,6 +142,10 @@ pub struct QueueBase<S, C> {
     _pd: PhantomData<(S, C)>,
 }
 
+/// Top bit of `waiters`: an async submitter has armed a sleep on `tail`. The low bits remain the
+/// blocking submitters' count.
+const ASYNC_SUBMIT_WAITING: u32 = 1 << 31;
+
 #[repr(C)]
 /// A raw queue header. This contains all the necessary counters and info to run the queue
 /// algorithm.
@@ -178,7 +182,19 @@ impl RawQueueHdr {
 
     #[inline]
     fn is_full(&self, h: u32, t: u64) -> bool {
-        (h & 0x7fffffff) as u64 - (t & 0x7fffffff) >= self.len() as u64
+        // `h` and `t` are separate loads, so `t` can legitimately be *ahead* of `h`: another
+        // producer advanced head after we read it, and the consumer drained past our stale value.
+        // Both counters also wrap in this 31-bit space -- tail is masked on store, head on every
+        // comparison -- so the difference is modular, not arithmetic.
+        //
+        // Subtracting directly underflows. In an overflow-checked build that panics, which killed a
+        // pager-srv worker mid-sweep and wedged the guest; in a release build it wraps to ~2^64,
+        // which is `>= len`, so a queue with space reports itself permanently full and the producer
+        // blocks forever. The release behaviour is the worse of the two.
+        let outstanding = (h & 0x7fffffff).wrapping_sub((t & 0x7fffffff) as u32) & 0x7fffffff;
+        // At or past the half-space, `t` is ahead of a stale `h` rather than a genuine backlog of
+        // 2^30 items, so there is certainly room.
+        outstanding < (1 << 30) && outstanding >= self.len() as u32
     }
 
     #[inline]
@@ -215,6 +231,19 @@ impl RawQueueHdr {
     #[inline]
     fn inc_submit_waiting(&self) {
         self.waiters.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Register an async submitter that is about to arm a `ThreadSyncSleep` on `tail`.
+    ///
+    /// The blocking path brackets its wait with `inc`/`dec_submit_waiting`, but an async submitter
+    /// arms a sleep and returns, so it has nowhere to run the `dec`. Hence a sticky bit rather than
+    /// a count: `advance_tail` consumes it when it rings, which bounds the cost to one spurious
+    /// ring. Using `inc_submit_waiting` here instead would leave `waiters` permanently non-zero
+    /// after the first full queue, making every subsequent dequeue ring.
+    #[inline]
+    fn set_async_submit_waiting(&self) {
+        self.waiters
+            .fetch_or(ASYNC_SUBMIT_WAITING, Ordering::SeqCst);
     }
 
     #[inline]
@@ -348,8 +377,9 @@ impl RawQueueHdr {
     }
 
     fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
-        // TODO: an interface that undoes this.
-        self.submitter_waiting();
+        // Must be set before the sleep value is read below: a consumer that advances tail after
+        // this point has to see a waiter and ring, or the sleep is never woken.
+        self.set_async_submit_waiting();
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         let h = self.head.load(Ordering::SeqCst) & 0x7fffffff;
         if self.is_full(h, t) {
@@ -384,20 +414,39 @@ impl RawQueueHdr {
         }
     }
 
+    /// Consume the async-submitter sticky bit, if set, *before* the tail store, and report whether
+    /// anyone was waiting beforehand.
+    ///
+    /// Clearing before the store is what makes the handoff race-free: a submitter that arms after
+    /// the clear re-sets the bit, and the post-store re-check in the callers picks it up. Clearing
+    /// afterwards could wipe a bit set by a submitter that had already read the new tail, which is
+    /// the lost wakeup this bit exists to prevent.
+    #[inline]
+    fn take_submitter_waiting(&self) -> bool {
+        let w = self.waiters.load(Ordering::SeqCst);
+        if w & ASYNC_SUBMIT_WAITING != 0 {
+            self.waiters
+                .fetch_and(!ASYNC_SUBMIT_WAITING, Ordering::SeqCst);
+        }
+        w != 0
+    }
+
     #[inline]
     fn advance_tail<R: Fn(&AtomicU64)>(&self, ring: R) {
+        let was_waiting = self.take_submitter_waiting();
         let t = self.tail.load(Ordering::SeqCst);
         self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
-        if self.submitter_waiting() {
+        if was_waiting || self.submitter_waiting() {
             ring(&self.tail);
         }
     }
 
     #[inline]
     fn advance_tail_setup<'a>(&'a self, ringer: &mut Option<&'a AtomicU64>) {
+        let was_waiting = self.take_submitter_waiting();
         let t = self.tail.load(Ordering::SeqCst);
         self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
-        if self.submitter_waiting() {
+        if was_waiting || self.submitter_waiting() {
             *ringer = Some(&self.tail);
         }
     }
@@ -690,6 +739,47 @@ mod tests {
             SubmissionFlags::NON_BLOCK,
         );
         assert_eq!(res, Err(QueueError::WouldBlock));
+    }
+
+    /// An async submitter arms a `ThreadSyncSleep` on `tail` and returns rather than blocking, so
+    /// it has to register itself for the consumer to ring. It used to not, and the sleep was never
+    /// woken.
+    #[test]
+    fn it_wakes_async_submitters() {
+        let qh = RawQueueHdr::new(2, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<i32>::default(); 1 << 2];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        for i in 0..4 {
+            let res = q.submit(QueueEntry::new(i, 7), wait, wake, SubmissionFlags::empty());
+            assert_eq!(res, Ok(()));
+        }
+        let res = q.submit(
+            QueueEntry::new(5, 7),
+            wait,
+            wake,
+            SubmissionFlags::NON_BLOCK,
+        );
+        assert_eq!(res, Err(QueueError::WouldBlock));
+
+        let _armed = q.setup_send_sleep_simple();
+
+        let rings = AtomicU64::new(0);
+        let count = |_: &AtomicU64| {
+            rings.fetch_add(1, Ordering::SeqCst);
+        };
+
+        assert!(q.receive(wait, &count, ReceiveFlags::NON_BLOCK).is_ok());
+        assert_eq!(
+            rings.load(Ordering::SeqCst),
+            1,
+            "freeing a slot must ring the tail for an armed async submitter"
+        );
+
+        // The registration is consumed by that ring, so a queue nobody is waiting on does not pay
+        // for a wake on every dequeue.
+        assert!(q.receive(wait, &count, ReceiveFlags::NON_BLOCK).is_ok());
+        assert_eq!(rings.load(Ordering::SeqCst), 1);
     }
 
     #[test]

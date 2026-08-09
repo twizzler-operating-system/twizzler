@@ -11,7 +11,13 @@ use async_io::block_on;
 use twizzler_abi::pager::{CompletionToKernel, KernelCommand, ObjectEvictFlags, RequestFromKernel};
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
-use crate::{request_handle::handle_kernel_request, PAGER_CTX};
+use crate::{request_handle::handle_kernel_request, watchdog, PAGER_CTX};
+
+/// Watchdog owner names. `Workers::new` caps the pool at 8, and indexing this is what keeps those
+/// names `'static` without leaking a `String` per thread.
+const WORKER_NAMES: [&str; 8] = [
+    "worker0", "worker1", "worker2", "worker3", "worker4", "worker5", "worker6", "worker7",
+];
 
 pub struct WorkItem {
     start: Instant,
@@ -38,7 +44,8 @@ pub struct WorkerThread {
 static LOCAL_EXEC: LocalExecutor<'static> = LocalExecutor::new();
 
 impl WorkerThread {
-    fn new() -> Self {
+    fn new(index: usize) -> Self {
+        let name = WORKER_NAMES[index % WORKER_NAMES.len()];
         let (send, recv) = async_channel::bounded::<WorkItem>(32);
         Self {
             _handle: std::thread::spawn(move || loop {
@@ -49,16 +56,19 @@ impl WorkerThread {
                     wi.start.elapsed().as_micros()
                 );
 
+                let work = watchdog::begin(name, wi.qid, wi.req);
                 let resp = run_async(handle_kernel_request(
                     PAGER_CTX.get().unwrap(),
                     wi.qid,
                     wi.req,
+                    &work,
                 ));
                 tracing::trace!(
                     "{}: done handling after {}us",
                     wi.qid,
                     wi.start.elapsed().as_micros()
                 );
+                work.phase("notify-kernel");
                 for resp in resp {
                     PAGER_CTX
                         .get()
@@ -81,8 +91,8 @@ impl Workers {
     fn new() -> Self {
         let mut threads = Vec::new();
         let nr_threads = (available_parallelism().unwrap().get() / 3).clamp(2, 8);
-        for _ in 0..nr_threads {
-            threads.push(WorkerThread::new());
+        for index in 0..nr_threads {
+            threads.push(WorkerThread::new(index));
         }
         Self { threads }
     }
@@ -149,7 +159,16 @@ fn kq_handler_main(
                         .try_send(wi)
                         .unwrap();
                 } else {
-                    let resp = run_async(handle_kernel_request(PAGER_CTX.get().unwrap(), id, req));
+                    // Handled inline, so anything that blocks here stops the pager dequeuing from
+                    // the kernel at all -- worth naming separately from a stuck worker.
+                    let work = watchdog::begin("kq-handler-inline", id, req);
+                    let resp = run_async(handle_kernel_request(
+                        PAGER_CTX.get().unwrap(),
+                        id,
+                        req,
+                        &work,
+                    ));
+                    work.phase("notify-kernel");
                     for resp in resp {
                         PAGER_CTX
                             .get()

@@ -170,8 +170,8 @@ fn build_third_party<'a>(
     let mut options = CompileOptions::new(config, mode)?;
     options.build_config = BuildConfig::new(config, None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
 
@@ -229,8 +229,8 @@ fn build_static<'a>(
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
@@ -265,8 +265,8 @@ fn build_twizzler<'a>(
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     // TODO: the debug hook is currently only supported on x86_64.
     options.spec = Packages::Packages(
@@ -340,8 +340,8 @@ fn maybe_build_tests_dynamic<'a>(
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     // Skip these. The macros don't compile right, here, and the others are low level and also don't
     // compile right. Some are deprecated and pending removal with the new twizzler crate.
@@ -416,8 +416,8 @@ fn maybe_build_kernel_tests<'a>(
         options.build_config = bc;
     }
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
@@ -459,8 +459,8 @@ fn build_kernel<'a>(
     }
 
     options.build_config.message_format = other_options.message_format;
-    if build_config.profile == Profile::Release {
-        options.build_config.requested_profile = InternedString::new("release");
+    if let Some(profile) = build_config.profile.requested() {
+        options.build_config.requested_profile = InternedString::new(profile);
     }
     options.spec = Packages::Packages(packages.iter().map(|p| p.name().to_string()).collect());
     options.build_config.force_rebuild = other_options.needs_full_rebuild;

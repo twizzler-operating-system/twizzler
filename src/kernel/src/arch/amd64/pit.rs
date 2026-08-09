@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use x86::io::{inb, outb};
 
 use crate::{clock::Nanoseconds, once::Once};
@@ -33,6 +35,35 @@ struct PitInfo {
 
 static INFO: Once<PitInfo> = Once::new();
 
+/// The PIT is a single device with global state -- one counter per channel, plus channel 2's gate
+/// on port 0x61 -- but two unrelated boot paths wait on it: AP startup (`apic::trampolines`) and
+/// TSC calibration. On SMP they overlap, and a second cpu reloading channel 2 holds the first's
+/// readback loop above its exit threshold indefinitely, as well as corrupting the latched lo/hi
+/// byte pair. Serialize every access.
+static PIT_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Proof that the caller owns the PIT.
+///
+/// Not interrupt-safe, and does not need to be: nothing on the interrupt path touches the PIT
+/// (`timer_interrupt` only runs the registered callback), and the waits below are boot-path code.
+pub struct PitGuard(());
+
+impl Drop for PitGuard {
+    fn drop(&mut self) {
+        PIT_LOCK.store(false, Ordering::Release);
+    }
+}
+
+pub fn lock() -> PitGuard {
+    while PIT_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    PitGuard(())
+}
+
 pub fn timer_interrupt() {
     if let Some(info) = INFO.poll() {
         (info.cb)(1000000000 / info.freq);
@@ -42,13 +73,17 @@ pub fn timer_interrupt() {
 pub fn setup_freq(hz: u64, cb: fn(Nanoseconds)) {
     let count = CRYSTAL_HZ / hz;
     assert!(count < 65536);
-    unsafe {
-        outb(
-            PIT_CMD,
-            channel(0) | ACCESS_BOTH | MODE_SQUAREGEN | FORMAT_BINARY,
-        );
-        outb(pit_data(0), (count & 0xff) as u8);
-        outb(pit_data(0), ((count >> 8) & 0xff) as u8);
+    {
+        // Scoped so the log below, which takes the console lock, is not nested inside this spin.
+        let _pit = lock();
+        unsafe {
+            outb(
+                PIT_CMD,
+                channel(0) | ACCESS_BOTH | MODE_SQUAREGEN | FORMAT_BINARY,
+            );
+            outb(pit_data(0), (count & 0xff) as u8);
+            outb(pit_data(0), ((count >> 8) & 0xff) as u8);
+        }
     }
     let info = INFO.call_once(|| PitInfo {
         freq: CRYSTAL_HZ / count,
@@ -61,7 +96,27 @@ pub fn setup_freq(hz: u64, cb: fn(Nanoseconds)) {
     );
 }
 
+/// Abandon a countdown after this many TSC cycles.
+///
+/// The readback loop below exits only on `readback < 64`, a ~53us window out of each ~55ms
+/// countdown, so any sampling round slower than that window misses it every cycle and the loop
+/// never terminates. The bound only has to exceed the longest legitimate wait -- 200ms, TSC
+/// calibration -- by enough that a starved vcpu under an emulated, heavily loaded host cannot trip
+/// it. ~40s at any plausible tsc rate is far past that, and still turns a dead boot into a line of
+/// output.
+const READBACK_TIMEOUT_CYCLES: u64 = 100_000_000_000;
+
 pub fn wait_ns(ns: u64) {
+    let pit = lock();
+    wait_ns_locked(&pit, ns);
+}
+
+/// `wait_ns` for a caller that already owns the PIT.
+///
+/// TSC calibration brackets its wait with `rdtsc` reads, so it has to hold the PIT across both:
+/// acquiring inside the wait would charge lock-wait time to the measurement and inflate the
+/// frequency estimate.
+pub fn wait_ns_locked(_pit: &PitGuard, ns: u64) {
     let tmp = ns as u128 * CRYSTAL_HZ as u128;
     let mut count = (tmp / 1000000000) as u64;
 
@@ -84,6 +139,7 @@ pub fn wait_ns(ns: u64) {
             outb(0x61, 1);
 
             let mut readback;
+            let start = x86::time::rdtsc();
             loop {
                 outb(PIT_CMD, channel(2) | ACCESS_LATCH);
                 let readlo = inb(pit_data(2));
@@ -91,6 +147,21 @@ pub fn wait_ns(ns: u64) {
                 readback = readlo as u16 | ((readhi as u16) << 8);
                 if readback < 64 {
                     break;
+                }
+                if x86::time::rdtsc().wrapping_sub(start) > READBACK_TIMEOUT_CYCLES {
+                    // emerglogln!, not logln!: a machine wedged here may well have a cpu stuck
+                    // holding the console lock, and `_print_normal` would then block and this
+                    // diagnostic would never appear -- which is precisely what happened the first
+                    // time it was reached. The emergency path takes no lock.
+                    emerglogln!(
+                        "[kernel::arch::x86-pit] wait_ns: channel 2 never reached its exit window \
+                         (readback {}, loaded {}, {} ticks left); abandoning the wait. Any tsc \
+                         calibration from this wait is wrong.",
+                        readback,
+                        thiscount,
+                        count
+                    );
+                    return;
                 }
             }
 

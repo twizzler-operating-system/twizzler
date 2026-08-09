@@ -17,6 +17,9 @@ pub(super) static mut PHYS_MEM_OFFSET: u64 = 0;
 // TODO: choose where our own identity map lives
 
 /* TODO: hide this */
+// An add and a range check, on the path taken for every access to a physical frame through the
+// identity map.
+#[inline(always)]
 pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
     let raw: u64 = pa.into();
     VirtAddr::new(raw + unsafe { PHYS_MEM_OFFSET }).unwrap()

@@ -108,6 +108,11 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
+/// Everything in here is packed into the initrd verbatim, and the initrd is read through UEFI block
+/// I/O at boot (~90MB/s), so a stray file here is paid for on every single boot. `src/data` is
+/// gitignored scratch, which makes that easy to miss -- hence the size warning.
+const DATA_FOLDER_WARN_BYTES: u64 = 8 << 20;
+
 fn generate_data_folder(comp: &TwizzlerCompilation, data_override: Option<&Path>) -> PathBuf {
     let mut destination = comp.get_kernel_image(false).parent().unwrap().to_path_buf();
     destination.push("data/");
@@ -122,9 +127,82 @@ fn generate_data_folder(comp: &TwizzlerCompilation, data_override: Option<&Path>
             .arg(format!("{}/", source.display()))
             .arg(&destination)
             .status();
+    } else {
+        // No source means no data files. Without this the last rsync's output survives in the
+        // build tree and keeps getting packed, with nothing left to explain where it came from.
+        let _ = std::fs::remove_dir_all(&destination);
+    }
+
+    let total: u64 = walkdir::WalkDir::new(&destination)
+        .min_depth(1)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum();
+    if total >= DATA_FOLDER_WARN_BYTES {
+        eprintln!(
+            "warning: {} adds {:.0}MB to the initrd, costing roughly {:.1}s of boot time per run",
+            source.display(),
+            total as f64 / (1 << 20) as f64,
+            total as f64 / (90.0 * (1 << 20) as f64),
+        );
     }
 
     destination
+}
+
+fn is_elf(path: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    File::open(path)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .is_ok_and(|()| magic == *b"\x7fELF")
+}
+
+/// Copy every initrd file into a staging directory with its DWARF removed, and return the staged
+/// paths.
+///
+/// The initrd is read whole through UEFI block I/O at boot, and it is almost entirely debug info --
+/// 229MB of payload drops to 38MB. Nothing in the guest needs that DWARF: the host symbolizes
+/// against the unstripped originals in `target/`, which is also what the debug sysroot extracted
+/// below is for.
+///
+/// `--strip-debug`, not `--strip-all`: it keeps `.symtab` and `.dynsym`, so dynamic linking and
+/// symbol-level in-guest backtraces both still work. Non-ELF entries (the generated `test_bins`
+/// list and friends are plain text) are staged unchanged -- checked by magic rather than by letting
+/// `llvm-strip` fail, which would spray "not a valid object file" through the build output.
+fn strip_initrd_files(
+    initrd_files: &[PathBuf],
+    comp: &TwizzlerCompilation,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let stage = get_genfile_path(comp, "initrd-stage");
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage)?;
+
+    let strip = get_toolchain_path()?.join("bin/llvm-strip");
+    let mut staged = Vec::with_capacity(initrd_files.len());
+    for src in initrd_files {
+        let dst = stage.join(src.file_name().with_context(|| {
+            format!("initrd entry {} has no file name", src.display())
+        })?);
+        let stripped = is_elf(src)
+            && Command::new(&strip)
+                .arg("--strip-debug")
+                .arg("-o")
+                .arg(&dst)
+                .arg(src)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if !stripped {
+            std::fs::copy(src, &dst).with_context(|| {
+                format!("failed to stage initrd entry {}", src.display())
+            })?;
+        }
+        staged.push(dst);
+    }
+    Ok(staged)
 }
 
 fn generate_initrd(
@@ -192,11 +270,13 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             }
         }
 
-        // all the tests for init to run.
+        // all the tests for init to run. Only the *list* goes in the initrd -- `copy_twizzler_build`
+        // stages the binaries themselves on the disk, where they are demand-paged instead of being
+        // read whole at boot. `unittest` resolves each name against the disk and falls back to the
+        // initrd, so an older image still works.
         if let Some(ref test_comp) = comp.borrow_user_test_compilation() {
             let mut testlist = String::new();
             for bin in test_comp.tests.iter() {
-                initrd_files.push(bin.path.clone());
                 testlist += &bin.path.file_name().unwrap().to_string_lossy();
                 testlist += "\n";
             }
@@ -357,6 +437,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     copy_twizzler_build(&comp, &cli.config.twz_triple())?;
 
     let initrd_files = build_initrd(&cli, &comp)?;
+    let initrd_files = strip_initrd_files(&initrd_files, &comp)?;
     let data_files = generate_data_folder(&comp, cli.data.as_deref());
     let initrd_path = generate_initrd(initrd_files, data_files, &comp)?;
 

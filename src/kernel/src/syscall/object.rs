@@ -58,6 +58,28 @@ fn current_vmc() -> Result<ContextRef> {
     })
 }
 
+/// Who is mapping, for `sys_object_map`'s failure warnings.
+///
+/// A failed map is diagnosed from the caller, not the object: the id alone does not say which
+/// thread or security context lost the race against a delete. Written as a `Display` rather than a
+/// helper returning a string so the warning path allocates nothing.
+struct MapCaller;
+
+impl core::fmt::Display for MapCaller {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match current_thread_ref() {
+            Some(ct) => write!(
+                f,
+                "thread {} ({}), sctx {}",
+                ct.id(),
+                ct.objid(),
+                ct.secctx.active_id()
+            ),
+            None => write!(f, "no current thread"),
+        }
+    }
+}
+
 fn new_nonce() -> Result<u128> {
     let mut bytes = [0; 16];
     if !getrandom(&mut bytes, false) {
@@ -148,9 +170,10 @@ pub fn sys_object_map(
     let obj = match obj {
         crate::obj::LookupResult::WasDeleted => {
             log::warn!(
-                "sys_object_map: object {} was deleted ({})",
+                "sys_object_map: object {} was deleted ({}) [{}]",
                 id,
-                crate::obj::describe_missing(id)
+                crate::obj::describe_missing(id),
+                MapCaller
             );
             return Err(ObjectError::NoSuchObject.into());
         }
@@ -159,9 +182,10 @@ pub fn sys_object_map(
             Some(obj) => obj,
             None => {
                 log::warn!(
-                    "sys_object_map: object {} not found ({})",
+                    "sys_object_map: object {} not found ({}) [{}]",
                     id,
-                    crate::obj::describe_missing(id)
+                    crate::obj::describe_missing(id),
+                    MapCaller
                 );
                 return Err(ObjectError::NoSuchObject.into());
             }

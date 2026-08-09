@@ -366,6 +366,39 @@ volatile = "0.6"
 [profile.release]
 debug = true
 
+# The dev profile optimized nothing at all, including dependencies. That is what the debug
+# configurations in many.py were mostly measuring: p256/sha2/chacha20/blake3 at opt-level 0 make
+# capability verification (which is on the security path) tens of times slower than it needs to be,
+# and the kernel builds `core`/`alloc` from source via build-std, so even a slice bounds check was
+# an out-of-line call.
+#
+# `"*"` is dependencies only -- workspace crates keep opt-level 0, so the code under test is still
+# built the way the debug configuration exists to test it. `debug-assertions` and `overflow-checks`
+# stay on at every opt-level, so the semantics are unchanged either way.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The kernel itself gets 1 rather than 2: it is built with `-Cforce-frame-pointers=yes` and its
+# panic backtraces are symbolized from DWARF, and every step up the optimizer inlines away frames
+# that a hang report needs.
+[profile.dev.package.twizzler-kernel]
+opt-level = 1
+
+# `--profile full-debug`: dev with the overrides above reset, i.e. genuinely everything at
+# opt-level 0. Reach for it when the thing under investigation is codegen itself -- a miscompile, a
+# backtrace that inlining has made useless, a bug that only appears unoptimized. It is far slower
+# than `debug`; the measured suite was 159s against 67s.
+[profile.full-debug]
+inherits = "dev"
+
+# Set explicitly rather than relying on `inherits` to not carry the dev overrides across, which is
+# not something the profile documentation is clear about either way.
+[profile.full-debug.package."*"]
+opt-level = 0
+
+[profile.full-debug.package.twizzler-kernel]
+opt-level = 0
+
 [patch.'https://github.com/dbittman/twizzler-abi']
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 

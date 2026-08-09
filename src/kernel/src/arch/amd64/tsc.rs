@@ -135,8 +135,11 @@ fn feature_info_frequency() -> Result<u64, TscError> {
 }
 
 fn pit_frequency_estimation() -> u64 {
+    // Held across the whole measurement, not just the wait: another cpu programming the PIT
+    // mid-wait corrupts the estimate, which showed up as two cpus calibrating 10% apart.
+    let pit = super::pit::lock();
     let start = unsafe { x86::time::rdtsc() };
-    super::pit::wait_ns(SLEEP_TIME);
+    super::pit::wait_ns_locked(&pit, SLEEP_TIME);
     let (end, _) = unsafe { x86::time::rdtscp() };
     // nano is 1e-9, multiply by 1e9 to get Hz
     return ((end - start) * 1_000_000_000) / SLEEP_TIME;

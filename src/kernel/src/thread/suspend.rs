@@ -154,13 +154,27 @@ mod test {
                 *incr2.lock() += 1;
             }
         });
-        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1))).unwrap();
+        // Wait until the thread has actually run, rather than sleeping a flat second and assuming
+        // it did. Quicker in the normal case -- a tight increment loop gets there in microseconds
+        // once scheduled -- and steadier in the bad one, since it tolerates twice the old wait
+        // before giving up, which matters when a dozen qemu lanes are competing for cpu.
+        const STARTUP_POLLS: usize = 2000;
+        for _ in 0..STARTUP_POLLS {
+            if { *incr.lock() } != 0 {
+                break;
+            }
+            sys_thread_sync(&mut [], Some(&mut Duration::from_millis(1))).unwrap();
+        }
         let cur = { *incr.lock() };
         assert_ne!(cur, 0);
 
         test_thread.0.suspend();
         let cur = { *incr.lock() };
-        sys_thread_sync(&mut [], Some(&mut Duration::from_secs(1))).unwrap();
+        // A fixed wait, not a poll: the assertion here is a negative one, so there is no event to
+        // wait for, only the absence of one. It stays short because a suspend that did not take
+        // leaves a tight loop running, which shows up within microseconds -- the window buys
+        // detection probability, and past a few hundred milliseconds it is buying almost none.
+        sys_thread_sync(&mut [], Some(&mut Duration::from_millis(250))).unwrap();
         let cur2 = { *incr.lock() };
         assert_eq!(cur, cur2);
         exit_flag.store(true, Ordering::SeqCst);

@@ -101,7 +101,9 @@ fn create_uefi_disk_image(
         r#"
 # Specifies the timeout in seconds before the first entry is automatically booted.
 # If set to 0, boots default entry instantly (see default_entry option).
-timeout: 1
+# 0, not 1: there is only one entry, and the countdown was a flat second on every boot -- which a
+# sweep pays once per run.
+timeout: 0
 # If set to yes, enable serial I/O for the bootloader.
 serial: yes
 # Print additional information during boot.

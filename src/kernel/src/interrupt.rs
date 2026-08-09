@@ -28,7 +28,11 @@ use crate::{
 };
 
 /// Set the current interrupt enable state to disabled and return the old state.
-#[inline]
+// `inline(always)`, not `inline`: at opt-level 0 the ordinary inliner does not run at all, only
+// LLVM's always-inliner, so a plain `#[inline]` leaves this a real call in the debug build. These
+// three are a handful of instructions each and sit under every spinlock acquire and every critical
+// section, which is exactly where the debug profile spends its time.
+#[inline(always)]
 pub fn disable() -> bool {
     let state = crate::arch::interrupt::disable();
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -36,14 +40,14 @@ pub fn disable() -> bool {
 }
 
 /// Set the current interrupt enable state.
-#[inline]
+#[inline(always)]
 pub fn set(state: bool) {
     core::sync::atomic::fence(Ordering::SeqCst);
     crate::arch::interrupt::set(state);
 }
 
 /// Get the current interrupt enable state without modifying it.
-#[inline]
+#[inline(always)]
 pub fn get() -> bool {
     core::sync::atomic::fence(Ordering::SeqCst);
     crate::arch::interrupt::get()

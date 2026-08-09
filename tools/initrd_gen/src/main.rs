@@ -1,6 +1,5 @@
 use std::{
     fs::{self, File},
-    io::Seek,
     path::{Path, PathBuf},
 };
 
@@ -60,7 +59,11 @@ fn main() {
                 Path::new(file)
                     .file_name()
                     .map(|s| {
-                        // TODO: HACK
+                        // libstd ships under a hashed name, but both dynamic loaders rewrite any
+                        // `libstd*` request to this one before looking it up -- see
+                        // `monitor::dlengine::Engine::name_resolver` and `bootstrap`'s
+                        // `name_resolver`. So the hashed name is what every binary's DT_NEEDED
+                        // says, and this is the only name anything ever asks for.
                         if s.to_str().unwrap().starts_with("libstd") {
                             "libstd.so"
                         } else {
@@ -71,12 +74,6 @@ fn main() {
                 &mut f,
             )
             .unwrap();
-        if file.contains("libstd") {
-            f.rewind().unwrap();
-            archive
-                .append_file(Path::new(file).file_name().unwrap(), &mut f)
-                .unwrap();
-        }
     }
     // Add data files (raw bytes — kernel sets MEXT_SIZED, runtime uses RawFile fallback)
     if let Ok(md) = fs::metadata(data_dir) {

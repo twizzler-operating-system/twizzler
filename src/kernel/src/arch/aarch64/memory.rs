@@ -17,6 +17,8 @@ pub(super) static mut PHYS_MEM_OFFSET: u64 = 0;
 
 // TODO: choose where our own identity map lives
 
+// Kept in step with the amd64 version: an add and a range check on every identity-map access.
+#[inline(always)]
 pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
     VirtAddr::new(pa.raw() + unsafe { PHYS_MEM_OFFSET }).unwrap()
 }

@@ -1223,7 +1223,9 @@ pub fn init_idt() {
 }
 
 /// Set the current interrupt enable state to disabled and return the old state.
-#[inline]
+// Inlined unconditionally so the debug build does not turn a pushfq/cli pair into a call; see the
+// note on `crate::interrupt::disable`, which wraps this.
+#[inline(always)]
 pub fn disable() -> bool {
     let mut flags = x86::bits64::rflags::read();
     let old_if = flags.contains(RFlags::FLAGS_IF);
@@ -1233,7 +1235,7 @@ pub fn disable() -> bool {
 }
 
 /// Set the current interrupt enable state.
-#[inline]
+#[inline(always)]
 pub fn set(state: bool) {
     let mut flags = x86::bits64::rflags::read();
     flags.set(RFlags::FLAGS_IF, state);
@@ -1241,7 +1243,7 @@ pub fn set(state: bool) {
 }
 
 /// Get the current interrupt enable state without modifying it.
-#[inline]
+#[inline(always)]
 pub fn get() -> bool {
     x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }
