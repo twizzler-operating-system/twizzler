@@ -8,10 +8,10 @@ use crate::SecurityError;
 /// Flags pertaining to a `Cap`
 /// Currently only used to set which hashing scheme to
 /// use when forming a capability.
-pub struct CapFlags(u16);
+pub struct SecFlags(u16);
 
 bitflags! {
-    impl CapFlags: u16 {
+    impl SecFlags: u16 {
         /// The Blake3 Hashing Algorithm was used
         const Blake3 = 1;
         /// The SHA256 Hashing Algorithm was used
@@ -19,13 +19,13 @@ bitflags! {
     }
 }
 
-impl Display for CapFlags {
+impl Display for SecFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("CapFlags {")?;
         for flag in self.iter() {
             match flag {
-                CapFlags::Blake3 => f.write_str(" Blake3 ")?,
-                CapFlags::Sha256 => f.write_str(" SHA256 ")?,
+                SecFlags::Blake3 => f.write_str(" Blake3 ")?,
+                SecFlags::Sha256 => f.write_str(" SHA256 ")?,
                 _ => (),
             };
         }
@@ -36,11 +36,11 @@ impl Display for CapFlags {
     }
 }
 
-impl Debug for CapFlags {
+impl Debug for SecFlags {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CapFlags")
-            .field("blake3", &self.contains(CapFlags::Blake3))
-            .field("sha256", &self.contains(CapFlags::Sha256))
+            .field("blake3", &self.contains(SecFlags::Blake3))
+            .field("sha256", &self.contains(SecFlags::Sha256))
             .field("bits", &self.bits())
             .finish()
     }
@@ -64,15 +64,15 @@ pub enum HashingAlgo {
     Sha256,
 }
 
-impl TryFrom<CapFlags> for HashingAlgo {
+impl TryFrom<SecFlags> for HashingAlgo {
     type Error = SecurityError;
-    fn try_from(value: CapFlags) -> Result<Self, Self::Error> {
+    fn try_from(value: SecFlags) -> Result<Self, Self::Error> {
         let mut result = None;
 
         for flag in value.iter() {
             if let Some(algo) = match flag {
-                CapFlags::Sha256 => Some(HashingAlgo::Sha256),
-                CapFlags::Blake3 => Some(HashingAlgo::Blake3),
+                SecFlags::Sha256 => Some(HashingAlgo::Sha256),
+                SecFlags::Blake3 => Some(HashingAlgo::Blake3),
                 _ => None,
             } {
                 if result.is_some() {
@@ -87,11 +87,11 @@ impl TryFrom<CapFlags> for HashingAlgo {
     }
 }
 
-impl From<HashingAlgo> for CapFlags {
+impl From<HashingAlgo> for SecFlags {
     fn from(value: HashingAlgo) -> Self {
         match value {
-            HashingAlgo::Blake3 => CapFlags::Blake3,
-            HashingAlgo::Sha256 => CapFlags::Sha256,
+            HashingAlgo::Blake3 => SecFlags::Blake3,
+            HashingAlgo::Sha256 => SecFlags::Sha256,
         }
     }
 }

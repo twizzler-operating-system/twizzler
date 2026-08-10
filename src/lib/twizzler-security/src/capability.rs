@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
-    flags::{CapFlags, HashingAlgo},
+    flags::{HashingAlgo, SecFlags},
     Gate, Revoc, SecurityError, Signature, SigningKey, VerifyingKey,
 };
 
@@ -43,10 +43,10 @@ pub struct Cap {
     pub accessor: ObjID,
 
     /// Specific access rights this capability grants
-    pub protections: Protections,
+    pub prots: Protections,
 
     /// Cryptographic configuration for capability validation
-    flags: CapFlags,
+    flags: SecFlags,
 
     /// Additional constraints on when this capability can be used
     gate: Gate,
@@ -55,7 +55,7 @@ pub struct Cap {
     pub revocation: Revoc,
 
     /// The signature inside the capability
-    sig: Signature,
+    pub(super) sig: Signature,
 }
 
 const CAP_SERIALIZED_LEN: usize = 78;
@@ -71,7 +71,7 @@ impl Cap {
         gates: Gate,
         hashing_algo: HashingAlgo,
     ) -> Result<Self, SecurityError> {
-        let flags: CapFlags = hashing_algo.clone().into();
+        let flags: SecFlags = hashing_algo.clone().into();
 
         #[cfg(feature = "log")]
         debug!(
@@ -83,7 +83,6 @@ impl Cap {
 
         let sig = match hashing_algo {
             HashingAlgo::Blake3 => {
-                // unimplemented!("running into problems with blake3 compilation on aarch64");
                 let hash = blake3::hash(&hash_arr);
                 target_priv_key.sign(hash.as_bytes())?
             }
@@ -98,7 +97,7 @@ impl Cap {
         Ok(Cap {
             accessor,
             target,
-            protections: prots,
+            prots,
             flags,
             revocation,
             gate: gates,
@@ -112,7 +111,7 @@ impl Cap {
         let hash_arr = Self::serialize(
             self.accessor,
             self.target,
-            self.protections,
+            self.prots,
             self.flags,
             self.revocation,
             self.gate,
@@ -170,14 +169,26 @@ impl Cap {
         Ok(())
     }
 
+    /// Serializes this `Capability`
+    pub(super) fn into_array(&self) -> [u8; CAP_SERIALIZED_LEN] {
+        Self::serialize(
+            self.accessor,
+            self.target,
+            self.prots,
+            self.flags,
+            self.revocation,
+            self.gate,
+        )
+    }
+
     /// returns all contents other than sig as a buffer ready to hash
     fn serialize(
         accessor: ObjID,
         target: ObjID,
         prots: Protections,
-        flags: CapFlags,
+        flags: SecFlags,
         revocation: Revoc,
-        gates: Gate,
+        gate: Gate,
     ) -> [u8; CAP_SERIALIZED_LEN] {
         let mut hash_arr: [u8; CAP_SERIALIZED_LEN] = [0; CAP_SERIALIZED_LEN];
         hash_arr[0..16].copy_from_slice(&accessor.raw().to_le_bytes());
@@ -185,9 +196,9 @@ impl Cap {
         hash_arr[32..34].copy_from_slice(&prots.bits().to_le_bytes());
         hash_arr[34..36].copy_from_slice(&flags.bits().to_le_bytes());
         hash_arr[36..52].copy_from_slice(&revocation.to_bytes());
-        hash_arr[52..60].copy_from_slice(&gates.offset.to_le_bytes());
-        hash_arr[60..68].copy_from_slice(&gates.length.to_le_bytes());
-        hash_arr[68..76].copy_from_slice(&gates.align.to_le_bytes());
+        hash_arr[52..60].copy_from_slice(&gate.offset.to_le_bytes());
+        hash_arr[60..68].copy_from_slice(&gate.length.to_le_bytes());
+        hash_arr[68..76].copy_from_slice(&gate.align.to_le_bytes());
         hash_arr
     }
 }
@@ -200,7 +211,6 @@ mod tests {
     use crate::*;
 
     extern crate test;
-
     use twizzler::object::TypedObject;
     use twizzler_abi::{object::Protections, syscall::ObjectCreate};
     /// Create a default capability
