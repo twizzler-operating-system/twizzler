@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use log::{error, trace};
+use log::{error, trace, warn};
 use twizzler_abi::{
     device::CacheType,
     object::{ObjID, Protections},
@@ -8,7 +8,9 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::error::{NamingError, ObjectError};
 pub use twizzler_security::PermsInfo;
-use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingKey};
+use twizzler_security::{
+    Cap, CtxMapItemType, Del, MAX_DELEGATION_NEST, SecCtxBase, SecCtxFlags, VerifyingKey,
+};
 
 use crate::{
     memory::context::{
@@ -146,7 +148,73 @@ impl SecurityContext {
         for entry in results {
             match entry.item_type {
                 CtxMapItemType::Del => {
-                    todo!("Delegations not supported yet for lookup")
+                    let Some(del) = obj.lea_raw(entry.offset as *const Del) else {
+                        error!("Failed to map delegation from entry: {entry:#?}");
+                        // something weird going on, entry offset not inside object bounds,
+                        // return already granted perms to avoid panic
+                        granted_perms.provide &= base.global_mask;
+                        return granted_perms;
+                    };
+
+                    if del.verify_sig(v_key).is_err() || del.target != _id {
+                        warn!("Signature invalid for del: {del:#?}, moving on to next entry");
+                        continue;
+                    }
+
+                    // chase `inner` through `provider` objects until we bottom out at a
+                    // `Cap`, ANDing down `prot_mask` at every hop. Bounded by
+                    // `MAX_DELEGATION_NEST` since a `Del` can't see how deep the chain it
+                    // points into already is.
+                    let mut mask = del.prot_mask;
+                    let mut provider = del.provider;
+                    let mut item_type = del.inner.item_type;
+                    let mut offset = del.inner.offset;
+                    let mut resolved = None;
+
+                    for _ in 0..MAX_DELEGATION_NEST {
+                        let provider_obj = match lookup_object(provider, LookupFlags::empty()) {
+                            LookupResult::Found(o) => o,
+                            _ => break,
+                        };
+
+                        let k_ctx = kernel_context();
+                        let provider_kobj =
+                            k_ctx.insert_kernel_object::<SecCtxBase>(ObjectContextInfo::new(
+                                provider_obj,
+                                Protections::READ,
+                                CacheType::WriteBack,
+                                MapFlags::STABLE,
+                            ));
+
+                        match item_type {
+                            CtxMapItemType::Cap => {
+                                let Some(cap) = provider_kobj.lea_raw(offset as *const Cap) else {
+                                    break;
+                                };
+                                if cap.verify_sig(v_key).is_ok() && cap.target == _id {
+                                    resolved = Some(cap.prots);
+                                }
+                                break;
+                            }
+                            CtxMapItemType::Del => {
+                                let Some(next_del) = provider_kobj.lea_raw(offset as *const Del)
+                                else {
+                                    break;
+                                };
+                                if next_del.verify_sig(v_key).is_err() || next_del.target != _id {
+                                    break;
+                                }
+                                mask &= next_del.prot_mask;
+                                provider = next_del.provider;
+                                item_type = next_del.inner.item_type;
+                                offset = next_del.inner.offset;
+                            }
+                        }
+                    }
+
+                    if let Some(prots) = resolved {
+                        granted_perms.provide |= prots & mask;
+                    }
                 }
 
                 CtxMapItemType::Cap => {
@@ -159,7 +227,7 @@ impl SecurityContext {
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
-                        granted_perms.provide |= cap.protections;
+                        granted_perms.provide |= cap.prots;
                     };
                 }
             }

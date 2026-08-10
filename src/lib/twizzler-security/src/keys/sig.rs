@@ -10,19 +10,19 @@ use crate::{SecurityError, SigningScheme};
 
 /// The maximum signature size supported by the security system.
 /// NOTE: can be increased while preserving backwards compatibility.
-const MAX_SIG_SIZE: usize = 128;
+pub const MAX_SIG_SIZE: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Represents a Scheme agnostic Signature;
 pub struct Signature {
     /// Buffer to store the bytes
-    buf: Vec<u8, MAX_SIG_SIZE>,
+    pub(crate) buf: Vec<u8, MAX_SIG_SIZE>,
     /// The scheme used to generate this signature
     scheme: SigningScheme,
 }
 
 impl Signature {
-    fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         self.buf.as_slice()
     }
 }

@@ -9,3 +9,4 @@ src/data
 toolchain/src/rust/library/twizzler-abis
 Makefile
 .direnv/
+src/bin/decent-twizbox/local

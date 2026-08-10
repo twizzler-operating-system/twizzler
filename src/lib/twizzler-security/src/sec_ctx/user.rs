@@ -139,11 +139,58 @@ impl SecCtx {
     }
 
     /// Insert a `Del` into this `SecCtx`.
-    ///
-    /// # Panics
-    /// is not implemented yet
-    pub fn insert_del(&mut self, _del: Del) -> Result<(), TwzError> {
-        unimplemented!()
+    pub fn insert_del(&mut self, del: Del) -> Result<(), TwzError> {
+        let mut tx = self.uobj.clone().into_tx()?;
+        let mut base = tx.base_mut();
+
+        let mut map_item = {
+            base.offset += size_of::<Del>();
+
+            CtxMapItem {
+                item_type: CtxMapItemType::Del,
+                offset: base.offset + OBJECT_ROOT_OFFSET,
+            }
+        };
+
+        let alignment = 0x10 - (map_item.offset % 0x10);
+        map_item.offset += alignment;
+        // also have to fix the length in the offset
+        base.offset += alignment;
+
+        #[cfg(feature = "log")]
+        log::debug!("write offset into object for entry: {:#X}", map_item.offset);
+
+        // seeing if a vec already exists for target obj, else create new
+        if let Some(vec) = base.map.get_mut(&del.target) {
+            vec.push(map_item).map_err(|_| {
+                // only possible error case is it being full
+                TwzError::Resource(ResourceError::OutOfResources)
+            })?;
+        } else {
+            let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
+            let _ = new_vec.push(map_item);
+            let _ = base.map.insert(del.target, new_vec).map_err(|_| {
+                // only possible error case is it being full
+                TwzError::Resource(ResourceError::OutOfResources)
+            })?;
+        };
+
+        let ptr = tx
+            .lea_mut(map_item.offset, size_of::<Del>())
+            .expect("Write offset should not result in a pointer outside of the object")
+            .cast::<Del>();
+
+        // SAFETY: copies the delegation into the object, we check that the pointer is valid above
+        // and fix its alignment
+        unsafe {
+            *ptr = del;
+        }
+
+        tx.commit()?;
+
+        #[cfg(feature = "log")]
+        log::debug!("Added delegation at ptr: {:#?}", ptr);
+        Ok(())
     }
 
     /// Returns the `ObjID` of this `SecCtx`.
