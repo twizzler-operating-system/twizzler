@@ -33,6 +33,8 @@ impl Disk {
     pub async fn new() -> Result<Disk> {
         let ctrl = init_nvme().await.expect("failed to open nvme controller");
         let len = ctrl.blocking_get_flash_size();
+        // Warm the MDTS query here so the first I/O doesn't pay a blocking admin command.
+        let _ = ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>();
         let len = std::cmp::max(len, u32::MAX as usize / SECTOR_SIZE);
         Ok(Disk {
             ctrl,
@@ -54,6 +56,10 @@ impl PagedDevice for Disk {
         list: &[object_store::PagedPhysMem],
         mut inner_cursor: usize,
     ) -> Result<usize> {
+        // Only describe what one command can carry. The caller loops on the returned count, so
+        // building a descriptor for every remaining page just to drop all but the first
+        // max-transfer of them made a large run quadratic in its length.
+        let nr_pages = nr_pages.min(self.ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let mut i = 0;
         let mut cursor = 0;
         let mut phys = Vec::with_capacity(nr_pages);
@@ -93,6 +99,8 @@ impl PagedDevice for Disk {
         list: &[object_store::PagedPhysMem],
         mut inner_cursor: usize,
     ) -> Result<usize> {
+        // See `sequential_read`: clamp to one command's worth before building descriptors.
+        let nr_pages = nr_pages.min(self.ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let mut i = 0;
         let mut cursor = 0;
         let mut phys = Vec::with_capacity(nr_pages);

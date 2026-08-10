@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use petgraph::graph::NodeIndex;
 
 use super::{Context, LoadedOrUnloaded};
@@ -28,18 +26,9 @@ impl Context {
         lookup_flags: LookupFlags,
         deps_list: &[NodeIndex],
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
-        let _start = Instant::now();
-        let r = self.do_lookup_symbol(start_id, name, lookup_flags, deps_list);
-        tracing::trace!(
-            "sym {}, {:?} from {} ({}): took {}us",
-            name,
-            lookup_flags,
-            start_id,
-            r.is_ok(),
-            _start.elapsed().as_micros()
-        );
-
-        r
+        // No timing here: this is the hot path, and Instant::now() is not free (rdtsc plus u128
+        // femtosecond conversion). Per-library relocation timing is reported by relocate_single.
+        self.do_lookup_symbol(start_id, name, lookup_flags, deps_list)
     }
 
     fn do_lookup_symbol<'a>(
@@ -53,14 +42,9 @@ impl Context {
         let start_lib = self.get_library(start_id)?;
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            let _start = Instant::now();
             if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
                 return Ok(sym);
             }
-            tracing::trace!(
-                "failed to find sym in self in {}us",
-                _start.elapsed().as_micros()
-            );
         }
 
         // Next, try all of our transitive dependencies.
@@ -119,7 +103,22 @@ impl Context {
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
-        for idx in self.library_deps.node_indices() {
+        // Only libraries that actually define this name are candidates. Previously this walked
+        // every node in the graph, so a name defined nowhere (common: weak undefined symbols) cost
+        // a full sweep with two hash probes and a secgate scan per library.
+        let Some(candidates) = self.sym_index.get(name) else {
+            return Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into());
+        };
+        let skip_secgate_check = lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK);
+        let start_comp = start_lib.compartment();
+        for site in candidates.iter().copied() {
+            // Cheap reject before touching the graph or its hash tables. Mirrors the
+            // is_local_or_secgate_from() check below: a library in another compartment can only
+            // match via the secgate path, which is impossible if it exports no gates.
+            if !skip_secgate_check && site.comp != start_comp && !site.has_gates {
+                continue;
+            }
+            let idx = site.idx;
             let dep = &self.library_deps[idx];
             match dep {
                 LoadedOrUnloaded::Unloaded(_) => {}

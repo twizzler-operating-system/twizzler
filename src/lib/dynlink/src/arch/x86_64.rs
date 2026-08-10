@@ -77,7 +77,7 @@ impl Context {
             } else {
                 LookupFlags::ALLOW_WEAK
             };
-            let _start = std::time::Instant::now();
+            // No per-relocation timing: this runs for every symbolic relocation.
             let r = strings
                 .get(sym.st_name as usize)
                 .map(|name| {
@@ -100,11 +100,6 @@ impl Context {
                     (name, sym)
                 })
                 .ok();
-            tracing::trace!(
-                "lookup {:?} cost {}us",
-                r.as_ref().map(|r| r.0),
-                _start.elapsed().as_micros()
-            );
             r
         } else {
             None

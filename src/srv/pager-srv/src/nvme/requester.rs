@@ -5,7 +5,7 @@ use std::{
     ptr::NonNull,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Condvar, Mutex,
+        Arc, Condvar, Mutex,
     },
     task::{Context, Poll, Waker},
     time::Duration,
@@ -31,7 +31,7 @@ pub struct NvmeRequesterInner {
     comq: CompletionQueue,
     sub_bell: *mut u32,
     com_bell: *mut u32,
-    requests: Slab<NvmeRequest>,
+    requests: Slab<Arc<NvmeRequest>>,
     _sub_dma: NvmeDmaSliceRegion<CommonCommand>,
     _com_dma: NvmeDmaSliceRegion<CommonCompletion>,
     _bar_obj: MmioObject,
@@ -45,42 +45,81 @@ pub struct NvmeRequester {
 pub struct InflightRequest<'a> {
     pub req: &'a NvmeRequester,
     pub id: u16,
+    /// Held directly rather than looked up in the slab per poll: waiting must not touch the
+    /// requester lock, and the slab moves its entries as it grows.
+    entry: Arc<NvmeRequest>,
 }
 
+/// Iterations to spin on the completion flag before parking. Completions are reaped by the
+/// interrupt thread, so this only has to cover the latency of an already-fast device.
+const SPIN_ITERS: usize = 4096;
+/// How often, within a spin, to try reaping completions ourselves in case the interrupt thread is
+/// descheduled. Uses `try_lock`, so a spinning waiter never blocks a submitter.
+const SPIN_DRAIN_EVERY: usize = 256;
+
 impl<'a> InflightRequest<'a> {
+    fn completion(&self) -> Option<CommonCompletion> {
+        if self.entry.flags.load(Ordering::Acquire) & READY != 0 {
+            Some(unsafe { self.entry.ready.get().as_ref().unwrap().assume_init_read() })
+        } else {
+            None
+        }
+    }
+
+    /// Spin on the completion flag, holding no lock, occasionally draining the completion queue.
+    fn spin(&self) -> Option<CommonCompletion> {
+        for i in 0..SPIN_ITERS {
+            if let Some(cc) = self.completion() {
+                return Some(cc);
+            }
+            if i % SPIN_DRAIN_EVERY == 0 {
+                self.req.try_check_completions();
+            }
+            core::hint::spin_loop();
+        }
+        self.completion()
+    }
+
     pub fn _poll(&self) -> std::io::Result<CommonCompletion> {
-        self.req.poll(self)
+        self.completion().ok_or(ErrorKind::WouldBlock.into())
     }
 
     pub fn wait(&self) -> std::io::Result<CommonCompletion> {
         loop {
             let wait = self.wait_item_read();
-            let flags = self.req.get_flags(self);
-            for _ in 0..100 {
-                if unsafe { &*flags }.load(Ordering::Relaxed) & READY != 0 {
-                    let req = self.req.poll(self);
-                    if req.is_ok() {
-                        return req;
-                    }
-                    let kind = req.as_ref().unwrap_err().kind();
-                    if kind != ErrorKind::WouldBlock {
-                        return req;
-                    }
-                }
+            if let Some(cc) = self.spin() {
+                return Ok(cc);
             }
 
-            let req = self.req.poll(self);
-            if req.is_ok() {
-                return req;
+            // Publish WAITER before the final check: `get_completion` sends its wake after setting
+            // READY, so whichever of the two stores lands second observes the other's bit.
+            self.entry.flags.fetch_or(WAITER, Ordering::SeqCst);
+            if let Some(cc) = self.completion() {
+                return Ok(cc);
             }
-            let kind = req.as_ref().unwrap_err().kind();
-            if kind != ErrorKind::WouldBlock {
-                return req;
-            }
-
-            unsafe { &*flags }.fetch_or(WAITER, Ordering::Release);
             sys_thread_sync(&mut [ThreadSync::new_sleep(wait.0)], None)?;
         }
+    }
+
+    pub fn poll_completion(&self, cx: &mut Context<'_>) -> Poll<std::io::Result<CommonCompletion>> {
+        if let Some(cc) = self.completion() {
+            return Poll::Ready(Ok(cc));
+        }
+        // Only spin on the first poll; on a re-poll the waker is already registered.
+        if self.entry.flags.load(Ordering::Acquire) & WAKER == 0 {
+            if let Some(cc) = self.spin() {
+                return Poll::Ready(Ok(cc));
+            }
+        }
+
+        // Store the waker before advertising it, for the same reason as WAITER above.
+        *self.entry.waker.lock().unwrap() = Some(cx.waker().clone());
+        if self.entry.flags.fetch_or(WAKER, Ordering::SeqCst) & READY != 0 {
+            return Poll::Ready(Ok(unsafe {
+                self.entry.ready.get().as_ref().unwrap().assume_init_read()
+            }));
+        }
+        Poll::Pending
     }
 }
 
@@ -102,10 +141,15 @@ pub struct NvmeRequest {
 impl<'a> Drop for InflightRequest<'a> {
     #[track_caller]
     fn drop(&mut self) {
-        let requests = &mut self.req.inner.lock().unwrap().requests;
-        let entry = requests.get(self.id as usize).unwrap();
-        if entry.flags.fetch_or(DROPPED, Ordering::SeqCst) & READY != 0 {
-            requests.remove(self.id as usize);
+        // Whichever of this and `get_completion` observes the other's bit frees the slab slot, so
+        // exactly one of them does. The `Arc` keeps the entry itself alive either way.
+        if self.entry.flags.fetch_or(DROPPED, Ordering::SeqCst) & READY != 0 {
+            self.req
+                .inner
+                .lock()
+                .unwrap()
+                .requests
+                .remove(self.id as usize);
         } else {
             tracing::warn!(
                 "drop inflight request {} while not ready: {}",
@@ -118,11 +162,9 @@ impl<'a> Drop for InflightRequest<'a> {
 
 impl<'a> TwizzlerWaitable for InflightRequest<'a> {
     fn wait_item_read(&self) -> (twizzler_abi::syscall::ThreadSyncSleep, bool) {
-        let requests = &self.req.inner.lock().unwrap().requests;
-        let req = requests.get(self.id as usize).unwrap();
         (
             ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(&req.flags),
+                ThreadSyncReference::Virtual(&self.entry.flags),
                 WAITER,
                 twizzler_abi::syscall::ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
@@ -187,7 +229,7 @@ impl NvmeRequesterInner {
         self.subq.update_head(resp.new_sq_head());
         self.com_bell().write(bell as u32);
         let id: u16 = resp.command_id().into();
-        let entry = self.requests.get(id as usize).unwrap();
+        let entry = self.requests.get(id as usize).unwrap().clone();
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
         let flags = entry.flags.fetch_or(READY, Ordering::SeqCst);
         if flags & DROPPED != 0 {
@@ -212,82 +254,18 @@ impl NvmeRequesterInner {
     }
 
     #[inline]
-    pub fn submit(&mut self, mut cmd: CommonCommand) -> Option<u16> {
+    pub fn submit(&mut self, mut cmd: CommonCommand) -> Option<(u16, Arc<NvmeRequest>)> {
         let entry = self.requests.vacant_entry();
         let id = entry.key() as u16;
         cmd.set_cid(id.into());
-        entry.insert(NvmeRequest::new(cmd));
-        let entry = self.requests.get(id as usize)?;
-        if let Some(tail) = self.subq.submit(&entry.cmd) {
+        let req = entry.insert(Arc::new(NvmeRequest::new(cmd))).clone();
+        if let Some(tail) = self.subq.submit(&req.cmd) {
             self.sub_bell().write(tail as u32);
-            Some(id)
+            Some((id, req))
         } else {
             tracing::info!("removing request {} due overflow", id);
             self.requests.remove(id as usize);
             None
-        }
-    }
-
-    #[inline]
-    pub fn async_poll(
-        &mut self,
-        inflight: &InflightRequest,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<CommonCompletion>> {
-        let Some(mut entry) = self.requests.get(inflight.id as usize) else {
-            tracing::warn!("no such request {}", inflight.id);
-            return Poll::Ready(Err(ErrorKind::Other.into()));
-        };
-        let flags = entry.flags.load(Ordering::Acquire);
-        if flags & READY != 0 {
-            return Poll::Ready(Ok(unsafe {
-                entry.ready.get().as_ref().unwrap().assume_init_read()
-            }));
-        }
-
-        if flags & WAKER == 0 {
-            for i in 0..30_000 {
-                if entry.flags.load(Ordering::Acquire) & READY != 0 {
-                    return Poll::Ready(Ok(unsafe {
-                        entry.ready.get().as_ref().unwrap().assume_init_read()
-                    }));
-                }
-                core::hint::spin_loop();
-                if i % 4 == 0 {
-                    if let Some((id, cc)) = self.get_completion() {
-                        if id == inflight.id {
-                            return Poll::Ready(Ok(cc));
-                        }
-                    }
-                    entry = self.requests.get(inflight.id as usize).unwrap();
-                }
-            }
-        }
-
-        let Some(entry) = self.requests.get(inflight.id as usize) else {
-            tracing::warn!("no such request (post-poll) {}", inflight.id);
-            return Poll::Ready(Err(ErrorKind::Other.into()));
-        };
-
-        if entry.flags.fetch_or(WAKER, Ordering::SeqCst) & READY != 0 {
-            Poll::Ready(Ok(unsafe {
-                entry.ready.get().as_ref().unwrap().assume_init_read()
-            }))
-        } else {
-            *entry.waker.lock().unwrap() = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-
-    #[inline]
-    pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        let Some(entry) = self.requests.get(inflight.id as usize) else {
-            return Err(ErrorKind::Other.into());
-        };
-        if entry.flags.load(Ordering::SeqCst) & READY != 0 {
-            Ok(unsafe { entry.ready.get().as_ref().unwrap().assume_init_read() })
-        } else {
-            Err(ErrorKind::WouldBlock.into())
         }
     }
 }
@@ -312,8 +290,12 @@ impl NvmeRequester {
 
     #[inline]
     pub fn submit(&self, cmd: CommonCommand) -> Option<InflightRequest<'_>> {
-        let id = self.inner.lock().unwrap().submit(cmd)?;
-        Some(InflightRequest { req: self, id })
+        let (id, entry) = self.inner.lock().unwrap().submit(cmd)?;
+        Some(InflightRequest {
+            req: self,
+            id,
+            entry,
+        })
     }
 
     #[inline]
@@ -324,8 +306,12 @@ impl NvmeRequester {
     ) -> Option<InflightRequest<'_>> {
         let mut inner = self.inner.lock().unwrap();
         loop {
-            if let Some(id) = inner.submit(cmd) {
-                return Some(InflightRequest { req: self, id });
+            if let Some((id, entry)) = inner.submit(cmd) {
+                return Some(InflightRequest {
+                    req: self,
+                    id,
+                    entry,
+                });
             }
             if let Some(timeout) = timeout {
                 let (guard, to) = self.cv.wait_timeout(inner, timeout).unwrap();
@@ -339,27 +325,21 @@ impl NvmeRequester {
         }
     }
 
-    pub fn async_poll(
-        &self,
-        inflight: &InflightRequest,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<CommonCompletion>> {
-        self.inner.lock().unwrap().async_poll(inflight, cx)
-    }
-
-    pub fn poll(&self, inflight: &InflightRequest) -> std::io::Result<CommonCompletion> {
-        self.inner.lock().unwrap().poll(inflight)
-    }
-
-    pub fn get_flags(&self, inflight: &InflightRequest) -> *const AtomicU64 {
-        &self
-            .inner
-            .lock()
-            .unwrap()
-            .requests
-            .get(inflight.id as usize)
-            .unwrap()
-            .flags
+    /// Reap completions, but only if nobody else holds the lock. Called from spin loops, where
+    /// blocking on the lock is exactly what we are trying to avoid.
+    fn try_check_completions(&self) -> bool {
+        let Ok(mut inner) = self.inner.try_lock() else {
+            return false;
+        };
+        let mut more = false;
+        while let Some(_) = inner.get_completion() {
+            more = true;
+        }
+        drop(inner);
+        if more {
+            self.cv.notify_all();
+        }
+        more
     }
 
     pub fn check_completions(&self) -> bool {

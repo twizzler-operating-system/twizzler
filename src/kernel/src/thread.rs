@@ -102,6 +102,10 @@ pub struct Thread {
     pub last_pf_addr: AtomicU64,
     pub last_pf_kind: AtomicU32,
     pub last_pf_flags: AtomicU32,
+    /// Consecutive faults identical to the one before. Two in a row is ordinary; a fault that
+    /// resolves to `Ok` without establishing a mapping produces millions, and nothing else in the
+    /// kernel bounds that -- `send_upcall`'s cap only covers the `Err(upcall)` path.
+    pub last_pf_count: AtomicU32,
     mutex_count: AtomicU32,
     /// Consecutive orphan scans that found this thread on no queue. Written only by the scanning
     /// cpu. See `check_orphan_threads`.
@@ -297,6 +301,7 @@ impl Thread {
             pending_message: AtomicU64::new(0),
             upcalls_since_user: AtomicU32::new(0),
             last_pf_addr: AtomicU64::new(0),
+            last_pf_count: AtomicU32::new(0),
             last_pf_kind: AtomicU32::new(0),
             offqueue_scans: AtomicU32::new(0),
             last_pf_flags: AtomicU32::new(0),
@@ -700,7 +705,18 @@ impl Thread {
                 exit(101);
             }
         } else {
-            ipi_exec(Destination::AllButSelf, Box::new(|| schedule_resched()));
+            // Waits. Nothing reads the result -- the target notices `THREAD_MUST_EXIT` via
+            // `maybe_exit` -- but not waiting measurably raised the rate of a shutdown hang whose
+            // dump is every cpu halted right after this call, i.e. a nudge that never landed. Same
+            // lesson as `suspend`: the wait is load-bearing as timing even where it is not a
+            // handshake. The deadlock this could have avoided needs a caller that holds something a
+            // spinning cpu wants, and this is the only exit-path sender -- normal exit never
+            // sends -- so there is nothing to buy by not waiting.
+            ipi_exec(
+                Destination::AllButSelf,
+                Box::new(|| schedule_resched()),
+                true,
+            );
         }
     }
 

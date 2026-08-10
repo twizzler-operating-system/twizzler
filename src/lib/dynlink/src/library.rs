@@ -3,7 +3,6 @@
 use std::{
     fmt::{Debug, Display},
     sync::OnceLock,
-    time::Instant,
 };
 
 use elf::{
@@ -124,6 +123,10 @@ pub struct Library {
     // Caching stuff
     elf: OnceLock<elf::ElfBytes<'static, NativeEndian>>,
     elf_common: OnceLock<elf::CommonElfData<'static, NativeEndian>>,
+    /// Gate names from `.twz_secgate_info`, built once. is_secgate() is called for every candidate
+    /// library on every cross-compartment symbol lookup, and used to be a linear scan with a
+    /// byte-compare per gate.
+    secgate_names: OnceLock<std::collections::HashSet<Box<str>>>,
 }
 
 #[allow(dead_code)]
@@ -154,6 +157,7 @@ impl Library {
             allowed_gates,
             elf: OnceLock::new(),
             elf_common: OnceLock::new(),
+            secgate_names: OnceLock::new(),
         }
     }
 
@@ -290,9 +294,7 @@ impl Library {
         name: &str,
         allow_weak: bool,
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
-        let _start_1 = Instant::now();
         let common = self.get_elf_common()?;
-        let _start_2 = Instant::now();
 
         /*
         if self.is_relocated() {
@@ -335,11 +337,6 @@ impl Library {
                         || allow_weak
                         || (self.is_relocated() && self.is_secgate(name))
                     {
-                        tracing::trace!(
-                            "found {} in gnu hash in {}us",
-                            name,
-                            _start_2.elapsed().as_micros()
-                        );
                         return Ok(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
@@ -425,15 +422,16 @@ impl Library {
         allow_weak: bool,
         allow_prefix: bool,
     ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
-        let _start = Instant::now();
         let ret = self.do_lookup_symbol(&name, allow_weak);
-        tracing::trace!(
-            "bare lookup ({} {}) costs {}us",
-            allow_weak,
-            allow_prefix,
-            _start.elapsed().as_micros()
-        );
-        if allow_prefix && ret.is_err() && !name.starts_with("__TWIZZLER_SECURE_GATE_") {
+        // A `__TWIZZLER_SECURE_GATE_*` symbol only exists in a library that has gates, so skip the
+        // string build and the second hash probe entirely for the libraries that have none (which
+        // is most of them: libstd, libc, libtwz_rt). Previously this constructed a 256-byte
+        // SmallString and probed the hash table for every candidate library on every lookup.
+        if allow_prefix
+            && ret.is_err()
+            && self.secgate_info.num > 0
+            && !name.starts_with("__TWIZZLER_SECURE_GATE_")
+        {
             let mut prefixedname = SmallString::<[u8; 256]>::from_str("__TWIZZLER_SECURE_GATE_");
             prefixedname.push_str(name);
 
@@ -457,13 +455,23 @@ impl Library {
     }
 
     fn is_secgate(&self, name: &str) -> bool {
-        self.iter_secgates()
-            .map(|gates| {
-                gates
-                    .iter()
-                    .any(|gate| gate.name().to_bytes() == name.as_bytes())
+        // Fast reject before touching the set: most libraries export no gates at all.
+        if self.secgate_info.num == 0 {
+            return false;
+        }
+        self.secgate_names
+            .get_or_init(|| {
+                self.iter_secgates()
+                    .map(|gates| {
+                        gates
+                            .iter()
+                            .filter_map(|gate| gate.name().to_str().ok())
+                            .map(Box::from)
+                            .collect()
+                    })
+                    .unwrap_or_default()
             })
-            .unwrap_or(false)
+            .contains(name)
     }
 
     pub fn iter_secgates(&self) -> Option<&[RawSecGateInfo]> {

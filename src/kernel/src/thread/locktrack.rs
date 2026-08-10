@@ -156,6 +156,16 @@ pub mod diag {
     pub static MUTEX_HANDOFF_TO_DEAD: Counter =
         Counter::new("mutex handed off to a thread that exited");
 
+    /// `warn_if_blocking_with_mutexes` bailed before it could look at anything. Its silence was
+    /// being read as "this never happens", which it cannot support: a check that never ran and a
+    /// check that ran and found nothing are the same absence of output. This separates them.
+    pub static BLOCK_CHECK_SKIPPED: Counter =
+        Counter::new("blocking-with-mutex check skipped (no tracker, or incomplete)");
+    /// The same check ran and found no mutexes held -- the ordinary case, and the one that makes
+    /// the silence meaningful. Counted rather than printed: it is on every pager round trip.
+    pub static BLOCK_CHECK_CLEAR: Counter =
+        Counter::new("blocking-with-mutex check ran, no mutexes held");
+
     /// A thread entered the kernel from userspace already holding a critical count, i.e. some
     /// earlier kernel entry leaked one. This is Mode C's cause, caught at the first point after the
     /// leak where the count is provably wrong -- a user thread cannot be critical while running
@@ -168,7 +178,7 @@ pub mod diag {
     pub static CRITICAL_LEAK_AT_EXIT: Counter =
         Counter::new("returning to user with a critical count held");
 
-    static ALL: [&Counter; 20] = [
+    static ALL: [&Counter; 22] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -189,6 +199,8 @@ pub mod diag {
         &MUTEX_COUNT_UNDERFLOW,
         &SUSPEND_SELF_NOT_CURRENT,
         &MUTEX_HANDOFF_TO_DEAD,
+        &BLOCK_CHECK_SKIPPED,
+        &BLOCK_CHECK_CLEAR,
     ];
 
     /// Token identifying who holds a `LockTracker`'s flag: cpu in the high 16 bits (biased by one
@@ -688,6 +700,15 @@ impl LockTrackerInner {
             .map(|l| (l.caller(), l.owner))
     }
 
+    /// The spinlock this thread is currently trying to take, if any.
+    ///
+    /// A thread spinning here stays `Running` and records nothing in `intended_to_mutexlock`, so
+    /// reading only [`Self::intended_mutex`] reports it as "not waiting" -- which is how a wait
+    /// edge through a spinlock disappears from a chain that is otherwise fully traced.
+    pub fn intended_spinlock(&self) -> Option<&'static core::panic::Location<'static>> {
+        self.intended_to_spinlock.as_ref().map(|l| l.caller())
+    }
+
     fn log_held_mutexes(&self) {
         for lock in self.mutexes.iter().flatten() {
             if lock.is_locked() {
@@ -728,14 +749,34 @@ pub fn warn_if_blocking_with_mutexes(what: &str) {
     if DISABLE_LOCK_TRACKING {
         return;
     }
+    // Both bails below are why this check's silence proves nothing on its own: neither one means
+    // "no thread ever blocked holding a mutex", they mean the question was never asked. The idle
+    // thread plausibly hits the first, and any thread that has ever lost a record hits the second.
     let Some(tracker) = current_tracker() else {
+        if diag::BLOCK_CHECK_SKIPPED.hit() {
+            emerglogln!(
+                "locktrack: blocking-on-{} check skipped: no current tracker (cpu {})",
+                what,
+                diag::this_cpu(),
+            );
+        }
         return;
     };
     if !tracker.is_complete() {
+        if diag::BLOCK_CHECK_SKIPPED.hit() {
+            emerglogln!(
+                "locktrack: blocking-on-{} check skipped: tracker {} incomplete",
+                what,
+                tracker.id,
+            );
+        }
         return;
     }
     with_tracker(tracker, |lt| {
         if lt.mutex_count() == 0 {
+            // The ordinary case, and the one that makes a zero on BLOCK_WITH_MUTEX_HELD mean
+            // something. Counted only -- it is on every pager round trip.
+            diag::BLOCK_CHECK_CLEAR.count_only();
             return;
         }
         if !diag::BLOCK_WITH_MUTEX_HELD.hit() {
@@ -884,6 +925,16 @@ fn thread_snapshot() -> heapless::Vec<(u64, ExecutionState, bool, bool), MAX_SNA
 
 const MAX_SNAPSHOT: usize = 256;
 
+/// Full dumps emitted per boot. Once a thread is wedged this function finds it on every pass of the
+/// idle loop -- the transcripts show ~50 -- and both the console writes and the time they take are
+/// enough to move the window being investigated. Three is enough to see it settle.
+static STUCK_REPORTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const MAX_STUCK_REPORTS: u32 = 3;
+
+fn stuck_reports_left() -> bool {
+    STUCK_REPORTS.load(core::sync::atomic::Ordering::Relaxed) < MAX_STUCK_REPORTS
+}
+
 pub fn check_timed_out_mutexes() {
     if DISABLE_LOCK_TRACKING {
         return;
@@ -899,7 +950,35 @@ pub fn check_timed_out_mutexes() {
             continue;
         };
         let Some(lt) = lock_tracker.try_lock() else {
-            emerglogln!("failed to lock lock tracker for thread {}", lock_tracker.id,);
+            // A tracker nobody can lock is the most interesting thread in the system, not one to
+            // pass over. `with_tracker` holds this flag across a few non-blocking lines with
+            // interrupts off, so a thread still holding it a second later is wedged inside that
+            // window or left it without unlocking -- and in every category-A transcript the thread
+            // that owns the wedge is exactly the one whose tracker reads busy. Skipping it also
+            // skipped the `any = true` below, which is why the thread-state dump this function
+            // exists to produce has never once printed during the failures it was written for.
+            if stuck_reports_left() {
+                let (ocpu, othread) = diag::split_token(
+                    lock_tracker
+                        .owner
+                        .load(core::sync::atomic::Ordering::Relaxed),
+                );
+                emerglogln!(
+                    "locktrack: tracker {} busy, flag held by cpu {} thread {}; thread state {:?}",
+                    lock_tracker.id,
+                    ocpu,
+                    othread,
+                    threads
+                        .iter()
+                        .find(|(id, ..)| *id == lock_tracker.id)
+                        .map(|(_, state, mutex_wait, idle)| (*state, *mutex_wait, *idle)),
+                );
+                // Racy by construction -- it reads the inner state without the flag. That is the
+                // point: the flag is not coming back, and a wedged thread is not mutating its own
+                // record.
+                lock_tracker.print_locks();
+            }
+            any = true;
             continue;
         };
         if let Some(waited) = lt.mutex_wait_time().map(|t| (now - t).as_millis())
@@ -972,17 +1051,28 @@ pub fn check_timed_out_mutexes() {
         lock_tracker.unlock();
     }
 
-    if any {
+    if any && STUCK_REPORTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < MAX_STUCK_REPORTS
+    {
         for th in at.iter() {
             let Some(lock_tracker) = th.as_ref() else {
                 continue;
             };
-            let Some(lt) = lock_tracker.try_lock() else {
-                emerglogln!("failed to lock lock tracker for thread {}", lock_tracker.id,);
-                continue;
-            };
-            lt.print_locks_at(Some(now));
-            lock_tracker.unlock();
+            match lock_tracker.try_lock() {
+                Some(lt) => {
+                    lt.print_locks_at(Some(now));
+                    lock_tracker.unlock();
+                }
+                // Same reasoning as the busy branch above: a tracker that cannot be locked is the
+                // one worth reading, so read it anyway rather than printing a line that says only
+                // that we did not.
+                None => {
+                    emerglogln!(
+                        "(tracker {} busy, reading without the flag)",
+                        lock_tracker.id
+                    );
+                    lock_tracker.print_locks();
+                }
+            }
         }
         // A holder that is Sleeping is blocked on something while holding the lock; one that is
         // Running is either on-cpu or spinning. The lock dumps cannot tell those apart, and it is
@@ -1001,6 +1091,11 @@ pub fn check_timed_out_mutexes() {
                 if *idle { " (idle)" } else { "" },
             );
         }
+        // The counters are otherwise printed only from a panic or from shutdown, and a hang reaches
+        // neither -- so every category-A transcript on disk has no counter dump at all, and the
+        // probes that exist to make silence meaningful (BLOCK_CHECK_*, TRACKER_*) cannot be read
+        // for exactly the failures they were added for.
+        diag::print_counters(true);
     }
 }
 

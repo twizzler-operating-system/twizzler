@@ -97,6 +97,11 @@ fn check_settings(
     Ok(())
 }
 
+/// An instruction fetch reached the fault handler for a region whose effective protections lack
+/// EXEC. Rejecting these outright broke ~60% of runs, so this is observation only.
+static EXEC_FAULT_NO_EXEC: crate::thread::locktrack::diag::Counter =
+    crate::thread::locktrack::diag::Counter::new("exec fault on a region without EXEC");
+
 impl MapRegion {
     fn trace_fault(
         &self,
@@ -226,6 +231,39 @@ impl MapRegion {
             all_were_present,
             prot
         );
+
+        // For a PRESENT fault `ensure_in_core` above is skipped, so `all_were_present` stays true,
+        // and the tail of this function re-installs the *same* protections and returns Ok -- so a
+        // fault those protections cannot satisfy makes the instruction retry and fault identically,
+        // forever. Nothing bounds that: `send_upcall`'s MAX_UPCALLS_WITHOUT_RETURN covers only the
+        // Err path. One wedge was observed at 8.4M identical instruction fetches on one address,
+        // against a slot whose object had been unmapped and the slot reused.
+        //
+        // `check_settings` above encodes the permission rule but returns early when the active sctx
+        // is 0, as does `check_security`; `effective()` then caps at the region's own `map_prots`,
+        // so with sctx 0 nothing between the fault and here enforces it.
+        //
+        // Reported, NOT rejected. Returning Err here -- the obvious symmetry with the write check
+        // below -- failed ~60% of runs against a ~3% baseline, so an exec fault reaching this point
+        // without EXEC in `prot` is evidently routine and satisfied by something further down,
+        // rather than being the livelock by itself. What distinguishes the wedge is that the fault
+        // *repeats*; `log_fault`'s refault counter is what identifies that. This probe exists to
+        // show which regions and protections reach here at all, and whether the looping one differs
+        // from the rest.
+        if cause == MemoryAccessKind::InstructionFetch
+            && !prot.contains(Protections::EXEC)
+            && EXEC_FAULT_NO_EXEC.hit()
+        {
+            emerglogln!(
+                "exec fault without EXEC: addr {:?} ip {:?} prot {:?} region-prot {:?} present {} object {}",
+                addr,
+                ip,
+                prot,
+                self.prot,
+                pfflags.contains(PageFaultFlags::PRESENT),
+                self.object().id(),
+            );
+        }
 
         let mut did_cow = false;
         if cause == MemoryAccessKind::Write {

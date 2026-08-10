@@ -47,12 +47,23 @@ pub struct NvmeController {
     inner: Arc<NvmeControllerInner>,
     capacity: OnceLock<usize>,
     block_size: OnceLock<usize>,
+    max_transfer_pages: OnceLock<usize>,
+    /// CAP.MPSMIN in bytes; MDTS is expressed in units of it.
+    mps_min: usize,
     int_thr: OnceLock<JoinHandle<()>>,
 }
 
 const ADMIN_QUEUE_LEN: u16 = 32;
 const DATA_QUEUE_ID: u16 = 1;
-const DATA_QUEUE_LEN: u16 = 32;
+/// Create I/O Queue is issued with PC=1, so the queue memory must be physically contiguous, and a
+/// DMA pool allocation is only guaranteed contiguous within a single page. At 64 bytes an entry
+/// that caps the submission queue -- and hence the number of outstanding commands -- at one page's
+/// worth of entries. Going deeper needs either a contiguity check on a multi-page pin or PC=0.
+const MAX_DATA_QUEUE_LEN: u32 = (DMA_PAGE_SIZE / size_of::<CommonCommand>()) as u32;
+
+/// Largest transfer we will build for one command when the controller reports no MDTS limit, and
+/// the ceiling we clamp a reported limit to.
+const MAX_TRANSFER_PAGES: usize = 512;
 
 fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<NvmeController> {
     let dma_pool = Arc::new(CachedDmaPool::new(dma_pool));
@@ -151,6 +162,12 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
     };
     let cq = nvme::queue::CompletionQueue::new(cmem, ADMIN_QUEUE_LEN, C_STRIDE).unwrap();
 
+    // Read before `bar` is handed to the requester, which ends the borrow `reg` holds on it.
+    let cap = map_field!(reg.capabilities).read();
+    // MQES is 0-based.
+    let data_queue_len = (cap.max_queue_entries() as u32 + 1).min(MAX_DATA_QUEUE_LEN) as usize;
+    let mps_min = cap.memory_page_sz_min_bytes();
+
     let mut saq_bell = unsafe { bar.get_mmio_offset::<u32>(0x1000) };
     let mut caq_bell = unsafe {
         bar.get_mmio_offset::<u32>(
@@ -178,7 +195,7 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
         cqid,
         sqid,
         QueuePriority::Medium,
-        DATA_QUEUE_LEN as usize,
+        data_queue_len,
     )?;
 
     Ok(NvmeController {
@@ -190,6 +207,8 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
         }),
         capacity: OnceLock::new(),
         block_size: OnceLock::new(),
+        max_transfer_pages: OnceLock::new(),
+        mps_min,
         int_thr: OnceLock::new(),
     })
 }
@@ -492,6 +511,27 @@ impl NvmeController {
         }
     }
 
+    /// Largest number of `PAGE_SIZE` pages the controller will accept in one command, from MDTS.
+    pub fn blocking_get_max_transfer_pages<const PAGE_SIZE: usize>(&self) -> usize {
+        *self.max_transfer_pages.get_or_init(|| {
+            let (inflight, dma) = self.send_identify_controller().unwrap();
+            let cc = inflight.wait().unwrap();
+            if cc.status().is_error() {
+                panic!("error on ident ctrl")
+            }
+            let mdts = dma.dma_region().with(|ident| ident.max_data_transfer_size);
+            // MDTS is log2 of the transfer size in CAP.MPSMIN units; 0 means unlimited.
+            let pages = if mdts == 0 || mdts as u32 >= usize::BITS {
+                MAX_TRANSFER_PAGES
+            } else {
+                ((1usize << mdts) * self.mps_min) / PAGE_SIZE
+            };
+            let pages = pages.clamp(1, MAX_TRANSFER_PAGES);
+            tracing::debug!("nvme max transfer: {} pages (mdts {})", pages, mdts);
+            pages
+        })
+    }
+
     pub fn send_read_page(
         &self,
         lba_start: u64,
@@ -688,8 +728,9 @@ impl NvmeController {
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        // TODO: get from controller
-        let count = phys.len().min(128);
+        let count = phys
+            .len()
+            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
@@ -728,9 +769,10 @@ impl NvmeController {
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        // TODO: get from controller
         let start = Instant::now();
-        let count = phys.len().min(128);
+        let count = phys
+            .len()
+            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
@@ -761,9 +803,10 @@ impl NvmeController {
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        // TODO: get from controller
         let start = Instant::now();
-        let count = phys.len().min(128);
+        let count = phys
+            .len()
+            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
@@ -796,9 +839,10 @@ impl NvmeController {
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        // TODO: get from controller
         let start = Instant::now();
-        let count = phys.len().min(128);
+        let count = phys
+            .len()
+            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
         let dptr = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
@@ -879,6 +923,6 @@ impl<'a> Future for InflightRequest<'a> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        self.req.async_poll(&*self, cx)
+        self.poll_completion(cx)
     }
 }

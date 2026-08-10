@@ -40,6 +40,103 @@ use crate::{
     time::TimeStatCollector,
 };
 
+/// Iterations between repeats of the stuck-wait report. The first fires at 1000; after that a
+/// sleeping waiter loops once per wakeup while an idle thread spins continuously, so this is sized
+/// for the spinner to report on the order of seconds rather than flood.
+const PAUSE_REPORT_EVERY: usize = 5_000_000;
+
+/// Minimum wall-clock gap between repeats, which is what actually bounds the rate for a sleeping
+/// waiter -- see the `is_spinner` comment in `lock`.
+const PAUSE_REPORT_AFTER: Duration = Duration::from_secs(2);
+
+/// Report an unresolved wait *from the waiter*, which is the one thread guaranteed to still be
+/// running when it matters.
+///
+/// The owner's own wait edge is the part nothing else records. `check_timed_out_mutexes` prints it,
+/// but it runs only from the bsp idle loop -- and reaping exited threads is what takes these locks,
+/// so that thread is routinely one of the stuck ones. Every stuck-mutex transcript so far has named
+/// an owner and nothing whatsoever about it, which is exactly one edge short of a cycle.
+///
+/// `try_lock`, never block: this runs inside `lock`'s wait loop, where anything that can block
+/// wedges the cpu with interrupts masked.
+fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRef) {
+    let tracker = owner.lock_tracker();
+    let sampled = match tracker.try_lock() {
+        // Both accessors yield only ids and 'static locations, so nothing borrows the tracker past
+        // this point.
+        Some(inner) => {
+            let intent = (inner.intended_mutex(), inner.intended_spinlock());
+            tracker.unlock();
+            Some(intent)
+        }
+        None => None,
+    };
+    // 0 for "no current thread": `IdCounter` asserts ids are non-zero, so it cannot collide.
+    let waiter = current_thread_ref().map(|t| t.id()).unwrap_or(0);
+    let this_cpu = locktrack::diag::this_cpu();
+    // `ExecutionState::Running` covers both on-cpu and merely-runnable, and for a lock that is
+    // never released those are entirely different bugs: a runnable owner is not being scheduled
+    // (a spinner with interrupts masked cannot take a tick to reschedule), an on-cpu one is
+    // looping inside its critical section.
+    let on_cpu = if owner.is_active_running() {
+        "on-cpu"
+    } else {
+        "runnable/off-cpu"
+    };
+    // Run queues are per-cpu, so a runnable owner queued on *this* cpu cannot be rescheduled by any
+    // other: this loop spins with interrupts masked, so the cpu it is on takes no tick and reaches
+    // neither `schedule()` nor `requeue_all()`. `rq == this cpu` is that wedge, stated outright
+    // rather than inferred from `runnable/off-cpu`.
+    let rq = owner.sched.current_cpu_rq().map(|c| c as i64).unwrap_or(-1);
+    // Set by `lock` itself, not by the tracker, so it survives a dropped intent record. Disagreeing
+    // with the tracker edge below means the tracker is lying about this owner, not that the owner
+    // is running freely -- which is the one way "not waiting on a mutex" can hide a cycle.
+    let mutex_wait = owner.get_mutex_wait();
+    let complete = if tracker.is_complete() {
+        "complete"
+    } else {
+        "INCOMPLETE"
+    };
+    // One console write, so a second cpu reporting concurrently cannot split this line in half.
+    macro_rules! stall {
+        ($edge:literal $(, $arg:expr)* $(,)?) => {
+            emerglogln!(
+                concat!(
+                    "mutex stall: t{} (cpu {}) waited {} at {}; owner t{} ({:?}, {}, rq {}, ",
+                    "idle {}, mutex_wait {}, tracker {}) ",
+                    $edge,
+                ),
+                waiter,
+                this_cpu,
+                iters,
+                caller,
+                owner.id(),
+                owner.get_state(),
+                on_cpu,
+                rq,
+                owner.is_idle_thread(),
+                mutex_wait,
+                complete,
+                $($arg,)*
+            )
+        };
+    }
+    match sampled {
+        Some((Some((at, Some((next, next_at)))), _)) => stall!(
+            "is itself waiting at {} for a mutex held by t{} taken at {}",
+            at,
+            next,
+            next_at,
+        ),
+        Some((Some((at, None)), _)) => stall!("is itself waiting at {}, holder unknown", at),
+        // A spinlock edge keeps the owner `Running` and leaves `intended_to_mutexlock` empty, so
+        // without this arm it reads identically to an owner that is waiting for nothing at all.
+        Some((None, Some(at))) => stall!("is spinning for the spinlock at {}", at),
+        Some((None, None)) => stall!("is not waiting on a mutex or a spinlock"),
+        None => stall!("tracker busy"),
+    }
+}
+
 #[repr(align(64))]
 struct AlignedAtomicU64(AtomicU64);
 struct SleepQueue {
@@ -220,6 +317,18 @@ impl<T> Mutex<T> {
 
         let int_state = crate::interrupt::disable();
         let mut i = 0;
+        let mut stuck_owner: Option<ThreadRef> = None;
+        // An idle thread spins here; every other thread loops once per wakeup. `i` therefore
+        // measures wildly different things for the two, and a purely iteration-based repeat means a
+        // sleeping waiter reports once at 1000 and never again -- so the one transcript that caught
+        // a sleeping owner caught it at 1000 iterations, describing a moment rather than the wedge.
+        // Repeat on elapsed time instead, reading the clock every iteration only for the sleeper
+        // (where a clock read is lost against a sleep/wake round trip) and rarely for the spinner.
+        let mut last_report = start_time;
+        let is_spinner = current_thread
+            .as_ref()
+            .map(|t| t.is_idle_thread())
+            .unwrap_or(true);
         loop {
             i += 1;
             if i == 1000 {
@@ -259,6 +368,20 @@ impl<T> Mutex<T> {
                             self.locked_at.get().read()
                         });
                     });
+                    // Sampled here where the owner is in hand, reported after the queue lock is
+                    // dropped -- emerglogln takes no lock, but holding this one across a console
+                    // write is a needless widening.
+                    let due = i == 1000
+                        || i % PAUSE_REPORT_EVERY == 0
+                        || (i > 1000
+                            && (!is_spinner || i % 4096 == 0)
+                            && Instant::now()
+                                .checked_sub_instant(&last_report)
+                                .is_some_and(|d| d >= PAUSE_REPORT_AFTER));
+                    if due {
+                        last_report = Instant::now();
+                        stuck_owner = Some(cur_owner.clone());
+                    }
                     if let Some(ref cur_thread) = current_thread {
                         // Compare by objid, not `id()`: the latter comes from `IdCounter`, which
                         // recycles, so a stale owner naming a dead thread whose id was handed to
@@ -333,6 +456,9 @@ impl<T> Mutex<T> {
                 }
                 reinsert
             };
+            if let Some(owner) = stuck_owner.take() {
+                report_stuck_owner(caller, i, &owner);
+            }
             crate::arch::processor::spin_wait_iteration();
             if let Some(guard) = guard {
                 finish_blocking(guard);

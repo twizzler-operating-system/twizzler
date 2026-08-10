@@ -491,6 +491,7 @@ impl Context {
 
         assert_eq!(idx, lib.idx);
         self.library_deps[idx] = LoadedOrUnloaded::Loaded(lib);
+        self.index_library_symbols(idx);
         Ok(ids)
     }
 

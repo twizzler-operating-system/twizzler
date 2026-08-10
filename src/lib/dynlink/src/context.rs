@@ -34,6 +34,28 @@ pub struct Context {
     // placed here independent of compartment. Edges denote dependency relationships, and may also
     // cross compartments.
     pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded, ()>,
+
+    // Maps a symbol name to the loaded libraries that define it, so the global fallback search
+    // does not have to walk every node in the graph. Entries are kept sorted by node index to
+    // preserve the "lowest node index wins" resolution order the linear scan had.
+    //
+    // A library that exports `__TWIZZLER_SECURE_GATE_foo` is also indexed under `foo`, mirroring
+    // the prefixed retry in Library::lookup_symbol.
+    pub(crate) sym_index: HashMap<String, std::vec::Vec<SymSite>>,
+}
+
+/// One place a symbol is defined. `comp` and `has_gates` are carried here so the global search can
+/// discard candidates in other compartments without fetching the graph node and probing its hash
+/// table: a library in a different compartment can only satisfy a lookup via the secgate path, and
+/// a library with no gates at all can never do that.
+///
+/// Without this, a symbol like `twz_rt_malloc` accumulates one entry per live compartment (each has
+/// its own libtwz_rt), and the search cost grows with the number of running compartments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct SymSite {
+    pub idx: NodeIndex,
+    pub comp: CompartmentId,
+    pub has_gates: bool,
 }
 
 // Libraries in the dependency graph are placed there before loading, so that they can participate
@@ -87,7 +109,64 @@ impl Context {
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
             compartments: StableVec::new(),
+            sym_index: HashMap::new(),
         }
+    }
+
+    /// Record every symbol a freshly-loaded library defines in the global symbol index.
+    pub(crate) fn index_library_symbols(&mut self, idx: NodeIndex) {
+        let (site, names): (SymSite, std::vec::Vec<String>) = {
+            let Some(lib) = self.library_deps[idx].loaded() else {
+                return;
+            };
+            let site = SymSite {
+                idx,
+                comp: lib.compartment(),
+                has_gates: lib.secgate_info.num > 0,
+            };
+            let Ok(common) = lib.get_elf_common() else {
+                return;
+            };
+            let (Some(syms), Some(strs)) = (common.dynsyms.as_ref(), common.dynsyms_strs.as_ref())
+            else {
+                return;
+            };
+            (
+                site,
+                syms.iter()
+                    .filter(|sym| !sym.is_undefined())
+                    .filter_map(|sym| strs.get(sym.st_name as usize).ok())
+                    .map(|name| name.to_string())
+                    .collect(),
+            )
+        };
+
+        for name in names {
+            if let Some(bare) = name.strip_prefix("__TWIZZLER_SECURE_GATE_") {
+                self.index_one(bare.to_string(), site);
+            }
+            self.index_one(name, site);
+        }
+    }
+
+    fn index_one(&mut self, name: String, site: SymSite) {
+        let ents = self.sym_index.entry(name).or_default();
+        // Sorted insert by node index: indices are not added in ascending order (dependencies
+        // finish loading before their parent), and resolution order is observable.
+        if let Err(pos) = ents.binary_search_by_key(&site.idx, |s| s.idx) {
+            ents.insert(pos, site);
+        }
+    }
+
+    /// Drop every index entry pointing at `idx`. Required on unload: StableDiGraph hands freed
+    /// node indices back out, so a stale entry would resolve to an unrelated library.
+    pub(crate) fn unindex_library_symbols(&mut self, idx: NodeIndex) {
+        self.sym_index.retain(|_, ents| {
+            if let Ok(pos) = ents.binary_search_by_key(&idx, |s| s.idx) {
+                ents.remove(pos);
+            }
+            !ents.is_empty()
+        });
     }
 
     /// Replace the callback engine for this context.
@@ -223,7 +302,10 @@ impl Context {
         let nodes = ids
             .collect::<Vec<_>>()
             .iter()
-            .filter_map(|id| self.library_deps.remove_node(id.0))
+            .filter_map(|id| {
+                self.unindex_library_symbols(id.0);
+                self.library_deps.remove_node(id.0)
+            })
             .collect();
         self.compartment_names.remove(&name);
         (self.compartments.remove(comp_id.0), nodes)

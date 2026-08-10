@@ -149,10 +149,17 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                         thread.suspend();
                     }
                     ExecutionState::Exited => {
+                        // `exit()` unlinks the target from the scheduler and the requeue list but
+                        // never from a mutex wait queue, and this is the only call site that can
+                        // kill a thread mid-wait. `mutex_link` linked here says the target dies
+                        // while still a member of some mutex's sleep queue.
                         logln!(
-                            "calling force exit on thread {} ({})",
+                            "calling force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}",
                             thread.id(),
-                            thread.objid()
+                            thread.objid(),
+                            cur_state,
+                            thread.mutex_link.is_linked(),
+                            thread.get_mutex_wait(),
                         );
                         crate::panic::backtrace(true, None);
                         thread.force_exit();

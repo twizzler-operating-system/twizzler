@@ -49,7 +49,18 @@ impl Thread {
                 });
             }
         } else {
-            ipi_exec(Destination::AllButSelf, Box::new(|| schedule_resched()));
+            // Waits, unlike the exit path's identical-looking send. Nothing here reads the IPI's
+            // result, but callers depend on the delay it imposes: `ThreadControl::ChangeState` is
+            // how a debugger stops a thread, and returning before every cpu has taken a reschedule
+            // lets it observe a thread it just suspended still running. `test_suspend` catches
+            // exactly that. Note this was never a real guarantee -- the IPI waits for cpus to run
+            // `schedule_resched`, not for the target to reach a suspend point -- so the honest fix
+            // is a handshake on the target's state, not a wider window.
+            ipi_exec(
+                Destination::AllButSelf,
+                Box::new(|| schedule_resched()),
+                true,
+            );
         }
     }
 

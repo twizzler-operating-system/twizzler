@@ -16,7 +16,7 @@ use crate::{
     once::Once,
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
     spinlock::Spinlock,
-    thread::{current_memory_context, current_thread_ref},
+    thread::{current_memory_context, current_thread_ref, locktrack},
     time::TimeStatCollector,
 };
 
@@ -103,6 +103,16 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
     stats.page_fault_stats = stats_lock.time.get_stats();
 }
 
+/// Consecutive identical faults before the loop is called a loop. Two in a row happen normally (two
+/// threads on one page, a COW retry); a fault that returns `Ok` without mapping anything reaches
+/// this in milliseconds.
+const REFAULT_LOOP_AT: u32 = 1000;
+
+/// Report budget for the above, so a livelocked thread cannot flood the console and move the very
+/// window being investigated.
+static REFAULT_LOOP: locktrack::diag::Counter =
+    locktrack::diag::Counter::new("same address faulted in a loop");
+
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     if let Some(ct) = current_thread_ref() {
@@ -116,13 +126,32 @@ fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip:
             .last_pf_kind
             .swap(cause as u32, core::sync::atomic::Ordering::SeqCst);
         if old_addr == addr.raw() && old_flags == flags.bits() && old_kind == cause as u32 {
-            log::debug!(
-                "page-fault: {:?} {:?} {:?} ip={:?} (repeated fault)",
-                addr,
-                cause,
-                flags,
-                ip
-            );
+            // Counted, not just noticed. Comparing against only the previous fault cannot tell a
+            // benign repeat from a livelock, and `log::debug!` is filtered out at the level these
+            // runs use -- so this detector has been present and silent.
+            let n = ct
+                .last_pf_count
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if n >= REFAULT_LOOP_AT && n.is_power_of_two() && REFAULT_LOOP.hit() {
+                emerglogln!(
+                    "refault loop: thread {} faulted {} times at {:?} ({:?}, {:?}) ip={:?}",
+                    ct.id(),
+                    n,
+                    addr,
+                    cause,
+                    flags,
+                    ip,
+                );
+                // Names the object that last occupied this slot, which is the thing a violation
+                // cannot report once the region is gone -- and every category-A wedge so far has
+                // been on a thread the pager reported a deleted object to.
+                if let Ok(slot) = TryInto::<Slot>::try_into(addr) {
+                    report_unmap_history(slot.raw());
+                }
+            }
+        } else {
+            ct.last_pf_count
+                .store(0, core::sync::atomic::Ordering::Relaxed);
         }
     }
 }

@@ -404,11 +404,13 @@ impl RunCompLoader {
         // We don't want to drop anymore, since now drop-cleanup will be handled by RunCompLoader.
         std::mem::forget(loads);
 
-        tracing::trace!(
-            "prepped in {}ms, loaded in {}ms, relocated in {}ms",
-            (_start_2 - _start_1).as_millis(),
-            (_start_3 - _start_2).as_millis(),
-            _start_3.elapsed().as_millis()
+        // Microseconds, not millis: individual phases are frequently sub-millisecond.
+        tracing::info!(
+            "COMPLOAD {}: prepped {}us, loaded {}us, relocated {}us",
+            comp_name,
+            (_start_2 - _start_1).as_micros(),
+            (_start_3 - _start_2).as_micros(),
+            _start_3.elapsed().as_micros()
         );
 
         Ok(RunCompLoader {

@@ -331,7 +331,26 @@ fn write_cross_file(
             triple,
         )?;
         if tool == "c_link_args" || tool == "cpp_link_args" {
-            write!(&mut cf, "'-z', 'norelro'",)?;
+            // -Bsymbolic-non-weak-functions binds libc's calls to its own non-weak functions at
+            // link time. 323 of libc.so's 410 symbolic relocations resolve within libc itself, and
+            // every compartment loads libc.so, so this removes those lookups from each compartment
+            // load. It does not change which definition wins: dynlink already searches the
+            // referencing library first (see Context::do_lookup_symbol), so an intra-libc call
+            // already binds locally at runtime.
+            //
+            // The `non-weak` variant is required. twz-rt exports weak malloc/free/getenv/fwrite/
+            // fprintf stubs that log "not yet implemented"; plain -Bsymbolic-functions would let
+            // those shadow the real definitions for anything that legitimately interposes.
+            //
+            // Must be spelled -Wl,: these args are handed to clang, which parses a bare
+            // -Bsymbolic... as -B <prefix-dir> (the same -B used just above for the LLVM bin dir).
+            //
+            // RELR is deliberately absent here: the Twizzler clang driver already passes
+            // --pack-dyn-relocs=relr (clang/lib/Driver/ToolChains/Twizzler.cpp).
+            write!(
+                &mut cf,
+                "'-z', 'norelro', '-Wl,-Bsymbolic-non-weak-functions'",
+            )?;
         }
         writeln!(&mut cf, "]")?;
     }

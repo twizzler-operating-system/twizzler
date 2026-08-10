@@ -150,24 +150,56 @@ fn did_pass(x: u64, y: u64, l: u64, n: u64) -> bool {
 
 fn reserve_write(state: u64, len: usize) -> u64 {
     let len = len as u64;
-    let wr = write_resv(state);
+    let old_wr = write_resv(state);
     let mut wh = write_head(state);
     let mut rh = read_head(state);
 
-    let passed_rh = did_pass(wr, rh, len, KEC_BUFFER_LEN as u64);
-    let passed_wh = did_pass(wr, wh, len, KEC_BUFFER_LEN as u64);
+    let passed_rh = did_pass(old_wr, rh, len, KEC_BUFFER_LEN as u64);
+    let passed_wh = did_pass(old_wr, wh, len, KEC_BUFFER_LEN as u64);
 
-    let wr = (wr + len) % KEC_BUFFER_LEN as u64;
+    let wr = (old_wr + len) % KEC_BUFFER_LEN as u64;
 
     if passed_rh {
         rh = wr;
     }
 
     if passed_wh {
-        wh = (wr - len) % KEC_BUFFER_LEN as u64;
+        // Keep the pre-advance reservation rather than recovering it as `wr - len`: once the
+        // advance has wrapped, `wr < len` and that subtraction underflows. It panics in a checked
+        // build and wraps to a plausible-looking index in a release one.
+        wh = old_wr;
     }
 
     new_state(rh, wh, wr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KEC_BUFFER_LEN, new_state, read_head, reserve_write, write_head, write_resv};
+
+    /// Advancing the reservation past the write head sets the head to where the reservation was.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_reserve_write_passes_head() {
+        let state = new_state(0, 150, 100);
+        let next = reserve_write(state, 100);
+        assert_eq!(write_resv(next), 200);
+        assert_eq!(write_head(next), 100);
+        assert_eq!(read_head(next), 0);
+    }
+
+    /// The same, with the advance wrapping the buffer: recovering the old reservation as
+    /// `wr - len` underflows here, which panics in a checked build and silently yields a wrong
+    /// index in a release one.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_reserve_write_passes_head_wrapped() {
+        let len = 200;
+        let old_wr = KEC_BUFFER_LEN as u64 - 96;
+        let state = new_state(200, old_wr + 50, old_wr);
+        let next = reserve_write(state, len as usize);
+        assert_eq!(write_resv(next), (old_wr + len) % KEC_BUFFER_LEN as u64);
+        assert_eq!(write_head(next), old_wr);
+        assert_eq!(read_head(next), 200);
+    }
 }
 
 fn commit_write(state: u64, len: usize) -> u64 {

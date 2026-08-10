@@ -29,10 +29,21 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct RelocCache<'a> {
     syms: HashMap<CompartmentId, HashMap<String, RelocatedSymbol<'a>>>,
+    /// Resolutions served from the cache (cheap).
+    pub(crate) hits: usize,
+    /// Resolutions that fell through to a full lookup_symbol() search (expensive: walks the
+    /// dependency list, then the whole graph on miss). Reported so the per-lookup cost can be
+    /// derived from the relocation time.
+    pub(crate) misses: usize,
 }
 
 impl<'a> RelocCache<'a> {
     pub fn find(&mut self, name: &str, from: CompartmentId) -> Option<&RelocatedSymbol<'a>> {
+        if self.syms.get(&from).is_some_and(|m| m.contains_key(name)) {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
         let entry = self.syms.entry(from).or_default();
         entry.get(name)
     }
@@ -225,6 +236,7 @@ impl Context {
         reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
         let _start_1 = Instant::now();
+        let (_hits_0, _misses_0) = (reloc_cache.hits, reloc_cache.misses);
         let lib = self.get_library(lib_id)?;
         debug!("{}: relocating library", lib);
         let common = lib.get_elf_common()?;
@@ -363,11 +375,15 @@ impl Context {
                 reloc_cache,
             )?;
         }
-        tracing::trace!(
-            "reloc {}: {}ms prep, {}ms reloc",
+        // Microseconds, not millis: a single library's relocation is often sub-millisecond, which
+        // the old as_millis() reporting rounded to 0.
+        tracing::info!(
+            "reloc {}: {}us prep, {}us reloc, {} lookups, {} cached",
             lib.name,
-            (_start_2 - _start_1).as_millis(),
-            _start_2.elapsed().as_millis()
+            (_start_2 - _start_1).as_micros(),
+            _start_2.elapsed().as_micros(),
+            reloc_cache.misses - _misses_0,
+            reloc_cache.hits - _hits_0,
         );
 
         Ok(())
@@ -441,13 +457,24 @@ impl Context {
     /// been relocated.
     pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
         let name = self.get_library(root_id)?.name.as_str().into();
+        let rootname = self.get_library(root_id)?.name.clone();
+        let _start = Instant::now();
         let mut reloc_cache = RelocCache::default();
-        self.relocate_recursive(root_id, &mut reloc_cache)
+        let res = self
+            .relocate_recursive(root_id, &mut reloc_cache)
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::RelocationFail { library: name },
                     vec![e],
                 )
-            })
+            });
+        tracing::info!(
+            "reloc_all {}: {}us total, {} lookups, {} cached",
+            rootname,
+            _start.elapsed().as_micros(),
+            reloc_cache.misses,
+            reloc_cache.hits,
+        );
+        res
     }
 }

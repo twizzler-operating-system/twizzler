@@ -272,10 +272,9 @@ def sweep_schedule(pid: int) -> Optional[List[str]]:
         # rebuild costs an ETA, and must not cost the status report.
         with contextlib.redirect_stderr(io.StringIO()):
             args = many.build_parser().parse_args(rest)
-        return [
-            f"round{n}-{c.name}"
-            for n, c in many.build_jobs(args.rounds, args.slow_rounds, args.enable_slow_debug)
-        ]
+        # The whole namespace, so a new selection flag over there cannot silently drop out of the
+        # schedule here.
+        return [f"round{n}-{c.name}" for n, c in many.build_jobs(args)]
     except SystemExit:
         return None
     except Exception:

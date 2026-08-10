@@ -31,6 +31,10 @@ building underneath them, so prefer --reuse-images when something else is using 
 Serial transcripts land in target/results/many-<tag>/, named `round<N>-<config>.log`, with
 `-FAILED` appended before the extension for runs that did not pass; `<same>.out` holds that run's
 xtask output, since concurrent runs cannot all stream to the console.
+
+By default a sweep runs the whole matrix. `--config` narrows it to named configurations instead,
+which is what a reproducer wants -- a known-failing config hammered N times rather than a matrix
+swept once. See `parse_config_spec` for the accepted spelling.
 """
 
 import argparse
@@ -39,6 +43,7 @@ import fcntl
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -49,7 +54,11 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent
 
+# What the default matrix sweeps. `full-debug` is deliberately not here: it is a real xtask profile
+# and selectable by name, but it is slower than debug and adds a third of the matrix for no
+# stability coverage the other two do not already give.
 PROFILES = ("release", "debug")
+ALL_PROFILES = ("release", "debug", "full-debug")
 SMP_COUNTS = (1, 2, 4)
 
 # many.py never passes --arch, so x86_64 is the only target in play.
@@ -141,8 +150,8 @@ class Lane:
 
 
 def is_slow_config(config: Config) -> bool:
-    """debug under emulation: the one quadrant an order of magnitude slower than the rest."""
-    return config.profile == "debug" and not config.kvm
+    """A debug build under emulation: the one quadrant an order of magnitude slower than the rest."""
+    return config.profile in ("debug", "full-debug") and not config.kvm
 
 
 def configurations() -> List[Config]:
@@ -154,17 +163,114 @@ def configurations() -> List[Config]:
     ]
 
 
-def build_jobs(rounds: int, slow_rounds: int, slow_debug: bool) -> List[Tuple[int, Config]]:
-    """Round-major order, so a full sweep of every configuration completes before round 2 starts."""
+# --- configuration selection --------------------------------------------------------------------
+
+# Aliases, not renames. `Config.name` stays `<profile>-{kvm,nokvm}-smp<N>`, because it names result
+# files, the serial-log label, and everything check-many.py parses -- so the selector is where
+# alternate spellings live and the stored form never moves.
+_PROFILE_TOKENS = {p: p for p in ALL_PROFILES}
+_ACCEL_TOKENS = {
+    "kvm": True,
+    "qemu-kvm": True,
+    "nokvm": False,
+    "tcg": False,
+    "qemu-tcg": False,
+}
+# Both spellings: `smp4` matches how a config prints, a bare `4` is what you type.
+_SMP_TOKENS = {**{f"smp{n}": n for n in SMP_COUNTS}, **{str(n): n for n in SMP_COUNTS}}
+
+
+def _take(tokens: List[str], vocab: Dict[str, object]) -> Tuple[Optional[object], List[str]]:
+    """Consume the longest known token from the front of `tokens`, or nothing.
+
+    Longest-first because both `full-debug` and `qemu-kvm` are two `-`-separated words, so a plain
+    per-word split cannot tell `full-debug-kvm` from a profile called `full`. No accel or smp token
+    is also a profile token, so greedy is unambiguous here.
+    """
+    if tokens and tokens[0] == "*":
+        return None, tokens[1:]
+    for width in (2, 1):
+        if len(tokens) >= width:
+            key = "-".join(tokens[:width])
+            if key in vocab:
+                return vocab[key], tokens[width:]
+    return None, tokens
+
+
+def parse_config_spec(spec: str) -> List[Config]:
+    """Expand one `--config` value into the configurations it names.
+
+    The shape is `<profile>-<accel>-<smp>`, any field either omitted or `*` to mean "all":
+
+        release-kvm-smp4     one configuration
+        release-qemu-kvm-4   the same one; `qemu-kvm`/`qemu-tcg` and a bare `4` are accepted
+        '*-kvm-smp4'         every profile, KVM, 4 cpus
+        debug                every debug configuration
+        smp1                 every configuration with one cpu
+
+    Leading fields may be dropped as well as trailing ones, so `kvm-smp4` and `smp4` both work.
+    Raises ValueError on anything it cannot account for -- a typo that silently selected nothing
+    would look exactly like a sweep that found no failures.
+    """
+    tokens = [t for t in spec.strip().lower().split("-") if t]
+    if not tokens:
+        raise ValueError("empty configuration")
+    rest = tokens
+    profile, rest = _take(rest, _PROFILE_TOKENS)
+    kvm, rest = _take(rest, _ACCEL_TOKENS)
+    smp, rest = _take(rest, _SMP_TOKENS)
+    if rest:
+        raise ValueError(f"unrecognized in {spec!r}: {'-'.join(rest)!r}")
+
+    profiles = [profile] if profile is not None else list(ALL_PROFILES)
+    accels = [kvm] if kvm is not None else [True, False]
+    smps = [smp] if smp is not None else list(SMP_COUNTS)
+    return [Config(p, a, s) for p in profiles for a in accels for s in smps]
+
+
+def select_configurations(specs: List[str]) -> List[Config]:
+    """Union of every `--config`, deduplicated, in a stable order."""
+    seen = {}
+    for spec in specs:
+        for config in parse_config_spec(spec):
+            seen[config] = None
+    order = {c: i for i, c in enumerate(
+        Config(p, a, s) for p in ALL_PROFILES for a in (True, False) for s in SMP_COUNTS
+    )}
+    return sorted(seen, key=lambda c: order[c])
+
+
+def config_vocabulary() -> str:
+    return (
+        f"profile: {', '.join(ALL_PROFILES)}; "
+        f"accel: {', '.join(sorted(_ACCEL_TOKENS))}; "
+        f"smp: {', '.join(f'smp{n}' for n in SMP_COUNTS)}; '*' for any"
+    )
+
+
+def build_jobs(args: argparse.Namespace) -> List[Tuple[int, Config]]:
+    """Round-major order, so a full sweep of every configuration completes before round 2 starts.
+
+    Takes the whole namespace rather than the three fields it needs, because check-many.py rebuilds
+    a running sweep's schedule by calling this with a re-parsed argv -- and a signature that grows a
+    field silently breaks that instead of failing loudly.
+    """
+    if args.config:
+        # Naming a configuration is the opt-in, so the matrix's own gates -- --enable-slow-debug and
+        # the separate --slow-rounds budget -- do not apply. Asking for N runs of one config and
+        # getting one because it happened to be a TCG debug build is not a useful default.
+        selected = select_configurations(args.config)
+        return [(n, c) for n in range(1, args.rounds + 1) for c in selected]
+
     jobs = []
-    for round_no in range(1, max(rounds, slow_rounds) + 1):
+    for round_no in range(1, max(args.rounds, args.slow_rounds) + 1):
         for config in configurations():
             if config.kvm:
-                limit = rounds
-            elif config.profile == "debug" and not slow_debug:
+                limit = args.rounds
+            elif config.profile == "debug" and not args.enable_slow_debug:
                 limit = 0
             else:
-                limit = slow_rounds
+                limit = args.slow_rounds
             if round_no <= limit:
                 jobs.append((round_no, config))
     return jobs
@@ -257,15 +363,47 @@ def prune_dead_lanes(work: Path, keep_tag: str) -> int:
     return reclaimed
 
 
-def disk_usage_note(work: Path, lanes: int) -> str:
-    """Rough space needed: two masters per profile plus a private pair per lane."""
+def kill_stray_qemu(lane_root: Path) -> int:
+    """Kill any qemu still holding this sweep's lane images, and report how many there were.
+
+    xtask spawns qemu, so qemu is this driver's *grandchild*: terminating the lanes' xtask processes
+    on interrupt leaves it running, reparented to init. That is not merely untidy. A stray qemu runs
+    a full vcpu set flat out and holds a write lock on its lane's disk, so the next sweep starts on a
+    machine that is quietly oversubscribed -- and since these sweeps exist to measure failure
+    *rates*, the resulting timeouts on slow tests are indistinguishable from product bugs. One
+    session lost two sweeps to twelve strays burning eleven cores between them.
+
+    Matched on the lane root in the qemu command line, which contains this sweep's tag, so a
+    concurrent sweep's processes are never touched.
+    """
+    needle = str(lane_root).encode()
+    killed = 0
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue  # exited between listing and reading
+        if b"qemu-system" not in cmdline or needle not in cmdline:
+            continue
+        try:
+            os.kill(int(entry.name), signal.SIGKILL)
+            killed += 1
+        except OSError:
+            pass
+    return killed
+
+
+def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
+    """Rough space needed: two masters per profile in play plus a private pair per lane."""
     per_pair = 0
-    for profile in PROFILES:
+    for profile in profiles:
         src = dev_boot_image(profile)
         if src.exists():
             per_pair = max(per_pair, src.stat().st_blocks * 512)
     data = DEV_DATA_IMAGE.stat().st_blocks * 512 if DEV_DATA_IMAGE.exists() else 0
-    need = (per_pair + data) * (len(PROFILES) + lanes)
+    need = (per_pair + data) * (len(profiles) + lanes)
     free = shutil.disk_usage(work.parent if work.parent.exists() else REPO_ROOT).free
     return f"~{need / 2**30:.0f}GB of copies against {free / 2**30:.0f}GB free"
 
@@ -639,9 +777,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-r", "--rounds", type=int, default=1,
                         help="Times to run each KVM-accelerated configuration (default: 1).")
+    parser.add_argument("--config", action="append", default=[], metavar="SPEC",
+                        help="Run only the named configuration(s) instead of the whole matrix; "
+                             "repeatable. SPEC is <profile>-<accel>-<smp>, any field omitted or "
+                             "'*' meaning all -- e.g. release-kvm-smp4, '*-kvm-smp4', debug, "
+                             "smp1. Naming a configuration is the opt-in, so --slow-rounds and "
+                             "--enable-slow-debug do not apply: every selected configuration runs "
+                             "--rounds times. Vocabulary -- " + config_vocabulary() + ".")
     parser.add_argument("--slow-rounds", type=int, default=1,
                         help="Times to run each non-KVM configuration, which is far slower "
-                             "(default: 1). 0 skips them entirely.")
+                             "(default: 1). 0 skips them entirely. Ignored with --config.")
     parser.add_argument("--enable-slow-debug", action="store_true",
                         help="Include debug+non-KVM configurations, the slowest quadrant. Their "
                              "heartbeat budget is scaled automatically (--slow-debug-factor) and "
@@ -712,7 +857,10 @@ def main() -> int:
     if args.max_slow is None:
         args.max_slow = max(1, args.jobs // 2)
 
-    jobs = build_jobs(args.rounds, args.slow_rounds, args.enable_slow_debug)
+    try:
+        jobs = build_jobs(args)
+    except ValueError as e:
+        parser.error(f"--config: {e}. Vocabulary -- {config_vocabulary()}.")
     if not jobs:
         print("nothing to run")
         return 0
@@ -723,7 +871,9 @@ def main() -> int:
         args.results_dir = REPO_ROOT / "target" / "results" / f"many-{args.tag}"
 
     work: Path = args.work_dir
-    needed = [p for p in PROFILES if any(c.profile == p for _, c in jobs)]
+    # Over ALL_PROFILES, not PROFILES: --config can name a profile the default matrix never sweeps,
+    # and a profile that is scheduled but never built fails every run of it at image-copy time.
+    needed = [p for p in ALL_PROFILES if any(c.profile == p for _, c in jobs)]
     lanes = [
         Lane(
             index=i,
@@ -750,7 +900,7 @@ def main() -> int:
                   f"heartbeat x{args.slow_debug_factor}")
         print(f"results  {rel(args.results_dir)}")
         print(f"lanes    {rel(work / 'lanes' / args.tag)}")
-        print(disk_usage_note(work, len(lanes)))
+        print(disk_usage_note(work, len(lanes), tuple(needed)))
         return 0
 
     work.mkdir(parents=True, exist_ok=True)
@@ -804,7 +954,7 @@ def main() -> int:
     slow_note = (f", {n_slow} debug+TCG capped at {max(1, min(args.max_slow, len(lanes)))} at once"
                  if n_slow and args.max_slow else "")
     print(f"\ntag {args.tag}: running {len(runnable)} configurations across {len(lanes)} lanes"
-          f"{slow_note} ({disk_usage_note(work, len(lanes))})", flush=True)
+          f"{slow_note} ({disk_usage_note(work, len(lanes), tuple(needed))})", flush=True)
     print(f"results -> {rel(args.results_dir)}", flush=True)
 
     pending: List[Tuple[int, Config]] = list(runnable)
@@ -908,6 +1058,12 @@ def main() -> int:
         report(results, len(jobs), builds, time.monotonic() - started)
         return 130
     finally:
+        # Before the rmtree, and unconditionally: a stray qemu outlives --keep-lanes too, and
+        # deleting images out from under a running qemu is its own kind of confusing.
+        strays = kill_stray_qemu(lane_root)
+        if strays:
+            print(f"killed {strays} stray qemu process(es) still holding this sweep's lanes",
+                  flush=True)
         if not args.keep_lanes:
             for lane in lanes:
                 shutil.rmtree(lane.directory, ignore_errors=True)

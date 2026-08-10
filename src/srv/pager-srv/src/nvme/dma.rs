@@ -108,45 +108,46 @@ pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &Arc<CachedDmaPool>, mode: 
             buffer: false,
         },
         _ => {
-            let mut first_prp_page = dma.get().unwrap();
-            let start = first_prp_page
-                .pin()
-                .unwrap()
-                .into_iter()
-                .next()
-                .unwrap()
-                .addr()
-                .into();
-            let mut list = vec![first_prp_page];
-            let embed = [pin_iter.next().unwrap().addr().into(), start];
-            for (num, page) in pin_iter.enumerate() {
-                let index = num % entries_per_page;
-                if (num + 1) % entries_per_page == 0 && num != pin_len - 1 {
-                    // Last entry with more to record, chain.
-                    let mut next_prp_page = dma.get().unwrap();
-                    let pin = next_prp_page.pin().unwrap();
-                    assert_eq!(pin.len(), 1);
-                    let phys = pin.into_iter().next().unwrap().addr();
-                    list.last_mut()
-                        .unwrap()
-                        .with_mut(index..(index + 1), |array: &mut [u64]| {
-                            array[0] = phys.into();
-                        });
+            // The first data page rides in the command itself; the rest go in a chain of PRP list
+            // pages. Every page but the last spends its final entry on a pointer to the next, so
+            // only the last one gets to use all `entries_per_page` slots for data.
+            let embed_first: u64 = pin[0].into();
+            let rest = &pin[1..];
+            let per_page = if rest.len() <= entries_per_page {
+                entries_per_page
+            } else {
+                entries_per_page - 1
+            };
 
-                    list.push(next_prp_page);
-                }
+            // Built back to front, so each page already knows the address it has to chain to.
+            let mut list = Vec::with_capacity(rest.len().div_ceil(per_page));
+            let mut next: Option<u64> = None;
+            for chunk in rest.chunks(per_page).rev() {
+                let mut page = dma.get().unwrap();
+                let pin = page.pin().unwrap();
+                assert_eq!(pin.len(), 1);
+                let addr: u64 = pin.into_iter().next().unwrap().addr().into();
 
-                list.last_mut()
-                    .unwrap()
-                    .with_mut(index..(index + 1), |array: &mut [u64]| {
-                        array[0] = page.addr().into();
-                    });
+                // One `with_mut` for the whole page, rather than one per entry.
+                let fill = chunk.len() + next.is_some() as usize;
+                page.with_mut(0..fill, |array: &mut [u64]| {
+                    for (slot, phys) in array.iter_mut().zip(chunk.iter()) {
+                        *slot = (*phys).into();
+                    }
+                    if let Some(next) = next {
+                        array[chunk.len()] = next;
+                    }
+                });
+
+                next = Some(addr);
+                list.push(page);
             }
+
             PrpMgr {
                 _list: list,
                 dma: dma.clone(),
                 mode,
-                embed,
+                embed: [embed_first, next.unwrap()],
                 buffer: false,
             }
         }
