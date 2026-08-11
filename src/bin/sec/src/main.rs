@@ -15,7 +15,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{
-    Cap, SecCtx, SecCtxFlags, SecureBuilderExt as _, SigningKey, SigningScheme,
+    Cap, Del, SecCtx, SecCtxFlags, SecureBuilderExt as _, SigningKey, SigningScheme,
 };
 
 mod args;
@@ -165,6 +165,56 @@ fn main() {
 
                     println!("Inserted\n{cap:?}\ninto {:?}", modifying_sec_ctx.base());
                 }
+
+                CtxAddCommands::Del(args) => {
+                    if let Some(sec_ctx_id) = args.executing_ctx {
+                        let sec_ctx = SecCtx::try_from(sec_ctx_id).unwrap();
+                        sys_sctx_attach(sec_ctx.id()).unwrap();
+                        sys_thread_set_active_sctx_id(sec_ctx.id()).unwrap();
+                        println!("attached to SecCtx: {sec_ctx_id:#?}");
+                    }
+                    // map in signing key
+                    let s_key = Object::<SigningKey>::map(args.signing_key_id, MapFlags::READ)
+                        .expect("failed to map signing key object");
+
+                    let mut modifying_sec_ctx = SecCtx::try_from(args.modifying_ctx)
+                        .expect("failed to map receiving SecCtx");
+
+                    let provider_sec_ctx =
+                        SecCtx::try_from(args.provider_ctx).expect("failed to map provider SecCtx");
+
+                    // find the existing capability/delegation for the target object
+                    // inside the provider's security context, to delegate.
+                    let inner = *provider_sec_ctx
+                        .base()
+                        .map
+                        .get(&args.target_obj)
+                        .expect("provider's security context has no entry for the target object")
+                        .last()
+                        .expect("provider's map entry for the target object was empty");
+
+                    // create a new delegation
+                    let del = Del::new(
+                        Some(modifying_sec_ctx.id()),
+                        args.provider_ctx,
+                        args.target_obj,
+                        inner,
+                        Default::default(),
+                        Protections::all(),
+                        Default::default(),
+                        Default::default(),
+                        s_key.base(),
+                    )
+                    .unwrap();
+
+                    println!("Inserting\n{del:?}");
+
+                    modifying_sec_ctx
+                        .insert_del(del)
+                        .expect("Failed to insert delegation!");
+
+                    println!("into {:?}", modifying_sec_ctx.base());
+                }
             },
             CtxCommands::New(args) => {
                 let flags = if args.undetachable {
@@ -177,7 +227,7 @@ fn main() {
                     ObjectCreate::new(
                         Default::default(),
                         Default::default(),
-                        None,
+                        args.verifying_key_id,
                         Default::default(),
                         Protections::all(),
                     ),

@@ -60,7 +60,7 @@ impl Del {
         prot_mask: Protections,
         gates: Gate,
         hashing_algo: HashingAlgo,
-        target_priv_key: &SigningKey,
+        ctx_priv_key: &SigningKey,
     ) -> Result<Self, SecurityError> {
         #[cfg(feature = "user")]
         check_nest_depth(provider, inner)?;
@@ -80,13 +80,13 @@ impl Del {
         let sig = match hashing_algo {
             HashingAlgo::Blake3 => {
                 let hash = blake3::hash(&hash_arr);
-                target_priv_key.sign(hash.as_bytes())?
+                ctx_priv_key.sign(hash.as_bytes())?
             }
             HashingAlgo::Sha256 => {
                 let mut hasher = Sha256::new();
                 hasher.update(hash_arr);
                 let hash = hasher.finalize();
-                target_priv_key.sign(hash.as_slice())?
+                ctx_priv_key.sign(hash.as_slice())?
             }
         };
 
@@ -104,7 +104,10 @@ impl Del {
     }
 
     /// Verifies the signature inside this delegation
-    pub fn verify_sig(&self, verifying_key: &VerifyingKey) -> Result<(), SecurityError> {
+    pub fn verify_sig(
+        &self,
+        provider_ctx_verifying_key: &VerifyingKey,
+    ) -> Result<(), SecurityError> {
         let hash_arr = Self::serialize(
             self.receiver,
             self.provider,
@@ -121,13 +124,13 @@ impl Del {
         match hash_algo {
             HashingAlgo::Blake3 => {
                 let hash = blake3::hash(&hash_arr);
-                verifying_key.verify(hash.as_bytes(), &self.sig)
+                provider_ctx_verifying_key.verify(hash.as_bytes(), &self.sig)
             }
             HashingAlgo::Sha256 => {
                 let mut hasher = Sha256::new();
                 hasher.update(&hash_arr);
                 let result = hasher.finalize();
-                verifying_key.verify(result.as_slice(), &self.sig)
+                provider_ctx_verifying_key.verify(result.as_slice(), &self.sig)
             }
         }
     }
