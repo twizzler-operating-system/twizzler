@@ -15,7 +15,7 @@ use twizzler_security::{
 use crate::{
     memory::context::{
         KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
-        kernel_context,
+        kernel_context, virtmem::KernelObjectVirtHandle,
     },
     mutex::Mutex,
     obj::{LookupFlags, LookupResult, lookup_object},
@@ -108,39 +108,9 @@ impl SecurityContext {
         // from now on, whenever we return granted_perms, it must be &'d with the sec_ctx global
         // mask, since there are some entries inside the base.map()
 
-        let v_obj = {
-            let target_obj = match lookup_object(_id, LookupFlags::empty()) {
-                LookupResult::Found(obj) => obj,
-                _ => {
-                    granted_perms.provide &= base.global_mask;
-                    return granted_perms;
-                }
-            };
-
-            let Some(meta) = target_obj.read_meta(true) else {
-                granted_perms.provide &= base.global_mask;
-                return granted_perms;
-            };
-
-            match lookup_object(meta.kuid, LookupFlags::empty()) {
-                LookupResult::Found(v_obj) => {
-                    let k_ctx = kernel_context();
-
-                    let handle =
-                        k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
-                            v_obj,
-                            Protections::READ,
-                            CacheType::WriteBack,
-                            MapFlags::STABLE,
-                        ));
-                    handle
-                }
-                // verifying key wasnt found, return no perms
-                _ => {
-                    granted_perms.provide &= base.global_mask;
-                    return granted_perms;
-                }
-            }
+        let Some(v_obj) = fetch_verifying_key_from_obj_id(_id) else {
+            granted_perms.provide &= base.global_mask;
+            return granted_perms;
         };
 
         let v_key = v_obj.base();
@@ -156,15 +126,23 @@ impl SecurityContext {
                         return granted_perms;
                     };
 
-                    if del.verify_sig(v_key).is_err() || del.target != _id {
+                    let Some(provider_ctx_v_obj) = fetch_verifying_key_from_obj_id(del.provider)
+                    else {
+                        // what happens if your provider security context has no
+                        // verifying key, meaning it was created as a bare object
+                        // how about we just say thats impossible?
+                        //TODO: need to ask owen about the stuff here
+                        granted_perms.provide &= base.global_mask;
+                        return granted_perms;
+                    };
+
+                    let provider_ctx_v_key = provider_ctx_v_obj.base();
+
+                    if del.verify_sig(provider_ctx_v_key).is_err() || del.target != _id {
                         warn!("Signature invalid for del: {del:#?}, moving on to next entry");
                         continue;
                     }
 
-                    // chase `inner` through `provider` objects until we bottom out at a
-                    // `Cap`, ANDing down `prot_mask` at every hop. Bounded by
-                    // `MAX_DELEGATION_NEST` since a `Del` can't see how deep the chain it
-                    // points into already is.
                     let mut mask = del.prot_mask;
                     let mut provider = del.provider;
                     let mut item_type = del.inner.item_type;
@@ -201,7 +179,23 @@ impl SecurityContext {
                                 else {
                                     break;
                                 };
-                                if next_del.verify_sig(v_key).is_err() || next_del.target != _id {
+
+                                let Some(provider_ctx_v_obj) =
+                                    fetch_verifying_key_from_obj_id(del.provider)
+                                else {
+                                    // what happens if your provider security context has no
+                                    // verifying key, meaning it was created as a bare object
+                                    // how about we just say thats impossible?
+                                    //TODO: need to ask owen about the stuff here
+                                    granted_perms.provide &= base.global_mask;
+                                    return granted_perms;
+                                };
+
+                                let provider_ctx_v_key = provider_ctx_v_obj.base();
+
+                                if next_del.verify_sig(provider_ctx_v_key).is_err()
+                                    || next_del.target != _id
+                                {
                                     break;
                                 }
                                 mask &= next_del.prot_mask;
@@ -454,6 +448,33 @@ impl Drop for SecCtxMgr {
         }
         if inner.active.id() != KERNEL_SCTX && Arc::strong_count(&inner.active) == 2 {
             global.remove(&inner.active.id());
+        }
+    }
+}
+
+fn fetch_verifying_key_from_obj_id(id: ObjID) -> Option<KernelObjectVirtHandle<VerifyingKey>> {
+    let obj = match lookup_object(id, LookupFlags::empty()) {
+        LookupResult::Found(obj) => obj,
+        _ => return None,
+    };
+
+    let Some(meta) = obj.read_meta(true) else {
+        return None;
+    };
+
+    match lookup_object(meta.kuid, LookupFlags::empty()) {
+        LookupResult::Found(v_obj) => {
+            let k_ctx = kernel_context();
+            let handle = k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
+                v_obj,
+                Protections::READ,
+                CacheType::WriteBack,
+                MapFlags::STABLE,
+            ));
+            Some(handle)
+        }
+        _ => {
+            return None;
         }
     }
 }

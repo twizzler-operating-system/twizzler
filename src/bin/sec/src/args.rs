@@ -46,6 +46,7 @@ pub enum KeyCommands {
 #[derive(Subcommand, Debug)]
 pub enum CtxAddCommands {
     Cap(CapAddArgs),
+    Del(DelAddArgs),
 }
 
 #[derive(Args, Debug)]
@@ -59,6 +60,31 @@ pub struct CapAddArgs {
     pub modifying_ctx: ObjID,
 
     /// The target object this capability will be usable for.
+    #[arg(short = 't', long, value_parser=parse_obj_id)]
+    pub target_obj: ObjID,
+
+    /// Optionally specify if this operation needs to be specified in a
+    /// specific security context
+    #[arg(short = 'e', long, value_parser=parse_obj_id)]
+    pub executing_ctx: Option<ObjID>,
+}
+
+#[derive(Args, Debug)]
+pub struct DelAddArgs {
+    /// The signing key of the providing Security Context object
+    #[arg(short = 's', long, value_parser=parse_obj_id)]
+    pub signing_key_id: ObjID,
+
+    /// The Security Context that will receive this delegation (gets modified).
+    #[arg(short = 'm', long, value_parser=parse_obj_id)]
+    pub modifying_ctx: ObjID,
+
+    /// The Security Context that already holds the capability/delegation being
+    /// delegated for the target object.
+    #[arg(short = 'p', long, value_parser=parse_obj_id)]
+    pub provider_ctx: ObjID,
+
+    /// The target object this delegation will (transitively) be usable for.
     #[arg(short = 't', long, value_parser=parse_obj_id)]
     pub target_obj: ObjID,
 
@@ -140,6 +166,10 @@ pub struct NewCtxArgs {
     /// Makes this security context undetachable once attached to.
     #[arg(short, long, default_value = "false")]
     pub undetachable: bool,
+
+    /// The verifying key to use when creating the SecCtx Object
+    #[arg(short = 'v', long, value_parser=parse_obj_id)]
+    pub verifying_key_id: Option<ObjID>,
 }
 
 #[derive(Debug, Args)]
