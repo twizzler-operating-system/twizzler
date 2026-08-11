@@ -339,11 +339,39 @@ impl<'comp, A, R> DynamicSecGate<'comp, A, R> {
     }
 }
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+pub mod gatestats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static FRAME: AtomicU64 = AtomicU64::new(0);
+    static CALL: AtomicU64 = AtomicU64::new(0);
+    static RESTORE: AtomicU64 = AtomicU64::new(0);
+    pub fn record(frame: u64, call: u64, restore: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let f = FRAME.fetch_add(frame, Ordering::Relaxed) + frame;
+        let c = CALL.fetch_add(call, Ordering::Relaxed) + call;
+        let r = RESTORE.fetch_add(restore, Ordering::Relaxed) + restore;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "GATESTATS {} dyn-gate calls: frame {} us, call {} us, restore {} us",
+                n,
+                f / 1000,
+                c / 1000,
+                r / 1000,
+            );
+        }
+    }
+}
+
 pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
     target: DynamicSecGate<A, R>,
     args: A,
 ) -> Result<R, TwzError> {
+    let t_frame = std::time::Instant::now();
     let frame = frame();
+    let frame_ns = t_frame.elapsed().as_nanos() as u64;
+    let t_call = std::time::Instant::now();
     // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
     let ret = GateCallInfo::with_alloca(get_thread_id(), get_sctx_id(), |info| {
         Arguments::<A>::with_alloca(args, |args| {
@@ -360,7 +388,10 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
             })
         })
     });
+    let call_ns = t_call.elapsed().as_nanos() as u64;
+    let t_restore = std::time::Instant::now();
     restore_frame(frame);
+    gatestats::record(frame_ns, call_ns, t_restore.elapsed().as_nanos() as u64);
     ret.ok_or(ResourceError::Unavailable)?
 }
 

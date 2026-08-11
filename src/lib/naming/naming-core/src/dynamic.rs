@@ -4,7 +4,7 @@ use monitor_api::CompartmentHandle;
 use secgate::{util::Descriptor, DynamicSecGate};
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, NsNode, Result};
+use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, InlinePath, NsNode, Result};
 
 pub struct DynamicNamerAPI {
     _handle: &'static CompartmentHandle,
@@ -12,7 +12,9 @@ pub struct DynamicNamerAPI {
     mkns: DynamicSecGate<'static, (Descriptor, usize, bool), ()>,
     link: DynamicSecGate<'static, (Descriptor, usize, usize), ()>,
     get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), NsNode>,
-    open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
+    get_inline: DynamicSecGate<'static, (Descriptor, InlinePath, GetFlags), NsNode>,
+    open_handle: DynamicSecGate<'static, (), Descriptor>,
+    get_buffer: DynamicSecGate<'static, (Descriptor,), ObjID>,
     close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
     enumerate_names: DynamicSecGate<'static, (Descriptor, usize, usize, usize), usize>,
     enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>,
@@ -30,8 +32,16 @@ impl NamerAPI for DynamicNamerAPI {
         (self.get)(desc, name_len, flags)
     }
 
-    fn open_handle(&self) -> Result<(Descriptor, ObjID)> {
+    fn get_inline(&self, desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
+        (self.get_inline)(desc, path, flags)
+    }
+
+    fn open_handle(&self) -> Result<Descriptor> {
         (self.open_handle)()
+    }
+
+    fn get_buffer(&self, desc: Descriptor) -> Result<ObjID> {
+        (self.get_buffer)(desc)
     }
 
     fn close_handle(&self, desc: Descriptor) -> Result<()> {
@@ -109,10 +119,20 @@ pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
                     .dynamic_gate("get")
                     .expect("failed to find get gate call")
             },
+            get_inline: unsafe {
+                handle
+                    .dynamic_gate("get_inline")
+                    .expect("failed to find get_inline gate call")
+            },
             open_handle: unsafe {
                 handle
-                    .dynamic_gate::<(), (Descriptor, ObjID)>("open_handle")
+                    .dynamic_gate::<(), Descriptor>("open_handle")
                     .expect("failed to find open_handle gate call")
+            },
+            get_buffer: unsafe {
+                handle
+                    .dynamic_gate::<(Descriptor,), ObjID>("get_buffer")
+                    .expect("failed to find get_buffer gate call")
             },
             close_handle: unsafe {
                 handle

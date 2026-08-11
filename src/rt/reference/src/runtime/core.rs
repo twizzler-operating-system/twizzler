@@ -228,10 +228,8 @@ impl ReferenceRuntime {
             nr.insert(NameRoot::Exe, PathBuf::from("/"));
             nr.insert(NameRoot::Temp, PathBuf::from("/tmp"));
             nr.insert(NameRoot::Current, PathBuf::from("/"));
-            if let Some(namer) = crate::runtime::file::get_naming_handle() {
-                if namer.lock().unwrap().change_namespace(&current_dir).is_ok() {
-                    nr.insert(NameRoot::Current, Path::new(&current_dir).to_path_buf());
-                }
+            if crate::runtime::file::set_naming_namespace(Path::new(&current_dir)).is_ok() {
+                nr.insert(NameRoot::Current, Path::new(&current_dir).to_path_buf());
             }
 
             let ret = match monitor_api::monitor_rt_comp_ctrl(

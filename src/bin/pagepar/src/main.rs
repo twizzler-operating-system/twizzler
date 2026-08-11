@@ -70,6 +70,21 @@ fn main() {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(64);
 
+    // Syscall floor. A warm cross-compartment gate call makes eight syscalls (frame's
+    // active-sctx read, the callee's settls/sctx_attach/set-active-sctx/self-id/settls, and
+    // restore_frame's settls/set-active-sctx), so this sets how much of a ~200us gate call is
+    // just kernel round trips before anything else is blamed.
+    const SYSCALL_ITERS: u32 = 10_000;
+    let t_sys = Instant::now();
+    for _ in 0..SYSCALL_ITERS {
+        std::hint::black_box(twizzler_abi::syscall::sys_thread_self_id());
+    }
+    println!(
+        "pagepar: SYSCALL {} ns per sys_thread_self_id ({} iters)",
+        t_sys.elapsed().as_nanos() / SYSCALL_ITERS as u128,
+        SYSCALL_ITERS,
+    );
+
     let files = collect_files(&root, max_files);
     if files.is_empty() {
         println!("pagepar: no files under {}", root);

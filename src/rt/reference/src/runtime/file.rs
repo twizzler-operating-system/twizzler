@@ -3,8 +3,8 @@ use std::{
     io::{ErrorKind, SeekFrom},
     mem::ManuallyDrop,
     net::Shutdown,
-    ops::Deref,
-    path::PathBuf,
+    ops::{Deref, DerefMut},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -373,26 +373,113 @@ lazy_static! {
     };
 }
 
-static HANDLE: OnceLock<Mutex<DynamicNamingHandle>> = OnceLock::new();
+/// Idle naming handles, and a latch recording that naming came up at all.
+///
+/// One handle per compartment behind a mutex meant every path lookup in the process serialized
+/// against every other one -- at four threads that was two thirds of the cost of `File::open`. A
+/// pool sizes itself to whatever parallelism actually shows up, and a handle costs only a
+/// descriptor now that its buffer is created on demand.
+static HANDLE_POOL: Mutex<Vec<PooledHandle>> = Mutex::new(Vec::new());
+static NAMING_UP: OnceLock<()> = OnceLock::new();
+
+/// The working namespace is per-handle state on the server, but callers expect it to be a property
+/// of the process. Handles record the generation they were last synced at, and re-apply on acquire
+/// if it has moved -- so a namespace set once is inherited by every handle the pool ever hands out.
+static CURRENT_NS: Mutex<Option<PathBuf>> = Mutex::new(None);
+static NS_GEN: AtomicU64 = AtomicU64::new(0);
+
+struct PooledHandle {
+    handle: DynamicNamingHandle,
+    ns_gen: u64,
+}
 
 #[track_caller]
 fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
 
-pub fn get_naming_handle() -> Option<&'static Mutex<DynamicNamingHandle>> {
-    if let Some(h) = HANDLE.get() {
-        return Some(h);
+/// A naming handle borrowed from the pool, returned when dropped.
+pub struct NamingGuard(Option<PooledHandle>);
+
+impl Deref for NamingGuard {
+    type Target = DynamicNamingHandle;
+
+    fn deref(&self) -> &Self::Target {
+        // Unwrap-Ok: only taken in Drop.
+        &self.0.as_ref().unwrap().handle
     }
-    if CompartmentHandle::lookup("naming").is_err() {
-        return None;
+}
+
+impl DerefMut for NamingGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Unwrap-Ok: only taken in Drop.
+        &mut self.0.as_mut().unwrap().handle
     }
-    HANDLE
-        .get_or_try_init(|| {
-            let f = dynamic_naming_factory().ok_or(())?;
-            Ok::<_, ()>(Mutex::new(f))
-        })
-        .ok()
+}
+
+impl Drop for NamingGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            HANDLE_POOL.lock().unwrap().push(handle);
+        }
+    }
+}
+
+pub fn get_naming_handle() -> Option<NamingGuard> {
+    let mut fresh = false;
+    let pooled = match HANDLE_POOL.lock().unwrap().pop() {
+        Some(pooled) => pooled,
+        None => {
+            fresh = true;
+            // Nothing idle: open another. The pool never shrinks, so its size settles at the
+            // high-water mark of concurrent lookups.
+            if NAMING_UP.get().is_none() {
+                if CompartmentHandle::lookup("naming").is_err() {
+                    return None;
+                }
+                let _ = NAMING_UP.set(());
+            }
+            {
+                static CREATED: AtomicU64 = AtomicU64::new(0);
+                let n = CREATED.fetch_add(1, Ordering::Relaxed) + 1;
+                let t0 = std::time::Instant::now();
+                let handle = dynamic_naming_factory()?;
+                twizzler_abi::klog_println!(
+                    "POOLSTATS naming handle #{} created in {} us",
+                    n,
+                    t0.elapsed().as_micros(),
+                );
+                PooledHandle { handle, ns_gen: 0 }
+            }
+        }
+    };
+    let mut guard = NamingGuard(Some(pooled));
+
+    let gen = NS_GEN.load(Ordering::Acquire);
+    if guard.0.as_ref().unwrap().ns_gen != gen {
+        let ns = CURRENT_NS.lock().unwrap().clone();
+        // A handle the server just created already sits at the root namespace, so applying a root
+        // setting to it is a gate call that changes nothing -- and that is the common case, since
+        // the namespace is only ever set away from "/" if TWZ_RT_INITIAL_DIR says so. A handle out
+        // of the pool has no such guarantee and always re-applies.
+        if let Some(ns) = ns.filter(|ns| !(fresh && ns == Path::new("/"))) {
+            let _ = guard
+                .change_namespace(&ns)
+                .inspect_err(|e| tracing::warn!("failed to set namespace on new handle: {}", e));
+        }
+        guard.0.as_mut().unwrap().ns_gen = gen;
+    }
+    Some(guard)
+}
+
+/// Set the working namespace for every naming handle in this compartment, now and in future.
+pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
+    let mut guard = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+    guard.change_namespace(path)?;
+    *CURRENT_NS.lock().unwrap() = Some(path.to_path_buf());
+    // Everything else in the pool, and this handle when it goes back, re-syncs on next acquire.
+    NS_GEN.fetch_add(1, Ordering::AcqRel);
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -576,7 +663,7 @@ impl ReferenceRuntime {
             let id = find_init_name(name).ok_or(NamingError::NotFound)?;
             return Ok(id.0);
         }
-        let mut session = get_naming_handle().unwrap().lock().unwrap();
+        let mut session = get_naming_handle().unwrap();
         let res = session.get(name, GetFlags::FOLLOW_SYMLINK)?;
         tracing::trace!("resolve got {:?}", res);
         Ok(res.id)
@@ -584,9 +671,7 @@ impl ReferenceRuntime {
 
     pub fn mkns(&self, name: &str) -> Result<()> {
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.put_namespace(name, true)?;
         Ok(())
@@ -594,9 +679,7 @@ impl ReferenceRuntime {
 
     pub fn symlink(&self, name: &str, target: &str) -> Result<()> {
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.symlink(name, target)?;
         Ok(())
@@ -604,9 +687,7 @@ impl ReferenceRuntime {
 
     pub fn readlink(&self, name: &str, target: &mut [u8], read_len: &mut u64) -> Result<()> {
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
         let node = session.get(name, GetFlags::empty())?;
 
         let link = node.readlink()?;
@@ -733,17 +814,13 @@ impl ReferenceRuntime {
 
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.rename(old, new)?)
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.remove(path)?)
     }
 
@@ -1018,9 +1095,7 @@ impl ReferenceRuntime {
     pub fn set_nameroot(&self, root: NameRoot, slice: &[u8]) -> Result<()> {
         let path = PathBuf::from(str::from_utf8(slice).unwrap());
         let mut nr = self.nameroots.lock();
-        if let Some(namer) = get_naming_handle() {
-            namer.lock().unwrap().change_namespace(&path)?;
-        }
+        set_naming_namespace(&path)?;
         if path.is_absolute() {
             let path = path.canonicalize()?;
             nr.insert(root, path);
@@ -1078,9 +1153,7 @@ impl ReferenceRuntime {
         );
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
         let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?
-            .lock()
-            .unwrap();
+            .ok_or(TwzError::NOT_SUPPORTED)?;
         let names = session.enumerate_names_nsid(stat.id.into(), off, buf.len())?;
         tracing::trace!("enumerate_names_nsid returned {} entries", names.len());
         let end = buf.len().min(names.len());

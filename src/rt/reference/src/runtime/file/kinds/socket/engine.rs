@@ -426,7 +426,7 @@ impl Engine {
         self.allocate_port(None)
     }
 
-    fn wake(&self) {
+    pub(super) fn wake(&self) {
         self.notify.store(1, Ordering::SeqCst);
         sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(

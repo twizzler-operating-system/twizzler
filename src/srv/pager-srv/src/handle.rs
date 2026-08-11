@@ -76,13 +76,35 @@ impl PagerClient {
 
 #[secgate::entry(lib = "pager")]
 pub fn pager_open_handle() -> Result<(Descriptor, ObjID), TwzError> {
+    let t_body = std::time::Instant::now();
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap().data;
     let handle = pager.new_handle(comp)?;
     let id = pager.with_handle(comp, handle, |pc| pc.sbid())?;
+    bodystats::record(t_body.elapsed().as_nanos() as u64);
 
     Ok((handle, id))
+}
+
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+mod bodystats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static BODY: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(body: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let b = BODY.fetch_add(body, Ordering::Relaxed) + body;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "OPENHANDLESTATS {} open-handle bodies: {} us total",
+                n,
+                b / 1000,
+            );
+        }
+    }
 }
 
 #[secgate::entry(lib = "pager")]
@@ -161,6 +183,7 @@ pub fn pager_lookup_external(
     let name =
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
+    let t_store = std::time::Instant::now();
     let file = run_async(pager.paged_ostore(None)?.open_external(
         Some(id.raw()),
         name,
@@ -168,6 +191,7 @@ pub fn pager_lookup_external(
         0,
         None,
     ))?;
+    lookupstats::record(t_store.elapsed().as_nanos() as u64);
 
     pager
         .data
@@ -175,6 +199,27 @@ pub fn pager_lookup_external(
             write_external_file_to_sb(&mut pc.buffer, &file, 0)
         })
         .ok_or(TwzError::INVALID_ARGUMENT)
+}
+
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+mod lookupstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static STORE: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(store: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let s = STORE.fetch_add(store, Ordering::Relaxed) + store;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "LOOKUPSTATS {} external lookups: store {} us (per lookup: {} us)",
+                n,
+                s / 1000,
+                s / (n * 1000),
+            );
+        }
+    }
 }
 
 #[secgate::entry(lib = "pager")]

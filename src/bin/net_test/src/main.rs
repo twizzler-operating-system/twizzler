@@ -35,6 +35,7 @@ use twizzler_rt_abi::{
         EV_ERROR, EV_RECEIPT,
     },
     fd::RawFd,
+    io::{twz_rt_fd_pread, IoCtx, IoFlags},
 };
 
 /// This binary's own address. One engine per process, so one address for every test here.
@@ -50,6 +51,14 @@ fn setup() {
         std::env::set_var("TWZ_NET_ADDR", SELF_ADDR);
     });
 }
+
+// A watchdog thread was tried here and removed: it made things worse, for a reason worth keeping.
+// `twz_rt_exit` calls `sys_thread_exit` for the *calling* thread only, so the compartment stays
+// alive as long as any other thread does. A detached thread sleeping out a watchdog budget
+// therefore holds the whole binary open for that long after `main` returns -- `unittest` waits on
+// the compartment, and the run is lost to the very symptom the watchdog was meant to prevent.
+// Bounding a hang has to come from not blocking indefinitely in the first place (see
+// `accept_within`), not from a timer thread, until `exit` terminates a compartment outright.
 
 /// Directories a spawned peer may live in, mirroring `unittest`'s search order.
 fn peer_path() -> String {
@@ -188,7 +197,7 @@ const UDP_SEND_COUNT: usize = 20;
 /// Must comfortably outlast the parent's accept, which is bounded by `PEER_TIMEOUT`: if the peer
 /// exits first its connection is torn down, and a test waiting to accept a *pending* connection
 /// then has nothing to take.
-const HOLD_MS: u64 = 8000;
+const HOLD_MS: u64 = 4000;
 
 // --- listener readiness -------------------------------------------------------------------
 
@@ -201,7 +210,12 @@ fn listener_reports_pending_connection_without_data() {
     let listener = TcpListener::bind("0.0.0.0:7701").expect("bind");
     let kq = register(listener.as_raw_fd(), EVFILT_READ, false);
 
-    let peer = spawn_peer("10.0.2.101", "connect-idle", "10.0.2.100:7701", &HOLD_MS.to_string());
+    let peer = spawn_peer(
+        "10.0.2.101",
+        "connect-idle",
+        "10.0.2.100:7701",
+        &HOLD_MS.to_string(),
+    );
 
     assert!(
         wait_ready(kq, PEER_TIMEOUT),
@@ -263,6 +277,10 @@ fn clear_listener_rearms_across_accepts() {
             let mut stream = accept_within(&listener, PEER_TIMEOUT, "rearm accept");
             let mut buf = [0u8; 64];
             let _ = stream.read(&mut buf);
+            // Explicit rather than relying on drop: the peer is blocked reading until we close,
+            // and this test is about listener re-arm, not about what drop emits
+            // (`dropping_a_stream_delivers_eof` covers that).
+            let _ = stream.shutdown(std::net::Shutdown::Both);
             drop(stream);
             accepted += 1;
         }
@@ -297,7 +315,12 @@ fn accept_and_echo() {
 fn clear_stream_reports_writable_once() {
     setup();
     let listener = TcpListener::bind("0.0.0.0:7704").expect("bind");
-    let peer = spawn_peer("10.0.2.104", "connect-idle", "10.0.2.100:7704", &HOLD_MS.to_string());
+    let peer = spawn_peer(
+        "10.0.2.104",
+        "connect-idle",
+        "10.0.2.100:7704",
+        &HOLD_MS.to_string(),
+    );
     let stream = accept_within(&listener, PEER_TIMEOUT, "writable-once");
 
     let kq = register(stream.as_raw_fd(), EVFILT_WRITE, true);
@@ -320,7 +343,12 @@ fn clear_stream_reports_writable_once() {
 fn idle_stream_read_waits_out_its_timeout() {
     setup();
     let listener = TcpListener::bind("0.0.0.0:7705").expect("bind");
-    let peer = spawn_peer("10.0.2.105", "connect-idle", "10.0.2.100:7705", &HOLD_MS.to_string());
+    let peer = spawn_peer(
+        "10.0.2.105",
+        "connect-idle",
+        "10.0.2.100:7705",
+        &HOLD_MS.to_string(),
+    );
     let stream = accept_within(&listener, PEER_TIMEOUT, "idle-read");
 
     let kq = register(stream.as_raw_fd(), EVFILT_READ, false);
@@ -336,6 +364,76 @@ fn idle_stream_read_waits_out_its_timeout() {
 
     drop(stream);
     expect_peer_ok(peer, "connect-idle");
+}
+
+// --- close ----------------------------------------------------------------------------------
+
+/// How long the `connect-drop` peer stays alive after dropping its stream.
+///
+/// What it has to cover is the gap between the drop and the engine's next poll pass putting the FIN
+/// on the wire -- milliseconds -- because nothing drains the engine at compartment exit. It is not
+/// required to outlast our read below: the two clocks start at different times (the peer drops
+/// before our accept completes), and once the FIN is on the wire the peer's exit cannot retract it.
+const LINGER_MS: u64 = 8000;
+const EOF_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Dropping a `TcpStream` must emit a FIN, so the other end sees EOF.
+///
+/// `TcpStreamInner::drop` used to only hand its socket to the engine's tracking list, and
+/// `State::Closed` is the one state `check_tracking` releases on. A stream dropped without an
+/// explicit `shutdown()`, whose peer never reset it, could not get there -- so it stayed half-open
+/// for the life of the process: the peer never saw EOF, the socket was never released from the
+/// socket set, and its ephemeral port was never returned.
+#[test]
+fn dropping_a_stream_delivers_eof() {
+    setup();
+    let listener = TcpListener::bind("0.0.0.0:7710").expect("bind");
+    let peer = spawn_peer(
+        "10.0.2.110",
+        "connect-drop",
+        "10.0.2.100:7710",
+        &LINGER_MS.to_string(),
+    );
+
+    let stream = accept_within(&listener, PEER_TIMEOUT, "connect-drop");
+    let fd = stream.as_raw_fd();
+
+    // Non-blocking reads against a deadline, rather than a blocking read that returns 0 at EOF.
+    // Two reasons, both of which rule out the more obvious spellings: EOF is not visible through
+    // the readiness path at all (a stream's read word is `can_recv()`, which is false once the
+    // buffer is drained whether or not a FIN arrived), so `wait_ready` cannot bound the wait; and a
+    // blocking read that never sees a FIN -- exactly the regression under test -- would hang the
+    // whole suite, since there is no per-test timeout and a watchdog thread cannot be used (see
+    // the note above).
+    let deadline = Instant::now() + EOF_TIMEOUT;
+    let mut payload = Vec::new();
+    let mut last_err = None;
+    let mut eof = false;
+    while Instant::now() < deadline {
+        let mut buf = [0u8; 64];
+        let mut ctx = IoCtx::new(None, IoFlags::NONBLOCKING, None);
+        match twz_rt_fd_pread(fd, &mut buf, &mut ctx) {
+            Ok(0) => {
+                eof = true;
+                break;
+            }
+            Ok(n) => payload.extend_from_slice(&buf[..n]),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    assert!(
+        eof,
+        "no FIN within {:?} after the peer dropped its stream (read {:?}, last error {:?})",
+        EOF_TIMEOUT, payload, last_err
+    );
+    assert_eq!(payload, b"bye", "peer's data did not arrive intact");
+
+    drop(stream);
+    expect_peer_ok(peer, "connect-drop");
 }
 
 // --- UDP ----------------------------------------------------------------------------------
@@ -411,7 +509,12 @@ fn connect_to_closed_port_is_refused() {
 fn stream_survives_a_third_networked_compartment() {
     setup();
     let holder_listener = TcpListener::bind("0.0.0.0:7708").expect("bind holder listener");
-    let holder = spawn_peer("10.0.2.108", "connect-idle", "10.0.2.100:7708", &HOLD_MS.to_string());
+    let holder = spawn_peer(
+        "10.0.2.108",
+        "connect-idle",
+        "10.0.2.100:7708",
+        &HOLD_MS.to_string(),
+    );
     let _held = accept_within(&holder_listener, PEER_TIMEOUT, "third-compartment holder");
 
     // With the holder's stack live and idle, run a full exchange with a different peer.

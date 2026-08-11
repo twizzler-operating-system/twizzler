@@ -326,7 +326,13 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
 
     let current_thread = current_thread_ref().unwrap();
     let current_context = current_vmc()?;
-    current_context.register_sctx(sctx.id(), ArchContext::new());
+    // Only build a page-table root if this context doesn't already have one for this sctx.
+    // Constructing one unconditionally cost ~590us per call: a global TLB shootdown on the way in,
+    // and a walk of the whole user address space in Drop on the way back out. Every gate entry
+    // calls this, and after the first it always already exists.
+    if current_context.try_with_arch(sctx.id(), |_| ()).is_none() {
+        current_context.register_sctx(sctx.id(), ArchContext::new());
+    }
     current_thread.secctx.attach(sctx)?;
 
     Ok(0)

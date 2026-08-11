@@ -1,4 +1,4 @@
-use naming_core::{api::NamerAPI, handle::NamingHandle, Result};
+use naming_core::{api::NamerAPI, handle::NamingHandle, InlinePath, Result};
 pub use naming_core::{dynamic::*, GetFlags, NsNode, NsNodeKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
@@ -10,7 +10,11 @@ fn put(desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {}
 #[secgate::gatecall]
 fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {}
 #[secgate::gatecall]
-fn open_handle() -> Result<(Descriptor, ObjID)> {}
+fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {}
+#[secgate::gatecall]
+fn open_handle() -> Result<Descriptor> {}
+#[secgate::gatecall]
+fn get_buffer(desc: Descriptor) -> Result<ObjID> {}
 #[secgate::gatecall]
 fn close_handle(desc: Descriptor) -> Result<()> {}
 #[secgate::gatecall]
@@ -40,8 +44,16 @@ impl NamerAPI for StaticNamingAPI {
         get(desc, name_len, flags)
     }
 
-    fn open_handle(&self) -> Result<(Descriptor, ObjID)> {
+    fn get_inline(&self, desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
+        get_inline(desc, path, flags)
+    }
+
+    fn open_handle(&self) -> Result<Descriptor> {
         open_handle()
+    }
+
+    fn get_buffer(&self, desc: Descriptor) -> Result<ObjID> {
+        get_buffer(desc)
     }
 
     fn close_handle(&self, desc: Descriptor) -> Result<()> {

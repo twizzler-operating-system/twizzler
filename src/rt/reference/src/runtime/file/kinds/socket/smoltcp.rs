@@ -544,12 +544,27 @@ impl SmolTcpStream {
 
 impl Drop for TcpStreamInner {
     fn drop(&mut self) {
+        // Close before tracking: check_tracking releases a tracked socket (and returns its port)
+        // only once it reaches State::Closed, and a stream dropped without an explicit shutdown()
+        // -- and whose peer never reset it -- had no way of getting there. Such a stream emitted
+        // no FIN, lingered in the socket set for the life of the process, and never gave its
+        // ephemeral port back. close() is a no-op in the states an explicit shutdown() leaves
+        // behind, so doing it unconditionally here is safe.
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .get_mutable_socket(self.socket_handle)
+            .close();
         ENGINE.track(
             self.socket_handle,
             self.port,
             self.is_ephemeral_port,
             SockKind::Tcp,
         );
+        // The FIN needs a poll pass to go out, and the polling thread may be parked on a timeout
+        // computed before the close.
+        ENGINE.wake();
     }
 }
 

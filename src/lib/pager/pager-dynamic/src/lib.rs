@@ -84,6 +84,30 @@ pub struct PagerHandle {
     buffer: SimpleBuffer,
 }
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+mod handlestats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static GATE: AtomicU64 = AtomicU64::new(0);
+    static MAP: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(gate: u64, map: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let g = GATE.fetch_add(gate, Ordering::Relaxed) + gate;
+        let m = MAP.fetch_add(map, Ordering::Relaxed) + map;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "PHSTATS {} pager handles: open-gate {} us, map {} us (per handle: {} us)",
+                n,
+                g / 1000,
+                m / 1000,
+                (g + m) / (n * 1000),
+            );
+        }
+    }
+}
+
 impl Handle for PagerHandle {
     type OpenError = TwzError;
 
@@ -93,9 +117,13 @@ impl Handle for PagerHandle {
     where
         Self: Sized,
     {
+        let t_gate = std::time::Instant::now();
         let (desc, id) = (pager_api().open_handle)()?;
+        let gate_ns = t_gate.elapsed().as_nanos() as u64;
+        let t_map = std::time::Instant::now();
         let handle =
             twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
+        handlestats::record(gate_ns, t_map.elapsed().as_nanos() as u64);
         let sb = SimpleBuffer::new(handle);
         Ok(Self { desc, buffer: sb })
     }

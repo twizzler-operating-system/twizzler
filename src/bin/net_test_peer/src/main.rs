@@ -25,6 +25,7 @@ fn usage() -> ! {
            connect-idle <hold_ms>   connect, then sit there without sending\n  \
            connect-send <msg>       connect, send msg, close\n  \
            connect-echo <msg>       connect, send msg, read the echo back, close\n  \
+           connect-drop <linger_ms> connect, send `bye`, drop the stream, then linger\n  \
            connect-n <count>        `count` sequential connections, one at a time\n  \
            udp-send <count>         send `count` datagrams"
     );
@@ -43,6 +44,7 @@ fn main() -> ExitCode {
         "connect-idle" => connect_idle(target, arg.parse().unwrap_or(500)),
         "connect-send" => connect_send(target, arg, false),
         "connect-echo" => connect_send(target, arg, true),
+        "connect-drop" => connect_drop(target, arg.parse().unwrap_or(2000)),
         "connect-n" => connect_repeatedly(target, arg.parse().unwrap_or(2)),
         "udp-send" => udp_send(target, arg.parse().unwrap_or(4)),
         _ => usage(),
@@ -85,6 +87,21 @@ fn connect_send(target: &str, msg: &str, expect_echo: bool) -> std::io::Result<(
     Ok(())
 }
 
+/// Connect, send a marker, then drop the stream *without* calling `shutdown()`.
+///
+/// The linger afterwards is what keeps this a test of `TcpStreamInner::drop` alone. The FIN that
+/// drop queues still needs a poll pass to reach the wire, and nothing drains the engine at
+/// compartment exit (the orderly-shutdown item in asyncplan.md); without the linger, a failure
+/// would not distinguish "drop emitted no FIN" from "the compartment died before it went out".
+fn connect_drop(target: &str, linger_ms: u64) -> std::io::Result<()> {
+    let mut stream = TcpStream::connect(target)?;
+    stream.write_all(b"bye")?;
+    stream.flush()?;
+    drop(stream);
+    sleep(Duration::from_millis(linger_ms));
+    Ok(())
+}
+
 fn connect_repeatedly(target: &str, count: usize) -> std::io::Result<()> {
     // Sequential with a gap, not concurrent. The LISTENER-REARM case is specifically "accept one,
     // then get told about the next"; if two connections were pending at once the listener's
@@ -97,10 +114,13 @@ fn connect_repeatedly(target: &str, count: usize) -> std::io::Result<()> {
         let mut stream = TcpStream::connect(target)?;
         stream.write_all(format!("conn{}", i).as_bytes())?;
         stream.flush()?;
-        // Hold briefly rather than closing straight away. Dropping immediately after the write
-        // races the server's accept: the connection can reach Closed before accept() runs, and a
-        // listening socket that is no longer active has nothing to hand over.
-        sleep(Duration::from_millis(150));
+        // Block until the server closes, rather than closing on a timer. A fixed hold is a race:
+        // if it expires before the server's accept runs, the listening socket is no longer active
+        // and the accept has nothing to take -- which, with a blocking accept, hangs. Waiting for
+        // the server's FIN makes the connection provably alive at accept time and removes the
+        // arbitrary sleep.
+        let mut buf = [0u8; 8];
+        let _ = stream.read(&mut buf);
         drop(stream);
     }
     Ok(())

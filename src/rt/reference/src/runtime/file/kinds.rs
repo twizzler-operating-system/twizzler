@@ -46,11 +46,38 @@ fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Re
     }
 }
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+mod openstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static LOCK: AtomicU64 = AtomicU64::new(0);
+    static GET: AtomicU64 = AtomicU64::new(0);
+    static OBJ: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(lock: u64, get: u64, obj: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
+        let g = GET.fetch_add(get, Ordering::Relaxed) + get;
+        let o = OBJ.fetch_add(obj, Ordering::Relaxed) + obj;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "OPENSTATS {} opens: lock {} us, get {} us, obj {} us (per open: {} us)",
+                n,
+                l / 1000,
+                g / 1000,
+                o / 1000,
+                (l + g + o) / (n * 1000),
+            );
+        }
+    }
+}
+
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
+    let t_start = std::time::Instant::now();
     let mut session = get_naming_handle()
-        .ok_or(TwzError::NOT_SUPPORTED)?
-        .lock()
-        .unwrap();
+        .ok_or(TwzError::NOT_SUPPORTED)?;
+    let lock_ns = t_start.elapsed().as_nanos() as u64;
 
     if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
         && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
@@ -71,6 +98,7 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
     } else {
         GetFlags::FOLLOW_SYMLINK
     };
+    let t_get = std::time::Instant::now();
     let (obj_id, did_create, kind) = match create_opt {
         CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
         CreateOptions::CreateKindExisting => {
@@ -95,6 +123,8 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             .map(|x| (ObjID::from(x.id), false, x.kind))?,
     };
 
+    let get_ns = t_get.elapsed().as_nanos() as u64;
+
     tracing::trace!(
         "open_path: path = {}, obj_id = {:x}, did_create = {}, kind = {:?}",
         path,
@@ -106,8 +136,9 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
         session.put(path, obj_id)?;
     }
 
-    Ok(match kind {
-        NsNodeKind::Namespace => Arc::new(DirFile::new(obj_id)?),
+    let t_obj = std::time::Instant::now();
+    let res = match kind {
+        NsNodeKind::Namespace => Arc::new(DirFile::new(obj_id)?) as FdImpl,
         NsNodeKind::Object => {
             let file = RawFile::open(obj_id, flags)?;
             if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
@@ -116,7 +147,10 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             Arc::new(file)
         }
         NsNodeKind::SymLink => Arc::new(SymLinkFile::new(obj_id)?),
-    })
+    };
+    openstats::record(lock_ns, get_ns, t_obj.elapsed().as_nanos() as u64);
+
+    Ok(res)
 }
 
 pub fn open(

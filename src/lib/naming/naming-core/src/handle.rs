@@ -7,11 +7,13 @@ use twizzler_rt_abi::{
     object::MapFlags,
 };
 
-use crate::{api::NamerAPI, GetFlags, NsNode, Result, PATH_MAX};
+use crate::{api::NamerAPI, GetFlags, InlinePath, NsNode, Result, PATH_MAX};
 
 pub struct NamingHandle<'a, API: NamerAPI> {
     desc: u32,
-    buffer: SimpleBuffer,
+    /// Created on first use. A handle that only ever does `get` on short paths never makes one,
+    /// which is what keeps a pool of handles from costing an object apiece.
+    buffer: Option<SimpleBuffer>,
     api: &'a API,
 }
 
@@ -23,12 +25,24 @@ impl<'a, API: NamerAPI> Drop for NamingHandle<'a, API> {
 
 // TODO don't need seperate functions for names and namespaces?
 impl<'a, API: NamerAPI> NamingHandle<'a, API> {
+    /// The handle's shared buffer, asking the server to create it the first time.
+    fn buffer(&mut self) -> Result<&mut SimpleBuffer> {
+        if self.buffer.is_none() {
+            let id = self.api.get_buffer(self.desc)?;
+            let handle =
+                twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
+            self.buffer = Some(SimpleBuffer::new(handle));
+        }
+        // Unwrap-Ok: just filled in above.
+        Ok(self.buffer.as_mut().unwrap())
+    }
+
     fn write_buffer<P: AsRef<Path>>(&mut self, path: P) -> Result<usize> {
         let bytes = path.as_ref().as_os_str().as_encoded_bytes();
         if bytes.len() > PATH_MAX {
             Err(ArgumentError::InvalidArgument.into())
         } else {
-            Ok(self.buffer.write(bytes))
+            Ok(self.buffer()?.write(bytes))
         }
     }
 
@@ -37,7 +51,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         if bytes.len() > PATH_MAX {
             Err(ArgumentError::InvalidArgument.into())
         } else {
-            Ok(self.buffer.write_offset(bytes, off))
+            Ok(self.buffer()?.write_offset(bytes, off))
         }
     }
 
@@ -52,6 +66,9 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
     }
 
     pub fn get(&mut self, path: &str, flags: GetFlags) -> Result<NsNode> {
+        if let Some(inline) = InlinePath::new(path) {
+            return self.api.get_inline(self.desc, inline, flags);
+        }
         let name_len = self.write_buffer(path)?;
         self.api.get(self.desc, name_len, flags)
     }
@@ -73,12 +90,14 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
             skip,
             count
         );
+        // The server replies through the buffer, so it has to exist before the call.
+        self.buffer()?;
         let element_count = self
             .api
             .enumerate_names_nsid(self.desc, nsid, skip, count)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
-        self.buffer.read(&mut buf_vec);
+        self.buffer()?.read(&mut buf_vec);
         let mut r_vec = Vec::new();
 
         for i in 0..element_count {
@@ -104,7 +123,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         let element_count = self.api.enumerate_names(self.desc, name_len, skip, count)?;
 
         let mut buf_vec = vec![0u8; element_count * std::mem::size_of::<NsNode>()];
-        self.buffer.read(&mut buf_vec);
+        self.buffer()?.read(&mut buf_vec);
         let mut r_vec = Vec::new();
 
         for i in 0..element_count {
@@ -156,13 +175,10 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
     where
         Self: Sized,
     {
-        let (desc, id) = info.open_handle()?;
-        let handle =
-            twizzler_rt_abi::object::twz_rt_map_object(id, MapFlags::READ | MapFlags::WRITE)?;
-        let sb = SimpleBuffer::new(handle);
+        let desc = info.open_handle()?;
         Ok(Self {
             desc,
-            buffer: sb,
+            buffer: None,
             api: info,
         })
     }

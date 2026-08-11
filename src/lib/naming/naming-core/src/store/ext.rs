@@ -1,9 +1,9 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
-use pager_dynamic::{objid_to_ino, ExternalKind};
+use pager_dynamic::{objid_to_ino, ExternalKind, PagerHandle};
 use secgate::TwzError;
 use twizzler::object::ObjID;
 
@@ -45,6 +45,21 @@ static GLOBAL_CACHE: GlobalCache = GlobalCache {
     namespaces: Mutex::new(BTreeMap::new()),
 };
 
+/// Opening a pager handle is two gate calls (open, close) plus an object map and unmap, to carry
+/// one name across in the third. Keep one open instead: the descriptor is per-compartment, not
+/// per-thread, so it is reusable, and the shared `SimpleBuffer` inside it is what the lock guards.
+static PAGER_HANDLE: Mutex<Option<PagerHandle>> = Mutex::new(None);
+
+/// Borrow the compartment's pager handle, opening it on first use. `None` inside means the pager
+/// could not be reached; retried on the next call.
+fn pager_handle() -> MutexGuard<'static, Option<PagerHandle>> {
+    let mut guard = PAGER_HANDLE.lock().unwrap();
+    if guard.is_none() {
+        *guard = PagerHandle::new();
+    }
+    guard
+}
+
 impl NsCache {
     pub fn cache_ready(&self) -> bool {
         self.cache_ready
@@ -77,6 +92,38 @@ impl NsCache {
             self.cache_node(node);
         }
         self.cache_ready = true;
+    }
+}
+
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+mod findstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    static MISSES: AtomicU64 = AtomicU64::new(0);
+    static HANDLE: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_hit() {
+        HITS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_miss(handle: u64, lookup: u64) {
+        let n = MISSES.fetch_add(1, Ordering::Relaxed) + 1;
+        let h = HANDLE.fetch_add(handle, Ordering::Relaxed) + handle;
+        let l = LOOKUP.fetch_add(lookup, Ordering::Relaxed) + lookup;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "FINDSTATS {} misses ({} cache hits): pager-handle {} us, lookup {} us \
+                 (per miss: handle {} us, lookup {} us)",
+                n,
+                HITS.load(Ordering::Relaxed),
+                h / 1000,
+                l / 1000,
+                h / (n * 1000),
+                l / (n * 1000),
+            );
+        }
     }
 }
 
@@ -123,10 +170,17 @@ impl Namespace for ExtNamespace {
     fn find(&self, name: &str) -> Option<NsNode> {
         tracing::debug!("looking up {} in external namespace {}", name, self.id);
         if let Some(node) = self.lookup_cache(name) {
+            findstats::record_hit();
             return Some(node);
         }
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
-            h.lookup_external(self.id, name).ok().and_then(|i| {
+        let t_handle = std::time::Instant::now();
+        let mut guard = pager_handle();
+        if let Some(h) = guard.as_mut() {
+            let handle_ns = t_handle.elapsed().as_nanos() as u64;
+            let t_lookup = std::time::Instant::now();
+            let res = h.lookup_external(self.id, name);
+            findstats::record_miss(handle_ns, t_lookup.elapsed().as_nanos() as u64);
+            res.ok().and_then(|i| {
                 tracing::trace!(
                     "found {} in external namespace {} with ID {} and kind {:?}",
                     name,
@@ -164,7 +218,8 @@ impl Namespace for ExtNamespace {
 
     fn create_file(&self, name: &str) -> Result<NsNode> {
         let mode = libc::S_IRUSR | libc::S_IWUSR | libc::S_IRGRP | libc::S_IROTH | libc::S_IFREG;
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+        let mut guard = pager_handle();
+        if let Some(h) = guard.as_mut() {
             let file = h.create_external_file(self.id, name, None, mode)?;
             if self.cache_ready() {
                 self.reset_cache();
@@ -190,7 +245,8 @@ impl Namespace for ExtNamespace {
             NsNodeKind::Object => mode |= libc::S_IFREG,
         }
 
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+        let mut guard = pager_handle();
+        if let Some(h) = guard.as_mut() {
             if objid_to_ino(node.id.raw()).is_none() {
                 if let Ok(file) = h.create_external_file(self.id, node.name().ok()?, None, mode) {
                     node.id = file.id.into();
@@ -227,7 +283,8 @@ impl Namespace for ExtNamespace {
             self.id
         );
         let node = self.find(name)?;
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+        let mut guard = pager_handle();
+        if let Some(h) = guard.as_mut() {
             if h.unlink_external(self.id, name).is_ok() {
                 self.reset_cache();
                 return Some(node);
@@ -277,7 +334,8 @@ impl Namespace for ExtNamespace {
             );
             return self.enumerate_cache(skip, count);
         }
-        if let Some(mut h) = pager_dynamic::PagerHandle::new() {
+        let mut guard = pager_handle();
+        if let Some(h) = guard.as_mut() {
             let mut entries = Vec::new();
             if let Ok(_) = h.enumerate_external(self.id, &mut entries, skip, count) {
                 return entries

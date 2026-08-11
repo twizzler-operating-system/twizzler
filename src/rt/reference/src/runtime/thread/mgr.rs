@@ -36,6 +36,40 @@ use crate::{
     RuntimeState,
 };
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md). Accumulators only --
+// no TLS, no allocation -- because most of `cross_compartment_entry` runs in the zero-TLS window.
+mod entrystats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static ATTACH: AtomicU64 = AtomicU64::new(0);
+    static SETSCTX: AtomicU64 = AtomicU64::new(0);
+    static LOCK: AtomicU64 = AtomicU64::new(0);
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    pub fn set_pending(attach: u64, setsctx: u64) {
+        ATTACH.fetch_add(attach, Ordering::Relaxed);
+        SETSCTX.fetch_add(setsctx, Ordering::Relaxed);
+    }
+
+    pub fn record(lock: u64, total: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
+        let t = TOTAL.fetch_add(total, Ordering::Relaxed) + total;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "ENTRYSTATS {} entries: settls+attach {} us, set-sctx {} us, mgr-lock {} us, \
+                 total {} us",
+                n,
+                ATTACH.load(Ordering::Relaxed) / 1000,
+                SETSCTX.load(Ordering::Relaxed) / 1000,
+                l / 1000,
+                t / 1000,
+            );
+        }
+    }
+}
+
 pub(crate) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
 }
@@ -237,6 +271,8 @@ impl ReferenceRuntime {
             .insert(thread.id, thread);
     }
 
+    // Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+
     /// Re-point this thread at *this* compartment's TLS on entry through a gate.
     ///
     /// # The zero-TLS window
@@ -256,6 +292,10 @@ impl ReferenceRuntime {
     /// map is allocator-parameterized for exactly this reason, and `next_id()` is `freeze`d so its
     /// `Drop` cannot push to a `Vec`.
     pub fn cross_compartment_entry(&self) -> Result<()> {
+        // Temporary instrumentation for the File::open latency hunt (pagerperf.md).
+        // Times phases with OUR_RUNTIME.get_monotonic() directly rather than Instant, to stay
+        // clear of anything that might touch TLS inside the zero-TLS window.
+        let t0 = OUR_RUNTIME.get_monotonic();
         twizzler_abi::syscall::sys_thread_settls(0);
         if OUR_RUNTIME.is_monitor().is_some() {
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into()).inspect_err(|e| {
@@ -268,13 +308,20 @@ impl ReferenceRuntime {
                         twizzler_abi::klog_println!("failed to attach sctx: {}", e);
                     }
                 });
+            let t_attach = OUR_RUNTIME.get_monotonic();
             twizzler_abi::syscall::sys_thread_set_active_sctx_id(
                 monitor_api::get_comp_config().sctx,
             )
             .inspect_err(|e| {
                 twizzler_abi::klog_println!("failed to set-a sctx: {}", e);
             })?;
+            let t_setsctx = OUR_RUNTIME.get_monotonic();
+            entrystats::set_pending(
+                t_attach.saturating_sub(t0).as_nanos() as u64,
+                t_setsctx.saturating_sub(t_attach).as_nanos() as u64,
+            );
         }
+        let t_pre_lock = OUR_RUNTIME.get_monotonic();
         let mut inner = THREAD_MGR.inner.lock();
 
         if let Some(ct) = inner
@@ -282,6 +329,13 @@ impl ReferenceRuntime {
             .get(&twizzler_abi::syscall::sys_thread_self_id())
         {
             twizzler_abi::syscall::sys_thread_settls(ct.tls as u64);
+            entrystats::record(
+                OUR_RUNTIME
+                    .get_monotonic()
+                    .saturating_sub(t_pre_lock)
+                    .as_nanos() as u64,
+                OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
+            );
             return Ok(());
         }
 
