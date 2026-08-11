@@ -183,6 +183,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// `release-kvm-smp1` lost all four while every other configuration passed.
 const UDP_SEND_COUNT: usize = 20;
 
+/// How long a `connect-idle` peer holds its connection open.
+///
+/// Must comfortably outlast the parent's accept, which is bounded by `PEER_TIMEOUT`: if the peer
+/// exits first its connection is torn down, and a test waiting to accept a *pending* connection
+/// then has nothing to take.
+const HOLD_MS: u64 = 8000;
+
 // --- listener readiness -------------------------------------------------------------------
 
 /// A connection waiting for accept() must be reported readable even though the client has sent no
@@ -194,7 +201,7 @@ fn listener_reports_pending_connection_without_data() {
     let listener = TcpListener::bind("0.0.0.0:7701").expect("bind");
     let kq = register(listener.as_raw_fd(), EVFILT_READ, false);
 
-    let peer = spawn_peer("10.0.2.101", "connect-idle", "10.0.2.100:7701", "2000");
+    let peer = spawn_peer("10.0.2.101", "connect-idle", "10.0.2.100:7701", &HOLD_MS.to_string());
 
     assert!(
         wait_ready(kq, PEER_TIMEOUT),
@@ -290,7 +297,7 @@ fn accept_and_echo() {
 fn clear_stream_reports_writable_once() {
     setup();
     let listener = TcpListener::bind("0.0.0.0:7704").expect("bind");
-    let peer = spawn_peer("10.0.2.104", "connect-idle", "10.0.2.100:7704", "3000");
+    let peer = spawn_peer("10.0.2.104", "connect-idle", "10.0.2.100:7704", &HOLD_MS.to_string());
     let stream = accept_within(&listener, PEER_TIMEOUT, "writable-once");
 
     let kq = register(stream.as_raw_fd(), EVFILT_WRITE, true);
@@ -313,7 +320,7 @@ fn clear_stream_reports_writable_once() {
 fn idle_stream_read_waits_out_its_timeout() {
     setup();
     let listener = TcpListener::bind("0.0.0.0:7705").expect("bind");
-    let peer = spawn_peer("10.0.2.105", "connect-idle", "10.0.2.100:7705", "3000");
+    let peer = spawn_peer("10.0.2.105", "connect-idle", "10.0.2.100:7705", &HOLD_MS.to_string());
     let stream = accept_within(&listener, PEER_TIMEOUT, "idle-read");
 
     let kq = register(stream.as_raw_fd(), EVFILT_READ, false);
@@ -404,7 +411,7 @@ fn connect_to_closed_port_is_refused() {
 fn stream_survives_a_third_networked_compartment() {
     setup();
     let holder_listener = TcpListener::bind("0.0.0.0:7708").expect("bind holder listener");
-    let holder = spawn_peer("10.0.2.108", "connect-idle", "10.0.2.100:7708", "4000");
+    let holder = spawn_peer("10.0.2.108", "connect-idle", "10.0.2.100:7708", &HOLD_MS.to_string());
     let _held = accept_within(&holder_listener, PEER_TIMEOUT, "third-compartment holder");
 
     // With the holder's stack live and idle, run a full exchange with a different peer.
