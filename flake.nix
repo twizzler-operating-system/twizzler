@@ -41,6 +41,11 @@
         { pkgs }:
         {
           default = pkgs.mkShell {
+            # breaks ring build
+            hardeningDisable = [
+              "fortify"
+              "fortify3"
+            ];
             packages = with pkgs; [
               rustToolchain
               openssl
@@ -53,8 +58,6 @@
               cmake
               qemu
               qemu_kvm
-              # this doesnt work on macos
-              # bridge-utils
               virt-manager
               libvirt
               libclang

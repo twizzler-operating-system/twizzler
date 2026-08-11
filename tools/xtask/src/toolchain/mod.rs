@@ -329,10 +329,18 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
     // let clang_path = Path::new(format!("{}/bin/clang", toolchain_path).as_str())
     //     .canonicalize()
     //     .unwrap();
-    std::env::set_var("CC", &clang_path);
-    std::env::set_var("LD", &clang_path);
-    std::env::set_var("CXX", &clang_path);
+    //
+    // These must be scoped to the target triple (CC_<target>/CFLAGS_<target>, per the `cc`
+    // crate's env var precedence) rather than set as the bare CC/CFLAGS. Building the
+    // `userspace` collection can pull in crates (e.g. `ring`) that also need to be built for
+    // the *host* (as a build-dependency), and bare CC/CFLAGS leak into those host-native
+    // compiles too, mixing in our Twizzler cross flags (`-target x86_64-unknown-twizzler
+    // --sysroot ...`) and breaking them. Scoping to the target keeps the cross toolchain
+    // applied only when actually compiling for `target`.
+    let target_str = target.to_string();
+    let target_u = target_str.replace('-', "_");
 
+    std::env::set_var("LD", &clang_path);
     std::env::set_var("AR", &ar_path);
     std::env::set_var("RANLIB", &ranlib_path);
 
@@ -355,19 +363,33 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
         target,
         sysroot_path.display(),
     );
-    std::env::set_var("CFLAGS", &cflags);
+
+    for suffix in [target_str.as_str(), target_u.as_str()] {
+        std::env::set_var(format!("CC_{suffix}"), &clang_path);
+        std::env::set_var(format!("CXX_{suffix}"), &clang_path);
+        std::env::set_var(format!("CFLAGS_{suffix}"), &cflags);
+        std::env::set_var(format!("CXXFLAGS_{suffix}"), &cflags);
+    }
     std::env::set_var("LDFLAGS", &cflags);
-    std::env::set_var("CXXFLAGS", &cflags);
 
     Ok(())
 }
 
 pub fn clear_cc() {
-    std::env::remove_var("CC");
-    std::env::remove_var("CXX");
     std::env::remove_var("LD");
-    std::env::remove_var("CC");
-    std::env::remove_var("CXXFLAGS");
-    std::env::remove_var("CFLAGS");
+    std::env::remove_var("AR");
+    std::env::remove_var("RANLIB");
+    std::env::remove_var("CMAKE_AR");
+    std::env::remove_var("CMAKE_RANLIB");
     std::env::remove_var("LDFLAGS");
+    for target in crate::triple::all_possible_platforms() {
+        let target_str = target.to_string();
+        let target_u = target_str.replace('-', "_");
+        for suffix in [target_str.as_str(), target_u.as_str()] {
+            std::env::remove_var(format!("CC_{suffix}"));
+            std::env::remove_var(format!("CXX_{suffix}"));
+            std::env::remove_var(format!("CFLAGS_{suffix}"));
+            std::env::remove_var(format!("CXXFLAGS_{suffix}"));
+        }
+    }
 }
