@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use twizzler_abi::{
-    object::NULLPAGE_SIZE,
+    object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
         sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
         ThreadSyncSleep, ThreadSyncWake,
@@ -111,10 +111,29 @@ impl<S: Copy, C: Copy> Queue<S, C> {
 
     /// Create a new Twizzler queue object.
     pub fn init(obj: &ObjectHandle, sub_queue_len: usize, com_queue_len: usize) {
-        const HDR_LEN: usize = 0x1000;
-        // TODO: verify things
-        let sub_len = (core::mem::size_of::<S>() * sub_queue_len) * 2;
-        //let com_len = (core::mem::size_of::<C>() * com_queue_len) * 2;
+        /// Cache line. Every component starts on one so that no two things written by different
+        /// threads can land in the same line — the header's internal padding would be pointless if
+        /// a buffer's first entry shared a line with the previous header's `tail`.
+        const LINE: usize = 64;
+        const fn align_up(x: usize, a: usize) -> usize {
+            (x + a - 1) & !(a - 1)
+        }
+        // Each of the base struct and the two headers used to get a 4 KiB region of its own, so a
+        // duplex queue spanned four pages, three of them all but empty. That is invisible with one
+        // hot queue and expensive with many: a thread servicing 128 of them ran ~40% slower purely
+        // on address translation (`page_layout_report` in twizzler-queue-raw). Packed, a small
+        // queue's headers and both buffers fit in a single page.
+        const _: () = assert!(LINE % core::mem::align_of::<RawQueueHdr>() == 0);
+        assert_eq!(NULLPAGE_SIZE % LINE, 0);
+
+        // The algorithm indexes QueueEntry<S>, not S, and rounds the slot count up to a power of
+        // two. Budgeting `size_of::<S>() * sub_queue_len` instead silently overlaps the completion
+        // buffer with the tail of the submission buffer for small payloads or non-power-of-two
+        // lengths.
+        let sub_slots = sub_queue_len.next_power_of_two();
+        let com_slots = com_queue_len.next_power_of_two();
+        let sub_len = core::mem::size_of::<QueueEntry<S>>() * sub_slots;
+        let com_len = core::mem::size_of::<QueueEntry<C>>() * com_slots;
         let (sub_hdr, com_hdr) = {
             let base: &mut QueueBase<S, C> = unsafe {
                 obj.start()
@@ -123,19 +142,34 @@ impl<S: Copy, C: Copy> Queue<S, C> {
                     .as_mut()
                     .unwrap()
             };
-            base.sub_hdr = NULLPAGE_SIZE + HDR_LEN;
-            base.com_hdr = base.sub_hdr + HDR_LEN;
-            base.sub_buf = base.com_hdr + HDR_LEN;
-            base.com_buf = base.sub_buf + sub_len;
+            base.sub_hdr = align_up(
+                NULLPAGE_SIZE + core::mem::size_of::<QueueBase<S, C>>(),
+                LINE,
+            );
+            base.com_hdr = base.sub_hdr + core::mem::size_of::<RawQueueHdr>();
+            base.sub_buf = align_up(base.com_hdr + core::mem::size_of::<RawQueueHdr>(), LINE);
+            base.com_buf = align_up(base.sub_buf + sub_len, LINE);
+            // True by construction, and asserted anyway: item 6 in the audit log was precisely a
+            // pair of regions that overlapped because the arithmetic was subtly wrong, and it
+            // corrupted silently rather than failing.
+            let hdr_size = core::mem::size_of::<RawQueueHdr>();
+            assert!(base.sub_hdr + hdr_size <= base.com_hdr);
+            assert!(base.com_hdr + hdr_size <= base.sub_buf);
+            assert!(base.sub_buf + sub_len <= base.com_buf);
+            assert!(base.com_buf + com_len <= MAX_SIZE - NULLPAGE_SIZE);
             (base.sub_hdr, base.com_hdr)
         };
         unsafe {
             let srq: *mut RawQueueHdr = obj.start().add(sub_hdr).cast();
             let crq: *mut RawQueueHdr = obj.start().add(com_hdr).cast();
-            let l2len = sub_queue_len.next_power_of_two().ilog2();
-            srq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<S>()));
-            let l2len = com_queue_len.next_power_of_two().ilog2();
-            crq.write(RawQueueHdr::new(l2len as usize, core::mem::size_of::<C>()));
+            srq.write(RawQueueHdr::new(
+                sub_slots.ilog2() as usize,
+                core::mem::size_of::<QueueEntry<S>>(),
+            ));
+            crq.write(RawQueueHdr::new(
+                com_slots.ilog2() as usize,
+                core::mem::size_of::<QueueEntry<C>>(),
+            ));
         }
     }
 

@@ -35,6 +35,10 @@ pub(crate) struct RelocCache<'a> {
     /// dependency list, then the whole graph on miss). Reported so the per-lookup cost can be
     /// derived from the relocation time.
     pub(crate) misses: usize,
+    /// Time spent inside lookup_symbol() on misses only. Cache hits are not timed: they are cheap,
+    /// and clocking every relocation would cost more than the thing being measured (there are
+    /// thousands of relocations but only hundreds of misses).
+    pub(crate) resolve_time: std::time::Duration,
 }
 
 impl<'a> RelocCache<'a> {
@@ -237,6 +241,7 @@ impl Context {
     ) -> Result<(), DynlinkError> {
         let _start_1 = Instant::now();
         let (_hits_0, _misses_0) = (reloc_cache.hits, reloc_cache.misses);
+        let _resolve_0 = reloc_cache.resolve_time;
         let lib = self.get_library(lib_id)?;
         debug!("{}: relocating library", lib);
         let common = lib.get_elf_common()?;
@@ -316,9 +321,16 @@ impl Context {
 
         // Process relocations
 
+        // RELR carries no symbol references at all, so this phase is pure apply: a linear
+        // `*ptr += base` sweep over the relocated words. It is the clean measure of what
+        // relocation costs once symbol resolution is removed -- including the COW faults taken
+        // on the data object the first time each page is written.
+        let _relr_start = Instant::now();
         if let Some((rel, ent, sz)) = relr {
             self.process_relr(lib, rel, ent as usize, sz as usize)?;
         }
+        let _relr_time = _relr_start.elapsed();
+        let _rels_start = Instant::now();
 
         if let Some((rela, ent, sz)) = relas {
             self.process_rels(
@@ -375,13 +387,19 @@ impl Context {
                 reloc_cache,
             )?;
         }
-        // Microseconds, not millis: a single library's relocation is often sub-millisecond, which
-        // the old as_millis() reporting rounded to 0.
+        // Three-way split. `relr` and `apply` are pure memory writes into the data object (and the
+        // COW faults they trigger); `resolve` is symbol lookup and is the only part further
+        // lookup optimization can shrink.
+        let _rels_total = _rels_start.elapsed();
+        let _resolve = reloc_cache.resolve_time - _resolve_0;
+        let _apply = _rels_total.saturating_sub(_resolve);
         tracing::info!(
-            "reloc {}: {}us prep, {}us reloc, {} lookups, {} cached",
+            "reloc {}: prep {}us, relr {}us, resolve {}us, apply {}us, {} lookups, {} cached",
             lib.name,
             (_start_2 - _start_1).as_micros(),
-            _start_2.elapsed().as_micros(),
+            _relr_time.as_micros(),
+            _resolve.as_micros(),
+            _apply.as_micros(),
             reloc_cache.misses - _misses_0,
             reloc_cache.hits - _hits_0,
         );
@@ -469,9 +487,10 @@ impl Context {
                 )
             });
         tracing::info!(
-            "reloc_all {}: {}us total, {} lookups, {} cached",
+            "reloc_all {}: {}us total, {}us resolve, {} lookups, {} cached",
             rootname,
             _start.elapsed().as_micros(),
+            reloc_cache.resolve_time.as_micros(),
             reloc_cache.misses,
             reloc_cache.hits,
         );

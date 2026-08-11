@@ -126,6 +126,14 @@ pub mod diag {
     pub static THREAD_CURRENT_ON_TWO_CPUS: Counter =
         Counter::new("thread made current on a second cpu");
 
+    /// A thread reached `exit` while still linked into some mutex's sleep queue. Nothing unlinks it
+    /// -- `exit` clears the scheduler and requeue memberships but has no back-pointer to the mutex
+    /// -- so `release` will hand it the lock and every later locker queues behind a dead owner.
+    /// This is the probe for the shutdown hang whose dump is either a non-terminating walk of that
+    /// queue or every cpu halted behind it.
+    pub static EXIT_WHILE_MUTEX_QUEUED: Counter =
+        Counter::new("thread exited while queued on a mutex");
+
     /// A mutex-wait record outlived the wait it described: the thread it belongs to is not in
     /// `Mutex::lock` (it acquired and lost the record, or it died mid-wait). Reported instead of
     /// being counted as a stuck lock -- see `check_timed_out_mutexes`.
@@ -284,7 +292,15 @@ pub struct Lock {
     caller: &'static core::panic::Location<'static>,
     locked: bool,
     time: Instant,
-    owner: Option<(u64, &'static core::panic::Location<'static>)>,
+    /// Split from the location, and the location kept as a plain address, because this record is
+    /// read by threads that do not hold the tracker flag (`print_locks`). A single
+    /// `Option<(u64, &'static Location)>` cannot be read that way: the two words are written
+    /// separately, so a reader can pass the `Some` check and then observe the pointer half already
+    /// replaced or cleared -- and merely *forming* a null `&'static Location` is UB, before
+    /// anything formats it.
+    owner: Option<u64>,
+    /// Address of the owner's `Location`, or 0 for none. See `owner`.
+    owner_at: usize,
     /// DIAG: cpu this record was made on. Differing from the observing cpu means the entry
     /// outlived a context switch.
     cpu: u32,
@@ -293,6 +309,28 @@ pub struct Lock {
 impl Lock {
     pub fn caller(&self) -> &'static core::panic::Location<'static> {
         self.caller
+    }
+
+    /// The caller address as an integer, without forming the reference the field holds. For
+    /// readers without the tracker flag: the owning thread can replace this whole record
+    /// (`intend_to_lock_mutex`) or drop it (`clear_intended_mutex`) mid-read.
+    pub fn caller_addr(&self) -> usize {
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.caller).cast::<usize>()) }
+    }
+
+    pub fn owner_id(&self) -> Option<u64> {
+        self.owner
+    }
+
+    pub fn owner_addr(&self) -> usize {
+        self.owner_at
+    }
+
+    /// The owner's location, dereferencing `owner_at`. Only sound from a caller holding the
+    /// tracker flag -- use `owner_addr` otherwise.
+    fn owner_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        (self.owner_at != 0)
+            .then(|| unsafe { &*(self.owner_at as *const core::panic::Location<'static>) })
     }
 
     pub fn cpu(&self) -> u32 {
@@ -315,6 +353,7 @@ impl Lock {
             locked: true,
             time,
             owner: None,
+            owner_at: 0,
             cpu: diag::this_cpu(),
         }
     }
@@ -422,10 +461,18 @@ impl LockTracker {
             .store(false, core::sync::atomic::Ordering::Release);
     }
 
+    /// Full detail when the flag is free, addresses only when it is not. Previously this always
+    /// took `inner()` without the flag, so every caller was reading records their owner could be
+    /// rewriting -- which is a kernel fault, not a garbled line, once a `Location` is formatted.
     pub fn print_locks(&self) {
         let int = crate::interrupt::disable();
-        let inner = unsafe { self.inner() };
-        inner.print_locks();
+        match self.try_lock() {
+            Some(inner) => {
+                inner.print_locks();
+                self.unlock();
+            }
+            None => unsafe { self.inner() }.print_locks_racy(),
+        }
         crate::interrupt::set(int);
     }
 
@@ -489,7 +536,8 @@ impl LockTrackerInner {
         from: &'static core::panic::Location<'static>,
     ) {
         if let Some(ref mut lock) = self.intended_to_mutexlock {
-            lock.owner = Some((thread_id, from));
+            lock.owner = Some(thread_id);
+            lock.owner_at = from as *const _ as usize;
         }
     }
 
@@ -626,6 +674,54 @@ impl LockTrackerInner {
         self.print_locks_at(None);
     }
 
+    /// `print_locks_at` for a tracker whose flag we could not take, i.e. one its own thread may be
+    /// writing right now. Prints locations as addresses and never dereferences one: resolve them
+    /// with addr2line against the booted kernel binary, the same way a dump is read.
+    ///
+    /// The distinction is not academic. The dereferencing version, reached from the idle loop for
+    /// a tracker that only *looked* wedged, faulted this kernel at V(0x0) formatting an owner
+    /// location that had been cleared between the `Some` check and the read.
+    pub fn print_locks_racy(&self) {
+        emerglogln!("== LockTracker for thread {} (racy, flag held):", self.id);
+        for (i, lock) in self.mutexes.iter().enumerate() {
+            if let Some(lock) = lock {
+                emerglogln!(
+                    "  mutex {}: at {:#x} ({}, cpu {})",
+                    i,
+                    lock.caller_addr(),
+                    if lock.is_locked() { "locked" } else { "unlocked" },
+                    lock.cpu(),
+                );
+            }
+        }
+        for (i, lock) in self.spinlocks.iter().enumerate() {
+            if let Some(lock) = lock {
+                emerglogln!(
+                    "  spinlock {}: at {:#x} ({}, cpu {})",
+                    i,
+                    lock.caller_addr(),
+                    if lock.is_locked() { "locked" } else { "unlocked" },
+                    lock.cpu(),
+                );
+            }
+        }
+        if let Some(lock) = self.intended_to_mutexlock.as_ref() {
+            emerglogln!(
+                "  intend mutex: at {:#x} (owner {:?} at {:#x})",
+                lock.caller_addr(),
+                lock.owner_id(),
+                lock.owner_addr(),
+            );
+        }
+        if let Some(lock) = self.intended_to_spinlock.as_ref() {
+            emerglogln!(
+                "  intend spinlock: at {:#x} (cpu {})",
+                lock.caller_addr(),
+                lock.cpu(),
+            );
+        }
+    }
+
     /// `now`, when given, adds each held mutex's age -- how long this thread has had it. A stuck
     /// lock is only identifiable from a dump if you can tell a lock taken microseconds ago from one
     /// held for seconds.
@@ -663,14 +759,19 @@ impl LockTrackerInner {
         }
 
         if let Some(lock) = self.intended_to_mutexlock.as_ref() {
-            match lock.owner.as_ref() {
-                Some((id, at)) => emerglogln!(
+            match (lock.owner_id(), lock.owner_location()) {
+                (Some(id), Some(at)) => emerglogln!(
                     "Intend to lock mutex: {} (owned by thread {} at {})",
                     lock.caller(),
                     id,
                     at
                 ),
-                None => emerglogln!("Intend to lock mutex: {}", lock.caller()),
+                (Some(id), None) => emerglogln!(
+                    "Intend to lock mutex: {} (owned by thread {})",
+                    lock.caller(),
+                    id
+                ),
+                _ => emerglogln!("Intend to lock mutex: {}", lock.caller()),
             }
         }
 
@@ -697,7 +798,7 @@ impl LockTrackerInner {
     )> {
         self.intended_to_mutexlock
             .as_ref()
-            .map(|l| (l.caller(), l.owner))
+            .map(|l| (l.caller(), l.owner_id().zip(l.owner_location())))
     }
 
     /// The spinlock this thread is currently trying to take, if any.
@@ -974,8 +1075,14 @@ pub fn check_timed_out_mutexes() {
                         .map(|(_, state, mutex_wait, idle)| (*state, *mutex_wait, *idle)),
                 );
                 // Racy by construction -- it reads the inner state without the flag. That is the
-                // point: the flag is not coming back, and a wedged thread is not mutating its own
-                // record.
+                // point: a tracker nobody can lock is the thread worth reporting.
+                //
+                // "A wedged thread is not mutating its own record" used to justify dereferencing
+                // what it found. It does not: the flag is also held across a short interrupts-off
+                // window in `with_tracker`, so a `try_lock` failure means "transiently busy" at
+                // least as often as "wedged", and this branch caught a *Running* thread mid-write
+                // and faulted the kernel at V(0x0). `print_locks` now prints addresses when it
+                // cannot take the flag.
                 lock_tracker.print_locks();
             }
             any = true;

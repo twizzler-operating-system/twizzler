@@ -177,21 +177,34 @@ impl ThreadMgr {
         // We own this repr object from here: the kernel no longer deletes it when the thread dies
         // (see Thread::drop), so every path out of here has to either hand it to a
         // ManagedThreadRepr, which deletes it on drop, or delete it directly.
-        let repr = Space::map(
+        //
+        // Mapped writable even though we only read it, so this shares one `Space` entry -- and so
+        // one slot -- with the mapping `spawn_compartment_thread` hands the owning compartment,
+        // which asks for READ | WRITE. `MapInfo` is keyed by flags as well as id, so asking for
+        // READ here would map the same object twice.
+        let repr = match Space::map(
             &get_monitor().space,
             MapInfo {
                 id,
-                flags: MapFlags::READ,
+                flags: MapFlags::READ | MapFlags::WRITE,
             },
-        )
-        .inspect_err(|e| {
-            tracing::error!(
-                "failed to map repr object {} of newly spawned thread: {}",
-                id,
-                e
-            );
-            delete_repr(id);
-        })?;
+        ) {
+            Ok(repr) => repr,
+            Err(e) => {
+                tracing::error!(
+                    "failed to map repr object {} of newly spawned thread: {}",
+                    id,
+                    e
+                );
+                // `spawn_thread` above has already started the thread, and it is running on this
+                // stack. Dropping the Box would hand that memory back to the allocator to be
+                // reused underneath a live thread, so leak it instead. (`super_tls` has no `Drop`,
+                // so it leaks either way.)
+                std::mem::forget(super_stack);
+                delete_repr(id);
+                return Err(e);
+            }
+        };
         Ok(Arc::new(ManagedThreadInner {
             id,
             super_tid,

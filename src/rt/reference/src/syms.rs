@@ -545,6 +545,87 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_kevent(
 }
 check_ffi_type!(twz_rt_fd_kevent, _, _, _, _, _, _);
 
+unsafe extern "C" {
+    fn __errno_location() -> *mut c_int;
+}
+
+/// Set errno and return -1, for the libc-facing shims below. mlibc has the full mapping
+/// (`twz_error_errno` in its twizzler sysdeps) but doesn't export it, so this covers the errors
+/// the kqueue paths can actually produce and agrees with mlibc on those.
+fn errno_ret(e: TwzError) -> c_int {
+    use twizzler_rt_abi::error::{GenericError, ResourceError};
+    let errno = match e {
+        TwzError::Argument(ArgumentError::BadHandle) => libc::EBADF,
+        TwzError::Generic(GenericError::NotSupported) => libc::ENOTSUP,
+        TwzError::Generic(GenericError::WouldBlock) => libc::EAGAIN,
+        TwzError::Generic(GenericError::Interrupted) => libc::EINTR,
+        TwzError::Generic(GenericError::TimedOut) => libc::ETIMEDOUT,
+        TwzError::Resource(ResourceError::OutOfMemory) => libc::ENOMEM,
+        _ => libc::EINVAL,
+    };
+    unsafe {
+        *__errno_location() = errno;
+    }
+    -1
+}
+
+/// kqueue(2). The `flags` argument of twz_rt_fd_open is unused for kqueue descriptors.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn kqueue() -> c_int {
+    match twizzler_rt_abi::fd::twz_rt_fd_open_kqueue(0) {
+        Ok(fd) => fd,
+        Err(e) => errno_ret(e),
+    }
+}
+
+/// kevent(2). `struct kevent` and the EVFILT_*/EV_* values in twizzler/rt/io.h match the BSD/libc
+/// ABI exactly, so this forwards to the runtime with no per-entry translation.
+///
+/// Note that EV_RECEIPT is not honored (see io.h): a caller that submits a changelist with a null
+/// -- i.e. infinite -- timeout, expecting receipts to make the call return immediately, will block
+/// until one of `kq`'s registrations becomes ready.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn kevent(
+    kq: c_int,
+    changelist: *const twizzler_rt_abi::bindings::kevent,
+    nchanges: c_int,
+    eventlist: *mut twizzler_rt_abi::bindings::kevent,
+    nevents: c_int,
+    timeout: *const libc::timespec,
+) -> c_int {
+    if nchanges < 0 || nevents < 0 {
+        return errno_ret(TwzError::INVALID_ARGUMENT);
+    }
+    let changelist = if changelist.is_null() || nchanges == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(changelist, nchanges as usize) }
+    };
+    let eventlist = if eventlist.is_null() || nevents == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(eventlist, nevents as usize) }
+    };
+    // A null timeout means "wait indefinitely", matching kevent(2).
+    let timeout = if timeout.is_null() {
+        None
+    } else {
+        let ts = unsafe { timeout.read() };
+        if ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1_000_000_000 {
+            return errno_ret(TwzError::INVALID_ARGUMENT);
+        }
+        Some(std::time::Duration::new(
+            ts.tv_sec as u64,
+            ts.tv_nsec as u32,
+        ))
+    };
+
+    match OUR_RUNTIME.kevent(kq, changelist, eventlist, timeout) {
+        Ok(n) => n as c_int,
+        Err(e) => errno_ret(e),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_enumerate_names(
     fd: descriptor,

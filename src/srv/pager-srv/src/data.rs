@@ -672,17 +672,23 @@ impl PagerData {
         obj_range: ObjectRange,
         _partial: bool,
     ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
-        let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
-        let max_pages = (current_mem_pages / 2).min(4096 * 128);
-        tracing::trace!(
-            "req: {}, cur: {} ({})",
-            obj_range.pages().count(),
-            current_mem_pages,
-            current_mem_pages / 2
-        );
-
         let start_page = obj_range.pages().next().unwrap();
-        let nr_pages = obj_range.page_count().min(max_pages).max(1);
+        // For a single-page request the clamp cannot bind -- `1.min(max).max(1)` is 1 for every
+        // value of max -- so skip avail_mem(), which folds over every region under the inner
+        // lock, on the hottest path.
+        let nr_pages = if obj_range.page_count() <= 1 {
+            1
+        } else {
+            let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
+            let max_pages = (current_mem_pages / 2).min(4096 * 128);
+            tracing::trace!(
+                "req: {}, cur: {} ({})",
+                obj_range.pages().count(),
+                current_mem_pages,
+                current_mem_pages / 2
+            );
+            obj_range.page_count().min(max_pages).max(1)
+        };
         let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
         let count = page_in_many(ctx, id, &mut reqs).await?;
         if count == 0 {

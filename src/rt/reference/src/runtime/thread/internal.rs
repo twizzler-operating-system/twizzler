@@ -20,7 +20,10 @@ use crate::runtime::{alloc::LOCAL_ALLOCATOR, thread::MIN_STACK_ALIGN, OUR_RUNTIM
 /// Internal representation of a thread, tracking the resources
 /// allocated for this thread.
 pub struct InternalThread {
-    repr_handle: ObjectHandle,
+    /// `None` if the repr object could not be mapped at spawn time -- see `impl_spawn`. The id is
+    /// tracked separately so the thread is still identifiable, and so join can retry the map.
+    repr_handle: Option<ObjectHandle>,
+    repr_id: ObjID,
     stack_addr: usize,
     stack_size: usize,
     args_box: usize,
@@ -33,7 +36,8 @@ pub struct InternalThread {
 
 impl InternalThread {
     pub(super) fn new(
-        repr_handle: ObjectHandle,
+        repr_handle: Option<ObjectHandle>,
+        repr_id: ObjID,
         stack_addr: usize,
         stack_size: usize,
         args_box: usize,
@@ -44,6 +48,7 @@ impl InternalThread {
     ) -> Self {
         Self {
             repr_handle,
+            repr_id,
             stack_addr,
             stack_size,
             args_box,
@@ -56,22 +61,23 @@ impl InternalThread {
     }
 
     pub(crate) fn objid(&self) -> ObjID {
-        self.repr_handle.id()
+        self.repr_id
     }
 
     #[allow(dead_code)]
-    pub(crate) fn repr(&self) -> &ThreadRepr {
+    pub(crate) fn repr(&self) -> Option<&ThreadRepr> {
         // Safety: repr_handle ensures that the start memory will be alive, and that it contains
         // the thread repr struct at the base.
-        unsafe {
-            (self.repr_handle.start().add(NULLPAGE_SIZE) as *const ThreadRepr)
-                .as_ref()
-                .unwrap()
-        }
+        let handle = self.repr_handle.as_ref()?;
+        unsafe { (handle.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }
     }
 
-    pub fn repr_handle(&self) -> &ObjectHandle {
-        &self.repr_handle
+    pub fn repr_handle(&self) -> Option<&ObjectHandle> {
+        self.repr_handle.as_ref()
+    }
+
+    pub(super) fn set_repr_handle(&mut self, handle: ObjectHandle) {
+        self.repr_handle = Some(handle);
     }
 
     pub fn set_name(&self, name: &CStr) {

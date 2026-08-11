@@ -106,10 +106,14 @@ struct Wait {
 }
 
 impl Wait {
+    // Both words start "not ready" (0). Claiming readiness before the engine thread has
+    // ever observed this socket would make poll/select/kevent report a bogus immediate
+    // ready; the live smoltcp check (SocketKind::is_ready, OR'd in by every consumer)
+    // covers the window until the first Core::poll pass.
     pub fn new() -> Self {
         Self {
-            read: Arc::new(AtomicU64::new(1)),
-            write: Arc::new(AtomicU64::new(1)),
+            read: Arc::new(AtomicU64::new(0)),
+            write: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -155,37 +159,26 @@ impl Waiters {
                 false
             };
 
-            let _ = if rwake && wwake {
-                sys_thread_sync(
-                    &mut [
-                        ThreadSync::new_wake(ThreadSyncWake::new(
-                            ThreadSyncReference::Virtual(&*wait.read),
-                            usize::MAX,
-                        )),
-                        ThreadSync::new_wake(ThreadSyncWake::new(
-                            ThreadSyncReference::Virtual(&*wait.write),
-                            usize::MAX,
-                        )),
-                    ],
-                    None,
-                )
-            } else if rwake {
-                sys_thread_sync(
-                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                        ThreadSyncReference::Virtual(&*wait.read),
-                        usize::MAX,
-                    ))],
-                    None,
-                )
-            } else {
-                sys_thread_sync(
-                    &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                        ThreadSyncReference::Virtual(&*wait.write),
-                        usize::MAX,
-                    ))],
-                    None,
-                )
-            };
+            // Only wake a side that actually transitioned not-ready -> ready. Waking
+            // unconditionally turns the rare spurious wakeup that sys_thread_sync callers must
+            // tolerate into a per-poll-cycle event, which breaks the single-shot
+            // poll/select/kevent waits (they would return early with nothing ready).
+            let mut wakes = Vec::with_capacity(2);
+            if rwake {
+                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&*wait.read),
+                    usize::MAX,
+                )));
+            }
+            if wwake {
+                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&*wait.write),
+                    usize::MAX,
+                )));
+            }
+            if !wakes.is_empty() {
+                let _ = sys_thread_sync(&mut wakes, None);
+            }
         }
     }
 
@@ -201,14 +194,13 @@ impl Waiters {
     fn init_waiter(&self, handle: SocketHandle) {
         let mut map = self.map.lock().unwrap();
         let wait = map.entry(handle).or_insert_with(Wait::new);
-        wait.read.store(1, Ordering::SeqCst);
-        wait.write.store(1, Ordering::SeqCst);
+        wait.read.store(0, Ordering::SeqCst);
+        wait.write.store(0, Ordering::SeqCst);
     }
 
     fn remove_waiter(&self, handle: SocketHandle) {
-        // Closing must wake both a blocked reader and a blocked writer (mark_waiter(_, false,
-        // false) only ever wakes the write side -- see mark_waiter's dispatch below -- which
-        // left a reader waiting on this socket asleep forever).
+        // Closing must wake both a blocked reader and a blocked writer, so mark both sides
+        // ready: mark_waiter only wakes a side it transitions to ready.
         self.mark_waiter(handle, true, true);
     }
 }
@@ -452,9 +444,7 @@ impl Core {
                     smoltcp::socket::Socket::Udp(socket) => {
                         let ready_read = socket.can_recv();
                         let ready_write = socket.can_send();
-                        if socket.can_recv() {
-                            WAITERS.mark_waiter(sock.0, ready_read, ready_write);
-                        }
+                        WAITERS.mark_waiter(sock.0, ready_read, ready_write);
                     }
                     smoltcp::socket::Socket::Tcp(socket) => {
                         if self.listeners.contains(&sock.0) {

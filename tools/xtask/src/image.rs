@@ -183,9 +183,10 @@ fn strip_initrd_files(
     let strip = get_toolchain_path()?.join("bin/llvm-strip");
     let mut staged = Vec::with_capacity(initrd_files.len());
     for src in initrd_files {
-        let dst = stage.join(src.file_name().with_context(|| {
-            format!("initrd entry {} has no file name", src.display())
-        })?);
+        let dst = stage.join(
+            src.file_name()
+                .with_context(|| format!("initrd entry {} has no file name", src.display()))?,
+        );
         let stripped = is_elf(src)
             && Command::new(&strip)
                 .arg("--strip-debug")
@@ -196,9 +197,8 @@ fn strip_initrd_files(
                 .map(|s| s.success())
                 .unwrap_or(false);
         if !stripped {
-            std::fs::copy(src, &dst).with_context(|| {
-                format!("failed to stage initrd entry {}", src.display())
-            })?;
+            std::fs::copy(src, &dst)
+                .with_context(|| format!("failed to stage initrd entry {}", src.display()))?;
         }
         staged.push(dst);
     }
@@ -270,10 +270,10 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             }
         }
 
-        // all the tests for init to run. Only the *list* goes in the initrd -- `copy_twizzler_build`
-        // stages the binaries themselves on the disk, where they are demand-paged instead of being
-        // read whole at boot. `unittest` resolves each name against the disk and falls back to the
-        // initrd, so an older image still works.
+        // all the tests for init to run. Only the *list* goes in the initrd --
+        // `copy_twizzler_build` stages the binaries themselves on the disk, where they are
+        // demand-paged instead of being read whole at boot. `unittest` resolves each name
+        // against the disk and falls back to the initrd, so an older image still works.
         if let Some(ref test_comp) = comp.borrow_user_test_compilation() {
             let mut testlist = String::new();
             for bin in test_comp.tests.iter() {

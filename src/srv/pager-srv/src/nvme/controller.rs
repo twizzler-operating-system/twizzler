@@ -2,7 +2,10 @@ use std::{
     future::Future,
     io::ErrorKind,
     mem::size_of,
-    sync::{Arc, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
     thread::JoinHandle,
     time::Instant,
 };
@@ -10,6 +13,7 @@ use std::{
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
+        cmd::admin::{features::FeatureId, AdminCommand},
         controller::properties::config::ControllerConfig,
         identify::{
             controller::IdentifyControllerDataStructure, namespace::IdentifyNamespaceDataStructure,
@@ -17,13 +21,14 @@ use nvme::{
         namespace::NamespaceId,
         queue::{
             comentry::CommonCompletion,
-            subentry::{CommonCommand, Dptr},
+            subentry::{CommandDword0, CommonCommand, Dptr, FuseSpec, Psdt},
             CommandId, QueueId, QueuePriority,
         },
     },
     hosted::memory::{PhysicalPageCollection, PrpMode},
     nvm::{ReadDword13, WriteDword13},
 };
+use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_driver::{
     device::Device,
     dma::{DmaOptions, DmaPool, PhysInfo, DMA_PAGE_SIZE},
@@ -37,10 +42,16 @@ use super::{
 use crate::nvme::dma::NvmeDmaSliceRegion;
 
 struct NvmeControllerInner {
-    data_requester: NvmeRequester,
+    /// One queue pair per pager worker, indexed by `threads::current_queue_index`, so submission
+    /// never crosses threads and the requester lock is uncontended in the common case.
+    data_requesters: Vec<NvmeRequester>,
     admin_requester: NvmeRequester,
     device: Device,
     dma_pool: Arc<CachedDmaPool>,
+    /// Diagnostic: bumped once per interrupt-thread iteration and once per park. Two dumps taken
+    /// apart say whether the only thread that reaps completions is still running at all.
+    int_loops: AtomicU64,
+    int_parks: AtomicU64,
 }
 
 pub struct NvmeController {
@@ -50,16 +61,28 @@ pub struct NvmeController {
     max_transfer_pages: OnceLock<usize>,
     /// CAP.MPSMIN in bytes; MDTS is expressed in units of it.
     mps_min: usize,
-    int_thr: OnceLock<JoinHandle<()>>,
+    int_thrs: OnceLock<Vec<JoinHandle<()>>>,
 }
 
 const ADMIN_QUEUE_LEN: u16 = 32;
+/// Queue ids are 1-based; 0 is the admin pair. Interrupt vectors follow the same numbering, so data
+/// queue `i` uses qid `i + 1` and MSI-X entry `i + 1`, leaving vector 0 to the admin queue -- which
+/// the spec fixes there and gives us no say in.
 const DATA_QUEUE_ID: u16 = 1;
+/// Ceiling on I/O queue pairs, whatever the controller and worker count would allow. `DeviceRepr`
+/// has `NUM_DEVICE_INTERRUPTS` (32) interrupt slots and vector 0 is spoken for.
+const MAX_DATA_QUEUES: usize = 16;
 /// Create I/O Queue is issued with PC=1, so the queue memory must be physically contiguous, and a
 /// DMA pool allocation is only guaranteed contiguous within a single page. At 64 bytes an entry
 /// that caps the submission queue -- and hence the number of outstanding commands -- at one page's
 /// worth of entries. Going deeper needs either a contiguity check on a multi-page pin or PC=0.
 const MAX_DATA_QUEUE_LEN: u32 = (DMA_PAGE_SIZE / size_of::<CommonCommand>()) as u32;
+/// Commands one `pipelined_transfer` keeps in flight. Four covers a 512-page large-page fill in a
+/// single round on QEMU, where MDTS gives 128 pages per command -- that fill is the shape that
+/// moves the most bytes. Deeper starts crowding a submission queue every worker shares, and the
+/// first command of a batch is the only one allowed to wait for a slot, so a too-large value costs
+/// other tasks their depth rather than buying this one any.
+const PIPELINE_DEPTH: usize = 4;
 
 /// Largest transfer we will build for one command when the controller reports no MDTS limit, and
 /// the ceiling we clamp a reported limit to.
@@ -185,42 +208,136 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
         caq,
     );
 
-    let cqid = DATA_QUEUE_ID.into();
-    let sqid = DATA_QUEUE_ID.into();
-
-    let req = NvmeController::create_queue_pair(
-        &mut admin_requester,
-        &dma_pool,
-        &mut device,
-        cqid,
-        sqid,
-        QueuePriority::Medium,
-        data_queue_len,
-    )?;
+    let nr_queues = negotiate_queue_count(&admin_requester, crate::threads::nr_workers())?;
+    let mut data_requesters = Vec::with_capacity(nr_queues);
+    for i in 0..nr_queues {
+        let id = ((DATA_QUEUE_ID as usize + i) as u16).into();
+        let ivec = (DATA_QUEUE_ID as usize + i) as u16;
+        device
+            .allocate_interrupt(ivec as usize)
+            .expect("failed to allocate nvme interrupt");
+        data_requesters.push(NvmeController::create_queue_pair(
+            &mut admin_requester,
+            &dma_pool,
+            &mut device,
+            id,
+            id,
+            QueuePriority::Medium,
+            data_queue_len,
+            ivec,
+        )?);
+    }
+    // Startup-only, and the first thing you want to know when a throughput number moves.
+    tracing::info!(
+        "nvme: {} io queue pairs of {} entries",
+        nr_queues,
+        data_queue_len
+    );
 
     Ok(NvmeController {
         inner: Arc::new(NvmeControllerInner {
-            data_requester: req,
+            data_requesters,
             admin_requester,
             device,
             dma_pool,
+            int_loops: AtomicU64::new(0),
+            int_parks: AtomicU64::new(0),
         }),
         capacity: OnceLock::new(),
         block_size: OnceLock::new(),
         max_transfer_pages: OnceLock::new(),
         mps_min,
-        int_thr: OnceLock::new(),
+        int_thrs: OnceLock::new(),
     })
 }
 
-fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize) {
+/// Ask the controller for `want` I/O queue pairs and report what it actually allocated.
+///
+/// Built by hand rather than with `nvme::admin::SetFeatures`, which sends the wrong opcode
+/// (`CreateCompletionQueue`) and offers no way to set CDW11, where the requested counts live.
+fn negotiate_queue_count(admin: &NvmeRequester, want: usize) -> std::io::Result<usize> {
+    let want = want.clamp(1, MAX_DATA_QUEUES);
+    // NSQR and NCQR are 0-based counts in the low and high halves of CDW11; the completion reports
+    // what was allocated the same way, and may be fewer than asked for but never more.
+    let requested = (want - 1) as u32;
+    let cmd = CommonCommand::new()
+        .with_cdw0(CommandDword0::build(
+            AdminCommand::SetFeatures.into(),
+            CommandId::new(),
+            FuseSpec::Normal,
+            Psdt::Prp,
+        ))
+        .with_cdw10(FeatureId::NumberOfQueues as u32)
+        .with_cdw11(requested | (requested << 16));
+
+    let inflight = admin.submit(cmd).ok_or(ErrorKind::Other)?;
+    let cc = loop {
+        if let Some((id, resp)) = admin.get_completion() {
+            if id != inflight.id {
+                tracing::error!("got other command ID for set-features command");
+            }
+            break resp;
+        }
+    };
+    if cc.status().is_error() {
+        tracing::warn!("nvme set-features(num queues) failed: {:?}", cc);
+        return Ok(1);
+    }
+
+    let dw0 = cc.dw0();
+    let nsqa = (dw0 & 0xffff) as usize + 1;
+    let ncqa = ((dw0 >> 16) & 0xffff) as usize + 1;
+    Ok(nsqa.min(ncqa).min(want).max(1))
+}
+
+/// The one controller, for the park hooks below. They are called from `threads::park_poll`, which
+/// has no path to a `PagerContext`, and the controller is a singleton in practice.
+static PARK_CTRL: OnceLock<Arc<NvmeControllerInner>> = OnceLock::new();
+
+fn park_queue(inner: &NvmeControllerInner) -> usize {
+    crate::threads::current_queue_index() % inner.data_requesters.len()
+}
+
+/// Consume this thread's queue interrupt and drain its completions.
+///
+/// Consuming the interrupt word is not optional: `setup_interrupt_sleep` blocks only while it is
+/// zero, so leaving it set turns the park below into a spin.
+pub fn reap_current_queue() {
+    let Some(inner) = PARK_CTRL.get() else {
+        return;
+    };
+    let idx = park_queue(inner);
+    inner
+        .device
+        .repr()
+        .check_for_interrupt(DATA_QUEUE_ID as usize + idx);
+    inner.data_requesters[idx].check_completions();
+}
+
+/// Sleep op for this thread's queue interrupt, to be armed alongside the park word.
+pub fn current_queue_sleep() -> Option<ThreadSyncSleep> {
+    let inner = PARK_CTRL.get()?;
+    let idx = park_queue(inner);
+    Some(
+        inner
+            .device
+            .repr()
+            .setup_interrupt_sleep(DATA_QUEUE_ID as usize + idx),
+    )
+}
+
+fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize, queue: Option<usize>) {
     loop {
+        inner.int_loops.fetch_add(1, Ordering::Relaxed);
         let more = inner.device.repr().check_for_interrupt(inum).is_some();
 
-        let more_a = inner.admin_requester.check_completions();
-        let more_d = inner.data_requester.check_completions();
+        // Only the vector-0 thread reaps admin: the admin completion queue is fixed to that vector,
+        // and every requester is reaped by exactly one thread so they do not fight for its lock.
+        let more_a = queue.is_none() && inner.admin_requester.check_completions();
+        let more_d = queue.is_some_and(|q| inner.data_requesters[q].check_completions());
 
         if !more && !more_a && !more_d {
+            inner.int_parks.fetch_add(1, Ordering::Relaxed);
             inner.device.repr().wait_for_interrupt(inum, None);
         }
     }
@@ -228,6 +345,19 @@ fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize) {
 
 #[allow(dead_code)]
 impl NvmeController {
+    /// Called by the pager watchdog when a work item has been stuck long enough to report.
+    pub fn dump_stall(&self) {
+        tracing::warn!(
+            "nvme dump: int_loops {} int_parks {}",
+            self.inner.int_loops.load(Ordering::Relaxed),
+            self.inner.int_parks.load(Ordering::Relaxed),
+        );
+        self.inner.admin_requester.dump("admin");
+        for (i, req) in self.inner.data_requesters.iter().enumerate() {
+            req.dump(&format!("data{}", i));
+        }
+    }
+
     pub fn new(device: Device) -> std::io::Result<Self> {
         let dma_pool = DmaPool::new(
             DmaPool::default_spec(),
@@ -236,16 +366,18 @@ impl NvmeController {
         );
 
         let ctrl = init_controller(device, dma_pool)?;
+        let _ = PARK_CTRL.set(ctrl.inner.clone());
+        // Only the admin queue gets a reaper thread. Data queues are reaped by whichever thread is
+        // waiting on them -- see `threads::park_poll` -- which is the whole point: a dedicated
+        // reaper can only ever hand the completion to the thread that was already waiting for it.
         let inner = ctrl.inner.clone();
-        ctrl.int_thr
-            .set(
-                std::thread::Builder::new()
-                    .name("nvme-int-0".to_string())
-                    .spawn(move || {
-                        interrupt_thread_main(&inner, 0);
-                    })
-                    .unwrap(),
-            )
+        ctrl.int_thrs
+            .set(vec![std::thread::Builder::new()
+                .name("nvme-int-admin".to_string())
+                .spawn(move || {
+                    interrupt_thread_main(&inner, 0, None);
+                })
+                .unwrap()])
             .unwrap();
         Ok(ctrl)
     }
@@ -258,6 +390,7 @@ impl NvmeController {
         sqid: QueueId,
         priority: QueuePriority,
         queue_len: usize,
+        ivec: u16,
     ) -> std::io::Result<NvmeRequester> {
         let saq = dma_pool
             .dma
@@ -316,7 +449,7 @@ impl NvmeController {
                     .get_prp_list_or_buffer(PrpMode::Single, dma_pool)
                     .unwrap(),
                 ((queue_len - 1) as u16).into(),
-                0,
+                ivec,
                 true,
             );
 
@@ -532,6 +665,14 @@ impl NvmeController {
         })
     }
 
+    /// The queue pair owned by the calling thread. Submission and its completion always land on the
+    /// same requester because `InflightRequest` carries the reference it was submitted through, and
+    /// tasks never migrate off a worker's thread-local executor.
+    fn data_requester(&self) -> &NvmeRequester {
+        let reqs = &self.inner.data_requesters;
+        &reqs[crate::threads::current_queue_index() % reqs.len()]
+    }
+
     pub fn send_read_page(
         &self,
         lba_start: u64,
@@ -548,10 +689,11 @@ impl NvmeController {
             ReadDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
+        let req = self.data_requester();
         if block {
-            self.inner.data_requester.submit_wait(cmd, None)
+            req.submit_wait(cmd, None)
         } else {
-            self.inner.data_requester.submit(cmd)
+            req.submit(cmd)
         }
     }
 
@@ -571,10 +713,11 @@ impl NvmeController {
             WriteDword13::default(),
         );
         let cmd: CommonCommand = cmd.into();
+        let req = self.data_requester();
         if block {
-            self.inner.data_requester.submit_wait(cmd, None)
+            req.submit_wait(cmd, None)
         } else {
-            self.inner.data_requester.submit(cmd)
+            req.submit(cmd)
         }
     }
 
@@ -731,13 +874,18 @@ impl NvmeController {
         let count = phys
             .len()
             .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
-        let dptr = super::dma::get_prp_list_or_buffer(
+        // Bound to a local, not consumed as a temporary. Dropping the `PrpMgr` hands its list
+        // pages back to the pool, and the device reads that list when it *processes* the command,
+        // which can be long after we ring the doorbell. As a temporary the pages were recycled
+        // before submission, so a concurrent command's list overwrote the one still in use -- both
+        // lists are valid addresses, so the transfer silently lands in the wrong pages rather than
+        // failing. Held here until after the wait below.
+        let prp = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
             PrpMode::Double,
-        )
-        .prp_list_or_buffer()
-        .dptr();
+        );
+        let dptr = prp.prp_list_or_buffer().dptr();
         let lba_size = self.blocking_get_lba_size();
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
@@ -773,13 +921,18 @@ impl NvmeController {
         let count = phys
             .len()
             .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
-        let dptr = super::dma::get_prp_list_or_buffer(
+        // Bound to a local, not consumed as a temporary. Dropping the `PrpMgr` hands its list
+        // pages back to the pool, and the device reads that list when it *processes* the command,
+        // which can be long after we ring the doorbell. As a temporary the pages were recycled
+        // before submission, so a concurrent command's list overwrote the one still in use -- both
+        // lists are valid addresses, so the transfer silently lands in the wrong pages rather than
+        // failing. Held here until after the wait below.
+        let prp = super::dma::get_prp_list_or_buffer(
             &phys[0..count],
             &self.inner.dma_pool,
             PrpMode::Double,
-        )
-        .prp_list_or_buffer()
-        .dptr();
+        );
+        let dptr = prp.prp_list_or_buffer().dptr();
         let lba_size = self.blocking_get_lba_size();
         let lbas_per_page = PAGE_SIZE / lba_size;
         let lba_start = disk_page_start * lbas_per_page as u64;
@@ -798,40 +951,106 @@ impl NvmeController {
         Ok(count)
     }
 
+    /// Largest run one pipelined call will describe, so a caller building descriptors for a long
+    /// extent stays linear in its length rather than rebuilding the tail per command.
+    pub fn blocking_get_pipelined_pages<const PAGE_SIZE: usize>(&self) -> usize {
+        self.blocking_get_max_transfer_pages::<PAGE_SIZE>() * PIPELINE_DEPTH
+    }
+
+    /// Transfer `phys` at the device's own depth: every command goes out before any is awaited.
+    /// One extent run used to go one command at a time because the caller re-derived its position
+    /// from each completion, which pinned a 2 MiB fill to four serial round trips no matter how
+    /// deep the queue was.
+    ///
+    /// Two invariants shape the awkward parts:
+    ///
+    /// - Every `PrpMgr` lives until its own command completes. Dropping one returns its list pages
+    ///   to the pool while the device may still be reading them, and the next command to allocate
+    ///   overwrites a list in use -- both hold valid addresses, so the transfer lands in the wrong
+    ///   pages silently instead of failing. That is why the loop below awaits the whole batch
+    ///   rather than returning on the first error.
+    /// - Only the first command may block for a submission slot. That guarantees forward progress
+    ///   without ever parking the executor thread just to go deeper: if the queue is full the batch
+    ///   is simply shorter, and the caller loops for the rest.
+    async fn pipelined_transfer<const PAGE_SIZE: usize>(
+        &self,
+        disk_page_start: u64,
+        phys: &[PhysInfo],
+        write: bool,
+    ) -> std::io::Result<usize> {
+        let start = Instant::now();
+        let max = self.blocking_get_max_transfer_pages::<PAGE_SIZE>();
+        let lbas_per_page = PAGE_SIZE / self.blocking_get_lba_size();
+
+        let mut batch = Vec::with_capacity(PIPELINE_DEPTH);
+        let mut submitted = 0usize;
+        for chunk in phys.chunks(max).take(PIPELINE_DEPTH) {
+            let prp =
+                super::dma::get_prp_list_or_buffer(chunk, &self.inner.dma_pool, PrpMode::Double);
+            let dptr = prp.prp_list_or_buffer().dptr();
+            let lba_start = (disk_page_start + submitted as u64) * lbas_per_page as u64;
+            let nr_blocks = chunk.len() * lbas_per_page;
+            let block = batch.is_empty();
+            let inflight = if write {
+                self.send_write_page(lba_start, dptr, nr_blocks, block)
+            } else {
+                self.send_read_page(lba_start, dptr, nr_blocks, block)
+            };
+            let Some(inflight) = inflight else {
+                break;
+            };
+            batch.push((prp, inflight, chunk.len()));
+            submitted += chunk.len();
+        }
+
+        let nr_cmds = batch.len();
+        // Report the leading run that succeeded: the caller advances by a count, so a gap in the
+        // middle cannot be expressed. It re-reads from there, and the kernel re-faults for the
+        // rest.
+        let mut done = 0;
+        let mut good = true;
+        let mut err = None;
+        for (prp, inflight, pages) in batch {
+            match inflight.await {
+                Ok(cc) if !cc.status().is_error() => {
+                    if good {
+                        done += pages;
+                    }
+                }
+                Ok(cc) => {
+                    tracing::warn!("got nvme error (write = {}): {:?}", write, cc);
+                    good = false;
+                    err.get_or_insert(std::io::Error::from(ErrorKind::Other));
+                }
+                Err(e) => {
+                    tracing::warn!("nvme err (write = {}): {}", write, e);
+                    good = false;
+                    err.get_or_insert(e);
+                }
+            }
+            drop(prp);
+        }
+        tracing::trace!(
+            "async seq {} took {}us ({} pages in {} commands)",
+            if write { "write" } else { "read" },
+            start.elapsed().as_micros(),
+            done,
+            nr_cmds,
+        );
+
+        match err {
+            Some(e) if done == 0 => Err(e),
+            _ => Ok(done),
+        }
+    }
+
     pub async fn sequential_read_async<const PAGE_SIZE: usize>(
         &self,
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        let start = Instant::now();
-        let count = phys
-            .len()
-            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
-        let dptr = super::dma::get_prp_list_or_buffer(
-            &phys[0..count],
-            &self.inner.dma_pool,
-            PrpMode::Double,
-        )
-        .prp_list_or_buffer()
-        .dptr();
-        let lba_size = self.blocking_get_lba_size();
-        let lbas_per_page = PAGE_SIZE / lba_size;
-        let lba_start = disk_page_start * lbas_per_page as u64;
-        let nr_blocks = count * lbas_per_page;
-        let inflight = self
-            .send_read_page(lba_start, dptr, nr_blocks, true)
-            .unwrap();
-
-        let cc = inflight
+        self.pipelined_transfer::<PAGE_SIZE>(disk_page_start, phys, false)
             .await
-            .inspect_err(|e| tracing::warn!("nvme err: {}", e))?;
-        tracing::trace!("async seq read took {}us", start.elapsed().as_micros());
-
-        if cc.status().is_error() {
-            tracing::warn!("got nvme error sra: {:?}", cc);
-            return Err(ErrorKind::Other.into());
-        }
-        Ok(count)
     }
 
     pub async fn sequential_write_async<const PAGE_SIZE: usize>(
@@ -839,37 +1058,8 @@ impl NvmeController {
         disk_page_start: u64,
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
-        let start = Instant::now();
-        let count = phys
-            .len()
-            .min(self.blocking_get_max_transfer_pages::<PAGE_SIZE>());
-        let dptr = super::dma::get_prp_list_or_buffer(
-            &phys[0..count],
-            &self.inner.dma_pool,
-            PrpMode::Double,
-        )
-        .prp_list_or_buffer()
-        .dptr();
-        let lba_size = self.blocking_get_lba_size();
-        let lbas_per_page = PAGE_SIZE / lba_size;
-        let lba_start = disk_page_start * lbas_per_page as u64;
-        let nr_blocks = count * lbas_per_page;
-        let inflight = self
-            .send_write_page(lba_start, dptr, nr_blocks, true)
-            .unwrap();
-
-        let cc = inflight.await?;
-        tracing::trace!(
-            "async seq write took {}us ({} pages)",
-            start.elapsed().as_micros(),
-            count
-        );
-
-        if cc.status().is_error() {
-            tracing::warn!("got nvme error swa: {:?}", cc);
-            return Err(ErrorKind::Other.into());
-        }
-        Ok(count)
+        self.pipelined_transfer::<PAGE_SIZE>(disk_page_start, phys, true)
+            .await
     }
 
     pub fn blocking_write_pages<const NR: usize>(

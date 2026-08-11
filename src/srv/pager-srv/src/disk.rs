@@ -2,11 +2,9 @@ use std::{
     collections::HashMap,
     future::Future,
     sync::{Arc, Mutex},
-    time::Duration,
     u32, u64,
 };
 
-use async_io::{block_on, Timer};
 use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN};
 use twizzler::Result;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
@@ -14,7 +12,7 @@ use twizzler_driver::dma::{PhysAddr, PhysInfo};
 use crate::{
     helpers::PAGE,
     nvme::{init_nvme, NvmeController},
-    threads::run_async,
+    threads::run_isolated,
     PAGER_CTX,
 };
 
@@ -56,10 +54,11 @@ impl PagedDevice for Disk {
         list: &[object_store::PagedPhysMem],
         mut inner_cursor: usize,
     ) -> Result<usize> {
-        // Only describe what one command can carry. The caller loops on the returned count, so
-        // building a descriptor for every remaining page just to drop all but the first
-        // max-transfer of them made a large run quadratic in its length.
-        let nr_pages = nr_pages.min(self.ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>());
+        // Describe one pipelined batch, not one command: `sequential_read_async` issues every
+        // command in this range before awaiting any of them. Still bounded, because the caller
+        // loops on the returned count -- describing every remaining page just to transfer a prefix
+        // is what made a large run quadratic in its length.
+        let nr_pages = nr_pages.min(self.ctrl.blocking_get_pipelined_pages::<PAGE_SIZE>());
         let mut i = 0;
         let mut cursor = 0;
         let mut phys = Vec::with_capacity(nr_pages);
@@ -99,8 +98,8 @@ impl PagedDevice for Disk {
         list: &[object_store::PagedPhysMem],
         mut inner_cursor: usize,
     ) -> Result<usize> {
-        // See `sequential_read`: clamp to one command's worth before building descriptors.
-        let nr_pages = nr_pages.min(self.ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>());
+        // See `sequential_read`: clamp to one pipelined batch before building descriptors.
+        let nr_pages = nr_pages.min(self.ctrl.blocking_get_pipelined_pages::<PAGE_SIZE>());
         let mut i = 0;
         let mut cursor = 0;
         let mut phys = Vec::with_capacity(nr_pages);
@@ -155,7 +154,7 @@ impl PagedDevice for Disk {
                         return Ok(());
                     }
                     tracing::info!("task out of memory, waiting");
-                    block_on(mw);
+                    run_isolated(mw);
                     continue;
                 }
             };
@@ -192,13 +191,20 @@ impl PagedDevice for Disk {
     }
 
     fn yield_now(&self) {
-        run_async(async {
-            Timer::after(Duration::from_micros(100)).await;
-        });
+        // An actual yield. This used to be `Timer::after(100us)` -- a real sleep, ~10ms per 10k
+        // blocks mapped (pagerperf.md 6) -- and the timer was also the last thing on a worker path
+        // that needed async-io's reactor, which `threads::park_poll` deliberately does not drive.
+        std::thread::yield_now();
     }
 
     fn run_async<R: 'static>(&self, f: impl Future<Output = R>) -> R {
-        run_async(f)
+        // `run_isolated`, never `run_async`: the only callers are lwext4's block-device callbacks,
+        // which always run with `Ext4Store::fs` held, and driving the shared executor there polls
+        // unrelated pager tasks on this thread -- any of which reaching for `fs`, a non-reentrant
+        // std mutex already held further up this very stack, blocks the thread forever. See
+        // pagerperf.md 2. `run_isolated` polls only `f`, but still parks on this thread's nvme
+        // interrupt and reaps, so the completion it waits for arrives without a reaper thread.
+        crate::threads::run_isolated(f)
     }
 
     async fn free_phys_range(&self, _range: PhysRange) {

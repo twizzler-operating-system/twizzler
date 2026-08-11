@@ -29,7 +29,7 @@ use crate::{
     idcounter::StableId,
     instant::Instant,
     once::Once,
-    processor::sched::schedule_thread,
+    processor::{mp::all_processors, sched::schedule_thread},
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
     thread::{
@@ -121,6 +121,51 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
             )
         };
     }
+    // An idle-thread owner cannot be reported like any other: `do_schedule` never reinserts an idle
+    // thread on a run queue (`rq -1` is its normal state), so it resumes only when its own cpu next
+    // finds nothing else to run. Whether that ever happens is a property of *that cpu*, and nothing
+    // in the line above says which cpu it is or what it is doing.
+    //
+    // All of this reads plain atomics -- `is_idle`, the run-queue flags/load word, and the free-
+    // running stat counters -- so it honours the wait loop's "nothing that takes another lock"
+    // rule. The reports repeat, so successive snapshots are a time series: a `switches` count that
+    // climbs says the owner's cpu is churning through work and simply never reaching its idle
+    // thread; one that stands still says the cpu is stuck somewhere of its own.
+    if owner.is_idle_thread() {
+        let owner_cpu = all_processors()
+            .iter()
+            .flatten()
+            .find(|p| {
+                p.idle_thread
+                    .poll()
+                    .is_some_and(|idle| idle.objid() == owner.objid())
+            })
+            .map(|p| p.id as i64)
+            .unwrap_or(-1);
+        emerglogln!(
+            "mutex stall:   owner t{} is the idle thread of cpu {}",
+            owner.id(),
+            owner_cpu
+        );
+        for p in all_processors().iter().flatten() {
+            emerglogln!(
+                "mutex stall:   cpu {}{}: idle {} rq_empty {} load {} switches {} steals {} preempts {} hardticks {}",
+                p.id,
+                if p.id as i64 == owner_cpu {
+                    " (owner)"
+                } else {
+                    ""
+                },
+                p.is_idle(),
+                p.rq_is_empty(),
+                p.current_load(),
+                p.stats.switches.load(Ordering::Relaxed),
+                p.stats.steals.load(Ordering::Relaxed),
+                p.stats.preempts.load(Ordering::Relaxed),
+                p.stats.hardticks.load(Ordering::Relaxed),
+            );
+        }
+    }
     match sampled {
         Some((Some((at, Some((next, next_at)))), _)) => stall!(
             "is itself waiting at {} for a mutex held by t{} taken at {}",
@@ -132,6 +177,13 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
         // A spinlock edge keeps the owner `Running` and leaves `intended_to_mutexlock` empty, so
         // without this arm it reads identically to an owner that is waiting for nothing at all.
         Some((None, Some(at))) => stall!("is spinning for the spinlock at {}", at),
+        // `mutex_wait` is set by `lock` itself and cleared only on acquisition, so the two
+        // disagreeing means the owner *is* in a mutex wait whose intent record was lost, and the
+        // chain continues past a point this report cannot name. Called out rather than left to
+        // read as "waiting for nothing", which is what made one observed chain ambiguous.
+        Some((None, None)) if mutex_wait => stall!(
+            "is in a mutex wait with no intent recorded -- edge unknown, chain is longer than shown",
+        ),
         Some((None, None)) => stall!("is not waiting on a mutex or a spinlock"),
         None => stall!("tracker busy"),
     }

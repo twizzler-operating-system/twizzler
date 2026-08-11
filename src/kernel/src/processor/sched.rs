@@ -777,6 +777,29 @@ pub fn schedule(flags: SchedFlags) {
         return;
     }
 
+    // An idle thread must not lose its cpu while it holds a mutex. `do_schedule` deliberately never
+    // reinserts one on a run queue, so it is not runnable-on-demand the way every other thread is:
+    // it resumes only when its own cpu next finds nothing else to run. Descheduled mid-critical-
+    // section it becomes a lock owner nothing can schedule, and the idle threads of the other cpus
+    // then spin for that lock in `Mutex::lock` -- they do not sleep on it, and they donate no
+    // priority to the owner, so there is no mechanism anywhere that gets the owner running again.
+    //
+    // The state is easy to reach and usually harmless: it shows up transiently in dozens of passing
+    // runs, resolving as soon as the owner's cpu happens to go idle. When that cpu stays busy it
+    // never resolves, and the run wedges with unbounded `mutex stall` reports naming an owner that
+    // is `Running, runnable/off-cpu, rq -1, idle true`.
+    //
+    // Only involuntary preemption is refused. A voluntary block reaches here from `finish_blocking`
+    // with the state already `Sleeping`, and that path must still be able to switch away -- an idle
+    // thread takes it once per iteration of the very spin loop described above.
+    if cur.is_idle_thread()
+        && cur.get_mutex_count() > 0
+        && cur.get_state() == ExecutionState::Running
+    {
+        interrupt::set(istate);
+        return;
+    }
+
     do_schedule(flags);
     interrupt::set(istate);
 

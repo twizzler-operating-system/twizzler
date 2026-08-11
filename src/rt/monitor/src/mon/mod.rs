@@ -232,11 +232,36 @@ impl Monitor {
             }),
         )?;
         let mon = get_monitor();
+
+        // Map the repr into the caller's compartment now, while we still hold `thread` and the
+        // object is therefore guaranteed to exist. The caller maps it immediately after this gate
+        // returns, and a short-lived thread can exit and be reaped by the thread cleaner -- which
+        // deletes the repr -- inside that window. Doing it here turns the caller's map into a
+        // refcount bump on this `Space` entry, which cannot fail, instead of a fresh
+        // `sys_object_map` racing the delete.
+        //
+        // These flags must match the ones the runtime asks for (`impl_spawn`), since `MapInfo` is
+        // keyed by flags as well as id. `do_spawn` already mapped the repr under the same key, so
+        // this shares that slot rather than consuming another.
+        let repr_info = MapInfo {
+            id: thread.id,
+            flags: MapFlags::READ | MapFlags::WRITE,
+        };
+        let repr_handle = Space::map(&mon.space, repr_info)
+            .inspect_err(|e| tracing::debug!("failed to premap repr of {}: {}", thread.id, e))
+            .ok();
+
         let mut comps = mon.comp_mgr.write(ThreadKey::get().unwrap());
         // This creates a per-thread structure in the compartment.
         let comp = comps.get_mut(instance)?;
         write_note!(thread.id, "thread:{}", comp.name);
         let _pt = comp.get_per_thread(thread.id);
+        // Held by the compartment, not by us: the caller's `map_object` replaces this entry with
+        // its own handle for the same `MapInfo`, and the mapping is released when the caller
+        // releases that one.
+        if let Some(repr_handle) = repr_handle {
+            comp.premap_object(repr_info, repr_handle);
+        }
         Ok(thread.id)
     }
 

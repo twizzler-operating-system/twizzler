@@ -5,10 +5,31 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+# Nothing in the lib target is a benchmark any more; without this `cargo bench` still builds and
+# runs its test harness just to report every unit test as ignored.
+bench = false
+
 [dependencies]
 bitflags = "2.4.1"
-twizzler-abi = { path = "../twizzler-abi", version = "*" }
+
+# Host-only concurrency model checking for the queue header. Enabled by building with
+# `RUSTFLAGS="--cfg loom"`; see src/loom_tests.rs.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
 
 [features]
 std = []
 default = ["std"]
+
+# Benchmarks and the measurement reports live in their own target so that `cargo test` stays fast:
+# `test = false` keeps them out of it entirely, rather than having libtest run every #[bench] once.
+# To run the reports (they are #[test]s, which `cargo bench` skips), name the target:
+#   cargo test --release -p twizzler-queue-raw --bench queue -- --nocapture
+[[bench]]
+name = "queue"
+harness = true
+test = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

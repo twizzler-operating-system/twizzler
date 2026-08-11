@@ -42,9 +42,36 @@ CPU_SAMPLE_SECONDS = 0.4
 
 TOTAL_RE = re.compile(r"^tag (\S+): running (\d+) configurations across (\d+) lanes")
 START_RE = re.compile(r"^\[lane (\d+)\] start\s+(\S+)")
-DONE_RE = re.compile(r"^\[lane (\d+)\] (PASS|FAIL)\s+(\S+)\s+([\d.]+)m\s+(.*)$")
+DONE_RE = re.compile(r"^\[lane (\d+)\] (PASS|FAIL)\s+(\S+)\s+([\dhms.]+)\s+(.*)$")
 BUILD_RE = re.compile(r"^=== building (\S+)")
 FINAL_RE = re.compile(r"^(\d+) passed, (\d+) failed$")
+
+HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+MINUTES_RE = re.compile(r"^([\d.]+)m$")
+
+
+def parse_duration(text: str) -> Optional[float]:
+    """Seconds from many.py's `42s`/`5m03s`/`1h05m`, or from the bare `12.3m` older sweeps wrote.
+
+    Both forms are accepted because the estimates lean on summary.txt files already on disk, which
+    predate the second-resolution format.
+    """
+    if (m := HMS_RE.match(text)) and any(m.groups()):
+        h, mins, secs = (int(g or 0) for g in m.groups())
+        return h * 3600.0 + mins * 60.0 + secs
+    if m := MINUTES_RE.match(text):
+        return float(m.group(1)) * 60.0
+    return None
+
+
+def human_time(seconds: float) -> str:
+    """`42s` / `5m03s` / `1h05m` -- the same shape many.py logs, so the two read alike."""
+    total = max(0, round(seconds))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{total % 3600 // 60:02d}m"
 
 
 @dataclass
@@ -58,7 +85,7 @@ class Sweep:
     phase: str = "starting"
     passed: int = 0
     failed: int = 0
-    done: List[Tuple[str, str, str, str]] = field(default_factory=list)
+    done: List[Tuple[str, str, float, str]] = field(default_factory=list)
     running: Dict[int, str] = field(default_factory=dict)
 
 
@@ -177,9 +204,9 @@ def read_status(sweep: Sweep) -> None:
             sweep.running[int(m.group(1))] = m.group(2)
             building = None
         elif m := DONE_RE.match(line):
-            lane, verdict, name, mins, summary = m.groups()
+            lane, verdict, name, took, summary = m.groups()
             sweep.running.pop(int(lane), None)
-            sweep.done.append((verdict, name, mins, summary))
+            sweep.done.append((verdict, name, parse_duration(took) or 0.0, summary))
             if verdict == "PASS":
                 sweep.passed += 1
             else:
@@ -281,11 +308,11 @@ def sweep_schedule(pid: int) -> Optional[List[str]]:
         return None
 
 
-SUMMARY_RE = re.compile(r"^round \d+\s+(\S+)\s+(PASS|FAIL)\s+([\d.]+)m")
+SUMMARY_RE = re.compile(r"^round \d+\s+(\S+)\s+(PASS|FAIL)\s+([\dhms.]+)")
 
 
 def historical_durations() -> Dict[str, List[Tuple[float, bool]]]:
-    """Per-configuration `(minutes, passed)` recorded by previous sweeps.
+    """Per-configuration `(seconds, passed)` recorded by previous sweeps.
 
     Round 1 is when an ETA is most useful and when a sweep knows least about itself, and the spread
     between configurations is two orders of magnitude (a release+KVM run is under a minute, a
@@ -305,9 +332,8 @@ def historical_durations() -> Dict[str, List[Tuple[float, bool]]]:
             continue
         for line in text.splitlines():
             if m := SUMMARY_RE.match(line):
-                out.setdefault(m.group(1), []).append(
-                    (float(m.group(3)), m.group(2) == "PASS")
-                )
+                if (secs := parse_duration(m.group(3))) is not None:
+                    out.setdefault(m.group(1), []).append((secs, m.group(2) == "PASS"))
     return out
 
 
@@ -327,15 +353,15 @@ def pick_estimate(samples: List[Tuple[float, bool]]) -> float:
     Taking the max of whatever survives keeps the failure direction safe: an ETA that reads high
     wastes patience, one that reads low says a sweep is nearly done when it has an hour left.
     """
-    passes = [m for m, ok in samples if ok]
-    return max(passes) if passes else max(m for m, _ in samples)
+    passes = [s for s, ok in samples if ok]
+    return max(passes) if passes else max(s for s, _ in samples)
 
 
 def estimates(sweep: "Sweep", history: Dict[str, List[Tuple[float, bool]]]) -> Dict[str, float]:
-    """Minutes a run of each configuration takes: this sweep's own numbers first, history second."""
+    """Seconds a run of each configuration takes: this sweep's own numbers first, history second."""
     own: Dict[str, List[Tuple[float, bool]]] = {}
-    for verdict, name, mins, _summary in sweep.done:
-        own.setdefault(config_of(name), []).append((float(mins), verdict == "PASS"))
+    for verdict, name, secs, _summary in sweep.done:
+        own.setdefault(config_of(name), []).append((secs, verdict == "PASS"))
     # This sweep's own numbers replace history rather than joining it: they are the only ones taken
     # from this tree, at this concurrency.
     effective = {name: v for name, v in history.items() if v}
@@ -348,19 +374,19 @@ def estimates(sweep: "Sweep", history: Dict[str, List[Tuple[float, bool]]]) -> D
     # `debug-nokvm-smp2` reads 4m off two panics while `debug-nokvm-smp1` correctly reads 60m.
     healthy: Dict[str, float] = {}
     for name, v in effective.items():
-        if any(ok for _mins, ok in v):
+        if any(ok for _secs, ok in v):
             healthy[quadrant_of(name)] = max(healthy.get(quadrant_of(name), 0.0), est[name])
     for name, v in effective.items():
-        if not any(ok for _mins, ok in v):
+        if not any(ok for _secs, ok in v):
             est[name] = max(est[name], healthy.get(quadrant_of(name), 0.0))
     return est
 
 
-def eta_minutes(
+def eta_seconds(
     sweep: "Sweep", schedule: Optional[List[str]], est: Dict[str, float],
     qemus: Dict[int, LaneProc],
 ) -> Optional[float]:
-    """Roughly how much longer the sweep has, in minutes.
+    """Roughly how much longer the sweep has, in seconds.
 
     Lane-time rather than wall-clock extrapolation: the driver log has no timestamps, so how long
     the sweep has already been running says nothing about how far through the work it is. Summing
@@ -377,13 +403,13 @@ def eta_minutes(
     # cannot pull the whole estimate to zero.
     tails = []
     for lane, name in sweep.running.items():
-        ran = qemus[lane].elapsed / 60 if lane in qemus else 0.0
-        left = max(est.get(config_of(name), 0.0) - ran, 1.0)
+        ran = qemus[lane].elapsed if lane in qemus else 0.0
+        left = max(est.get(config_of(name), 0.0) - ran, 60.0)
         remaining += left
         tails.append(left)
 
     if schedule is not None:
-        done = {name for _v, name, _m, _s in sweep.done}
+        done = {name for _v, name, _d, _s in sweep.done}
         pending = [j for j in schedule if j not in done and j not in sweep.running.values()]
         if not est and pending:
             return None
@@ -393,7 +419,7 @@ def eta_minutes(
     elif sweep.total is not None and sweep.done:
         # No schedule to work from: fall back to this sweep's own average pace, which is only
         # meaningful once a mix of configurations has finished.
-        avg = sum(float(m) for _v, _n, m, _s in sweep.done) / len(sweep.done)
+        avg = sum(secs for _v, _n, secs, _s in sweep.done) / len(sweep.done)
         left = max(0, sweep.total - len(sweep.done) - len(sweep.running))
         remaining += avg * left
         tails.append(avg if left else 0.0)
@@ -402,10 +428,6 @@ def eta_minutes(
 
     # However well the work packs, nothing finishes before its longest single remaining run does.
     return max(remaining / sweep.lanes, max(tails, default=0.0))
-
-
-def human_time(minutes: float) -> str:
-    return f"{minutes:.0f}m" if minutes < 90 else f"{minutes / 60:.1f}h"
 
 
 def activity(results: Optional[Path], name: str) -> str:
@@ -572,14 +594,14 @@ def main() -> int:
 
         tag = sweep.tag or "?"
         load = system_load()
-        print(f"many.py  pid {pid}  tag {tag}  elapsed {sweep.elapsed / 60:.1f}m  [{sweep.phase}]"
+        print(f"many.py  pid {pid}  tag {tag}  elapsed {human_time(sweep.elapsed)}  [{sweep.phase}]"
               + (f"  {load}" if load else ""))
         if sweep.results:
             print(f"  results  {rel(sweep.results)}")
 
         qemus = lane_qemus(sweep.tag)
         est = estimates(sweep, history)
-        eta = eta_minutes(sweep, sweep_schedule(pid), est, qemus)
+        eta = eta_seconds(sweep, sweep_schedule(pid), est, qemus)
 
         if sweep.total:
             complete = sweep.passed + sweep.failed
@@ -592,16 +614,16 @@ def main() -> int:
             name = sweep.running[lane]
             proc = qemus.get(lane)
             detail = proc.desc if proc else "copying images"
-            ran = proc.elapsed / 60 if proc else 0.0
+            ran = proc.elapsed if proc else 0.0
             # Elapsed against this configuration's usual run time: the two are only meaningful
             # together, so they share a column rather than becoming two.
             expect = est.get(config_of(name))
-            age = (f"{ran:.1f}m" if ran else "--") + (f"/~{expect:.0f}m" if expect else "")
+            age = (human_time(ran) if ran else "--") + (f"/~{human_time(expect)}" if expect else "")
             print(f"    lane {lane}  {name:<24} {age:>12}  {detail:<22} "
                   f"{(proc.load if proc else ''):>8}  {activity(sweep.results, name)}")
 
-        for verdict, name, mins, summary in [d for d in sweep.done if d[0] == "FAIL"]:
-            print(f"    FAILED   {name:<24} {mins}m  {summary}")
+        for verdict, name, secs, summary in [d for d in sweep.done if d[0] == "FAIL"]:
+            print(f"    FAILED   {name:<24} {human_time(secs):>7}  {summary}")
 
     if args.cleanup:
         if sweeps:

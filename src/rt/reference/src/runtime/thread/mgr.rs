@@ -67,25 +67,23 @@ struct CrossThread {
     alloc_base: *mut u8,
 }
 
-impl CrossThread {
-    /// Whether this thread is done with its TLS region.
-    ///
-    /// This has to be answered without calling into the monitor: the only way to read a thread's
-    /// `ExecutionState` is to map its repr, and outside the monitor `map_object` is a gate call --
-    /// which cannot be made from `cross_compartment_entry` (it wedges the compartment) and so
-    /// cannot be made while the thread is known alive. What is left is the existence of the
-    /// repr object, which the kernel deletes only once the thread is gone.
-    ///
-    /// The narrowing that matters: **only** `NoSuchObject` counts as death. The previous test was
-    /// `sys_object_stat(id).is_err()`, so a permissions failure, or any future error, silently
-    /// freed a live thread's TLS -- and a thread that keeps running on a freed region reads its
-    /// control block back as zero once the allocator reuses the memory, which is a fault at a
-    /// small negative address inside whatever thread-local it touches next.
-    fn is_exited(id: ObjID) -> bool {
-        match sys_object_stat(id) {
-            Err(TwzError::Object(ObjectError::NoSuchObject)) => true,
-            Err(_) | Ok(_) => false,
-        }
+/// Whether the thread owning this repr object is gone.
+///
+/// This has to be answerable without calling into the monitor: the only way to read a thread's
+/// `ExecutionState` is to map its repr, and outside the monitor `map_object` is a gate call --
+/// which cannot be made from `cross_compartment_entry` (it wedges the compartment) and so
+/// cannot be made while the thread is known alive. What is left is the existence of the
+/// repr object, which is destroyed only once the thread is gone.
+///
+/// The narrowing that matters: **only** `NoSuchObject` counts as death. The previous test was
+/// `sys_object_stat(id).is_err()`, so a permissions failure, or any future error, silently
+/// freed a live thread's TLS -- and a thread that keeps running on a freed region reads its
+/// control block back as zero once the allocator reuses the memory, which is a fault at a
+/// small negative address inside whatever thread-local it touches next.
+fn repr_is_gone(id: ObjID) -> bool {
+    match sys_object_stat(id) {
+        Err(TwzError::Object(ObjectError::NoSuchObject)) => true,
+        Err(_) | Ok(_) => false,
     }
 }
 
@@ -152,17 +150,20 @@ impl ThreadManagerInner {
     }
 
     fn scan_for_exited_cross(&mut self) {
-        for (_, th) in self
-            .cross_threads
-            .extract_if(.., |id, _| CrossThread::is_exited(*id))
-        {
+        for (_, th) in self.cross_threads.extract_if(.., |id, _| repr_is_gone(*id)) {
             drop(th);
         }
     }
 
     fn scan_for_exited_except(&mut self, id: u32) {
         for (_, th) in self.all_threads.extract_if(.., |_, th| {
-            th.id != id && th.repr().get_state() == ExecutionState::Exited
+            th.id != id
+                && match th.repr() {
+                    Some(repr) => repr.get_state() == ExecutionState::Exited,
+                    // No mapping to read the state from; fall back to the existence of the repr
+                    // object, which outlives the thread.
+                    None => repr_is_gone(th.objid()),
+                }
         }) {
             trace!("found orphaned thread {}", th.id);
             self.to_cleanup.push(th);
@@ -217,8 +218,17 @@ impl ReferenceRuntime {
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .unwrap();
         (unsafe { &mut *tls }).runtime_data.set_id(1);
-        let thread =
-            InternalThread::new(thread_repr_obj, 0, 0, 0, 1, tls, tls_alloc_base, tls_layout);
+        let thread = InternalThread::new(
+            Some(thread_repr_obj),
+            thid,
+            0,
+            0,
+            0,
+            1,
+            tls,
+            tls_alloc_base,
+            tls_layout,
+        );
 
         THREAD_MGR
             .inner
@@ -363,10 +373,23 @@ impl ReferenceRuntime {
             }
         };
 
-        let thread_repr_obj = self.map_object(thid, MapFlags::READ | MapFlags::WRITE)?;
+        // Nothing past this point may return `Err`. `monitor_rt_spawn_thread` above has already
+        // started the thread, and it is running on `arg_raw` -- a pointer to std's `ThreadInit`,
+        // which std frees the moment `twz_rt_spawn_thread` reports failure. The thread then
+        // dereferences that freed box and calls through a `dyn FnOnce` vtable pointer read back
+        // out of recycled heap, i.e. it jumps to a heap address and refaults there forever.
+        //
+        // The map fails when the thread has already exited and the monitor has deleted its repr,
+        // which is a race we lose legitimately for short-lived threads, not an error. A missing
+        // handle just means the state has to be read from the object's existence instead.
+        let thread_repr_obj = self
+            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
+            .inspect_err(|e| tracing::debug!("failed to map repr of new thread {}: {}", thid, e))
+            .ok();
 
         let thread = InternalThread::new(
             thread_repr_obj,
+            thid,
             stack_raw,
             stack_size,
             arg_raw,
@@ -382,16 +405,45 @@ impl ReferenceRuntime {
     }
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
-        let repr = {
-            let mut inner = THREAD_MGR.inner.lock();
-            inner.scan_for_exited_except(id);
-            inner
-                .all_threads
-                .get(&id)
-                .ok_or(TwzError::Argument(ArgumentError::BadHandle))?
-                .repr_handle()
-                .clone()
+        let start = std::time::Instant::now();
+        // Usually one pass: the thread has a repr handle and we go straight to waiting on it. The
+        // loop is for the thread whose repr could not be mapped at spawn time, where there is no
+        // wait word to sleep on -- either the object is gone (the thread has exited, so the join
+        // is already satisfied) or the map failed transiently and is worth retrying.
+        let repr = loop {
+            let repr_id = {
+                let mut inner = THREAD_MGR.inner.lock();
+                inner.scan_for_exited_except(id);
+                let thread = inner
+                    .all_threads
+                    .get(&id)
+                    .ok_or(TwzError::Argument(ArgumentError::BadHandle))?;
+                match thread.repr_handle() {
+                    Some(repr) => break repr.clone(),
+                    None => {
+                        let repr_id = thread.objid();
+                        if repr_is_gone(repr_id) {
+                            inner.prep_cleanup(id);
+                            inner.do_thread_gc();
+                            return Ok(());
+                        }
+                        repr_id
+                    }
+                }
+            };
+
+            if let Ok(repr) = self.map_object(repr_id, MapFlags::READ | MapFlags::WRITE) {
+                if let Some(thread) = THREAD_MGR.inner.lock().all_threads.get_mut(&id) {
+                    thread.set_repr_handle(repr.clone());
+                }
+                break repr;
+            }
+            if timeout.is_some_and(|timeout| start.elapsed() >= timeout) {
+                return Err(TwzError::TIMED_OUT);
+            }
+            self.sleep(std::time::Duration::from_millis(1));
         };
+        let timeout = timeout.map(|timeout| timeout.saturating_sub(start.elapsed()));
         let base =
             unsafe { (repr.start().add(NULLPAGE_SIZE) as *const ThreadRepr).as_ref() }.unwrap();
         loop {

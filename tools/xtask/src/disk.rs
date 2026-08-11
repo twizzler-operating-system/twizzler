@@ -249,10 +249,7 @@ pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyh
             }
 
             let mut dest_file = ext4
-                .open(
-                    dest,
-                    OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-                )
+                .open(dest, OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE)
                 .unwrap();
             let mut src_file = File::open(&test.path)?;
 

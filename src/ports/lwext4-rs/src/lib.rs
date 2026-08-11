@@ -582,17 +582,26 @@ impl Ext4Fs {
         errno_to_result(unsafe { lwext4::ext4_dir_mk(path.as_ptr()) })
     }
 
+    /// Write back dirty cache buffers. Does *not* touch the superblock: `ext4_fs_fini` is a
+    /// device write every single time regardless of whether anything changed, and callers hit
+    /// this on every page-out. Use `sync_super` at explicit sync points instead.
     pub fn flush(&mut self) -> Result<()> {
-        let fs = unsafe { lwext4::ext4_mountpoint_fs(self.mnt_name.as_ptr()) };
-        let e = unsafe { ext4_fs_fini(fs) };
-
-        errno_to_result(e)?;
         unsafe {
             _bc_lock();
-            errno_to_result(ext4_cache_flush(self.mnt_name.as_ptr()))?;
+            let r = ext4_cache_flush(self.mnt_name.as_ptr());
+            // Unlock before propagating: an early `?` here would leave BC_LOCK held.
             _bc_unlock();
+            errno_to_result(r)?;
         }
         Ok(())
+    }
+
+    /// Flush, then write the superblock (free counts, VALID_FS state). `ext4_umount` does this
+    /// too, so a clean shutdown is covered without calling this.
+    pub fn sync_super(&mut self) -> Result<()> {
+        let fs = unsafe { lwext4::ext4_mountpoint_fs(self.mnt_name.as_ptr()) };
+        errno_to_result(unsafe { ext4_fs_fini(fs) })?;
+        self.flush()
     }
 }
 

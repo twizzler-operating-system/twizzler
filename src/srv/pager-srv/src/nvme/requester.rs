@@ -40,6 +40,10 @@ pub struct NvmeRequesterInner {
 pub struct NvmeRequester {
     inner: Mutex<NvmeRequesterInner>,
     cv: Condvar,
+    /// Diagnostic only. Counted outside the lock so a dump can report them even when the lock is
+    /// the thing that is stuck.
+    submitted: AtomicU64,
+    completed: AtomicU64,
 }
 
 pub struct InflightRequest<'a> {
@@ -97,7 +101,17 @@ impl<'a> InflightRequest<'a> {
             if let Some(cc) = self.completion() {
                 return Ok(cc);
             }
-            sys_thread_sync(&mut [ThreadSync::new_sleep(wait.0)], None)?;
+            // Timed, not indefinite. Data queues have no reaper thread -- they are drained by
+            // whoever is waiting on them -- and this blocking path does not know its queue's
+            // interrupt word, so it re-checks rather than trusting someone else to wake it. The
+            // async path (`poll_completion` under `threads::park_poll`) is the one that sleeps on
+            // the interrupt properly; this is the admin queue and the odd blocking caller.
+            sys_thread_sync(
+                &mut [ThreadSync::new_sleep(wait.0)],
+                Some(Duration::from_micros(200)),
+            )
+            .ok();
+            self.req.try_check_completions();
         }
     }
 
@@ -232,10 +246,9 @@ impl NvmeRequesterInner {
         let entry = self.requests.get(id as usize).unwrap().clone();
         unsafe { entry.ready.get().as_mut().unwrap().write(resp) };
         let flags = entry.flags.fetch_or(READY, Ordering::SeqCst);
-        if flags & DROPPED != 0 {
-            tracing::info!("removing request {} due completion", id);
-            self.requests.remove(id as usize);
-        } else if flags & WAITER != 0 {
+        // Each bit is answered independently: these are not mutually exclusive states, and a chain
+        // of `else if`s silently drops the second wake for an entry carrying two of them.
+        if flags & WAITER != 0 {
             let _ = twizzler_abi::syscall::sys_thread_sync(
                 &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                     ThreadSyncReference::Virtual(&entry.flags),
@@ -243,11 +256,16 @@ impl NvmeRequesterInner {
                 ))],
                 None,
             );
-        } else if flags & WAKER != 0 {
+        }
+        if flags & WAKER != 0 {
             let mut w = entry.waker.lock().unwrap();
             if let Some(waker) = w.take() {
                 waker.wake();
             }
+        }
+        if flags & DROPPED != 0 {
+            tracing::info!("removing request {} due completion", id);
+            self.requests.remove(id as usize);
         }
 
         Some((id, resp))
@@ -285,12 +303,55 @@ impl NvmeRequester {
                 subq, comq, sub_bell, com_bell, bar_obj, sub_dma, com_dma,
             )),
             cv: Condvar::new(),
+            submitted: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+        }
+    }
+
+    /// Dump enough state to tell a lost completion from a lost wakeup.
+    ///
+    /// `try_lock`, never `lock`: this is called from the watchdog while the pager is wedged, and a
+    /// dump that blocks on the very lock under investigation reports nothing. A contended lock is
+    /// itself the answer, so it is printed rather than waited on.
+    pub fn dump(&self, label: &str) {
+        let submitted = self.submitted.load(Ordering::Relaxed);
+        let completed = self.completed.load(Ordering::Relaxed);
+        let Ok(inner) = self.inner.try_lock() else {
+            tracing::warn!(
+                "nvme dump {}: LOCK HELD, submitted {} completed {}",
+                label,
+                submitted,
+                completed
+            );
+            return;
+        };
+        // `cq_ready` is the discriminator: true means the device posted a completion that nobody
+        // has consumed, so the bug is on this side of the wire.
+        tracing::warn!(
+            "nvme dump {}: submitted {} completed {} outstanding {} live-slots {} sq_full {} sq_empty {} cq_ready {}",
+            label,
+            submitted,
+            completed,
+            submitted.wrapping_sub(completed),
+            inner.requests.len(),
+            inner.subq.is_full(),
+            inner.subq.is_empty(),
+            inner.comq.ready(),
+        );
+        for (id, entry) in inner.requests.iter().take(24) {
+            tracing::warn!(
+                "nvme dump {}:   req {} flags {:#x}",
+                label,
+                id,
+                entry.flags.load(Ordering::Relaxed),
+            );
         }
     }
 
     #[inline]
     pub fn submit(&self, cmd: CommonCommand) -> Option<InflightRequest<'_>> {
         let (id, entry) = self.inner.lock().unwrap().submit(cmd)?;
+        self.submitted.fetch_add(1, Ordering::Relaxed);
         Some(InflightRequest {
             req: self,
             id,
@@ -307,21 +368,35 @@ impl NvmeRequester {
         let mut inner = self.inner.lock().unwrap();
         loop {
             if let Some((id, entry)) = inner.submit(cmd) {
+                self.submitted.fetch_add(1, Ordering::Relaxed);
                 return Some(InflightRequest {
                     req: self,
                     id,
                     entry,
                 });
             }
-            if let Some(timeout) = timeout {
-                let (guard, to) = self.cv.wait_timeout(inner, timeout).unwrap();
-                if to.timed_out() {
-                    return None;
-                }
-                inner = guard;
-            } else {
-                inner = self.cv.wait(inner).unwrap();
+            // The queue is full and we may be the only thread that can drain it, so drain here
+            // rather than waiting to be notified -- with no per-queue reaper thread, waiting on the
+            // condvar alone would be a deadlock whenever this thread owns the queue.
+            let mut drained = false;
+            while inner.get_completion().is_some() {
+                drained = true;
+                self.completed.fetch_add(1, Ordering::Relaxed);
             }
+            if drained {
+                continue;
+            }
+            // Nothing to drain: the device still owes us. Bounded so we come back and re-drain;
+            // this path needs 64 commands outstanding from one thread, so it is close to
+            // unreachable at `PIPELINE_DEPTH`.
+            let (guard, to) = self
+                .cv
+                .wait_timeout(inner, timeout.unwrap_or(Duration::from_micros(200)))
+                .unwrap();
+            if to.timed_out() && timeout.is_some() {
+                return None;
+            }
+            inner = guard;
         }
     }
 
@@ -334,6 +409,7 @@ impl NvmeRequester {
         let mut more = false;
         while let Some(_) = inner.get_completion() {
             more = true;
+            self.completed.fetch_add(1, Ordering::Relaxed);
         }
         drop(inner);
         if more {
@@ -347,6 +423,7 @@ impl NvmeRequester {
         let mut more = false;
         while let Some(_) = inner.get_completion() {
             more = true;
+            self.completed.fetch_add(1, Ordering::Relaxed);
         }
         if more {
             self.cv.notify_all();
@@ -357,6 +434,7 @@ impl NvmeRequester {
     pub fn get_completion(&self) -> Option<(u16, CommonCompletion)> {
         let cc = self.inner.lock().unwrap().get_completion();
         if cc.is_some() {
+            self.completed.fetch_add(1, Ordering::Relaxed);
             self.cv.notify_one();
         }
         cc

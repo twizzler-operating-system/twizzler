@@ -72,16 +72,48 @@
 //! [1_, 0_, 0_]
 //! ```
 
-#![cfg_attr(test, feature(test))]
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
-use core::{
-    cell::UnsafeCell,
-    fmt::Display,
-    marker::PhantomData,
-    ptr::addr_of_mut,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
-};
+#[cfg(not(loom))]
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::{cell::UnsafeCell, fmt::Display, marker::PhantomData, ptr::addr_of_mut};
+
+// Under `--cfg loom` the header's counters become loom-tracked atomics so its wake protocol
+// can be model-checked. The entry buffer stays on real atomics either way: loom cannot see an
+// atomic punned out of a raw pointer into shared memory, so the buffer is deliberately outside
+// the model.
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+#[cfg(not(loom))]
+const SPIN_ATTEMPTS: usize = 1000;
+// Loom treats every spin iteration as a scheduling point; 1000 of them is an unexplorable state
+// space, and the interesting transitions are all past the spin phase anyway.
+#[cfg(loom)]
+const SPIN_ATTEMPTS: usize = 1;
+
+/// Compensates for loom modelling `SeqCst` as AcqRel, restoring the total order only at an explicit
+/// fence. Each call site below sits on a store-buffer boundary — one side stores its waiting
+/// indicator then loads the counter, the other stores the counter then loads the indicator — whose
+/// correctness *is* the SC guarantee that at least one side observes the other. Without this,
+/// models of the wake protocol report lost wakeups that C11 SC (and both targets' codegen) forbid.
+/// Compiles to nothing outside `--cfg loom`.
+#[inline(always)]
+fn sc_fence() {
+    #[cfg(loom)]
+    loom::sync::atomic::fence(Ordering::SeqCst);
+}
+
+#[inline]
+fn spin_hint() {
+    #[cfg(loom)]
+    loom::thread::yield_now();
+    #[cfg(not(loom))]
+    core::hint::spin_loop();
+}
+
+#[cfg(loom)]
+mod loom_tests;
 
 #[derive(Clone, Copy, Default, Debug)]
 #[repr(C)]
@@ -96,15 +128,28 @@ pub struct QueueEntry<T> {
 }
 
 impl<T> QueueEntry<T> {
+    /// Atomic access to `cmd_slot`, derived from a mutable-provenance pointer to the entry rather
+    /// than a shared reference: the sibling fields are written non-atomically by `submit` and read
+    /// non-atomically by `receive`, and only the turn protocol keeps those from overlapping with
+    /// this word.
+    ///
+    /// # Safety
+    /// `item` must point to a live, aligned entry in the queue buffer.
     #[inline]
-    fn get_cmd_slot(&self) -> u32 {
-        unsafe { core::mem::transmute::<&u32, &AtomicU32>(&self.cmd_slot).load(Ordering::SeqCst) }
+    unsafe fn get_cmd_slot(item: *mut Self) -> u32 {
+        unsafe {
+            core::sync::atomic::AtomicU32::from_ptr(addr_of_mut!((*item).cmd_slot))
+                .load(core::sync::atomic::Ordering::SeqCst)
+        }
     }
 
+    /// # Safety
+    /// As [QueueEntry::get_cmd_slot].
     #[inline]
-    fn set_cmd_slot(&self, v: u32) {
+    unsafe fn set_cmd_slot(item: *mut Self, v: u32) {
         unsafe {
-            core::mem::transmute::<&u32, &AtomicU32>(&self.cmd_slot).store(v, Ordering::SeqCst);
+            core::sync::atomic::AtomicU32::from_ptr(addr_of_mut!((*item).cmd_slot))
+                .store(v, core::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -146,16 +191,80 @@ pub struct QueueBase<S, C> {
 /// blocking submitters' count.
 const ASYNC_SUBMIT_WAITING: u32 = 1 << 31;
 
+/// `consumer_waiting`: the consumer has armed a sleep on `bell`.
+///
+/// This lived in bit 63 of `tail` for a while, deliberately outside that counter's arithmetic
+/// range so `advance_tail` could stay a plain `fetch_add(1)` that could not clobber it. Its own
+/// word keeps that property and drops the reason it was ever packed: the producer reads this flag
+/// on *every* submission, and `tail` is written by the consumer on every receive, so sharing a line
+/// with the counter made that read a guaranteed coherence miss. Alone on a line it is written only
+/// when someone actually arms a sleep, so it stays clean-shared in the producer's cache.
+///
+/// It also removes the one wart of the packed form: `setup_send_sleep_simple` returns `tail`
+/// unmasked, so a flag inside that word could flip the sleep predicate and cost a spurious wake.
+const CONSUMER_WAITING: u32 = 1;
+
+/// Pads a field out to its own cache line.
+///
+/// The whole header used to fit inside one 64-byte line: producer-written `head` and `bell`,
+/// consumer-written `tail`, and the read-only geometry all together. Every access from either side
+/// invalidated the other's copy of the line, so on the cross-core path essentially every atomic in
+/// the algorithm was a coherence miss — which is most of the gap between the single-threaded and
+/// two-thread numbers.
+///
+/// 64 bytes matches both targets we build for. Over-padding costs address space in a region that
+/// has 4 KiB to spare (see `Queue::init`'s `HDR_LEN`); under-padding silently reintroduces the
+/// sharing, so this does not try to be clever about it.
+#[repr(C, align(64))]
+struct CacheLine<T>(T);
+
+impl<T> core::ops::Deref for CacheLine<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// The producer-owned line: `head`, plus the producers' cached view of `tail`.
+///
+/// Both are written only by submitters, so they belong on one line — the cache is free to consult
+/// once `head` is in hand, and putting it anywhere else would just add a line to the working set.
 #[repr(C)]
+struct ProducerState {
+    head: AtomicU32,
+    /// Last value of `tail` a producer observed, masked to 31 bits like every other reader of it.
+    ///
+    /// `is_full` is the only thing on the submission fast path that needs `tail`, and `tail` is
+    /// the word the consumer writes on every receive — so consulting it directly made every
+    /// submission pay a coherence miss just to be told, almost always, that the queue has
+    /// room.
+    ///
+    /// Safe to trust because `tail` only ever advances: a stale copy *understates* what the
+    /// consumer has drained, so it can only report a queue as fuller than it is. That direction
+    /// costs a refresh, never a slot handed out over live data. It also cannot go stale without
+    /// bound — each submission advances `head`, so after at most `len` of them the cached value
+    /// reports full and forces a real read.
+    cached_tail: AtomicU32,
+}
+
+#[repr(C, align(64))]
 /// A raw queue header. This contains all the necessary counters and info to run the queue
 /// algorithm.
+///
+/// Field order is by writer, not by meaning: the geometry is immutable after init, `head` is
+/// producer-written per submission, `waiters` is producer-written only when a submitter blocks,
+/// `bell` is producer-written per submission, and `tail` is consumer-written per receive. The two
+/// rarely-written words stay clean-shared in the readers' caches precisely because they do not
+/// share a line with a counter that moves every item.
 pub struct RawQueueHdr {
     l2len: usize,
     stride: usize,
-    head: AtomicU32,
-    waiters: AtomicU32,
-    bell: AtomicU64,
-    tail: AtomicU64,
+    producer: CacheLine<ProducerState>,
+    waiters: CacheLine<AtomicU32>,
+    consumer_waiting: CacheLine<AtomicU32>,
+    bell: CacheLine<AtomicU64>,
+    tail: CacheLine<AtomicU64>,
 }
 
 impl RawQueueHdr {
@@ -164,10 +273,14 @@ impl RawQueueHdr {
         Self {
             l2len,
             stride,
-            head: AtomicU32::new(0),
-            waiters: AtomicU32::new(0),
-            bell: AtomicU64::new(0),
-            tail: AtomicU64::new(0),
+            producer: CacheLine(ProducerState {
+                head: AtomicU32::new(0),
+                cached_tail: AtomicU32::new(0),
+            }),
+            waiters: CacheLine(AtomicU32::new(0)),
+            consumer_waiting: CacheLine(AtomicU32::new(0)),
+            bell: CacheLine(AtomicU64::new(0)),
+            tail: CacheLine(AtomicU64::new(0)),
         }
     }
 
@@ -203,15 +316,10 @@ impl RawQueueHdr {
     }
 
     #[inline]
-    fn is_turn<T>(&self, t: u64, item: *const QueueEntry<T>) -> bool {
+    fn is_turn<T>(&self, t: u64, item: *mut QueueEntry<T>) -> bool {
         let turn = (t / (self.len() as u64)) % 2;
-        let val = unsafe { &*item }.get_cmd_slot() >> 31;
-        (val == 0) == (turn == 1)
-    }
-
-    #[inline]
-    fn consumer_waiting(&self) -> bool {
-        (self.tail.load(Ordering::SeqCst) & (1 << 31)) != 0
+        let val = unsafe { QueueEntry::get_cmd_slot(item) } >> 31;
+        (val == 1) == (turn == 0)
     }
 
     #[inline]
@@ -219,13 +327,39 @@ impl RawQueueHdr {
         self.waiters.load(Ordering::SeqCst) > 0
     }
 
+    /// A plain store, not a read-modify-write: the word holds nothing but this flag now, and both
+    /// directions are idempotent. Note this does *not* make arming single-writer — a blocking
+    /// receiver and a reactor thread can arm concurrently, since `with_guard` serializes receives
+    /// and not arming — but concurrent arms agree on the value, and the clear could already race
+    /// with an arm when the flag lived in `tail`. Unchanged semantics, one fewer locked RMW.
     #[inline]
     fn consumer_set_waiting(&self, waiting: bool) {
-        if waiting {
-            self.tail.fetch_or(1 << 31, Ordering::SeqCst);
-        } else {
-            self.tail.fetch_and(!(1 << 31), Ordering::SeqCst);
+        self.consumer_waiting
+            .store(if waiting { CONSUMER_WAITING } else { 0 }, Ordering::SeqCst);
+    }
+
+    /// Consume the consumer's armed flag, reporting whether it was set.
+    ///
+    /// The mirror of [RawQueueHdr::take_submitter_waiting], and for the same reason: a consumer
+    /// re-arms before every sleep, so a wake that honours an arm should also retire it. Without
+    /// this nothing tears the flag down at all -- `advance_tail` used to, accidentally, by masking
+    /// -- and every submission after the first async arm pays a wake syscall for a consumer that is
+    /// awake.
+    ///
+    /// Safe against a consumer arming concurrently: this side bumps `bell` before reading the flag
+    /// and the consumer sets the flag before reading `bell`, so by the SeqCst total order a
+    /// consumer whose arm is cleared here has already observed the new `bell` and will not sleep.
+    /// The load guard matters: nobody is armed on the overwhelmingly common path, and an
+    /// unconditional `fetch_and` would put a locked read-modify-write on every single submission.
+    /// Skipping it when the flag is already clear is safe by the same argument as above — a
+    /// consumer that arms after this load has yet to read `bell`, which this side has already
+    /// bumped.
+    #[inline]
+    fn take_consumer_waiting(&self) -> bool {
+        if self.consumer_waiting.load(Ordering::SeqCst) == 0 {
+            return false;
         }
+        self.consumer_waiting.swap(0, Ordering::SeqCst) != 0
     }
 
     #[inline]
@@ -251,6 +385,29 @@ impl RawQueueHdr {
         self.waiters.fetch_sub(1, Ordering::SeqCst);
     }
 
+    /// Is there room for a submission at `h`, consulting the producers' cached `tail` first and
+    /// only reading the real one if the cache claims the queue is full?
+    ///
+    /// This is the whole point of [ProducerState::cached_tail]: the answer is almost always yes,
+    /// and getting it from the producer's own line rather than the consumer's turns the common
+    /// submission into one that never touches consumer-written memory.
+    ///
+    /// One-directional by construction — the cache can only make the queue look fuller than it is
+    /// (see the field's docs), so a `true` here is as trustworthy as one derived from a fresh load,
+    /// while a `false` is merely a prompt to go and check for real.
+    #[inline]
+    fn has_room(&self, h: u32) -> bool {
+        let cached = self.producer.cached_tail.load(Ordering::Relaxed) as u64;
+        if !self.is_full(h, cached) {
+            return true;
+        }
+        let t = self.tail.load(Ordering::SeqCst);
+        self.producer
+            .cached_tail
+            .store((t & 0x7fffffff) as u32, Ordering::Relaxed);
+        !self.is_full(h, t)
+    }
+
     #[inline]
     fn reserve_slot<W: Fn(&AtomicU64, u64)>(
         &self,
@@ -258,19 +415,21 @@ impl RawQueueHdr {
         wait: W,
     ) -> Result<u32, QueueError> {
         let mut waiter = false;
-        let mut attempts = 1000;
+        let mut attempts = SPIN_ATTEMPTS;
         let h = loop {
-            let h = self.head.load(Ordering::SeqCst);
-            let t = self.tail.load(Ordering::SeqCst);
-            if !self.is_full(h, t) {
+            let h = self.producer.head.load(Ordering::SeqCst);
+            if self.has_room(h) {
                 if self
+                    .producer
                     .head
-                    .compare_exchange(h, h + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    // Wrapping: head is only ever compared modulo 2^31, so the u32 rollover at 2^32
+                    // submissions is benign -- but an overflow-checked build would panic on it.
+                    .compare_exchange(h, h.wrapping_add(1), Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
                     break h;
                 } else {
-                    core::hint::spin_loop();
+                    spin_hint();
                     continue;
                 }
             }
@@ -281,18 +440,19 @@ impl RawQueueHdr {
 
             if attempts != 0 {
                 attempts -= 1;
-                core::hint::spin_loop();
+                spin_hint();
                 continue;
             }
 
             if !waiter {
                 waiter = true;
                 self.inc_submit_waiting();
+                sc_fence();
             }
 
             let t = self.tail.load(Ordering::SeqCst);
             if self.is_full(h, t) {
-                wait(&self.tail, t);
+                wait(&self.tail.0, t);
             }
         };
 
@@ -311,12 +471,13 @@ impl RawQueueHdr {
     #[inline]
     fn ring<R: Fn(&AtomicU64)>(&self, ring: R) {
         self.bell.fetch_add(1, Ordering::SeqCst);
-        if self.consumer_waiting() {
-            ring(&self.bell)
+        sc_fence();
+        if self.take_consumer_waiting() {
+            ring(&self.bell.0)
         }
     }
 
-    pub fn has_pending<T>(&self, raw_buf: *const QueueEntry<T>) -> bool {
+    pub fn has_pending<T>(&self, raw_buf: *mut QueueEntry<T>) -> bool {
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         let b = self.bell.load(Ordering::SeqCst);
         let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
@@ -324,7 +485,7 @@ impl RawQueueHdr {
     }
 
     pub fn has_space<T>(&self) -> bool {
-        let h = self.head.load(Ordering::SeqCst);
+        let h = self.producer.head.load(Ordering::SeqCst);
         let t = self.tail.load(Ordering::SeqCst);
         !self.is_full(h, t)
     }
@@ -334,9 +495,9 @@ impl RawQueueHdr {
         &self,
         wait: W,
         flags: ReceiveFlags,
-        raw_buf: *const QueueEntry<T>,
+        raw_buf: *mut QueueEntry<T>,
     ) -> Result<u64, QueueError> {
-        let mut attempts = 1000;
+        let mut attempts = SPIN_ATTEMPTS;
         let t = loop {
             let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
             let b = self.bell.load(Ordering::SeqCst);
@@ -352,14 +513,15 @@ impl RawQueueHdr {
 
             if attempts != 0 {
                 attempts -= 1;
-                core::hint::spin_loop();
+                spin_hint();
                 continue;
             }
 
             self.consumer_set_waiting(true);
+            sc_fence();
             let b = self.bell.load(Ordering::SeqCst);
             if self.is_empty(b, t) || !self.is_turn(t, item) {
-                wait(&self.bell, b);
+                wait(&self.bell.0, b);
             }
         };
 
@@ -369,41 +531,65 @@ impl RawQueueHdr {
         Ok(t)
     }
 
+    /// Arm a sleep on `bell` for a caller that will not block inside the queue.
+    ///
+    /// There is deliberately no paired cancel. `consumer_waiting` is a single bit with two arming
+    /// paths, and the single-consumer rule does not separate them: it serializes *receives*, so
+    /// `get_next_ready`'s blocking loop arms from inside one, while this path arms from a reactor
+    /// thread that is not receiving at all and so is not covered by that guard. A cancel here could
+    /// therefore clear an arm a blocking receiver is asleep on, reintroducing the missed wake that
+    /// moving the flag to [CONSUMER_WAITING] fixed. `QueueSender` reaches both paths on a single
+    /// completion subqueue today, so this is a live configuration rather than a hypothetical one.
+    ///
+    /// An abandoned arm is retired instead by the first producer to honour it
+    /// (`take_consumer_waiting`), bounding it to one stray wake rather than one per submission.
     fn setup_rec_sleep_simple(&self) -> (&AtomicU64, u64) {
-        // TODO: an interface that undoes this.
+        // Flag first, then load: a producer ringing after this point must see the flag and wake us.
+        //
+        // The sleep value has to come from bell, the word being slept on -- not from tail. bell
+        // free-runs while tail is masked to 31 bits, so the two agree only for the first 2^31
+        // operations; past that a tail-derived value never matches bell, the sleep returns
+        // immediately every time, and the caller spins instead of blocking.
         self.consumer_set_waiting(true);
-        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
-        (&self.bell, t)
+        sc_fence();
+        let b = self.bell.load(Ordering::SeqCst);
+        (&self.bell.0, b)
     }
 
     fn setup_send_sleep_simple(&self) -> (&AtomicU64, u64) {
         // Must be set before the sleep value is read below: a consumer that advances tail after
         // this point has to see a waiter and ring, or the sleep is never woken.
         self.set_async_submit_waiting();
-        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
-        let h = self.head.load(Ordering::SeqCst) & 0x7fffffff;
+        sc_fence();
+        // Unmasked: the sleep predicate compares the whole 64-bit word, so masking off the
+        // consumer-waiting bit makes the comparison fail on entry whenever that bit happens to be
+        // set, turning the sleep into a busy poll. Leaving it in costs at most a spurious wake when
+        // the bit flips.
+        let t = self.tail.load(Ordering::SeqCst);
+        let h = self.producer.head.load(Ordering::SeqCst);
         if self.is_full(h, t) {
-            (&self.tail, t)
+            (&self.tail.0, t)
         } else {
-            (&self.tail, u64::MAX)
+            (&self.tail.0, u64::MAX)
         }
     }
 
     fn setup_rec_sleep<'a, T>(
         &'a self,
         sleep: bool,
-        raw_buf: *const QueueEntry<T>,
+        raw_buf: *mut QueueEntry<T>,
         waiter: &mut (Option<&'a AtomicU64>, u64),
     ) -> Result<u64, QueueError> {
         let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
         let b = self.bell.load(Ordering::SeqCst);
         let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
-        *waiter = (Some(&self.bell), b);
+        *waiter = (Some(&self.bell.0), b);
         if self.is_empty(b, t) || !self.is_turn(t, item) {
             if sleep {
                 self.consumer_set_waiting(true);
+                sc_fence();
                 let b = self.bell.load(Ordering::SeqCst);
-                *waiter = (Some(&self.bell), b);
+                *waiter = (Some(&self.bell.0), b);
                 if !self.is_empty(b, t) && self.is_turn(t, item) {
                     return Ok(t);
                 }
@@ -421,6 +607,11 @@ impl RawQueueHdr {
     /// the clear re-sets the bit, and the post-store re-check in the callers picks it up. Clearing
     /// afterwards could wipe a bit set by a submitter that had already read the new tail, which is
     /// the lost wakeup this bit exists to prevent.
+    ///
+    /// That re-check is one half of a store-buffer pair — this side stores `tail` then loads
+    /// `waiters`, the submitter side stores `waiters` then loads `tail` — so it relies on the
+    /// SeqCst total order for at least one side to observe the other. Weakening any of the four
+    /// accesses to Release/Acquire silently reintroduces the lost wakeup.
     #[inline]
     fn take_submitter_waiting(&self) -> bool {
         let w = self.waiters.load(Ordering::SeqCst);
@@ -431,23 +622,36 @@ impl RawQueueHdr {
         w != 0
     }
 
+    /// Advance `tail` by one, and report whether a submitter needs waking.
+    ///
+    /// A single `fetch_add` rather than a load/store pair or a CAS loop: `tail` carries nothing but
+    /// the counter — [CONSUMER_WAITING] has its own word — so nothing here has to preserve, mask,
+    /// or re-read a flag, and the operation stays wait-free. The load/store form this replaced
+    /// silently dropped any `consumer_set_waiting` landing between its two halves, and its mask
+    /// cleared the flag even when it didn't — either way the next producer saw no waiter and
+    /// skipped the wake.
+    ///
+    /// Consequence: nothing tears the consumer's flag down here, so it can outlive the last
+    /// consumer that armed a sleep, costing an occasional wake syscall that wakes nobody.
+    /// `get_next_ready` still clears it explicitly for the case it owns. A spurious wake is a
+    /// wasted syscall; a missed one is a hang.
     #[inline]
     fn advance_tail<R: Fn(&AtomicU64)>(&self, ring: R) {
         let was_waiting = self.take_submitter_waiting();
-        let t = self.tail.load(Ordering::SeqCst);
-        self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
+        self.tail.fetch_add(1, Ordering::SeqCst);
+        sc_fence();
         if was_waiting || self.submitter_waiting() {
-            ring(&self.tail);
+            ring(&self.tail.0);
         }
     }
 
     #[inline]
     fn advance_tail_setup<'a>(&'a self, ringer: &mut Option<&'a AtomicU64>) {
         let was_waiting = self.take_submitter_waiting();
-        let t = self.tail.load(Ordering::SeqCst);
-        self.tail.store((t + 1) & 0x7fffffff, Ordering::SeqCst);
+        self.tail.fetch_add(1, Ordering::SeqCst);
+        sc_fence();
         if was_waiting || self.submitter_waiting() {
-            *ringer = Some(&self.tail);
+            *ringer = Some(&self.tail.0);
         }
     }
 }
@@ -543,12 +747,7 @@ impl<T: Copy> RawQueue<T> {
         unsafe { *addr_of_mut!((*buf_item).data) = item.data };
         unsafe { *addr_of_mut!((*buf_item).info) = item.info };
         let turn = self.hdr().get_turn(h);
-        unsafe {
-            addr_of_mut!(*buf_item)
-                .as_ref()
-                .unwrap()
-                .set_cmd_slot(h | if turn { 1u32 << 31 } else { 0 })
-        };
+        unsafe { QueueEntry::set_cmd_slot(buf_item, h | if turn { 1u32 << 31 } else { 0 }) };
 
         self.hdr().ring(ring);
         Ok(())
@@ -644,23 +843,28 @@ pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Optio
     if output.len() != queues.len() {
         return Err(QueueError::Unknown);
     }
-    /* TODO (opt): avoid this allocation until we have to sleep */
-    let mut waiters = Vec::new();
-    waiters.resize(queues.len(), Default::default());
-    let mut ringers = Vec::new();
-    ringers.resize(queues.len(), None);
+    // Both scratch vectors stay empty until a queue actually produces something to ring or we are
+    // about to sleep; the common case is a ready queue on the first pass, which allocates once for
+    // the ringers and never touches the waiters.
+    let mut waiters: Vec<(Option<&AtomicU64>, u64)> = Vec::new();
+    let mut ringers: Vec<Option<&AtomicU64>> = Vec::new();
     let mut attempts = 100;
     loop {
+        let sleep = attempts == 0;
         let mut count = 0;
         for (i, q) in queues.iter().enumerate() {
-            let res = q.setup_sleep(
-                attempts == 0,
-                &mut output[i],
-                &mut waiters[i],
-                &mut ringers[i],
-            );
-            if res == Ok(()) {
+            let mut waiter = Default::default();
+            let mut ringer = None;
+            if q.setup_sleep(sleep, &mut output[i], &mut waiter, &mut ringer) == Ok(()) {
                 count += 1;
+            }
+            if ringer.is_some() {
+                ringers.resize(queues.len(), None);
+                ringers[i] = ringer;
+            }
+            if sleep {
+                waiters.resize(queues.len(), Default::default());
+                waiters[i] = waiter;
             }
         }
         if count > 0 {
@@ -678,7 +882,24 @@ pub fn multi_receive<T: Copy, W: Fn(&[(Option<&AtomicU64>, u64)]), R: Fn(&[Optio
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
+impl RawQueueHdr {
+    /// Fast-forward the counters, so wrap behaviour can be exercised in microseconds instead of
+    /// 2^31 real operations.
+    fn seed(&self, head: u32, tail: u64, bell: u64) {
+        self.producer.head.store(head, Ordering::SeqCst);
+        // Keep the producers' cache consistent with the counter it shadows: it may lag `tail`, but
+        // it must never lead it, or `has_room` would hand out a slot over live data.
+        self.producer
+            .cached_tail
+            .store((tail & 0x7fffffff) as u32, Ordering::SeqCst);
+        self.tail.store(tail, Ordering::SeqCst);
+        self.bell.store(bell, Ordering::SeqCst);
+    }
+}
+
+// Loom builds swap in loom's atomics, which panic if constructed outside a `loom::model` closure.
+#[cfg(all(test, not(loom)))]
 mod tests {
     #![allow(soft_unstable)]
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -782,6 +1003,75 @@ mod tests {
         assert_eq!(rings.load(Ordering::SeqCst), 1);
     }
 
+    /// The producers' cached `tail` is only allowed to be pessimistic. Once it says full it must be
+    /// refreshed against the real counter, or a queue that the consumer has since drained stays
+    /// full forever from the producer's point of view — a hang, not a slowdown.
+    #[test]
+    fn producer_cache_refreshes_after_drain() {
+        let qh = RawQueueHdr::new(2, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<i32>::default(); 1 << 2];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        for i in 0..4 {
+            q.submit(QueueEntry::new(i, 7), wait, wake, SubmissionFlags::empty())
+                .unwrap();
+        }
+        // Cache is now stale-and-full: this is the load that populates it.
+        assert_eq!(
+            q.submit(
+                QueueEntry::new(9, 7),
+                wait,
+                wake,
+                SubmissionFlags::NON_BLOCK
+            ),
+            Err(QueueError::WouldBlock)
+        );
+
+        assert!(q.receive(wait, wake, ReceiveFlags::NON_BLOCK).is_ok());
+        assert_eq!(
+            q.submit(
+                QueueEntry::new(9, 7),
+                wait,
+                wake,
+                SubmissionFlags::NON_BLOCK
+            ),
+            Ok(()),
+            "a full-looking cache must be rechecked against the real tail"
+        );
+    }
+
+    /// Sanity on the layout the cross-core numbers depend on: the counters written by different
+    /// threads must land on different cache lines. Cheap to assert, and silent to lose.
+    #[test]
+    fn header_counters_do_not_share_cache_lines() {
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let line = |p: *const u8| (p as usize) / 64;
+
+        let head = line(&qh.producer.head as *const _ as *const u8);
+        let cached = line(&qh.producer.cached_tail as *const _ as *const u8);
+        let waiters = line(&*qh.waiters as *const _ as *const u8);
+        let cwait = line(&*qh.consumer_waiting as *const _ as *const u8);
+        let bell = line(&*qh.bell as *const _ as *const u8);
+        let tail = line(&*qh.tail as *const _ as *const u8);
+
+        assert_eq!(
+            head, cached,
+            "both are producer-owned; sharing a line is the point"
+        );
+        for (a, b) in [
+            (head, waiters),
+            (head, bell),
+            (head, tail),
+            (waiters, bell),
+            (waiters, tail),
+            (bell, tail),
+            (cwait, bell),
+            (cwait, tail),
+        ] {
+            assert_ne!(a, b, "cross-thread counters must not share a cache line");
+        }
+    }
+
     #[test]
     fn it_nonblock_receives() {
         let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
@@ -796,6 +1086,181 @@ mod tests {
         assert_eq!(res.unwrap().item(), 7);
         let res = q.receive(wait, wake, ReceiveFlags::NON_BLOCK);
         assert_eq!(res.unwrap_err(), QueueError::WouldBlock);
+    }
+
+    /// Arming a sleep must be honest: the returned value has to be the current contents of the
+    /// returned word, or the caller's `sys_thread_sync` returns immediately and the reactor spins
+    /// instead of sleeping. Both `setup_*_sleep_simple` functions have shipped a violation of this.
+    #[test]
+    fn arming_to_receive_matches_the_bell() {
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let (word, value) = qh.setup_rec_sleep_simple();
+        assert_eq!(word.load(Ordering::SeqCst), value);
+    }
+
+    /// As above, past 2^31 operations. `bell` free-runs while `tail` is only ever compared modulo
+    /// 2^31, so a `tail`-derived sleep value stops matching `bell` here and every armed receive
+    /// degenerates into a busy loop.
+    #[test]
+    fn arming_to_receive_matches_the_bell_past_wrap() {
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        qh.seed(0x8000_0010, 0x8000_0000, 0x8000_0010);
+        let (word, value) = qh.setup_rec_sleep_simple();
+        assert_eq!(word.load(Ordering::SeqCst), value);
+    }
+
+    /// As above for the send side, with the consumer-waiting bit set in the very word being slept
+    /// on. Masking that bit out of the returned value is what made this spin.
+    #[test]
+    fn arming_to_send_matches_the_tail() {
+        let qh = RawQueueHdr::new(0, std::mem::size_of::<QueueEntry<u32>>());
+        qh.reserve_slot(SubmissionFlags::NON_BLOCK, |_, _| {})
+            .unwrap();
+        qh.consumer_set_waiting(true);
+
+        let (word, value) = qh.setup_send_sleep_simple();
+        assert_eq!(word.load(Ordering::SeqCst), value);
+    }
+
+    /// With space available there is nothing to wait for, so arming must produce a predicate that
+    /// is already false rather than one that blocks.
+    #[test]
+    fn arming_to_send_with_space_does_not_sleep() {
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let (word, value) = qh.setup_send_sleep_simple();
+        assert_ne!(word.load(Ordering::SeqCst), value);
+    }
+
+    /// A real producer and consumer on two threads must deliver every item, in order, exactly once.
+    ///
+    /// The queue is deliberately tiny so the producer genuinely fills it and blocks: that is what
+    /// exercises `reserve_slot`'s wait path, the `cached_tail` refresh, and `advance_tail`'s wake
+    /// under actual contention rather than in a single thread's cache. Sized to finish in
+    /// milliseconds — the throughput and latency measurements live in `benches/queue.rs`.
+    #[test]
+    fn two_threads_deliver_every_item_in_order() {
+        const COUNT: u64 = 20_000;
+
+        let qh = RawQueueHdr::new(3, std::mem::size_of::<QueueEntry<u64>>());
+        let mut buffer = vec![QueueEntry::<u64>::default(); 1 << 3];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        std::thread::scope(|s| {
+            let consumer = s.spawn(|| {
+                for expect in 0..COUNT {
+                    let e = q.receive(wait, wake, ReceiveFlags::empty()).unwrap();
+                    assert_eq!(e.item(), expect, "item out of order or lost");
+                    assert_eq!(e.info() as u64, expect % (u32::MAX as u64));
+                }
+                // Nothing left over.
+                assert!(matches!(
+                    q.receive(wait, wake, ReceiveFlags::NON_BLOCK),
+                    Err(QueueError::WouldBlock)
+                ));
+            });
+
+            for i in 0..COUNT {
+                q.submit(
+                    QueueEntry::new((i % (u32::MAX as u64)) as u32, i),
+                    wait,
+                    wake,
+                    SubmissionFlags::empty(),
+                )
+                .unwrap();
+            }
+            consumer.join().unwrap();
+        });
+    }
+
+    /// The uncontended path must not touch the callbacks at all: in the real queue each one is a
+    /// `sys_thread_sync`, so a stray call is a syscall on the fast path.
+    #[test]
+    fn uncontended_path_makes_no_callbacks() {
+        use std::cell::Cell;
+
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<u32>::default(); 1 << 4];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        let (waits, rings) = (Cell::new(0), Cell::new(0));
+        let wait = |_: &AtomicU64, _: u64| waits.set(waits.get() + 1);
+        let ring = |_: &AtomicU64| rings.set(rings.get() + 1);
+
+        for i in 0..100 {
+            q.submit(QueueEntry::new(i, i), wait, ring, SubmissionFlags::empty())
+                .unwrap();
+            q.receive(wait, ring, ReceiveFlags::empty()).unwrap();
+        }
+        assert_eq!((waits.get(), rings.get()), (0, 0));
+    }
+
+    /// An abandoned arm -- a poller that registers interest and then drops it without ever being
+    /// woken -- must cost a bounded number of stray wakes, not one per operation forever.
+    #[test]
+    fn abandoned_receive_arm_costs_at_most_one_wake() {
+        use std::cell::Cell;
+
+        let qh = RawQueueHdr::new(4, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<u32>::default(); 1 << 4];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        // Arm, then walk away without ever sleeping on it.
+        let _ = qh.setup_rec_sleep_simple();
+
+        let rings = Cell::new(0);
+        let ring = |_: &AtomicU64| rings.set(rings.get() + 1);
+        for i in 0..100 {
+            q.submit(
+                QueueEntry::new(i, i),
+                |_, _| {},
+                ring,
+                SubmissionFlags::empty(),
+            )
+            .unwrap();
+            q.receive(|_, _| {}, ring, ReceiveFlags::empty()).unwrap();
+        }
+        assert_eq!(rings.get(), 1);
+    }
+
+    /// As above for the send side, whose sticky bit is consumed by `advance_tail`.
+    #[test]
+    fn abandoned_send_arm_costs_at_most_one_wake() {
+        use std::cell::Cell;
+
+        let qh = RawQueueHdr::new(1, std::mem::size_of::<QueueEntry<u32>>());
+        let mut buffer = [QueueEntry::<u32>::default(); 2];
+        let q = unsafe { RawQueue::new(&qh, buffer.as_mut_ptr()) };
+
+        q.submit(
+            QueueEntry::new(0, 0),
+            |_, _| {},
+            |_| {},
+            SubmissionFlags::empty(),
+        )
+        .unwrap();
+        q.submit(
+            QueueEntry::new(1, 1),
+            |_, _| {},
+            |_| {},
+            SubmissionFlags::empty(),
+        )
+        .unwrap();
+        // Full: arm for space, then walk away.
+        let _ = qh.setup_send_sleep_simple();
+
+        let rings = Cell::new(0);
+        let ring = |_: &AtomicU64| rings.set(rings.get() + 1);
+        for i in 0..100 {
+            q.receive(|_, _| {}, ring, ReceiveFlags::empty()).unwrap();
+            q.submit(
+                QueueEntry::new(i, i),
+                |_, _| {},
+                ring,
+                SubmissionFlags::empty(),
+            )
+            .unwrap();
+        }
+        assert_eq!(rings.get(), 1);
     }
 
     #[test]

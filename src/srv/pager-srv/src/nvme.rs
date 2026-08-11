@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device};
 
@@ -6,8 +6,18 @@ mod controller;
 mod dma;
 mod requester;
 
-pub use controller::NvmeController;
+pub use controller::{current_queue_sleep, reap_current_queue, NvmeController};
 use twizzler_rt_abi::error::{NamingError, TwzError};
+
+/// Set once at probe so the watchdog, which owns no pager state, can reach the controller.
+static CTRL: OnceLock<Arc<NvmeController>> = OnceLock::new();
+
+/// Dump controller state. No-op before the controller exists.
+pub fn dump_stall() {
+    if let Some(ctrl) = CTRL.get() {
+        ctrl.dump_stall();
+    }
+}
 
 pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
     let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
@@ -26,6 +36,7 @@ pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
             );
 
             let ctrl = Arc::new(NvmeController::new(device)?);
+            let _ = CTRL.set(ctrl.clone());
             return Ok(ctrl);
         }
     }

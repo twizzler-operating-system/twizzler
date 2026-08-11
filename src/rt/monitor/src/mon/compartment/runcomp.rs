@@ -207,6 +207,14 @@ impl RunComp {
         Ok(handle)
     }
 
+    /// Record a mapping the monitor made on this compartment's behalf, before the compartment has
+    /// asked for it. Deliberately not `map_object`: no map note is written, since the
+    /// compartment's own `map_object` will replace this entry and write one, and an existing
+    /// mapping is never clobbered.
+    pub fn premap_object(&mut self, info: MapInfo, handle: MapHandle) {
+        self.mapped_objects.entry(info).or_insert(handle);
+    }
+
     /// Unmap and object from this compartment.
     pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.remove(&info);

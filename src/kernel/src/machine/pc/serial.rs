@@ -1,7 +1,7 @@
 use core::{
     cell::UnsafeCell,
     fmt::Write,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use crate::{
@@ -273,10 +273,12 @@ pub fn late_init() {
     interrupt_handler();
 }
 
-fn do_interrupt(serial: &mut SerialPort, mut buf: &mut [u8]) -> usize {
+/// Returns the bytes drained and the IIR value that decided the arm, so the caller can report what
+/// the handler saw without re-reading any uart register.
+fn do_interrupt(serial: &mut SerialPort, mut buf: &mut [u8]) -> (usize, u8) {
     let status = serial.read_iid();
     let mut count = 0;
-    match (status >> 1) & 7 {
+    let drained = match (status >> 1) & 7 {
         0 => {
             let _msr = serial.read_modem_status();
             0
@@ -290,25 +292,67 @@ fn do_interrupt(serial: &mut SerialPort, mut buf: &mut [u8]) -> usize {
                 break count;
             }
         },
+    };
+    (drained, status)
+}
+
+/// DIAG (B1): entries into the serial ISR.
+///
+/// The shutdown hang's guest dump puts a cpu at CPL=0 with RIP inside `interrupt_handler` in 4 of
+/// the 5 instances captured in `many-b1probe`, so count entries rather than infer from a register
+/// file. Normal operation takes one entry per console-input event and never comes near the
+/// threshold: **a report at all means the handler is re-firing without its condition clearing**,
+/// and the `iid` says which arm is failing to clear it.
+///
+/// Two properties this deliberately has. It reads no uart register of its own -- `iid` is the value
+/// `do_interrupt` already read -- because reading LSR or MSR here would clear interrupt conditions
+/// and could mask the livelock it exists to catch. And it reports with `emerglogln`, which takes no
+/// console lock (see `log::_print_emergency`), so it is safe from interrupt context even when the
+/// interrupted thread holds one -- which is the likely case here, since the hang follows a
+/// `force_exit` backtrace.
+static ISR_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static ISR_REPORTS: AtomicU32 = AtomicU32::new(0);
+const ISR_REPORT_EVERY: u64 = 1 << 16;
+const ISR_REPORT_BUDGET: u32 = 8;
+
+fn report_isr_rate(iid1: u8, count1: usize, iid2: u8, count2: usize) {
+    let entries = ISR_ENTRIES.fetch_add(1, Ordering::Relaxed) + 1;
+    if entries % ISR_REPORT_EVERY != 0 {
+        return;
     }
+    if ISR_REPORTS.fetch_add(1, Ordering::Relaxed) >= ISR_REPORT_BUDGET {
+        return;
+    }
+    emerglogln!(
+        "serial isr: {} entries -- com1 iid {:#04x} (id {}) drained {}, com2 iid {:#04x} (id {}) drained {}",
+        entries,
+        iid1,
+        (iid1 >> 1) & 7,
+        count1,
+        iid2,
+        (iid2 >> 1) & 7,
+        count2,
+    );
 }
 
 pub fn interrupt_handler() {
     let mut serial = serial1().lock();
     let mut buf = [0; 128];
-    let count = do_interrupt(&mut *serial, &mut buf);
+    let (count1, iid1) = do_interrupt(&mut *serial, &mut buf);
     drop(serial);
-    for b in &buf[0..count] {
+    for b in &buf[0..count1] {
         crate::log::push_input_byte(*b, false);
     }
 
     let mut serial = serial2().lock();
     let mut buf = [0; 128];
-    let count = do_interrupt(&mut *serial, &mut buf);
+    let (count2, iid2) = do_interrupt(&mut *serial, &mut buf);
     drop(serial);
-    for b in &buf[0..count] {
+    for b in &buf[0..count2] {
         crate::log::push_input_byte(*b, true);
     }
+
+    report_isr_rate(iid1, count1, iid2, count2);
 }
 
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bool) {

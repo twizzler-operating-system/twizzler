@@ -86,6 +86,17 @@ impl Processor {
             }
     }
 
+    /// Whether this cpu is currently running its idle thread. Plain atomic read, so it is callable
+    /// from contexts that must not take a lock (the mutex wait loop's stall report).
+    pub fn is_idle(&self) -> bool {
+        self.is_idle.load(Ordering::SeqCst)
+    }
+
+    /// Lock-free run-queue emptiness, for the same reason as [`Processor::is_idle`].
+    pub fn rq_is_empty(&self) -> bool {
+        self.rq.is_empty()
+    }
+
     pub fn enter_idle(&self) {
         self.is_idle.store(true, Ordering::SeqCst);
     }

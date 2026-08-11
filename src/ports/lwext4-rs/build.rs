@@ -55,6 +55,10 @@ fn main() {
     assert!(status.success());
 
     println!("cargo::rerun-if-changed=src/lwext4.h");
+    // Without these, editing the vendored C sources or config headers does not rerun this
+    // script, so cmake/ninja never run and the crate silently links a stale liblwext4.a.
+    println!("cargo::rerun-if-changed=lwext4/src");
+    println!("cargo::rerun-if-changed=lwext4/include");
     println!("cargo::rustc-link-lib=c");
     println!("cargo::rustc-link-search={}/cmake-build/src/", outdir);
     println!("cargo::rustc-link-lib=lwext4");

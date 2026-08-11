@@ -62,7 +62,11 @@ fn first_bad(chunk: &[u8], round: usize, idx: usize) -> Option<usize> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Block {
     /// Holds a valid record, naming where these bytes were written.
-    Record { round: usize, chunk: usize, block: usize },
+    Record {
+        round: usize,
+        chunk: usize,
+        block: usize,
+    },
     Zero,
     Garbage,
 }
@@ -86,9 +90,10 @@ fn decode(chunk: &[u8], block: usize) -> Block {
 
 /// Does `[base, base+len)` overlap any *other* chunk's allocation?
 fn overlapping(spans: &[(usize, usize)], idx: usize, base: usize, len: usize) -> Option<usize> {
-    spans.iter().enumerate().find_map(|(k, &(b, l))| {
-        (k != idx && base < b + l && b < base + len).then_some(k)
-    })
+    spans
+        .iter()
+        .enumerate()
+        .find_map(|(k, &(b, l))| (k != idx && base < b + l && b < base + len).then_some(k))
 }
 
 /// Write through our pointer and read back through the source's. Rules out the two addresses being
@@ -174,7 +179,11 @@ fn survey(chunk: &[u8], round: usize, idx: usize, from_block: usize) -> Survey {
             s.last_bad_page = page;
         }
         match decode(chunk, block) {
-            Block::Record { round: r, chunk: c, block: b } => {
+            Block::Record {
+                round: r,
+                chunk: c,
+                block: b,
+            } => {
                 s.records += 1;
                 bump(&mut s.sources, (r, c));
                 bump(&mut s.deltas, b as isize - block as isize);
@@ -211,11 +220,19 @@ fn census(chunk: &[u8], round: usize, idx: usize, from: usize) {
         words += 1;
         if v >> 48 == TAG {
             tagged += 1;
-            if n % 2 == 0 { tag_even += 1 } else { tag_odd += 1 }
+            if n % 2 == 0 {
+                tag_even += 1
+            } else {
+                tag_odd += 1
+            }
         }
         if v >> 48 == !TAG & 0xffff {
             untagged_tag += 1;
-            if n % 2 == 0 { tag_even += 1 } else { tag_odd += 1 }
+            if n % 2 == 0 {
+                tag_even += 1
+            } else {
+                tag_odd += 1
+            }
         }
         if v == 0 {
             zero += 1;
@@ -301,7 +318,12 @@ fn report_damage(chunk: &[u8], round: usize, idx: usize, bad: usize, spans: &[(u
     );
 
     // The single most informative line: what the damaged bytes say they are, in address terms.
-    if let Block::Record { round: r, chunk: c, block: b } = decode(chunk, bad / RECORD) {
+    if let Block::Record {
+        round: r,
+        chunk: c,
+        block: b,
+    } = decode(chunk, bad / RECORD)
+    {
         let our_block = bad / RECORD;
         let src_base = spans.get(c).map(|&(x, _)| x).unwrap_or(0);
         let src_addr = src_base + b * RECORD;
@@ -357,14 +379,18 @@ fn hog_round(round: usize) -> bool {
         // Verify immediately, before anything else is allocated. This separates "our stores never
         // landed" from "something clobbered us afterwards".
         if let Some(j) = first_bad(&chunk, round, i) {
-            println!("memhog-test: EARLY r{round} chunk {i} bad at {j} immediately after writing it");
+            println!(
+                "memhog-test: EARLY r{round} chunk {i} bad at {j} immediately after writing it"
+            );
             early.push((i, j));
         }
         chunks.push(chunk);
     }
 
-    let spans: Vec<(usize, usize)> =
-        chunks.iter().map(|c| (c.as_ptr() as usize, c.len())).collect();
+    let spans: Vec<(usize, usize)> = chunks
+        .iter()
+        .map(|c| (c.as_ptr() as usize, c.len()))
+        .collect();
 
     let mut damaged = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {

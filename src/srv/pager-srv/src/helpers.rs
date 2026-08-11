@@ -1,5 +1,3 @@
-use std::ops::Add;
-
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_SIZED};
 use twizzler_abi::{
@@ -23,14 +21,17 @@ pub fn _objectrange_to_page_number(object_range: &ObjectRange) -> Option<u64> {
     Some(object_range.start / PAGE)
 }
 
+/// Group `data` into maximal runs, where `is_adjacent(a, b)` reports whether `b` immediately
+/// follows `a`. Taking the predicate explicitly avoids encoding adjacency in an `Add` impl,
+/// which could only express "exactly one page later".
 //https://stackoverflow.com/questions/50380352/how-can-i-group-consecutive-integers-in-a-vector-in-rust
-pub fn consecutive_slices<T: PartialEq + Add<u64> + Copy>(data: &[T]) -> impl Iterator<Item = &[T]>
-where
-    T::Output: PartialEq<T>,
-{
+pub fn consecutive_slices<T>(
+    data: &[T],
+    mut is_adjacent: impl FnMut(&T, &T) -> bool,
+) -> impl Iterator<Item = &[T]> {
     let mut slice_start = 0;
     (1..=data.len()).flat_map(move |i| {
-        if i == data.len() || data[i - 1] + 1u64 != data[i] {
+        if i == data.len() || !is_adjacent(&data[i - 1], &data[i]) {
             let begin = slice_start;
             slice_start = i;
             Some(&data[begin..i])

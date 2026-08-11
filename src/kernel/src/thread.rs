@@ -840,6 +840,27 @@ pub fn exit(code: u64) -> ! {
         code
     );
     th.set_is_exiting();
+    // Nothing below unlinks `mutex_link`, and there is no back-pointer from a thread to the mutex
+    // whose sleep queue it is in, so a thread that dies here stays a member of that queue forever.
+    // `release` will later hand it the mutex (`pop_highest_priority` does not skip the dead), and
+    // every later locker sleeps behind an owner that will never take it -- `lock`'s
+    // MUTEX_HANDOFF_TO_DEAD arm reclaims that, but only once someone else contends.
+    //
+    // Reported from `exit` rather than from the ChangeState syscall so it covers every exit path.
+    // A hit says the "dies while queued" reading of the shutdown hang is live; the queue's own
+    // `pri` is now stale too, since it was computed with this thread in the list.
+    if th.mutex_link.is_linked() && locktrack::diag::EXIT_WHILE_MUTEX_QUEUED.hit() {
+        emerglogln!(
+            "thread {} ({}) exiting while still queued on a mutex (mutex_wait {}, mutex_count {}, code {})",
+            th.id(),
+            th.objid(),
+            th.get_mutex_wait(),
+            th.get_mutex_count(),
+            code,
+        );
+        th.print_locks();
+        crate::panic::backtrace(true, None);
+    }
     // A thread can exit with a timeout still outstanding against it -- the callback holds a
     // ThreadRef, so it will run. Retire it here for the same reason the sleep paths do, rather than
     // relying on `schedule_thread_on_cpu`'s is_exiting() check to catch it downstream.

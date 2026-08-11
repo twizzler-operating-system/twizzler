@@ -205,7 +205,28 @@ fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID) {
         assert!(!flags.contains(PageFaultFlags::USER));
         (kernel_context().clone(), KERNEL_SCTX)
     } else {
-        (user_ctx.clone().unwrap(), sctx_id)
+        // Seen once, at a user fault with no memory context, and never reproduced -- so say
+        // everything that distinguishes the candidates. A thread mid-exit or mid-context-switch
+        // has a reason to have dropped its context; a plain running user thread does not, and
+        // that is a different bug from a stray kernel access to a non-kernel-object address.
+        match user_ctx.clone() {
+            Some(ctx) => (ctx, sctx_id),
+            None => {
+                let ct = current_thread_ref();
+                panic!(
+                    "page fault at {:?} (flags {:?}) with no memory context: thread {:?} ({:?}), \
+                     state {:?}, exiting {:?}, critical {:?}, sctx {}",
+                    addr,
+                    flags,
+                    ct.as_ref().map(|t| t.id()),
+                    ct.as_ref().map(|t| t.objid()),
+                    ct.as_ref().map(|t| t.get_state()),
+                    ct.as_ref().map(|t| t.is_exiting()),
+                    ct.as_ref().map(|t| t.is_critical()),
+                    sctx_id,
+                );
+            }
+        }
     }
 }
 

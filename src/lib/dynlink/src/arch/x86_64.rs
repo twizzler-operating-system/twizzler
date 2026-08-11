@@ -87,7 +87,10 @@ impl Context {
                             Ok(sym.clone())
                         }
                         None => {
+                            // Only misses are timed; see RelocCache::resolve_time.
+                            let _t = std::time::Instant::now();
                             let sym = self.lookup_symbol(lib.id(), name, flags, deps_list);
+                            reloc_cache.resolve_time += _t.elapsed();
                             if let Ok(ref sym) = sym {
                                 reloc_cache.insert(name, lib.comp_id, unsafe {
                                     std::mem::transmute(sym.clone())

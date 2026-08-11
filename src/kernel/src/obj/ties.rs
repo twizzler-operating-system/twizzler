@@ -21,7 +21,13 @@ impl TiesStatic {
     }
 
     pub fn delete_object(&self, obj: ObjectRef) {
-        self.inner.lock().delete_value(obj.id(), obj);
+        // Dropping the last `ObjectRef` runs `Object::drop`, which calls the *blocking*
+        // `pager::del_object`. Doing that under the ties mutex sleeps a thread on a pager round
+        // trip with `Ties` held, and `Ties` is taken from the object-teardown path the idle
+        // threads run while reaping -- so every reaper queues behind one pager request. Hand the
+        // released refs back and drop them after the guard is gone.
+        let released = self.inner.lock().delete_value(obj.id(), obj);
+        drop(released);
     }
 
     pub fn create_object_ties(&self, created_id: ObjID, ties: impl IntoIterator<Item = ObjID>) {
@@ -71,24 +77,34 @@ impl<K: Ord + PartialOrd + PartialEq + Debug + Copy + Clone, V: Debug> Ties<K, V
         self.ties.entry(obj).or_default().clear();
     }
 
-    fn delete_ties(&mut self, target: K) {
+    /// Returns the values whose last tie just went away, for the caller to drop. See
+    /// `TiesStatic::delete_object` for why they are not dropped here.
+    #[must_use = "released values must be dropped outside the ties lock"]
+    fn delete_ties(&mut self, target: K) -> Vec<V> {
+        let mut released = Vec::new();
         for (objid, set) in self.ties.iter_mut() {
             set.remove(&target);
             if set.is_empty() {
-                self.pending_delete.remove(&objid);
+                released.extend(self.pending_delete.remove(&objid));
             }
         }
+        released
     }
 
-    pub fn delete_value(&mut self, id: K, val: V) {
-        self.delete_ties(id);
+    /// Returns the values that are now unreferenced, for the caller to drop outside the lock.
+    #[must_use = "released values must be dropped outside the ties lock"]
+    pub fn delete_value(&mut self, id: K, val: V) -> Vec<V> {
+        let mut released = self.delete_ties(id);
         let _ = self
             .ties
             .extract_if(.., |_, val| val.is_empty())
             .collect::<Vec<_>>();
         if self.ties.get(&id).map_or(0, |set| set.len()) > 0 {
             self.pending_delete.insert(id, val);
+        } else {
+            released.push(val);
         }
+        released
     }
 }
 
@@ -179,16 +195,18 @@ mod tests {
         ties.insert_ties(z.id, [y.id]);
         ties.insert_ties(zz.id, [y.id]);
 
-        ties.delete_value(z.id, z);
-        ties.delete_value(y.id, y);
-        ties.delete_value(zz.id, zz);
+        // Dropping the returned values is what destroys them now, so these mirror what
+        // `TiesStatic::delete_object` does once the lock is released.
+        drop(ties.delete_value(z.id, z));
+        drop(ties.delete_value(y.id, y));
+        drop(ties.delete_value(zz.id, zz));
 
         assert!(!x_tracker.is_destroyed());
         assert!(!y_tracker.is_destroyed());
         assert!(z_tracker.is_destroyed());
         assert!(zz_tracker.is_destroyed());
 
-        ties.delete_value(x.id, x);
+        drop(ties.delete_value(x.id, x));
 
         assert!(x_tracker.is_destroyed());
         assert!(y_tracker.is_destroyed());

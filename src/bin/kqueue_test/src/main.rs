@@ -45,6 +45,7 @@ fn add_read_event(ident: RawFd, extra_flags: u16) -> kevent {
         fflags: 0,
         data: 0,
         udata: core::ptr::null_mut(),
+        ext: [0; 4],
     }
 }
 
@@ -122,6 +123,7 @@ fn test_delete_removes_registration() {
         fflags: 0,
         data: 0,
         udata: core::ptr::null_mut(),
+        ext: [0; 4],
     };
     kevent_call(kq, &[del], &mut events, Some(Duration::from_millis(10)));
 

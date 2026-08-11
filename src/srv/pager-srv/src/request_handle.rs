@@ -35,11 +35,8 @@ async fn handle_page_data_request_task(
         req_range.start = PAGE;
     }
     let start_time = Instant::now();
-    let max_len = ctx
-        .paged_ostore(None)
-        .unwrap()
-        .len(id.raw())
-        .await
+    let obj_len = ctx.paged_ostore(None).unwrap().len(id.raw()).await.ok();
+    let max_len = obj_len
         .map(|x| x + PAGE)
         .unwrap_or(MAX_SIZE as u64)
         .min(MAX_SIZE as u64);
@@ -60,7 +57,7 @@ async fn handle_page_data_request_task(
     }
     if prefetch {
         tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
-        if let Ok(len) = ctx.paged_ostore(None).unwrap().len(id.raw()).await {
+        if let Some(len) = obj_len {
             tracing::debug!(
                 "==> prefetch request reduce len: {} -> {}",
                 req_range.end,
@@ -112,8 +109,23 @@ async fn handle_page_data_request_task(
             .iter()
             .fold(0u64, |acc, x| acc + (x.range.end - x.range.start) / PAGE);
 
+        // A fill that yields no pages (e.g. out of physical memory) would spin this loop
+        // forever. Report what we did manage and let the kernel re-fault for the rest.
+        if thiscount == 0 {
+            tracing::warn!(
+                "page data request for {} {:?} made no progress after {} of {} pages",
+                id,
+                req_range,
+                count,
+                total
+            );
+            break;
+        }
+
         // try to compress page ranges
-        let runs = crate::helpers::consecutive_slices(pages.as_slice());
+        let runs = crate::helpers::consecutive_slices(pages.as_slice(), |a, b| {
+            a.range.end == b.range.start && a.same_flags(b)
+        });
         let mut acc = 0;
         for comp in runs.map(|run| {
             let start = run[0];

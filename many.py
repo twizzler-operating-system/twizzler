@@ -99,6 +99,20 @@ def emit(message: str) -> None:
         sys.stdout.flush()
 
 
+def human_time(seconds: float) -> str:
+    """`42s` / `5m03s` / `1h05m`.
+
+    Seconds and not just minutes: a run that dies in 20s and one that dies in 90s both read as `1m`
+    otherwise, and check-many.py builds its per-configuration estimates out of exactly these numbers.
+    """
+    total = max(0, round(seconds))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{total % 3600 // 60:02d}m"
+
+
 @dataclass(frozen=True)
 class Config:
     profile: str
@@ -670,7 +684,7 @@ def run_once(
     summary = summarize(output, exit_code)
     emit(
         f"[lane {lane.index}] {'PASS' if passed else 'FAIL'}   {name}  "
-        f"{duration / 60:.1f}m  {summary}"
+        f"{human_time(duration):>7}  {summary}"
     )
     return Result(round_no, config, passed, exit_code, duration, summary, log, lane.index)
 
@@ -699,7 +713,7 @@ def report(
     for r in ordered:
         lines.append(
             f"round {r.round_no}  {r.config.name:<{width}}  "
-            f"{'PASS' if r.passed else 'FAIL'}  {r.duration / 60:6.1f}m  "
+            f"{'PASS' if r.passed else 'FAIL'}  {human_time(r.duration):>7}  "
             f"exit {r.exit_code:<3}  {r.summary}"
             + (f"  [{rel(r.log)}]" if r.log else "")
         )
@@ -710,12 +724,12 @@ def report(
     run_time = sum(r.duration for r in results)
     lines.append("")
     lines.append(
-        f"{len(builds)} builds ({build_time / 60:.1f}m) + {len(results)} runs "
-        f"({run_time / 60:.1f}m of run time in {wall / 60:.1f}m wall)"
+        f"{len(builds)} builds ({human_time(build_time)}) + {len(results)} runs "
+        f"({human_time(run_time)} of run time in {human_time(wall)} wall)"
     )
     for b in builds:
         lines.append(
-            f"    build {b.profile:<8} {'ok' if b.ok else 'FAILED'}  {b.duration / 60:6.1f}m"
+            f"    build {b.profile:<8} {'ok' if b.ok else 'FAILED'}  {human_time(b.duration):>7}"
         )
     for line in lines[-(len(builds) + 2):]:
         print(line)
