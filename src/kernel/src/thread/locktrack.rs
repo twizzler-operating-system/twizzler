@@ -689,7 +689,11 @@ impl LockTrackerInner {
                     "  mutex {}: at {:#x} ({}, cpu {})",
                     i,
                     lock.caller_addr(),
-                    if lock.is_locked() { "locked" } else { "unlocked" },
+                    if lock.is_locked() {
+                        "locked"
+                    } else {
+                        "unlocked"
+                    },
                     lock.cpu(),
                 );
             }
@@ -700,7 +704,11 @@ impl LockTrackerInner {
                     "  spinlock {}: at {:#x} ({}, cpu {})",
                     i,
                     lock.caller_addr(),
-                    if lock.is_locked() { "locked" } else { "unlocked" },
+                    if lock.is_locked() {
+                        "locked"
+                    } else {
+                        "unlocked"
+                    },
                     lock.cpu(),
                 );
             }

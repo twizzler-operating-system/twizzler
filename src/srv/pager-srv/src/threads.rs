@@ -21,15 +21,40 @@ use twizzler_abi::{
 };
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
-use crate::{request_handle::handle_kernel_request, watchdog, PAGER_CTX};
+use crate::{
+    nvme::controller::MAX_DATA_QUEUES, request_handle::handle_kernel_request, watchdog, PAGER_CTX,
+};
 
-/// Watchdog owner names, split by lane class so a dump says which kind of worker wedged.
-/// `Workers::new` caps the pool at 8 with at most 2 fast lanes, and indexing these is what keeps
-/// those names `'static` without leaking a `String` per thread.
-const FAST_NAMES: [&str; 2] = ["fast0", "fast1"];
-const WORKER_NAMES: [&str; 8] = [
-    "worker0", "worker1", "worker2", "worker3", "worker4", "worker5", "worker6", "worker7",
-];
+/// Worker threads per core. Measured: at 1x the blocking NVMe leaf loses to the async one by 2.1x,
+/// and at 2x it wins back the intra-worker overlap it gave up (pagerperf.md 1).
+const WORKER_SCALE: usize = 2;
+
+/// Fast-lane depth at which a fast request starts eyeing an idle bulk lane.
+///
+/// One outstanding item is the lane doing its job -- borrowing there drains the reservation into
+/// bulk on essentially every request, since `DepthGuard` keeps the count raised for the whole life
+/// of a detached page-in. At two, something is genuinely queued behind the in-flight item, which is
+/// the queueing the reservation exists to prevent.
+const FAST_BORROW_DEPTH: usize = 2;
+
+/// Most fast lanes to reserve, however large the pool gets. The reservation exists to keep small
+/// demand faults off bulk transfers, which one or two lanes achieve; past that it is just bulk
+/// capacity taken away.
+const MAX_FAST_LANES: usize = 2;
+
+/// Watchdog owner name for a lane, so a dump says which kind of worker wedged.
+///
+/// Leaked, once per worker at pool construction: the watchdog wants `'static` and the pool is built
+/// exactly once, so this is a bounded handful of allocations rather than a growing leak. It used to
+/// be a pair of fixed arrays, whose *lengths* silently became the cap on pool size.
+fn lane_name(fast: bool, index: usize) -> &'static str {
+    let name = if fast {
+        format!("fast{}", index)
+    } else {
+        format!("worker{}", index)
+    };
+    Box::leak(name.into_boxed_str())
+}
 
 /// Largest page-data request a fast lane will accept. Three shapes reach us from
 /// `Object::ensure_in_core_pager`: a single page (a meta page, or a tail), a run capped at 64, and
@@ -108,9 +133,47 @@ pub fn current_queue_index() -> usize {
 /// Memoized because the nvme controller sizes its queue pairs from this and is initialized before
 /// the pool exists -- the two have to agree, and `available_parallelism` is not contractually
 /// stable across calls.
-pub fn nr_workers() -> usize {
+/// How many nvme queue pairs to ask the device for.
+///
+/// `WORKER_SCALE` per core, capped by `MAX_DATA_QUEUES`. Memoized because the controller is
+/// initialized before the pool exists and the two have to agree, and because
+/// `available_parallelism` is not contractually stable across calls.
+///
+/// A blocking worker is parked for the whole transfer, so the pool -- not the executor -- is what
+/// keeps commands outstanding; 1x cores measured 2.1x worse than 2x (pagerperf.md 1). Floor of 2 so
+/// the fast lane always has somewhere to live.
+pub fn desired_queues() -> usize {
     static NR: OnceLock<usize> = OnceLock::new();
-    *NR.get_or_init(|| (available_parallelism().unwrap().get() / 3).clamp(2, WORKER_NAMES.len()))
+    *NR.get_or_init(|| {
+        (available_parallelism().unwrap().get() * WORKER_SCALE).clamp(2, MAX_DATA_QUEUES)
+    })
+}
+
+/// Queue pairs the device actually granted, recorded by the controller during init.
+static GRANTED_QUEUES: OnceLock<usize> = OnceLock::new();
+
+/// Record the negotiated queue count. Called once from `nvme::controller`, before the pool is
+/// built.
+pub fn set_granted_queues(n: usize) {
+    let _ = GRANTED_QUEUES.set(n);
+}
+
+/// Number of worker threads: **one per nvme queue pair**.
+///
+/// A waiting thread reaps the queue it submitted to, so 1-1 gives each worker an uncontended
+/// requester lock and no spurious wakeups -- with several workers per queue, one queue's interrupt
+/// wakes them all and most find the completion belongs to someone else. Sharing is *correct*
+/// (`pagerplan.md`, "waiters reap"), just noisier, which is why this follows the device down rather
+/// than leaving the pool at what we asked for.
+///
+/// `desired_queues()` is the fallback for configurations with no nvme controller at all (the
+/// virtio-mem store), where nothing ever records a grant.
+pub fn nr_workers() -> usize {
+    GRANTED_QUEUES
+        .get()
+        .copied()
+        .unwrap_or_else(desired_queues)
+        .max(2)
 }
 
 /// Holds a lane's depth raised for the lifetime of one unit of work.
@@ -217,6 +280,10 @@ pub struct Workers {
     /// never queues behind a multi-megabyte prefetch. Fixed at startup, which is what lets the
     /// fence hash in `dispatch_ordered` stay stable for the life of the process.
     nr_fast: usize,
+    /// Rotating start for the idle-bulk-lane search, so a burst of borrows spreads instead of
+    /// stacking on the lowest-index lane. The depth charge lands after the decision is read, so a
+    /// fixed start makes concurrent dispatches all pick the same "idle" lane.
+    borrow_rotor: AtomicUsize,
 }
 
 impl Workers {
@@ -226,19 +293,36 @@ impl Workers {
         // enough bulk lanes left that reserving it does not just move the queue. Never take the
         // last lane -- bulk work has to have somewhere to go.
         let nr_fast = (nr_threads / 4)
-            .clamp(1, FAST_NAMES.len())
+            .clamp(1, MAX_FAST_LANES)
             .min(nr_threads - 1);
         let threads = (0..nr_threads)
             .map(|index| {
                 let name = if index < nr_fast {
-                    FAST_NAMES[index]
+                    lane_name(true, index)
                 } else {
-                    WORKER_NAMES[index - nr_fast]
+                    lane_name(false, index - nr_fast)
                 };
                 WorkerThread::new(index, name)
             })
             .collect();
-        Self { threads, nr_fast }
+        Self {
+            threads,
+            nr_fast,
+            borrow_rotor: AtomicUsize::new(0),
+        }
+    }
+
+    /// An idle bulk lane, starting the search at a rotating offset.
+    fn idle_bulk_lane(&self) -> Option<usize> {
+        let bulk = self.lane(false);
+        let n = bulk.len();
+        if n == 0 {
+            return None;
+        }
+        let start = self.borrow_rotor.fetch_add(1, Ordering::Relaxed) % n;
+        (0..n)
+            .map(|k| bulk.start + (start + k) % n)
+            .find(|i| self.threads[*i].depth.load(Ordering::Relaxed) == 0)
     }
 
     fn lane(&self, fast: bool) -> Range<usize> {
@@ -254,15 +338,32 @@ impl Workers {
     /// loaded; ties break to the lowest index, and the charge lands before the next decision reads
     /// it, so a run of identical requests still spreads.
     fn dispatch(&self, wi: WorkItem) {
-        let lane = self.lane(is_fast(&wi.req));
-        let best = lane
+        let fast = is_fast(&wi.req);
+        let lane = self.lane(fast);
+        let depth = |i: usize| self.threads[i].depth.load(Ordering::Relaxed);
+        let mut best = lane
             .clone()
-            .min_by_key(|i| self.threads[*i].depth.load(Ordering::Relaxed))
+            .min_by_key(|i| depth(*i))
             .expect("every request class needs at least one lane");
-        // Spill within the class before blocking: an idle sibling beats stalling the dequeue
-        // thread, and stalling beats the panic a failed `try_send` used to be.
+        // A fast request waiting behind another fast request is the queueing the reservation was
+        // meant to prevent, and a bulk lane at depth 0 is not the bulk transfer it exists to get
+        // out from behind -- so borrow it. Only in this direction: bulk work never takes a fast
+        // lane, or the reservation would stop meaning anything.
+        if fast && depth(best) >= FAST_BORROW_DEPTH {
+            if let Some(idle) = self.idle_bulk_lane() {
+                best = idle;
+            }
+        }
+        // Spill before blocking: an idle sibling beats stalling the dequeue thread, and stalling
+        // beats the panic a failed `try_send` used to be. Fast work may fall back onto *idle* bulk
+        // lanes too -- an empty one is not the bulk transfer the reservation exists to avoid -- but
+        // never onto a busy one, which would be the queueing it exists to prevent.
         let mut wi = wi;
-        for idx in std::iter::once(best).chain(lane.filter(|i| *i != best)) {
+        let siblings = lane.filter(|i| *i != best);
+        let idle_bulk = self
+            .lane(false)
+            .filter(|i| fast && *i != best && depth(*i) == 0);
+        for idx in std::iter::once(best).chain(siblings).chain(idle_bulk) {
             match self.threads[idx].try_send(wi) {
                 Ok(()) => return,
                 Err(item) => wi = item,

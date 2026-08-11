@@ -26,7 +26,9 @@ use twizzler_rt_abi::{
 };
 
 use super::engine::ENGINE;
-use crate::runtime::file::kinds::socket::engine::{SockKind, WAITERS};
+use crate::runtime::file::kinds::socket::engine::{
+    listener_socket_ready, SockKind, WaitKey, WAITERS,
+};
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
@@ -38,6 +40,10 @@ pub struct SmolTcpListener {
     listeners: Mutex<Vec<Listener>>,
     local_addr: SocketAddr,
     port: u16,
+    // Stable identity for this listener's readiness. accept() swaps socket handles in and out of
+    // the backlog, so no individual handle can name the source a poller registered against; the
+    // group's words are the OR over whichever sockets are currently in it.
+    group: u64,
 }
 
 struct Listener {
@@ -68,8 +74,11 @@ impl SmolTcpListener {
     pub fn can_read(&self) -> bool {
         let mut core = ENGINE.core.lock().unwrap();
         for listener in self.listeners.lock().unwrap().iter() {
-            let sock = core.get_mutable_socket(listener.socket_handle);
-            if sock.can_recv() {
+            // Must be the same predicate the engine publishes into the group's wait word: a live
+            // check that disagrees with the word makes an edge-triggered consumer wait for an edge
+            // that already happened. (can_recv() here also meant a pending connection went
+            // unreported until the client sent data.)
+            if listener_socket_ready(core.get_mutable_socket(listener.socket_handle)) {
                 return true;
             }
         }
@@ -91,7 +100,16 @@ impl SmolTcpListener {
     }
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
-        WAITERS.waitpoint(self.listeners.lock().unwrap()[0].socket_handle, kind)
+        // See SmolTcpStream::waitpoint. Refreshing the group rather than one socket is the point:
+        // readiness here is "any of the backlog has a connection for accept()", and which socket
+        // that is changes on every accept.
+        ENGINE.core.lock().unwrap().refresh_group(self.group);
+        WAITERS.waitpoint(WaitKey::Group(self.group), kind)
+    }
+
+    pub fn down_waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
+        ENGINE.core.lock().unwrap().refresh_group(self.group);
+        WAITERS.down_waitpoint(WaitKey::Group(self.group), kind)
     }
     /* each_addr():
      * parameters:
@@ -128,10 +146,10 @@ impl SmolTcpListener {
         Ok((sock, port, local_address))
     }
 
-    fn bind_once<A: ToSocketAddrs>(addrs: A) -> Result<Listener, Error> {
+    fn bind_once<A: ToSocketAddrs>(addrs: A, group: u64) -> Result<Listener, Error> {
         let (sock, port, local_address) =
             Self::do_bind(addrs).inspect_err(|e| tracing::debug!("do_bind: {e}"))?;
-        let handle = ENGINE.add_socket(sock, true);
+        let handle = ENGINE.add_socket(sock, Some(group));
         let tcp_listener = Listener {
             socket_handle: handle,
             port,
@@ -152,17 +170,28 @@ impl SmolTcpListener {
     */
     const BACKLOG: usize = 8;
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
+        let group = WAITERS.alloc_group();
         let mut listeners = Vec::with_capacity(Self::BACKLOG);
 
         for _ in 0..Self::BACKLOG {
-            let listener = Self::bind_once(&addrs)?;
-            listeners.push(listener);
+            match Self::bind_once(&addrs, group) {
+                Ok(listener) => listeners.push(listener),
+                Err(e) => {
+                    // Any listener already bound will free the group as its socket is released; if
+                    // none were, nothing else will.
+                    if listeners.is_empty() {
+                        WAITERS.free_group(group);
+                    }
+                    return Err(e);
+                }
+            }
         }
 
         let smoltcplistener = SmolTcpListener {
             local_addr: listeners[0].local_addr,
             port: listeners[0].port,
             listeners: Mutex::new(listeners),
+            group,
         };
         // all listeners are now in the socket set and in the array within the SmolTcpListener
         Ok(smoltcplistener) // return the first listener
@@ -198,17 +227,25 @@ impl SmolTcpListener {
                             e
                         );
                     })?;
-                    let newhandle = core.add_socket(sock.0, true);
+                    // The accepted socket leaves the accept queue and becomes a stream with a
+                    // readiness identity of its own; a freshly-bound listener takes its place in
+                    // the group. Both sides are then republished, which is what lets the group's
+                    // falling edge be recorded when this was the last pending connection.
+                    let accepted = listener.socket_handle;
+                    core.detach_from_group(accepted);
+                    let newhandle = core.add_socket(sock.0, Some(self.group));
+                    listener.socket_handle = newhandle;
+                    core.refresh_waiter(accepted);
+                    core.refresh_group(self.group);
 
                     let stream = SmolTcpStream {
                         inner: Arc::new(TcpStreamInner {
-                            socket_handle: listener.socket_handle,
+                            socket_handle: accepted,
                             port: self.port,
                             is_ephemeral_port: false,
                             rx_shutdown: AtomicBool::new(false),
                         }),
                     };
-                    listener.socket_handle = newhandle;
                     return Ok((stream, remote_addr));
                 } else if !sock.is_open() {
                     // Connection was reset?
@@ -220,8 +257,14 @@ impl SmolTcpListener {
                             e
                         );
                     }) {
-                        let newhandle = core.add_socket(sock.0, true);
+                        let dead = listener.socket_handle;
+                        let newhandle = core.add_socket(sock.0, Some(self.group));
                         listener.socket_handle = newhandle;
+                        // Retire the broken socket rather than orphaning it in the group:
+                        // listener_socket_ready is true for a closed socket, so leaving it in
+                        // would pin the group readable forever and spin every poller on it.
+                        // (retire_socket republishes the group itself.)
+                        core.retire_socket(dead);
                     }
                 }
             }
@@ -288,7 +331,27 @@ impl SmolTcpStream {
     }
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
-        WAITERS.waitpoint(self.inner.socket_handle, kind)
+        // Publish current readiness before handing out a waitpoint. Callers compare the word
+        // against the live check (SocketKind::is_ready) and expect them to agree; a word left
+        // stale by a poll pass that hasn't run yet makes an edge-triggered waiter conclude the
+        // wrong thing about which edge it is waiting for.
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .refresh_waiter(self.inner.socket_handle);
+        WAITERS.waitpoint(WaitKey::Sock(self.inner.socket_handle), kind)
+    }
+
+    pub fn down_waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
+        // Refresh first for the same reason as waitpoint: a drain that hasn't been published yet
+        // has not bumped the falling-edge counter, and the caller would miss it.
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .refresh_waiter(self.inner.socket_handle);
+        WAITERS.down_waitpoint(WaitKey::Sock(self.inner.socket_handle), kind)
     }
     /* read():
      * parameters - reference to where the data should be placed upon reading
@@ -301,7 +364,10 @@ impl SmolTcpStream {
         engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_recv() {
-                Ok(socket.recv_slice(buf).unwrap())
+                let n = socket.recv_slice(buf).unwrap();
+                // This read may have drained the socket; publish that before anyone waits on it.
+                core.refresh_waiter(self.inner.socket_handle);
+                Ok(n)
             } else if (!socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst))
                 && socket.state() != State::SynReceived
                 && socket.state() != State::SynSent
@@ -326,7 +392,10 @@ impl SmolTcpStream {
         engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
-                Ok(socket.send_slice(buf).unwrap())
+                let n = socket.send_slice(buf).unwrap();
+                // This write may have filled the send buffer; publish that before anyone waits.
+                core.refresh_waiter(self.inner.socket_handle);
+                Ok(n)
             } else if !socket.may_send() {
                 Err(ErrorKind::ConnectionReset.into())
             } else {
@@ -402,7 +471,10 @@ impl SmolTcpStream {
             ENGINE.return_port(port);
             return Err(e);
         };
-        let handle = ENGINE.add_socket(sock, true);
+        // Not a listener: a connecting socket's readiness is can_recv/can_send like any stream's.
+        // It used to be added as one purely to borrow poll()'s retire-on-first-connection path,
+        // which claimed the socket was *readable* on establishment as a side effect.
+        let handle = ENGINE.add_socket(sock, None);
 
         ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(handle);
@@ -525,7 +597,23 @@ impl UdpSocket {
     }
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
-        WAITERS.waitpoint(self.inner.socket_handle, kind)
+        // See SmolTcpStream::waitpoint.
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .refresh_waiter(self.inner.socket_handle);
+        WAITERS.waitpoint(WaitKey::Sock(self.inner.socket_handle), kind)
+    }
+
+    pub fn down_waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
+        // See SmolTcpStream::down_waitpoint.
+        ENGINE
+            .core
+            .lock()
+            .unwrap()
+            .refresh_waiter(self.inner.socket_handle);
+        WAITERS.down_waitpoint(WaitKey::Sock(self.inner.socket_handle), kind)
     }
 
     pub fn can_write(&self) -> bool {
@@ -549,7 +637,10 @@ impl UdpSocket {
         engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_recv() {
-                Ok(socket.recv_slice(buf).map(|x| (x.0, Some(x.1))).unwrap())
+                let r = socket.recv_slice(buf).map(|x| (x.0, Some(x.1))).unwrap();
+                // This read may have taken the last queued datagram.
+                core.refresh_waiter(self.inner.socket_handle);
+                Ok(r)
             } else if !socket.is_open() || self.inner.rx_shutdown.load(Ordering::SeqCst) {
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok((0, None))
@@ -574,7 +665,10 @@ impl UdpSocket {
         ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_send() {
-                Ok(socket.send_slice(buf, meta).unwrap())
+                let r = socket.send_slice(buf, meta).unwrap();
+                // This write may have filled the transmit queue.
+                core.refresh_waiter(self.inner.socket_handle);
+                Ok(r)
             } else if !socket.is_open() {
                 Err(ErrorKind::ConnectionReset.into())
             } else {
@@ -661,14 +755,27 @@ impl UdpSocket {
                     .allocate_port(Some(port))
                     .ok_or(ErrorKind::ResourceBusy)?;
             }
-            if sock.bind((addr, port)).is_ok() {
+            // A wildcard address must bind the port alone. `(addr, port)` goes through
+            // `From<(T, u16)>`, which yields `IpListenEndpoint { addr: Some(0.0.0.0) }` rather
+            // than `None`, and smoltcp then reads that literally in both directions: `accepts()`
+            // rejects every datagram not addressed to 0.0.0.0, and dispatch uses 0.0.0.0 as the
+            // packet's *source* address. So a wildcard-bound socket could neither receive nor
+            // usefully send.
+            let bound = if addr.is_unspecified() {
+                sock.bind(port).is_ok()
+            } else {
+                sock.bind((addr, port)).is_ok()
+            };
+            if bound {
                 break;
             }
             if ephem {
                 ENGINE.return_port(port);
             }
         }
-        if !sock.endpoint().is_specified() {
+        // Not `is_specified()`: that requires an address, which a wildcard bind legitimately does
+        // not have. The port is what has to be settled.
+        if sock.endpoint().port == 0 {
             return Err(Error::new(
                 ErrorKind::AddrNotAvailable,
                 "address not available",

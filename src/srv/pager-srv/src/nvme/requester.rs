@@ -115,6 +115,39 @@ impl<'a> InflightRequest<'a> {
         }
     }
 
+    /// Blocking wait that reaps its own queue, for data-queue commands.
+    ///
+    /// Sleeps on this request's flags word *and* the calling thread's queue interrupt in one
+    /// `sys_thread_sync`. That is sound because submission and waiting now happen on the same
+    /// thread, so "the calling thread's queue" is the queue this command went out on. Contrast
+    /// `wait`, which does not know its queue and therefore polls on a bound.
+    pub fn wait_owned(&self) -> std::io::Result<CommonCompletion> {
+        loop {
+            if let Some(cc) = self.spin() {
+                return Ok(cc);
+            }
+            // Must consume the interrupt word before arming: `spin` drains the completion queue but
+            // leaves the word set, and `setup_interrupt_sleep` blocks only while it is zero, so
+            // arming without consuming turns the sleep below into a spin.
+            crate::nvme::reap_current_queue();
+
+            // Publish WAITER before the final check: `get_completion` sends its wake after setting
+            // READY, so whichever of the two stores lands second observes the other's bit.
+            self.entry.flags.fetch_or(WAITER, Ordering::SeqCst);
+            if let Some(cc) = self.completion() {
+                return Ok(cc);
+            }
+
+            let mut ops = heapless::Vec::<ThreadSync, 2>::new();
+            let _ = ops.push(ThreadSync::new_sleep(self.wait_item_read().0));
+            if let Some(int) = crate::nvme::current_queue_sleep() {
+                let _ = ops.push(ThreadSync::new_sleep(int));
+            }
+            sys_thread_sync(&mut ops, None).ok();
+            crate::nvme::reap_current_queue();
+        }
+    }
+
     pub fn poll_completion(&self, cx: &mut Context<'_>) -> Poll<std::io::Result<CommonCompletion>> {
         if let Some(cc) = self.completion() {
             return Poll::Ready(Ok(cc));

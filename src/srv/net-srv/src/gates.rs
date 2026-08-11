@@ -5,7 +5,6 @@ use std::{
 };
 
 use secgate::{util::HandleMgr, ResourceError, TwzError};
-use smoltcp::wire::EthernetAddress;
 use tracing::Level;
 use twizzler::{object::RawObject, Result};
 use twizzler_abi::syscall::ObjectCreate;
@@ -15,10 +14,10 @@ use twizzler_net::{
 };
 
 use crate::{
-    client::Client, device::device_thread, port::PortAssigner, NetworkInfo, NETINFO, PORTS,
+    addr::AddrAssigner, client::Client, device::device_thread, port::PortAssigner, NetworkInfo,
+    ADDRS, NETINFO, PORTS,
 };
 
-const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 
 #[secgate::entry(lib = "twizzler-net")]
@@ -38,9 +37,10 @@ pub fn start_network() -> Result<()> {
     let device = virtio_net::get_device();
     let _device = device.clone();
     std::thread::spawn(move || device_thread(_device));
-    tracing::info!("network ready: IP = {}, gateway = {}", IP, GATEWAY);
+    tracing::info!("network ready: gateway = {}", GATEWAY);
 
     let _ = PORTS.set(PortAssigner::new());
+    let _ = ADDRS.set(AddrAssigner::new());
 
     let _ = NETINFO.set(NetworkInfo {
         handles: Mutex::new(HandleMgr::new(None)),
@@ -101,7 +101,12 @@ fn twz_net_release_port(desc: secgate::util::Descriptor, port: u16) -> Result<()
         .lookup(caller, desc)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     let mut ports = client.ports.lock().unwrap();
-    let entry = ports.entry(port).or_default();
+    // Releasing a port this client never held is a caller error, not something to underflow on:
+    // `entry(port).or_default()` followed by `-= 1` panics on a debug build and wraps to
+    // usize::MAX on a release one, and either way it corrupts the refcount for that port.
+    let Some(entry) = ports.get_mut(&port) else {
+        return Err(TwzError::INVALID_ARGUMENT);
+    };
     *entry -= 1;
     if *entry == 0 {
         PORTS.get().unwrap().return_port(port);
@@ -127,6 +132,7 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
         for port in client.ports.lock().unwrap().drain() {
             PORTS.get().unwrap().return_port(port.0);
         }
+        ADDRS.get().unwrap().release(client.addr);
     }
     Ok(())
 }
@@ -161,20 +167,33 @@ pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo
             .expect("failed to create queue")
     };
 
+    // Each client gets its own address and MAC; see addr.rs for why sharing them was actively
+    // harmful rather than merely untidy.
+    let addr = ADDRS
+        .get()
+        .ok_or(TwzError::NOT_SUPPORTED)?
+        .allocate()
+        .ok_or(ResourceError::OutOfResources)?;
+
     let mut ncinfo = NetClientOpenInfo {
         tx_buf: tx_buf.id(),
         rx_buf: rx_buf.id(),
         tx_queue: tx_queue_obj.id(),
         rx_queue: rx_queue_obj.id(),
         handle: 0,
-        addr: IpAddr::from_str(IP).unwrap(),
+        addr: IpAddr::from(addr.ipv4()),
         gateway: IpAddr::from_str(GATEWAY).unwrap(),
-        hwaddr: EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+        hwaddr: addr.hwaddr(),
         addr_prefix_len: 8,
     };
+    tracing::info!(
+        "new net client: addr = {}, hwaddr = {}",
+        ncinfo.addr,
+        ncinfo.hwaddr
+    );
 
     let ep = NetServer::open(&ncinfo)?;
-    let client = Client::new(ep);
+    let client = Client::new(ep, addr);
 
     let desc = handles
         .insert(caller, client)

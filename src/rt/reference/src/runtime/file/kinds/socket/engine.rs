@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::ErrorKind,
     net::SocketAddr,
     sync::{
@@ -45,11 +45,41 @@ pub(super) enum SockKind {
     Udp,
 }
 
+/// Identity of a readiness source. Usually one socket -- but a listener's accept queue is several
+/// listening sockets whose readiness is the OR over the group, and `accept()` swaps handles in and
+/// out of that group, so no individual `SocketHandle` can name the thing a poller registered
+/// against.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum WaitKey {
+    Sock(SocketHandle),
+    Group(u64),
+}
+
+/// A listening socket is readable exactly when `accept()` will return a connection for it, which
+/// smoltcp spells `is_active()` -- true from SynReceived onward, false while it is still in Listen.
+///
+/// Deliberately a state predicate rather than an event, so the readiness cannot be lost between the
+/// poll pass that observes it and the `accept()` that consumes it. `SmolTcpListener::can_read` must
+/// agree with this: a live check that disagrees with the published word is what makes an
+/// edge-triggered consumer wait for an edge that already happened.
+///
+/// It must *not* also cover "this socket has broken and needs rebinding" (`!is_open()`,
+/// `!is_listening()`), which is what the old retire-on-first-connection branch in `poll` tested
+/// for. Those are maintenance, not readiness: advertising them makes a poller report readable while
+/// `accept()` finds nothing active, takes its repair branch, and blocks -- an outright hang, which
+/// is how this was found. The repair still happens, because a blocked `accept()` re-runs on every
+/// `Core::poll` condvar notify rather than waiting on these words.
+pub(super) fn listener_socket_ready(socket: &Socket<'_>) -> bool {
+    socket.is_active()
+}
+
 pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
     tracking: Vec<(SocketHandle, u16, SockKind)>,
-    listeners: HashSet<SocketHandle>,
+    // Listening sockets -> the listener group they belong to. Membership is also what marks a
+    // socket as a listener, which is what selects listener_socket_ready over can_recv/can_send.
+    groups: HashMap<SocketHandle, u64>,
 }
 
 struct IfaceSet {
@@ -103,10 +133,18 @@ lazy_static::lazy_static! {
 struct Wait {
     read: Arc<AtomicU64>,
     write: Arc<AtomicU64>,
+    // Monotonic count of falling edges (ready -> not ready) on each side, never reset. An
+    // edge-triggered consumer samples this when it suppresses a readiness it has already
+    // reported, and re-arms once it moves. That is the piece the level words cannot express:
+    // they only say what is true *now*, so a drain followed by a refill while nobody was
+    // looking is indistinguishable from the readiness never having gone away -- which would
+    // leave an edge-triggered waiter suppressed forever with data pending.
+    read_down: Arc<AtomicU64>,
+    write_down: Arc<AtomicU64>,
 }
 
 impl Wait {
-    // Both words start "not ready" (0). Claiming readiness before the engine thread has
+    // Both level words start "not ready" (0). Claiming readiness before the engine thread has
     // ever observed this socket would make poll/select/kevent report a bogus immediate
     // ready; the live smoltcp check (SocketKind::is_ready, OR'd in by every consumer)
     // covers the window until the first Core::poll pass.
@@ -114,16 +152,48 @@ impl Wait {
         Self {
             read: Arc::new(AtomicU64::new(0)),
             write: Arc::new(AtomicU64::new(0)),
+            read_down: Arc::new(AtomicU64::new(0)),
+            write_down: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 #[derive(Default)]
 pub(crate) struct Waiters {
-    map: Mutex<HashMap<SocketHandle, Wait>>,
+    map: Mutex<HashMap<WaitKey, Wait>>,
+    groups: Mutex<GroupIds>,
+}
+
+#[derive(Default)]
+struct GroupIds {
+    next: u64,
+    free: Vec<u64>,
 }
 
 impl Waiters {
+    /// Mint an identity for a new listener group. Ids are recycled, so the map stays bounded by the
+    /// peak number of concurrently live groups and a `Wait`, once created, is never freed -- the
+    /// same contract init_waiter documents, for the same reason.
+    pub fn alloc_group(&self) -> u64 {
+        let id = {
+            let mut ids = self.groups.lock().unwrap();
+            match ids.free.pop() {
+                Some(id) => id,
+                None => {
+                    let id = ids.next;
+                    ids.next += 1;
+                    id
+                }
+            }
+        };
+        self.init_waiter(WaitKey::Group(id));
+        id
+    }
+
+    pub fn free_group(&self, id: u64) {
+        self.groups.lock().unwrap().free.push(id);
+    }
+
     // Returns an owning clone of the wait word rather than just a raw pointer into it. The
     // underlying allocation is in practice permanently stable once created (see
     // init_waiter's comment), but callers that can retain the clone (kqueue/poll/select)
@@ -131,11 +201,11 @@ impl Waiters {
     // that implementation detail.
     pub fn waitpoint(
         &self,
-        handle: SocketHandle,
+        key: WaitKey,
         kind: wait_kind,
     ) -> Result<(Arc<AtomicU64>, u64), TwzError> {
         let mut map = self.map.lock().unwrap();
-        let entry = map.entry(handle).or_insert_with(|| Wait::new());
+        let entry = map.entry(key).or_insert_with(|| Wait::new());
         let arc = match kind {
             x if x == WAIT_READ => entry.read.clone(),
             x if x == WAIT_WRITE => entry.write.clone(),
@@ -144,18 +214,45 @@ impl Waiters {
         Ok((arc, 0))
     }
 
-    fn mark_waiter(&self, handle: SocketHandle, read: bool, write: bool) {
-        if let Some(wait) = self.map.lock().unwrap().get(&handle) {
+    /// The falling-edge counter for `kind`, plus its current value. Sleeping on it with that
+    /// value blocks until the next ready -> not-ready transition; retaining the value and
+    /// comparing later tells you whether one has happened since.
+    pub fn down_waitpoint(
+        &self,
+        key: WaitKey,
+        kind: wait_kind,
+    ) -> Result<(Arc<AtomicU64>, u64), TwzError> {
+        let mut map = self.map.lock().unwrap();
+        let entry = map.entry(key).or_insert_with(|| Wait::new());
+        let arc = match kind {
+            x if x == WAIT_READ => entry.read_down.clone(),
+            x if x == WAIT_WRITE => entry.write_down.clone(),
+            _ => return Err(TwzError::INVALID_ARGUMENT),
+        };
+        let val = arc.load(Ordering::SeqCst);
+        Ok((arc, val))
+    }
+
+    fn mark_waiter(&self, key: WaitKey, read: bool, write: bool) {
+        if let Some(wait) = self.map.lock().unwrap().get(&key) {
+            let mut rfell = false;
+            let mut wfell = false;
             let rwake = if read {
                 wait.read.swap(1, Ordering::SeqCst) == 0
             } else {
-                wait.read.store(0, Ordering::SeqCst);
+                rfell = wait.read.swap(0, Ordering::SeqCst) == 1;
+                if rfell {
+                    wait.read_down.fetch_add(1, Ordering::SeqCst);
+                }
                 false
             };
             let wwake = if write {
                 wait.write.swap(1, Ordering::SeqCst) == 0
             } else {
-                wait.write.store(0, Ordering::SeqCst);
+                wfell = wait.write.swap(0, Ordering::SeqCst) == 1;
+                if wfell {
+                    wait.write_down.fetch_add(1, Ordering::SeqCst);
+                }
                 false
             };
 
@@ -176,32 +273,44 @@ impl Waiters {
                     usize::MAX,
                 )));
             }
+            // A falling edge is a wakeup too: an edge-triggered consumer suppressed on this side
+            // is blocked on the down counter waiting for exactly this.
+            if rfell {
+                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&*wait.read_down),
+                    usize::MAX,
+                )));
+            }
+            if wfell {
+                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(&*wait.write_down),
+                    usize::MAX,
+                )));
+            }
             if !wakes.is_empty() {
                 let _ = sys_thread_sync(&mut wakes, None);
             }
         }
     }
 
-    // Resets (rather than replaces) any existing entry for `handle`, so the underlying
-    // AtomicU64 allocation for a given handle value, once created, is never freed for the
-    // life of the process -- it is only ever reset back to Wait::new()'s initial state.
-    // This keeps a raw `*const AtomicU64` handed out for this handle (e.g. across the
-    // extern "C" twz_rt_fd_waitpoint ABI, which cannot carry an owning Arc back to its
-    // caller -- see ReferenceRuntime::fd_waitpoint) permanently valid even after `handle` is
-    // released and reused by smoltcp for an unrelated new socket. The map can only grow to
-    // the peak number of concurrently live SocketHandles, since smoltcp's SocketSet reuses
-    // freed slots rather than handing out ever-increasing handle values.
-    fn init_waiter(&self, handle: SocketHandle) {
+    // Resets (rather than replaces) any existing entry for `key`, so the underlying AtomicU64
+    // allocation for a given key value, once created, is never freed for the life of the
+    // process -- it is only ever reset back to Wait::new()'s initial state. This keeps a raw
+    // `*const AtomicU64` handed out for this key (e.g. across the extern "C"
+    // twz_rt_fd_waitpoint ABI, which cannot carry an owning Arc back to its caller -- see
+    // ReferenceRuntime::fd_waitpoint) permanently valid even after the socket or group behind
+    // it is released and its identity reused. The map can only grow to the peak number of
+    // concurrently live keys: smoltcp's SocketSet reuses freed handles rather than handing out
+    // ever-increasing values, and alloc_group recycles group ids for the same reason.
+    //
+    // The falling-edge counters are deliberately not reset: they are monotonic for the life of
+    // the process, so a suppression token held over an identity reuse can only ever read as
+    // "it moved" (a spurious re-arm, harmless) and never as "it did not" (a silent hang).
+    fn init_waiter(&self, key: WaitKey) {
         let mut map = self.map.lock().unwrap();
-        let wait = map.entry(handle).or_insert_with(Wait::new);
+        let wait = map.entry(key).or_insert_with(Wait::new);
         wait.read.store(0, Ordering::SeqCst);
         wait.write.store(0, Ordering::SeqCst);
-    }
-
-    fn remove_waiter(&self, handle: SocketHandle) {
-        // Closing must wake both a blocked reader and a blocked writer, so mark both sides
-        // ready: mark_waiter only wakes a side it transitions to ready.
-        self.mark_waiter(handle, true, true);
     }
 }
 
@@ -244,7 +353,12 @@ impl Engine {
                         core.release_socket(item.0);
                         core.tracking.remove(idx);
                         drop(core);
-                        ENGINE.return_port(item.1);
+                        // `track` stores 0 for a socket whose port it does not own (see
+                        // Engine::track); returning it would decrement a refcount net-srv never
+                        // incremented.
+                        if item.1 != 0 {
+                            ENGINE.return_port(item.1);
+                        }
                         return true;
                     }
                 }
@@ -324,8 +438,8 @@ impl Engine {
         .unwrap();
     }
 
-    pub fn add_socket(&self, socket: Socket<'static>, is_listening: bool) -> SocketHandle {
-        self.core.lock().unwrap().add_socket(socket, is_listening)
+    pub fn add_socket(&self, socket: Socket<'static>, group: Option<u64>) -> SocketHandle {
+        self.core.lock().unwrap().add_socket(socket, group)
     }
 
     pub fn add_udp_socket(&self, socket: SmolUdpSocket<'static>) -> SocketHandle {
@@ -393,7 +507,7 @@ impl Core {
             socketset,
             ifaceset,
             tracking: Vec::new(),
-            listeners: HashSet::new(),
+            groups: HashMap::new(),
         }
     }
 
@@ -403,17 +517,47 @@ impl Core {
 
     pub fn add_udp_socket(&mut self, sock: SmolUdpSocket<'static>) -> SocketHandle {
         let handle = self.socketset.add(sock);
-        WAITERS.init_waiter(handle);
+        WAITERS.init_waiter(WaitKey::Sock(handle));
         handle
     }
 
-    pub fn add_socket(&mut self, sock: Socket<'static>, is_listening: bool) -> SocketHandle {
+    /// Add a socket, optionally as a member of listener group `group` (see WaitKey).
+    pub fn add_socket(&mut self, sock: Socket<'static>, group: Option<u64>) -> SocketHandle {
         let handle = self.socketset.add(sock);
-        WAITERS.init_waiter(handle);
-        if is_listening {
-            self.listeners.insert(handle);
+        match group {
+            // The group's words belong to the group, not to any one member: resetting them here
+            // would drop a sibling's pending connection on the floor.
+            Some(group) => {
+                self.groups.insert(handle, group);
+            }
+            None => WAITERS.init_waiter(WaitKey::Sock(handle)),
         }
         handle
+    }
+
+    fn wait_key(&self, handle: SocketHandle) -> WaitKey {
+        match self.groups.get(&handle) {
+            Some(&group) => WaitKey::Group(group),
+            None => WaitKey::Sock(handle),
+        }
+    }
+
+    /// Take `handle` out of its listener group and give it a readiness identity of its own -- what
+    /// `accept()` does to the socket it hands back as a stream.
+    pub fn detach_from_group(&mut self, handle: SocketHandle) {
+        if self.groups.remove(&handle).is_some() {
+            WAITERS.init_waiter(WaitKey::Sock(handle));
+        }
+    }
+
+    /// Queue `handle` for release once it closes, taking it out of any listener group first: a dead
+    /// socket left in a group would pin the group readable forever (listener_socket_ready is true
+    /// for a closed socket), which spins every poller watching it.
+    pub fn retire_socket(&mut self, handle: SocketHandle) {
+        if let Some(group) = self.groups.remove(&handle) {
+            self.refresh_group(group);
+        }
+        self.tracking.push((handle, 0, SockKind::Tcp));
     }
 
     pub fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
@@ -429,8 +573,74 @@ impl Core {
     }
 
     pub fn release_socket(&mut self, handle: SocketHandle) {
-        WAITERS.remove_waiter(handle);
+        let group = self.groups.remove(&handle);
         self.socketset.remove(handle);
+        match group {
+            Some(group) => {
+                // The group outlives its members, so recompute rather than forcing it ready --
+                // unless this was the last one, in which case the identity itself is done.
+                self.refresh_group(group);
+                if !self.groups.values().any(|g| *g == group) {
+                    WAITERS.free_group(group);
+                }
+            }
+            // Closing must wake both a blocked reader and a blocked writer, so mark both sides
+            // ready: mark_waiter only wakes a side it transitions to ready.
+            None => WAITERS.mark_waiter(WaitKey::Sock(handle), true, true),
+        }
+    }
+
+    /// Readiness of one socket, as its wait key's contributor. A listening socket's is "accept()
+    /// has work here" rather than "there are bytes to read"; see listener_socket_ready.
+    fn socket_readiness(
+        &self,
+        handle: SocketHandle,
+        sock: &smoltcp::socket::Socket<'static>,
+    ) -> (bool, bool) {
+        match sock {
+            smoltcp::socket::Socket::Udp(socket) => (socket.can_recv(), socket.can_send()),
+            smoltcp::socket::Socket::Tcp(socket) => {
+                if self.groups.contains_key(&handle) {
+                    // Write is meaningless for a listener; SmolTcpListener::can_write agrees.
+                    (listener_socket_ready(socket), false)
+                } else {
+                    (socket.can_recv(), socket.can_send())
+                }
+            }
+            _ => (false, false),
+        }
+    }
+
+    /// Re-publish one readiness source's state into its wait words, using the same expressions
+    /// poll() uses. Call this after an app-side operation changes readiness -- a read that drains
+    /// the receive buffer, a write that fills the send buffer, an accept that takes a connection
+    /// out of a listener group. Without it the words only move on the background poll pass, so a
+    /// drain followed by a refill before the next pass is never observed as a not-ready period at
+    /// all, which is fatal for any edge-triggered consumer (see the EV_CLEAR handling in
+    /// runtime::file::kqueue).
+    pub fn refresh_waiter(&self, handle: SocketHandle) {
+        self.refresh_key(self.wait_key(handle));
+    }
+
+    pub fn refresh_group(&self, group: u64) {
+        self.refresh_key(WaitKey::Group(group));
+    }
+
+    fn refresh_key(&self, key: WaitKey) {
+        let (mut read, mut write) = (false, false);
+        for (handle, sock) in self.socketset.iter() {
+            if self.wait_key(handle) != key {
+                continue;
+            }
+            let (r, w) = self.socket_readiness(handle, sock);
+            read |= r;
+            write |= w;
+            // A Sock key has exactly one contributor; only a group needs the whole scan.
+            if matches!(key, WaitKey::Sock(_)) {
+                break;
+            }
+        }
+        WAITERS.mark_waiter(key, read, write);
     }
 
     fn poll(&mut self, waiter: &Condvar) -> bool {
@@ -439,37 +649,20 @@ impl Core {
             res |= ifaceset.poll(&mut self.socketset);
         }
         if res {
-            for sock in self.socketset.iter_mut() {
-                match sock.1 {
-                    smoltcp::socket::Socket::Udp(socket) => {
-                        let ready_read = socket.can_recv();
-                        let ready_write = socket.can_send();
-                        WAITERS.mark_waiter(sock.0, ready_read, ready_write);
-                    }
-                    smoltcp::socket::Socket::Tcp(socket) => {
-                        if self.listeners.contains(&sock.0) {
-                            if socket.is_active()
-                                || !socket.is_open()
-                                || !socket.is_listening()
-                                || socket.may_recv()
-                                || socket.may_send()
-                            {
-                                self.listeners.remove(&sock.0);
-                                WAITERS.mark_waiter(sock.0, true, true);
-                            }
-                        } else {
-                            let ready_read = socket.can_recv();
-                            let ready_write = socket.can_send();
-                            WAITERS.mark_waiter(sock.0, ready_read, ready_write);
-                        }
-                    }
-                    _ => {}
-                }
+            // Aggregate before publishing: several listening sockets share one WaitKey, and marking
+            // them one at a time would let a not-ready sibling clear a ready one's word (and count
+            // a bogus falling edge while doing it).
+            let mut agg: HashMap<WaitKey, (bool, bool)> = HashMap::new();
+            for (handle, sock) in self.socketset.iter() {
+                let (read, write) = self.socket_readiness(handle, sock);
+                let entry = agg.entry(self.wait_key(handle)).or_insert((false, false));
+                entry.0 |= read;
+                entry.1 |= write;
             }
-        }
-        // When we poll, notify the CV so that other waiting threads can retry their blocking
-        // operations.
-        if res {
+            for (key, (read, write)) in agg {
+                WAITERS.mark_waiter(key, read, write);
+            }
+            // Notify the CV so that other waiting threads can retry their blocking operations.
             waiter.notify_all();
         }
         res
@@ -511,16 +704,33 @@ fn get_twznet_device_and_interface() -> (Interface, NetClient) {
     let mut config = Config::new(device.info.hwaddr.into());
     config.random_seed = std::random::random(..);
 
+    // Static-address override. net-srv hands out addresses in the order compartments happen to
+    // open a client, which is fine for talking to the outside world but leaves two compartments
+    // unable to name each other ahead of time -- so a test that needs a client and a server in
+    // separate compartments can pin both. The MAC still comes from net-srv, and net-srv's
+    // on-host delivery is keyed on MAC, so overriding the address here needs no cooperation from
+    // it (and slirp NATs whatever source address it sees).
+    let addr = match std::env::var("TWZ_NET_ADDR")
+        .ok()
+        .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+    {
+        Some(addr) => {
+            tracing::info!("using static address {} from TWZ_NET_ADDR", addr);
+            addr
+        }
+        None => device.info.addr,
+    };
+
     tracing::info!(
         "setting up interface with addr {} and prefix {}",
-        device.info.addr,
+        addr,
         device.info.addr_prefix_len
     );
     let mut iface = Interface::new(config, &mut device, Instant::now());
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs
             .push(IpCidr::new(
-                IpAddress::from(device.info.addr),
+                IpAddress::from(addr),
                 device.info.addr_prefix_len,
             ))
             .unwrap();

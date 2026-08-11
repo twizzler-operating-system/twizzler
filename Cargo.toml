@@ -7,6 +7,7 @@ members = [
     "tools/image_builder",
     "tools/initrd_gen",
     "src/bin/init",
+    "src/bin/pagepar",
     "src/bin/bootstrap",
     "src/kernel",
     "src/lib/twizzler-queue-raw",
@@ -65,6 +66,8 @@ members = [
 
     "src/bin/ptest",
     "src/bin/kqueue_test",
+    "src/bin/net_test",
+    "src/bin/net_test_peer",
     "src/bin/memhog-test",
     "src/bin/hmrepro",
     #"src/bin/sqlite_test",
@@ -133,6 +136,7 @@ initrd = [
     #"crate:trace",
     #"crate:gfxtest",
     "crate:shell",
+    "crate:pagepar",
     "crate:hmrepro",
     #"crate:sshd",
 

@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use secgate::util::HandleMgr;
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
 
-use crate::{client::Client, port::PortAssigner};
+use crate::{addr::AddrAssigner, client::Client, port::PortAssigner};
 
+pub mod addr;
 pub mod client;
 pub mod device;
 pub mod gates;
@@ -15,6 +16,7 @@ pub mod port;
 
 static NETINFO: OnceLock<NetworkInfo> = OnceLock::new();
 static PORTS: OnceLock<PortAssigner> = OnceLock::new();
+static ADDRS: OnceLock<AddrAssigner> = OnceLock::new();
 
 #[allow(dead_code)]
 struct NetworkInfo {

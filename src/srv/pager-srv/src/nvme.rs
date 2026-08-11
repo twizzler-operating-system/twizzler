@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device};
 
-mod controller;
+pub(crate) mod controller;
 mod dma;
 mod requester;
 

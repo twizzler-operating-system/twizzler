@@ -20,6 +20,74 @@ use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
 use crate::{helpers::PAGE, threads::spawn_async, watchdog, PagerContext};
 
+/// In-flight page-data requests, with high-water marks.
+///
+/// Answers the question downstream instrumentation cannot: whether the pager ever services more
+/// than one paging request at a time. If it does not, no amount of per-object locking further down
+/// can produce parallelism -- there is nothing concurrent to serialize in the first place.
+struct ReqStats {
+    demand: AtomicU64,
+    prefetch: AtomicU64,
+    max_demand: AtomicU64,
+    max_prefetch: AtomicU64,
+    max_total: AtomicU64,
+    completed: AtomicU64,
+}
+
+static REQ_STATS: ReqStats = ReqStats {
+    demand: AtomicU64::new(0),
+    prefetch: AtomicU64::new(0),
+    max_demand: AtomicU64::new(0),
+    max_prefetch: AtomicU64::new(0),
+    max_total: AtomicU64::new(0),
+    completed: AtomicU64::new(0),
+};
+
+/// Decrements its gauge on drop, so the error returns out of the fill loop cannot leak a count. A
+/// leaked gauge would only ever *overstate* concurrency, which is the one direction a measurement
+/// of concurrency must not drift.
+struct ReqGuard {
+    prefetch: bool,
+}
+
+impl ReqStats {
+    fn enter(&'static self, prefetch: bool) -> ReqGuard {
+        let (gauge, max) = if prefetch {
+            (&self.prefetch, &self.max_prefetch)
+        } else {
+            (&self.demand, &self.max_demand)
+        };
+        let now = gauge.fetch_add(1, Ordering::AcqRel) + 1;
+        max.fetch_max(now, Ordering::AcqRel);
+        let total = self.demand.load(Ordering::Acquire) + self.prefetch.load(Ordering::Acquire);
+        self.max_total.fetch_max(total, Ordering::AcqRel);
+        ReqGuard { prefetch }
+    }
+}
+
+impl Drop for ReqGuard {
+    fn drop(&mut self) {
+        let stats = &REQ_STATS;
+        if self.prefetch {
+            stats.prefetch.fetch_sub(1, Ordering::AcqRel);
+        } else {
+            stats.demand.fetch_sub(1, Ordering::AcqRel);
+        }
+        let done = stats.completed.fetch_add(1, Ordering::Relaxed) + 1;
+        if done.is_power_of_two() {
+            tracing::info!(
+                "REQSTATS: {} page-data requests done; in flight now {} demand / {} prefetch; max {} demand, {} prefetch, {} total",
+                done,
+                stats.demand.load(Ordering::Relaxed),
+                stats.prefetch.load(Ordering::Relaxed),
+                stats.max_demand.load(Ordering::Relaxed),
+                stats.max_prefetch.load(Ordering::Relaxed),
+                stats.max_total.load(Ordering::Relaxed),
+            );
+        }
+    }
+}
+
 async fn handle_page_data_request_task(
     ctx: &'static PagerContext,
     qid: u32,
@@ -69,6 +137,7 @@ async fn handle_page_data_request_task(
     } else {
         COUNT.fetch_add(1, Ordering::SeqCst);
     }
+    let _req = REQ_STATS.enter(prefetch);
 
     let total = req_range.page_count() as u64;
     tracing::trace!(

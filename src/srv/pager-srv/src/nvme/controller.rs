@@ -71,7 +71,7 @@ const ADMIN_QUEUE_LEN: u16 = 32;
 const DATA_QUEUE_ID: u16 = 1;
 /// Ceiling on I/O queue pairs, whatever the controller and worker count would allow. `DeviceRepr`
 /// has `NUM_DEVICE_INTERRUPTS` (32) interrupt slots and vector 0 is spoken for.
-const MAX_DATA_QUEUES: usize = 16;
+pub(crate) const MAX_DATA_QUEUES: usize = 16;
 /// Create I/O Queue is issued with PC=1, so the queue memory must be physically contiguous, and a
 /// DMA pool allocation is only guaranteed contiguous within a single page. At 64 bytes an entry
 /// that caps the submission queue -- and hence the number of outstanding commands -- at one page's
@@ -208,7 +208,10 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
         caq,
     );
 
-    let nr_queues = negotiate_queue_count(&admin_requester, crate::threads::nr_workers())?;
+    let nr_queues = negotiate_queue_count(&admin_requester, crate::threads::desired_queues())?;
+    // The pool sizes itself from this, one worker per queue pair, so it has to be recorded before
+    // `PagerThreadPool::new` runs. A device may grant fewer than asked for, never more.
+    crate::threads::set_granted_queues(nr_queues);
     let mut data_requesters = Vec::with_capacity(nr_queues);
     for i in 0..nr_queues {
         let id = ((DATA_QUEUE_ID as usize + i) as u16).into();
@@ -972,7 +975,7 @@ impl NvmeController {
     /// - Only the first command may block for a submission slot. That guarantees forward progress
     ///   without ever parking the executor thread just to go deeper: if the queue is full the batch
     ///   is simply shorter, and the caller loops for the rest.
-    async fn pipelined_transfer<const PAGE_SIZE: usize>(
+    fn pipelined_transfer<const PAGE_SIZE: usize>(
         &self,
         disk_page_start: u64,
         phys: &[PhysInfo],
@@ -1011,7 +1014,7 @@ impl NvmeController {
         let mut good = true;
         let mut err = None;
         for (prp, inflight, pages) in batch {
-            match inflight.await {
+            match inflight.wait_owned() {
                 Ok(cc) if !cc.status().is_error() => {
                     if good {
                         done += pages;
@@ -1031,7 +1034,7 @@ impl NvmeController {
             drop(prp);
         }
         tracing::trace!(
-            "async seq {} took {}us ({} pages in {} commands)",
+            "seq {} took {}us ({} pages in {} commands)",
             if write { "write" } else { "read" },
             start.elapsed().as_micros(),
             done,
@@ -1050,7 +1053,6 @@ impl NvmeController {
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
         self.pipelined_transfer::<PAGE_SIZE>(disk_page_start, phys, false)
-            .await
     }
 
     pub async fn sequential_write_async<const PAGE_SIZE: usize>(
@@ -1059,7 +1061,6 @@ impl NvmeController {
         phys: &[PhysInfo],
     ) -> std::io::Result<usize> {
         self.pipelined_transfer::<PAGE_SIZE>(disk_page_start, phys, true)
-            .await
     }
 
     pub fn blocking_write_pages<const NR: usize>(

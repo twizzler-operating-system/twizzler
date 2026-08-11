@@ -21,6 +21,41 @@ pub fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyh
     cfg.build_arg("-j").build_arg(&nr_jobs);
     cfg.profile("Release");
     cfg.host(guess_host_triple().unwrap());
+    // Also record it as a real cache entry, so a cmake re-run that doesn't come from us (e.g.
+    // ninja's regeneration rule, which passes no -D flags) still gets a build type.
+    cfg.define("CMAKE_BUILD_TYPE", "Release");
+
+    Ok(())
+}
+
+/// Drop a cmake build directory that cmake can no longer reconfigure in place.
+///
+/// A generated build system with no usable cache is a trap: ninja's regeneration rule re-runs cmake
+/// with no -D flags, LLVM rejects that outright ("No build type selected"), and the failed run
+/// leaves behind a cache with an empty build type and the default generator, which every later
+/// configure then refuses to reuse ("generator ... does not match the generator used previously").
+fn discard_unusable_build_dir(out_dir: &Path) -> anyhow::Result<()> {
+    let build_dir = out_dir.join("build");
+    if !build_dir.join("build.ninja").exists() {
+        return Ok(());
+    }
+    let cache = std::fs::read_to_string(build_dir.join("CMakeCache.txt")).unwrap_or_default();
+    let entry = |key: &str| {
+        cache
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.split_once('=').map(|(_, v)| v.trim()))
+    };
+    if entry("CMAKE_BUILD_TYPE:").is_some_and(|v| !v.is_empty())
+        && entry("CMAKE_GENERATOR:").is_some_and(|v| v == "Ninja")
+    {
+        return Ok(());
+    }
+
+    println!(
+        "==> discarding unusable cmake build dir {}",
+        build_dir.display()
+    );
+    fs_extra::dir::remove(&build_dir)?;
 
     Ok(())
 }
@@ -79,6 +114,7 @@ pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     std::fs::create_dir_all(&llvm_build_path)?;
     std::fs::create_dir_all("toolchain/install")?;
     let llvm_build_path = llvm_build_path.canonicalize()?;
+    discard_unusable_build_dir(&llvm_build_path)?;
 
     let mut cfg = cmake::Config::new(llvm_src_path.join("llvm"));
 
@@ -147,6 +183,7 @@ pub fn build_lld(_cli: &BootstrapOptions) -> anyhow::Result<()> {
 
     std::fs::create_dir_all(&build_dir)?;
     let build_dir = build_dir.canonicalize()?;
+    discard_unusable_build_dir(&build_dir)?;
 
     std::fs::create_dir_all(&bin_dir)?;
     let bin_dir = bin_dir.canonicalize()?;

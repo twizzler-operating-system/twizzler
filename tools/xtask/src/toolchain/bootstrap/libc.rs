@@ -13,6 +13,13 @@ use crate::{
     triple::Triple,
 };
 
+/// The meson installed by `install_build_tools`, run through its own shebang so that it uses the
+/// interpreter pip installed it for. `python3` on PATH is not necessarily that interpreter, and
+/// meson only supports the one it was resolved for.
+fn meson() -> Command {
+    Command::new("toolchain/install/python/bin/meson")
+}
+
 pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()> {
     println!("== Installing libc headers for {}", triple);
 
@@ -40,8 +47,7 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
 
     let _ = std::fs::remove_dir_all(&build_dir);
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
+    let status = meson()
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=true")
@@ -59,18 +65,12 @@ pub fn install_headers(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         ))?;
     }
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
-        .arg("compile")
-        .arg("-C")
-        .arg(&build_dir)
-        .status()?;
+    let status = meson().arg("compile").arg("-C").arg(&build_dir).status()?;
     if !status.success() {
         Err(std::io::Error::other("failed to build libc headers"))?;
     }
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
+    let status = meson()
         .arg("install")
         .arg("-q")
         .arg("-C")
@@ -109,8 +109,7 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Path::new(&cross_file),
     )?;
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
+    let status = meson()
         .arg("setup")
         .arg(format!("-Dprefix={}", mlibc_sysroot.display()))
         .arg("-Dheaders_only=false")
@@ -126,18 +125,12 @@ pub fn build_libc(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<()
         Err(std::io::Error::other("failed to setup meson for libc"))?;
     }
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
-        .arg("compile")
-        .arg("-C")
-        .arg(&build_dir)
-        .status()?;
+    let status = meson().arg("compile").arg("-C").arg(&build_dir).status()?;
     if !status.success() {
         Err(std::io::Error::other("failed to build libc"))?;
     }
 
-    let status = Command::new("python3")
-        .arg("toolchain/install/python/bin/meson")
+    let status = meson()
         .arg("install")
         .arg("-q")
         .arg("-C")

@@ -36,24 +36,31 @@ impl PortAssignerInner {
         true
     }
 
+    /// Allocate an ephemeral port, cycling upward through the range before reusing anything.
+    ///
+    /// The order matters, and getting it wrong is not a fairness nicety. Handing back a
+    /// just-released port means the next connection reuses the previous one's four-tuple while
+    /// that connection's socket may still be lingering (CloseWait/LastAck/TimeWait); smoltcp
+    /// matches the incoming SYN against that socket rather than a listener, and the handshake
+    /// never completes. This previously preferred the recycle pool, so every connection after the
+    /// first release collided -- and the pool never removed what it handed out, so it kept
+    /// returning the *same* port forever.
     pub fn get_ephemeral_port(&mut self) -> Option<u16> {
-        if self.unused.is_empty() {
-            if self.unused_start == EPHEMERAL_END {
-                return None;
-            }
+        while self.unused_start < EPHEMERAL_END {
             let port = self.unused_start;
             self.unused_start += 1;
             if self.used.contains(&port) {
-                return self.get_ephemeral_port();
+                continue;
             }
-            self.used.insert(port);
             self.unused.remove(&port);
-            Some(port)
-        } else {
-            let port = self.unused.iter().next().unwrap();
-            self.used.insert(*port);
-            Some(*port)
+            self.used.insert(port);
+            return Some(port);
         }
+        // Range exhausted; now recycling is the only option.
+        let port = *self.unused.iter().next()?;
+        self.unused.remove(&port);
+        self.used.insert(port);
+        Some(port)
     }
 }
 

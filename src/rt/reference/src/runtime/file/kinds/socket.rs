@@ -295,6 +295,27 @@ impl Fd for SocketKind {
         })
     }
 
+    fn waitpoint_not_ready(&self, kind: wait_kind) -> Result<WaitpointResult> {
+        let (arc, value): (Arc<AtomicU64>, u64) = match self {
+            SocketKind::TcpStream(smol_tcp_stream) => smol_tcp_stream.down_waitpoint(kind)?,
+            SocketKind::TcpListener(smol_tcp_listener) => smol_tcp_listener.down_waitpoint(kind)?,
+            SocketKind::UdpSocket(udp_socket) => udp_socket
+                .get()
+                .ok_or(TwzError::INVALID_ARGUMENT)?
+                .down_waitpoint(kind)?,
+        };
+        Ok(WaitpointResult {
+            sleep: ThreadSyncSleep {
+                reference: ThreadSyncReference::Virtual(Arc::as_ptr(&arc)),
+                value,
+                op: ThreadSyncOp::Equal,
+                flags: ThreadSyncFlags::empty(),
+            },
+            ready: false,
+            keepalive: Some(arc),
+        })
+    }
+
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {
         match self {
             SocketKind::TcpStream(stream) => stream.shutdown(sh).map_err(Into::into),

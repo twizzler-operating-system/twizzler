@@ -4600,6 +4600,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "net_test"
+version = "0.1.0"
+dependencies = [
+ "twizzler-rt-abi",
+]
+
+[[package]]
+name = "net_test_peer"
+version = "0.1.0"
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 dependencies = [
@@ -5182,6 +5193,13 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "sha2",
+]
+
+[[package]]
+name = "pagepar"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
 ]
 
 [[package]]

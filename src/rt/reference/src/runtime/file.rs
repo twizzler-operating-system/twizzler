@@ -103,6 +103,18 @@ pub trait Fd {
         Err(ErrorKind::Unsupported.into())
     }
 
+    /// The inverse of [Fd::waitpoint]: a waitpoint that fires when this fd stops being ready for
+    /// `kind` -- the falling edge. `WaitpointResult::ready` is correspondingly "is currently NOT
+    /// ready".
+    ///
+    /// Edge-triggered kqueue registrations (EV_CLEAR) use this to wait out a readiness they have
+    /// already reported, instead of re-reporting it every call. Kinds that can't express it leave
+    /// this unimplemented, and EV_CLEAR degrades to level-triggered for them -- which spins a
+    /// consumer that never drains, but never loses an event.
+    fn waitpoint_not_ready(&self, _kind: wait_kind) -> Result<WaitpointResult> {
+        Err(ErrorKind::Unsupported.into())
+    }
+
     fn shutdown(&self, _sh: Shutdown) -> Result<()> {
         Ok(())
     }
