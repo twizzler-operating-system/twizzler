@@ -22,20 +22,15 @@ pub struct HandleCache {
     active: BTreeMap<Mapping, object_handle>,
     queued: Vec<(Mapping, object_handle)>,
     slotmap: BTreeMap<usize, Mapping>,
+    /// Mappings whose monitor unmap gate call still has to be made. The cache never calls the
+    /// monitor itself: the gate has to happen with the manager mutex dropped, and only the manager
+    /// can mark the key in-flight first so a concurrent map of it waits rather than racing.
+    pending_unmaps: Vec<Mapping>,
 }
 
 // Safety: this is needed because of the raw pointers in object_handle, but that's okay here
 // because those pointers are not used within the handle cache.
 unsafe impl Send for HandleCache {}
-
-fn do_unmap(handle: &object_handle) {
-    let map = Mapping::from_raw_handle(handle);
-    // No one else has a reference outside of the runtime, and we are being called by the handle
-    // cache after it has bumped us from the queue. Thus, the internal refs had to be zero (to
-    // be on the queue) and never incremented.
-    free_runtime_info(handle.runtime_info.cast());
-    monitor_api::monitor_rt_object_unmap(map.0, map.1).unwrap();
-}
 
 impl HandleCache {
     pub const fn new() -> Self {
@@ -43,6 +38,7 @@ impl HandleCache {
             active: BTreeMap::new(),
             queued: Vec::new(),
             slotmap: BTreeMap::new(),
+            pending_unmaps: Vec::new(),
         }
     }
 
@@ -90,10 +86,21 @@ impl HandleCache {
         self.slotmap.insert(slot, map);
     }
 
+    /// Drop the cache's ownership of `item` and queue its unmap for the manager to issue.
+    ///
+    /// No one else has a reference outside of the runtime, and we are called only after the handle
+    /// has been bumped from the queue, so the internal refs had to be zero and never incremented.
     fn do_remove(&mut self, item: &object_handle) {
         let slot = (item.start as usize) / MAX_SIZE;
-        do_unmap(&item);
+        let map = Mapping::from_raw_handle(item);
+        free_runtime_info(item.runtime_info.cast());
         self.slotmap.remove(&slot);
+        self.pending_unmaps.push(map);
+    }
+
+    /// Take the unmaps queued by any operation since the last drain.
+    pub fn take_pending_unmaps(&mut self) -> Vec<Mapping> {
+        core::mem::take(&mut self.pending_unmaps)
     }
 
     /// Release a handle. Must only be called from runtime handle release (internal_refs == 0).

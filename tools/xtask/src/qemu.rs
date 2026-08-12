@@ -261,7 +261,13 @@ impl QemuCommand {
                     options.config.twz_triple().to_string()
                 );
                 if !std::fs::exists(&path).unwrap() {
-                    crate::disk::create_fresh_disk_image(&options.config.twz_triple()).unwrap();
+                    let triple = options.config.twz_triple();
+                    let image = crate::disk::image_path(&triple, None);
+                    let _image_lock = crate::imagelock::image_lock(&image).unwrap();
+                    // Re-check under the lock: whoever we waited behind may have created it.
+                    if !std::fs::exists(&path).unwrap() {
+                        crate::disk::create_fresh_disk_image(&triple, &image).unwrap();
+                    }
                 }
                 path
             }

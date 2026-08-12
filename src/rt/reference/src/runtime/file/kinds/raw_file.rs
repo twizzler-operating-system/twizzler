@@ -26,6 +26,30 @@ use crate::{
     OUR_RUNTIME,
 };
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md): splits the `obj` phase
+// of an open into the mapping and the first touch of the meta page.
+mod objstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static MAP: AtomicU64 = AtomicU64::new(0);
+    static META: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(map: u64, meta: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let m = MAP.fetch_add(map, Ordering::Relaxed) + map;
+        let e = META.fetch_add(meta, Ordering::Relaxed) + meta;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "OBJSTATS {} rawfile opens: map {} us, meta {} us",
+                n,
+                m / 1000,
+                e / 1000,
+            );
+        }
+    }
+}
+
 const RFI_NEEDS_SYNC: u64 = 1 << 0;
 const RFI_HAS_KSYNC: u64 = 1 << 1;
 struct RawFileInner {
@@ -76,7 +100,11 @@ impl RawFile {
     }
 
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
+        let t_map = std::time::Instant::now();
         let handle = OUR_RUNTIME.map_object(obj_id, flags)?;
+        let map_ns = t_map.elapsed().as_nanos() as u64;
+        // First touch of the meta page: a fault, and on a cold object a pager round trip.
+        let t_meta = std::time::Instant::now();
         let len = if let Some(me) = handle.find_meta_ext(MEXT_SIZED) {
             me.value.load(Ordering::SeqCst)
         } else {
@@ -85,6 +113,7 @@ impl RawFile {
             }
             0
         };
+        objstats::record(map_ns, t_meta.elapsed().as_nanos() as u64);
         Ok(Self {
             inner: Arc::new(RawFileInner {
                 pos: AtomicU64::new(0),

@@ -140,17 +140,19 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             let monitor = get_monitor();
             {
                 let key = happylock::ThreadKey::get().unwrap();
-                let mut tmgr = monitor.thread_mgr.write(key);
+                let mut tmgr = crate::lockdiag::watched(monitor.thread_mgr.write(key));
                 tmgr.do_remove(&th);
             }
             let comps = {
                 let key = happylock::ThreadKey::get().unwrap();
-                let (_, ref mut cmgr, ref mut dynlink, _, _) = *monitor.locks.lock(key);
+                let (ref tmgr, ref mut cmgr, ref mut dynlink, _, _) =
+                    *crate::lockdiag::watched(monitor.locks.lock(key));
                 for comp in cmgr.compartments_mut() {
                     comp.clean_per_thread_data(th.id);
                 }
                 if let Some(comp_id) = th.main_thread_comp {
-                    cmgr.main_thread_exited(comp_id);
+                    let others = tmgr.threads_of(comp_id);
+                    cmgr.main_thread_exited(comp_id, &others);
                 }
                 cmgr.process_cleanup_queue(&mut *dynlink)
             };

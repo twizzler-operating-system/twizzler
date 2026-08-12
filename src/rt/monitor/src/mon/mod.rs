@@ -52,6 +52,101 @@ pub(crate) fn reentrant_key() -> Result<ThreadKey, TwzError> {
     ThreadKey::get().ok_or(GenericError::WouldBlock.into())
 }
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md): splits the monitor's
+// side of a map gate into the space lock plus `sys_object_map`, reaching the compartment, and
+// recording the mapping in it.
+mod monmapstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static SPACE: AtomicU64 = AtomicU64::new(0);
+    static MGR: AtomicU64 = AtomicU64::new(0);
+    static REC: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(space: u64, mgr: u64, rec: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let s = SPACE.fetch_add(space, Ordering::Relaxed) + space;
+        let m = MGR.fetch_add(mgr, Ordering::Relaxed) + mgr;
+        let r = REC.fetch_add(rec, Ordering::Relaxed) + rec;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "MONMAPSTATS {} maps: space {} us, comp-mgr {} us, record {} us",
+                n,
+                s / 1000,
+                m / 1000,
+                r / 1000,
+            );
+        }
+    }
+}
+
+// Temporary: which monitor entry points actually reach a thread's simple buffer, and how often.
+//
+// `get_thread_simple_buffer` turned out to be cold -- 8 calls over a whole boot, because the client
+// caches the id in a `#[thread_local] OnceCell` (`monitor_api::lazy_sb`). These counters say which
+// of the *other* per-thread-buffer paths carry real traffic, so a workload can be chosen before
+// anything is measured against it. One `klog_println!` per report: it does not line-buffer, so a
+// multi-line report from several threads interleaves into garbage.
+pub(crate) mod ptstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Entry points that reach `RunComp::get_per_thread`, directly or via
+    /// `read_thread_simple_buffer`.
+    #[derive(Clone, Copy, Debug)]
+    pub enum Site {
+        GetSb = 0,
+        CompInfo = 1,
+        LibInfo = 2,
+        LoadLib = 3,
+        LookupSym = 4,
+        Spawn = 5,
+        // The five that shared `read_sb` in the first pass, which was 66% of all traffic. Split
+        // because "narrow the lock further" and "stop making the call" are different fixes and
+        // the aggregate could not tell them apart.
+        GateAddr = 6,
+        LookupComp = 7,
+        LoadComp = 8,
+        LibNameMap = 9,
+        LibNameUnmap = 10,
+        // Not buffer users: the inline gates. Counted so the collapse of
+        // `gate_addr`/`lookup_comp` is visibly a move, not a disappearance.
+        GateAddrInline = 11,
+        LookupCompInline = 12,
+    }
+    const NR_SITES: usize = 13;
+    const NAMES: [&str; NR_SITES] = [
+        "get_sb",
+        "comp_info",
+        "lib_info",
+        "load_lib",
+        "lookup_sym",
+        "spawn",
+        "gate_addr",
+        "lookup_comp",
+        "load_comp",
+        "libname_map",
+        "libname_unmap",
+        "gate_addr_INL",
+        "lookup_comp_INL",
+    ];
+
+    static SITES: [AtomicU64; NR_SITES] = [const { AtomicU64::new(0) }; NR_SITES];
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(site: Site) {
+        SITES[site as usize].fetch_add(1, Ordering::Relaxed);
+        let n = TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
+        if !n.is_power_of_two() {
+            return;
+        }
+        let mut line = format!("PTSTATS {} per-thread-buffer calls:", n);
+        for (i, name) in NAMES.iter().enumerate() {
+            line.push_str(&format!(" {} {},", name, SITES[i].load(Ordering::Relaxed)));
+        }
+        twizzler_abi::klog_println!("{}", line);
+    }
+}
+
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
 /// We split the state into the following components: 'space', managing the virtual memory space and
 /// mapping objects, 'thread_mgr', which manages all threads owned by the monitor (typically, all
@@ -90,6 +185,7 @@ impl Monitor {
     /// Start the background threads for the monitor instance. Must be done only once the monitor
     /// has been initialized.
     pub fn start_background_threads(&self) {
+        crate::lockdiag::start_watchdog();
         let cleaner = ThreadCleaner::new();
         self.unmapper.set(Unmapper::new()).ok().unwrap();
         self.thread_mgr
@@ -192,7 +288,7 @@ impl Monitor {
         main: Box<dyn FnOnce()>,
     ) -> Result<ManagedThread, TwzError> {
         let key = ThreadKey::get().unwrap();
-        let locks = &mut *self.locks.lock(key);
+        let locks = &mut *crate::lockdiag::watched(self.locks.lock(key));
 
         let monitor_dynlink_comp = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         locks
@@ -251,10 +347,12 @@ impl Monitor {
             .inspect_err(|e| tracing::debug!("failed to premap repr of {}: {}", thread.id, e))
             .ok();
 
-        let mut comps = mon.comp_mgr.write(ThreadKey::get().unwrap());
-        // This creates a per-thread structure in the compartment.
-        let comp = comps.get_mut(instance)?;
+        // A read: both of the things done here -- pre-creating the per-thread structure and
+        // recording the premapped repr -- now take `&RunComp` and carry their own locks.
+        let comps = crate::lockdiag::watched(mon.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comp = comps.get(instance)?;
         write_note!(thread.id, "thread:{}", comp.name);
+        ptstats::record(ptstats::Site::Spawn);
         let _pt = comp.get_per_thread(thread.id);
         // Held by the compartment, not by us: the caller's `map_object` replaces this entry with
         // its own handle for the same `MapInfo`, and the mapping is released when the caller
@@ -268,18 +366,27 @@ impl Monitor {
     /// Get the compartment config for the given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_comp_config(&self, sctx: ObjID) -> Result<*const SharedCompConfig, TwzError> {
-        let comps = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let comps = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         Ok(comps.get(sctx)?.comp_config_ptr())
     }
 
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
+        let t_space = std::time::Instant::now();
         let handle = Space::map(&self.space, info)?;
+        let space_ns = t_space.elapsed().as_nanos() as u64;
 
-        let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
-        let rc = comp_mgr.get_mut(sctx)?;
+        // A read: recording the mapping only touches the compartment's own map, which has its own
+        // lock. Taking the manager's *write* lock here made every map in the system serialize
+        // against every other one, in any compartment.
+        let t_mgr = std::time::Instant::now();
+        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let rc = comp_mgr.get(sctx)?;
+        let mgr_ns = t_mgr.elapsed().as_nanos() as u64;
+        let t_rec = std::time::Instant::now();
         let handle = rc.map_object(info, handle)?;
+        monmapstats::record(space_ns, mgr_ns, t_rec.elapsed().as_nanos() as u64);
         Ok(handle)
     }
 
@@ -291,10 +398,11 @@ impl Monitor {
         info: MapInfo,
         info2: MapInfo,
     ) -> Result<(MapHandle, MapHandle), TwzError> {
-        let (handle, handle2) = self.space.lock().unwrap().map_pair(info, info2)?;
+        let (handle, handle2) =
+            crate::lockdiag::watched(self.space.lock().unwrap()).map_pair(info, info2)?;
 
-        let mut comp_mgr = self.comp_mgr.write(ThreadKey::get().unwrap());
-        let rc = comp_mgr.get_mut(sctx)?;
+        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let rc = comp_mgr.get(sctx)?;
         let handle = rc.map_object(info, handle)?;
         let handle2 = rc.map_object(info2, handle2)?;
         Ok((handle, handle2))
@@ -308,8 +416,9 @@ impl Monitor {
             return;
         };
 
-        let mut comp_mgr = self.comp_mgr.write(key);
-        if let Ok(comp) = comp_mgr.get_mut(sctx) {
+        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(key));
+        if let Ok(comp) = comp_mgr.get(sctx) {
+            // Handle dropped after both locks: it sends to the unmapper thread.
             let handle = comp.unmap_object(info);
             drop(comp_mgr);
             drop(handle);
@@ -319,11 +428,24 @@ impl Monitor {
     /// Get the object ID for this compartment-thread's simple buffer.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Result<ObjID, TwzError> {
-        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
-        let (_, ref mut comps, _, _, _) = *locks;
-        let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread);
-        pt.simple_buffer_id().ok_or(GenericError::Internal.into())
+        ptstats::record(ptstats::Site::GetSb);
+        let pt = self.per_thread(sctx, thread)?;
+        let id = pt.lock().unwrap().simple_buffer_id();
+        id.ok_or(GenericError::Internal.into())
+    }
+
+    /// Reach a compartment thread's per-thread data under a *read* of the compartment manager.
+    ///
+    /// The manager lock is dropped before the caller touches the buffer, so a memcpy into a
+    /// thread's own object no longer excludes every other monitor operation. See
+    /// [`RunComp::get_per_thread`] for why an owned handle is sound here.
+    fn per_thread(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+    ) -> Result<std::sync::Arc<Mutex<compartment::PerThread>>, TwzError> {
+        let comps = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        Ok(comps.get(sctx)?.get_per_thread(thread))
     }
 
     /// Write bytes to this per-compartment thread's simple buffer.
@@ -334,11 +456,9 @@ impl Monitor {
         thread: ObjID,
         bytes: &[u8],
     ) -> Result<usize, TwzError> {
-        let mut locks = self.locks.lock(ThreadKey::get().unwrap());
-        let (_, ref mut comps, _, _, _) = *locks;
-        let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread);
-        Ok(pt.write_bytes(bytes))
+        let pt = self.per_thread(sctx, thread)?;
+        let n = pt.lock().unwrap().write_bytes(bytes);
+        Ok(n)
     }
 
     /// Read bytes from this per-compartment thread's simple buffer.
@@ -348,13 +468,12 @@ impl Monitor {
         sctx: ObjID,
         thread: ObjID,
         len: usize,
+        site: ptstats::Site,
     ) -> Result<Vec<u8>, TwzError> {
-        let t = ThreadKey::get().unwrap();
-        let mut locks = self.locks.lock(t);
-        let (_, ref mut comps, _, _, _) = *locks;
-        let rc = comps.get_mut(sctx)?;
-        let pt = rc.get_per_thread(thread);
-        Ok(pt.read_bytes(len))
+        ptstats::record(site);
+        let pt = self.per_thread(sctx, thread)?;
+        let bytes = pt.lock().unwrap().read_bytes(len);
+        Ok(bytes)
     }
 
     /// Read the name of a compartment.
@@ -478,7 +597,7 @@ impl Monitor {
         let target = target.unwrap_or(info.source_context().unwrap_or(MONITOR_INSTANCE_ID));
         let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
             tracing::debug!("posting signal {} to {}", sig, target);
-            let comp = self.comp_mgr.read(ThreadKey::get().unwrap());
+            let comp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
             let comp = comp.get(target)?;
             let scc = comp.comp_config_ptr();
             let scc = unsafe { &*scc };
@@ -518,7 +637,7 @@ impl Monitor {
         target: ObjID,
         controller: ObjID,
     ) -> Result<(), TwzError> {
-        let mut cm = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let mut cm = crate::lockdiag::watched(self.comp_mgr.write(ThreadKey::get().unwrap()));
         cm.set_controller(target, controller)?;
         return Ok(());
     }
@@ -530,11 +649,12 @@ impl Monitor {
         namelen: usize,
         id: ObjID,
     ) -> Result<(), TwzError> {
-        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen)?;
+        let str_bytes =
+            self.read_thread_simple_buffer(caller, thread, namelen, ptstats::Site::LibNameMap)?;
 
         let name = str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("libname map: {}", name);
-        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+        let mut dynlink = crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
         dynlink.engine.add_name_map(name, id);
 
         Ok(())
@@ -547,11 +667,16 @@ impl Monitor {
         namelen: Option<usize>,
         id: Option<ObjID>,
     ) -> Result<(), TwzError> {
-        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen.unwrap_or(0))?;
+        let str_bytes = self.read_thread_simple_buffer(
+            caller,
+            thread,
+            namelen.unwrap_or(0),
+            ptstats::Site::LibNameUnmap,
+        )?;
         let name = namelen
             .map(|_| str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT))
             .transpose()?;
-        let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+        let mut dynlink = crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
         dynlink.engine.remove_name_map(name, id);
 
         Ok(())

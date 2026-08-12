@@ -1,7 +1,10 @@
 // use alloc::boxed::Box;
 
 use crate::{
-    arch::address::{PhysAddr, VirtAddr},
+    arch::{
+        address::{PhysAddr, VirtAddr},
+        context::ArchContextTarget,
+    },
     // interrupt::Destination,
 };
 
@@ -143,10 +146,10 @@ pub struct ArchTlbMgr {
 
 impl ArchTlbMgr {
     /// Construct a new [ArchTlbMgr].
-    pub fn new(table_root: PhysAddr) -> Self {
+    pub fn new(target: ArchContextTarget) -> Self {
         Self {
             queue: TlbInvQueue::new(),
-            root: table_root,
+            root: target.0,
         }
     }
 

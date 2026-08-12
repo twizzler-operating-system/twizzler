@@ -3,7 +3,10 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     ptr::{addr_of, NonNull},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use dynlink::{compartment::CompartmentId, context::Context};
@@ -14,8 +17,8 @@ use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::{
     syscall::{
-        sys_object_remove_note, DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags,
-        ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
+        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
     write_note,
@@ -60,9 +63,25 @@ pub struct RunComp {
     pub deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     alloc: Talc<ErrOnOom>,
-    mapped_objects: HashMap<MapInfo, MapHandle>,
+    /// Behind its own lock so mapping does not need `&mut RunComp`: the monitor can then reach a
+    /// compartment through a *read* of the compartment manager, letting maps into different
+    /// compartments run concurrently, and maps into this one serialize only on a HashMap insert
+    /// rather than on the manager's global write lock.
+    mapped_objects: Mutex<HashMap<MapInfo, MapHandle>>,
     flags: Box<AtomicU64>,
-    pub per_thread: HashMap<ObjID, PerThread>,
+    /// Behind its own lock, and each entry behind its own lock, for two separate reasons.
+    ///
+    /// A `PerThread`'s buffer is only ever touched by the thread that owns it -- every gate passes
+    /// its own `info.thread_id()` -- so the inner `Mutex` is uncontended by construction. It
+    /// exists because that invariant is not visible to the compiler, and because the thread
+    /// cleaner needs a defined way to reach an entry.
+    ///
+    /// The *map*, by contrast, is genuinely shared: `spawn_compartment_thread` inserts on behalf
+    /// of a thread other than the caller, `ThreadCleaner` removes, and `main_thread_exited`
+    /// iterates. An insert can rehash and relocate every value, which is what made a bare
+    /// `&mut PerThread` require `&mut RunComp` -- and thence the monitor's whole exclusive
+    /// `LockCollection` -- for what is otherwise a memcpy into this thread's own object.
+    per_thread: Mutex<HashMap<ObjID, Arc<Mutex<PerThread>>>>,
     init_info: Option<(StackObject, usize, usize, Vec<CtorSet>)>,
     is_debugging: bool,
     pub(crate) use_count: u64,
@@ -179,45 +198,83 @@ impl RunComp {
             deps,
             comp_config_object,
             alloc,
-            mapped_objects: HashMap::default(),
+            mapped_objects: Mutex::new(HashMap::default()),
             flags: Box::new(AtomicU64::new(flags)),
-            per_thread: HashMap::new(),
+            per_thread: Mutex::new(HashMap::new()),
             init_info: Some((main_stack, entry, main_entry, ctors.to_vec())),
             use_count: 0,
             controller,
         }
     }
 
-    /// Get per-thread data in this compartment.
-    pub fn get_per_thread(&mut self, id: ObjID) -> &mut PerThread {
+    /// Get per-thread data in this compartment, creating it if this thread has none yet.
+    ///
+    /// Returns an owned handle rather than a borrow: the caller drops the manager's lock before
+    /// using the buffer, and the `Arc` is what keeps the buffer alive for that window -- not the
+    /// `RunComp`, which a concurrent teardown may remove. (In practice a thread cannot be inside
+    /// the monitor when its own compartment is torn down: `main_thread_exited` force-exits with
+    /// `sys_thread_change_state_in_sctx` restricted to the instance, so the kernel holds the exit
+    /// until the victim is back on its own code. The `Arc` means correctness does not rest on it.)
+    pub fn get_per_thread(&self, id: ObjID) -> Arc<Mutex<PerThread>> {
+        let instance = self.instance;
+        // `PerThread::new` creates and maps an object under this lock. Deliberate: it runs once per
+        // thread per compartment (8 times over a whole boot, measured), the lock is this
+        // compartment's alone, and the alternative -- create outside, insert under -- wastes an
+        // object whenever two threads race for the same entry.
         self.per_thread
+            .lock()
+            .unwrap()
             .entry(id)
-            .or_insert_with(|| PerThread::new(self.instance, id))
+            .or_insert_with(|| Arc::new(Mutex::new(PerThread::new(instance, id))))
+            .clone()
     }
 
     /// Remove all per-thread data for a given thread.
-    pub fn clean_per_thread_data(&mut self, id: ObjID) {
-        self.per_thread.remove(&id);
+    pub fn clean_per_thread_data(&self, id: ObjID) {
+        // Dropped after the lock: the last `Arc` releasing a `MapHandle` sends to the unmapper.
+        let _old = self.per_thread.lock().unwrap().remove(&id);
+    }
+
+    /// The threads this compartment has per-thread data for, plus any of `also` not already in it.
+    ///
+    /// Collected rather than iterated in place: the caller force-exits each one, and a syscall
+    /// under this lock would block every gate call in the compartment behind it.
+    pub fn thread_ids_including(&self, also: &[ObjID]) -> Vec<ObjID> {
+        let pt = self.per_thread.lock().unwrap();
+        pt.keys()
+            .copied()
+            .chain(also.iter().copied().filter(|t| !pt.contains_key(t)))
+            .collect()
     }
 
     /// Map an object into this compartment.
-    pub fn map_object(&mut self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, TwzError> {
-        self.mapped_objects.insert(info, handle.clone());
-        handle.set_map_note_key(write_note!(handle.id(), "map:{}", self.name));
+    /// Deliberately writes no object note. A `map:<comp>` note cost a `format!` and a
+    /// `sys_object_add_note` syscall per map, and both ran under the monitor's global `comp_mgr`
+    /// write lock, serializing every mapping in the system behind a syscall.
+    pub fn map_object(&self, info: MapInfo, handle: MapHandle) -> Result<MapHandle, TwzError> {
+        // Dropped after the lock: a `MapHandle` reaching zero sends to the unmapper thread, which
+        // has no business happening inside this compartment's map lock.
+        let _old = self
+            .mapped_objects
+            .lock()
+            .unwrap()
+            .insert(info, handle.clone());
         Ok(handle)
     }
 
     /// Record a mapping the monitor made on this compartment's behalf, before the compartment has
-    /// asked for it. Deliberately not `map_object`: no map note is written, since the
-    /// compartment's own `map_object` will replace this entry and write one, and an existing
-    /// mapping is never clobbered.
-    pub fn premap_object(&mut self, info: MapInfo, handle: MapHandle) {
-        self.mapped_objects.entry(info).or_insert(handle);
+    /// asked for it. Deliberately not `map_object`: an existing mapping is never clobbered.
+    pub fn premap_object(&self, info: MapInfo, handle: MapHandle) {
+        self.mapped_objects
+            .lock()
+            .unwrap()
+            .entry(info)
+            .or_insert(handle);
     }
 
     /// Unmap and object from this compartment.
-    pub fn unmap_object(&mut self, info: MapInfo) -> Option<MapHandle> {
-        let x = self.mapped_objects.remove(&info);
+    pub fn unmap_object(&self, info: MapInfo) -> Option<MapHandle> {
+        let x = self.mapped_objects.lock().unwrap().remove(&info);
         if x.is_none() {
             // TODO:: this happens occasionally, but it doesn't seem to be an issue?
             tracing::debug!(
@@ -225,11 +282,6 @@ impl RunComp {
                 self.name,
                 info
             );
-        } else {
-            let nk = x.as_ref().unwrap().get_map_note_key();
-            if nk != 0 {
-                let _ = sys_object_remove_note(info.id, nk);
-            }
         }
         x
     }
@@ -465,6 +517,8 @@ impl RunComp {
             });
         }
         self.per_thread
+            .lock()
+            .unwrap()
             .keys()
             .filter(|t| **t != main.thread.id)
             .nth(n - 1)
@@ -502,15 +556,23 @@ impl RunComp {
                 frame.sp(),
                 frame.bp()
             );
-            for (info, handle) in self.mapped_objects.iter() {
-                let addrs = handle.addrs();
-                tracing::warn!(
-                    "  mapped {} {:?} start {:#x} meta {:#x}",
-                    info.id,
-                    info.flags,
-                    addrs.start,
-                    addrs.meta
-                );
+            // Best effort, and never fatal: this runs on the fault path, possibly on the very
+            // thread holding the lock, and the `set_flag` below must run either way or anyone in
+            // `compartment_wait` blocks forever.
+            match self.mapped_objects.try_lock() {
+                Ok(mapped) => {
+                    for (info, handle) in mapped.iter() {
+                        let addrs = handle.addrs();
+                        tracing::warn!(
+                            "  mapped {} {:?} start {:#x} meta {:#x}",
+                            info.id,
+                            info.flags,
+                            addrs.start,
+                            addrs.meta
+                        );
+                    }
+                }
+                Err(_) => tracing::warn!("  (mapped-object list unavailable: lock held)"),
             }
             // The faulting thread is about to exit without ever reaching the normal exit paths, so
             // nothing else would mark this compartment dead. Without this, anyone in

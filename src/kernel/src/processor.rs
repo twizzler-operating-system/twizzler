@@ -27,6 +27,21 @@ pub struct ProcessorStats {
     pub non_idle: AtomicU64,
     pub hardticks: AtomicU64,
     pub switches: AtomicU64,
+    /// Address-space switches (not thread switches -- see `switches`) that reloaded cr3 and
+    /// flushed the incoming PCID. Before PCIDs this was the only outcome, so
+    /// `noflush / (noflush + flush)` is exactly the fraction of switches the feature changed,
+    /// readable from one boot with no baseline run to compare against.
+    pub aspace_switch_flush: AtomicU64,
+    /// Address-space switches that reloaded cr3 *without* flushing, because this cpu still held a
+    /// valid claim on the incoming PCID. Counts only switches that actually wrote cr3: staying on
+    /// the context you are already running never flushed, before PCIDs or after, so folding those
+    /// in would report a saving that was never there.
+    pub aspace_switch_noflush: AtomicU64,
+    /// Times another cpu revoked this cpu's right to skip a flush, for an address space this cpu
+    /// was not running. The counterweight to the two above -- each one costs at most one future
+    /// flush here -- so if this tracks them, invalidation is cancelling the switch saving and
+    /// PCIDs are a wash on whatever is running.
+    pub aspace_flush_revoked: AtomicU64,
 }
 
 pub struct Processor {

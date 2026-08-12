@@ -88,7 +88,18 @@ impl ThreadSleepLinker {
                 return self.reserve(count, thread);
             }
 
-            drop(unsafe { Box::from_raw(old) });
+            // Freeing the old slabs is only safe if nothing still points at them. A link left in
+            // some RBTree past the end of its round -- which `reset` reports rather than repairs,
+            // because a link cannot name the tree it is in -- would become a dangling node the next
+            // insert or removal walks. Leak the allocation instead: bounded by how often that
+            // happens, and a leak is recoverable where the use-after-free is not.
+            let stale = unsafe { &*old }.iter().any(|node| node.link.is_linked());
+            if stale {
+                log::warn!("ThreadSleepLinker::reserve: old links still linked, leaking them");
+                core::mem::forget(unsafe { Box::from_raw(old) });
+            } else {
+                drop(unsafe { Box::from_raw(old) });
+            }
         }
     }
 
@@ -104,13 +115,30 @@ impl ThreadSleepLinker {
         (&links[idx].link, idx)
     }
 
+    /// End of round: every slot handed out this `sys_thread_sync` should have been removed from
+    /// whatever tree it was inserted into.
+    ///
+    /// A slot still linked here is *the* invariant break behind the "already linked" panic in
+    /// `RBTree::insert`: `next` goes back to zero, the next round hands slot 0 out again, and the
+    /// insert trips over a node that is still in a tree. The panic therefore fires a round late and
+    /// names the innocent inserter -- which is why suppressing it at the insert (tried once in
+    /// `setup_device_wait`, see the note there) hides the cause and makes things worse.
+    ///
+    /// This is the point that knows. It cannot repair anything -- a link cannot name the tree
+    /// holding it -- but it can say so loudly enough to reach a transcript, which the `log::warn!`
+    /// it used to carry did not.
     pub fn reset(&self) {
         let n = self.next.load(Ordering::SeqCst);
         for i in 0..n {
             let links = self.get_links();
             let link = &links[i].link;
-            if link.is_linked() {
-                log::warn!("ThreadSleepLinker::reset: link {} is still linked", i);
+            if link.is_linked() && crate::thread::locktrack::diag::SLEEP_LINK_LEAKED.hit() {
+                emerglogln!(
+                    "ThreadSleepLinker::reset: thread {} left sleep link {} of {} linked; the next round's insert on this slot will panic",
+                    links[i].owner.objid(),
+                    i,
+                    n,
+                );
             }
         }
         self.next.store(0, Ordering::SeqCst);

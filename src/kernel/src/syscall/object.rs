@@ -154,6 +154,42 @@ pub fn sys_object_create(
     Ok(obj.id())
 }
 
+// Temporary instrumentation, pairing with the monitor's `SPACESPLIT` (pagerperf.md). That counter
+// found `sys_object_map` to be 99.4% of `Space::map` -- locks and slot allocation together were
+// 0.6% -- so the monitor's side is exonerated and the cost is in here. This splits the syscall into
+// the in-kernel object lookup, the pager round trip taken when the lookup misses, and the mapping
+// itself, which decides whether this is a paging problem or a `VirtContext` one.
+mod mapsplit {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static PAGED: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP: AtomicU64 = AtomicU64::new(0);
+    static WAIT: AtomicU64 = AtomicU64::new(0);
+    static MAP: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(lookup: u64, wait: u64, map: u64, paged: bool) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if paged {
+            PAGED.fetch_add(1, Ordering::Relaxed);
+        }
+        LOOKUP.fetch_add(lookup, Ordering::Relaxed);
+        WAIT.fetch_add(wait, Ordering::Relaxed);
+        MAP.fetch_add(map, Ordering::Relaxed);
+        if !n.is_power_of_two() {
+            return;
+        }
+        crate::logln!(
+            "MAPSYSSPLIT {} sys_object_map ({} paged): lookup {} us, pagerwait {} us, map {} us",
+            n,
+            PAGED.load(Ordering::Relaxed),
+            LOOKUP.load(Ordering::Relaxed) / 1000,
+            WAIT.load(Ordering::Relaxed) / 1000,
+            MAP.load(Ordering::Relaxed) / 1000,
+        );
+    }
+}
+
 pub fn sys_object_map(
     id: ObjID,
     slot: usize,
@@ -166,7 +202,11 @@ pub fn sys_object_map(
     } else {
         current_vmc()?
     };
+    let t_lookup = crate::instant::Instant::now();
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
+    let lookup_ns = (crate::instant::Instant::now() - t_lookup).as_nanos() as u64;
+    let mut wait_ns = 0u64;
+    let mut paged = false;
     let obj = match obj {
         crate::obj::LookupResult::WasDeleted => {
             log::warn!(
@@ -178,7 +218,13 @@ pub fn sys_object_map(
             return Err(ObjectError::NoSuchObject.into());
         }
         crate::obj::LookupResult::Found(obj) => obj,
-        _ => match crate::pager::lookup_object_and_wait(id) {
+        _ => match {
+            paged = true;
+            let t_wait = crate::instant::Instant::now();
+            let r = crate::pager::lookup_object_and_wait(id);
+            wait_ns = (crate::instant::Instant::now() - t_wait).as_nanos() as u64;
+            r
+        } {
             Some(obj) => obj,
             None => {
                 log::warn!(
@@ -192,7 +238,14 @@ pub fn sys_object_map(
         },
     };
     // TODO
+    let t_map = crate::instant::Instant::now();
     let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags);
+    mapsplit::record(
+        lookup_ns,
+        wait_ns,
+        (crate::instant::Instant::now() - t_map).as_nanos() as u64,
+        paged,
+    );
     Ok(slot)
 }
 

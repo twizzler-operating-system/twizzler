@@ -30,8 +30,9 @@ impl Monitor {
         thread: ObjID,
         desc: Descriptor,
     ) -> Result<LibraryInfoRaw, TwzError> {
-        let (_, ref mut comps, ref dynlink, ref libhandles, _) =
-            *self.locks.lock(super::reentrant_key()?);
+        // A read: the only reason this held the collection exclusively was the simple-buffer write.
+        let (_, ref comps, ref dynlink, ref libhandles, _) =
+            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
         let handle = libhandles
             .lookup(instance, desc)
             .ok_or(ArgumentError::InvalidArgument)?;
@@ -40,8 +41,9 @@ impl Monitor {
             .get_library(handle.id)
             .map_err(|_| GenericError::Internal)?;
         // write the library name to the per-thread simple buffer
-        let pt = comps.get_mut(instance)?.get_per_thread(thread);
-        let name_len = pt.write_bytes(lib.name.as_bytes());
+        super::ptstats::record(super::ptstats::Site::LibInfo);
+        let pt = comps.get(instance)?.get_per_thread(thread);
+        let name_len = pt.lock().unwrap().write_bytes(lib.name.as_bytes());
         let dynamic_ptr = lib.dynamic_ptr();
         Ok(LibraryInfoRaw {
             name_len,
@@ -79,7 +81,7 @@ impl Monitor {
         num: usize,
     ) -> Result<Descriptor, TwzError> {
         let (_, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
-            *self.locks.lock(super::reentrant_key()?);
+            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
         let comp_id = comp
             .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
             .unwrap_or(Some(caller))
@@ -109,9 +111,11 @@ impl Monitor {
         id: Option<ObjID>,
     ) -> Result<(Descriptor, usize), TwzError> {
         let (_, ref mut comps, ref mut dynlink, ref mut handles, _) =
-            *self.locks.lock(super::reentrant_key()?);
-        let rc = comps.get_mut(caller)?;
-        let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
+            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
+        super::ptstats::record(super::ptstats::Site::LoadLib);
+        let rc = comps.get(caller)?;
+        let per_thread = rc.get_per_thread(thread);
+        let name_bytes = per_thread.lock().unwrap().read_bytes(name_len);
         let name = std::str::from_utf8(&name_bytes)
             .map_err(|_| ArgumentError::InvalidArgument)?
             .to_string();
@@ -154,7 +158,7 @@ impl Monitor {
                 ctors.len() * core::mem::size_of::<ctor_set>(),
             )
         };
-        let ctor_len = rc.get_per_thread(thread).write_bytes(bytes);
+        let ctor_len = per_thread.lock().unwrap().write_bytes(bytes);
 
         handles
             .insert(
@@ -177,7 +181,7 @@ impl Monitor {
             tracing::warn!("skipping drop of library handle {} for {}: monitor locks already held by this thread", desc, caller);
             return;
         };
-        self.library_handles.write(key).remove(caller, desc);
+        crate::lockdiag::watched(self.library_handles.write(key)).remove(caller, desc);
     }
 
     /// Look up a symbol by name in the given library (or all libs in the caller's compartment
@@ -190,10 +194,16 @@ impl Monitor {
         lib_desc: Option<Descriptor>,
         name_len: usize,
     ) -> Result<usize, TwzError> {
-        let (_, ref mut comps, ref dynlink, ref libhandles, _) =
-            *self.locks.lock(super::reentrant_key()?);
-        let rc = comps.get_mut(caller)?;
-        let name_bytes = rc.get_per_thread(thread).read_bytes(name_len);
+        // A read: symbol lookup mutates nothing, and the name comes out of the caller's own buffer.
+        let (_, ref comps, ref dynlink, ref libhandles, _) =
+            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+        super::ptstats::record(super::ptstats::Site::LookupSym);
+        let rc = comps.get(caller)?;
+        let name_bytes = rc
+            .get_per_thread(thread)
+            .lock()
+            .unwrap()
+            .read_bytes(name_len);
         let name = std::str::from_utf8(&name_bytes).map_err(|_| ArgumentError::InvalidArgument)?;
 
         tracing::debug!(

@@ -322,7 +322,10 @@ impl Namespace for ExtNamespace {
             self.cache_ready(),
         );
         if self.cache_ready() {
-            return self.enumerate_cache(skip, count);
+            let t = std::time::Instant::now();
+            let r = self.enumerate_cache(skip, count);
+            itemstats::record_cached(t.elapsed().as_nanos() as u64);
+            return r;
         }
         if skip == 0 && count > 60 && count != usize::MAX {
             self.reset_cache();
@@ -334,11 +337,19 @@ impl Namespace for ExtNamespace {
             );
             return self.enumerate_cache(skip, count);
         }
+        let t_handle = std::time::Instant::now();
         let mut guard = pager_handle();
+        let handle_ns = t_handle.elapsed().as_nanos() as u64;
         if let Some(h) = guard.as_mut() {
             let mut entries = Vec::new();
-            if let Ok(_) = h.enumerate_external(self.id, &mut entries, skip, count) {
-                return entries
+            let t_enum = std::time::Instant::now();
+            let res = h.enumerate_external(self.id, &mut entries, skip, count);
+            let enum_ns = t_enum.elapsed().as_nanos() as u64;
+            if let Ok(_) = res {
+                let t_conv = std::time::Instant::now();
+                let mut nr_links = 0u64;
+                let mut link_ns = 0u64;
+                let out: Vec<NsNode> = entries
                     .iter()
                     .filter_map(|i| {
                         i.name().and_then(|name| {
@@ -352,7 +363,11 @@ impl Namespace for ExtNamespace {
                             match i.kind {
                                 ExternalKind::Directory => NsNode::ns(name, i.id.into()),
                                 ExternalKind::SymLink => {
-                                    if let Ok(lname) = h.readlink_external(i.id.into()) {
+                                    nr_links += 1;
+                                    let t_link = std::time::Instant::now();
+                                    let link = h.readlink_external(i.id.into());
+                                    link_ns += t_link.elapsed().as_nanos() as u64;
+                                    if let Ok(lname) = link {
                                         NsNode::symlink(name, lname)
                                     } else {
                                         tracing::warn!(
@@ -369,6 +384,15 @@ impl Namespace for ExtNamespace {
                         })
                     })
                     .collect();
+                itemstats::record_pager(
+                    handle_ns,
+                    enum_ns,
+                    t_conv.elapsed().as_nanos() as u64 - link_ns,
+                    link_ns,
+                    out.len() as u64,
+                    nr_links,
+                );
+                return out;
             } else {
                 tracing::warn!("failed to enumerate external namespace {}", self.id);
             }
@@ -376,5 +400,53 @@ impl Namespace for ExtNamespace {
             tracing::warn!("failed to open handle to pager");
         }
         vec![]
+    }
+}
+
+// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md). An external
+// namespace serves an enumeration either out of its cache or from the pager, and in the latter case
+// pays one more gate call per symlink to read its target.
+mod itemstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CACHED: AtomicU64 = AtomicU64::new(0);
+    static CACHED_NS: AtomicU64 = AtomicU64::new(0);
+    static PAGED: AtomicU64 = AtomicU64::new(0);
+    static HANDLE: AtomicU64 = AtomicU64::new(0);
+    static ENUM: AtomicU64 = AtomicU64::new(0);
+    static CONV: AtomicU64 = AtomicU64::new(0);
+    static LINKS: AtomicU64 = AtomicU64::new(0);
+    static LINK_NS: AtomicU64 = AtomicU64::new(0);
+    static ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_cached(ns: u64) {
+        let n = CACHED.fetch_add(1, Ordering::Relaxed) + 1;
+        let c = CACHED_NS.fetch_add(ns, Ordering::Relaxed) + ns;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!("ITEMSTATS {} cached enumerates: {} us", n, c / 1000);
+        }
+    }
+
+    pub fn record_pager(handle: u64, enum_ns: u64, conv: u64, link: u64, entries: u64, links: u64) {
+        let n = PAGED.fetch_add(1, Ordering::Relaxed) + 1;
+        let h = HANDLE.fetch_add(handle, Ordering::Relaxed) + handle;
+        let e = ENUM.fetch_add(enum_ns, Ordering::Relaxed) + enum_ns;
+        let c = CONV.fetch_add(conv, Ordering::Relaxed) + conv;
+        let l = LINK_NS.fetch_add(link, Ordering::Relaxed) + link;
+        let nl = LINKS.fetch_add(links, Ordering::Relaxed) + links;
+        let ne = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "ITEMSTATS {} pager enumerates, {} entries: handle {} us, enumerate {} us, \
+                 convert {} us, readlink {} us over {} links",
+                n,
+                ne,
+                h / 1000,
+                e / 1000,
+                c / 1000,
+                l / 1000,
+                nl,
+            );
+        }
     }
 }

@@ -104,8 +104,12 @@ pub fn sys_object_enumerate_notes(id: ObjID, offset: usize, buf: &mut [u64]) -> 
 #[macro_export]
 macro_rules! write_note {
     ($id:expr, $($arg:tt)*) => {{
-        let s = format!($($arg)*);
-        twizzler_abi::syscall::sys_object_add_note($id, s.as_bytes()).unwrap_or(0)
+        if cfg!(debug_assertions) {
+            let s = format!($($arg)*);
+            twizzler_abi::syscall::sys_object_add_note($id, s.as_bytes()).unwrap_or(0)
+        } else {
+            0
+        }
     }
     };
 }

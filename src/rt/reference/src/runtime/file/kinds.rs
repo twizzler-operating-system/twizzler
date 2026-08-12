@@ -75,8 +75,7 @@ mod openstats {
 
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
     let t_start = std::time::Instant::now();
-    let mut session = get_naming_handle()
-        .ok_or(TwzError::NOT_SUPPORTED)?;
+    let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
     let lock_ns = t_start.elapsed().as_nanos() as u64;
 
     if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)

@@ -1,11 +1,15 @@
-use core::{fmt::Debug, sync::atomic::AtomicUsize};
+use core::{
+    fmt::Debug,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use intrusive_collections::LinkedList;
 use twizzler_abi::trace::{CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, TraceEntryFlags, TraceKind};
 
 use crate::{
     arch::{
-        address::{PhysAddr, VirtAddr},
+        address::VirtAddr,
+        context::ArchContextTarget,
         memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
     },
     memory::frame::{FrameAdapter, FrameRef},
@@ -30,6 +34,44 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
         .shootdowns
         .load(core::sync::atomic::Ordering::SeqCst);
     stats.tlb_flush_count = TLB_STATS.flushes.load(core::sync::atomic::Ordering::SeqCst);
+    // The switch counters live per-cpu (see `ProcessorStats`) so that incrementing them on the
+    // switch path costs no cross-cpu traffic; summing them is this read side's job instead, and it
+    // happens once per stat syscall.
+    crate::processor::mp::with_each_active_processor(|p| {
+        let s = &p.stats;
+        stats.aspace_switch_flush_count += s.aspace_switch_flush.load(Ordering::Relaxed) as usize;
+        stats.aspace_switch_noflush_count +=
+            s.aspace_switch_noflush.load(Ordering::Relaxed) as usize;
+        stats.tlb_revoke_count += s.aspace_flush_revoked.load(Ordering::Relaxed) as usize;
+    });
+}
+
+/// Printed at shutdown beside the locktrack counters, and for the same reason: a run that finishes
+/// cleanly has to put its numbers on the record, because silence is indistinguishable from a build
+/// without the instrumentation.
+///
+/// `noflush / total` is the fraction of address-space switches that flushed before PCIDs and no
+/// longer do -- self-contained, with no baseline run to compare against, because a flush was the
+/// only outcome beforehand. `revoked` is what an invalidation-heavy workload takes back: it counts
+/// only claims that actually existed to be revoked (see [ArchProcessor::pcid_invalidate]), so it is
+/// a real count of forced future flushes rather than of revocation attempts, and if it approaches
+/// `noflush` the feature is paying for itself and no more.
+pub fn print_switch_counters() {
+    let (mut noflush, mut flush, mut revoked) = (0u64, 0u64, 0u64);
+    crate::processor::mp::with_each_active_processor(|p| {
+        noflush += p.stats.aspace_switch_noflush.load(Ordering::Relaxed);
+        flush += p.stats.aspace_switch_flush.load(Ordering::Relaxed);
+        revoked += p.stats.aspace_flush_revoked.load(Ordering::Relaxed);
+    });
+    let total = noflush + flush;
+    emerglogln!(
+        "== aspace switches: {} total, {} noflush ({}%), {} flush, {} revoked",
+        total,
+        noflush,
+        if total == 0 { 0 } else { noflush * 100 / total },
+        flush,
+        revoked
+    );
 }
 
 pub fn tlb_shootdown_inc_count(ipi: bool) {
@@ -52,7 +94,7 @@ pub struct Consistency {
 }
 
 impl Consistency {
-    pub fn new(target: PhysAddr) -> Self {
+    pub fn new(target: ArchContextTarget) -> Self {
         Self {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
@@ -61,12 +103,12 @@ impl Consistency {
     }
 
     pub fn new_object_tables() -> Self {
-        Self::new(PhysAddr::new(0).unwrap())
+        Self::new(ArchContextTarget::null())
     }
 
     #[cfg(target_arch = "x86_64")]
     pub fn new_full_global() -> Self {
-        let mut this = Self::new(unsafe { PhysAddr::new_unchecked(0) });
+        let mut this = Self::new(ArchContextTarget::null());
         this.set_full_global();
         this
     }

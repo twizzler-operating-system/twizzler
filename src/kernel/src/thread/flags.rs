@@ -66,10 +66,13 @@ pub fn enter_kernel() {
             report_leaked_critical(&thread, "entering kernel", &diag::CRITICAL_LEAK_AT_ENTRY);
         }
 
-        if thread.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 {
-            // TODO
-            super::exit(101);
-        }
+        // Through `maybe_exit`, not the raw flag: this is one of the two places a pending
+        // force-exit is polled, and the restrictions the other one honours apply here too. A raw
+        // check kills a thread that is mid-gate at its next syscall or fault -- in the callee's
+        // security context, holding the callee's locks -- which is exactly what
+        // `sys_thread_change_state_in_sctx` defers the exit to avoid. The flag is sticky, so
+        // declining here only delays it to the entry after the thread comes home.
+        thread.maybe_exit();
     }
 }
 
@@ -138,6 +141,13 @@ impl Thread {
 
     pub fn is_exiting(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_EXITING != 0
+    }
+
+    /// A force-exit is pending against this thread. Sticky: once set, only the thread's own exit
+    /// clears it, so a caller that sees it can act at whatever point is safe rather than having to
+    /// act right here.
+    pub fn must_exit(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0
     }
 
     /// See [`THREAD_ACTIVE_RUNNING`]. Two callers only: `set_current_thread` sets it, and

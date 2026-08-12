@@ -321,6 +321,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         Syscall::Null => {
             if context.arg0::<u64>() == 0x12345678 {
                 crate::thread::locktrack::diag::print_counters(true);
+                crate::memory::pagetables::print_switch_counters();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
@@ -508,6 +509,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 },
                 context.arg3(),
                 context.arg4(),
+                context.arg5(),
             );
             context.set_return_values(code, val);
             return;
@@ -635,6 +637,13 @@ fn add_syscall_stat_sample(syscall: Syscall, duration: TimeSpan) {
     stats.per_syscall_stats[syscall as usize].add_sample(duration);
     stats.per_syscall_count[syscall as usize] += 1;
     stats.count += 1;
+}
+
+/// Total syscalls executed since boot. The liveness signal for
+/// [`crate::thread::check_system_hang`]: a running system makes thousands a second, and a wedged
+/// one makes none.
+pub fn nr_syscalls() -> usize {
+    get_sysstats().lock().count
 }
 
 fn get_syscall_stats() -> SyscallStats {

@@ -197,6 +197,69 @@ pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
     contexts.iter().for_each(cb);
 }
 
+// Temporary instrumentation (pagerperf.md). `MAPSYSSPLIT` found `map_object_into_context` to be
+// 82% of `sys_object_map`, and that it costs ~27 us per map single-threaded but ~251 us per map
+// once four threads map concurrently -- a 9x that looks like contention or invalidation rather
+// than per-map work. These two counters split `insert_object` and the `map_object` inside it to
+// find which phase carries that scaling.
+mod inssplit {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static CHECKID: AtomicU64 = AtomicU64::new(0);
+    static REGLOCK: AtomicU64 = AtomicU64::new(0);
+    static MAPOBJ: AtomicU64 = AtomicU64::new(0);
+    static INSREG: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(checkid: u64, reglock: u64, mapobj: u64, insreg: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        CHECKID.fetch_add(checkid, Ordering::Relaxed);
+        REGLOCK.fetch_add(reglock, Ordering::Relaxed);
+        MAPOBJ.fetch_add(mapobj, Ordering::Relaxed);
+        INSREG.fetch_add(insreg, Ordering::Relaxed);
+        if !n.is_power_of_two() {
+            return;
+        }
+        crate::logln!(
+            "INSSPLIT {} insert_object: checkid {} us, reglock {} us, mapobj {} us, insreg {} us",
+            n,
+            CHECKID.load(Ordering::Relaxed) / 1000,
+            REGLOCK.load(Ordering::Relaxed) / 1000,
+            MAPOBJ.load(Ordering::Relaxed) / 1000,
+            INSREG.load(Ordering::Relaxed) / 1000,
+        );
+    }
+}
+
+mod mapobjsplit {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static PRE: AtomicU64 = AtomicU64::new(0);
+    static SCTX: AtomicU64 = AtomicU64::new(0);
+    static PTLOCK: AtomicU64 = AtomicU64::new(0);
+    static ARCH: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(pre: u64, sctx: u64, ptlock: u64, arch: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        PRE.fetch_add(pre, Ordering::Relaxed);
+        SCTX.fetch_add(sctx, Ordering::Relaxed);
+        PTLOCK.fetch_add(ptlock, Ordering::Relaxed);
+        ARCH.fetch_add(arch, Ordering::Relaxed);
+        if !n.is_power_of_two() {
+            return;
+        }
+        crate::logln!(
+            "MAPOBJSPLIT {} map_object: precharge {} us, sctx {} us, ptlock {} us, archmap {} us",
+            n,
+            PRE.load(Ordering::Relaxed) / 1000,
+            SCTX.load(Ordering::Relaxed) / 1000,
+            PTLOCK.load(Ordering::Relaxed) / 1000,
+            ARCH.load(Ordering::Relaxed) / 1000,
+        );
+    }
+}
+
 impl VirtContext {
     fn __new(is_kernel: bool) -> Self {
         let mut secctx = Mutex::new(BTreeMap::new());
@@ -277,20 +340,30 @@ impl VirtContext {
 
         let len = info.range.end - info.range.start;
         let cursor = MappingCursor::new(info.range.start, len);
+        let t_pre = crate::instant::Instant::now();
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
             cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
             FrameAllocFlags::WAIT_OK,
         );
+        let pre_ns = (crate::instant::Instant::now() - t_pre).as_nanos() as u64;
+        let mut sctx_ns = 0u64;
+        let mut ptlock_ns = 0u64;
+        let mut arch_ns = 0u64;
+        let t_sctx = crate::instant::Instant::now();
         if let Ok(sctx) = crate::security::get_sctx(sctx) {
             let perms = sctx.lookup(info.object().id(), default_prots);
+            sctx_ns = (crate::instant::Instant::now() - t_sctx).as_nanos() as u64;
+            let t_ptlock = crate::instant::Instant::now();
             let mut pt = if info.stable.is_some() {
                 info.stable.as_ref().unwrap().lock()
             } else {
                 info.object.lock_page_tables()
             };
+            ptlock_ns = (crate::instant::Instant::now() - t_ptlock).as_nanos() as u64;
+            let t_arch = crate::instant::Instant::now();
             self.try_with_arch(sctx.id(), |arch| {
-                pt.add_invalidate(arch.target.paddr(), cursor);
+                pt.add_invalidate(arch.target, cursor);
                 let settings = MappingSettings::new(
                     perms.effective(default_prots, info.prot),
                     info.cache_type,
@@ -298,7 +371,9 @@ impl VirtContext {
                 );
                 arch.object_map(cursor, &mut *pt, settings, &mut fa);
             });
+            arch_ns = (crate::instant::Instant::now() - t_arch).as_nanos() as u64;
         };
+        mapobjsplit::record(pre_ns, sctx_ns, ptlock_ns, arch_ns);
     }
 
     pub fn ensure_object_mapped(
@@ -314,7 +389,7 @@ impl VirtContext {
             FrameAllocFlags::WAIT_OK,
         );
         self.with_arch(sctxid, |arch| {
-            object_tables.add_invalidate(arch.target.paddr(), cursor);
+            object_tables.add_invalidate(arch.target, cursor);
             arch.ensure_object_mapped(cursor, object_tables, settings, &mut fa)
         })
     }
@@ -360,7 +435,24 @@ impl VirtContext {
         }
         let arch = secctx.remove(&sctx);
 
+        // Retire the target *before* `arch` is dropped at the end of this function, not after: the
+        // drop frees the root page table and releases the PCID, and until the cache is rebuilt a
+        // concurrent `switch_to` on this sctx would still find the old target and load it. Doing it
+        // here shrinks that window from "the whole unmap walk below" to "a switch that already read
+        // the target", and keeps a recycled PCID from being installed against a freed root -- which
+        // would alias one address space's translations onto whoever gets the PCID next. Same
+        // build-then-swap dance as register_sctx, because target_cache is a spinlock and the
+        // allocation has to happen outside it.
+        let mut new_target_cache = BTreeMap::new();
+        for value in secctx.iter() {
+            new_target_cache.insert(*value.0, value.1.target);
+        }
+        {
+            let mut target_cache = self.target_cache.lock();
+            core::mem::swap(&mut *target_cache, &mut new_target_cache);
+        }
         drop(secctx);
+        drop(new_target_cache);
 
         if let Some(arch) = arch {
             let regions = self.regions.lock();
@@ -386,7 +478,7 @@ impl VirtContext {
                 let obj_table = pt.as_ref().and_then(|pt| pt.context_table_addr());
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
                 if let Some(pt) = pt.as_mut() {
-                    pt.remove_invalidate(arch.target.paddr(), cursor);
+                    pt.remove_invalidate(arch.target, cursor);
                     if released {
                         pt.dec_map_count();
                         if pt.map_count() == 0 {
@@ -395,19 +487,6 @@ impl VirtContext {
                     }
                 }
             }
-        }
-
-        secctx = self.secctx.lock();
-        // Rebuild the target cache. We have to do it this way because we cannot allocate
-        // memory while holding the target_cache lock (as it's a spinlock).
-        let mut new_target_cache = BTreeMap::new();
-        for value in secctx.iter() {
-            new_target_cache.insert(*value.0, value.1.target);
-        }
-        // Swap out the target caches, dropping the old one after the spinlock is released.
-        {
-            let mut target_cache = self.target_cache.lock();
-            core::mem::swap(&mut *target_cache, &mut new_target_cache);
         }
     }
 
@@ -538,18 +617,31 @@ impl UserContext for VirtContext {
             removed: Arc::new(AtomicBool::new(false)),
         };
 
+        let t_checkid = crate::instant::Instant::now();
         let (_is_ok, default_prots) = object_info.object.check_id();
+        let checkid_ns = (crate::instant::Instant::now() - t_checkid).as_nanos() as u64;
 
         // Check the slot is free before mapping, and hold the lock across the map: otherwise a
         // racing insert can clobber our object table entry, and a Busy return leaves behind a
         // mapping plus the map count taken for it, which keeps the object from ever being reaped.
         // Lock order (regions -> object page tables -> secctx) matches insert_kernel_object.
+        let t_reglock = crate::instant::Instant::now();
         let mut slots = self.regions.lock();
+        let reglock_ns = (crate::instant::Instant::now() - t_reglock).as_nanos() as u64;
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
         }
+        let t_mapobj = crate::instant::Instant::now();
         self.map_object(&new_slot_info, default_prots);
+        let mapobj_ns = (crate::instant::Instant::now() - t_mapobj).as_nanos() as u64;
+        let t_insreg = crate::instant::Instant::now();
         slots.insert_region(new_slot_info);
+        inssplit::record(
+            checkid_ns,
+            reglock_ns,
+            mapobj_ns,
+            (crate::instant::Instant::now() - t_insreg).as_nanos() as u64,
+        );
         Ok(())
     }
 
@@ -601,7 +693,7 @@ impl UserContext for VirtContext {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
                 if counted {
-                    pt.remove_invalidate(arch.target.paddr(), cursor);
+                    pt.remove_invalidate(arch.target, cursor);
                     if released {
                         pt.dec_map_count();
                         if pt.map_count() == 0 {

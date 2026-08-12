@@ -49,7 +49,9 @@ impl SimpleBuffer {
     }
 
     pub fn into_handle(self) -> ObjectHandle {
-        let _ = sys_object_remove_note(self.handle.id(), self.note_key);
+        if self.note_key != 0 {
+            let _ = sys_object_remove_note(self.handle.id(), self.note_key);
+        }
         self.handle
     }
 

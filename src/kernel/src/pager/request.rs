@@ -17,7 +17,7 @@ use crate::{
     instant::Instant,
     obj::{ObjectRef, PageNumber, pagetables::DirtyList},
     spinlock::Spinlock,
-    syscall::sync::{add_all_to_requeue, requeue_all},
+    syscall::sync::{add_all_to_requeue, claim_own_wakeup, requeue_all},
     thread::{CriticalGuard, Thread, ThreadRef, current_thread_ref},
 };
 
@@ -365,6 +365,23 @@ impl Request {
         let critical = thread.enter_critical();
         self.waiters.lock().push_back(thread.clone());
         thread.set_sync_sleep_done();
+        // The guard the thread-sync sleep paths take and this one never had. A waker that parked a
+        // requeue entry for us before the flag went up has already done its half: blocking now
+        // waits on an unrelated `requeue_all()`, and being woken by one leaves us still linked in
+        // `waiters` -- which is the state the *next* `setup_wait` panics on ("attempted to insert
+        // an object that is already linked").
+        if claim_own_wakeup(thread) {
+            let unlinked = thread.pager_link.is_linked().then(|| {
+                // Sound: we pushed this thread onto this list just above, and nothing else links
+                // `pager_link` -- a `signal` racing us would have taken it off instead.
+                let mut waiters = self.waiters.lock();
+                unsafe { waiters.cursor_mut_from_ptr(&**thread).remove() }
+            });
+            // Outside the spinlock: dropping a ThreadRef can release the thread's id, which takes
+            // a sleeping mutex.
+            drop(unlinked);
+            return None;
+        }
         Some(critical)
     }
 }

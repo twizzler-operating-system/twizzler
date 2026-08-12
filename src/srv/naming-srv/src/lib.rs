@@ -77,6 +77,13 @@ impl ClientInner<'_> {
     fn buffer(&self) -> Result<&SimpleBuffer> {
         self.buffer.as_ref().ok_or(ArgumentError::BadHandle.into())
     }
+
+    /// Write through the handle's own buffer rather than building a fresh [`SimpleBuffer`] over a
+    /// clone of its handle: `SimpleBuffer::new` formats a string and adds an object note, so a
+    /// throwaway one costs a syscall per call and leaves a note behind that nothing removes.
+    fn buffer_mut(&mut self) -> Result<&mut SimpleBuffer> {
+        self.buffer.as_mut().ok_or(ArgumentError::BadHandle.into())
+    }
 }
 
 /// One open naming handle.
@@ -405,7 +412,7 @@ pub fn enumerate_names(
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let path = inner.read_buffer(name_len)?;
 
@@ -413,14 +420,13 @@ pub fn enumerate_names(
     let vec1 = inner.session.enumerate_namespace(path, skip, count)?;
     let len = vec1.len();
 
-    let mut buffer = SimpleBuffer::new(inner.buffer()?.handle().clone());
     let slice = unsafe {
         std::slice::from_raw_parts(
             vec1.as_ptr() as *const u8,
             len * std::mem::size_of::<NsNode>(),
         )
     };
-    buffer.write(slice);
+    inner.buffer_mut()?.write(slice);
 
     Ok(len)
 }
@@ -432,25 +438,64 @@ pub fn enumerate_names_nsid(
     skip: usize,
     count: usize,
 ) -> Result<usize> {
+    let t_lock = std::time::Instant::now();
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
+    let lock_ns = t_lock.elapsed().as_nanos() as u64;
 
     // TODO: make not bad
+    let t_items = std::time::Instant::now();
     let vec1 = inner.session.enumerate_namespace_nsid(id, skip, count)?;
+    let items_ns = t_items.elapsed().as_nanos() as u64;
     let len = vec1.len();
 
-    let mut buffer = SimpleBuffer::new(inner.buffer()?.handle().clone());
+    let t_write = std::time::Instant::now();
     let slice = unsafe {
         std::slice::from_raw_parts(
             vec1.as_ptr() as *const u8,
             len * std::mem::size_of::<NsNode>(),
         )
     };
-    buffer.write(slice);
+    inner.buffer_mut()?.write(slice);
+    srvenumstats::record(
+        lock_ns,
+        items_ns,
+        t_write.elapsed().as_nanos() as u64,
+        len as u64,
+    );
 
     Ok(len)
+}
+
+// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md).
+mod srvenumstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static ENTRIES: AtomicU64 = AtomicU64::new(0);
+    static LOCK: AtomicU64 = AtomicU64::new(0);
+    static ITEMS: AtomicU64 = AtomicU64::new(0);
+    static WRITE: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(lock: u64, items: u64, write: u64, entries: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
+        let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
+        let w = WRITE.fetch_add(write, Ordering::Relaxed) + write;
+        let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "SRVENUMSTATS {} calls, {} entries: lock {} us, items {} us, write {} us",
+                n,
+                e,
+                l / 1000,
+                i / 1000,
+                w / 1000,
+            );
+        }
+    }
 }
 
 #[secgate::entry(lib = "naming")]

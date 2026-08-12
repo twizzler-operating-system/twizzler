@@ -80,6 +80,15 @@ pub struct MemoryStats {
     pub tlb_flush_count: usize,
     pub page_fault_count: usize,
     pub page_fault_stats: TimeStat,
+    /// Address-space switches that reloaded the page-table root and flushed.
+    pub aspace_switch_flush_count: usize,
+    /// Address-space switches that reloaded the root without flushing, which is the whole point of
+    /// PCIDs (x86_64) -- against `aspace_switch_flush_count` this is the fraction of switches that
+    /// used to flush and no longer do. Zero on hardware or builds without them.
+    pub aspace_switch_noflush_count: usize,
+    /// Times a processor's right to take that no-flush path was revoked by an invalidation on
+    /// another processor. Read against the two above: this is what eats the saving.
+    pub tlb_revoke_count: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]

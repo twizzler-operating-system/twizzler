@@ -1,7 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use ext4_lwext4::{mkfs, OpenFlags};
@@ -15,9 +15,22 @@ const DISK_IMAGE_SIZE: u64 = 1024 * 1024 * 1024 * 100; // 100 GB
 /// step with the first entry of `unittest`'s `SEARCH_DIRS`.
 const TEST_DIR_ON_DISK: &str = "/sysroot/pkg/twizzler/test";
 
-pub fn create_fresh_disk_image(triple: &Triple) -> anyhow::Result<()> {
-    let path = format!("target/disk-{}.img", triple);
-    println!("Creating disk image for {}", triple);
+/// Where the ext4 data disk lives: the caller's `--disk-image`, or the shared default.
+///
+/// The default is shared by every invocation for a triple, including across profiles, which is why
+/// writing it is serialized (see [`crate::imagelock`]). A caller that wants to build without
+/// touching the build tree's copy passes its own path; it is created if absent and updated in
+/// place if present.
+pub fn image_path(triple: &Triple, over: Option<&Path>) -> PathBuf {
+    over.map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(format!("target/disk-{}.img", triple)))
+}
+
+pub fn create_fresh_disk_image(triple: &Triple, path: &Path) -> anyhow::Result<()> {
+    println!("Creating disk image for {} at {}", triple, path.display());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     if let Ok(f) = OpenOptions::new().write(true).create(true).open(&path) {
         f.set_len(DISK_IMAGE_SIZE).unwrap();
     }
@@ -28,14 +41,13 @@ pub fn create_fresh_disk_image(triple: &Triple) -> anyhow::Result<()> {
     };
     mkfs(device, &options).unwrap();
 
-    copy_sysroot(triple, true)?;
+    copy_sysroot(triple, path, true)?;
 
     Ok(())
 }
 
-pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
+pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result<()> {
     let sysroot = Path::new("toolchain/install/sysroots").join(triple.to_string());
-    let path = format!("target/disk-{}.img", triple);
 
     let mut latest_time = std::time::UNIX_EPOCH;
     let mut total_bytes = 0;
@@ -66,7 +78,7 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
             return Ok(());
         }
     } else {
-        return create_fresh_disk_image(triple);
+        return create_fresh_disk_image(triple, path);
     }
 
     println!("Copying sysroot to disk image for {}", triple,);
@@ -175,9 +187,12 @@ pub fn copy_sysroot(triple: &Triple, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyhow::Result<()> {
-    copy_sysroot(triple, false)?;
-    let path = format!("target/disk-{}.img", triple);
+pub fn copy_twizzler_build(
+    build: &TwizzlerCompilation,
+    triple: &Triple,
+    path: &Path,
+) -> anyhow::Result<()> {
+    copy_sysroot(triple, path, false)?;
     let device = ext4_lwext4::FileBlockDevice::open(path)?;
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
 
@@ -261,8 +276,11 @@ pub fn copy_twizzler_build(build: &TwizzlerCompilation, triple: &Triple) -> anyh
 }
 
 pub fn do_disk_image(opts: DiskImageOptions) -> anyhow::Result<()> {
+    let triple = opts.config.twz_triple();
+    let path = image_path(&triple, opts.disk_image.as_deref());
+    let _image_lock = crate::imagelock::image_lock(&path)?;
     match opts.cmd {
-        DiskCmd::Reset => create_fresh_disk_image(&opts.config.twz_triple()),
-        DiskCmd::Setup => copy_sysroot(&opts.config.twz_triple(), opts.force),
+        DiskCmd::Reset => create_fresh_disk_image(&triple, &path),
+        DiskCmd::Setup => copy_sysroot(&triple, &path, opts.force),
     }
 }

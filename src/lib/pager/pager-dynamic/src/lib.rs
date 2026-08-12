@@ -12,71 +12,54 @@ use secgate::{
 use twizzler_abi::object::ObjID;
 use twizzler_rt_abi::{error::TwzError, object::MapFlags, Result};
 
-struct PagerAPI {
-    _handle: &'static CompartmentHandle,
-    open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)>,
-    close_handle: DynamicSecGate<'static, (Descriptor,), ()>,
-    enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>,
-    lookup_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), usize>,
-    create_external:
-        DynamicSecGate<'static, (Descriptor, ObjID, mode_t, usize, Option<ObjID>), usize>,
-    unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>,
-    readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>,
+/// Gate addresses resolved on first use, same reasoning as `naming_core::dynamic`: building all
+/// seven eagerly cost a gate call each per compartment, and most compartments never touch the
+/// external-file API at all.
+macro_rules! lazy_gates {
+    ($($field:ident : $ty:ty = $name:literal),* $(,)?) => {
+        struct PagerAPI {
+            handle: &'static CompartmentHandle,
+            $( $field: OnceLock<$ty>, )*
+        }
+        impl PagerAPI {
+            $(
+                fn $field(&self) -> &$ty {
+                    self.$field.get_or_init(|| unsafe {
+                        self.handle
+                            .dynamic_gate($name)
+                            .expect(concat!("failed to find ", $name, " gate call"))
+                    })
+                }
+            )*
+        }
+        static PAGER_API: OnceLock<PagerAPI> = OnceLock::new();
+
+        fn pager_api() -> &'static PagerAPI {
+            PAGER_API.get_or_init(|| {
+                let handle = Box::leak(Box::new(
+                    CompartmentHandle::lookup("pager-srv")
+                        .expect("failed to open pager compartment"),
+                ));
+                PagerAPI { handle, $( $field: OnceLock::new(), )* }
+            })
+        }
+    };
 }
 
-static PAGER_API: OnceLock<PagerAPI> = OnceLock::new();
-
-fn pager_api() -> &'static PagerAPI {
-    PAGER_API.get_or_init(|| {
-        let handle = Box::leak(Box::new(
-            CompartmentHandle::lookup("pager-srv").expect("failed to open pager compartment"),
-        ));
-        let open_handle = unsafe {
-            handle
-                .dynamic_gate("pager_open_handle")
-                .expect("failed to find open handle gate call")
-        };
-        let close_handle = unsafe {
-            handle
-                .dynamic_gate("pager_close_handle")
-                .expect("failed to find close handle gate call")
-        };
-        let enumerate_external = unsafe {
-            handle
-                .dynamic_gate("pager_enumerate_external")
-                .expect("failed to find enumerate external gate call")
-        };
-        let lookup_external = unsafe {
-            handle
-                .dynamic_gate("pager_lookup_external")
-                .expect("failed to find lookup external gate call")
-        };
-        let create_external = unsafe {
-            handle
-                .dynamic_gate("pager_create_external")
-                .expect("failed to find create external gate call")
-        };
-        let unlink_external = unsafe {
-            handle
-                .dynamic_gate("pager_unlink_external")
-                .expect("failed to find unlink external gate call")
-        };
-        let readlink_external = unsafe {
-            handle
-                .dynamic_gate("pager_readlink_external")
-                .expect("failed to find unlink external gate call")
-        };
-        PagerAPI {
-            _handle: handle,
-            open_handle,
-            close_handle,
-            enumerate_external,
-            lookup_external,
-            create_external,
-            unlink_external,
-            readlink_external,
-        }
-    })
+lazy_gates! {
+    open_handle: DynamicSecGate<'static, (), (Descriptor, ObjID)> = "pager_open_handle",
+    close_handle: DynamicSecGate<'static, (Descriptor,), ()> = "pager_close_handle",
+    enumerate_external: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>
+        = "pager_enumerate_external",
+    lookup_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), usize>
+        = "pager_lookup_external",
+    create_external:
+        DynamicSecGate<'static, (Descriptor, ObjID, mode_t, usize, Option<ObjID>), usize>
+        = "pager_create_external",
+    unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>
+        = "pager_unlink_external",
+    readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>
+        = "pager_readlink_external",
 }
 
 pub struct PagerHandle {
@@ -118,7 +101,7 @@ impl Handle for PagerHandle {
         Self: Sized,
     {
         let t_gate = std::time::Instant::now();
-        let (desc, id) = (pager_api().open_handle)()?;
+        let (desc, id) = (pager_api().open_handle())()?;
         let gate_ns = t_gate.elapsed().as_nanos() as u64;
         let t_map = std::time::Instant::now();
         let handle =
@@ -129,7 +112,7 @@ impl Handle for PagerHandle {
     }
 
     fn release(&mut self) {
-        let _ = (pager_api().close_handle)(self.desc);
+        let _ = (pager_api().close_handle())(self.desc);
     }
 }
 
@@ -177,7 +160,7 @@ impl PagerHandle {
     }
 
     pub fn readlink_external(&mut self, id: ObjID) -> Result<String> {
-        let len = (pager_api().readlink_external)(self.desc, id)?;
+        let len = (pager_api().readlink_external())(self.desc, id)?;
         let mut v = vec![0; len];
         self.buffer.read(&mut v);
         String::from_utf8(v).map_err(|_| TwzError::INVALID_ARGUMENT)
@@ -190,7 +173,7 @@ impl PagerHandle {
         }
         let namelen = self.buffer.write(name);
 
-        (pager_api().unlink_external)(self.desc, id, namelen)
+        (pager_api().unlink_external())(self.desc, id, namelen)
     }
 
     pub fn create_external_file(
@@ -206,7 +189,7 @@ impl PagerHandle {
         }
         let namelen = self.buffer.write(name);
 
-        let _filelen = (pager_api().create_external)(self.desc, dir, mode, namelen, link_to)?;
+        let _filelen = (pager_api().create_external())(self.desc, dir, mode, namelen, link_to)?;
 
         get_external_file_from_sb(&self.buffer, 0)
             .ok_or(TwzError::INVALID_ARGUMENT)
@@ -220,7 +203,7 @@ impl PagerHandle {
         }
         let namelen = self.buffer.write(name);
 
-        let _filelen = (pager_api().lookup_external)(self.desc, dir, namelen)?;
+        let _filelen = (pager_api().lookup_external())(self.desc, dir, namelen)?;
 
         get_external_file_from_sb(&self.buffer, 0)
             .ok_or(TwzError::INVALID_ARGUMENT)
@@ -234,7 +217,7 @@ impl PagerHandle {
         skip: usize,
         count: usize,
     ) -> Result<()> {
-        let len = (pager_api().enumerate_external)(self.desc, id, skip, count)?;
+        let len = (pager_api().enumerate_external())(self.desc, id, skip, count)?;
 
         let mut off = 0;
         entries.clear();

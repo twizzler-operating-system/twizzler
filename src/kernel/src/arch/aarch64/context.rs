@@ -33,6 +33,13 @@ pub struct ArchContext {
 // TODO: can we get the kernel tables elsewhere?
 pub struct ArchContextTarget(pub PhysAddr);
 
+impl ArchContextTarget {
+    /// A target matching no real context, for invalidations that aren't tied to one.
+    pub fn null() -> Self {
+        Self(PhysAddr::new(0).unwrap())
+    }
+}
+
 // default kernel mapper that is shared among all kernel instances of ArchContext
 static KERNEL_MAPPER: Once<(Spinlock<Mapper>, PhysAddr)> = Once::new();
 
@@ -123,7 +130,7 @@ impl ArchContext {
         let ops = if cursor.start().is_kernel() {
             // upper half addresses go to TTBR1_EL1
             let mut mapper = kernel_mapper().0.lock();
-            let consist = Consistency::new(mapper.root_address());
+            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
             mapper.map(cursor, phys, consist)
         } else {
             // lower half addresses go to TTBR0_EL1
@@ -173,7 +180,7 @@ impl ArchContextInner {
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
     ) -> Result<(), DeferredUnmappingOps> {
-        let consist = Consistency::new(self.mapper.root_address());
+        let consist = Consistency::new(ArchContextTarget(self.mapper.root_address()));
         self.mapper.map(cursor, phys, consist)
     }
 

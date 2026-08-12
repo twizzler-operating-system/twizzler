@@ -14,7 +14,7 @@ impl Monitor {
             ref mut dynlink,
             ref mut lib_handles,
             ref mut comp_handles,
-        ) = *self.locks.lock(ThreadKey::get().unwrap());
+        ) = *crate::lockdiag::watched(self.locks.read(ThreadKey::get().unwrap()));
         let mut nr_libs = 0;
         let mut compset = HashSet::new();
         for lib in dynlink.libraries() {
@@ -30,7 +30,7 @@ impl Monitor {
             nr_lib_handles: lib_handles.total_count(),
         };
         MonitorStats {
-            space: self.space.lock().unwrap().stat(),
+            space: crate::lockdiag::watched(self.space.lock().unwrap()).stat(),
             thread_mgr: threads.stat(),
             comp_mgr: comp.stat(),
             handles,

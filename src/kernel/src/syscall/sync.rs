@@ -139,8 +139,14 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
 /// [claim_own_wakeup] if the caller is about to decide whether to block.
 pub fn remove_from_requeue(thread: &ThreadRef) {
     let requeue = get_requeue_list();
-    let mut list = requeue.list.lock();
-    let _ = list.find_mut(&thread.objid()).remove();
+    // Drop the removed reference outside the spinlock. It can be the last one, and `Thread::drop`
+    // returns its id through `IdCounter::release`, which takes a sleeping mutex -- a mutex under a
+    // spinlock, which wedges every cpu that later wants the requeue lock.
+    let removed = {
+        let mut list = requeue.list.lock();
+        list.find_mut(&thread.objid()).remove()
+    };
+    drop(removed);
 }
 
 /// Take a wakeup a waker already parked on the requeue list for `thread`, returning true if there
@@ -153,13 +159,43 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 /// wakeup can never be counted twice or left half-applied.
 pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
     let requeue = get_requeue_list();
-    let mut list = requeue.list.lock();
-    if list.find_mut(&thread.objid()).remove().is_some() {
+    // See remove_from_requeue: the removed reference must not be dropped under the spinlock.
+    let removed = {
+        let mut list = requeue.list.lock();
+        list.find_mut(&thread.objid()).remove()
+    };
+    if removed.is_some() {
         thread.reset_sync_sleep_done();
+        drop(removed);
         true
     } else {
         false
     }
+}
+
+/// Whether this thread must return from a thread-sync sleep instead of entering one.
+///
+/// A force-exit sets THREAD_MUST_EXIT and expects the target to notice it at its next poll point,
+/// but a thread that blocks here has no next poll point: `finish_blocking` reaches `schedule`
+/// without SchedFlags::REINSERT, which is the only arm that calls `maybe_exit`, and it will not
+/// cross the kernel boundary again until something wakes it. If the word it is sleeping on belongs
+/// to a peer that is exiting too, nothing ever does.
+///
+/// Checked under the caller's critical guard, after set_sync_sleep_done, so it catches every
+/// force-exit that lands before we commit to blocking -- which is the case that occurs, since
+/// `ChangeState` only reaches a thread the monitor believes is still running. A force-exit against
+/// a thread that is *already* parked here is not covered: `force_exit` does not wake its target,
+/// and waking one from outside is not a flag poke (see the note there).
+///
+/// The caller treats a true here exactly like a claimed wakeup -- drop the guard, do not block --
+/// and its normal post-sleep cleanup (undo_sleep, remove_from_requeue, resetting the sleep flags)
+/// runs either way. The exit itself happens in `sys_thread_sync`, once that cleanup is done.
+///
+/// A force-exit restricted to a security context (see `sys_thread_change_state_in_sctx`) is not one
+/// this thread can act on yet, so it must still be allowed to block: refusing would spin it against
+/// whatever it is waiting for until it happens to return to its own compartment.
+fn must_not_block(thread: &ThreadRef) -> bool {
+    thread.exit_deliverable()
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
@@ -200,6 +236,14 @@ pub fn finish_blocking(guard: CriticalGuard) {
     let start = Instant::now();
     trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
+        if must_not_block(thread) {
+            let _timeout_key = crate::clock::register_timeout_callback(
+                0,
+                thread_sync_cb_timeout,
+                thread.clone(),
+                thread.sync_sleep_gen(),
+            );
+        }
         drop(guard);
         thread.set_state(ExecutionState::Sleeping);
         schedule(SchedFlags::YIELD | SchedFlags::PREEMPT);
@@ -252,6 +296,11 @@ struct SleepEvent {
 
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent> {
     let (obj, offset, vaddr) = get_obj(sleep.reference)?;
+    if first_sleep {
+        if let Some(thread) = current_thread_ref() {
+            thread.note_sleep_word(obj.id(), offset);
+        }
+    }
 
     let did_sleep = if matches!(sleep.reference, ThreadSyncReference::Virtual32(_)) {
         let vaddr = vaddr
@@ -573,6 +622,13 @@ pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -
     }
     thread.sync_links.reset();
     thread.set_timed_wait(false);
+
+    // The one point on this path where exiting is safe: every sleep word has been undone, the
+    // requeue entry is gone, the sleep flags are clear, and no guard is held. A thread that got
+    // here via `must_not_block` is here precisely to do this; for anyone else it is a no-op.
+    // Without it, a force-exit delivered mid-sleep would only be noticed on the next kernel entry,
+    // which for a thread whose whole job is to wait may never come.
+    thread.maybe_exit();
 
     r
 }

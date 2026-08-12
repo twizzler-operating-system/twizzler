@@ -110,6 +110,28 @@ pub struct Thread {
     /// Consecutive orphan scans that found this thread on no queue. Written only by the scanning
     /// cpu. See `check_orphan_threads`.
     offqueue_scans: AtomicU32,
+    /// Consecutive scans that found this thread carrying an undelivered force-exit. Same writer
+    /// and same purpose as `offqueue_scans`: distinguish a transient from a thread that is
+    /// stuck.
+    stuck_exit_scans: AtomicU32,
+    /// Security context this thread must be running in for a pending force-exit to be delivered,
+    /// as (lo, hi); zero means unconditional. Written before THREAD_MUST_EXIT is set and read only
+    /// after observing it, so the pair is never torn from a reader's point of view.
+    ///
+    /// A gate call runs the caller's thread inside the callee compartment, holding that
+    /// compartment's locks; a force-exit landing there kills the thread with those locks held and
+    /// wedges the callee for every compartment. The monitor names the victim's own instance here,
+    /// so the exit waits for it to come home. See `sys_thread_change_state_in_sctx`.
+    exit_sctx: [AtomicU64; 2],
+    /// `sync_sleep_gen` as of the last hang scan, and the time (nanos since boot, +1) it last
+    /// differed. Written only by the scanning cpu. See `check_system_hang`.
+    hang_gen: AtomicU64,
+    hang_since: AtomicU64,
+    /// Object and offset of the first sleep word of this thread's current `sys_thread_sync`, as
+    /// (lo, hi, offset). Diagnostic only: the user ip of a blocked thread is always the same
+    /// syscall wrapper, so it says the thread is in a thread-sync sleep and nothing about *which*
+    /// word -- which is exactly what names the userspace lock it is waiting on.
+    sleep_word: [AtomicU64; 3],
     /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
     /// executing in userspace. A counter rather than a flag because a fault taken while already
     /// in the kernel must not report a return to user when only the inner handler finishes.
@@ -304,6 +326,11 @@ impl Thread {
             last_pf_count: AtomicU32::new(0),
             last_pf_kind: AtomicU32::new(0),
             offqueue_scans: AtomicU32::new(0),
+            stuck_exit_scans: AtomicU32::new(0),
+            exit_sctx: [const { AtomicU64::new(0) }; 2],
+            hang_gen: AtomicU64::new(0),
+            hang_since: AtomicU64::new(0),
+            sleep_word: [const { AtomicU64::new(0) }; 3],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
@@ -700,18 +727,14 @@ impl Thread {
     pub fn force_exit(self: &ThreadRef) {
         self.flags.fetch_or(THREAD_MUST_EXIT, Ordering::SeqCst);
         if self == current_thread_ref().unwrap() {
-            if !self.is_critical() {
+            // `exit_sctx_ok` for the same reason the target path defers: a thread asking to die
+            // while executing inside another compartment would leave that compartment's locks
+            // held. The flag is sticky, so a later poll takes it.
+            if !self.is_critical() && self.exit_sctx_ok() {
                 // TODO
                 exit(101);
             }
         } else {
-            // Waits. Nothing reads the result -- the target notices `THREAD_MUST_EXIT` via
-            // `maybe_exit` -- but not waiting measurably raised the rate of a shutdown hang whose
-            // dump is every cpu halted right after this call, i.e. a nudge that never landed. Same
-            // lesson as `suspend`: the wait is load-bearing as timing even where it is not a
-            // handshake. The deadlock this could have avoided needs a caller that holds something a
-            // spinning cpu wants, and this is the only exit-path sender -- normal exit never
-            // sends -- so there is nothing to buy by not waiting.
             ipi_exec(
                 Destination::AllButSelf,
                 Box::new(|| schedule_resched()),
@@ -720,11 +743,67 @@ impl Thread {
         }
     }
 
-    pub fn maybe_exit(self: &ThreadRef) {
-        if self.flags.load(Ordering::SeqCst) & THREAD_MUST_EXIT != 0 && !self.is_critical() {
-            // TODO
-            exit(101);
+    /// Record the word this thread is about to sleep on, for the wait table. Diagnostic only.
+    pub fn note_sleep_word(&self, obj: ObjID, offset: usize) {
+        let parts = obj.parts();
+        self.sleep_word[0].store(parts[0], Ordering::Relaxed);
+        self.sleep_word[1].store(parts[1], Ordering::Relaxed);
+        self.sleep_word[2].store(offset as u64, Ordering::Relaxed);
+    }
+
+    /// Record the security context this thread must be running in before a pending force-exit is
+    /// delivered. Zero clears the restriction.
+    pub fn set_exit_sctx(&self, sctx: ObjID) {
+        let parts = sctx.parts();
+        self.exit_sctx[0].store(parts[0], Ordering::SeqCst);
+        self.exit_sctx[1].store(parts[1], Ordering::SeqCst);
+    }
+
+    /// Whether a pending force-exit may be delivered here, as far as the security context goes.
+    ///
+    /// False means the thread is executing inside some other compartment -- a gate call -- and
+    /// exiting would leave that compartment's locks held forever. It returns home, and the flag is
+    /// sticky, so this only delays the exit.
+    pub fn exit_sctx_ok(&self) -> bool {
+        let want = ObjID::from_parts([
+            self.exit_sctx[0].load(Ordering::SeqCst),
+            self.exit_sctx[1].load(Ordering::SeqCst),
+        ]);
+        if want.raw() == 0 {
+            return true;
         }
+        self.secctx.active_id() == want
+    }
+
+    /// A force-exit is pending *and* can be delivered at this thread's current security context.
+    /// Callers that decline to block on behalf of an exiting thread want this, not `must_exit`:
+    /// an exit that cannot be delivered yet is not a reason to spin.
+    pub fn exit_deliverable(&self) -> bool {
+        self.must_exit() && self.exit_sctx_ok()
+    }
+
+    pub fn maybe_exit(self: &ThreadRef) {
+        if !self.must_exit() || self.is_critical() {
+            return;
+        }
+        if !self.exit_sctx_ok() {
+            locktrack::diag::EXIT_DEFERRED_SCTX.count_only();
+            return;
+        }
+        // Exiting from here would leak every kernel mutex this thread holds: `exit` unlinks it from
+        // the scheduler but releases nothing it owns, and every later locker then sleeps behind an
+        // owner that will never run. That is the `VirtContext::secctx` pile-up -- a thread
+        // force-exited inside `with_arch` left 261 waiters on a lock nobody could release.
+        //
+        // Deferring is safe because MUST_EXIT is sticky: the next poll after the last unlock takes
+        // it. `is_critical` above is the same argument for spinlocks; this is the mutex half, which
+        // that check does not cover.
+        if self.get_mutex_count() > 0 {
+            locktrack::diag::EXIT_DEFERRED_MUTEX_HELD.count_only();
+            return;
+        }
+        // TODO
+        exit(101);
     }
 
     pub fn set_trace_state(&self, events: u64) -> Result<(), TwzError> {
@@ -919,6 +998,105 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
 /// instructions and cannot survive one, let alone three.
 const ORPHAN_SCANS: u32 = 3;
 
+/// Scans a thread may carry an undelivered force-exit before it is reported. Longer than
+/// [`ORPHAN_SCANS`] because a thread legitimately takes a moment to notice: it has to reach a poll
+/// point, and one blocked on a real reply is entitled to wait for it. What is not legitimate is
+/// still carrying the flag many scans later, which is the shutdown hang.
+const STUCK_EXIT_SCANS: u32 = 20;
+
+/// How long one thread must sit in a single uninterrupted thread-sync sleep before the wait table
+/// below is printed. Long waits are ordinary here -- sshd waiting for a connection, the cleaner's
+/// 8s poll -- so this is set past anything the test suite does on purpose.
+const HANG_REPORT_SECS: u64 = 25;
+/// Cap, so a system with a legitimately parked thread costs a few tables, not a stream.
+const MAX_HANG_REPORTS: u32 = 4;
+
+static HANG_REPORTS: AtomicU32 = AtomicU32::new(0);
+
+/// Print where every thread is parked, once any one of them has been in the same thread-sync sleep
+/// for [`HANG_REPORT_SECS`].
+///
+/// The wedges this exists for leave every cpu halted and every thread `Sleeping`, which the state
+/// list alone cannot take apart: it says they are all blocked and nothing about *on what*. The
+/// linkage bits name the queue (sync = a thread-sync sleep, pager = an inflight pager reply,
+/// memwait = the tracker, mutex/condvar = a kernel lock), and the user ip plus the active security
+/// context name the userspace call -- which for a gate call is the caller's ip in the callee's
+/// context, i.e. exactly the thing a transcript of a stuck `CompartmentHandle::lookup` has never
+/// contained.
+///
+/// Per-thread rather than system-wide, because neither system-wide signal survives contact with a
+/// real wedge: "no thread is Running" fails because the transcripts do carry a thread in state
+/// Running, and "no syscalls anywhere" fails because a wedged system still has the heartbeat thread
+/// and the monitor's watchdog waking on their timers. Only the individual thread stops moving.
+pub fn check_system_hang() {
+    // +1 so a zero timestamp always means "no sample yet".
+    let now = crate::instant::Instant::now().into_time_span().as_nanos() as u64 + 1;
+    let mut any_stuck = false;
+    with_all_threads(|at| {
+        for thread in at.values() {
+            if thread.is_idle_thread() {
+                continue;
+            }
+            let sleep_gen = thread.sync_sleep_gen();
+            if thread.hang_gen.swap(sleep_gen, Ordering::Relaxed) != sleep_gen
+                || thread.get_state() != ExecutionState::Sleeping
+            {
+                thread.hang_since.store(now, Ordering::Relaxed);
+                continue;
+            }
+            let since = thread.hang_since.load(Ordering::Relaxed);
+            if since == 0 {
+                thread.hang_since.store(now, Ordering::Relaxed);
+                continue;
+            }
+            if now.saturating_sub(since) >= HANG_REPORT_SECS * 1_000_000_000 {
+                any_stuck = true;
+                // Restart this thread's window so a permanently parked thread reports on an
+                // interval rather than on every scan.
+                thread.hang_since.store(now, Ordering::Relaxed);
+            }
+        }
+    });
+    if !any_stuck || HANG_REPORTS.fetch_add(1, Ordering::Relaxed) >= MAX_HANG_REPORTS {
+        return;
+    }
+    emerglogln!(
+        "== a thread has been asleep for {}s; thread wait table:",
+        HANG_REPORT_SECS
+    );
+    with_all_threads(|at| {
+        for thread in at.values() {
+            if thread.is_idle_thread() {
+                continue;
+            }
+            emerglogln!(
+                "  thread {} ({}): {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
+                thread.id(),
+                thread.objid(),
+                thread.get_state(),
+                thread.secctx.active_id(),
+                thread.is_in_user(),
+                thread.must_exit(),
+                thread.read_ip(),
+                ObjID::from_parts([
+                    thread.sleep_word[0].load(Ordering::Relaxed),
+                    thread.sleep_word[1].load(Ordering::Relaxed),
+                ]),
+                thread.sleep_word[2].load(Ordering::Relaxed),
+                thread.sync_links.is_linked(),
+                thread.pager_link.is_linked(),
+                thread.memwait_link.is_linked(),
+                thread.mutex_link.is_linked(),
+                thread.condvar_link.is_linked(),
+                thread.requeue_link.is_linked(),
+                thread.suspend_link.is_linked(),
+                thread.sched_link.is_linked(),
+                thread.has_timed_wait(),
+            );
+        }
+    });
+}
+
 pub fn check_orphan_threads() {
     //#[cfg(debug_assertions)]
     with_all_threads(|at| {
@@ -964,6 +1142,43 @@ pub fn check_orphan_threads() {
                         scans,
                     );
                 }
+            }
+            // A force-exit that never landed. The shutdown hang leaves exactly this behind -- a
+            // thread carrying THREAD_MUST_EXIT that never reaches a poll point -- but the
+            // transcript has never said *where* it is stuck, only that the system went
+            // quiet after `ChangeState` printed. The linkage above already answers
+            // that: whichever of these is true names the wait it is parked on
+            // (sync_linked = a thread-sync sleep, pager_linked = an inflight pager
+            // reply, memwait_linked = the memory tracker, mutex/condvar = a kernel
+            // lock), and all-false with state Running is the orphan case instead.
+            if thread.must_exit() && thread.get_state() != ExecutionState::Exited {
+                let scans = thread.stuck_exit_scans.fetch_add(1, Ordering::Relaxed) + 1;
+                if scans == STUCK_EXIT_SCANS {
+                    emerglogln!(
+                        "thread {} ({}) has an undelivered force-exit after {} scans: sctx_ok {} (active {}), state {:?}, critical {}, mutex_count {}, mutex_linked {}, condvar_linked {}, sync_linked {}, pager_linked {}, memwait_linked {}, requeue_linked {}, suspend_linked {}, sched_linked {}, timed_wait {}, active_running {}",
+                        thread.id(),
+                        thread.objid(),
+                        scans,
+                        thread.exit_sctx_ok(),
+                        thread.secctx.active_id(),
+                        thread.get_state(),
+                        thread.is_critical(),
+                        thread.get_mutex_count(),
+                        is_mutex_linked,
+                        is_condvar_linked,
+                        is_sync_linked,
+                        is_pager_linked,
+                        is_memwait_linked,
+                        is_requeue_linked,
+                        is_suspend_linked,
+                        is_sched_linked,
+                        is_timed_wait,
+                        is_active_running,
+                    );
+                    thread.print_locks();
+                }
+            } else {
+                thread.stuck_exit_scans.store(0, Ordering::Relaxed);
             }
             log::trace!(
                 "[kernel::thread] thread {} ({}) is orphaned: mutex_linked={} condvar_linked={} requeue_linked={} suspend_linked={} sync_linked={} memwait_linked={} timed_wait={} pager_linked={} sched_linked={} active_running={}",

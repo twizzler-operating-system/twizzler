@@ -95,6 +95,18 @@ pub fn monitor_rt_compartment_dynamic_gate(
 }
 
 #[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_compartment_dynamic_gate_inline(
+    desc: Option<Descriptor>,
+    name: monitor_api::InlineName,
+) -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    crate::mon::ptstats::record(crate::mon::ptstats::Site::GateAddrInline);
+    monitor.gate_address_named(caller, desc, name.as_str()?)
+}
+
+#[secgate::entry(lib = "monitor-api")]
 pub fn monitor_rt_get_compartment_deps(
     desc: Option<Descriptor>,
     dep_n: usize,
@@ -122,6 +134,17 @@ pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzE
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.lookup_compartment(caller, info.thread_id(), name_len)
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_lookup_compartment_inline(
+    name: monitor_api::InlineName,
+) -> Result<Descriptor, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    crate::mon::ptstats::record(crate::mon::ptstats::Site::LookupCompInline);
+    monitor.lookup_compartment_named(caller, name.as_str()?)
 }
 
 #[secgate::entry(lib = "monitor-api")]

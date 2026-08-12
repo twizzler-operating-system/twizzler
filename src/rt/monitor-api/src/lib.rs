@@ -90,6 +90,60 @@ pub fn monitor_rt_get_compartment_thread(
 #[secgate::gatecall]
 pub fn monitor_rt_lookup_compartment(name_len: usize) -> Result<Descriptor, TwzError> {}
 
+/// Longest name carried in the gate arguments rather than through the per-thread simple buffer.
+///
+/// Sized for what these two gates actually carry -- a secgate symbol name and a compartment name.
+/// Gate arguments are stack-marshalled by `alloca` and need only `Copy`, and `NsNode` already
+/// crosses at ~288 bytes, so this is not a new kind of thing (see `naming_core::InlinePath`).
+pub const INLINE_NAME_MAX: usize = 96;
+
+/// A short name passed inline in a gate call.
+///
+/// Measured motivation: `monitor_rt_compartment_dynamic_gate` and `monitor_rt_lookup_compartment`
+/// were 49% and 13% of all per-thread-buffer traffic in a test boot -- ~14 gate resolutions and
+/// ~4 compartment lookups per compartment loaded, each a write into the simple buffer, a gate
+/// call, and a read back out in the monitor. The names are tens of bytes; the buffer round trip
+/// was the entire cost.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct InlineName {
+    len: u32,
+    bytes: [u8; INLINE_NAME_MAX],
+}
+
+impl InlineName {
+    /// `None` if the name is too long to inline; the caller falls back to the simple buffer.
+    pub fn new(name: &str) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if bytes.len() > INLINE_NAME_MAX {
+            return None;
+        }
+        let mut this = Self {
+            len: bytes.len() as u32,
+            bytes: [0; INLINE_NAME_MAX],
+        };
+        this.bytes[..bytes.len()].copy_from_slice(bytes);
+        Some(this)
+    }
+
+    /// The name, or `InvalidArgument` if the sender's bytes are not UTF-8. `len` is clamped: it
+    /// arrives from another compartment and is not trusted.
+    pub fn as_str(&self) -> Result<&str, TwzError> {
+        let len = (self.len as usize).min(INLINE_NAME_MAX);
+        core::str::from_utf8(&self.bytes[..len]).map_err(|_| ArgumentError::InvalidArgument.into())
+    }
+}
+
+#[secgate::gatecall]
+pub fn monitor_rt_lookup_compartment_inline(name: InlineName) -> Result<Descriptor, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_compartment_dynamic_gate_inline(
+    desc: Option<Descriptor>,
+    name: InlineName,
+) -> Result<usize, TwzError> {
+}
+
 #[secgate::gatecall]
 pub fn monitor_rt_load_compartment(
     root_object: ObjID,
@@ -499,8 +553,13 @@ impl CompartmentHandle {
         &self,
         name: &str,
     ) -> Result<DynamicSecGate<'_, A, R>, TwzError> {
-        let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
-        let address = monitor_rt_compartment_dynamic_gate(self.desc, name_len)?;
+        let address = match InlineName::new(name) {
+            Some(inline) => monitor_rt_compartment_dynamic_gate_inline(self.desc, inline)?,
+            None => {
+                let name_len = lazy_sb::write_bytes_to_sb(name.as_bytes());
+                monitor_rt_compartment_dynamic_gate(self.desc, name_len)?
+            }
+        };
         Ok(DynamicSecGate::new(address))
     }
 
@@ -713,10 +772,12 @@ impl CompartmentHandle {
 
     /// Lookup a compartment by name.
     pub fn lookup(name: impl AsRef<str>) -> Result<Self, TwzError> {
-        let name_len = lazy_sb::write_bytes_to_sb(name.as_ref().as_bytes());
-        Ok(Self {
-            desc: Some(monitor_rt_lookup_compartment(name_len)?),
-        })
+        let name = name.as_ref();
+        let desc = match InlineName::new(name) {
+            Some(inline) => monitor_rt_lookup_compartment_inline(inline)?,
+            None => monitor_rt_lookup_compartment(lazy_sb::write_bytes_to_sb(name.as_bytes()))?,
+        };
+        Ok(Self { desc: Some(desc) })
     }
 
     /// Lookup a compartment by ID.

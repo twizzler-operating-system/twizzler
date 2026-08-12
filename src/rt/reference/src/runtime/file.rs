@@ -670,24 +670,21 @@ impl ReferenceRuntime {
     }
 
     pub fn mkns(&self, name: &str) -> Result<()> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.put_namespace(name, true)?;
         Ok(())
     }
 
     pub fn symlink(&self, name: &str, target: &str) -> Result<()> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.symlink(name, target)?;
         Ok(())
     }
 
     pub fn readlink(&self, name: &str, target: &mut [u8], read_len: &mut u64) -> Result<()> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         let node = session.get(name, GetFlags::empty())?;
 
         let link = node.readlink()?;
@@ -813,14 +810,12 @@ impl ReferenceRuntime {
     }
 
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.rename(old, new)?)
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.remove(path)?)
     }
 
@@ -1152,9 +1147,13 @@ impl ReferenceRuntime {
             buf.len()
         );
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
-        let mut session = get_naming_handle()
-            .ok_or(TwzError::NOT_SUPPORTED)?;
+        let t_acq = std::time::Instant::now();
+        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let acq_ns = t_acq.elapsed().as_nanos() as u64;
+        let t_gate = std::time::Instant::now();
         let names = session.enumerate_names_nsid(stat.id.into(), off, buf.len())?;
+        let gate_ns = t_gate.elapsed().as_nanos() as u64;
+        let t_conv = std::time::Instant::now();
         tracing::trace!("enumerate_names_nsid returned {} entries", names.len());
         let end = buf.len().min(names.len());
         for i in 0..end {
@@ -1212,6 +1211,41 @@ impl ReferenceRuntime {
             };
             buf[i] = ne;
         }
+        enumstats::record(
+            acq_ns,
+            gate_ns,
+            t_conv.elapsed().as_nanos() as u64,
+            end as u64,
+        );
         Ok(end)
+    }
+}
+
+// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md).
+mod enumstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static ENTRIES: AtomicU64 = AtomicU64::new(0);
+    static ACQ: AtomicU64 = AtomicU64::new(0);
+    static GATE: AtomicU64 = AtomicU64::new(0);
+    static CONV: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(acq: u64, gate: u64, conv: u64, entries: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let a = ACQ.fetch_add(acq, Ordering::Relaxed) + acq;
+        let g = GATE.fetch_add(gate, Ordering::Relaxed) + gate;
+        let c = CONV.fetch_add(conv, Ordering::Relaxed) + conv;
+        let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "ENUMSTATS {} calls, {} entries: acquire {} us, gate {} us, convert {} us",
+                n,
+                e,
+                a / 1000,
+                g / 1000,
+                c / 1000,
+            );
+        }
     }
 }

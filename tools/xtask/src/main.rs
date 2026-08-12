@@ -3,6 +3,7 @@
 mod build;
 mod disk;
 mod image;
+mod imagelock;
 mod qemu;
 mod test;
 mod toolchain;
@@ -167,6 +168,21 @@ struct ImageOptions {
     data: Option<PathBuf>,
     #[clap(long, help = "Auto-start a program in init.")]
     autostart: Option<String>,
+    #[clap(
+        long,
+        allow_hyphen_values = true,
+        help = "Append an argument to the kernel command line, which is baked into the image. \
+                May be specified multiple times. Arguments starting with a dash need the equals \
+                form, e.g. --kernel-arg=--no-pcid."
+    )]
+    kernel_arg: Vec<String>,
+    #[clap(
+        long,
+        help = "Create or update the ext4 data disk at this path instead of the shared \
+                target/disk-<triple>.img. Concurrent builds that each pass their own path never \
+                touch the build tree's copy, and so never queue behind (or corrupt) each other."
+    )]
+    pub disk_image: Option<PathBuf>,
 }
 
 #[derive(Subcommand, ValueEnum, Debug, Clone, Copy)]
@@ -188,6 +204,13 @@ struct DiskImageOptions {
         help = "Force copying sysroot to disk image, even if it appears up to date."
     )]
     pub force: bool,
+    #[clap(
+        long,
+        help = "Create or update the ext4 data disk at this path instead of the shared \
+                target/disk-<triple>.img. Concurrent builds that each pass their own path never \
+                touch the build tree's copy, and so never queue behind (or corrupt) each other."
+    )]
+    pub disk_image: Option<PathBuf>,
 }
 
 impl From<ImageOptions> for BuildOptions {
@@ -234,6 +257,14 @@ struct QemuOptions {
     autostart: Option<String>,
     #[clap(
         long,
+        allow_hyphen_values = true,
+        help = "Append an argument to the kernel command line, which is baked into the image. \
+                May be specified multiple times. Arguments starting with a dash need the equals \
+                form, e.g. --kernel-arg=--no-pcid."
+    )]
+    kernel_arg: Vec<String>,
+    #[clap(
+        long,
         short,
         help = "Enable GDB connection via serial, exposed via host TCP <port>. Defaults to :2159.",
         default_value_t = 2159
@@ -269,7 +300,12 @@ impl From<&QemuOptions> for ImageOptions {
             kernel: qo.kernel,
             data: qo.data.clone(),
             autostart: qo.autostart.clone(),
+            kernel_arg: qo.kernel_arg.clone(),
             bench: qo.bench.clone(),
+            // Build into the same image we are about to boot. Otherwise `--disk-image` boots a
+            // private copy while the build writes its binaries into the shared one, which is both
+            // wrong and the collision the flag exists to avoid.
+            disk_image: qo.disk_image.clone(),
         }
     }
 }

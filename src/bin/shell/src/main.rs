@@ -400,6 +400,21 @@ mod builtins {
                 mem_stats.tlb_shootdown_count
             )
             .into_diagnostic()?;
+            let switches =
+                mem_stats.aspace_switch_flush_count + mem_stats.aspace_switch_noflush_count;
+            writeln!(
+                ctx.stdout(),
+                "  aspace switch         : {} noflush / {} total ({}%), {} revoked",
+                mem_stats.aspace_switch_noflush_count,
+                switches,
+                if switches == 0 {
+                    0
+                } else {
+                    mem_stats.aspace_switch_noflush_count * 100 / switches
+                },
+                mem_stats.tlb_revoke_count,
+            )
+            .into_diagnostic()?;
             writeln!(
                 ctx.stdout(),
                 "  page faults: count={} avg={}ns min={}ns max={}ns stddev={}ns, running avg={}ns",

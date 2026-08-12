@@ -56,6 +56,15 @@ pub struct TestOptions {
     pub qemu_options: Vec<String>,
     #[clap(
         long,
+        allow_hyphen_values = true,
+        help = "Append an argument to the kernel command line. May be specified multiple times. \
+                Arguments starting with a dash need the equals form, e.g. --kernel-arg=--no-pcid. \
+                Only takes effect when this run builds its own image: with --boot-image the \
+                command line is already baked into the image you pass."
+    )]
+    pub kernel_arg: Vec<String>,
+    #[clap(
+        long,
         help = "Don't build anything, just run against the current image"
     )]
     pub no_build: bool,
@@ -110,6 +119,7 @@ impl TestOptions {
             data: None,
             repeat: false,
             autostart: None,
+            kernel_arg: self.kernel_arg.clone(),
             // Leave the gdb serial port unbound; scenarios are run unattended, and binding it
             // would collide between concurrent runs.
             gdb: 0,

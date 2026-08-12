@@ -136,6 +136,31 @@ impl SmolTcpListener {
         ))
     }
 
+    /// Build a listening socket on a port this listener already owns.
+    ///
+    /// `accept()` runs inside `ENGINE.blocking`, which holds the engine's core lock for the whole
+    /// closure, and the rebind there used to go through `do_bind` -> `each_addr` ->
+    /// `ENGINE.allocate_port`, i.e. four cross-compartment calls (a monitor lookup, a dynamic-gate
+    /// resolve, the net-srv gate, and the handle drop) *with the core lock held*. Every socket
+    /// operation in the compartment queues behind those, and a stall anywhere in that path becomes
+    /// a stall for the whole network stack. There is nothing to allocate anyway: net-srv already
+    /// counts this port against this client, so re-allocating it only bumped a refcount that the
+    /// single release on drop never brings back to zero.
+    fn listen_on_owned_port(port: u16) -> Result<Socket<'static>, Error> {
+        let mut sock = {
+            let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
+            let tx_buffer = SocketBuffer::new(vec![0; TX_BUF_SIZE]);
+            Socket::new(rx_buffer, tx_buffer)
+        };
+        sock.listen(port).map_err(|_| {
+            Error::new(
+                ErrorKind::AddrNotAvailable,
+                "failed to listen on owned port",
+            )
+        })?;
+        Ok(sock)
+    }
+
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let mut sock = {
             let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
@@ -219,7 +244,7 @@ impl SmolTcpListener {
                     let remote = sock.remote_endpoint().unwrap(); // the socket addr returned is that of the remote endpoint. ie. the client.
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
                     // creating another listener and swapping self's socket handle
-                    let sock = Self::do_bind(self.local_addr).inspect_err(|e| {
+                    let sock = Self::listen_on_owned_port(self.port).inspect_err(|e| {
                         tracing::warn!("failed to rebind new socket after accept: {e}");
                         twizzler_abi::klog_println!(
                             "failed to rebind new socket on {} after accept: {}",
@@ -233,7 +258,7 @@ impl SmolTcpListener {
                     // falling edge be recorded when this was the last pending connection.
                     let accepted = listener.socket_handle;
                     core.detach_from_group(accepted);
-                    let newhandle = core.add_socket(sock.0, Some(self.group));
+                    let newhandle = core.add_socket(sock, Some(self.group));
                     listener.socket_handle = newhandle;
                     core.refresh_waiter(accepted);
                     core.refresh_group(self.group);
@@ -249,7 +274,7 @@ impl SmolTcpListener {
                     return Ok((stream, remote_addr));
                 } else if !sock.is_open() {
                     // Connection was reset?
-                    if let Ok(sock) = Self::do_bind(self.local_addr).inspect_err(|e| {
+                    if let Ok(sock) = Self::listen_on_owned_port(self.port).inspect_err(|e| {
                         tracing::warn!("failed to rebind socket after detecting reset: {e}");
                         twizzler_abi::klog_println!(
                             "failed to rebind socket on {} after detecting reset: {}",
@@ -258,7 +283,7 @@ impl SmolTcpListener {
                         );
                     }) {
                         let dead = listener.socket_handle;
-                        let newhandle = core.add_socket(sock.0, Some(self.group));
+                        let newhandle = core.add_socket(sock, Some(self.group));
                         listener.socket_handle = newhandle;
                         // Retire the broken socket rather than orphaning it in the group:
                         // listener_socket_ready is true for a closed socket, so leaving it in

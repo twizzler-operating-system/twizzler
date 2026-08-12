@@ -1,7 +1,10 @@
 use core::ops::{Index, IndexMut};
 
 use super::Entry;
-use crate::{arch::address::VirtAddr, memory::PhysAddr};
+use crate::{
+    arch::{address::VirtAddr, context::PCID_MASK},
+    memory::PhysAddr,
+};
 
 #[repr(transparent)]
 /// Representation of a page table. Can be indexed with [].
@@ -21,7 +24,8 @@ impl Table {
 
     /// Get the current root table.
     pub fn current() -> PhysAddr {
-        let cr3 = unsafe { x86::controlregs::cr3() };
+        // Mask off cr3[11:0]: with CR4.PCIDE set those are the PCID, not part of the address.
+        let cr3 = unsafe { x86::controlregs::cr3() } & !PCID_MASK;
         PhysAddr::new(cr3).unwrap()
     }
 

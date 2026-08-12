@@ -23,7 +23,13 @@ pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
 }
 
-pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u64) -> [u64; 2] {
+pub fn thread_ctrl(
+    cmd: ThreadControl,
+    target: Option<ObjID>,
+    arg: u64,
+    arg2: u64,
+    arg3: u64,
+) -> [u64; 2] {
     match cmd {
         ThreadControl::GetUpcall => {
             let arg = arg as usize as *mut UpcallTarget;
@@ -153,15 +159,19 @@ pub fn thread_ctrl(cmd: ThreadControl, target: Option<ObjID>, arg: u64, arg2: u6
                         // never from a mutex wait queue, and this is the only call site that can
                         // kill a thread mid-wait. `mutex_link` linked here says the target dies
                         // while still a member of some mutex's sleep queue.
+                        let exit_sctx = ObjID::from_parts([arg2, arg3]);
                         logln!(
-                            "calling force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}",
+                            "calling force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}, active sctx {}, exit sctx {}",
                             thread.id(),
                             thread.objid(),
                             cur_state,
                             thread.mutex_link.is_linked(),
                             thread.get_mutex_wait(),
+                            thread.secctx.active_id(),
+                            exit_sctx,
                         );
                         crate::panic::backtrace(true, None);
+                        thread.set_exit_sctx(exit_sctx);
                         thread.force_exit();
                     }
                     _ => {

@@ -105,6 +105,30 @@ impl NsNode {
     }
 }
 
+// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md): opening a
+// namespace by id maps its object, which is a monitor gate call on a cache miss.
+mod nsidstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static OPEN: AtomicU64 = AtomicU64::new(0);
+    static ITEMS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(open: u64, items: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let o = OPEN.fetch_add(open, Ordering::Relaxed) + open;
+        let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!(
+                "NSIDSTATS {} enumerates: open-ns {} us, items {} us",
+                n,
+                o / 1000,
+                i / 1000,
+            );
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ParentInfo {
     ns: Arc<dyn Namespace>,
@@ -457,8 +481,12 @@ impl NameSession<'_> {
         count: usize,
     ) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("opening namespace-ensid: {} {} {}", id, skip, count);
+        let t_open = std::time::Instant::now();
         let ns = self.open_namespace(id, false, None)?;
+        let open_ns = t_open.elapsed().as_nanos() as u64;
+        let t_items = std::time::Instant::now();
         let items = ns.items(skip, count);
+        nsidstats::record(open_ns, t_items.elapsed().as_nanos() as u64);
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }

@@ -164,6 +164,29 @@ pub mod diag {
     pub static MUTEX_HANDOFF_TO_DEAD: Counter =
         Counter::new("mutex handed off to a thread that exited");
 
+    /// `maybe_exit` had a force-exit to deliver but the thread held kernel mutexes, so it was left
+    /// to a later poll. The alternative is exiting here and leaking every one of them, which is
+    /// what produced the shutdown pile-up on `VirtContext::secctx`. A nonzero count is healthy --
+    /// it says the deferral is doing work; a count that rises without the thread ever exiting is
+    /// not, and would show up as an unkillable thread.
+    pub static EXIT_DEFERRED_MUTEX_HELD: Counter =
+        Counter::new("force-exit deferred, thread holds mutexes");
+
+    /// `maybe_exit` had a force-exit to deliver but the thread was executing in a security context
+    /// other than the one the exit was restricted to -- i.e. inside a cross-compartment call, where
+    /// dying would leave the callee's userspace locks held. Healthy while it rises and the thread
+    /// eventually exits; a thread that never comes home shows up as an undelivered force-exit in
+    /// `check_orphan_threads` instead.
+    pub static EXIT_DEFERRED_SCTX: Counter =
+        Counter::new("force-exit deferred, thread in another security context");
+
+    /// A `sys_thread_sync` ended with one of its sleep-link slots still linked into some tree. The
+    /// next round reuses that slot and `RBTree::insert` panics with "already linked" -- so this
+    /// counts the cause, one round before the symptom, and the report names the thread that leaked
+    /// it. Nonzero means a sleep site inserted without a matching removal, which is a bug wherever
+    /// it happens; zero is the only healthy value.
+    pub static SLEEP_LINK_LEAKED: Counter = Counter::new("sleep link still linked at reset");
+
     /// `warn_if_blocking_with_mutexes` bailed before it could look at anything. Its silence was
     /// being read as "this never happens", which it cannot support: a check that never ran and a
     /// check that ran and found nothing are the same absence of output. This separates them.
@@ -186,7 +209,7 @@ pub mod diag {
     pub static CRITICAL_LEAK_AT_EXIT: Counter =
         Counter::new("returning to user with a critical count held");
 
-    static ALL: [&Counter; 22] = [
+    static ALL: [&Counter; 25] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -207,6 +230,9 @@ pub mod diag {
         &MUTEX_COUNT_UNDERFLOW,
         &SUSPEND_SELF_NOT_CURRENT,
         &MUTEX_HANDOFF_TO_DEAD,
+        &EXIT_DEFERRED_MUTEX_HELD,
+        &EXIT_DEFERRED_SCTX,
+        &SLEEP_LINK_LEAKED,
         &BLOCK_CHECK_SKIPPED,
         &BLOCK_CHECK_CLEAR,
     ];

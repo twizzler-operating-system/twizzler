@@ -1,10 +1,7 @@
-use std::sync::{atomic::AtomicU64, Arc};
+use std::sync::Arc;
 
 use monitor_api::MappedObjectAddrs;
-use twizzler_abi::{
-    object::{ObjID, MAX_SIZE, NULLPAGE_SIZE},
-    syscall::sys_object_remove_note,
-};
+use twizzler_abi::object::{ObjID, MAX_SIZE, NULLPAGE_SIZE};
 use twizzler_rt_abi::object::ObjectHandle;
 
 use super::MapInfo;
@@ -16,7 +13,6 @@ use crate::mon::get_monitor;
 pub struct MapHandleInner {
     info: MapInfo,
     map: MappedObjectAddrs,
-    map_note_key: AtomicU64,
     /// True if this handle is the sole owner of its slot (see `Space::map_pair`), in which case
     /// dropping it unmaps that slot directly instead of going through the shared, MapInfo-keyed
     /// reference count in `Space::maps`.
@@ -32,7 +28,6 @@ impl MapHandleInner {
         Self {
             info,
             map,
-            map_note_key: AtomicU64::new(0),
             exclusive: false,
         }
     }
@@ -42,18 +37,8 @@ impl MapHandleInner {
         Self {
             info,
             map,
-            map_note_key: AtomicU64::new(0),
             exclusive: true,
         }
-    }
-
-    pub(crate) fn set_map_note_key(&self, key: u64) {
-        self.map_note_key
-            .store(key, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub(crate) fn get_map_note_key(&self) -> u64 {
-        self.map_note_key.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get the mapped addresses of this handle.
@@ -89,10 +74,6 @@ impl MapHandleInner {
 
 impl Drop for MapHandleInner {
     fn drop(&mut self) {
-        let nk = self.get_map_note_key();
-        if nk != 0 {
-            let _ = sys_object_remove_note(self.info.id, nk);
-        }
         // Toss this work onto a background thread.
         let monitor = get_monitor();
         if let Some(unmapper) = monitor.unmapper.get() {

@@ -5,7 +5,7 @@ use twizzler_abi::device::CacheType;
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
-    arch::{PhysAddr, VirtAddr, memory::pagetables::ArchTlbMgr},
+    arch::{PhysAddr, VirtAddr, context::ArchContextTarget, memory::pagetables::ArchTlbMgr},
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, min_level_for_len},
         pagetables::{
@@ -24,7 +24,10 @@ const MAX_INVLS: usize = 4;
 
 pub struct ObjectPageTable {
     mapper: Mapper,
-    invls: heapless::Vec<(PhysAddr, heapless::Vec<MappingCursor, MAX_INVLS>), MAX_INVL_TARGETS>,
+    invls: heapless::Vec<
+        (ArchContextTarget, heapless::Vec<MappingCursor, MAX_INVLS>),
+        MAX_INVL_TARGETS,
+    >,
     map_count: usize,
 }
 
@@ -125,7 +128,7 @@ impl ObjectPageTable {
         self.map_count -= 1;
     }
 
-    pub fn add_invalidate(&mut self, target: PhysAddr, cursor: MappingCursor) {
+    pub fn add_invalidate(&mut self, target: ArchContextTarget, cursor: MappingCursor) {
         if let Some((_, maps)) = self.invls.iter_mut().find(|(t, _)| *t == target) {
             if !maps.iter().contains(&cursor) {
                 let _ = maps.push(cursor);
@@ -137,7 +140,7 @@ impl ObjectPageTable {
         }
     }
 
-    pub fn remove_invalidate(&mut self, target: PhysAddr, cursor: MappingCursor) {
+    pub fn remove_invalidate(&mut self, target: ArchContextTarget, cursor: MappingCursor) {
         if self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full()) {
             // We might have hit the limit.
             return;
@@ -178,6 +181,15 @@ impl ObjectPageTable {
 
             let mut tlb = ArchTlbMgr::new(*target);
             for map in maps.iter() {
+                if map.start().is_kernel() {
+                    // The kernel half's page tables are shared by every context, so these
+                    // translations can be cached under any PCID -- and a targeted invlpg reaches
+                    // only the executing cpu's current one. Nothing short of the PGE toggle behind
+                    // a full+global batch covers them, which is what ArchContext::lock_with_consist
+                    // already does for every other kernel-range mapping change.
+                    tlb.set_full_global();
+                    continue;
+                }
                 let mut len = map.remaining().min(len);
                 let addr = match map.start().offset(offset as usize) {
                     Ok(addr) => addr,
@@ -247,7 +259,12 @@ impl ObjectPageTable {
 
                     for map in maps.iter() {
                         // For each map, copy, offset, and merge.
-                        let tlb = consist.tlb().apply_offset_from_map(map);
+                        let mut tlb = consist.tlb().apply_offset_from_map(map);
+                        // See Self::invalidate: a kernel-range mapping is visible under every PCID,
+                        // so precise invalidation cannot reach all of its copies.
+                        if map.start().is_kernel() {
+                            tlb.set_full_global();
+                        }
 
                         if let Some(ref mut final_tlb) = final_tlb {
                             final_tlb.merge(tlb);

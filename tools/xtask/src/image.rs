@@ -434,7 +434,15 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
 
 pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     let comp = crate::build::do_build(cli.clone().into())?.unwrap();
-    copy_twizzler_build(&comp, &cli.config.twz_triple())?;
+    let triple = cli.config.twz_triple();
+    let disk_image = crate::disk::image_path(&triple, cli.disk_image.as_deref());
+    // Everything below writes state shared by every concurrent xtask. Taken after the build, which
+    // cargo already serializes for itself and which is far too long to hold these over. Staging
+    // first, then the image: two locks in one fixed order, so callers that need only one (the
+    // `disk` subcommand, qemu's fresh-image path) cannot invert it.
+    let _staging_lock = crate::imagelock::staging_lock(&triple, cli.config.profile)?;
+    let _image_lock = crate::imagelock::image_lock(&disk_image)?;
+    copy_twizzler_build(&comp, &triple, &disk_image)?;
 
     let initrd_files = build_initrd(&cli, &comp)?;
     let initrd_files = strip_initrd_files(&initrd_files, &comp)?;
@@ -472,6 +480,11 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     }
     if cli.benches || cli.bench.is_some() {
         cmdline.push_str("--benches ");
+    }
+    // Before autostart, which is a bare program name and has to stay last.
+    for arg in &cli.kernel_arg {
+        cmdline.push_str(arg);
+        cmdline.push(' ');
     }
     if let Some(autostart) = cli.autostart {
         cmdline.push_str(autostart.as_str());

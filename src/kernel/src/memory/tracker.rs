@@ -146,7 +146,13 @@ impl MemoryTracker {
         self.trigger_reclaim();
         {
             current_thread.set_state(ExecutionState::Sleeping);
-            if self.idle() == old_idle {
+            // Two reasons not to block after having registered. Memory may have become available
+            // under us -- and a force-exit may have landed, which a thread parked here would never
+            // see: `wake()` only fires when memory is freed, and the exit request is not that.
+            // Unlike the pager sites, this one cannot park its own wakeup and block anyway: being
+            // woken through the requeue list rather than by `wake()` draining `waiters` is exactly
+            // the leak the branch below exists to prevent.
+            if self.idle() == old_idle && !current_thread.exit_deliverable() {
                 finish_blocking(guard);
             } else {
                 // Memory became available before we decided to actually block, so we
@@ -170,6 +176,14 @@ impl MemoryTracker {
             current_thread.reset_sync_sleep_done();
         }
         self.waiting.fetch_sub(1, Ordering::SeqCst);
+        if current_thread.exit_deliverable() {
+            // Our caller retries the allocation in a loop, so returning without blocking would
+            // spin. Yield instead, and do it through the reinserting schedule -- that is one of the
+            // two places MUST_EXIT is polled, so the thread takes its exit here rather than going
+            // around again. If it holds mutexes, `maybe_exit` declines and we have at least given
+            // up the cpu instead of burning it.
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        }
     }
 
     fn wake(&self) {

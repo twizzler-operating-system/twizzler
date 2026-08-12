@@ -204,6 +204,15 @@ impl GlobalInterruptState {
         if set_sync_sleep {
             thread.set_sync_sleep();
         }
+        // A find-then-insert guard here (as `SleepEntry::add_thread` has) was tried and reverted.
+        // It stops the duplicate insert, but it *keeps* the stale entry -- and `external_interrupt_
+        // entry` requeues every thread in this tree unconditionally, claiming the wake through
+        // `reset_sync_sleep_done` rather than `reset_sync_sleep` the way `wake_n` does. A leftover
+        // entry then fires a spurious wake at whatever that thread is sleeping on next, and if that
+        // is a kernel mutex it wakes still linked on the mutex's wait queue: the assert at the end
+        // of `finish_blocking`. Measured: 0 in ~2950 runs before the guard, 1 in the first 17
+        // after. So the duplicate is a symptom; the fix belongs in how this tree claims its
+        // wakes, and panicking at the insert is the more honest failure until then.
         waiters.insert(thread);
         true
     }

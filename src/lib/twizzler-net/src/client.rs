@@ -71,7 +71,15 @@ pub fn net_alloc_port(desc: Descriptor, port: Option<u16>) -> Result<u16, TwzErr
 }
 
 pub fn net_release_port(desc: Descriptor, port: u16) -> Result<(), TwzError> {
-    twizzler_abi::klog_println!("() net_release_port: desc = {}, port = {}", desc, port);
+    // The thread id is the link the wedge hunt was missing: a transcript's unmatched `()` names the
+    // stuck call, and the kernel's wait table names every thread's sleep word -- but nothing tied
+    // the two together, so the one thread that matters could not be found in the table.
+    twizzler_abi::klog_println!(
+        "() net_release_port: desc = {}, port = {}, thread = {}",
+        desc,
+        port,
+        twizzler_abi::syscall::sys_thread_self_id()
+    );
     let comp = CompartmentHandle::lookup("net")?;
     twizzler_abi::klog_println!("(2) net_release_port: desc = {}, port = {}", desc, port);
     let gate = unsafe { comp.dynamic_gate("twz_net_release_port") }?;

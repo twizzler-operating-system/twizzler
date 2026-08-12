@@ -7,7 +7,8 @@ use x86::controlregs::Cr4;
 
 use crate::{
     arch::{
-        address::{PhysAddr, VirtAddr},
+        address::VirtAddr,
+        context::{ArchContextTarget, PCID_MASK},
         interrupt::TLB_SHOOTDOWN_VECTOR,
         processor::CR3_IN_TRANSITION,
     },
@@ -76,19 +77,27 @@ impl TlbInvData {
         self.target_cr3
     }
 
+    /// The PCID of the address space being invalidated, or 0 if this invalidation isn't tied to
+    /// one (or the context in question is on the no-PCID fallback).
+    fn pcid(&self) -> u16 {
+        (self.target_cr3 & PCID_MASK) as u16
+    }
+
     fn instructions(&self) -> &[InvInstruction] {
         &self.instructions[0..(self.len as usize)]
     }
 
     /// Whether `p` needs to be sent (and waited on for) this invalidation. A processor
-    /// whose active address space doesn't match our target can't hold stale entries for
-    /// it: it's either off on an unrelated context now, or it'll switch into ours later,
-    /// which does a full non-global flush via its own `mov cr3` (no PCID is in use here)
-    /// -- by then the underlying page-table write that triggered this invalidation has
-    /// already happened, so it'll walk fresh, correct PTEs. Global invalidations always
-    /// go to every processor regardless, matching the receiver-side check in
-    /// `do_invalidation`. A processor midway through a page-table switch publishes
-    /// `CR3_IN_TRANSITION`, which matches here, because it may hold entries for either root.
+    /// whose active address space doesn't match our target is guaranteed to flush before
+    /// it can use stale entries for that address space: it will switch into our target
+    /// later, and [ArchTlbMgr::finish] has already cleared its valid bit for our PCID, so
+    /// that switch loads cr3 without CR3_PCID_NOFLUSH -- by then the underlying page-table
+    /// write that triggered this invalidation has already happened, so it'll walk fresh,
+    /// correct PTEs. (Without PCIDs every `mov cr3` flushes, and the same holds trivially.)
+    /// Global invalidations always go to every processor regardless, matching the
+    /// receiver-side check in `do_invalidation`. A processor midway through a page-table
+    /// switch publishes `CR3_IN_TRANSITION`, which matches here, because it may hold
+    /// entries for either root.
     fn should_target(&self, p: &Processor) -> bool {
         if self.global() {
             return true;
@@ -334,16 +343,16 @@ impl core::fmt::Debug for ArchTlbMgr {
 
 impl ArchTlbMgr {
     /// Construct a new [ArchTlbMgr].
-    pub fn new(target: PhysAddr) -> Self {
+    pub fn new(target: ArchContextTarget) -> Self {
         let this = Self {
-            data: TlbInvData::new(target.into()),
+            data: TlbInvData::new(target.raw()),
         };
         assert!(!this.data.has_invalidations());
         this
     }
 
     pub fn new_full_global() -> Self {
-        let mut this = Self::new(PhysAddr::new(0).unwrap());
+        let mut this = Self::new(ArchContextTarget::null());
         this.set_full_global();
         this
     }
@@ -357,8 +366,8 @@ impl ArchTlbMgr {
         self.data.full()
     }
 
-    pub fn set_target(&mut self, target: PhysAddr) {
-        self.data.target_cr3 = target.into();
+    pub fn set_target(&mut self, target: ArchContextTarget) {
+        self.data.target_cr3 = target.raw();
     }
 
     pub fn reset(&mut self) {
@@ -405,6 +414,39 @@ impl ArchTlbMgr {
         let proc = current_processor();
 
         let mut count = 0;
+        // Revoke every *other* processor's right to switch into this address space without
+        // flushing. A processor we skip below relies on that flush to shed the entries we are
+        // invalidating; one we do IPI gets a precise invalidation instead, but revoking its bit
+        // too costs only a redundant flush later and keeps this independent of who we end up
+        // targeting. We keep our own bit only when we are running the target ourselves, since
+        // then `do_invalidation` below invalidates precisely for us. (This is FreeBSD's
+        // pmap_invalidate_preipi_pcid, minus the generation counter: our PCIDs are per address
+        // space, not per cpu, so there is nothing to re-allocate.)
+        //
+        // Racing a `switch_to_target` for the same PCID, exactly one of two things happens, and
+        // the RMWs on the bitmap word are what decide which. Either its `fetch_or` follows our
+        // `fetch_and` in that word's modification order, so it reads the bit clear and flushes;
+        // or it precedes ours, in which case our `fetch_and` reads from its release (RMWs join
+        // the release sequence, so intervening traffic on other bits in the same word doesn't
+        // break this) and its earlier CR3_IN_TRANSITION store therefore happens-before our load
+        // of active_cr3 -- so we see it and IPI it. Both sides' AcqRel is load-bearing: the same
+        // edge, read the other way, is what publishes our page-table writes to a processor that
+        // flushes instead of being IPI'd.
+        let pcid = self.data.pcid();
+        if pcid != 0 {
+            let ours = unsafe { x86::controlregs::cr3() } == self.data.target();
+            with_each_active_processor(|p| {
+                if !(ours && p.id == proc.id) {
+                    // Counted against the cpu losing the claim rather than the one issuing it, and
+                    // only when there was a claim to lose: what the number is for is comparing
+                    // "flushes I was forced into" against "flushes I got to skip", and both are
+                    // per-victim. Most calls here clear an already-clear bit and cost nothing.
+                    if p.arch.pcid_invalidate(pcid) {
+                        p.stats.aspace_flush_revoked.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+        }
         // Our caller's page-table writes must be visible to any processor that we then decide
         // *not* to target. Those writes and the `active_cr3` loads below form a store->load
         // pair, the one reordering x86 permits, so without this fence we could observe a

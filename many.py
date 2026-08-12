@@ -9,8 +9,9 @@ Serializing never actually protected them -- nothing stopped a developer's own `
 taking the disk's write lock or port 5555 mid-sweep, and when that happened the run died with
 `Failed to get "write" lock` and got recorded as a mysterious exit 34.
 
-So instead: build each profile once, snapshot its boot image and ext4 disk into a work directory,
-and give every lane private copies to run against (`xtask test --boot-image/--disk-image`). Nothing
+So instead: build each profile once into a work directory -- the ext4 disk directly, via
+`make-image --disk-image`, and the boot image snapshotted out of the build tree right after -- and
+give every lane private copies to run against (`xtask test --boot-image/--disk-image`). Nothing
 in the sweep touches the build tree after the build phase, which both lets lanes run concurrently
 -- across different profiles, not just different qemu flags -- and leaves the development tree free
 to build and boot while a sweep is in flight.
@@ -20,9 +21,12 @@ existing semantics that guest-written disk state carries from one run to the nex
 
 The same reasoning applies one level up: several sweeps can run at once, and alongside an ordinary
 `cargo xtask test`, because everything a sweep writes is keyed by its `--tag` -- results, lane
-images, and the serial-log label xtask writes into the shared target/test-logs. The per-profile
-master snapshots are the one thing sweeps deliberately share, guarded by a lock that is exclusive
-while a build replaces them and shared while lanes copy them.
+images, the data image its build writes, and the serial-log label xtask writes into the shared
+target/test-logs. The per-profile master snapshots are the one thing sweeps deliberately share,
+guarded by a lock that is exclusive while a build replaces them and shared while lanes copy them.
+The build tree itself is still shared, and sweeps cannot lock each other out of it alone -- xtask
+locks the disk image and the initrd/boot staging on its own account, which is what also covers a
+developer building underneath a sweep.
 
 The build phase is the exception, and unavoidably so: it writes the one build tree and the one dev
 disk. Sweeps serialize against each other there, but nothing stops a bare `cargo xtask test` from
@@ -416,7 +420,9 @@ def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
         src = dev_boot_image(profile)
         if src.exists():
             per_pair = max(per_pair, src.stat().st_blocks * 512)
-    data = DEV_DATA_IMAGE.stat().st_blocks * 512 if DEV_DATA_IMAGE.exists() else 0
+    # The dev image only stands in for the size a freshly built master will be; sweeps write their
+    # own now and it may not exist at all.
+    data = DEV_DATA_IMAGE.stat().st_blocks * 512 if DEV_DATA_IMAGE.exists() else 4 << 30
     need = (per_pair + data) * (len(profiles) + lanes)
     free = shutil.disk_usage(work.parent if work.parent.exists() else REPO_ROOT).free
     return f"~{need / 2**30:.0f}GB of copies against {free / 2**30:.0f}GB free"
@@ -425,8 +431,22 @@ def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
 # --- building -----------------------------------------------------------------------------------
 
 
-def build_command_for(profile: str) -> List[str]:
-    return ["cargo", "xtask", "make-image", "--tests", "--profile", profile]
+def build_command_for(profile: str, work: Path) -> List[str]:
+    """Build straight into this sweep's own master data image.
+
+    `--disk-image` is what keeps a sweep off `target/disk-<triple>.img`. Without it every build
+    wrote that one file, so two sweeps building different profiles at the same time mounted the same
+    ext4 concurrently -- which is not an error you get told about: one process spun at 100% cpu
+    inside the sysroot copy while the image it half-wrote failed every later write, and every guest
+    booted from it died loading libtwz_rt.so.
+
+    It also removes the snapshot step for the data image: the build writes the master in place, so
+    there is nothing to copy out of the build tree afterwards.
+    """
+    return [
+        "cargo", "xtask", "make-image", "--tests", "--profile", profile,
+        "--disk-image", str(master_data_image(work, profile)),
+    ]
 
 
 def xtask_binary() -> List[str]:
@@ -438,15 +458,17 @@ def xtask_binary() -> List[str]:
 def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> BuildPhase:
     """Build a profile, then copy its boot image and the ext4 disk out of the build tree.
 
-    The data snapshot has to happen here, right after this profile's build: `copy_twizzler_build`
-    writes the built binaries into /sysroot/pkg of the one shared disk, so the next profile's build
-    would overwrite them.
+    The boot image still has to be snapshotted here, right after this profile's build, because
+    `make-image` writes it to one path per profile inside the build tree. The data image no longer
+    does: the build was pointed at this sweep's master with `--disk-image`.
     """
     start = time.monotonic()
-    # Exclusive for the whole phase: the build writes the one shared build tree and the one shared
-    # dev disk, so two sweeps building at once would corrupt each other's /sysroot/pkg.
+    # Exclusive for the whole phase: the build still writes the one shared build tree, even though
+    # the data image is now private to this sweep. xtask takes its own locks over the parts that
+    # outlive a single sweep, which is what protects us from builds this lock cannot see -- a
+    # developer's own `cargo start-qemu`, say.
     with master_lock(work, exclusive=True):
-        cmd = build_command_for(profile)
+        cmd = build_command_for(profile, work)
         args.results_dir.mkdir(parents=True, exist_ok=True)
         out_path = args.results_dir / f"build-{profile}.out"
         print(f"=== building {profile} (log: {rel(out_path)})", flush=True)
@@ -470,10 +492,11 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
                     print(f"    {line}", file=sys.stderr, flush=True)
             return BuildPhase(profile, False, time.monotonic() - start)
 
-        print(f"=== snapshotting {profile} images", flush=True)
+        # Only the boot image is snapshotted now: `--disk-image` had the build write the data
+        # master itself, in place.
+        print(f"=== snapshotting {profile} boot image", flush=True)
         try:
             copy_image(dev_boot_image(profile), master_boot_image(work, profile))
-            copy_image(DEV_DATA_IMAGE, master_data_image(work, profile))
         except (OSError, subprocess.CalledProcessError) as e:
             print(f"SNAPSHOT FAILED ({profile}): {e}", file=sys.stderr, flush=True)
             return BuildPhase(profile, False, time.monotonic() - start)
@@ -899,7 +922,8 @@ def main() -> int:
 
     if args.dry_run:
         for profile in needed:
-            action = "reuse snapshot" if args.reuse_images else " ".join(build_command_for(profile))
+            action = ("reuse snapshot" if args.reuse_images
+                      else " ".join(build_command_for(profile, work)))
             print(f"                 {profile}: {action}")
         for round_no, config in jobs:
             print(f"round {round_no}  {config.name}")

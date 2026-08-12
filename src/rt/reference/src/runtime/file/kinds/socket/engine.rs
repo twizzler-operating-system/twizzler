@@ -404,6 +404,16 @@ impl Engine {
                 }
             }
         });
+        // Temporary (wedgehunt.md): every wedged transcript has five threads of one compartment
+        // queued on one word at a fixed object offset, and which word decides the story -- the core
+        // mutex means a dead lock holder, the condvar means the poll thread stopped notifying. The
+        // kernel's wait table prints the object offset, so printing these addresses names it.
+        twizzler_abi::klog_println!(
+            "ENGINEADDR core {:p} waiter {:p} notify {:p}",
+            &*core,
+            &*waiter,
+            &*notify,
+        );
         Self {
             core,
             waiter,

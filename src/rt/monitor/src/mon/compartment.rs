@@ -11,7 +11,7 @@ use monitor_api::{
     MONITOR_INSTANCE_ID,
 };
 use secgate::util::Descriptor;
-use twizzler_abi::syscall::{sys_thread_change_state, sys_thread_sync, ThreadSync};
+use twizzler_abi::syscall::{sys_thread_change_state_in_sctx, sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
     object::ObjID,
@@ -160,12 +160,15 @@ impl CompartmentMgr {
         self.instances.values_mut()
     }
 
+    /// Takes `&self`: a compartment's flags are an `AtomicU64`, so updating them needs no exclusive
+    /// access to the manager. That lets every caller hold a *read* of it -- and the wake syscall
+    /// inside `cas_flag` then no longer runs under a lock that excludes all other compartments.
     fn update_compartment_flags(
-        &mut self,
+        &self,
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
-        let Ok(rc) = self.get_mut(instance) else {
+        let Ok(rc) = self.get(instance) else {
             return false;
         };
 
@@ -196,17 +199,39 @@ impl CompartmentMgr {
         Ok(rc.until_change(state))
     }
 
-    pub fn main_thread_exited(&mut self, instance: ObjID) {
+    pub fn main_thread_exited(&mut self, instance: ObjID, also: &[ObjID]) {
         tracing::debug!("main thread for compartment {} exited", instance);
-        while !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED)) {}
+        // `update_compartment_flags` reports false both for "the CAS lost" and for "no such
+        // compartment"; retrying unconditionally turns the latter into an infinite spin under every
+        // monitor lock, which the `get` below already knows how to handle.
+        while self.get(instance).is_ok()
+            && !self.update_compartment_flags(instance, |old| Some(old | COMP_EXITED))
+        {}
 
         let Ok(rc) = self.get(instance) else {
             tracing::warn!("failed to find compartment {} during exit", instance);
             return;
         };
 
-        for thread in rc.per_thread.keys() {
-            let _ = sys_thread_change_state(*thread, twizzler_abi::thread::ExecutionState::Exited);
+        // `per_thread` only holds threads that have called a gate needing the simple buffer, so it
+        // is a *subset* of the compartment's threads -- and killing a subset is worse than killing
+        // none. The socket engine's poll thread calls `net_release_port`, so it is in the set and
+        // dies; a thread that only maps objects and does socket I/O is not, and lives on blocked
+        // forever on an engine condvar nothing will ever notify again. `also` closes that gap with
+        // the thread manager's own record of who was spawned for this instance.
+        // Collected before the loop: each iteration makes a syscall, and holding the compartment's
+        // per-thread lock across those would block every gate call in it behind the teardown.
+        for thread in rc.thread_ids_including(also) {
+            crate::lockdiag::note_killed(thread);
+            // Restricted to `instance`: a gate call runs this thread inside another compartment
+            // (this one included, which is why the wedge takes the whole system with it), and an
+            // exit landing there leaves that compartment's locks held by a corpse. The kernel holds
+            // the request until the thread is running its own code again.
+            let _ = sys_thread_change_state_in_sctx(
+                thread,
+                twizzler_abi::thread::ExecutionState::Exited,
+                instance,
+            );
         }
 
         for dep in rc.deps.clone() {
@@ -274,8 +299,10 @@ impl super::Monitor {
             thread,
             desc
         );
-        let (_, ref mut comps, ref dynlink, _, ref comphandles) =
-            *self.locks.lock(super::reentrant_key()?);
+        // A read of the whole collection: writing the name into the caller's own simple buffer no
+        // longer needs `&mut RunComp`, and nothing else here mutates.
+        let (_, ref comps, ref dynlink, _, ref comphandles) =
+            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
@@ -288,8 +315,9 @@ impl super::Monitor {
                 instance
             );
         }
-        let pt = comps.get_mut(instance)?.get_per_thread(thread);
-        let name_len = pt.write_bytes(name.as_bytes());
+        super::ptstats::record(super::ptstats::Site::CompInfo);
+        let pt = comps.get(instance)?.get_per_thread(thread);
+        let name_len = pt.lock().unwrap().write_bytes(name.as_bytes());
         let comp = comps.get(comp_id)?;
         let nr_libs = dynlink
             .get_compartment(comp.compartment_id)
@@ -318,15 +346,35 @@ impl super::Monitor {
         desc: Option<Descriptor>,
         name_len: usize,
     ) -> Result<usize, TwzError> {
-        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
+        let name = self.read_thread_simple_buffer(
+            instance,
+            thread,
+            name_len,
+            super::ptstats::Site::GateAddr,
+        )?;
+        let name = String::from_utf8(name)
+            .ok()
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
+        self.gate_address_named(instance, desc, &name)
+    }
+
+    /// Resolve a secgate address by name, without the simple buffer.
+    ///
+    /// The buffer round trip was the whole cost of this call: `dynamic_gate` is resolved once per
+    /// gate per compartment (~14 times each, measured), and a gate symbol name is tens of bytes.
+    /// `InlineName` carries it in the gate arguments instead.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn gate_address_named(
+        &self,
+        instance: ObjID,
+        desc: Option<Descriptor>,
+        name: &str,
+    ) -> Result<usize, TwzError> {
         let (_, ref comps, ref dynlink, _, ref comphandles) =
-            *self.locks.lock(ThreadKey::get().unwrap());
+            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
-            .ok_or(TwzError::INVALID_ARGUMENT)?;
-        let name = String::from_utf8(name)
-            .ok()
             .ok_or(TwzError::INVALID_ARGUMENT)?;
 
         let comp = comps.get(comp_id)?;
@@ -340,7 +388,7 @@ impl super::Monitor {
                 .map_err(|_| GenericError::Internal)?;
             if let Some(gates) = lib.iter_secgates() {
                 for gate in gates {
-                    if gate.name().to_str().ok() == Some(name.as_str()) {
+                    if gate.name().to_str() == Ok(name) {
                         return Ok(gate.imp);
                     }
                 }
@@ -356,7 +404,8 @@ impl super::Monitor {
         caller: ObjID,
         compartment: ObjID,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(super::reentrant_key()?);
+        let (_, ref mut comps, _, _, ref mut ch) =
+            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
         ch.insert(
@@ -380,7 +429,8 @@ impl super::Monitor {
         thread: ObjID,
         comp: ObjID,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
+        let (_, ref mut comps, _, _, ref mut ch) =
+            *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
         let comp = comps.get_mut(comp)?;
         comp.inc_use_count();
         ch.insert(
@@ -400,12 +450,29 @@ impl super::Monitor {
         thread: ObjID,
         name_len: usize,
     ) -> Result<Descriptor, TwzError> {
-        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
+        let name = self.read_thread_simple_buffer(
+            instance,
+            thread,
+            name_len,
+            super::ptstats::Site::LookupComp,
+        )?;
         let name = String::from_utf8(name)
             .ok()
             .ok_or(TwzError::INVALID_ARGUMENT)?;
-        let (_, ref mut comps, _, _, ref mut ch) = *self.locks.lock(ThreadKey::get().unwrap());
-        let comp = comps.get_name_mut(&name)?;
+        self.lookup_compartment_named(instance, &name)
+    }
+
+    /// Open a handle to a compartment by name, without the simple buffer. See
+    /// [`Self::gate_address_named`] for why.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn lookup_compartment_named(
+        &self,
+        instance: ObjID,
+        name: &str,
+    ) -> Result<Descriptor, TwzError> {
+        let (_, ref mut comps, _, _, ref mut ch) =
+            *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+        let comp = comps.get_name_mut(name)?;
         comp.inc_use_count();
         ch.insert(
             instance,
@@ -424,7 +491,9 @@ impl super::Monitor {
         flags: u64,
     ) -> (u64, u64) {
         let Some(instance) = ({
-            let comphandles = self._compartment_handles.write(ThreadKey::get().unwrap());
+            let comphandles = crate::lockdiag::watched(
+                self._compartment_handles.write(ThreadKey::get().unwrap()),
+            );
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller));
@@ -445,13 +514,13 @@ impl super::Monitor {
         dep_n: usize,
     ) -> Result<Descriptor, TwzError> {
         let dep = {
-            let (_, ref mut comps, _, _, ref mut comphandles) =
-                *self.locks.lock(super::reentrant_key()?);
+            let (_, ref comps, _, _, ref comphandles) =
+                *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
                 .ok_or(ArgumentError::InvalidArgument)?;
-            let comp = comps.get_mut(comp_id)?;
+            let comp = comps.get(comp_id)?;
             comp.deps.get(dep_n).cloned()
         }
         .ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -467,13 +536,13 @@ impl super::Monitor {
         t_n: usize,
     ) -> Result<ThreadInfo, TwzError> {
         let dep = {
-            let (_, ref mut comps, _, _, ref mut comphandles) =
-                *self.locks.lock(super::reentrant_key()?);
+            let (_, ref comps, _, _, ref comphandles) =
+                *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
                 .ok_or(ArgumentError::InvalidArgument)?;
-            let comp = comps.get_mut(comp_id)?;
+            let comp = comps.get(comp_id)?;
             comp.get_nth_thread_info(t_n)
         }
         .ok_or(TwzError::INVALID_ARGUMENT);
@@ -497,7 +566,12 @@ impl super::Monitor {
         let _start_1 = Instant::now();
         let config = unsafe { config.read() };
         let total_bytes = name_len + args_len + env_len;
-        let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
+        let str_bytes = self.read_thread_simple_buffer(
+            caller,
+            thread,
+            total_bytes,
+            super::ptstats::Site::LoadComp,
+        )?;
         let name_bytes = &str_bytes[0..name_len];
         let arg_bytes = &str_bytes[name_len..(name_len + args_len)];
         let env_bytes = &str_bytes[(name_len + args_len)..total_bytes];
@@ -557,7 +631,8 @@ impl super::Monitor {
 
         let _start_2 = Instant::now();
         let loader = {
-            let mut dynlink = self.dynlink.write(ThreadKey::get().unwrap());
+            let mut dynlink =
+                crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
             loader::RunCompLoader::new(
                 *dynlink,
                 compname,
@@ -573,7 +648,7 @@ impl super::Monitor {
 
         let root_comp = {
             let (_, ref mut cmp, ref mut dynlink, _, _) =
-                &mut *self.locks.lock(ThreadKey::get().unwrap());
+                &mut *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
 
             let controller = match config.controller {
                 ControllerOption::Inherit => cmp.get(caller)?.controller,
@@ -630,7 +705,8 @@ impl super::Monitor {
             return;
         };
         let comps = {
-            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) = *self.locks.lock(key);
+            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
+                *crate::lockdiag::watched(self.locks.lock(key));
             let comp = comp_handles.remove(caller, desc);
 
             if let Some(comp) = comp {
@@ -652,19 +728,19 @@ impl super::Monitor {
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
-        let mut cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         cmp.update_compartment_flags(instance, f)
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         cmp.load_compartment_flags(instance)
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn read_flags_and_signals(&self, instance: ObjID) -> (u64, u64) {
-        let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         let flags = cmp.load_compartment_flags(instance);
         let signals = cmp
             .get(instance)
@@ -676,7 +752,7 @@ impl super::Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
         let mut sl = {
-            let cmp = self.comp_mgr.write(ThreadKey::get().unwrap());
+            let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
             let Ok(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };

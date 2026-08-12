@@ -53,6 +53,64 @@ fn collect_files(root: &str, max: usize) -> Vec<PathBuf> {
     files
 }
 
+/// Time `read_dir` over `root` itself: cold once, then warm, then warm from several threads.
+///
+/// Enumeration is a separate cost from open and has never been measured. It is one naming gate call
+/// per 128 entries (libstd's `ReadDir` buffer), but the server side may go all the way to the pager
+/// and pay a further gate call per symlink, so the cold and warm numbers are expected to differ by
+/// orders of magnitude rather than by a constant.
+fn enum_phase(root: &str, nr_threads: usize) {
+    fn count_dir(dir: &str) -> usize {
+        std::fs::read_dir(dir)
+            .map(|d| d.flatten().count())
+            .unwrap_or(0)
+    }
+
+    let t_cold = Instant::now();
+    let n = count_dir(root);
+    let cold = t_cold.elapsed();
+    if n == 0 {
+        println!("pagepar: ENUM {} is empty, skipping", root);
+        return;
+    }
+
+    const WARM_ITERS: usize = 8;
+    let t_warm = Instant::now();
+    for _ in 0..WARM_ITERS {
+        std::hint::black_box(count_dir(root));
+    }
+    let warm = t_warm.elapsed() / WARM_ITERS as u32;
+
+    let barrier = Arc::new(Barrier::new(nr_threads));
+    let mut handles = Vec::new();
+    for _ in 0..nr_threads {
+        let barrier = barrier.clone();
+        let root = root.to_string();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            let t = Instant::now();
+            for _ in 0..WARM_ITERS {
+                std::hint::black_box(count_dir(&root));
+            }
+            t.elapsed() / WARM_ITERS as u32
+        }));
+    }
+    let par: Vec<_> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+    let par_max = par.iter().max().copied().unwrap_or_default();
+
+    println!(
+        "pagepar: ENUM {} ({} entries): cold {} us, warm {} us ({} us/entry), \
+         {} threads warm max {} us",
+        root,
+        n,
+        cold.as_micros(),
+        warm.as_micros(),
+        warm.as_micros() / n as u128,
+        nr_threads,
+        par_max.as_micros(),
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let root = args.next().unwrap_or_else(|| "/sysroot/lib".to_string());
@@ -84,6 +142,8 @@ fn main() {
         t_sys.elapsed().as_nanos() / SYSCALL_ITERS as u128,
         SYSCALL_ITERS,
     );
+
+    enum_phase(&root, nr_threads);
 
     let files = collect_files(&root, max_files);
     if files.is_empty() {

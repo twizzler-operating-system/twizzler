@@ -95,6 +95,15 @@ impl ThreadMgr {
         self.id_stack.push(id);
     }
 
+    /// Every live thread spawned for `instance`.
+    pub fn threads_of(&self, instance: ObjID) -> Vec<ObjID> {
+        self.all
+            .values()
+            .filter(|t| t.instance == instance)
+            .map(|t| t.id)
+            .collect()
+    }
+
     fn do_remove(&mut self, thread: &ManagedThread) {
         self.all.remove(&thread.id);
         self.release_super_tid(thread.super_tid);
@@ -212,6 +221,7 @@ impl ThreadMgr {
             _super_stack: super_stack,
             _super_tls: super_tls,
             main_thread_comp,
+            instance,
         }))
     }
 
@@ -261,6 +271,11 @@ pub struct ManagedThreadInner {
     _super_stack: Box<[MaybeUninit<u8>]>,
     _super_tls: TlsRegion,
     pub main_thread_comp: Option<ObjID>,
+    /// The compartment this thread was spawned for. Recorded so teardown can find every thread of
+    /// a compartment: `RunComp::per_thread` only holds threads that have called a gate needing
+    /// the simple buffer, which is a subset, and killing a subset is what leaves the survivors
+    /// blocked on a socket engine whose poll thread is gone.
+    pub instance: ObjID,
 }
 
 impl ManagedThreadInner {

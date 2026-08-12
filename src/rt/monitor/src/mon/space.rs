@@ -27,6 +27,73 @@ mod unmapper;
 pub use handle::MapHandle;
 pub use unmapper::Unmapper;
 
+// Temporary instrumentation for the File::open latency hunt (pagerperf.md). `sys_object_map` runs
+// with the space lock dropped, so separating it says how much of `Space::map` is real kernel work
+// (a cold object needs a pager round trip) versus the two lock acquisitions around it.
+mod mapsyscallstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(ns: u64) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let t = NS.fetch_add(ns, Ordering::Relaxed) + ns;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!("MAPSYSSTATS {} sys_object_map: {} us", n, t / 1000);
+        }
+    }
+}
+
+// Temporary: `Space::map` split into its four phases.
+//
+// `MAPSYSSTATS` established that the syscall is only ~40% of this function, but never said what the
+// other 60% is -- the two acquisitions of the one global space mutex, or the slot allocator's own
+// lock. Those want opposite fixes (shard the map table vs. a per-thread cache of free singles), so
+// measure before choosing. `comp_mgr` acquisition is now 45 us against this function's 34.5 ms, so
+// this is where the monitor's side of a map has gone.
+mod spacesplit {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    static LOCK1: AtomicU64 = AtomicU64::new(0);
+    static SLOT: AtomicU64 = AtomicU64::new(0);
+    static SYS: AtomicU64 = AtomicU64::new(0);
+    static LOCK2: AtomicU64 = AtomicU64::new(0);
+
+    pub struct Split {
+        pub lock1: u64,
+        pub slot: u64,
+        pub sys: u64,
+        pub lock2: u64,
+        pub hit: bool,
+    }
+
+    pub fn record(s: Split) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if s.hit {
+            HITS.fetch_add(1, Ordering::Relaxed);
+        }
+        LOCK1.fetch_add(s.lock1, Ordering::Relaxed);
+        SLOT.fetch_add(s.slot, Ordering::Relaxed);
+        SYS.fetch_add(s.sys, Ordering::Relaxed);
+        LOCK2.fetch_add(s.lock2, Ordering::Relaxed);
+        if !n.is_power_of_two() {
+            return;
+        }
+        twizzler_abi::klog_println!(
+            "SPACESPLIT {} maps ({} hits): lock1 {} us, slot {} us, sys {} us, lock2 {} us",
+            n,
+            HITS.load(Ordering::Relaxed),
+            LOCK1.load(Ordering::Relaxed) / 1000,
+            SLOT.load(Ordering::Relaxed) / 1000,
+            SYS.load(Ordering::Relaxed) / 1000,
+            LOCK2.load(Ordering::Relaxed) / 1000,
+        );
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 /// A mapping of an object and flags.
 pub struct MapInfo {
@@ -78,17 +145,34 @@ impl Space {
     /// Map an object into the space.
     pub fn map<'a>(this: &Mutex<Self>, info: MapInfo) -> Result<MapHandle, TwzError> {
         // Can't use the entry API here because the closure may fail.
-        let mut guard = this.lock().unwrap();
+        let mut split = spacesplit::Split {
+            lock1: 0,
+            slot: 0,
+            sys: 0,
+            lock2: 0,
+            hit: true,
+        };
+        let t_lock1 = std::time::Instant::now();
+        let mut guard = crate::lockdiag::watched(this.lock().unwrap());
+        split.lock1 = t_lock1.elapsed().as_nanos() as u64;
         let item = match guard.maps.get_mut(&info) {
             Some(item) => item,
             None => {
-                // Not yet mapped, so allocate a slot and map it.
-                let slot = unsafe { __monitor_get_slot() }
+                split.hit = false;
+                // Not yet mapped, so allocate a slot and map it. The slot allocator has its own
+                // lock, so taking it here used to nest that lock inside this one and stretch this
+                // critical section over it for no reason -- nothing about picking a free slot needs
+                // the map table held. Allocating after the drop leaves this lock covering only a
+                // hash lookup on the way in and an insert on the way out.
+                drop(guard);
+                let t_slot = std::time::Instant::now();
+                let slot: usize = unsafe { __monitor_get_slot() }
                     .try_into()
                     .ok()
                     .ok_or(ResourceError::OutOfResources)?;
+                split.slot = t_slot.elapsed().as_nanos() as u64;
 
-                drop(guard);
+                let t_sys = std::time::Instant::now();
                 let res = sys_object_map(
                     None,
                     info.id,
@@ -96,7 +180,11 @@ impl Space {
                     mapflags_into_prot(info.flags),
                     info.flags.into(),
                 );
-                guard = this.lock().unwrap();
+                split.sys = t_sys.elapsed().as_nanos() as u64;
+                mapsyscallstats::record(split.sys);
+                let t_lock2 = std::time::Instant::now();
+                guard = crate::lockdiag::watched(this.lock().unwrap());
+                split.lock2 = t_lock2.elapsed().as_nanos() as u64;
                 let Ok(_) = res else {
                     unsafe {
                         __monitor_release_slot(slot);
@@ -132,7 +220,10 @@ impl Space {
 
         // New maps will be set to zero, so this is unconditional.
         item.handle_count += 1;
-        Ok(Arc::new(MapHandleInner::new(info, item.addrs)))
+        let addrs = item.addrs;
+        drop(guard);
+        spacesplit::record(split);
+        Ok(Arc::new(MapHandleInner::new(info, addrs)))
     }
 
     /// Map a pair of objects into the space.

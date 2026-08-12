@@ -31,7 +31,8 @@ impl Unmapper {
                                 let monitor = get_monitor();
                                 match info {
                                     UnmapCommand::SpaceUnmap(info) => {
-                                        let mut space = monitor.space.lock().unwrap();
+                                        let mut space =
+                                            crate::lockdiag::watched(monitor.space.lock().unwrap());
                                         space.handle_drop(info);
                                     }
                                     UnmapCommand::SlotUnmap(slot) => {

@@ -2,7 +2,7 @@ use twizzler_abi::object::Protections;
 
 use super::super::common::uart::PL011;
 use crate::{
-    arch::memory::mmio::mmio_allocator,
+    arch::{context::ArchContextTarget, memory::mmio::mmio_allocator},
     interrupt::{Destination, TriggerMode},
     memory::{
         PhysAddr,
@@ -40,7 +40,7 @@ pub fn serial() -> &'static PL011 {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            let consist = Consistency::new(mapper.root_address());
+            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
             mapper.map(cursor, &mut phys, consist);
         }
 

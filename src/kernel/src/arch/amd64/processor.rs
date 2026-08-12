@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use twizzler_abi::arch::XSAVE_LEN;
 
@@ -75,10 +75,6 @@ pub fn init(tls: VirtAddr) {
         .get_feature_info()
         .map(|f| f.has_xsave())
         .unwrap_or_default();
-    unsafe { x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.raw()) };
-    unsafe { x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64) };
-    unsafe { x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0) };
-
     let _has_avx512 = x86::cpuid::CpuId::new()
         .get_extended_feature_info()
         .map(|f| f.has_avx512f())
@@ -88,6 +84,8 @@ pub fn init(tls: VirtAddr) {
         .map(|f| f.has_avx2())
         .unwrap_or_default();
 
+    let use_pcid = pcid_enabled();
+
     unsafe {
         let mut cr4 = x86::controlregs::cr4()
             | x86::controlregs::Cr4::CR4_ENABLE_SSE
@@ -96,7 +94,28 @@ pub fn init(tls: VirtAddr) {
             cr4 |= x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE
                 | x86::controlregs::Cr4::CR4_UNMASKED_SSE;
         }
+        // Legal only because cr3[11:0] is zero here: this cpu has either never left the root the
+        // trampoline gave it, or (on the bsp) switched to the kernel context back when
+        // switch_to_target still wrote bare roots.
+        if use_pcid {
+            cr4 |= x86::controlregs::Cr4::CR4_ENABLE_PCID;
+        }
         x86::controlregs::cr4_write(cr4);
+        if use_pcid {
+            // Turning PCIDE on is not architecturally required to invalidate anything, and every
+            // entry from before it went on is tagged PCID 0 -- the fallback PCID. Drop and re-set
+            // PGE, which does invalidate everything, globals included.
+            x86::controlregs::cr4_write(cr4 & !x86::controlregs::Cr4::CR4_ENABLE_GLOBAL_PAGES);
+            x86::controlregs::cr4_write(cr4);
+        }
+        // After PCIDE, not before. Writing the thread pointer is what makes `tls_ready()` true for
+        // this cpu, and `switch_to_target` reads that to decide whether it may put a PCID (and the
+        // no-flush bit, which #GPs with PCIDE clear) into cr3. Nothing between here and there
+        // switches address spaces today, so the old order was only latently wrong -- but the
+        // ordering is the invariant, so state it in the code rather than in the gap between calls.
+        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, tls.raw());
+        x86::msr::wrmsr(x86::msr::IA32_GS_BASE, gs_scratch as u64);
+        x86::msr::wrmsr(x86::msr::IA32_KERNEL_GSBASE, 0);
         if has_xsave {
             let cpuid = x86::cpuid::CpuId::new();
             let xsave_size = if let Some(ex) = cpuid.get_extended_state_info() {
@@ -246,6 +265,33 @@ fn topo_path(shifts: &[u32], smt_level: Option<usize>, id: u32) -> Vec<(usize, b
     path
 }
 
+/// The number of PCIDs the hardware provides: cr3[11:0].
+pub(super) const NR_PCIDS: usize = 4096;
+const PCID_BITMAP_WORDS: usize = NR_PCIDS / 64;
+
+/// Whether PCIDs are in use, decided once by [init_pcid].
+static PCID_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Decide whether to use PCIDs. Must run before the first [crate::arch::context::ArchContext] is
+/// built -- a context's PCID is fixed at construction, and the kernel's is built by
+/// `memory::init` -- and therefore before any cpu has set CR4.PCIDE. That gap is why
+/// `switch_to_target` masks the PCID out of cr3 while a cpu is still pre-`init`.
+pub fn init_pcid() {
+    let ok = !crate::no_pcid()
+        && x86::cpuid::CpuId::new()
+            .get_feature_info()
+            .is_some_and(|f| f.has_pcid());
+    PCID_ENABLED.store(ok, Ordering::SeqCst);
+    logln!(
+        "[kernel::mm] pcid: {}",
+        if ok { "enabled" } else { "disabled" }
+    );
+}
+
+pub(super) fn pcid_enabled() -> bool {
+    PCID_ENABLED.load(Ordering::Relaxed)
+}
+
 pub struct ArchProcessor {
     wait_word: AtomicU64,
     pub(super) tlb_shootdown_info: TlbShootdownInfo,
@@ -253,6 +299,35 @@ pub struct ArchProcessor {
     /// processors whose active address space can't have stale entries for the target
     /// being invalidated. 0 is a sentinel that never matches a real page-table root.
     pub(super) active_cr3: AtomicU64,
+    /// One bit per PCID: set means this processor cannot be holding a stale entry for that
+    /// PCID, so it may switch into it with CR3_PCID_NOFLUSH. Conservative in the safe
+    /// direction -- a spuriously clear bit costs one flush, a spuriously set one is a bug.
+    pcid_valid: [AtomicU64; PCID_BITMAP_WORDS],
+}
+
+impl ArchProcessor {
+    /// Claim that this processor's entries for `pcid` are up to date, returning whether they
+    /// already were. A false return obliges the caller to load cr3 *without*
+    /// CR3_PCID_NOFLUSH, which is what makes the claim true.
+    ///
+    /// AcqRel, not Relaxed: this pairs with [Self::pcid_invalidate] to order a switch against a
+    /// racing invalidation. See the argument in `ArchTlbMgr::finish`.
+    pub(super) fn pcid_test_and_set(&self, pcid: u16) -> bool {
+        let (word, bit) = (pcid as usize / 64, pcid as usize % 64);
+        self.pcid_valid[word].fetch_or(1 << bit, Ordering::AcqRel) & (1 << bit) != 0
+    }
+
+    /// Declare that this processor may hold stale entries for `pcid`, forcing a flush the next
+    /// time it switches into that address space. AcqRel for the reason above.
+    ///
+    /// Returns whether the claim was actually there to take. Only a true return costs anything:
+    /// clearing an already-clear bit changes nothing, and since every invalidation sprays this
+    /// across every other processor, most calls are exactly that. Counting calls instead of
+    /// transitions overstates the cost of PCIDs by several times.
+    pub(super) fn pcid_invalidate(&self, pcid: u16) -> bool {
+        let (word, bit) = (pcid as usize / 64, pcid as usize % 64);
+        self.pcid_valid[word].fetch_and(!(1 << bit), Ordering::AcqRel) & (1 << bit) != 0
+    }
 }
 
 /// Published in [`ArchProcessor::active_cr3`] while a processor is partway through switching
@@ -274,6 +349,7 @@ impl Default for ArchProcessor {
             wait_word: Default::default(),
             tlb_shootdown_info: TlbShootdownInfo::new(),
             active_cr3: AtomicU64::new(0),
+            pcid_valid: [const { AtomicU64::new(0) }; PCID_BITMAP_WORDS],
         }
     }
 }

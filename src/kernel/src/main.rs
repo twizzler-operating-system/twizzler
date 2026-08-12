@@ -101,6 +101,13 @@ pub fn is_bench_mode() -> bool {
     BENCH_MODE.load(Ordering::SeqCst) > 0
 }
 
+static NO_PCID: AtomicBool = AtomicBool::new(false);
+/// Whether the boot cmdline asked us to run without PCIDs (x86_64). A kill switch for bisecting
+/// TLB coherence problems: with this set, address space switches flush as they always did.
+pub fn no_pcid() -> bool {
+    NO_PCID.load(Ordering::SeqCst)
+}
+
 static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
 
 pub fn get_boot_info() -> &'static dyn BootInfo {
@@ -151,11 +158,18 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         if opt == "--bench" {
             BENCH_MODE.store(BENCH_MODE_USER, Ordering::SeqCst);
         }
+        if opt == "--no-pcid" {
+            NO_PCID.store(true, Ordering::SeqCst);
+        }
     }
 
     if is_test_mode() {
         logln!("!!! TEST MODE ACTIVE");
     }
+    // Before memory::init, which builds the kernel context: a context's PCID is fixed when it is
+    // constructed.
+    #[cfg(target_arch = "x86_64")]
+    arch::processor::init_pcid();
     logln!("[kernel::mm] initializing memory management");
     memory::init(boot_info);
     arch::init_post_memory(boot_info);
@@ -245,6 +259,7 @@ pub fn idle_main() -> ! {
             check_timed_out_mutexes();
             check_timed_out_requests();
             check_orphan_threads();
+            crate::thread::check_system_hang();
         }
         iter = iter.wrapping_add(1);
         requeue_all();

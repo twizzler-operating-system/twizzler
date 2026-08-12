@@ -15,6 +15,7 @@ use crate::{
             },
             pit,
         },
+        context::PCID_MASK,
         memory::phys_to_virt,
     },
     interrupt::Destination,
@@ -192,7 +193,9 @@ pub unsafe fn poke_cpu(cpu: u32, tcb_base: VirtAddr, kernel_stack: *mut u8) {
         ));
 
         let pagetables = (0x6f40 + phys_mem_offset) as *mut u64;
-        *pagetables = x86::controlregs::cr3();
+        // Mask off the PCID: the trampoline loads this in protected mode with CR4.PCIDE clear,
+        // where cr3[4:3] mean PWT/PCD rather than being part of a PCID.
+        *pagetables = x86::controlregs::cr3() & !PCID_MASK;
         let stack = (0x6f48 + phys_mem_offset) as *mut u64;
         *stack = kernel_stack as u64;
         let entry = (0x6fa0 + phys_mem_offset) as *mut u64;
