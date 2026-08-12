@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
-    syscall::{ThreadControl, ThreadSchedStats, ThreadSpawnArgs},
+    syscall::{SctxSwitchFlags, ThreadControl, ThreadSchedStats, ThreadSpawnArgs},
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
@@ -15,8 +15,11 @@ use crate::{
         sched::{SchedFlags, lookup_thread_repr, schedule},
     },
     security::SwitchResult,
-    syscall::sync::{add_to_requeue, requeue_all},
-    thread::current_thread_ref,
+    syscall::{
+        object::sys_sctx_attach,
+        sync::{add_to_requeue, requeue_all},
+    },
+    thread::{current_thread_ref, priority::Priority},
 };
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
@@ -79,14 +82,30 @@ pub fn thread_ctrl(
         }
         ThreadControl::GetSelfId => return current_thread_ref().unwrap().objid().parts(),
         ThreadControl::GetActiveSctxId => {
-            return current_thread_ref().unwrap().secctx.active_id().parts();
+            return current_thread_ref().unwrap().active_sctx_id().parts();
         }
         ThreadControl::SetActiveSctxId => {
             let id = ObjID::from_parts([arg, arg2]);
-            let res = current_thread_ref().unwrap().secctx.switch_context(id);
+            let flags = SctxSwitchFlags::from_bits_truncate(arg3);
+            let cur = current_thread_ref().unwrap();
+            let (res, tls) = cur.switch_sctx(id);
+            if res != SwitchResult::NotAttached {
+                return [0, tls];
+            }
+            // A gate entry always switches into a context it is not necessarily attached to yet,
+            // and attaching is unconditional anyway (any thread may attach any sctx it can name),
+            // so doing it here saves the caller a second syscall on every cold entry -- and, since
+            // userspace cannot cheaply remember that it has already attached, on every entry.
+            if !flags.contains(SctxSwitchFlags::ATTACH) {
+                return [1, 1];
+            }
+            if let Err(e) = sys_sctx_attach(id) {
+                return [1, e.raw()];
+            }
+            let (res, tls) = cur.switch_sctx(id);
             return match res {
                 SwitchResult::NotAttached => [1, 1],
-                _ => [0, 0],
+                _ => [0, tls],
             };
         }
         ThreadControl::GetStats => {
@@ -160,17 +179,16 @@ pub fn thread_ctrl(
                         // kill a thread mid-wait. `mutex_link` linked here says the target dies
                         // while still a member of some mutex's sleep queue.
                         let exit_sctx = ObjID::from_parts([arg2, arg3]);
-                        logln!(
-                            "calling force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}, active sctx {}, exit sctx {}",
+                        log::debug!(
+                            "force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}, active sctx {}, exit sctx {}",
                             thread.id(),
                             thread.objid(),
                             cur_state,
                             thread.mutex_link.is_linked(),
                             thread.get_mutex_wait(),
-                            thread.secctx.active_id(),
+                            thread.active_sctx_id(),
                             exit_sctx,
                         );
-                        crate::panic::backtrace(true, None);
                         thread.set_exit_sctx(exit_sctx);
                         thread.force_exit();
                     }
@@ -211,6 +229,37 @@ pub fn thread_ctrl(
                 Ok(_) => [0, 0],
                 Err(e) => [1, e.raw()],
             };
+        }
+        ThreadControl::SetPriority => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let Ok(raw) = u32::try_from(arg) else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let Some(pri) = Priority::try_from_raw(raw) else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            // TODO: check perms (raising priority, and touching another thread, should both be
+            // privileged).
+            thread.set_priority(pri);
+            return [0, 0];
+        }
+        ThreadControl::GetPriority => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            return [0, thread.base_priority().raw() as u64];
         }
         ThreadControl::SendMessage => {
             let thread = if let Some(target) = target {

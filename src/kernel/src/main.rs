@@ -256,10 +256,18 @@ pub fn idle_main() -> ! {
         }
         if iter % 1000 == 0 && current_processor().is_bsp() {
             scan_deleted();
-            check_timed_out_mutexes();
-            check_timed_out_requests();
-            check_orphan_threads();
-            crate::thread::check_system_hang();
+            // The rest are diagnostics, and they are not free: each walks every thread or every
+            // inflight request under that structure's lock, from the idle loop, on every scan.
+            // `check_system_hang` additionally reports on threads that are merely idle -- service
+            // threads parked on a condvar cross its 25s threshold in every boot, which spent its
+            // whole report budget on healthy runs. Restricted to test mode, where a sweep is
+            // reading the transcript and the cost buys something.
+            if is_test_mode() {
+                check_timed_out_mutexes();
+                check_timed_out_requests();
+                check_orphan_threads();
+                crate::thread::check_system_hang();
+            }
         }
         iter = iter.wrapping_add(1);
         requeue_all();

@@ -17,11 +17,18 @@ fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
     TICK_SOURCES.lock().get(0).cloned().flatten()
 }
 
+/// The `Once` exists to make this a one-time cost, but the guard in front of it was
+/// `bench_clock().is_none()` -- which called `bench_clock()` *unconditionally*, so every
+/// `Instant::now()` took the global `TICK_SOURCES` spinlock and cloned an `Arc` (a shared-cacheline
+/// atomic RMW) before consulting the cache it already had. That is on the path of every
+/// `Mutex::lock`, every page fault, and every scheduler tick, and it is a system-wide serialization
+/// point rather than merely slow.
 fn get_bench() -> Option<&'static Arc<dyn ClockHardware + Send + Sync>> {
-    if bench_clock().is_none() {
-        return None;
+    if let Some(clock) = BENCH_CLOCK.poll() {
+        return Some(clock);
     }
-    Some(BENCH_CLOCK.call_once(|| bench_clock().unwrap()))
+    let clock = bench_clock()?;
+    Some(BENCH_CLOCK.call_once(|| clock))
 }
 
 impl Instant {

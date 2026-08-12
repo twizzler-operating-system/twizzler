@@ -365,7 +365,9 @@ impl Thread {
             logln!("warning -- tried to restore thread to 0 IP");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
-        let res = self.secctx.switch_context(frame.prior_ctx);
+        // The frame's own `thread_ptr` is applied later, on the syscall return path, so it wins
+        // over whatever this switch installs for `prior_ctx`.
+        let (res, _) = self.switch_sctx(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!(
                 "warning -- tried to restore thread to non-attached security context {}",
@@ -388,7 +390,7 @@ impl Thread {
             logln!("warning -- thread aborted due to upcall generation during frame restoration");
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
-        let source_ctx = self.secctx.active_id();
+        let source_ctx = self.active_sctx_id();
         let ok = match *self.arch.entry_registers.borrow() {
             Registers::None => {
                 panic!(
@@ -415,10 +417,12 @@ impl Thread {
         }
 
         if sup {
+            // Switch first: the switch installs whatever thread pointer this thread last used in
+            // `super_ctx`, and the upcall target's is the one that must end up in place.
+            self.switch_sctx(target.super_ctx);
             self.arch
                 .user_fs
                 .store(target.super_thread_ptr as u64, Ordering::SeqCst);
-            self.secctx.switch_context(target.super_ctx);
         }
     }
 

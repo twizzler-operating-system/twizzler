@@ -198,7 +198,7 @@ fn check_violations(
 
 fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID) {
     let sctx_id = current_thread_ref()
-        .map(|ct| ct.secctx.active_id())
+        .map(|ct| ct.active_sctx_id())
         .unwrap_or(KERNEL_SCTX);
     let user_ctx = current_memory_context();
     if addr.is_kernel_object_memory() {
@@ -276,12 +276,12 @@ fn check_security(
         exec_off: ip - exec_info.range.start,
     };
     if let Some(ct) = current_thread_ref() {
-        let perms = ct.secctx.check_active_access(&access_info, default_prot);
+        let perms = ct.check_active_access(&access_info, default_prot);
 
         if perms.provide & !perms.restrict & access_kind == access_kind {
             return Ok(perms);
         }
-        let perms = ct.secctx.search_access(&access_info, default_prot);
+        let perms = ct.search_access(&access_info, default_prot);
         if perms.provide & !perms.restrict & access_kind != access_kind {
             log::error!(
                 "security violation: addr={:?}, cause={:?}, ip={:?}, perms={:?}, access_info={:?}",
@@ -331,7 +331,7 @@ fn page_fault_to_region(
 
     // Do we need to switch contexts?
     if perms.ctx != sctx_id {
-        current_thread_ref().map(|ct| ct.secctx.switch_context(perms.ctx));
+        current_thread_ref().map(|ct| ct.switch_sctx(perms.ctx));
     }
 
     if let Err(e) = info.handle_fault(

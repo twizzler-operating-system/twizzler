@@ -10,7 +10,7 @@ use core::{
 use intrusive_collections::{RBTreeAtomicLink, linked_list::AtomicLink, offset_of};
 use time::{SAMPLE_PERIOD_TICKS, ThreadSched, ThreadStats};
 use twizzler_abi::{
-    object::{NULLPAGE_SIZE, ObjID},
+    object::{NULLPAGE_SIZE, ObjID, Protections},
     syscall::{PERTHREAD_TRACE_GEN_SAMPLE, ThreadSpawnArgs},
     thread::{ExecutionState, ThreadRepr},
     trace::{ThreadSamplingEvent, TraceEntryFlags, TraceKind},
@@ -36,11 +36,15 @@ use crate::{
         mp::get_processor,
         sched::{SchedFlags, remove_thread, schedule, schedule_resched, with_all_threads},
     },
-    security::SecCtxMgr,
+    security::{
+        AccessInfo, KERNEL_SCTX, PermsInfo, SecCtxMgr, SecurityContextRef, SwitchResult,
+        kernel_sctx,
+    },
     spinlock::Spinlock,
     thread::{
         flags::THREAD_MUST_EXIT,
         locktrack::{LockTracker, deregister_lock_tracker, register_lock_tracker},
+        sctx::{SctxCache, Switch},
     },
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
@@ -52,10 +56,62 @@ pub mod entry;
 mod flags;
 pub mod locktrack;
 pub mod priority;
+mod sctx;
 pub mod suspend;
 pub mod time;
 
 pub use flags::{enter_kernel, exit_kernel};
+
+/// Temporary instrumentation: a cross-compartment gate entry is now a single `SetActiveSctxId`
+/// syscall, so what [Thread::switch_sctx] costs is most of what a gate call costs. Separates the
+/// three outcomes, since they differ by an order of magnitude.
+mod switchstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static FAST_N: AtomicU64 = AtomicU64::new(0);
+    static FAST_NS: AtomicU64 = AtomicU64::new(0);
+    static SLOW_N: AtomicU64 = AtomicU64::new(0);
+    static SLOW_NS: AtomicU64 = AtomicU64::new(0);
+    static NONE_N: AtomicU64 = AtomicU64::new(0);
+    /// Cost of one back-to-back pair of `Instant::now()` calls, so the figures above can be read
+    /// against the floor of the instrument measuring them.
+    static CLOCK_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn fast(ns: u64) {
+        FAST_NS.fetch_add(ns, Ordering::Relaxed);
+        report(FAST_N.fetch_add(1, Ordering::Relaxed) + 1);
+    }
+
+    pub fn slow(ns: u64) {
+        SLOW_NS.fetch_add(ns, Ordering::Relaxed);
+        SLOW_N.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn no_switch() {
+        NONE_N.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn report(n: u64) {
+        let cal = crate::instant::Instant::now();
+        let clock = CLOCK_NS.fetch_add(
+            (crate::instant::Instant::now() - cal).as_nanos() as u64,
+            Ordering::Relaxed,
+        ) + 1;
+        if !n.is_power_of_two() {
+            return;
+        }
+        let slow_n = SLOW_N.load(Ordering::Relaxed).max(1);
+        crate::logln!(
+            "SCTXSWITCHSTATS {} fast @ {} ns, {} slow @ {} ns, {} no-switch, clock read {} ns",
+            n,
+            FAST_NS.load(Ordering::Relaxed) / n,
+            SLOW_N.load(Ordering::Relaxed),
+            SLOW_NS.load(Ordering::Relaxed) / slow_n,
+            NONE_N.load(Ordering::Relaxed),
+            clock / n,
+        );
+    }
+}
 
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
@@ -94,6 +150,8 @@ pub struct Thread {
     pub suspend_link: RBTreeAtomicLink,
     pub sync_links: ThreadSleepLinker,
     pub secctx: SecCtxMgr,
+    /// User thread pointer, saved per security context and swapped by [Thread::switch_sctx].
+    sctx_cache: SctxCache,
     pub sample_expire: Spinlock<Option<u64>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
@@ -317,6 +375,9 @@ impl Thread {
             sync_links: ThreadSleepLinker::new(),
             upcall_target: Spinlock::new(None),
             secctx: SecCtxMgr::new_kernel(),
+            // Threads start in the kernel context; `start_new_user` re-seeds this from the
+            // spawning thread when it clones the attachment set.
+            sctx_cache: SctxCache::new(KERNEL_SCTX, &kernel_sctx()),
             sample_expire: Spinlock::new(None),
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
@@ -345,6 +406,106 @@ impl Thread {
         thread.flags.fetch_or(THREAD_PROC_IDLE, Ordering::SeqCst);
         thread.switch_lock.store(1, Ordering::SeqCst);
         thread
+    }
+
+    /// Switch the active security context, carrying the user thread pointer with it.
+    ///
+    /// A compartment's TLS is only reachable from inside that compartment, so the thread pointer
+    /// belongs to the (thread, context) pair rather than to the thread: this saves the outgoing
+    /// context's pointer and installs the incoming one, which is zero the first time this thread
+    /// runs in a given context.
+    ///
+    /// Returns the installed pointer, which is what lets a cross-compartment entry decide from the
+    /// switch alone whether it may use TLS immediately or must build a region first -- userspace
+    /// cannot test for a zero thread pointer, because the read that would test it is the fault.
+    pub fn switch_sctx(&self, id: ObjID) -> (SwitchResult, u64) {
+        let t0 = crate::instant::Instant::now();
+        // One lock acquisition covers the whole fast path: reading the outgoing context, saving
+        // its thread pointer, finding the incoming one, and installing it as active.
+        match self.sctx_cache.switch(id, self.get_tls()) {
+            Switch::NoSwitch => {
+                // Still load the page tables: being active in a context is not by itself proof
+                // that its root is in cr3.
+                self.memory_context.as_ref().map(|mc| mc.switch_to(id));
+                switchstats::no_switch();
+                (SwitchResult::NoSwitch, self.get_tls())
+            }
+            Switch::Hit(hit) => {
+                self.set_tls(hit.tls);
+                if let Some(mc) = self.memory_context.as_ref() {
+                    // Safety: the target came from this context, and the `Hit` holds a reference
+                    // to the security context that keeps its registration alive across this call.
+                    unsafe { mc.switch_to_target(&hit.target) };
+                }
+                switchstats::fast((crate::instant::Instant::now() - t0).as_nanos() as u64);
+                (SwitchResult::Switched, hit.tls)
+            }
+            Switch::Miss { from } => {
+                let r = self.switch_sctx_slow(from, id);
+                switchstats::slow((crate::instant::Instant::now() - t0).as_nanos() as u64);
+                r
+            }
+        }
+    }
+
+    /// The incoming context was not cached, so go through the attached map.
+    ///
+    /// The cache has already saved `from`'s thread pointer and left it active, so a `NotAttached`
+    /// bail-out here leaves everything as it was.
+    #[inline(never)]
+    fn switch_sctx_slow(&self, from: ObjID, id: ObjID) -> (SwitchResult, u64) {
+        let Some(ctx) = self.secctx.attached(id) else {
+            return (SwitchResult::NotAttached, self.get_tls());
+        };
+        self.sctx_cache.save_tls(from, self.get_tls());
+        let new_tls = self.sctx_cache.saved_tls(id);
+        self.sctx_cache.set_active(id, &ctx);
+        self.set_tls(new_tls);
+        if let Some(mc) = self.memory_context.as_ref() {
+            mc.switch_to(id);
+            // Cache what that cost, so the next switch into this context -- and the return trip,
+            // once it has been through here once itself -- takes the fast path.
+            if let Some(target) = mc.switch_target(id) {
+                self.sctx_cache.insert(id, new_tls, &ctx, target);
+            }
+        }
+        (SwitchResult::Switched, new_tls)
+    }
+
+    /// The id of the security context this thread is running in.
+    pub fn active_sctx_id(&self) -> ObjID {
+        self.sctx_cache.active_id()
+    }
+
+    /// The security context this thread is running in.
+    pub fn active_sctx(&self) -> SecurityContextRef {
+        // The attached map holds a strong reference to whatever is active, so the weak one in the
+        // cache resolves; going to the map is a belt-and-braces fallback, not an expected path.
+        self.sctx_cache
+            .active_ctx()
+            .or_else(|| self.secctx.attached(self.active_sctx_id()))
+            .unwrap_or_else(kernel_sctx)
+    }
+
+    /// Check access rights in this thread's active context.
+    pub fn check_active_access(
+        &self,
+        access_info: &AccessInfo,
+        default_prots: Protections,
+    ) -> PermsInfo {
+        self.active_sctx()
+            .lookup(access_info.target_id, default_prots)
+    }
+
+    /// Search every context this thread is attached to for one granting the requested access.
+    pub fn search_access(&self, access_info: &AccessInfo, default_prots: Protections) -> PermsInfo {
+        self.secctx
+            .search_access(&self.active_sctx(), access_info, default_prots)
+    }
+
+    /// Seed the active context, for a thread built by cloning another's attachments.
+    pub fn init_active_sctx(&self, ctx: &SecurityContextRef) {
+        self.sctx_cache.set_active(ctx.id(), ctx);
     }
 
     /// Mark this thread as having executed, returning whether it already had. A thread that has
@@ -382,7 +543,7 @@ impl Thread {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
                 // We have to use active_id here to avoid a mutex.
-                ctx.switch_to(self.secctx.active_id());
+                ctx.switch_to(self.active_sctx_id());
             } else {
                 // Threads with no memory context of their own (the idle thread, kernel
                 // threads) must not be left running on the outgoing thread's page tables.
@@ -670,7 +831,7 @@ impl Thread {
                 info,
                 self.read_ip(),
                 self.read_registers(),
-                self.secctx.active_id(),
+                self.active_sctx_id(),
                 self.objid(),
             );
             //crate::panic::backtrace(true, None);
@@ -716,7 +877,7 @@ impl Thread {
 
     pub fn must_return_to_user(&self) -> bool {
         self.pending_message.load(Ordering::SeqCst) != 0
-            && self.secctx.active_id()
+            && self.active_sctx_id()
                 == self
                     .upcall_target
                     .lock()
@@ -735,6 +896,23 @@ impl Thread {
                 exit(101);
             }
         } else {
+            // The resched below only reaches a target that is running. One already parked in a
+            // thread-sync sleep polls neither exit point and nothing else will wake it, so hand it
+            // to the timeout queue.
+            //
+            // Deferred rather than claimed here: `prep_sleep` sets SYNC_SLEEP while the thread is
+            // still running, before its critical guard, so a `reset_sync_sleep` from this side can
+            // requeue a thread that is already on the run queue -- "attempted to insert an object
+            // that is already linked". On the timeout thread the generation captured now is
+            // re-checked first (see `end_sync_sleep`), so a sleep that ended meanwhile is left
+            // alone, and a target still mid-commit is critical and merely lands on the requeue list
+            // for its own `claim_own_wakeup` to collect.
+            let _ = crate::clock::register_timeout_callback(
+                crate::syscall::sync::force_exit_wake_ns(self),
+                crate::syscall::sync::thread_sync_cb_timeout,
+                self.clone(),
+                self.sync_sleep_gen(),
+            );
             ipi_exec(
                 Destination::AllButSelf,
                 Box::new(|| schedule_resched()),
@@ -772,7 +950,7 @@ impl Thread {
         if want.raw() == 0 {
             return true;
         }
-        self.secctx.active_id() == want
+        self.active_sctx_id() == want
     }
 
     /// A force-exit is pending *and* can be delivered at this thread's current security context.
@@ -1032,6 +1210,7 @@ pub fn check_system_hang() {
     // +1 so a zero timestamp always means "no sample yet".
     let now = crate::instant::Instant::now().into_time_span().as_nanos() as u64 + 1;
     let mut any_stuck = false;
+    let mut stuck_id = None;
     with_all_threads(|at| {
         for thread in at.values() {
             if thread.is_idle_thread() {
@@ -1050,6 +1229,12 @@ pub fn check_system_hang() {
                 continue;
             }
             if now.saturating_sub(since) >= HANG_REPORT_SECS * 1_000_000_000 {
+                // Record *who* tripped it, not just that something did. Without this the header
+                // says a thread is stuck and the table lists every thread sorted by id, so the one
+                // that actually crossed the threshold is indistinguishable from the dozens parked
+                // legitimately -- which is how the first attempt at filtering this got aimed at the
+                // wrong threads entirely.
+                stuck_id = Some((thread.id(), thread.objid()));
                 any_stuck = true;
                 // Restart this thread's window so a permanently parked thread reports on an
                 // interval rather than on every scan.
@@ -1060,8 +1245,11 @@ pub fn check_system_hang() {
     if !any_stuck || HANG_REPORTS.fetch_add(1, Ordering::Relaxed) >= MAX_HANG_REPORTS {
         return;
     }
+    let (stuck_tid, stuck_objid) = stuck_id.unwrap_or((0, 0.into()));
     emerglogln!(
-        "== a thread has been asleep for {}s; thread wait table:",
+        "== thread {} ({}) has been asleep for {}s; thread wait table:",
+        stuck_tid,
+        stuck_objid,
         HANG_REPORT_SECS
     );
     with_all_threads(|at| {
@@ -1074,7 +1262,7 @@ pub fn check_system_hang() {
                 thread.id(),
                 thread.objid(),
                 thread.get_state(),
-                thread.secctx.active_id(),
+                thread.active_sctx_id(),
                 thread.is_in_user(),
                 thread.must_exit(),
                 thread.read_ip(),
@@ -1160,7 +1348,7 @@ pub fn check_orphan_threads() {
                         thread.objid(),
                         scans,
                         thread.exit_sctx_ok(),
-                        thread.secctx.active_id(),
+                        thread.active_sctx_id(),
                         thread.get_state(),
                         thread.is_critical(),
                         thread.get_mutex_count(),

@@ -98,7 +98,7 @@ pub fn exit_kernel() {
         if thread.arch.has_upcall_restore_frame() {
             return;
         }
-        if thread.secctx.active_id()
+        if thread.active_sctx_id()
             == thread
                 .upcall_target
                 .lock()

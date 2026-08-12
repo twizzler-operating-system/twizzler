@@ -278,18 +278,32 @@ pub struct SecFrame {
     sctx: ObjID,
 }
 
+/// Snapshot the caller's compartment context, to be reinstalled by [restore_frame] once the gate
+/// returns.
+///
+/// The sctx read used to be a syscall on every gate call, for a value the caller stub then went on
+/// to ask [get_sctx_id] for anyway. A thread running a compartment's own code is always active in
+/// that compartment's context -- entry switches to the callee's and this restores the caller's --
+/// so the answer is a per-(thread, compartment) constant, which is exactly what `get_sctx_id`
+/// memoizes in this compartment's TLS. It still falls back to the kernel when there is no usable
+/// thread pointer to memoize into.
 pub fn frame() -> SecFrame {
     let tp = get_tp();
-    // TODO: do this without calling the kernel.
-    let sctx = twizzler_abi::syscall::sys_thread_active_sctx_id();
+    let sctx = get_sctx_id();
     SecFrame { tp, sctx }
 }
 
 pub fn restore_frame(frame: SecFrame) {
-    if frame.tp != 0 {
+    // The kernel tracks a thread pointer per (thread, security context), so switching back also
+    // restores this compartment's TLS -- one syscall for both halves of the frame. The check is an
+    // `rdfsbase` and covers the paths where no switch happened on the way in (a callee entered
+    // from the monitor never runs `cross_compartment_entry`), where the kernel has no swap to
+    // undo. Restoring a pointer we did not leave with would be a compartment running on another
+    // compartment's TLS, so it is worth the branch.
+    twizzler_abi::syscall::sys_thread_set_active_sctx_id(frame.sctx).unwrap();
+    if frame.tp != 0 && get_tp() != frame.tp {
         twizzler_abi::syscall::sys_thread_settls(frame.tp as u64);
     }
-    twizzler_abi::syscall::sys_thread_set_active_sctx_id(frame.sctx).unwrap();
 }
 
 #[derive(Clone, Copy)]

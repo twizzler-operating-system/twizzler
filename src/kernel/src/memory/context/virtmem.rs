@@ -239,24 +239,71 @@ mod mapobjsplit {
     static SCTX: AtomicU64 = AtomicU64::new(0);
     static PTLOCK: AtomicU64 = AtomicU64::new(0);
     static ARCH: AtomicU64 = AtomicU64::new(0);
+    static PTDROP: AtomicU64 = AtomicU64::new(0);
+    static FADROP: AtomicU64 = AtomicU64::new(0);
 
-    pub fn record(pre: u64, sctx: u64, ptlock: u64, arch: u64) {
+    static PROLOGUE: AtomicU64 = AtomicU64::new(0);
+    static GETSCTX: AtomicU64 = AtomicU64::new(0);
+    static OK: AtomicU64 = AtomicU64::new(0);
+    static ERR: AtomicU64 = AtomicU64::new(0);
+    static ERR_KERNEL: AtomicU64 = AtomicU64::new(0);
+    static OK_KERNEL: AtomicU64 = AtomicU64::new(0);
+
+    pub fn got(ok: bool, is_kernel_sctx: bool) {
+        match (ok, is_kernel_sctx) {
+            (true, false) => OK.fetch_add(1, Ordering::Relaxed),
+            (true, true) => OK_KERNEL.fetch_add(1, Ordering::Relaxed),
+            (false, false) => ERR.fetch_add(1, Ordering::Relaxed),
+            (false, true) => ERR_KERNEL.fetch_add(1, Ordering::Relaxed),
+        };
+    }
+
+    fn resolve_line() {
+        crate::logln!(
+            "MAPOBJRESOLVE ok {} (kernel-sctx {}), err {} (kernel-sctx {})",
+            OK.load(Ordering::Relaxed),
+            OK_KERNEL.load(Ordering::Relaxed),
+            ERR.load(Ordering::Relaxed),
+            ERR_KERNEL.load(Ordering::Relaxed),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        prologue: u64,
+        pre: u64,
+        getsctx: u64,
+        sctx: u64,
+        ptlock: u64,
+        arch: u64,
+        ptdrop: u64,
+        fadrop: u64,
+    ) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        PROLOGUE.fetch_add(prologue, Ordering::Relaxed);
+        GETSCTX.fetch_add(getsctx, Ordering::Relaxed);
         PRE.fetch_add(pre, Ordering::Relaxed);
         SCTX.fetch_add(sctx, Ordering::Relaxed);
         PTLOCK.fetch_add(ptlock, Ordering::Relaxed);
         ARCH.fetch_add(arch, Ordering::Relaxed);
+        PTDROP.fetch_add(ptdrop, Ordering::Relaxed);
+        FADROP.fetch_add(fadrop, Ordering::Relaxed);
         if !n.is_power_of_two() {
             return;
         }
         crate::logln!(
-            "MAPOBJSPLIT {} map_object: precharge {} us, sctx {} us, ptlock {} us, archmap {} us",
+            "MAPOBJSPLIT {} map_object: prologue {} us, precharge {} us, getsctx {} us, perms {} us, ptlock {} us, archmap {} us, ptdrop {} us, fadrop {} us",
             n,
+            PROLOGUE.load(Ordering::Relaxed) / 1000,
             PRE.load(Ordering::Relaxed) / 1000,
+            GETSCTX.load(Ordering::Relaxed) / 1000,
             SCTX.load(Ordering::Relaxed) / 1000,
             PTLOCK.load(Ordering::Relaxed) / 1000,
             ARCH.load(Ordering::Relaxed) / 1000,
+            PTDROP.load(Ordering::Relaxed) / 1000,
+            FADROP.load(Ordering::Relaxed) / 1000,
         );
+        resolve_line();
     }
 }
 
@@ -334,12 +381,30 @@ impl VirtContext {
     }
 
     pub fn map_object(&self, info: &MapRegion, default_prots: Protections) {
-        let sctx = current_thread_ref()
-            .map(|ct| ct.secctx.active_id())
-            .unwrap_or(KERNEL_SCTX);
+        // Prologue timed separately: `secctx.active_id()` goes through `SecCtxMgr`, and it sat
+        // before every timestamp in the first version of this instrumentation.
+        let t_prologue = crate::instant::Instant::now();
+        // An explicit target wins; zero means "whatever this thread is running as", which for the
+        // monitor is KERNEL_SCTX -- its instance id is zero too. That now resolves (see
+        // `security::kernel_sctx`), so those mappings get installed here rather than left to the
+        // fault path.
+        let sctx = if self.is_kernel {
+            // The kernel context has exactly one arch context, registered under KERNEL_SCTX by
+            // `new_kernel`, and nothing ever registers another into it. Taking the caller's active
+            // sctx here would just make `try_with_arch` miss and silently install nothing --
+            // which is what every `insert_kernel_object` from a thread in a real context did.
+            KERNEL_SCTX
+        } else if info.target_sctx.raw() != 0 {
+            info.target_sctx
+        } else {
+            current_thread_ref()
+                .map(|ct| ct.active_sctx_id())
+                .unwrap_or(KERNEL_SCTX)
+        };
 
         let len = info.range.end - info.range.start;
         let cursor = MappingCursor::new(info.range.start, len);
+        let prologue_ns = (crate::instant::Instant::now() - t_prologue).as_nanos() as u64;
         let t_pre = crate::instant::Instant::now();
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
@@ -350,10 +415,24 @@ impl VirtContext {
         let mut sctx_ns = 0u64;
         let mut ptlock_ns = 0u64;
         let mut arch_ns = 0u64;
+        let mut ptdrop_ns = 0u64;
         let t_sctx = crate::instant::Instant::now();
-        if let Ok(sctx) = crate::security::get_sctx(sctx) {
+        // Reading the thread's own `secctx.active()` instead of `get_sctx(active_id())` is faster
+        // (68% of this function). The two used to differ -- `get_sctx(0)` returned `Err` and
+        // skipped this whole block -- but both now resolve to the single `kernel_sctx()`, so the
+        // swap is available if this shows up in a profile again. See pagerperf.md 17.
+        let got = crate::security::get_sctx(sctx);
+        // Recorded before the branch: the `Err` arm skips the whole body, and assigning inside the
+        // `if let` threw that time away -- which is where 93% of this function was hiding.
+        let getsctx_ns = (crate::instant::Instant::now() - t_sctx).as_nanos() as u64;
+        // Does `get_sctx` actually resolve here? If it does not, this whole block is skipped and
+        // the mapping is left to be faulted in later -- which would make every phase timed inside
+        // it meaningless, and would mean kernel-context maps do no page-table work at all.
+        mapobjsplit::got(got.is_ok(), sctx == crate::security::KERNEL_SCTX);
+        if let Ok(sctx) = got {
+            let t_lookup = crate::instant::Instant::now();
             let perms = sctx.lookup(info.object().id(), default_prots);
-            sctx_ns = (crate::instant::Instant::now() - t_sctx).as_nanos() as u64;
+            sctx_ns = (crate::instant::Instant::now() - t_lookup).as_nanos() as u64;
             let t_ptlock = crate::instant::Instant::now();
             let mut pt = if info.stable.is_some() {
                 info.stable.as_ref().unwrap().lock()
@@ -372,8 +451,25 @@ impl VirtContext {
                 arch.object_map(cursor, &mut *pt, settings, &mut fa);
             });
             arch_ns = (crate::instant::Instant::now() - t_arch).as_nanos() as u64;
+            // Timed explicitly: dropping this guard is where `add_invalidate`'s queued work is
+            // flushed, and 96% of this function was unaccounted for by the four phases above.
+            let t_ptdrop = crate::instant::Instant::now();
+            drop(pt);
+            ptdrop_ns = (crate::instant::Instant::now() - t_ptdrop).as_nanos() as u64;
         };
-        mapobjsplit::record(pre_ns, sctx_ns, ptlock_ns, arch_ns);
+        let t_fadrop = crate::instant::Instant::now();
+        drop(fa);
+        let fadrop_ns = (crate::instant::Instant::now() - t_fadrop).as_nanos() as u64;
+        mapobjsplit::record(
+            prologue_ns,
+            pre_ns,
+            getsctx_ns,
+            sctx_ns,
+            ptlock_ns,
+            arch_ns,
+            ptdrop_ns,
+            fadrop_ns,
+        );
     }
 
     pub fn ensure_object_mapped(
@@ -569,6 +665,19 @@ impl VirtContext {
 
 impl UserContext for VirtContext {
     type MappingInfo = Slot;
+    type SwitchTarget = ArchContextTarget;
+
+    fn switch_target(&self, sctx: ObjID) -> Option<ArchContextTarget> {
+        self.target_cache.lock().get(&sctx).copied()
+    }
+
+    unsafe fn switch_to_target(&self, target: &ArchContextTarget) {
+        let proc = tls_ready().then(current_processor);
+        // Safety: the caller guarantees the target is still registered here.
+        unsafe {
+            ArchContext::switch_to_target(target, proc);
+        }
+    }
 
     fn switch_to(&self, sctx: ObjID) {
         //let sctx = 0.into();
@@ -612,6 +721,7 @@ impl UserContext for VirtContext {
             offset: 0,
             range: slot.range(),
             flags: object_info.flags,
+            target_sctx: object_info.target_sctx(),
             stable,
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),
@@ -881,6 +991,7 @@ impl KernelMemoryContext for VirtContext {
             prot: info.prot(),
             cache_type: info.cache(),
             flags: info.flags,
+            target_sctx: info.target_sctx(),
             stable: None,
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),

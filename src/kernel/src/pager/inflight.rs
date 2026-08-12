@@ -33,10 +33,17 @@ impl Inflight {
         }
         let cmd = match &self.rk {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(*obj_id),
+            // The requester tag is added here rather than in the `ReqKind` because `ReqKind` is the
+            // coalescing key -- `add_request` finds an existing request by it, using the *derived*
+            // `Ord`, which compares the flags. A flag that varies by requesting thread would put
+            // two entries in flight for one range, which is the shape suspected of wedging the
+            // guest when prefetch last set a flag (see the removal note in `pager.rs`). This runs
+            // on the thread that is about to wait, and only for the request that actually sends, so
+            // a coalescing waiter simply inherits the first submitter's tag.
             ReqKind::PageData(obj_id, s, l, f) => KernelCommand::PageDataReq(
                 *obj_id,
                 ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
-                *f,
+                *f | crate::pager::requester_flags(),
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectEvict(ObjectEvictInfo {
                 obj_id: *obj_id,

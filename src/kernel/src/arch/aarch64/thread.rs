@@ -112,7 +112,7 @@ pub fn new_stack_top(stack_base: usize, stack_size: usize) -> VirtAddr {
 
 impl Thread {
     pub fn restore_upcall_frame(&self, frame: &UpcallFrame) {
-        let res = self.secctx.switch_context(frame.prior_ctx);
+        let (res, _) = self.switch_sctx(frame.prior_ctx);
         if matches!(res, crate::security::SwitchResult::NotAttached) {
             logln!("warning -- tried to restore thread to non-attached security context");
             crate::thread::exit(UPCALL_EXIT_CODE);
@@ -129,7 +129,7 @@ impl Thread {
         }
 
         // obtain the active security context
-        let source_ctx = self.secctx.active_id();
+        let source_ctx = self.active_sctx_id();
 
         // obtain a reference to the upcall frame register block
         // and set the upcall state in the register block
@@ -163,6 +163,10 @@ impl Thread {
 
     pub fn set_tls(&self, tls: u64) {
         TPIDR_EL0.set(tls);
+    }
+
+    pub fn get_tls(&self) -> u64 {
+        TPIDR_EL0.get()
     }
 
     /// Architechture specific CPU context switch.

@@ -26,7 +26,7 @@ use crate::{
     obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
     once::OnceWait,
     random::getrandom,
-    security::get_sctx,
+    security::{KERNEL_SCTX, get_sctx},
     syscall::create_user_slice,
     thread::{current_memory_context, current_thread_ref},
 };
@@ -73,7 +73,7 @@ impl core::fmt::Display for MapCaller {
                 "thread {} ({}), sctx {}",
                 ct.id(),
                 ct.objid(),
-                ct.secctx.active_id()
+                ct.active_sctx_id()
             ),
             None => write!(f, "no current thread"),
         }
@@ -102,6 +102,10 @@ pub fn sys_object_create(
     };
     let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
     let obj = Arc::new(Object::new(id, create.lt, ties));
+    // We just derived the ID from these fields, so the check `check_id` would do is already done.
+    // Recording it now saves the first mapper of this object a `read_meta`, which for a
+    // pager-backed object is a page-in (mapperf.md).
+    obj.set_verified_id(true, create.def_prot);
     if obj.use_pager() {
         crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
@@ -196,6 +200,7 @@ pub fn sys_object_map(
     prot: Protections,
     handle: Option<ObjID>,
     flags: MapFlags,
+    target_sctx: ObjID,
 ) -> Result<usize> {
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
@@ -239,7 +244,8 @@ pub fn sys_object_map(
     };
     // TODO
     let t_map = crate::instant::Instant::now();
-    let _res = crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags);
+    let _res =
+        crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags, target_sctx);
     mapsplit::record(
         lookup_ns,
         wait_ns,
@@ -375,6 +381,12 @@ pub fn sys_unbind_handle(id: ObjID) {
 
 // Note: placeholder types
 pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
+    // `get_sctx` resolves KERNEL_SCTX now, so say no explicitly: attaching it would let a thread
+    // `switch_context(0)` into the context the fault path grants Protections::all() to. This used
+    // to be rejected only as a side effect of `lookup_object(ObjID(0))` failing.
+    if id == KERNEL_SCTX {
+        return Err(ArgumentError::InvalidArgument.into());
+    }
     let sctx = get_sctx(id)?;
 
     let current_thread = current_thread_ref().unwrap();

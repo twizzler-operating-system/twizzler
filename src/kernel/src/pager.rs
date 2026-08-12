@@ -28,7 +28,7 @@ use crate::{
     once::OnceWait,
     processor::sched::{SchedFlags, schedule},
     syscall::sync::{finish_blocking, sys_thread_sync},
-    thread::current_thread_ref,
+    thread::{current_thread_ref, priority::PriorityClass},
 };
 
 mod inflight;
@@ -62,6 +62,17 @@ pub fn check_timed_out_requests() {
     }
     mgr.check_timed_out_requests();
 }
+
+// REMOVED, and worth knowing why before trying again. Speculatively prefetching an object's first
+// region here -- issued by the thread that just waited for the pager to describe the object, so as
+// to stay off the completion thread -- reproducibly wedged the guest: `pagepar` stalled after ~8
+// file opens with no panic, no warning, and no request-slot or memory exhaustion, twice in two
+// runs. `PagerFlags::PREFETCH` had never been exercised before (`REQSTATS` always reported
+// 0 prefetch), and the leading suspect is that a demand fault and a prefetch covering overlapping
+// pages get separate `InflightManager` entries, since `add_request` coalesces on `ReqKind` and the
+// two differ in their flags -- so a waiter can be left waiting for a completion that another
+// request already consumed. The two fixes that came out of the attempt are kept: the pager clamps
+// a prefetch range instead of overwriting it, and it caps concurrent prefetches.
 
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     if id.raw() == 0 {
@@ -103,6 +114,25 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             finish_blocking(guard);
         };
+    }
+}
+
+/// Tag a request with the priority class of the thread that needs it.
+///
+/// Only "is this below ordinary userspace" is conveyed, not the priority itself: the pager uses it
+/// to keep low-priority paging off the lanes it reserves for demand faults, which is a routing
+/// decision, not a scheduling one. Full priority inheritance through the pager wants the requesting
+/// thread's actual priority and is a larger design (see `pagerplan.md` stage 4).
+///
+/// Applied where the wire request is built, not where the [ReqKind] is -- see the note at that call
+/// site for why this must stay out of the coalescing key.
+pub(super) fn requester_flags() -> PagerFlags {
+    let background =
+        current_thread_ref().is_some_and(|t| t.effective_priority().class < PriorityClass::User);
+    if background {
+        PagerFlags::BACKGROUND
+    } else {
+        PagerFlags::empty()
     }
 }
 

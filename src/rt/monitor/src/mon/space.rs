@@ -143,7 +143,14 @@ impl Space {
     }
 
     /// Map an object into the space.
-    pub fn map<'a>(this: &Mutex<Self>, info: MapInfo) -> Result<MapHandle, TwzError> {
+    /// `target_sctx` names the security context the kernel should install the mapping in; zero
+    /// means the calling thread's active one, which for the monitor is `ObjID(0)` -- the same value
+    /// as `KERNEL_SCTX`, so the kernel's eager mapping silently no-ops. See pagerperf.md 17.
+    pub fn map<'a>(
+        this: &Mutex<Self>,
+        info: MapInfo,
+        target_sctx: ObjID,
+    ) -> Result<MapHandle, TwzError> {
         // Can't use the entry API here because the closure may fail.
         let mut split = spacesplit::Split {
             lock1: 0,
@@ -173,12 +180,13 @@ impl Space {
                 split.slot = t_slot.elapsed().as_nanos() as u64;
 
                 let t_sys = std::time::Instant::now();
-                let res = sys_object_map(
+                let res = twizzler_abi::syscall::sys_object_map_in_sctx(
                     None,
                     info.id,
                     slot,
                     mapflags_into_prot(info.flags),
                     info.flags.into(),
+                    target_sctx,
                 );
                 split.sys = t_sys.elapsed().as_nanos() as u64;
                 mapsyscallstats::record(split.sys);
@@ -335,6 +343,7 @@ impl Space {
                 id,
                 flags: map_flags,
             },
+            ObjID::new(0),
         ) {
             Ok(mh) => Ok(mh),
             Err(me) => {

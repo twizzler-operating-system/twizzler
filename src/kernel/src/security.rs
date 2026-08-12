@@ -13,28 +13,30 @@ use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingK
 
 use crate::{
     memory::context::{
-        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, UserContext,
-        kernel_context, virtmem::with_each_context,
+        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, kernel_context,
+        virtmem::with_each_context,
     },
     mutex::Mutex,
     obj::{LookupFlags, LookupResult, lookup_object},
-    once::OnceWait,
-    spinlock::Spinlock,
-    thread::current_memory_context,
+    once::{Once, OnceWait},
 };
 
 #[derive(Clone)]
 struct SecCtxMgrInner {
-    active: SecurityContextRef,
-    //ObjID here refers to the security contexts ID
-    inactive: BTreeMap<ObjID, SecurityContextRef>,
+    /// Every context this thread is attached to, the active one included. Which member is active
+    /// is tracked separately, so that switching does not have to move entries between two maps --
+    /// and so does not have to take this mutex at all when the caller already holds a reference.
+    attached: BTreeMap<ObjID, SecurityContextRef>,
 }
 
 /// Management of per-thread security context info.
+///
+/// This is the *attachment* set only. Which member is active lives in the owning thread's
+/// `SctxCache`, under the same lock as the rest of the switch state, so that a context switch is
+/// one lock acquisition -- and so that reading the active context, which the page-fault path does
+/// constantly, never touches this mutex. See [`crate::thread::Thread::active_sctx_id`].
 pub struct SecCtxMgr {
     inner: Mutex<SecCtxMgrInner>,
-    // Cache this here so we can access it quickly and without grabbing a mutex.
-    active_id: Spinlock<ObjID>,
 }
 
 /// A single security context.
@@ -121,6 +123,13 @@ impl SecurityContext {
 
     /// Lookup the permission info for an object, and maybe cache it.
     pub fn lookup(&self, _id: ObjID, default_prots: Protections) -> PermsInfo {
+        // The kernel context has no object to hold capabilities in, and the fault path already
+        // grants sctx 0 everything unconditionally (`fault::check_security`). Grant the same here,
+        // so an eager map and a faulted-in one compute identical protections -- otherwise
+        // `is_object_mapped` rejects the eager entry and the fault path remaps it anyway.
+        if self.kobj.is_none() {
+            return PermsInfo::new(KERNEL_SCTX, Protections::all(), Protections::empty());
+        }
         // check the cache to see if we already have something
         if let Some(cache_entry) = self.cache.lock().get(&_id) {
             return *cache_entry;
@@ -243,35 +252,19 @@ impl SecurityContext {
 }
 
 impl SecCtxMgr {
-    /// Lookup the permission info for an object in the active context, and maybe cache it.
-    pub fn lookup(&self, id: ObjID, default_prots: Protections) -> PermsInfo {
-        self.active().lookup(id, default_prots)
+    /// Look up an attached context by ID.
+    pub fn attached(&self, id: ObjID) -> Option<SecurityContextRef> {
+        self.inner.lock().attached.get(&id).cloned()
     }
 
-    /// Get the active context.
-    pub fn active(&self) -> SecurityContextRef {
-        self.inner.lock().active.clone()
-    }
-
-    /// Get the active ID. This is faster than active().id() and doesn't allocate memory (and only
-    /// uses a spinlock).
-    pub fn active_id(&self) -> ObjID {
-        *self.active_id.lock()
-    }
-
-    /// Check access rights in the active context.
-    pub fn check_active_access(
+    /// Search all attached contexts for access, starting from `active`.
+    pub fn search_access(
         &self,
-        _access_info: &AccessInfo,
+        active: &SecurityContextRef,
+        access_info: &AccessInfo,
         default_prots: Protections,
     ) -> PermsInfo {
-        let perms = self.lookup(_access_info.target_id, default_prots);
-        perms
-    }
-
-    /// Search all attached contexts for access.
-    pub fn search_access(&self, access_info: &AccessInfo, default_prots: Protections) -> PermsInfo {
-        let active_perms = self.lookup(access_info.target_id, default_prots);
+        let active_perms = active.lookup(access_info.target_id, default_prots);
 
         let perms_satisfy = |granting: &PermsInfo| -> bool {
             // this is the same boolean expr used by the fault handler to check perms
@@ -286,15 +279,17 @@ impl SecCtxMgr {
 
         // if the active context has the undetachable bit set, we cant leave it, return what we
         // already have
-        if let Some(flags) = self.active().flags()
+        if let Some(flags) = active.flags()
             && flags.contains(SecCtxFlags::UNDETACHABLE)
         {
             trace!("UNDETACHABLE bit set, refusing to evaluate inactive security contexts.");
             return active_perms;
         };
 
-        // look through the other attached contexts to see if any of them match
-        for (_, ctx) in &self.inner.lock().inactive {
+        // Look through the attached contexts to see if any of them match. This includes the active
+        // one, which was already checked above; re-checking it costs one cache-hit lookup and is
+        // what lets the map stay agnostic about which member is active.
+        for (_, ctx) in &self.inner.lock().attached {
             let perms = ctx.lookup(access_info.target_id, default_prots);
 
             // the perms granted by this ctx are equal to the way we are accessing the object, so
@@ -308,61 +303,28 @@ impl SecCtxMgr {
         active_perms
     }
 
-    /// Build a new SctxMgr for user threads.
+    /// Build a new SctxMgr for user threads, attached to `ctx`.
     pub fn new(ctx: SecurityContextRef) -> Self {
-        let id = ctx.id();
+        let mut attached = BTreeMap::new();
+        attached.insert(ctx.id(), ctx);
         Self {
-            inner: Mutex::new(SecCtxMgrInner {
-                active: ctx,
-                inactive: Default::default(),
-            }),
-            active_id: Spinlock::new(id),
+            inner: Mutex::new(SecCtxMgrInner { attached }),
         }
     }
 
     /// Build a new SctxMgr for kernel threads.
     pub fn new_kernel() -> Self {
-        Self {
-            inner: Mutex::new(SecCtxMgrInner {
-                active: Arc::new(SecurityContext::new(None)),
-                inactive: Default::default(),
-            }),
-            active_id: Spinlock::new(KERNEL_SCTX),
-        }
-    }
-
-    /// Switch to the specified context.
-    pub fn switch_context(&self, id: ObjID) -> SwitchResult {
-        if *self.active_id.lock() == id {
-            current_memory_context().map(|mc| mc.switch_to(id));
-            return SwitchResult::NoSwitch;
-        }
-
-        let mut inner = self.inner.lock();
-
-        if let Some(mut ctx) = inner.inactive.remove(&id) {
-            ctx.inc_active_count();
-            inner.active.dec_active_count();
-            core::mem::swap(&mut ctx, &mut inner.active);
-
-            *self.active_id.lock() = id;
-            // ctx now holds the old active context
-            inner.inactive.insert(ctx.id(), ctx);
-            current_memory_context().map(|mc| mc.switch_to(id));
-            SwitchResult::Switched
-        } else {
-            SwitchResult::NotAttached
-        }
+        Self::new(kernel_sctx())
     }
 
     /// Attach a security context.
     pub fn attach(&self, sctx: SecurityContextRef) -> twizzler_rt_abi::Result<()> {
         let mut inner = self.inner.lock();
-        if inner.active.id() == sctx.id() || inner.inactive.contains_key(&sctx.id()) {
+        if inner.attached.contains_key(&sctx.id()) {
             return Err(NamingError::AlreadyBound.into());
         }
         sctx.inc_attached_count();
-        inner.inactive.insert(sctx.id(), sctx);
+        inner.attached.insert(sctx.id(), sctx);
         Ok(())
     }
 }
@@ -381,10 +343,8 @@ pub enum SwitchResult {
 impl Clone for SecCtxMgr {
     fn clone(&self) -> Self {
         let inner = self.inner.lock().clone();
-        let active_id = inner.active.id();
         Self {
             inner: Mutex::new(inner),
-            active_id: Spinlock::new(active_id),
         }
     }
 }
@@ -416,22 +376,71 @@ pub fn get_sctx_stats() -> SctxStats {
     }
 }
 
+// `Once`, not `OnceWait`: `Thread::new_idle` calls this from `init_threading` on each secondary
+// cpu, where there is no current thread yet, and `OnceWait`'s condvar path unwraps one.
+static KERNEL_SECCTX: Once<SecurityContextRef> = Once::new();
+
+/// The one security context for [`KERNEL_SCTX`], which is also
+/// `MONITOR_INSTANCE_ID` -- the monitor runs as sctx 0.
+///
+/// There is exactly one, globally: it has no backing object (there is no object 0 to look up), so
+/// every `SecurityContext::new(None)` is interchangeable with it, and every `VirtContext`
+/// registers an `ArchContext` under `KERNEL_SCTX` at construction. Resolving it rather than
+/// failing is what lets `VirtContext::map_object` install page-table entries for sctx-0 mappings
+/// -- the monitor's, which is nearly every mapping in the system -- instead of leaving all of them
+/// to the fault path (mapperf.md).
+pub fn kernel_sctx() -> SecurityContextRef {
+    KERNEL_SECCTX
+        .call_once(|| Arc::new(SecurityContext::new(None)))
+        .clone()
+}
+
 /// Get a security contexts from the global cache.
 pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
+    // Not in the global map: it has no object, so the miss arm below cannot build it, and
+    // `SecCtxMgr::drop` already refuses to reap it. Note that this makes `sys_sctx_attach(0)`
+    // succeed where the failing `lookup_object` used to reject it -- see the guard there.
+    if id == KERNEL_SCTX {
+        return Ok(kernel_sctx());
+    }
+    // Hit path: one lock and a clone. `obj` below is used only by the miss arm, so an unconditional
+    // `lookup_object` made every hit pay a global object-table lookup for a value it discarded --
+    // and this is on the gate-entry path (pagerperf.md 15: `sys_sctx_attach` costs ~30 us "all to
+    // conclude the thread is already attached").
+    //
+    // Checking the cache first is only safe because the miss arm below builds its kernel object
+    // *outside* this lock. It previously did so inside `or_insert_with`, and
+    // `insert_kernel_object` -> `VirtContext::map_object` -> `get_sctx` is a real recursion; what
+    // terminated it was the pre-lock `lookup_object` failing for KERNEL_SCTX, rather than anything
+    // deliberate, so reordering alone panics with "this mutex is not re-entrant". The KERNEL_SCTX
+    // early return above now terminates that recursion outright, but the hoist stands on its own.
+    //
+    // Behaviour note: a cached context whose object has since been deleted now returns `Ok` where
+    // the lookup would have reported `NoSuchObject`. A cache entry exists only while something
+    // holds a reference (`SecCtxMgr::drop` reaps it when the manager and this map are the last
+    // two), so the window is narrow -- but this is security-relevant code and the change is real.
+    if let Some(entry) = global_secctx_mgr().contexts.lock().get(&id) {
+        return Ok(entry.clone());
+    }
+
     let obj =
         crate::obj::lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
+    // Built before the lock, for two reasons: it removes the recursion above, and it takes a
+    // mapping call out of a global lock that every security check in the system passes through.
+    // TODO: use control object cacher.
+    let kobj =
+        crate::memory::context::kernel_context().insert_kernel_object(ObjectContextInfo::new(
+            obj,
+            Protections::READ,
+            twizzler_abi::device::CacheType::WriteBack,
+            MapFlags::empty(),
+        ));
     let mut global = global_secctx_mgr().contexts.lock();
-    let entry = global.entry(id).or_insert_with(|| {
-        // TODO: use control object cacher.
-        let kobj =
-            crate::memory::context::kernel_context().insert_kernel_object(ObjectContextInfo::new(
-                obj,
-                Protections::READ,
-                twizzler_abi::device::CacheType::WriteBack,
-                MapFlags::empty(),
-            ));
-        Arc::new(SecurityContext::new(Some(kobj)))
-    });
+    // A thread that lost the race drops its `kobj` unused, which is the cost of not holding the
+    // lock across the mapping.
+    let entry = global
+        .entry(id)
+        .or_insert_with(|| Arc::new(SecurityContext::new(Some(kobj))));
     Ok(entry.clone())
 }
 
@@ -442,13 +451,14 @@ impl Drop for SecCtxMgr {
         // Check the contexts we have a reference to. If the value is 2, then it's only us and the
         // global mgr that have a ref. Since we hold the global mgr lock, this will not get
         // incremented if no one else holds a ref.
-        for ctx in inner.inactive.values() {
+        //
+        // The owning thread's `SctxCache` -- including its notion of which context is active --
+        // deliberately holds only `Weak`s, so nothing there inflates this count, and this reap does
+        // not have to happen in any particular order relative to the cache being dropped.
+        for ctx in inner.attached.values() {
             if ctx.id() != KERNEL_SCTX && Arc::strong_count(ctx) == 2 {
                 global.remove(&ctx.id());
             }
-        }
-        if inner.active.id() != KERNEL_SCTX && Arc::strong_count(&inner.active) == 2 {
-            global.remove(&inner.active.id());
         }
     }
 }

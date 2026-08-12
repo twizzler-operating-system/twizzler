@@ -66,6 +66,7 @@ impl PageRequestMgr {
 static PR_MGR: OnceLock<PageRequestMgr> = OnceLock::new();
 
 fn pr_mgr_thread_main(recv: Receiver<Request>) {
+    crate::threads::boost_priority(crate::threads::SERVICE_PRIORITY);
     loop {
         match recv.recv().ok() {
             Some(req) => {

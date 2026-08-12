@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use twizzler_abi::{object::Protections, syscall::MapFlags};
-use twizzler_rt_abi::error::TwzError;
+use twizzler_rt_abi::{error::TwzError, object::ObjID};
 
 use crate::{
     memory::context::{ContextRef, ObjectContextInfo, UserContext},
@@ -14,14 +14,16 @@ pub fn map_object_into_context(
     vmc: ContextRef,
     perms: Protections,
     flags: MapFlags,
+    target_sctx: ObjID,
 ) -> Result<(), TwzError> {
     vmc.insert_object(
         slot.try_into().map_err(|_| TwzError::INVALID_ARGUMENT)?,
-        &ObjectContextInfo::new(
+        &ObjectContextInfo::new_in_sctx(
             obj,
             perms,
             twizzler_abi::device::CacheType::WriteBack,
             flags,
+            target_sctx,
         ),
     )
 }

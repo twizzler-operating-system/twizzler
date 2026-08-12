@@ -12,11 +12,11 @@ use tracing::trace;
 use twizzler_abi::{
     object::{ObjID, NULLPAGE_SIZE},
     simple_mutex::Mutex,
-    syscall::{sys_object_stat, sys_thread_self_id},
+    syscall::{sys_object_stat, sys_thread_self_id, SctxSwitchFlags},
     thread::{ExecutionState, ThreadRepr},
 };
 use twizzler_rt_abi::{
-    error::{ArgumentError, NamingError, ObjectError, TwzError},
+    error::{ArgumentError, ObjectError, TwzError},
     object::MapFlags,
     thread::ThreadSpawnArgs,
     Result,
@@ -37,33 +37,29 @@ use crate::{
 };
 
 // Temporary instrumentation for the File::open latency hunt (pagerperf.md). Accumulators only --
-// no TLS, no allocation -- because most of `cross_compartment_entry` runs in the zero-TLS window.
+// no TLS, no allocation -- because the cold half of `cross_compartment_entry` runs in the zero-TLS
+// window.
 mod entrystats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNT: AtomicU64 = AtomicU64::new(0);
-    static ATTACH: AtomicU64 = AtomicU64::new(0);
-    static SETSCTX: AtomicU64 = AtomicU64::new(0);
-    static LOCK: AtomicU64 = AtomicU64::new(0);
+    static COLD: AtomicU64 = AtomicU64::new(0);
+    static SWITCH: AtomicU64 = AtomicU64::new(0);
     static TOTAL: AtomicU64 = AtomicU64::new(0);
 
-    pub fn set_pending(attach: u64, setsctx: u64) {
-        ATTACH.fetch_add(attach, Ordering::Relaxed);
-        SETSCTX.fetch_add(setsctx, Ordering::Relaxed);
-    }
-
-    pub fn record(lock: u64, total: u64) {
+    pub fn record(switch: u64, total: u64, cold: bool) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
+        let s = SWITCH.fetch_add(switch, Ordering::Relaxed) + switch;
         let t = TOTAL.fetch_add(total, Ordering::Relaxed) + total;
+        if cold {
+            COLD.fetch_add(1, Ordering::Relaxed);
+        }
         if n.is_power_of_two() {
             twizzler_abi::klog_println!(
-                "ENTRYSTATS {} entries: settls+attach {} us, set-sctx {} us, mgr-lock {} us, \
-                 total {} us",
+                "ENTRYSTATS {} entries ({} cold): enter-sctx {} us, total {} us",
                 n,
-                ATTACH.load(Ordering::Relaxed) / 1000,
-                SETSCTX.load(Ordering::Relaxed) / 1000,
-                l / 1000,
+                COLD.load(Ordering::Relaxed),
+                s / 1000,
                 t / 1000,
             );
         }
@@ -275,17 +271,23 @@ impl ReferenceRuntime {
 
     /// Re-point this thread at *this* compartment's TLS on entry through a gate.
     ///
+    /// One syscall does the whole context switch: it attaches this compartment's security context
+    /// if the thread is not attached yet, switches to it, and -- because the kernel tracks the user
+    /// thread pointer per (thread, context) -- swaps in whatever thread pointer this thread last
+    /// used *here*, reporting it back. So the caller's thread pointer is gone before this returns,
+    /// without a `settls` to zero it, and a nonzero return means %fs already points at a TLS region
+    /// this compartment built on an earlier entry.
+    ///
     /// # The zero-TLS window
     ///
-    /// The thread arrives holding the *caller* compartment's thread pointer, which must not be used
-    /// for anything -- reading through it is a cross-compartment access -- so it is zeroed
-    /// immediately and stays zero until this compartment's region is installed below.
+    /// A zero return means this thread has never run in this compartment, and everything below
+    /// runs with a null thread pointer until `sys_thread_settls` installs a region.
     ///
-    /// **Nothing called between those two `sys_thread_settls` calls may touch thread-local storage,
-    /// directly or indirectly.** With the thread pointer at zero, `mov {}, fs:0` -- how the control
-    /// block is found -- reads linear address 0 and faults; there is no null to test for, because
-    /// the read *is* the fault. That rules out the global allocator, which reads the control block
-    /// on every allocation, and so rules out any collection that allocates through it.
+    /// **Nothing in that window may touch thread-local storage, directly or indirectly.** With the
+    /// thread pointer at zero, `mov {}, fs:0` -- how the control block is found -- reads linear
+    /// address 0 and faults; there is no null to test for, because the read *is* the fault. That
+    /// rules out the global allocator, which reads the control block on every allocation, and so
+    /// rules out any collection that allocates through it.
     ///
     /// What the window is allowed: syscalls, `simple_mutex::Mutex` (thread-sync, no TLS),
     /// `klog_println!`, and `LOCAL_ALLOCATOR`'s methods, which reach talc directly. `TLS_GEN_MGR`'s
@@ -296,45 +298,42 @@ impl ReferenceRuntime {
         // Times phases with OUR_RUNTIME.get_monotonic() directly rather than Instant, to stay
         // clear of anything that might touch TLS inside the zero-TLS window.
         let t0 = OUR_RUNTIME.get_monotonic();
-        twizzler_abi::syscall::sys_thread_settls(0);
-        if OUR_RUNTIME.is_monitor().is_some() {
-            twizzler_abi::syscall::sys_thread_set_active_sctx_id(0.into()).inspect_err(|e| {
-                twizzler_abi::klog_println!("failed to set sctx: {}", e);
-            })?;
+        // The monitor is instance zero, and asking `get_comp_config()` for that would be a gate
+        // call back into itself.
+        let sctx = if OUR_RUNTIME.is_monitor().is_some() {
+            ObjID::new(0)
         } else {
-            let _ = twizzler_abi::syscall::sys_sctx_attach(monitor_api::get_comp_config().sctx)
+            monitor_api::get_comp_config().sctx
+        };
+        let tp =
+            twizzler_abi::syscall::sys_thread_set_active_sctx_id_ext(sctx, SctxSwitchFlags::ATTACH)
                 .inspect_err(|e| {
-                    if !matches!(e, TwzError::Naming(NamingError::AlreadyBound)) {
-                        twizzler_abi::klog_println!("failed to attach sctx: {}", e);
-                    }
-                });
-            let t_attach = OUR_RUNTIME.get_monotonic();
-            twizzler_abi::syscall::sys_thread_set_active_sctx_id(
-                monitor_api::get_comp_config().sctx,
-            )
-            .inspect_err(|e| {
-                twizzler_abi::klog_println!("failed to set-a sctx: {}", e);
-            })?;
-            let t_setsctx = OUR_RUNTIME.get_monotonic();
-            entrystats::set_pending(
-                t_attach.saturating_sub(t0).as_nanos() as u64,
-                t_setsctx.saturating_sub(t_attach).as_nanos() as u64,
+                    twizzler_abi::klog_println!("failed to enter sctx {}: {}", sctx, e);
+                })?;
+        let t_switch = OUR_RUNTIME.get_monotonic();
+        let switch_ns = t_switch.saturating_sub(t0).as_nanos() as u64;
+        if tp != 0 {
+            entrystats::record(
+                switch_ns,
+                OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
+                false,
             );
+            return Ok(());
         }
-        let t_pre_lock = OUR_RUNTIME.get_monotonic();
-        let mut inner = THREAD_MGR.inner.lock();
 
-        if let Some(ct) = inner
-            .cross_threads
-            .get(&twizzler_abi::syscall::sys_thread_self_id())
-        {
+        // Cold: this thread has no TLS in this compartment. Everything from here to the `settls`
+        // below is inside the zero-TLS window described above.
+        let self_id = twizzler_abi::syscall::sys_thread_self_id();
+        let mut inner = THREAD_MGR.inner.lock();
+        if let Some(ct) = inner.cross_threads.get(&self_id) {
+            // A region we built on an earlier entry that the kernel has no record of -- it should
+            // have handed it back above. Reinstalling it is both correct and cheaper than leaking
+            // a second region for the same thread.
             twizzler_abi::syscall::sys_thread_settls(ct.tls as u64);
             entrystats::record(
-                OUR_RUNTIME
-                    .get_monotonic()
-                    .saturating_sub(t_pre_lock)
-                    .as_nanos() as u64,
+                switch_ns,
                 OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
+                true,
             );
             return Ok(());
         }
@@ -345,16 +344,14 @@ impl ReferenceRuntime {
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(id))
             .unwrap();
+        // Ends the zero-TLS window, and registers the pointer with the kernel: it is saved against
+        // this compartment's context on the way out, so the next entry takes the warm path.
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
         libc_init_tcb(tls);
 
         with_current_thread(|cur| {
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
         });
-
-        // Mapped here, while the thread is demonstrably alive (it is us), so that the GC scan can
-        // read its execution state later instead of inferring death from a failed stat.
-        let self_id = twizzler_abi::syscall::sys_thread_self_id();
 
         THREAD_MGR.inner.lock().cross_threads.insert(
             self_id,
@@ -364,6 +361,11 @@ impl ReferenceRuntime {
                 id,
                 alloc_base,
             },
+        );
+        entrystats::record(
+            switch_ns,
+            OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
+            true,
         );
         Ok(())
     }

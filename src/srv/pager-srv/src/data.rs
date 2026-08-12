@@ -29,7 +29,7 @@ use twizzler_rt_abi::{
 
 use crate::{
     handle::PagerClient,
-    helpers::{page_in, page_in_many, page_out_many, PAGE},
+    helpers::{page_in, page_in_many, page_out_many, EXTERNAL_META, PAGE},
     stats::RecentStats,
     threads::run_async,
     PagerContext,
@@ -775,33 +775,77 @@ impl PagerData {
         return Ok(phys_range);
     }
 
+    /// Answer the kernel's "does this object exist, and what is it" question -- and settle its
+    /// metadata while we are here.
+    ///
+    /// The kernel reads the meta page on the first `check_id` of every object, which without this
+    /// is a second round trip back to us, charged to whoever is mapping (mapperf.md: half of
+    /// `insert_object`).
+    ///
+    /// The two backings need opposite things. An external file's metadata is invented, so we can
+    /// state it and send no page at all. A stored object's metadata is on disk, and `page_in` gets
+    /// it into a physical page over the disk's own path -- so we send the page but cannot vouch
+    /// for its contents, having never looked at them. Either way the kernel stops faulting for it.
     pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         tracing::trace!(
             "lookup_object: {:?} (ino = {:?})",
             id,
             objid_to_ino(id.raw())
         );
+        let base = ObjectInfo::new(
+            LifetimeType::Persistent,
+            BackingType::Normal,
+            0.into(),
+            0,
+            Protections::empty(),
+        );
+
         if objid_to_ino(id.raw()).is_some() {
-            return Ok(ObjectInfo::new(
+            // No page crosses over. These objects have no stored metadata -- we invent it from
+            // [EXTERNAL_META] plus the file's length -- so the length is the only thing the kernel
+            // needs to build the page for itself. Filling one here instead would mean
+            // `fill_physical_pages`, i.e. a `CopyUserPhys` on the strictly single-outstanding
+            // pager->kernel channel (pagerperf.md 5), to hand over bytes we already know.
+            let info = ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
-                0.into(),
-                0,
-                Protections::empty(),
-            ));
+                EXTERNAL_META.kuid,
+                EXTERNAL_META.nonce.0,
+                EXTERNAL_META.default_prot,
+            )
+            .validated();
+            // Deliberately not `?`: this path never checked existence, and returning an error here
+            // would make the kernel cache the ID in `no_exist` permanently. Without a length we
+            // just skip the synthesis and the meta page gets faulted in later, as it used to be.
+            return Ok(match ctx.paged_ostore(None)?.len(id.raw()).await {
+                Ok(len) => info.synth_meta(len),
+                Err(e) => {
+                    tracing::debug!("no length for external file {}: {}", id, e);
+                    info
+                }
+            });
         }
 
         ctx.paged_ostore(None)?
             .len(id.raw())
             .await
             .map_err(|_| ObjectError::NoSuchObject)?;
-        Ok(ObjectInfo::new(
-            LifetimeType::Persistent,
-            BackingType::Normal,
-            0.into(),
-            0,
-            Protections::empty(),
-        ))
+
+        // Best-effort: a failure here costs the kernel a page-in later, which is what it did
+        // before, so it is not worth failing the lookup over.
+        match page_in(
+            ctx,
+            id,
+            ObjectRange::new(MAX_SIZE as u64 - PAGE, MAX_SIZE as u64),
+        )
+        .await
+        {
+            Ok(meta) => Ok(base.with_meta_page(meta)),
+            Err(e) => {
+                tracing::debug!("failed to prefetch meta page for {}: {}", id, e);
+                Ok(base)
+            }
+        }
     }
 
     pub async fn sync_region(

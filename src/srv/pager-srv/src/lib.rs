@@ -134,6 +134,12 @@ impl PagerContext {
         Ok(self.store.wait())
     }
 
+    /// The store, if it is already open. For callers that must not block waiting for it -- unlike
+    /// [PagerContext::paged_ostore], which waits.
+    pub fn try_paged_ostore(&self) -> Option<&Ext4Store<Disk>> {
+        self.store.get()
+    }
+
     pub fn notify_kernel(&'static self, id: u32, comp: CompletionToKernel) {
         self.kernel_notify
             .complete(id, comp, SubmissionFlags::empty())

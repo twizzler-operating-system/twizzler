@@ -197,6 +197,7 @@ impl ThreadMgr {
                 id,
                 flags: MapFlags::READ | MapFlags::WRITE,
             },
+            ObjID::new(0),
         ) {
             Ok(repr) => repr,
             Err(e) => {

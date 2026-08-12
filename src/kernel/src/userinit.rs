@@ -6,7 +6,10 @@ use twizzler_abi::{
     slot::RESERVED_STACK,
     syscall::MapFlags,
 };
-use twizzler_rt_abi::core::{InitInfoPtrs, MinimalInitInfo, RUNTIME_INIT_MIN, RuntimeInfo};
+use twizzler_rt_abi::{
+    core::{InitInfoPtrs, MinimalInitInfo, RUNTIME_INIT_MIN, RuntimeInfo},
+    object::ObjID,
+};
 use xmas_elf::program::SegmentData;
 
 use crate::{
@@ -52,6 +55,7 @@ pub extern "C" fn user_init() {
             vm.clone(),
             Protections::READ | Protections::EXEC | Protections::WRITE,
             MapFlags::empty(),
+            ObjID::new(0),
         )
         .unwrap();
         crate::operations::map_object_into_context(
@@ -60,6 +64,7 @@ pub extern "C" fn user_init() {
             vm.clone(),
             Protections::READ | Protections::WRITE,
             MapFlags::empty(),
+            ObjID::new(0),
         )
         .unwrap();
         crate::operations::map_object_into_context(
@@ -68,6 +73,7 @@ pub extern "C" fn user_init() {
             vm.clone(),
             Protections::READ | Protections::WRITE,
             MapFlags::empty(),
+            ObjID::new(0),
         )
         .unwrap();
         crate::operations::map_object_into_context(
@@ -76,6 +82,7 @@ pub extern "C" fn user_init() {
             vm.clone(),
             Protections::READ,
             MapFlags::empty(),
+            ObjID::new(0),
         )
         .unwrap();
 
@@ -86,6 +93,7 @@ pub extern "C" fn user_init() {
             vm.clone(),
             Protections::READ,
             MapFlags::empty(),
+            ObjID::new(0),
         )
         .unwrap();
         let obj1_data = crate::operations::read_object(init_obj);

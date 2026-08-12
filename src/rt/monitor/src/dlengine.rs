@@ -179,6 +179,7 @@ impl ContextEngine for Engine {
                 id,
                 flags: MapFlags::READ,
             },
+            ObjID::new(0),
         )
         .map_err(|_err| DynlinkErrorKind::NewBackingFail)
         .inspect_err(|e| tracing::warn!("failed to map {}: {}", unlib, e))?;

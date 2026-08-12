@@ -18,7 +18,7 @@ pub fn new_trace_entry(kind: TraceKind, event: u64, flags: TraceEntryFlags) -> T
             .map(|ct| ct.objid())
             .unwrap_or_default(),
         sctx: current_thread_ref()
-            .map(|ct| ct.secctx.active_id())
+            .map(|ct| ct.active_sctx_id())
             .unwrap_or_default(),
         mctx: 0.into(), // TODO
         cpuid: current_processor().id as u64,
@@ -40,7 +40,7 @@ pub fn new_trace_entry_thread(
     let now = Instant::now();
     TraceEntryHead {
         thread: thread.objid(),
-        sctx: thread.secctx.active_id(),
+        sctx: thread.active_sctx_id(),
         mctx: 0.into(), // TODO
         cpuid,
         time: now.into_time_span(),

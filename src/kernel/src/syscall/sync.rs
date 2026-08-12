@@ -157,20 +157,38 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 /// THREAD_IS_SYNC_SLEEP_DONE here is what keeps that invariant intact: every way off the requeue
 /// list (here, `requeue_all`, and `add_to_requeue`'s fast path) claims the flag exactly once, so a
 /// wakeup can never be counted twice or left half-applied.
+///
+/// True requires *winning the flag*, not merely finding an entry, because a caller acts on this by
+/// not blocking -- and an entry alone does not mean nobody has already made it runnable.
+/// `add_all_to_requeue`'s fast path calls `schedule_thread` without removing any entry the thread
+/// already had, so a stale entry can sit on the list while a waker that won the flag has put the
+/// thread on a run queue. Removing that entry proves nothing. Winning the flag does: every path
+/// that schedules a thread must take it first, so taking it ourselves means no one else did.
+///
+/// The claim below holds the requeue lock across both halves, which settles it against everything
+/// that takes that lock. It cannot settle it against the fast paths in `add_to_requeue` and
+/// `add_all_to_requeue`, which test the flag with no lock at all -- so the result is still a race
+/// to be checked, not an outcome to be assumed.
+///
+/// A caller that is critical (the one below `set_sync_sleep_done`) cannot observe the difference:
+/// both the fast path and `requeue_all` skip a critical thread, so an entry there always comes with
+/// the flag still set.
 pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
     let requeue = get_requeue_list();
-    // See remove_from_requeue: the removed reference must not be dropped under the spinlock.
-    let removed = {
+    let (removed, claimed) = {
         let mut list = requeue.list.lock();
-        list.find_mut(&thread.objid()).remove()
+        let removed = list.find_mut(&thread.objid()).remove();
+        // Both under the lock, so no other holder of it can catch the half-state where the entry is
+        // gone but the flag is still set: against `requeue_all` and the two slow paths, taking the
+        // entry and taking the flag are one step. Order still matters within it -- the flag is
+        // taken only once the entry is ours, so losing leaves the wakeup with whoever won rather
+        // than eating it here.
+        let claimed = removed.is_some() && thread.reset_sync_sleep_done();
+        (removed, claimed)
     };
-    if removed.is_some() {
-        thread.reset_sync_sleep_done();
-        drop(removed);
-        true
-    } else {
-        false
-    }
+    // See remove_from_requeue: the removed reference must not be dropped under the spinlock.
+    drop(removed);
+    claimed
 }
 
 /// Whether this thread must return from a thread-sync sleep instead of entering one.
@@ -196,6 +214,31 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
 /// whatever it is waiting for until it happens to return to its own compartment.
 fn must_not_block(thread: &ThreadRef) -> bool {
     thread.exit_deliverable()
+}
+
+/// How long after a force-exit to wake the target, for both the registration below and
+/// [`Thread::force_exit`]'s.
+///
+/// A tick rather than zero, and the delay is load-bearing rather than a courtesy to a thread that
+/// is about to die anyway. A 0ns entry lands in the current window, so it can fire from the timeout
+/// thread while the target is still critical between registering it and reaching `schedule` --
+/// where `add_to_requeue` can only park it on the requeue list, and nothing collects that before it
+/// sleeps. Firing a tick later means the target is parked in the ordinary way first, and the
+/// callback takes the ordinary wake path.
+const FORCE_EXIT_WAKE_NS: u64 = 1_000_000;
+
+/// Number of timeout windows to spread force-exit wakes across.
+///
+/// A window holds `NR_WINDOW_ENTRIES` (32) entries, and past that `TimeoutQueue::insert` runs the
+/// callback inline under its own lock -- which is the racy immediate claim the delay above exists
+/// to avoid. `main_thread_exited` force-exits a compartment's threads in a loop, so without this
+/// they all land in the one window a tick from now.
+const FORCE_EXIT_WAKE_SPREAD: u64 = 8;
+
+/// Delay before waking `thread` to take a pending force-exit. See [`FORCE_EXIT_WAKE_NS`] for why it
+/// is not zero and [`FORCE_EXIT_WAKE_SPREAD`] for why it varies by thread.
+pub(crate) fn force_exit_wake_ns(thread: &ThreadRef) -> u64 {
+    FORCE_EXIT_WAKE_NS * (1 + thread.id() % FORCE_EXIT_WAKE_SPREAD)
 }
 
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
@@ -238,13 +281,22 @@ pub fn finish_blocking(guard: CriticalGuard) {
     crate::interrupt::with_disabled(|| {
         if must_not_block(thread) {
             let _timeout_key = crate::clock::register_timeout_callback(
-                0,
+                force_exit_wake_ns(thread),
                 thread_sync_cb_timeout,
                 thread.clone(),
                 thread.sync_sleep_gen(),
             );
         }
         drop(guard);
+        // No claim_own_wakeup here, deliberately. A wakeup parked on the requeue list while we held
+        // the guard is real and blocking on it does cost a lost wake, but this is the wrong place
+        // to take it: every caller owns a different wait-list link, and returning without blocking
+        // means unlinking it. `Request::setup_wait` unlinks `pager_link` when it claims -- staying
+        // linked is what makes the *next* setup_wait panic with "already linked" -- and the memory
+        // tracker unlinks `memwait_link` in the same situation, for the same reason. By the time we
+        // get here those callers have handed us the guard and cannot do either. So the claim stays
+        // where the link is known: sys_thread_sync, setup_wait, and CondVar::wait each do their own
+        // just before calling us.
         thread.set_state(ExecutionState::Sleeping);
         schedule(SchedFlags::YIELD | SchedFlags::PREEMPT);
         thread.set_state(ExecutionState::Running);
@@ -344,7 +396,7 @@ pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
     Ok(obj.wakeup_word(offset, wake.count))
 }
 
-fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
+pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
     // The sleep we were registered for is over, so this timeout has no one to wake. Bail before
     // touching the sleep flags: they belong to whatever the thread is doing now, and consuming them
     // here is what used to schedule an already-running thread. Reached whenever the thread woke for

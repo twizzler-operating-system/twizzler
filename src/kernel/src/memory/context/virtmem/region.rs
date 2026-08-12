@@ -47,6 +47,8 @@ pub struct MapRegion {
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
     pub stable: Option<Arc<Mutex<ObjectPageTable>>>,
+    /// Security context to install this mapping in; zero means the mapping thread's active one.
+    pub target_sctx: ObjID,
     pub should_sync: Arc<AtomicBool>,
     /// Set once this region has been taken out of its [RegionManager] and unmapped. Shared across
     /// clones, since the fault path works from a clone taken before the removal.
@@ -60,6 +62,7 @@ impl From<&MapRegion> for ObjectContextInfo {
             cache: value.cache_type,
             perms: value.prot,
             flags: value.flags,
+            target_sctx: value.target_sctx,
         }
     }
 }
@@ -72,7 +75,7 @@ fn check_settings(
     if !settings.flags().contains(MappingFlags::USER) {
         return Ok(());
     }
-    if current_thread_ref().is_some_and(|ct| ct.secctx.active_id().raw() == 0) {
+    if current_thread_ref().is_some_and(|ct| ct.active_sctx_id().raw() == 0) {
         return Ok(());
     }
     let upcall =

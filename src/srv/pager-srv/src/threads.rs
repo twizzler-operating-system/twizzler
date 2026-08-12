@@ -13,10 +13,14 @@ use std::{
 
 use async_executor::LocalExecutor;
 use twizzler_abi::{
-    pager::{CompletionToKernel, KernelCommand, ObjectEvictFlags, PagerFlags, RequestFromKernel},
+    object::ObjID,
+    pager::{
+        CompletionToKernel, KernelCommand, ObjectEvictFlags, ObjectRange, PagerFlags,
+        RequestFromKernel,
+    },
     syscall::{
-        sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-        ThreadSyncSleep, ThreadSyncWake,
+        sys_thread_set_priority, sys_thread_sync, PriorityClass, ThreadPriority, ThreadSync,
+        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
 };
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
@@ -28,6 +32,42 @@ use crate::{
 /// Worker threads per core. Measured: at 1x the blocking NVMe leaf loses to the async one by 2.1x,
 /// and at 2x it wins back the intra-worker overlap it gave up (pagerperf.md 1).
 const WORKER_SCALE: usize = 2;
+
+/// Scheduler priority for the pager's service threads.
+///
+/// The pager is on the critical path of every fault in the system, so a thread woken by a
+/// completion and then queued behind ordinary userspace work adds its own scheduling latency to
+/// that fault. These put pager threads ahead of ordinary threads (which run at
+/// [`ThreadPriority::USER`]), and demand work ahead of bulk work -- the same ordering the fast/bulk
+/// lane split expresses in the dispatcher, now expressed in the scheduler too.
+///
+/// Deliberately still `PriorityClass::User` rather than realtime. A pager thread is *not* more
+/// important than the thread whose fault it is servicing -- the right answer is to inherit that
+/// thread's priority (`pagerplan.md` stage 4), and a blanket realtime class would let a background
+/// task's fault preempt a realtime thread, which is exactly what inheritance is supposed to
+/// prevent. It also keeps a pager thread that spins (`InflightRequest::spin`) from locking an
+/// ordinary thread off a core entirely.
+///
+/// Both are expressed as offsets from the default so "above ordinary userspace" stays true if that
+/// default moves, and they are two kernel timeshare buckets apart (`MAX_PRIORITY / NR_QUEUES` = 16
+/// wide), so the ordering between the lanes is real placement rather than a tiebreak.
+const FAST_LANE_PRIORITY: ThreadPriority =
+    ThreadPriority::new(PriorityClass::User, ThreadPriority::USER.value + 48);
+const BULK_LANE_PRIORITY: ThreadPriority =
+    ThreadPriority::new(PriorityClass::User, ThreadPriority::USER.value + 32);
+
+/// Raise the calling thread's priority. Non-fatal: an unboosted pager is slower, not broken.
+pub fn boost_priority(pri: ThreadPriority) {
+    if let Err(e) = sys_thread_set_priority(ObjID::new(0), pri) {
+        tracing::warn!("failed to set pager thread priority to {:?}: {}", pri, e);
+    }
+}
+
+/// Priority for pager threads that are not lanes but gate them: the kernel-queue dequeue thread
+/// (nothing is dispatched while it is off-cpu, and it handles non-fence evicts inline) and the
+/// physical-read/write requester (single-outstanding, so every page-in's data movement waits on
+/// it). Both are cheap and always on the demand path, so they run with the fast lanes.
+pub const SERVICE_PRIORITY: ThreadPriority = FAST_LANE_PRIORITY;
 
 /// Fast-lane depth at which a fast request starts eyeing an idle bulk lane.
 ///
@@ -66,19 +106,38 @@ const FAST_PAGE_LIMIT: usize = 16;
 
 /// Whether a request belongs on a reserved fast lane. `DramPages` is pure bookkeeping and
 /// `ObjectInfoReq` is a `len()` probe the length cache usually answers without touching the disk
-/// (see pagerperf.md 12). Page data qualifies only when it is small and not a prefetch: prefetch
-/// ranges run to the whole object, which is exactly the traffic the reservation exists to dodge.
-/// Create/delete/evict all do synchronous filesystem work under the global `fs` lock, so they are
-/// bulk by definition.
+/// (see pagerperf.md 12). Page data qualifies only when it is small, not a prefetch, not raised for
+/// a background thread, and answerable without the fs lock. Prefetch ranges run to the whole
+/// object, which is exactly the traffic the reservation exists to dodge; create/delete/evict all do
+/// synchronous filesystem work under the global `fs` lock, so they are bulk by definition.
 fn is_fast(req: &RequestFromKernel) -> bool {
     match req.cmd() {
         KernelCommand::ObjectInfoReq(_) | KernelCommand::DramPages(_) => true,
-        KernelCommand::PageDataReq(_, range, flags) => {
-            !flags.contains(PagerFlags::PREFETCH) && range.page_count() <= FAST_PAGE_LIMIT
+        KernelCommand::PageDataReq(id, range, flags) => {
+            !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND)
+                && range.page_count() <= FAST_PAGE_LIMIT
+                && !would_block_on_store(id, range)
         }
         KernelCommand::ObjectCreate(..) | KernelCommand::ObjectDel(_) => false,
         KernelCommand::ObjectEvict(_) => false,
     }
+}
+
+/// Whether serving this range would park the lane on the object store's fs lock.
+///
+/// That lock is global and held across NVMe round trips (pagerperf.md 2), so a fast lane that takes
+/// it can sit behind a bulk transfer for a whole disk round trip -- the queueing the reservation
+/// exists to prevent, and the one thing that makes running these lanes above ordinary userspace
+/// unsafe: the holder can be of any priority class, and a userspace mutex donates nothing. Sending
+/// such work to a bulk lane does not make *it* faster -- it waits for the same lock either way --
+/// it keeps the fast lane available for the requests that need nothing but caches.
+///
+/// Asked on the dequeue thread, which nothing may stall, so it must stay a cache read: it takes
+/// only the length and extent caches' own short locks and never touches the disk.
+fn would_block_on_store(id: ObjID, range: ObjectRange) -> bool {
+    PAGER_CTX
+        .get()
+        .is_some_and(|ctx| crate::helpers::page_in_would_block(ctx, id, range))
 }
 
 pub struct WorkItem {
@@ -210,12 +269,17 @@ impl Drop for DepthGuard {
 }
 
 impl WorkerThread {
-    fn new(index: usize, name: &'static str) -> Self {
+    fn new(index: usize, name: &'static str, fast: bool) -> Self {
         let (send, recv) = async_channel::bounded::<WorkItem>(32);
         let depth = Arc::new(AtomicUsize::new(0));
         let thread_depth = depth.clone();
         Self {
             _handle: std::thread::spawn(move || {
+                boost_priority(if fast {
+                    FAST_LANE_PRIORITY
+                } else {
+                    BULK_LANE_PRIORITY
+                });
                 LANE_DEPTH.replace(Some(thread_depth.clone()));
                 QUEUE_INDEX.set(index);
                 loop {
@@ -297,12 +361,13 @@ impl Workers {
             .min(nr_threads - 1);
         let threads = (0..nr_threads)
             .map(|index| {
-                let name = if index < nr_fast {
+                let fast = index < nr_fast;
+                let name = if fast {
                     lane_name(true, index)
                 } else {
                     lane_name(false, index - nr_fast)
                 };
-                WorkerThread::new(index, name)
+                WorkerThread::new(index, name, fast)
             })
             .collect();
         Self {
@@ -532,6 +597,7 @@ fn kq_handler_main(
     workers: Arc<Workers>,
     queue: &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
 ) {
+    boost_priority(SERVICE_PRIORITY);
     loop {
         let mut tmp = heapless::Vec::<(u32, RequestFromKernel), 8>::new();
         while !tmp.is_full() {

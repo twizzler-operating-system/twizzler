@@ -41,6 +41,79 @@ pub fn consecutive_slices<T>(
     })
 }
 
+/// The meta page an external (ino-backed) file gets.
+///
+/// These objects have no stored metadata -- there is a POSIX file underneath, not a Twizzler
+/// object -- so the pager makes one up from the file's length. `lookup_object` reports the same
+/// values to the kernel as [ObjectInfo] fields, hence one definition rather than two.
+pub const EXTERNAL_META: MetaInfo = MetaInfo {
+    nonce: Nonce(0),
+    kuid: ObjID::new(0),
+    flags: MetaFlags::empty(),
+    default_prot: Protections::all(),
+    fotcount: 0,
+    extcount: 1,
+};
+
+/// Write [EXTERNAL_META] plus its `MEXT_SIZED` extension, which is where the file's length lives,
+/// into a page-sized buffer.
+fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64) {
+    unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+        ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+    }
+    let me = MetaExt::new(MEXT_SIZED, len);
+    unsafe {
+        buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&EXTERNAL_META));
+        buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
+            .copy_from_slice(any_as_u8_slice(&me));
+    }
+}
+
+/// Fill a fresh physical page with an external file's meta page.
+pub async fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
+    let len = ctx
+        .paged_ostore(None)?
+        .len(obj_id.raw())
+        .await
+        .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
+    let phys_range = {
+        let page = match ctx.data.try_alloc_page() {
+            Ok(page) => page,
+            Err(mw) => {
+                tracing::warn!("out of memory -- task waiting");
+                mw.await
+            }
+        };
+        PhysRange::new(page, page + PAGE)
+    };
+    tracing::debug!("building meta page for external file, len: {}", len);
+    let mut buffer = [0; PAGE as usize];
+    fill_external_meta(&mut buffer, len);
+    crate::physrw::fill_physical_pages(&buffer, phys_range).await?;
+    Ok(phys_range)
+}
+
+/// Whether paging in this range would have to take the object store's fs lock -- which is held
+/// across disk I/O, so a lane that takes it can park for a whole transfer behind a lane of any
+/// other priority class.
+///
+/// Mirrors [page_in]'s range-to-store-page mapping, including the meta page: for an external
+/// (ext4-backed) object it is synthesized from the length alone, so a cached length is the whole
+/// question there. Answers "no" before the store is open, which is the pre-store behavior.
+pub fn page_in_would_block(ctx: &PagerContext, obj_id: ObjID, obj_range: ObjectRange) -> bool {
+    let Some(store) = ctx.try_paged_ostore() else {
+        return false;
+    };
+    let mut start_page = obj_range.start / PAGE;
+    if obj_range.start == (MAX_SIZE as u64) - PAGE {
+        if objid_to_ino(obj_id.raw()).is_some() {
+            return !store.len_is_cached(obj_id.raw());
+        }
+        start_page = 0;
+    }
+    store.page_in_would_block(obj_id.raw(), start_page, obj_range.page_count() as u32)
+}
+
 pub async fn page_in(
     ctx: &'static PagerContext,
     obj_id: ObjID,
@@ -54,47 +127,7 @@ pub async fn page_in(
         tracing::debug!("found meta page, using 0 page",);
         start_page = 0;
         if objid_to_ino(obj_id.raw()).is_some() {
-            let phys_range = {
-                let page = match ctx.data.try_alloc_page() {
-                    Ok(page) => page,
-                    Err(mw) => {
-                        tracing::warn!("out of memory -- task waiting");
-                        mw.await
-                    }
-                };
-                let phys_range = PhysRange::new(page, page + PAGE);
-                phys_range
-            };
-            unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-                ::core::slice::from_raw_parts(
-                    (p as *const T) as *const u8,
-                    ::core::mem::size_of::<T>(),
-                )
-            }
-
-            let len = ctx
-                .paged_ostore(None)?
-                .len(obj_id.raw())
-                .await
-                .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
-            tracing::debug!("building meta page for external file, len: {}", len);
-            let mut buffer = [0; PAGE as usize];
-            let meta = MetaInfo {
-                nonce: Nonce(0),
-                kuid: ObjID::new(0),
-                flags: MetaFlags::empty(),
-                default_prot: Protections::all(),
-                fotcount: 0,
-                extcount: 1,
-            };
-            let me = MetaExt::new(MEXT_SIZED, len);
-            unsafe {
-                buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&meta));
-                buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
-                    .copy_from_slice(any_as_u8_slice(&me));
-            }
-            crate::physrw::fill_physical_pages(&buffer, phys_range).await?;
-            return Ok(phys_range);
+            return page_in_external_meta(ctx, obj_id).await;
         }
     }
 

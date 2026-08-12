@@ -15,6 +15,10 @@ bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct PagerFlags : u32 {
         const PREFETCH = 1;
+        /// Raised on behalf of a thread below the default userspace priority. The pager keeps
+        /// such requests off the lanes it reserves for demand faults; an unflagged request is
+        /// treated as demand work.
+        const BACKGROUND = 2;
     }
 }
 
@@ -159,6 +163,34 @@ pub struct PageDataReq {
     pub object_range: ObjectRange,
 }
 
+bitflags::bitflags! {
+    /// Extra guarantees a pager can attach to an [ObjectInfo] it returns.
+    ///
+    /// Both are about the object's *meta page*, which the kernel otherwise has to fault in on the
+    /// first `check_id` -- a full page-data round trip charged to whoever is mapping the object.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct ObjectInfoFlags : u32 {
+        /// `meta_page` holds physical pages the pager has already filled with the object's meta
+        /// page. The kernel installs them directly, so nothing has to page it in later.
+        const META_PAGE = 1;
+        /// The pager has checked that this object's ID matches its metadata, so the kernel may
+        /// take `kuid`/`nonce`/`def_prot` as the object's real values rather than re-deriving
+        /// them. Independent of `META_PAGE`: a pager that streams a page it never reads (the
+        /// store writes straight into the physical page) can set one and not the other.
+        const VALIDATED = 2;
+        /// This object's whole meta page is derivable from the fields here plus `size`, so the
+        /// kernel should build it rather than have one sent. For an external file there is nothing
+        /// to send -- the pager invents the metadata from the file's length -- and building it
+        /// kernel-side avoids both a `CopyUserPhys` and a later fault. Mutually exclusive with
+        /// `META_PAGE` in practice; `META_PAGE` wins if both are set.
+        const SYNTH_META = 4;
+    }
+}
+
+/// Kernel-facing description of an object.
+///
+/// Also travels the other way, in [KernelCommand::ObjectCreate]; `flags` and `meta_page` are
+/// meaningless in that direction and are left empty.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub struct ObjectInfo {
     pub lifetime: LifetimeType,
@@ -166,6 +198,13 @@ pub struct ObjectInfo {
     pub kuid: ObjID,
     pub nonce: u128,
     pub def_prot: Protections,
+    pub flags: ObjectInfoFlags,
+    /// Physical memory holding the object's meta page. Only meaningful with
+    /// [ObjectInfoFlags::META_PAGE].
+    pub meta_page: PhysRange,
+    /// The object's data length, for the `MEXT_SIZED` meta extension. Only meaningful with
+    /// [ObjectInfoFlags::SYNTH_META].
+    pub size: u64,
 }
 
 impl ObjectInfo {
@@ -182,7 +221,30 @@ impl ObjectInfo {
             kuid,
             nonce,
             def_prot,
+            flags: ObjectInfoFlags::empty(),
+            meta_page: PhysRange::new(0, 0),
+            size: 0,
         }
+    }
+
+    /// Attach a pager-filled meta page.
+    pub fn with_meta_page(mut self, meta_page: PhysRange) -> Self {
+        self.flags |= ObjectInfoFlags::META_PAGE;
+        self.meta_page = meta_page;
+        self
+    }
+
+    /// Ask the kernel to build the meta page itself, for an object `size` bytes long.
+    pub fn synth_meta(mut self, size: u64) -> Self {
+        self.flags |= ObjectInfoFlags::SYNTH_META;
+        self.size = size;
+        self
+    }
+
+    /// Assert that this info's fields are the object's real metadata.
+    pub fn validated(mut self) -> Self {
+        self.flags |= ObjectInfoFlags::VALIDATED;
+        self
     }
 }
 

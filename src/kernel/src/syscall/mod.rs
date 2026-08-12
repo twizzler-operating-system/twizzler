@@ -421,12 +421,19 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             let prot = Protections::from_bits(context.arg3::<u64>() as u16);
             let flags = MapFlags::from_bits(context.arg4::<u64>() as u32);
             let id = ObjID::from_parts([hi, lo]);
-            let handle = context.arg5();
-            let handle = unsafe { create_user_ptr(handle) };
-            let result = if let Some(handle) = handle {
+            let margs = context.arg5();
+            let margs = unsafe { create_user_ptr::<twizzler_abi::syscall::ObjectMapArgs>(margs) };
+            let result = if let Some(margs) = margs {
                 prot.map_or(Err(ArgumentError::InvalidArgument.into()), |prot| {
                     flags.map_or(Err(ArgumentError::InvalidArgument.into()), |flags| {
-                        object::sys_object_map(id, slot, prot, *handle, flags)
+                        object::sys_object_map(
+                            id,
+                            slot,
+                            prot,
+                            margs.handle,
+                            flags,
+                            margs.target_sctx,
+                        )
                     })
                 })
                 .map(|r| r as u64)

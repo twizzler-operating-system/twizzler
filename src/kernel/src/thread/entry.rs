@@ -12,7 +12,7 @@ use crate::{
     condvar::CondVar,
     memory::{VirtAddr, context::Context},
     processor::{mp::current_processor, sched::schedule_new_thread},
-    security::{SecCtxMgr, SecurityContext},
+    security::{SecCtxMgr, kernel_sctx},
     spinlock::Spinlock,
     syscall::object::get_vmcontext_from_handle,
     userinit::user_init,
@@ -58,6 +58,9 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
     }
     if let Some(cur) = current_thread_ref() {
         thread.secctx = cur.secctx.clone();
+        // The attachment set is cloned, but which member is active is not part of it -- it lives
+        // in the per-thread switch cache, which a new thread starts empty.
+        thread.init_active_sctx(&cur.active_sctx());
         let _ = thread
             .set_trace_state(cur.get_trace_state().unwrap_or_default())
             .inspect_err(|e| log::warn!("failed to inherit tracing state: {}", e));
@@ -76,7 +79,10 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
 
 pub fn start_new_init() {
     let mut thread = Thread::new(Some(Context::new()), None, Priority::USER);
-    thread.secctx = SecCtxMgr::new(Arc::new(SecurityContext::new(None)));
+    // The same context `get_sctx(KERNEL_SCTX)` hands out, not a private copy of it: init and
+    // everything it spawns (the monitor) run as sctx 0, and mapping decisions made for them have
+    // to land in the one arch context registered under that id.
+    thread.secctx = SecCtxMgr::new(kernel_sctx());
     unsafe {
         thread.init(user_init);
     }

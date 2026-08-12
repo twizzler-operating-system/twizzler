@@ -127,8 +127,28 @@ pub fn sys_thread_active_sctx_id() -> ObjID {
     ObjID::from_parts([hi, lo])
 }
 
-/// Get the active security context ID for the calling thread.
-pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
+bitflags::bitflags! {
+    /// Options for [sys_thread_set_active_sctx_id_ext].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SctxSwitchFlags: u64 {
+        /// Attach the calling thread to the target context if it is not attached already, instead
+        /// of failing. Saves a separate [super::sys_sctx_attach] call on the gate-entry path.
+        const ATTACH = 1;
+    }
+}
+
+/// Set the active security context for the calling thread, returning the thread pointer the kernel
+/// installed for it.
+///
+/// The thread pointer is tracked per (thread, context) by the kernel, so switching contexts also
+/// switches TLS: the returned value is this thread's pointer in `id`, and is zero the first time
+/// this thread runs there. That is the only way for a cross-compartment entry to learn whether it
+/// may touch thread-local storage -- from userspace, the read that would test the thread pointer
+/// for zero is itself the fault.
+pub fn sys_thread_set_active_sctx_id_ext(
+    id: ObjID,
+    flags: SctxSwitchFlags,
+) -> Result<u64, TwzError> {
     let (code, val) = unsafe {
         raw_syscall(
             Syscall::ThreadCtrl,
@@ -138,10 +158,16 @@ pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
                 ThreadControl::SetActiveSctxId as u64,
                 id.parts()[0],
                 id.parts()[1],
+                flags.bits(),
             ],
         )
     };
-    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
+}
+
+/// Set the active security context for the calling thread.
+pub fn sys_thread_set_active_sctx_id(id: ObjID) -> Result<(), TwzError> {
+    sys_thread_set_active_sctx_id_ext(id, SctxSwitchFlags::empty()).map(|_| ())
 }
 
 /// Get the upcall location for this thread.
@@ -395,6 +421,98 @@ pub fn sys_thread_get_trace_events(target: ObjID) -> Result<u64, TwzError> {
         )
     };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
+}
+
+/// The scheduling class of a thread, ordered from lowest to highest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, IntoPrimitive)]
+#[repr(u16)]
+pub enum PriorityClass {
+    Idle = 0,
+    Background = 1,
+    #[default]
+    User = 2,
+    Realtime = 3,
+}
+
+/// Priority values within a class range over `0..MAX_PRIORITY_VALUE`.
+pub const MAX_PRIORITY_VALUE: u16 = 128;
+
+/// A thread's scheduling priority: a class, and a value within that class. A higher class always
+/// outranks a lower one, regardless of value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(C)]
+pub struct ThreadPriority {
+    pub class: PriorityClass,
+    pub value: u16,
+}
+
+impl ThreadPriority {
+    /// The default priority of a userspace thread.
+    pub const USER: Self = Self {
+        class: PriorityClass::User,
+        value: MAX_PRIORITY_VALUE / 2,
+    };
+
+    pub const fn new(class: PriorityClass, value: u16) -> Self {
+        Self {
+            class,
+            value: if value < MAX_PRIORITY_VALUE {
+                value
+            } else {
+                MAX_PRIORITY_VALUE - 1
+            },
+        }
+    }
+
+    /// The packed representation exchanged with the kernel.
+    pub fn raw(&self) -> u32 {
+        ((self.class as u32) << 16) | (self.value as u32)
+    }
+
+    pub fn from_raw(raw: u32) -> Self {
+        Self::new(
+            PriorityClass::from_primitive((raw >> 16) as u16),
+            (raw & 0xffff) as u16,
+        )
+    }
+}
+
+/// Set a thread's priority.
+pub fn sys_thread_set_priority(target: ObjID, priority: ThreadPriority) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::SetPriority as u64,
+                priority.raw() as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// Get a thread's priority. This is the thread's base priority -- any priority it has been
+/// temporarily donated by the kernel is not reflected here.
+pub fn sys_thread_get_priority(target: ObjID) -> Result<ThreadPriority, TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetPriority as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, v| ThreadPriority::from_raw(v as u32),
+        twzerr,
+    )
 }
 
 pub const PERTHREAD_TRACE_GEN_SAMPLE: u64 = 1;

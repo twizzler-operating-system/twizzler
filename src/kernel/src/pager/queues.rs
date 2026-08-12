@@ -4,15 +4,19 @@ use core::time::Duration;
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::CacheType,
+    meta::{MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
     object::{ObjID, Protections},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags,
-        ObjectEvictFlags, ObjectInfo, ObjectRange, PageFlags, PagerCompletionData, PagerRequest,
-        PhysRange, RequestFromKernel, RequestFromPager,
+        ObjectEvictFlags, ObjectInfo, ObjectInfoFlags, ObjectRange, PageFlags, PagerCompletionData,
+        PagerRequest, PhysRange, RequestFromKernel, RequestFromPager,
     },
     syscall::{MapFlags, NANOS_PER_SEC},
 };
-use twizzler_rt_abi::error::{ObjectError, RawTwzError, TwzError};
+use twizzler_rt_abi::{
+    error::{ObjectError, RawTwzError, TwzError},
+    object::Nonce,
+};
 
 use super::{
     DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, provide_pager_memory,
@@ -286,9 +290,111 @@ fn pager_compl_handle_page_data(
     });
 }
 
+/// Take physical pages the pager filled with `obj`'s meta page and install them.
+///
+/// The meta page is the object's last page, and `check_id` reads it on the first map of every
+/// object -- so without this it is a page-data round trip billed to the mapping path
+/// (`mapperf.md`: 49% of `insert_object`). Unlike the page-data path this needs no large-page
+/// branch: it is one page, and the last one, so it can never start a large-aligned run.
+fn install_meta_page(obj: &ObjectRef, phys_range: PhysRange) {
+    let pcount = phys_range.page_count();
+    if pcount == 0 {
+        log::warn!("pager sent an empty meta page for {}", obj.id());
+        return;
+    }
+    if pcount != 1 {
+        log::warn!(
+            "pager sent {} pages for {}'s meta page, using the first",
+            pcount,
+            obj.id()
+        );
+    }
+    crate::memory::tracker::untrack_page_pager(pcount);
+    let Some(pa) = phys_range
+        .pages()
+        .next()
+        .and_then(|p| PhysAddr::new(p * PageNumber::PAGE_SIZE as u64).ok())
+    else {
+        log::warn!("pager sent an unusable meta page {:?}", phys_range);
+        return;
+    };
+    let Some(frame) = crate::memory::frame::get_frame(pa) else {
+        log::warn!(
+            "pager sent a meta page outside of physical memory: {:?}",
+            pa
+        );
+        return;
+    };
+    assert!(!frame.is_pt());
+    assert!(!frame.is_cow());
+    obj.add_frame(PageNumber::meta_page(), frame);
+    if frame.dec_refcount() == 0 {
+        crate::memory::tracker::free_frame(frame);
+    }
+    if crate::memory::tracker::get_outstanding_pager_pages() < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
+    {
+        provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+    }
+}
+
+/// Build an object's meta page from the fields the pager sent, instead of moving a page across.
+///
+/// For an external file there is nothing to move: the pager invents that metadata from the file's
+/// length, so the length is the only thing it actually has to send. Building it here costs one
+/// zeroed frame and ~64 bytes of writes, against either a `CopyUserPhys` on the single-outstanding
+/// pager->kernel channel (`pagerperf.md` 5) or a later fault when userspace reads `MEXT_SIZED`.
+/// Same construction `initrd.rs` does for boot objects.
+///
+/// `write_bytes` is deliberately not used: it goes through `ensure_in_core` for any pager-backed
+/// object, which would issue the very page-in this exists to avoid -- from the pager completion
+/// thread, at that.
+fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
+    let Some(frame) =
+        crate::memory::tracker::try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[0])
+    else {
+        // Not fatal: without a meta page the first `check_id` reads it the old way.
+        log::warn!(
+            "no frame available to synthesize a meta page for {}",
+            obj.id()
+        );
+        return;
+    };
+    let meta = MetaInfo {
+        nonce: Nonce(info.nonce),
+        kuid: info.kuid,
+        flags: MetaFlags::empty(),
+        default_prot: info.def_prot,
+        fotcount: 0,
+        extcount: 1,
+    };
+    let ext = MetaExt::new(MEXT_SIZED, info.size);
+    // Safety: the frame is freshly allocated, zeroed, and a whole page; both writes land inside it.
+    // Unaligned because the extension follows `MetaInfo` at its natural end, not at its alignment.
+    unsafe {
+        let base = frame.virtaddr().as_mut_ptr::<u8>();
+        base.cast::<MetaInfo>().write_unaligned(meta);
+        base.add(size_of::<MetaInfo>())
+            .cast::<MetaExt>()
+            .write_unaligned(ext);
+    }
+    // No refcount dance, unlike `install_meta_page`: a fresh frame arrives at zero and `map_page`
+    // takes the reference that makes the object its owner.
+    obj.add_frame(PageNumber::meta_page(), frame);
+}
+
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
-    let obj = Object::new(id, info.lifetime, &[]);
-    crate::obj::register_object(Arc::new(obj));
+    let obj = Arc::new(Object::new(id, info.lifetime, &[]));
+    // Both before `register_object`, so nothing can look the object up and race a `check_id`
+    // against either.
+    if info.flags.contains(ObjectInfoFlags::META_PAGE) {
+        install_meta_page(&obj, info.meta_page);
+    } else if info.flags.contains(ObjectInfoFlags::SYNTH_META) {
+        synthesize_meta_page(&obj, &info);
+    }
+    if info.flags.contains(ObjectInfoFlags::VALIDATED) {
+        obj.set_verified_id(true, info.def_prot);
+    }
+    crate::obj::register_object(obj);
     inflight_mgr().lock().request_ready(rk);
 }
 

@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{Thread, current_thread_ref, flags::THREAD_HAS_DONATED_PRIORITY};
+use crate::processor::sched::{SchedFlags, needs_reschedule, schedule};
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,10 +60,31 @@ impl Priority {
         }
     }
 
+    /// Decode a priority supplied by userspace, rejecting an unknown class or an out-of-range
+    /// value rather than silently clamping the way [Priority::from_raw] does.
+    pub fn try_from_raw(d: u32) -> Option<Self> {
+        let class = match d >> 16 {
+            0 => PriorityClass::Idle,
+            1 => PriorityClass::Background,
+            2 => PriorityClass::User,
+            3 => PriorityClass::Realtime,
+            _ => return None,
+        };
+        let value = (d & 0xffff) as u16;
+        if value >= MAX_PRIORITY {
+            return None;
+        }
+        Some(Self { class, value })
+    }
+
     pub fn raw(&self) -> u32 {
         ((self.class as u32) << 16) | (self.value as u32)
     }
 }
+
+// The packed encoding above is the syscall ABI for thread priority, so the two sides must agree on
+// the range of a priority value.
+const _: () = assert!(MAX_PRIORITY == twizzler_abi::syscall::MAX_PRIORITY_VALUE);
 
 impl Thread {
     pub fn remove_donated_priority(&self) {
@@ -99,6 +121,31 @@ impl Thread {
         self.stable_priority
             .store(priority.raw(), Ordering::Release);
         priority
+    }
+
+    pub fn base_priority(&self) -> Priority {
+        Priority::from_raw(self.priority.load(Ordering::SeqCst))
+    }
+
+    /// Set the thread's base priority. Any donated priority is unaffected, and still wins while it
+    /// is higher.
+    ///
+    /// A thread that is already sitting on a run queue keeps its place there: the queues bucket a
+    /// thread by the priority snapshot taken when it was inserted (see
+    /// [Thread::stable_effective_priority]), so the new priority applies from its next enqueue.
+    pub fn set_priority(&self, pri: Priority) {
+        let old = Priority::from_raw(self.priority.swap(pri.raw(), Ordering::SeqCst));
+        if pri == old {
+            return;
+        }
+        if self.is_current_thread() {
+            // Lowering our own priority can mean something already queued here outranks us now.
+            if pri < old && needs_reschedule(false) {
+                schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            }
+        } else if pri > old {
+            self.maybe_reschedule_thread();
+        }
     }
 
     pub fn effective_priority(&self) -> Priority {
@@ -151,6 +198,19 @@ mod test {
         let raw = pri.raw();
         let new_pri = Priority::from_raw(raw);
         assert_eq!(pri, new_pri);
+    }
+
+    #[kernel_test]
+    fn test_priority_try_from_raw() {
+        assert_eq!(
+            Priority::try_from_raw(Priority::USER.raw()),
+            Some(Priority::USER)
+        );
+        assert_eq!(Priority::try_from_raw(4 << 16), None);
+        assert_eq!(
+            Priority::try_from_raw(Priority::USER.raw() | MAX_PRIORITY as u32),
+            None
+        );
     }
 
     #[kernel_test]

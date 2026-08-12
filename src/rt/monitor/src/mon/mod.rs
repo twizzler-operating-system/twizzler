@@ -343,7 +343,7 @@ impl Monitor {
             id: thread.id,
             flags: MapFlags::READ | MapFlags::WRITE,
         };
-        let repr_handle = Space::map(&mon.space, repr_info)
+        let repr_handle = Space::map(&mon.space, repr_info, instance)
             .inspect_err(|e| tracing::debug!("failed to premap repr of {}: {}", thread.id, e))
             .ok();
 
@@ -374,7 +374,7 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
         let t_space = std::time::Instant::now();
-        let handle = Space::map(&self.space, info)?;
+        let handle = Space::map(&self.space, info, sctx)?;
         let space_ns = t_space.elapsed().as_nanos() as u64;
 
         // A read: recording the mapping only touches the compartment's own map, which has its own
