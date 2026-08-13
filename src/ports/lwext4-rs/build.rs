@@ -35,11 +35,13 @@ fn main() {
     assert!(status.success());
     let target = std::env::var("TARGET").unwrap();
 
+    let bindgen_out = format!("{}/lwext4.rs", outdir);
+
     let mut proc = std::process::Command::new("../../../toolchain/install/bin/bindgen");
     proc.stdout(stderr())
         .arg("src/lwext4.h")
         .arg("-o")
-        .arg("src/lwext4.rs")
+        .arg(&bindgen_out)
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")

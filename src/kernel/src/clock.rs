@@ -362,7 +362,8 @@ fn organize_clock_sources(kind: ClockKind) {
         }
         ClockKind::RealTime => {
             let mut clock_vec = Vec::new();
-            clock_vec.push(ClockID(0));
+            // slot 1 is reserved for the best real-time clock; see time::register_clock.
+            clock_vec.push(ClockID(1));
             USER_CLOCKS.lock().push(clock_vec);
         }
         ClockKind::Unknown => {

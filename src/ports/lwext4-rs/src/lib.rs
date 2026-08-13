@@ -16,7 +16,9 @@ use lwext4::{
 };
 
 #[allow(unused, nonstandard_style)]
-mod lwext4;
+mod lwext4 {
+    include!(concat!(env!("OUT_DIR"), "/lwext4.rs"));
+}
 
 fn errno_to_result(errno: i32) -> Result<()> {
     match errno {

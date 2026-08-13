@@ -56,3 +56,16 @@ where
 pub fn bench_clock() -> Option<Arc<dyn ClockHardware + Send + Sync>> {
     TICK_SOURCES.lock().get(0).cloned().flatten()
 }
+
+/// Explicitly install a clock as the best real-time clock source (slot 1), overriding whatever
+/// it was previously aliased to. Unlike [`register_clock`], this always claims slot 1, since
+/// callers of this function are supplying an actual wall-clock source rather than a generic
+/// monotonic tick source.
+pub fn register_realtime_clock<T>(clock: T)
+where
+    T: 'static + ClockHardware + Send + Sync,
+{
+    let clk = Arc::new(clock);
+    // Slot 1 is reserved for the best real-time clock; see register_clock above.
+    TICK_SOURCES.lock()[1] = Some(clk);
+}
