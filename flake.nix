@@ -40,10 +40,11 @@
       devShells = forEachSupportedSystem (
         { pkgs }:
         {
-          default = pkgs.mkShellNoCC {
+          default = pkgs.mkShell {
             packages = with pkgs; [
               rustToolchain
               openssl
+              curl
               pkg-config
               cargo-deny
               cargo-edit
@@ -58,13 +59,28 @@
               libvirt
               libclang
               mdbook
+
+              e2fsprogs
+              llvmPackages.lld
             ];
             env = {
-              # Required by rust-analyzer
               RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
-              # Required by bindgen to find libclang.so
               LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+
+              # to compile blake3 with asm features without erroring on nixos
+              CFLAGS = "-Wa,--compress-debug-sections=none";
+              ASFLAGS = "--compress-debug-sections=none";
+              CFLAGS_x86_64_unknown_none = "-Wa,--compress-debug-sections=none";
+              ASFLAGS_x86_64_unknown_none = "--compress-debug-sections=none";
+              TARGET_CFLAGS = "-Wa,--compress-debug-sections=none";
             };
+            # NIX_LDFLAGS carries -L search paths for build-time linking, but
+            # tools compiled by the build (e.g. xtask, cargo's own build
+            # scripts) also need these on LD_LIBRARY_PATH to dynamically
+            # load libs like libz.so.1 / libcurl.so.4 at run time.
+            shellHook = ''
+              export LD_LIBRARY_PATH="$(printf '%s' "$NIX_LDFLAGS" | tr ' ' '\n' | sed -n 's/^-L//p' | paste -sd: -):$LD_LIBRARY_PATH"
+            '';
           };
         }
       );
