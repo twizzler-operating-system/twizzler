@@ -177,7 +177,7 @@ impl TxToken for NetServerTxToken<'_> {
 impl RxToken for NetServerRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
         let mem = self.ns.client_tx.packet_mem_mut(self.packet);
         f(mem)

@@ -8,7 +8,7 @@ edition = "2021"
 virtio-net = { path = "../../lib/virtio-net" }
 
 [dependencies.smoltcp]
-version = "0.11.0"
+version = "0.13.1"
 optional = false
 default-features = true
 features = [

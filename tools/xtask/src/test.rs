@@ -65,6 +65,14 @@ pub struct TestOptions {
     pub kernel_arg: Vec<String>,
     #[clap(
         long,
+        help = "Run this program in init instead of the test suite, and report the guest's exit \
+                code rather than a test report. The first word names the program (a bare name is \
+                resolved under /initrd) and the rest are its arguments, e.g. \
+                --autostart=\"pagepar /sysroot/lib 4 16\"."
+    )]
+    pub autostart: Option<String>,
+    #[clap(
+        long,
         help = "Don't build anything, just run against the current image"
     )]
     pub no_build: bool,
@@ -118,7 +126,7 @@ impl TestOptions {
             kernel: false,
             data: None,
             repeat: false,
-            autostart: None,
+            autostart: self.autostart.clone(),
             kernel_arg: self.kernel_arg.clone(),
             // Leave the gdb serial port unbound; scenarios are run unattended, and binding it
             // would collide between concurrent runs.
@@ -174,7 +182,10 @@ fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
 /// Boot `image` with `run` and report what the guest's test suite said. Shared by every scenario
 /// that just runs the normal test suite under a different `RunConfig`.
 fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
-    let options = cli.qemu_options(true);
+    // An autostart run builds a *non*-test image on purpose. init runs the suite before it reaches
+    // the autostart program and shuts the guest down at the end of it, so a test-enabled image
+    // would never run the program at all.
+    let options = cli.qemu_options(cli.autostart.is_none());
     let image = match &cli.boot_image {
         Some(path) => {
             if !path.is_file() {
@@ -197,6 +208,26 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
     if let Some(death) = outcome.guest_death {
         eprintln!("FAILED: {}", death.describe());
         std::process::exit(death.exit_code());
+    }
+
+    // An autostart run has no test suite to report, so its outcome is the exit code init handed to
+    // isa-debug-exit. A run that never got there produced nothing and is a failure, same as a
+    // missing report below.
+    if let Some(autostart) = &cli.autostart {
+        return match outcome.guest_code {
+            Some(0) => {
+                println!("autostart {} exited 0", autostart);
+                Ok(())
+            }
+            Some(code) => {
+                eprintln!("FAILED: autostart {} exited with code {}", autostart, code);
+                std::process::exit(33);
+            }
+            None => {
+                eprintln!("FAILED: autostart {} never shut the guest down", autostart);
+                std::process::exit(34);
+            }
+        };
     }
 
     // A run that produced no report tells us nothing, whether it timed out or died early. Treat

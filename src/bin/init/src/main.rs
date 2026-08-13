@@ -239,12 +239,21 @@ fn main() {
 
     let start_time = Instant::now();
 
-    let mut autostart = None;
+    // The first bare word names the autostart program; everything after it is that program's
+    // arguments. Forwarding them is what lets a workload be aimed at something smaller than its
+    // defaults -- `--autostart="pagepar /sysroot/lib 4 16"` rather than 2048 files.
+    let mut autostart: Option<String> = None;
+    let mut autostart_args: Vec<String> = Vec::new();
     let mut start_unittest = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--tests" | "--bench" | "--benches" => start_unittest = true,
-            _ => autostart = Some(arg),
+            // Kernel-only flags share this command line (`--kernel-arg=--diag`), and the autostart
+            // program is a bare name. Without this any such flag becomes the autostart target and
+            // the run dies looking up an object called "--diag".
+            a if a.starts_with("--") => {}
+            _ if autostart.is_none() => autostart = Some(arg),
+            _ => autostart_args.push(arg),
         }
     }
 
@@ -485,20 +494,7 @@ fn main() {
     );
 
     if let Some(autostart) = autostart {
-        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &autostart)
-            .expect("failed to find autostart object");
-        println!("autostart: {}", autostart);
-        let comp = CompartmentLoader::new(&autostart, &autostart, id, NewCompartmentFlags::empty())
-            .args(&[&autostart])
-            .load();
-        if let Ok(comp) = comp {
-            let mut flags = comp.info().unwrap().flags;
-            while !flags.contains(CompartmentFlags::EXITED) {
-                flags = comp.wait(flags);
-            }
-        } else {
-            warn!("failed to start {}", autostart);
-        }
+        run_autostart(&autostart, &autostart_args);
     }
 
     loop {
@@ -517,6 +513,64 @@ fn main() {
 
         println!("shell exited -- restarting shell");
     }
+}
+
+/// Run the program named by `--autostart` and shut the guest down when it exits.
+///
+/// Two conveniences, both because getting either wrong wastes a whole boot:
+///
+/// - **`/initrd/<name>` is tried as a fallback.** Every program lives there, so a bare name is what
+///   anyone writes, and `--autostart=pagepar` failing on a missing path is a boot spent finding
+///   that out. An absolute path still resolves first, so nothing that worked before changes.
+/// - **The guest shuts down afterwards**, rather than falling through to the shell loop. An
+///   autostart run is unattended by construction -- it is how the harness drives one program -- and
+///   a guest that keeps running produces no exit status, so the run ends at whatever silence or
+///   progress budget the harness applies instead of when the work finished.
+fn run_autostart(autostart: &str, autostart_args: &[String]) {
+    let fallback = format!("/initrd/{}", autostart);
+    let resolved = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), autostart)
+        .map(|id| (autostart, id))
+        .or_else(|_| {
+            twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &fallback)
+                .map(|id| (fallback.as_str(), id))
+        });
+    let Ok((path, id)) = resolved else {
+        warn!(
+            "failed to find autostart program: tried {} and {}",
+            autostart, fallback
+        );
+        return;
+    };
+
+    println!("autostart: {} {:?}", path, autostart_args);
+    let mut args = vec![path.to_string()];
+    args.extend(autostart_args.iter().cloned());
+    let comp = CompartmentLoader::new(path, path, id, NewCompartmentFlags::empty())
+        .args(&args)
+        .load();
+    let Ok(comp) = comp else {
+        warn!("failed to start {}", path);
+        return;
+    };
+
+    let mut flags = comp.info().unwrap().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = comp.wait(flags);
+    }
+    let exit_code = comp.info().map(|info| info.exit_code).unwrap_or_else(|e| {
+        eprintln!("failed to read autostart exit code: {}", e);
+        1
+    });
+    println!("autostart {} finished with code {}", path, exit_code);
+
+    // Same clamp as run_tests: isa-debug-exit reports (code << 1) | 1 in an 8-bit status, so
+    // anything above 127 aliases onto another code.
+    #[allow(deprecated)]
+    twizzler_abi::syscall::sys_debug_shutdown(if exit_code == 0 {
+        0
+    } else {
+        exit_code.min(127) as u32
+    });
 }
 
 fn run_tests() {

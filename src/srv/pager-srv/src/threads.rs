@@ -113,13 +113,95 @@ const FAST_PAGE_LIMIT: usize = 16;
 fn is_fast(req: &RequestFromKernel) -> bool {
     match req.cmd() {
         KernelCommand::ObjectInfoReq(_) | KernelCommand::DramPages(_) => true,
-        KernelCommand::PageDataReq(id, range, flags) => {
-            !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND)
-                && range.page_count() <= FAST_PAGE_LIMIT
-                && !would_block_on_store(id, range)
+        KernelCommand::PageDataReq(id, range, flags, _) => {
+            let flags_ok = !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND);
+            let pages = range.page_count();
+            // Deliberately not short-circuited: the question `FAST_PAGE_LIMIT` has never been able
+            // to answer is whether raising it would *let anything through*, and that needs the
+            // probe evaluated on the requests the size test currently rejects. Two cache reads on
+            // the dequeue thread, which is the same cost the accepted path already pays.
+            let probe_ok = !would_block_on_store(id, range);
+            LANE_STATS.record(flags_ok, pages, probe_ok);
+            flags_ok && pages <= FAST_PAGE_LIMIT && probe_ok
         }
         KernelCommand::ObjectCreate(..) | KernelCommand::ObjectDel(_) => false,
         KernelCommand::ObjectEvict(_) => false,
+    }
+}
+
+/// What the fast-lane reservation actually admits, and what a bigger [FAST_PAGE_LIMIT] would.
+///
+/// `pagerperf.md` 11 set the threshold against the request shapes `ensure_in_core_pager` is
+/// *written* to emit and called it "a guess pending measurement"; this is that measurement. The
+/// `would_be_fast_at_*` counters are the decisive ones: they hold the flags and probe tests fixed
+/// and vary only the size limit, so the difference between them is exactly what raising it buys.
+struct LaneStats {
+    page_data: AtomicU64,
+    fast: AtomicU64,
+    rejected_flags: AtomicU64,
+    rejected_size: AtomicU64,
+    rejected_probe: AtomicU64,
+    would_be_fast_at_64: AtomicU64,
+    would_be_fast_at_512: AtomicU64,
+    would_be_fast_unlimited: AtomicU64,
+    pages_fast: AtomicU64,
+    pages_total: AtomicU64,
+}
+
+static LANE_STATS: LaneStats = LaneStats {
+    page_data: AtomicU64::new(0),
+    fast: AtomicU64::new(0),
+    rejected_flags: AtomicU64::new(0),
+    rejected_size: AtomicU64::new(0),
+    rejected_probe: AtomicU64::new(0),
+    would_be_fast_at_64: AtomicU64::new(0),
+    would_be_fast_at_512: AtomicU64::new(0),
+    would_be_fast_unlimited: AtomicU64::new(0),
+    pages_fast: AtomicU64::new(0),
+    pages_total: AtomicU64::new(0),
+};
+
+impl LaneStats {
+    fn record(&self, flags_ok: bool, pages: usize, probe_ok: bool) {
+        let n = self.page_data.fetch_add(1, Ordering::Relaxed) + 1;
+        self.pages_total.fetch_add(pages as u64, Ordering::Relaxed);
+        if !flags_ok {
+            self.rejected_flags.fetch_add(1, Ordering::Relaxed);
+        }
+        if pages > FAST_PAGE_LIMIT {
+            self.rejected_size.fetch_add(1, Ordering::Relaxed);
+        }
+        if !probe_ok {
+            self.rejected_probe.fetch_add(1, Ordering::Relaxed);
+        }
+        if flags_ok && probe_ok {
+            if pages <= FAST_PAGE_LIMIT {
+                self.fast.fetch_add(1, Ordering::Relaxed);
+                self.pages_fast.fetch_add(pages as u64, Ordering::Relaxed);
+            }
+            if pages <= 64 {
+                self.would_be_fast_at_64.fetch_add(1, Ordering::Relaxed);
+            }
+            if pages <= 512 {
+                self.would_be_fast_at_512.fetch_add(1, Ordering::Relaxed);
+            }
+            self.would_be_fast_unlimited.fetch_add(1, Ordering::Relaxed);
+        }
+        if n.is_power_of_two() {
+            tracing::info!(
+                "LANESTATS: {} page-data ({} pages); fast {} ({} pages); rejected {} flags / {} size / {} probe; would be fast at limit 64: {}, 512: {}, unlimited: {}",
+                n,
+                self.pages_total.load(Ordering::Relaxed),
+                self.fast.load(Ordering::Relaxed),
+                self.pages_fast.load(Ordering::Relaxed),
+                self.rejected_flags.load(Ordering::Relaxed),
+                self.rejected_size.load(Ordering::Relaxed),
+                self.rejected_probe.load(Ordering::Relaxed),
+                self.would_be_fast_at_64.load(Ordering::Relaxed),
+                self.would_be_fast_at_512.load(Ordering::Relaxed),
+                self.would_be_fast_unlimited.load(Ordering::Relaxed),
+            );
+        }
     }
 }
 

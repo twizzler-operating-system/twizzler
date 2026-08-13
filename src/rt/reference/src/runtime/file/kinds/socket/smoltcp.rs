@@ -1,6 +1,6 @@
 use std::{
     io::{Error, ErrorKind},
-    net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, ToSocketAddrs},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -240,7 +240,11 @@ impl SmolTcpListener {
 
             for listener in &mut *listeners {
                 let sock = core.get_mutable_socket(listener.socket_handle);
-                if sock.is_active() {
+                // Same predicate the engine publishes into the group's wait word, and for the same
+                // reason `can_read` uses it: a live check that disagrees with the word strands an
+                // edge-triggered consumer. It also keeps accept() from handing out a socket still
+                // in SYN-RECEIVED -- see `listener_socket_ready`.
+                if listener_socket_ready(sock) {
                     let remote = sock.remote_endpoint().unwrap(); // the socket addr returned is that of the remote endpoint. ie. the client.
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
                     // creating another listener and swapping self's socket handle
@@ -347,8 +351,8 @@ impl SmolTcpStream {
         };
         let addr: Option<SocketAddr> = ep.map(|e| {
             let sock: SocketAddr = match e.addr {
-                IpAddress::Ipv4(address) => (Ipv4Addr::from_octets(address.0), e.port).into(),
-                IpAddress::Ipv6(address) => (Ipv6Addr::from_octets(address.0), e.port).into(),
+                IpAddress::Ipv4(address) => (address, e.port).into(),
+                IpAddress::Ipv6(address) => (address, e.port).into(),
             };
             sock
         });
@@ -627,8 +631,8 @@ impl UdpSocket {
         let ep = if peer { None } else { Some(sock.endpoint()) };
         let addr: Option<SocketAddress> = ep.map(|e| {
             let sock: SocketAddr = match e.addr {
-                Some(IpAddress::Ipv4(address)) => (Ipv4Addr::from_octets(address.0), e.port).into(),
-                Some(IpAddress::Ipv6(address)) => (Ipv6Addr::from_octets(address.0), e.port).into(),
+                Some(IpAddress::Ipv4(address)) => (address, e.port).into(),
+                Some(IpAddress::Ipv6(address)) => (address, e.port).into(),
                 None => return SocketAddress::default(),
             };
             sock.into()

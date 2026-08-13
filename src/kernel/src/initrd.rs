@@ -108,9 +108,14 @@ pub fn init(modules: &[BootModule]) {
             }
 
             let mut buffer = [0; PHYS_LEVEL_LAYOUTS[0].size()];
+            // This rewrite exists only to add `MEXT_SIZED`, so it keeps the nonce and kuid
+            // `new_kernel` wrote. Zeroing them, as this used to, left every boot object with an ID
+            // that does not verify against its own meta page -- and would contradict the ID check
+            // recorded when that page was first written.
+            let existing = obj.read_meta();
             let meta = MetaInfo {
-                nonce: Nonce(0),
-                kuid: ObjID::new(0),
+                nonce: existing.map(|m| m.nonce).unwrap_or(Nonce(0)),
+                kuid: existing.map(|m| m.kuid).unwrap_or(ObjID::new(0)),
                 default_prot: Protections::all(),
                 flags: MetaFlags::empty(),
                 fotcount: 0,

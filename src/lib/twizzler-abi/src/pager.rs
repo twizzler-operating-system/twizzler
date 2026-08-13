@@ -38,7 +38,7 @@ impl RequestFromKernel {
 
     pub fn id(&self) -> Option<ObjID> {
         match self.cmd() {
-            KernelCommand::PageDataReq(objid, _, _) => Some(objid),
+            KernelCommand::PageDataReq(objid, _, _, _) => Some(objid),
             KernelCommand::ObjectInfoReq(objid) => Some(objid),
             KernelCommand::ObjectEvict(info) => Some(info.obj_id),
             KernelCommand::ObjectDel(objid) => Some(objid),
@@ -50,7 +50,17 @@ impl RequestFromKernel {
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
 pub enum KernelCommand {
-    PageDataReq(ObjID, ObjectRange, PagerFlags),
+    /// Page in a range of an object.
+    ///
+    /// The third range is the *required* subrange: the pages a thread is actually blocked on, as
+    /// opposed to the widening `ensure_in_core_pager` adds around them to install a large page and
+    /// save later faults. The pager transfers and completes it first, so the waiter can be woken
+    /// after tens of kilobytes rather than after the whole request (`pagerperf.md` 11) -- except
+    /// where cutting the transfer that small would cost the region its large-page merge, which the
+    /// pager decides for itself (`largepager.md`). Empty means
+    /// "no part of this is more urgent than any other" -- a prefetch, or a caller that needs all
+    /// of it -- and the request is served in address order.
+    PageDataReq(ObjID, ObjectRange, PagerFlags, ObjectRange),
     ObjectInfoReq(ObjID),
     ObjectEvict(ObjectEvictInfo),
     ObjectDel(ObjID),
@@ -184,6 +194,17 @@ bitflags::bitflags! {
         /// kernel-side avoids both a `CopyUserPhys` and a later fault. Mutually exclusive with
         /// `META_PAGE` in practice; `META_PAGE` wins if both are set.
         const SYNTH_META = 4;
+        /// `size` is the object's length in the store, and the pager promises there is nothing
+        /// beyond it to read.
+        ///
+        /// A positive assertion rather than an inference, because the kernel acts on it by
+        /// answering faults past that point *without asking the pager at all*. Zero is a perfectly
+        /// good length, so "size == 0" cannot distinguish an empty object from a pager that simply
+        /// never filled the field -- and reading the second as the first serves zeros over real
+        /// data. It did: setting the kernel's length from an unflagged `size` made every stored
+        /// object look empty, and the guest died with `failed to enumerate dependencies for
+        /// libtwz_rt.so` because its libraries read back as zeros (`pagerperf.md` 20).
+        const SIZE_VALID = 8;
     }
 }
 
@@ -235,8 +256,17 @@ impl ObjectInfo {
     }
 
     /// Ask the kernel to build the meta page itself, for an object `size` bytes long.
+    ///
+    /// Also states the length, since building the page from it is a strictly stronger claim.
     pub fn synth_meta(mut self, size: u64) -> Self {
         self.flags |= ObjectInfoFlags::SYNTH_META;
+        self.size = size;
+        self.with_size(size)
+    }
+
+    /// State the object's length in the store: there is nothing past `size` to read.
+    pub fn with_size(mut self, size: u64) -> Self {
+        self.flags |= ObjectInfoFlags::SIZE_VALID;
         self.size = size;
         self
     }

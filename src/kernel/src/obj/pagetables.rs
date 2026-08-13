@@ -247,7 +247,12 @@ impl ObjectPageTable {
     }
 
     pub fn do_run_consistency(&self, consist: &mut Consistency) -> Option<ArchTlbMgr> {
-        let tlb = if !consist.tlb().is_full() {
+        // `add_invalidate` drops silently once its bounded lists fill, so past MAX_INVL_TARGETS
+        // contexts (or MAX_INVLS cursors within one) this object no longer knows where all of its
+        // mappings live. Retargeting precisely would then reach only the contexts that happened to
+        // fit and skip the rest entirely -- the same reason `invalidate` gives up and goes global.
+        let overflowed = self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full());
+        let tlb = if !consist.tlb().is_full() && !overflowed {
             if consist.tlb().has_pending() {
                 let mut final_tlb: Option<ArchTlbMgr> = None;
                 'out: for (target, maps) in self.invls.iter() {
@@ -281,8 +286,10 @@ impl ObjectPageTable {
             } else {
                 None
             }
-        } else {
+        } else if consist.tlb().has_pending() {
             Some(ArchTlbMgr::new_full_global())
+        } else {
+            None
         };
         consist.tlb_mut().reset();
         tlb
@@ -329,6 +336,29 @@ impl ObjectPageTable {
                 acc + mi.len() / PageNumber::PAGE_SIZE
             }
         })
+    }
+
+    /// Bucket every populated 2 MiB region of this object into `out`.
+    ///
+    /// One pass of the raw (uncoalesced) map reader: entries arrive in address order and never
+    /// straddle a region, so grouping is a comparison against the running region base.
+    pub fn promotion_census(&self, out: &mut PromotionCensus) {
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
+        let mut acc: Option<RegionAcc> = None;
+        for mi in self.mapper.readmap(cursor) {
+            if mi.is_empty() {
+                continue;
+            }
+            let base = mi.vaddr().raw() & !(PHYS_LEVEL_LAYOUTS[1].size() as u64 - 1);
+            if acc.as_ref().is_some_and(|acc| acc.base != base) {
+                acc.take().unwrap().record(out);
+            }
+            acc.get_or_insert_with(|| RegionAcc::new(base)).add(&mi);
+        }
+        if let Some(acc) = acc {
+            acc.record(out);
+            out.objects += 1;
+        }
     }
 
     pub fn get_dirty_and_reset(&mut self) -> Result<DirtyList, TwzError> {
@@ -573,5 +603,126 @@ impl Object {
         );
         old_pt.run_consistency(consist).run_all();
         r.map(|_| new_pt)
+    }
+}
+
+/// What large-page *promotion* -- merging a fully-populated 2 MiB region of 4 KiB frames in place
+/// -- would find across the object system.
+///
+/// A large page today is a property of delivery, not of state: it exists only where 512 aligned,
+/// contiguous pages arrive in a single pager completion, and a region filled 4 KiB at a time stays
+/// 4 KiB forever however contiguous it turns out to be (`largepager.md`). `promotable` is what a
+/// promotion pass would convert and is the number that decides whether promotion is worth building.
+/// `unaligned` is what it could not convert, and so sizes the pager-side object-keyed allocation
+/// that would make promotion always possible.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PromotionCensus {
+    /// Objects with at least one populated region.
+    pub objects: usize,
+    /// Regions already mapped as one large page.
+    pub large: usize,
+    /// Full at 4 KiB, physically contiguous, 2 MiB-aligned, and made of frames a merge could
+    /// actually take: singly-referenced, not COW, not wired, not page tables.
+    pub promotable: usize,
+    /// Contiguous and aligned, but the frames are shared -- refcount above one, or COW, or wired.
+    /// `merge_frame`'s callers assert against exactly these, and a COW clone of an already-large
+    /// region lands here, so counting it as the prize would inflate it by the number of clones.
+    pub shared: usize,
+    /// Full at 4 KiB, but fragmented or misaligned.
+    pub unaligned: usize,
+    /// Populated but not full, and the pages in them.
+    pub partial: usize,
+    pub partial_pages: usize,
+    /// Populated region 0s, counted apart: page 0 is the null page and is never mapped, so region
+    /// 0 can never be full and would only inflate `partial`.
+    pub region0: usize,
+    /// Pages in `region0` and `partial` regions -- the two buckets whose page count is not implied
+    /// by their region count.
+    pub loose_pages: usize,
+}
+
+impl PromotionCensus {
+    /// Every 4 KiB page the census saw. The region counts claim memory, and the machine has to
+    /// actually have it -- comparing this against the allocator is what makes them checkable.
+    pub fn pages(&self) -> usize {
+        let per_region = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
+        (self.large + self.promotable + self.shared + self.unaligned) * per_region
+            + self.loose_pages
+    }
+}
+
+/// One region's worth of accumulation for [ObjectPageTable::promotion_census].
+struct RegionAcc {
+    base: u64,
+    bytes: usize,
+    large: bool,
+    /// The physical address this region would start at, as implied by an entry's offset within it.
+    /// One value agreed by every entry is exactly what "physically contiguous" means here.
+    phys_base: Option<u64>,
+    contig: bool,
+    /// Every frame is one a merge could take. Checked only while `contig` still holds, since a
+    /// region that has already lost contiguity cannot be promoted whatever its frames look like --
+    /// which keeps the frame lookups off the common fragmented case.
+    ///
+    /// Mapping settings are not compared: object page tables map with `default_user()` throughout,
+    /// and the one thing that varies them is COW, which this already rejects.
+    frames_ok: bool,
+}
+
+impl RegionAcc {
+    fn new(base: u64) -> Self {
+        Self {
+            base,
+            bytes: 0,
+            large: false,
+            phys_base: None,
+            contig: true,
+            frames_ok: true,
+        }
+    }
+
+    fn add(&mut self, mi: &MapInfo) {
+        self.bytes += mi.len();
+        if mi.len() >= PHYS_LEVEL_LAYOUTS[1].size() {
+            self.large = true;
+        }
+        let implied = mi.paddr().raw().wrapping_sub(mi.vaddr().raw() - self.base);
+        match self.phys_base {
+            None => self.phys_base = Some(implied),
+            Some(phys_base) if phys_base != implied => self.contig = false,
+            _ => {}
+        }
+        if self.contig && self.frames_ok {
+            self.frames_ok = get_frame(mi.paddr()).is_some_and(|frame| {
+                frame.refcount() == 1 && !frame.is_cow() && !frame.is_wired() && !frame.is_pt()
+            });
+        }
+    }
+
+    fn record(self, out: &mut PromotionCensus) {
+        let region = PHYS_LEVEL_LAYOUTS[1].size();
+        if self.base == 0 {
+            out.region0 += 1;
+            out.loose_pages += self.bytes / PageNumber::PAGE_SIZE;
+        } else if self.large {
+            out.large += 1;
+        } else if self.bytes == region {
+            let aligned = self
+                .phys_base
+                .is_some_and(|phys_base| phys_base.is_multiple_of(region as u64));
+            if self.contig && aligned {
+                if self.frames_ok {
+                    out.promotable += 1;
+                } else {
+                    out.shared += 1;
+                }
+            } else {
+                out.unaligned += 1;
+            }
+        } else {
+            out.partial += 1;
+            out.partial_pages += self.bytes / PageNumber::PAGE_SIZE;
+            out.loose_pages += self.bytes / PageNumber::PAGE_SIZE;
+        }
     }
 }

@@ -980,6 +980,18 @@ impl Thread {
             locktrack::diag::EXIT_DEFERRED_MUTEX_HELD.count_only();
             return;
         }
+        // Same argument, for sleep links. Only the `sys_thread_sync` frame knows which words this
+        // thread is parked on -- `undo_sleep` walks the caller's op array -- so exiting from here
+        // abandons the one thing that could unlink them, and `clear_all_references` then frees the
+        // slab under nodes still in objects' sleep trees.
+        //
+        // `must_not_block` already states the intended discipline: a thread that must exit returns
+        // without blocking, runs its normal cleanup, and exits from `sys_thread_sync` afterwards.
+        // This is the arm that was bypassing it.
+        if self.sync_links.is_linked() {
+            locktrack::diag::EXIT_DEFERRED_SLEEP_LINKED.count_only();
+            return;
+        }
         // TODO
         exit(101);
     }

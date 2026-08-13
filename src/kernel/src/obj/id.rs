@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::{
-    meta::MetaFlags,
+    meta::{MetaFlags, MetaInfo},
     object::{ObjID, Protections},
 };
 
@@ -160,6 +160,36 @@ impl Object {
         }
         checkidstats::preset();
         self.verified_id.call_once(|| (verified, default_prot));
+    }
+
+    /// Record the ID check for metadata the kernel is writing itself.
+    ///
+    /// [Object::check_id] would read these very bytes back and run `verify_id` over them, so
+    /// running it here against the struct being written is the same answer without the read --
+    /// which for a pager-backed object is a page-in charged to whoever maps the object first.
+    ///
+    /// Only the first call takes effect (`set_verified_id` is a `Once`), so an object whose meta
+    /// the kernel rewrites keeps the answer for the first write. `initrd.rs` is the only site that
+    /// rewrites, and it now preserves the fields this verifies against.
+    pub fn note_written_meta(&self, meta: &MetaInfo) {
+        // `verified_id` is an `OnceWait`, and its `call_once` ends in `CondVar::signal`, which
+        // unwraps the current thread. `initrd::init` writes object metadata from `kernel_main`,
+        // before threading exists, so there the memo is skipped rather than recorded -- those
+        // objects are DRAM-resident and their `read_meta` is the cheap kind. Same hazard `once.rs`
+        // describes for `Once` vs `OnceWait`.
+        if crate::thread::current_thread_ref().is_none() {
+            return;
+        }
+        self.set_verified_id(
+            verify_id(
+                self.id,
+                meta.nonce.0,
+                meta.kuid,
+                meta.flags,
+                meta.default_prot,
+            ),
+            meta.default_prot,
+        );
     }
 
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {

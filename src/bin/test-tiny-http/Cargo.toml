@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 tiny_http = { path = "src/tiny-http-twizzler" }
-smoltcp = "0.11.0"
+smoltcp = "0.13.1"
 tracing = "0.1"

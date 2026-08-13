@@ -242,7 +242,7 @@ impl TxToken for NetClientTxToken<'_> {
 impl RxToken for NetClientRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
         let mem = self.nc.rx.packet_mem_mut(self.packet);
         f(mem)

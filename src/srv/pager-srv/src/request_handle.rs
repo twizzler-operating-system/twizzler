@@ -99,12 +99,173 @@ impl Drop for ReqGuard {
     }
 }
 
+/// Largest "urgent" segment, in pages. The kernel only ever blocks on a page or two; this bounds
+/// what an unusually large or malformed required range can claim as urgent.
+const REQUIRED_SEGMENT_LIMIT: u64 = 16;
+
+/// Bytes covered by one large page, i.e. the granularity the kernel merges 4 KiB frames at.
+const LARGE_REGION: u64 = 2 * 1024 * 1024;
+
+/// Whether a required range whose whole large-page region is being requested is served as that
+/// region entire, instead of as a short urgent segment. Trading the early wake for the merge, but
+/// only where a merge is actually possible; see `largepager.md`. `false` restores the unconditional
+/// short segment.
+const WHOLE_REGION_FOR_LARGE: bool = true;
+
+/// The large-page region containing `offset`, if serving it whole could produce a large page.
+///
+/// Two ways it could not, and both fall back to the short urgent segment:
+///
+/// - **Region 0.** Object page 0 is the null page and is never delivered (`req_range.start` is
+///   rewritten past it below), so the region can never be fully populated and can never merge.
+///   Splitting it is free, which matters because first touch of any object -- and the whole of any
+///   object smaller than a region -- lands here.
+/// - **A region the request does not cover.** The kernel only widens to a whole region when that
+///   region's level-1 entry is empty; a partially-populated region arrives as scattered pages that
+///   no longer merge whatever the pager does, so rounding out would buy latency and nothing else.
+fn whole_region(req_range: ObjectRange, offset: u64) -> Option<ObjectRange> {
+    let start = offset - offset % LARGE_REGION;
+    if !WHOLE_REGION_FOR_LARGE || start == 0 {
+        return None;
+    }
+    let region = ObjectRange::new(start, start + LARGE_REGION);
+    (req_range.start <= region.start && req_range.end >= region.end).then_some(region)
+}
+
+/// Order the pieces of a page-data request: the pages a thread is blocked on first, then the rest
+/// in address order.
+///
+/// An empty `required`, or one that already spans the whole request, yields a single segment --
+/// the old behaviour, and what a prefetch wants. The segments always cover exactly `req_range` and
+/// never overlap, so no page is transferred twice.
+fn transfer_segments(
+    req_range: ObjectRange,
+    required: ObjectRange,
+) -> impl Iterator<Item = ObjectRange> {
+    let mut start = required.start.max(req_range.start);
+    let mut end = required.end.min(req_range.end);
+    if end > start {
+        match whole_region(req_range, start) {
+            Some(region) => {
+                start = region.start;
+                end = region.end;
+            }
+            None => end = end.min(start + REQUIRED_SEGMENT_LIMIT * PAGE),
+        }
+    }
+    let mut segs: heapless::Vec<ObjectRange, 3> = heapless::Vec::new();
+    if end > start && (start > req_range.start || end < req_range.end) {
+        let _ = segs.push(ObjectRange::new(start, end));
+        if start > req_range.start {
+            let _ = segs.push(ObjectRange::new(req_range.start, start));
+        }
+        if end < req_range.end {
+            let _ = segs.push(ObjectRange::new(end, req_range.end));
+        }
+    } else {
+        let _ = segs.push(req_range);
+    }
+    segs.into_iter()
+}
+
+/// Transfer one segment, emitting a completion per contiguous physical run.
+///
+/// `req_range` is passed only so diagnostics name the range the kernel asked about rather than the
+/// piece being worked on.
+async fn transfer_range(
+    ctx: &'static PagerContext,
+    qid: u32,
+    id: ObjID,
+    seg: ObjectRange,
+    req_range: ObjectRange,
+    prefetch: bool,
+) -> std::result::Result<(), ()> {
+    let total = seg.page_count() as u64;
+    tracing::trace!(
+        "handling page data request for {}: {:?} of {:?} ({} pages) (prefetch = {})",
+        id,
+        seg,
+        req_range,
+        total,
+        prefetch
+    );
+    let mut count = 0;
+    while count < total {
+        let range = ObjectRange::new(seg.start + count * PAGE, seg.end);
+        let pages = match ctx
+            .data
+            .fill_mem_pages_partial(ctx, id, range)
+            .await
+            .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
+        {
+            Ok(pages) => pages,
+            Err(e) => {
+                let comp = CompletionToKernel::new(
+                    KernelCompletionData::Error(RawTwzError::new(e.raw())),
+                    KernelCompletionFlags::DONE,
+                );
+                ctx.notify_kernel(qid, comp);
+                return Err(());
+            }
+        };
+
+        let thiscount = pages
+            .iter()
+            .fold(0u64, |acc, x| acc + (x.range.end - x.range.start) / PAGE);
+
+        // A fill that yields no pages (e.g. out of physical memory) would spin this loop
+        // forever. Report what we did manage and let the kernel re-fault for the rest.
+        if thiscount == 0 {
+            tracing::warn!(
+                "page data request for {} {:?} made no progress after {} of {} pages",
+                id,
+                seg,
+                count,
+                total
+            );
+            break;
+        }
+
+        // try to compress page ranges
+        let runs = crate::helpers::consecutive_slices(pages.as_slice(), |a, b| {
+            a.range.end == b.range.start && a.same_flags(b)
+        });
+        let mut acc = 0;
+        for comp in runs.map(|run| {
+            let start = run[0];
+            let last = run.last().unwrap();
+            let flags = if start.is_wired() {
+                PageFlags::WIRED
+            } else {
+                PageFlags::empty()
+            };
+            let phys_range = PhysRange {
+                start: start.range.start,
+                end: last.range.end,
+            };
+            let start = seg.start + (count + acc as u64) * PAGE;
+            let range = ObjectRange::new(start, start + phys_range.len() as u64);
+
+            acc += phys_range.page_count();
+            CompletionToKernel::new(
+                KernelCompletionData::PageDataCompletion(id, range, phys_range, flags),
+                KernelCompletionFlags::empty(),
+            )
+        }) {
+            ctx.notify_kernel(qid, comp);
+        }
+        count += thiscount;
+    }
+    Ok(())
+}
+
 async fn handle_page_data_request_task(
     ctx: &'static PagerContext,
     qid: u32,
     id: ObjID,
     mut req_range: ObjectRange,
     flags: PagerFlags,
+    required: ObjectRange,
 ) {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static PCOUNT: AtomicU64 = AtomicU64::new(0);
@@ -156,89 +317,25 @@ async fn handle_page_data_request_task(
     }
     let _req = REQ_STATS.enter(prefetch);
 
-    let total = req_range.page_count() as u64;
-    tracing::trace!(
-        "handling page data request for {}: {:?} ({} pages) (prefetch = {})",
-        id,
-        req_range,
-        total,
-        prefetch
-    );
-    let mut count = 0;
-    while count < total {
-        tracing::trace!(
-            "reading {} page {} of {} (pre = {})",
-            id,
-            count,
-            total,
-            prefetch
-        );
-        let range = ObjectRange::new(req_range.start + count * PAGE, req_range.end);
-        let pages = match ctx
-            .data
-            .fill_mem_pages_partial(ctx, id, range)
+    // Serve what someone is blocked on before the rest.
+    //
+    // The kernel widens a one-page touch to a whole large-page region, so most of a page-data
+    // request is speculative and nobody waits on it -- but it all used to arrive as a single
+    // completion, so the faulting thread slept through the entire transfer to get its one page
+    // (`pagerperf.md` 11). Transferring the required subrange as its own batch lets the kernel wake
+    // it after tens of kilobytes instead.
+    //
+    // The segments are disjoint, so no page moves twice. The required range is by construction
+    // inside the request's *first* large-page region -- `ensure_in_core_pager` aligns down to the
+    // region containing the fault -- so splitting could only ever cost that region's merge, and
+    // `whole_region` declines to split where the merge is still on the table.
+    for range in transfer_segments(req_range, required) {
+        if transfer_range(ctx, qid, id, range, req_range, prefetch)
             .await
-            .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
+            .is_err()
         {
-            Ok(pages) => pages,
-            Err(e) => {
-                let comp = CompletionToKernel::new(
-                    KernelCompletionData::Error(RawTwzError::new(e.raw())),
-                    KernelCompletionFlags::DONE,
-                );
-                ctx.notify_kernel(qid, comp);
-                return;
-            }
-        };
-
-        let thiscount = pages
-            .iter()
-            .fold(0u64, |acc, x| acc + (x.range.end - x.range.start) / PAGE);
-
-        // A fill that yields no pages (e.g. out of physical memory) would spin this loop
-        // forever. Report what we did manage and let the kernel re-fault for the rest.
-        if thiscount == 0 {
-            tracing::warn!(
-                "page data request for {} {:?} made no progress after {} of {} pages",
-                id,
-                req_range,
-                count,
-                total
-            );
-            break;
+            return;
         }
-
-        // try to compress page ranges
-        let runs = crate::helpers::consecutive_slices(pages.as_slice(), |a, b| {
-            a.range.end == b.range.start && a.same_flags(b)
-        });
-        let mut acc = 0;
-        for comp in runs.map(|run| {
-            let start = run[0];
-            let last = run.last().unwrap();
-            let flags = if start.is_wired() {
-                PageFlags::WIRED
-            } else {
-                PageFlags::empty()
-            };
-            let phys_range = PhysRange {
-                start: start.range.start,
-                end: last.range.end,
-            };
-            tracing::trace!("{:?} ==> {:?} {:?}", id, req_range, phys_range);
-
-            let start = req_range.start + (count + acc as u64) * PAGE;
-            let range = ObjectRange::new(start, start + phys_range.len() as u64);
-
-            acc += phys_range.page_count();
-            CompletionToKernel::new(
-                KernelCompletionData::PageDataCompletion(id, range, phys_range, flags),
-                KernelCompletionFlags::empty(),
-            )
-        }) {
-            ctx.notify_kernel(qid, comp);
-        }
-        count += thiscount;
     }
     if prefetch {
         PCOUNT.fetch_sub(1, Ordering::SeqCst);
@@ -266,6 +363,7 @@ async fn handle_page_data_request(
     id: ObjID,
     req_range: ObjectRange,
     flags: PagerFlags,
+    required: ObjectRange,
     req: RequestFromKernel,
 ) -> Vec<CompletionToKernel> {
     tracing::debug!(
@@ -291,7 +389,7 @@ async fn handle_page_data_request(
     // Detached: the caller's `Work` ends when this returns, so the task needs its own.
     spawn_async(async move {
         let _work = watchdog::begin("pagedata-task", qid, req);
-        handle_page_data_request_task(ctx, qid, id, req_range, flags).await;
+        handle_page_data_request_task(ctx, qid, id, req_range, flags, required).await;
     });
     vec![]
 }
@@ -363,9 +461,10 @@ pub async fn handle_kernel_request(
     work: &watchdog::Work,
 ) -> Vec<CompletionToKernel> {
     let data = match request.cmd() {
-        KernelCommand::PageDataReq(obj_id, range, flags) => {
+        KernelCommand::PageDataReq(obj_id, range, flags, required) => {
             work.phase("pagedata:spawn");
-            return handle_page_data_request(ctx, qid, obj_id, range, flags, request).await;
+            return handle_page_data_request(ctx, qid, obj_id, range, flags, required, request)
+                .await;
         }
         KernelCommand::ObjectInfoReq(obj_id) => {
             work.phase("info:spawn");
@@ -425,7 +524,12 @@ pub async fn handle_kernel_request(
                             .await
                             .unwrap();
 
-                        KernelCompletionData::ObjectInfoCompletion(id, object_info)
+                        // Validated, not merely echoed. The kernel derived `id` from these very
+                        // kuid/nonce/def_prot fields and we have just written them into the meta
+                        // page, so `check_id` would read back exactly what it already knows.
+                        // Without this the first map of every pager-backed object pays a meta-page
+                        // page-in for an answer nobody had to look up (mapperf.md).
+                        KernelCompletionData::ObjectInfoCompletion(id, object_info.validated())
                     }
                     Err(e) => {
                         tracing::warn!("failed to create object {}: {}", id, e);

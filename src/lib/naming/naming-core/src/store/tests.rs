@@ -171,6 +171,132 @@ fn remove_nested_bottom_up() {
 }
 
 #[test]
+fn over_long_component_rejected() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    let long = "x".repeat(crate::MAX_KEY_SIZE + 1);
+
+    assert_eq!(
+        session.put(&long, ObjID::new(1)).unwrap_err(),
+        TwzError::INVALID_ARGUMENT
+    );
+    assert_eq!(
+        session.mkns(&long, false).unwrap_err(),
+        TwzError::INVALID_ARGUMENT
+    );
+    // Name and target each fit, but not together.
+    assert_eq!(
+        session
+            .link("y".repeat(crate::MAX_KEY_SIZE - 1), "z".repeat(2))
+            .unwrap_err(),
+        TwzError::INVALID_ARGUMENT
+    );
+}
+
+#[test]
+fn traverse_through_object_fails() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    session.put("foo", ObjID::new(1)).unwrap();
+    session.put("bar", ObjID::new(2)).unwrap();
+
+    // "foo" is an object, so it cannot be walked through -- without this the lookup used to fall
+    // through to the current namespace and hand back "/bar".
+    assert_eq!(
+        session.get("foo/bar", GetFlags::empty()).unwrap_err(),
+        TwzError::Naming(NamingError::WrongNameKind)
+    );
+}
+
+#[test]
+fn rename_to_self_is_noop() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    session.put("a", ObjID::new(1)).unwrap();
+
+    session.rename("a", "a").unwrap();
+    assert_eq!(get_ok(&session, "a").id, ObjID::new(1));
+
+    session.rename("a", "./a").unwrap();
+    assert_eq!(get_ok(&session, "a").id, ObjID::new(1));
+
+    session.rename("a", "b").unwrap();
+    assert_eq!(get_ok(&session, "b").id, ObjID::new(1));
+    assert_eq!(
+        session.get("a", GetFlags::empty()).unwrap_err(),
+        TwzError::Naming(NamingError::NotFound)
+    );
+}
+
+#[test]
+fn remove_rejects_dot_and_dotdot() {
+    let store = NameStore::new();
+    let mut session = store.root_session();
+    session.mkns("foo", false).unwrap();
+    session.put("foo/a", ObjID::new(1)).unwrap();
+
+    // Each of these used to unlink something: "foo/.." resolved to the node for "foo" in root,
+    // and "." to the namespace's own self-entry.
+    for path in ["foo/..", ".", "foo/.", "..", "/"] {
+        assert_eq!(
+            session.remove(path).unwrap_err(),
+            TwzError::INVALID_ARGUMENT,
+            "remove({path:?}) should be rejected"
+        );
+    }
+
+    assert_eq!(get_ok(&session, "foo").kind, NsNodeKind::Namespace);
+    assert_eq!(get_ok(&session, "foo/a").id, ObjID::new(1));
+    // The self-entry survived, so "." is still traversable.
+    session.change_namespace("foo").unwrap();
+    session.change_namespace(".").unwrap();
+    assert_eq!(get_ok(&session, "a").id, ObjID::new(1));
+}
+
+#[test]
+fn rename_over_existing_name() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    session.put("a", ObjID::new(1)).unwrap();
+    session.put("b", ObjID::new(2)).unwrap();
+
+    session.rename("a", "b").unwrap();
+
+    assert_eq!(get_ok(&session, "b").id, ObjID::new(1));
+    assert_eq!(
+        session.get("a", GetFlags::empty()).unwrap_err(),
+        TwzError::Naming(NamingError::NotFound)
+    );
+    // Replace evicts rather than appending: a duplicate would shadow permanently, since `find`
+    // and `remove` both stop at the first match.
+    let bs = session
+        .enumerate_namespace(".", 0, usize::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.name().unwrap() == "b")
+        .count();
+    assert_eq!(bs, 1);
+}
+
+#[test]
+fn rename_onto_namespace_rejected() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    session.mkns("d", false).unwrap();
+    session.put("d/x", ObjID::new(1)).unwrap();
+    session.put("a", ObjID::new(2)).unwrap();
+
+    // Evicting "d" would orphan "d/x" -- nothing here deletes a namespace's contents, and nothing
+    // reclaims the namespace object either.
+    assert_eq!(
+        session.rename("a", "d").unwrap_err(),
+        TwzError::Naming(NamingError::AlreadyExists)
+    );
+    assert_eq!(get_ok(&session, "d/x").id, ObjID::new(1));
+    assert_eq!(get_ok(&session, "a").id, ObjID::new(2));
+}
+
+#[test]
 fn reload_from_object_id() {
     let id = {
         let store = NameStore::new();

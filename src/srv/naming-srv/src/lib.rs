@@ -54,9 +54,9 @@ pub fn get_sb_object(instance: ObjID) -> Result<ObjectHandle> {
         return Ok(handle);
     }
 
-    let next = sbo.objs.pop().unwrap();
-    // TODO: discard all object pages.
-    Ok(next)
+    // Wiped by `ClientInner::wipe` on release, so a pooled object carries nothing from its
+    // previous holder.
+    Ok(sbo.objs.pop().unwrap())
 }
 
 pub fn release_sb_object(obj: ObjectHandle) {
@@ -71,11 +71,42 @@ pub fn release_sb_object(obj: ObjectHandle) {
 struct ClientInner<'a> {
     session: NameSession<'a>,
     buffer: Option<SimpleBuffer>,
+    /// How far into the buffer this client has ever had data, so a recycled buffer can be wiped
+    /// over exactly that much of it rather than all `max_len()` (a gigabyte) of it.
+    used: usize,
 }
 
 impl ClientInner<'_> {
     fn buffer(&self) -> Result<&SimpleBuffer> {
         self.buffer.as_ref().ok_or(ArgumentError::BadHandle.into())
+    }
+
+    fn note_used(&mut self, end: usize) {
+        self.used = self.used.max(end);
+    }
+
+    /// Zero what this client put in the buffer, before the object goes back in the pool for a
+    /// different security context to be handed.
+    ///
+    /// Objects are zero-filled at creation, so only a recycled buffer needs this. Discarding the
+    /// object's pages would be cheaper, but `MapControlCmd::Discard` only zeroes a mapping that
+    /// has a stable page table behind it, which a volatile buffer object does not.
+    fn wipe(&mut self) {
+        let used = self.used;
+        let Some(buffer) = self.buffer.as_mut() else {
+            return;
+        };
+        const CHUNK: usize = 4096;
+        let zeros = [0u8; CHUNK];
+        let mut off = 0;
+        while off < used {
+            let n = buffer.write_offset(&zeros[..CHUNK.min(used - off)], off);
+            if n == 0 {
+                break;
+            }
+            off += n;
+        }
+        self.used = 0;
     }
 
     /// Write through the handle's own buffer rather than building a fresh [`SimpleBuffer`] over a
@@ -110,6 +141,7 @@ impl<'a> NamespaceClient<'a> {
             inner: Mutex::new(ClientInner {
                 session,
                 buffer: None,
+                used: 0,
             }),
         })
     }
@@ -125,7 +157,9 @@ impl<'a> NamespaceClient<'a> {
     }
 
     fn into_handle(self) -> Option<ObjectHandle> {
-        Some(self.inner.into_inner().unwrap().buffer?.into_handle())
+        let mut inner = self.inner.into_inner().unwrap();
+        inner.wipe();
+        Some(inner.buffer?.into_handle())
     }
 }
 
@@ -139,10 +173,11 @@ fn lookup_client(comp: ObjID, desc: Descriptor) -> Option<Arc<NamespaceClient<'s
 }
 
 impl<'a> ClientInner<'a> {
-    fn read_buffer(&self, name_len: usize) -> Result<PathBuf> {
+    fn read_buffer(&mut self, name_len: usize) -> Result<PathBuf> {
         if name_len >= PATH_MAX {
             return Err(ArgumentError::InvalidArgument.into());
         }
+        self.note_used(name_len);
         let mut buf = vec![0; name_len];
         self.buffer()?.read(&mut buf);
         Ok(PathBuf::from(
@@ -150,10 +185,11 @@ impl<'a> ClientInner<'a> {
         ))
     }
 
-    fn read_buffer_at(&self, name_len: usize, off: usize) -> Result<PathBuf> {
+    fn read_buffer_at(&mut self, name_len: usize, off: usize) -> Result<PathBuf> {
         if name_len >= PATH_MAX {
             return Err(ArgumentError::InvalidArgument.into());
         }
+        self.note_used(off.saturating_add(name_len));
         let mut buf = vec![0; name_len];
         self.buffer()?.read_offset(&mut buf, off);
         Ok(PathBuf::from(
@@ -203,13 +239,13 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 // How would this work if I changed the root while handles were open?
 #[secgate::entry(lib = "naming")]
 pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
-    tracing::subscriber::set_global_default(
+    // Anyone can call this gate; a second call must not unwind out of an extern "C" entry.
+    let _ = tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
             .without_time()
             .finish(),
-    )
-    .unwrap();
+    );
 
     Ok(NAMINGSERVICE
         .get_or_create(|_| {
@@ -219,11 +255,12 @@ pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
             namer.names.root_session().mkns("/initrd", false).unwrap();
             for n in get_kernel_init_info().names() {
                 if n.name() != ".." && n.name() != "." {
-                    namer
+                    // A name the store rejects (too long, say) costs us that one entry, not boot.
+                    let _ = namer
                         .names
                         .root_session()
                         .put(&format!("/initrd/{}", n.name()), n.id())
-                        .unwrap();
+                        .inspect_err(|e| tracing::warn!("failed to bind initrd name: {}", e));
                 }
             }
 
@@ -285,7 +322,7 @@ pub fn put(desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
         .ok_or(ArgumentError::BadHandle)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let path = inner.read_buffer(name_len)?;
 
@@ -297,7 +334,7 @@ pub fn mkns(desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
         .ok_or(ArgumentError::BadHandle)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let path = inner.read_buffer(name_len)?;
 
@@ -309,7 +346,7 @@ pub fn link(desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let path = inner.read_buffer(name_len)?;
     let link = inner.read_buffer_at(link_len, name_len)?;
@@ -323,7 +360,7 @@ pub fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode>
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
     let lock_ns = t_start.elapsed().as_nanos() as u64;
 
     let path = inner.read_buffer(name_len)?;
@@ -380,7 +417,7 @@ pub fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let old_path = inner.read_buffer(old_len)?;
     let new_path = inner.read_buffer_at(new_len, old_len)?;
@@ -393,7 +430,7 @@ pub fn remove(desc: Descriptor, name_len: usize) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let inner = client.inner.lock().unwrap();
+    let mut inner = client.inner.lock().unwrap();
 
     let path = inner.read_buffer(name_len)?;
 
@@ -426,7 +463,8 @@ pub fn enumerate_names(
             len * std::mem::size_of::<NsNode>(),
         )
     };
-    inner.buffer_mut()?.write(slice);
+    let n = inner.buffer_mut()?.write(slice);
+    inner.note_used(n);
 
     Ok(len)
 }
@@ -458,7 +496,8 @@ pub fn enumerate_names_nsid(
             len * std::mem::size_of::<NsNode>(),
         )
     };
-    inner.buffer_mut()?.write(slice);
+    let n = inner.buffer_mut()?.write(slice);
+    inner.note_used(n);
     srvenumstats::record(
         lock_ns,
         items_ns,

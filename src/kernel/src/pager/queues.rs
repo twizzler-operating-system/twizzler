@@ -1,5 +1,8 @@
 use alloc::sync::Arc;
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
@@ -29,7 +32,7 @@ use crate::{
     is_test_mode,
     memory::{
         context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
-        frame::{PHYS_LEVEL_LAYOUTS, merge_frame},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, merge_frame},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
         tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
@@ -168,6 +171,60 @@ pub(super) fn pager_request_handler_main() {
     }
 }
 
+/// Release a frame the pager filled, and count the ones the object already had.
+///
+/// `Table::map` skips an entry that is already present, so `add_frame` for a page that is already
+/// backed leaves the refcount at the single reference the pager handed us, and it drops to zero
+/// here. Safe -- the duplicate is simply freed -- but it is pure waste, and it is exactly what two
+/// overlapping in-flight requests produce. Speculative prefetch creates those by construction:
+/// `add_request` coalesces on an exact `ReqKind`, and a prefetch of a region never compares equal
+/// to a demand fault inside it (`pagerperf.md` 18). This is the counter that says how much.
+static DUP_PAGES: AtomicU64 = AtomicU64::new(0);
+
+/// Why a large-page merge does or does not happen.
+///
+/// Nothing has ever counted this, and the whole "splitting a request costs a large page" tradeoff
+/// rests on merges actually occurring. A merge needs the object page *and* the physical address to
+/// be 2 MiB-aligned at the same point in a run, and the pager's donations are aligned to their own
+/// chunks rather than to the object offsets they land on -- so `phys_ok` well below `candidates` is
+/// the signal that the tradeoff is imaginary and requests can be split freely.
+mod largepage {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static CANDIDATES: AtomicU64 = AtomicU64::new(0);
+    static PHYS_OK: AtomicU64 = AtomicU64::new(0);
+    static MERGED: AtomicU64 = AtomicU64::new(0);
+
+    /// Called once per point in a completion where the object side would allow a merge.
+    pub fn record(phys_aligned: bool, merged: bool) {
+        if phys_aligned {
+            PHYS_OK.fetch_add(1, Ordering::Relaxed);
+        }
+        if merged {
+            MERGED.fetch_add(1, Ordering::Relaxed);
+        }
+        let n = CANDIDATES.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            log::info!(
+                "LARGEPAGE: {} object-aligned candidates, {} also phys-aligned, {} merged",
+                n,
+                PHYS_OK.load(Ordering::Relaxed),
+                MERGED.load(Ordering::Relaxed),
+            );
+        }
+    }
+}
+
+fn release_pager_frame(frame: FrameRef) {
+    if frame.dec_refcount() == 0 {
+        let n = DUP_PAGES.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            log::info!("pager delivered {} pages the object already had", n);
+        }
+        crate::memory::tracker::free_frame(frame);
+    }
+}
+
 fn pager_compl_handle_page_data(
     request: &SentRequestInfo,
     obj_range: ObjectRange,
@@ -232,13 +289,32 @@ fn pager_compl_handle_page_data(
             max_phys
         );
 
-        let thiscount = if pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size())
-            && pn
-                .as_byte_offset()
-                .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
+        // Split out so the reasons a merge fails can be counted separately; evaluated in cost
+        // order, so the page-table lock is only taken once everything cheap has passed.
+        let candidate = pn
+            .as_byte_offset()
+            .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size())
             && thiscount >= pages_per_large
-            && !flags.contains(PageFlags::WIRED)
-        {
+            && !flags.contains(PageFlags::WIRED);
+        let phys_aligned = candidate && pa.is_aligned_to(PHYS_LEVEL_LAYOUTS[1].size());
+        // The region must still be empty. Mapping a large page over a level-1 entry that has become
+        // a table -- because some page inside it is already present -- does not merge: `Table::map`
+        // overwrites the entry, orphaning the table below it and leaving the frame it held mapped
+        // in whoever already had it, now pointing at different physical memory.
+        // `ensure_in_core_pager` checks this before *asking* for a large run, but a page
+        // can arrive between the ask and this completion, and serving a required subrange
+        // first makes partially-populated regions ordinary rather than rare.
+        let can_merge = phys_aligned
+            && request
+                .obj
+                .as_ref()
+                .unwrap()
+                .lock_page_tables()
+                .is_empty_at_level(pn.as_byte_offset() as u64, 1);
+        if candidate {
+            largepage::record(phys_aligned, can_merge);
+        }
+        let thiscount = if can_merge {
             let frame = crate::memory::frame::get_frame(pa).unwrap();
             assert!(!frame.is_pt());
             assert_eq!(frame.refcount(), 1);
@@ -250,9 +326,7 @@ fn pager_compl_handle_page_data(
             assert!(!frame.is_cow());
             assert!(frame.size() == PHYS_LEVEL_LAYOUTS[1].size());
             request.obj.as_ref().unwrap().add_frame(pn, frame);
-            if frame.dec_refcount() == 0 {
-                crate::memory::tracker::free_frame(frame);
-            }
+            release_pager_frame(frame);
             pages_per_large
         } else if flags.contains(PageFlags::WIRED) {
             request
@@ -273,9 +347,7 @@ fn pager_compl_handle_page_data(
             assert_eq!(frame.refcount(), 1);
             assert!(!frame.is_cow());
             request.obj.as_ref().unwrap().add_frame(pn, frame);
-            if frame.dec_refcount() == 0 {
-                crate::memory::tracker::free_frame(frame);
-            }
+            release_pager_frame(frame);
             1
         };
         count += thiscount;
@@ -285,8 +357,13 @@ fn pager_compl_handle_page_data(
     mgr.with_request(&request.reqkind, |req| {
         if req.finished_pages(count) {
             req.mark_done();
-            req.signal();
         }
+        // Signal on every batch, not only on the last one. A thread blocked here generally needs a
+        // small part of what it is waiting for -- the fault path widens a one-page touch to a whole
+        // large-page region -- so waking it now lets it re-check its own pages and go, with the
+        // rest of the transfer landing behind it. A waiter whose pages have not arrived re-parks,
+        // which costs it one pass round `get_pages_and_wait`'s loop.
+        req.signal();
     });
 }
 
@@ -384,6 +461,13 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
 
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
     let obj = Arc::new(Object::new(id, info.lifetime, &[]));
+    // What the store holds right now -- and only when the pager says so. `size` defaults to zero,
+    // which is a legitimate length, so acting on an unflagged value reads "the pager did not fill
+    // this in" as "the object is empty" and zero-fills over its contents. Left unset, the object
+    // simply keeps asking the pager, which is what it did before.
+    if info.flags.contains(ObjectInfoFlags::SIZE_VALID) {
+        obj.set_known_len(info.size);
+    }
     // Both before `register_object`, so nothing can look the object up and race a `check_id`
     // against either.
     if info.flags.contains(ObjectInfoFlags::META_PAGE) {

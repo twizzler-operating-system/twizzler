@@ -180,12 +180,26 @@ pub mod diag {
     pub static EXIT_DEFERRED_SCTX: Counter =
         Counter::new("force-exit deferred, thread in another security context");
 
+    /// `maybe_exit` declined to exit a thread that is mid-`sys_thread_sync`, so its sleep links get
+    /// unlinked by the round's own cleanup instead of abandoned. Pairs with
+    /// [SLEEP_LINK_LEAKED_AT_EXIT]: this counts the deferrals that keep that one at zero.
+    pub static EXIT_DEFERRED_SLEEP_LINKED: Counter =
+        Counter::new("force-exit deferred, thread has sleep links");
+
     /// A `sys_thread_sync` ended with one of its sleep-link slots still linked into some tree. The
     /// next round reuses that slot and `RBTree::insert` panics with "already linked" -- so this
     /// counts the cause, one round before the symptom, and the report names the thread that leaked
     /// it. Nonzero means a sleep site inserted without a matching removal, which is a bug wherever
     /// it happens; zero is the only healthy value.
     pub static SLEEP_LINK_LEAKED: Counter = Counter::new("sleep link still linked at reset");
+
+    /// A thread reached `Thread::exit` with a sleep-link slot still in some object's tree, so
+    /// freeing its slab would leave that tree a dangling node. Distinct from
+    /// [SLEEP_LINK_LEAKED]: that one fires at the end of a `sys_thread_sync` round, this one on a
+    /// path that never gets a next round to notice. Nonzero means the exit path is where the
+    /// sleep-tree corruption comes from.
+    pub static SLEEP_LINK_LEAKED_AT_EXIT: Counter =
+        Counter::new("sleep link still linked at thread exit");
 
     /// `warn_if_blocking_with_mutexes` bailed before it could look at anything. Its silence was
     /// being read as "this never happens", which it cannot support: a check that never ran and a
@@ -209,7 +223,7 @@ pub mod diag {
     pub static CRITICAL_LEAK_AT_EXIT: Counter =
         Counter::new("returning to user with a critical count held");
 
-    static ALL: [&Counter; 25] = [
+    static ALL: [&Counter; 27] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -232,7 +246,9 @@ pub mod diag {
         &MUTEX_HANDOFF_TO_DEAD,
         &EXIT_DEFERRED_MUTEX_HELD,
         &EXIT_DEFERRED_SCTX,
+        &EXIT_DEFERRED_SLEEP_LINKED,
         &SLEEP_LINK_LEAKED,
+        &SLEEP_LINK_LEAKED_AT_EXIT,
         &BLOCK_CHECK_SKIPPED,
         &BLOCK_CHECK_CLEAR,
     ];
@@ -855,10 +871,29 @@ impl LockTrackerInner {
 
 const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions) or test mode;
 
+/// The A/B switch for the whole tracker, `DISABLE_LOCK_TRACKING` read the way call sites want it.
+///
+/// Everything charged per lock acquisition has to be behind this, not just the `with_tracker`
+/// calls: `GenericSpinlock::lock` also resolves the current thread and cpu twice on its own to
+/// check for a thread crossing, and those reads are the same order of cost as the bookkeeping they
+/// guard. A const so both arms fold at compile time.
+#[inline(always)]
+pub const fn enabled() -> bool {
+    !DISABLE_LOCK_TRACKING
+}
+
+static LOCK_TRACKER_CALLS: AtomicU64 = AtomicU64::new(0);
+
 #[track_caller]
 pub fn with_lock_tracker<R: Default>(f: impl FnOnce(&mut LockTrackerInner) -> R) -> R {
     if DISABLE_LOCK_TRACKING || in_switch_window() {
         return R::default();
+    }
+    // After the gate, not before it: ahead of it this says "ENABLED" in a build where tracking is
+    // off, and it charges a contended atomic to the arm whose whole point is that it charges
+    // nothing.
+    if LOCK_TRACKER_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) == 0 {
+        emerglogln!("LOCK TRACKING ENABLED");
     }
     let Some(ct) = current_thread_ref() else {
         // DIAG: this is the silent-drop path. An acquire recorded with a current thread and a

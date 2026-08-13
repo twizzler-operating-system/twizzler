@@ -207,21 +207,44 @@ impl MapRegion {
 
         let mut used_pager = false;
         let mut all_were_present = true;
-        let mut obj_page_tree = if let Some(stable) = self.stable.as_ref() {
-            stable.lock()
-        } else {
-            self.object.lock_page_tables()
+        let needs_fill = !pfflags.contains(PageFaultFlags::PRESENT);
+        let mut obj_page_tree = match self.stable.as_ref() {
+            // A stable region's clone holds only what the object held when it was taken, and
+            // nothing refills it afterwards, so a page missing from it has to be brought into the
+            // object and re-shared here -- `ensure_in_core` drops and retakes the object's own
+            // lock internally, so it cannot be handed the clone's. Object tables before the clone,
+            // the order MapControlCmd::Discard uses.
+            Some(stable) if needs_fill => {
+                let mut pt = self.object.lock_page_tables();
+                pt = self.object.ensure_in_core(
+                    pt,
+                    page_number,
+                    1,
+                    &mut used_pager,
+                    &mut all_were_present,
+                )?;
+                let mut clone = stable.lock();
+                let offset = page_number.as_byte_offset() as u64;
+                pt.setup_cow_range(&mut clone, offset, offset, PageNumber::PAGE_SIZE)?;
+                drop(pt);
+                clone
+            }
+            Some(stable) => stable.lock(),
+            None => {
+                let mut pt = self.object.lock_page_tables();
+                if needs_fill {
+                    pt = self.object.ensure_in_core(
+                        pt,
+                        page_number,
+                        1,
+                        &mut used_pager,
+                        &mut all_were_present,
+                    )?;
+                }
+                pt
+            }
         };
         let prot = perms.effective(default_prot, self.prot);
-        if !pfflags.contains(PageFaultFlags::PRESENT) && self.stable.is_none() {
-            obj_page_tree = self.object.ensure_in_core(
-                obj_page_tree,
-                page_number,
-                1,
-                &mut used_pager,
-                &mut all_were_present,
-            )?;
-        }
 
         log::trace!(
             "fault info: addr={:?} cause={:?} flags={:?} ip={:?} page_number={} used_pager={} all_were_present={} prot={:?}",

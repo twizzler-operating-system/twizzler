@@ -567,19 +567,22 @@ impl VirtContext {
 
             for region in region_list {
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
-                let mut pt = region
-                    .stable
-                    .is_none()
-                    .then(|| region.object().lock_page_tables());
-                let obj_table = pt.as_ref().and_then(|pt| pt.context_table_addr());
+                // Whichever tree backs this region, as in remove_object: a stable clone still has
+                // to be told its mapping is gone, even though it never took a count against the
+                // object and so has nothing to give back.
+                let mut pt = if let Some(stable) = region.stable.as_ref() {
+                    stable.lock()
+                } else {
+                    region.object().lock_page_tables()
+                };
+                let counted = region.stable.is_none();
+                let obj_table = counted.then(|| pt.context_table_addr()).flatten();
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
-                if let Some(pt) = pt.as_mut() {
-                    pt.remove_invalidate(arch.target, cursor);
-                    if released {
-                        pt.dec_map_count();
-                        if pt.map_count() == 0 {
-                            region.object().note_last_unmap();
-                        }
+                pt.remove_invalidate(arch.target, cursor);
+                if counted && released {
+                    pt.dec_map_count();
+                    if pt.map_count() == 0 {
+                        region.object().note_last_unmap();
                     }
                 }
             }

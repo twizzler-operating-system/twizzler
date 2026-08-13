@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -11,15 +14,38 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-use twizzler_rt_abi::object::MapFlags;
+use twizzler_rt_abi::{error::NamingError, object::MapFlags};
 
 use super::{Namespace, NsNode, ParentInfo};
 use crate::Result;
 
+/// One lock per namespace *object*, shared by every `NamespaceObject` instance over it.
+///
+/// `open` maps the object afresh on each call, so two instances of one namespace are two mappings
+/// of the same memory behind two unrelated `Mutex`es. `VecObject`'s length lives in that shared
+/// memory and `push` is a read-modify-write of it, so without a lock keyed on the object -- not on
+/// the instance -- two gate calls inserting into one namespace can lose an entry outright.
+static OBJ_LOCKS: Mutex<BTreeMap<ObjID, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+
+fn obj_lock(id: ObjID) -> Arc<Mutex<()>> {
+    OBJ_LOCKS
+        .lock()
+        .unwrap()
+        .entry(id)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn find_idx(obj: &VecObject<NsNode, VecObjectAlloc>, name: &str) -> Option<usize> {
+    obj.iter().position(|e| e.name().is_ok_and(|n| n == name))
+}
+
 #[derive(Clone)]
 pub struct NamespaceObject {
     persist: bool,
+    id: ObjID,
     obj: Arc<Mutex<Option<VecObject<NsNode, VecObjectAlloc>>>>,
+    lock: Arc<Mutex<()>>,
     parent_info: Option<ParentInfo>,
 }
 
@@ -33,20 +59,25 @@ impl NamespaceObject {
         if persist {
             builder = builder.persist(true);
         }
+        let vec = VecObject::new(builder)?;
+        let id = vec.object().id();
         let this = Self {
             persist,
+            id,
             parent_info,
-            obj: Arc::new(Mutex::new(Some(VecObject::new(builder)?))),
+            obj: Arc::new(Mutex::new(Some(vec))),
+            lock: obj_lock(id),
         };
-        if let Some(id) = parent {
-            this.insert(NsNode::ns("..", id)?);
+        if let Some(parent) = parent {
+            this.insert(NsNode::ns("..", parent)?)?;
         }
-        this.insert(NsNode::ns(".", this.id())?);
+        this.insert(NsNode::ns(".", id)?)?;
         Ok(this)
     }
 
+    /// Shared lock first, always. `f` must not re-enter `with_obj`: neither lock is reentrant.
     fn with_obj<R>(&self, f: impl FnOnce(&mut VecObject<NsNode, VecObjectAlloc>) -> R) -> R {
-        //self.update();
+        let _shared = self.lock.lock().unwrap();
         let mut g = self.obj.lock().unwrap();
         f(g.as_mut().unwrap())
     }
@@ -60,10 +91,12 @@ impl Namespace for NamespaceObject {
         }
         Ok(Self {
             persist,
+            id,
             parent_info,
             obj: Arc::new(Mutex::new(Some(VecObject::from(Object::map(
                 id, map_flags,
             )?)))),
+            lock: obj_lock(id),
         })
     }
 
@@ -92,8 +125,7 @@ impl Namespace for NamespaceObject {
             &[CreateTieSpec::new(self.id(), CreateTieFlags::empty()).into()],
         )?;
         let node = NsNode::obj(name, id)?;
-        // TODO
-        let _ = self.insert(node);
+        self.insert(node)?;
         Ok(node)
     }
 
@@ -112,10 +144,21 @@ impl Namespace for NamespaceObject {
         })
     }
 
-    fn insert(&self, node: NsNode) -> Option<NsNode> {
+    fn insert(&self, node: NsNode) -> Result<()> {
         self.with_obj(|obj| {
-            obj.push(node).unwrap();
-            None
+            if find_idx(obj, node.name()?).is_some() {
+                return Err(NamingError::AlreadyExists.into());
+            }
+            obj.push(node)
+        })
+    }
+
+    fn replace(&self, node: NsNode) -> Result<()> {
+        self.with_obj(|obj| {
+            if let Some(idx) = find_idx(obj, node.name()?) {
+                obj.remove(idx)?;
+            }
+            obj.push(node)
         })
     }
 
@@ -140,7 +183,7 @@ impl Namespace for NamespaceObject {
     }
 
     fn id(&self) -> ObjID {
-        self.with_obj(|obj| obj.object().id())
+        self.id
     }
 
     fn len(&self) -> usize {

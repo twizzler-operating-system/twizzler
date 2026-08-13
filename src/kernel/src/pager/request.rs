@@ -50,74 +50,26 @@ impl Ord for SyncRegionInfo {
     }
 }
 
-impl PartialOrd for ReqKind {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        let self_disc = match self {
-            ReqKind::Info(_) => 0,
-            ReqKind::PageData(_, _, _, _) => 1,
-            ReqKind::Sync(_) => 2,
-            ReqKind::SyncRegion(_) => 3,
-            ReqKind::Del(_) => 4,
-            ReqKind::Create(_, _, _) => 5,
-            ReqKind::Pages(_) => 6,
-        };
-
-        let other_disc = match other {
-            ReqKind::Info(_) => 0,
-            ReqKind::PageData(_, _, _, _) => 1,
-            ReqKind::Sync(_) => 2,
-            ReqKind::SyncRegion(_) => 3,
-            ReqKind::Del(_) => 4,
-            ReqKind::Create(_, _, _) => 5,
-            ReqKind::Pages(_) => 6,
-        };
-
-        let disc = self_disc.partial_cmp(&other_disc).unwrap();
-        if disc.is_eq() {
-            Some(match (self, other) {
-                (ReqKind::Info(self_id), ReqKind::Info(other_id)) => self_id.cmp(other_id),
-                (
-                    ReqKind::PageData(self_id, self_start, self_len, _),
-                    ReqKind::PageData(other_id, other_start, _, _),
-                ) => {
-                    // We count two requests as equal if they overlap.
-                    if *self_id == *other_id {
-                        if *other_start >= *self_start && *other_start < *self_start + *self_len {
-                            core::cmp::Ordering::Equal
-                        } else {
-                            self_start.cmp(other_start)
-                        }
-                    } else {
-                        self_id.cmp(other_id)
-                    }
-                }
-                (ReqKind::Sync(self_id), ReqKind::Sync(other_id)) => self_id.cmp(other_id),
-                (ReqKind::SyncRegion(self_info), ReqKind::SyncRegion(other_info)) => {
-                    self_info.cmp(other_info)
-                }
-                (ReqKind::Del(self_id), ReqKind::Del(other_id)) => self_id.cmp(other_id),
-                (ReqKind::Create(self_id, _, _), ReqKind::Create(other_id, _, _)) => {
-                    self_id.cmp(other_id)
-                }
-                (ReqKind::Pages(self_range), ReqKind::Pages(other_range)) => {
-                    self_range.cmp(other_range)
-                }
-
-                _ => unreachable!(),
-            })
-        } else {
-            Some(disc)
-        }
-    }
-}
-
-impl PartialEq for ReqKind {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
-    }
-}
-
-#[derive(Debug, Clone, Eq, Ord)]
+/// `ReqKind` is the key of `InflightManager::req_map`, an `RBTree`, and that tree uses **both**
+/// comparison traits for different operations: `insert` descends with `key < current_key`
+/// (`PartialOrd`), while `find`/`find_mut` descend with `key.cmp(current_key)` (`Ord`). They must
+/// therefore agree, so both are derived.
+///
+/// This used to carry a hand-written `PartialOrd` whose `PageData` arm treated two requests as
+/// equal when their ranges overlapped, while `Ord` stayed derived (field-wise on
+/// `(id, start, len, flags)`). Nothing noticed for as long as every live `PageData` key was either
+/// identical or disjoint, because the two orders only disagree on overlap. Speculative prefetch is
+/// the first thing that ever puts overlapping-but-unequal keys in the tree at once -- a prefetch of
+/// a whole region alongside a demand fault inside it -- and at that point a node is *placed* where
+/// the search will never look for it. `remove_request` then silently removes nothing: the request
+/// stays in the map forever, its waiter is never signalled, and its slot is never freed. That is
+/// the wedge recorded in `pagerperf.md` 18, and it is why it produced no panic and no timeout.
+///
+/// Note this loses no coalescing that was ever in effect: `add_request` looks up with `find`, which
+/// has always used the derived order, so overlapping requests never coalesced regardless. Doing it
+/// for real needs an explicit range scan (`lower_bound` over the same object), not a comparator --
+/// overlap-equality is not transitive and cannot order a search tree.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReqKind {
     Info(ObjID),
     PageData(ObjID, usize, usize, PagerFlags),
@@ -227,6 +179,28 @@ impl ReqKind {
 
     pub fn new_pager_memory(range: PhysRange) -> Self {
         ReqKind::Pages(range)
+    }
+
+    /// The key a speculative request for this exact range would have, if this one is not already
+    /// speculative.
+    ///
+    /// [PagerFlags::PREFETCH] is part of the coalescing key, so a prefetch and the demand fault it
+    /// was issued to pre-empt are two entries covering one range -- two transfers, the second of
+    /// which `Table::map` throws away (`pagerperf.md` 18's `DUP_PAGES`). It has to stay in the key,
+    /// because the pager routes and caps on it. So the demand side looks for the speculative twin
+    /// explicitly instead.
+    pub fn prefetch_twin(&self) -> Option<ReqKind> {
+        match self {
+            ReqKind::PageData(id, start, len, flags) if !flags.contains(PagerFlags::PREFETCH) => {
+                Some(ReqKind::PageData(
+                    *id,
+                    *start,
+                    *len,
+                    *flags | PagerFlags::PREFETCH,
+                ))
+            }
+            _ => None,
+        }
     }
 
     pub fn all_pages(&self) -> impl Iterator<Item = usize> {

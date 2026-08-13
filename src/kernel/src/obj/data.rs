@@ -25,6 +25,33 @@ enum ZeroOrFrame {
     Frame(usize, FrameRef),
 }
 
+/// Whether a volatile object's first touch of an empty region actually gets a large frame.
+///
+/// The allocation below is a non-waiting `try_allocate` at level 1, so it fails silently and falls
+/// back to filling the region 4 KiB at a time -- which is how regions end up merely *promotable*
+/// rather than large (`promote.md`). Nothing distinguished "never attempted" from "attempted and
+/// refused" before this.
+mod largealloc {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+    static FAILED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(ok: bool) {
+        if !ok {
+            FAILED.fetch_add(1, Ordering::Relaxed);
+        }
+        let n = ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            log::info!(
+                "LARGEALLOC: {} up-front large-frame allocations, {} failed",
+                n,
+                FAILED.load(Ordering::Relaxed),
+            );
+        }
+    }
+}
+
 impl Object {
     fn do_with_frame<R>(
         self: &ObjectRef,
@@ -102,9 +129,15 @@ impl Object {
     }
 
     pub fn write_meta(self: &ObjectRef, meta: MetaInfo) -> bool {
-        self.write_at(&meta, PageNumber::meta_page().as_byte_offset())
+        let ok = self
+            .write_at(&meta, PageNumber::meta_page().as_byte_offset())
             .inspect_err(|e| log::warn!("failed to write metadata: {}", e))
-            .is_ok()
+            .is_ok();
+        if ok {
+            // The kernel chose these fields, so it already knows what `check_id` would find.
+            self.note_written_meta(&meta);
+        }
+        ok
     }
 
     pub fn with_ref<R, P>(
@@ -328,9 +361,12 @@ impl Object {
             self.with_frame(
                 page_offset as usize,
                 FindFrameFlags::POPULATE | FindFrameFlags::WRITE,
+                // `po` is the offset of this page within the frame backing it, which is only zero
+                // when that frame is a 4 KiB one. A large page backs 512 of these offsets and
+                // reports its region base for all of them, so the page's own address is the base
+                // plus `po`.
                 |po, frame| {
-                    assert_eq!(po, 0);
-                    pages.push(PinnedPage::new(frame.start_address().raw()));
+                    pages.push(PinnedPage::new(frame.start_address().raw() + po as u64));
                 },
             )?;
         }
@@ -364,6 +400,8 @@ impl Object {
                 page_count,
                 pager_was_used,
                 all_were_present,
+                PagerFlags::empty(),
+                false,
             );
         }
         drop(guard);
@@ -383,7 +421,9 @@ impl Object {
             let large_page = page.align_down(nr_pages_for_large);
             let pre_covered = page - large_page;
             let mut alloc = FrameAllocator::new(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1]);
-            if let Some(large_frame) = alloc.try_allocate() {
+            let large_frame = alloc.try_allocate();
+            largealloc::record(large_frame.is_some());
+            if let Some(large_frame) = large_frame {
                 *all_were_present = false;
                 guard.map_page(large_page.as_byte_offset() as u64, large_frame)?;
                 page = large_page.offset(nr_pages_for_large);
@@ -431,6 +471,51 @@ impl Object {
         Ok(guard)
     }
 
+    /// Back `[page, page + count)` with freshly zeroed frames, without involving the pager.
+    ///
+    /// Only correct for a range the store provably does not hold; see [Object::known_len] for why
+    /// the kernel is entitled to decide that, and note the error direction -- being wrong here
+    /// means serving zeros over real data.
+    fn fill_zero_pages<'a>(
+        self: &'a ObjectRef,
+        mut guard: LockGuard<'a, ObjectPageTable>,
+        page: PageNumber,
+        count: usize,
+        all_were_present: &mut bool,
+    ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+        let mut alloc = FrameAllocator::new(
+            FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
+        for i in 0..count {
+            let offset = page.offset(i).as_byte_offset() as u64;
+            if !guard.is_empty_at_level(offset, 0) {
+                continue;
+            }
+            *all_were_present = false;
+            let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+            if let Err(e) = guard.map_page(offset, frame) {
+                alloc.abort([frame]);
+                return Err(e);
+            }
+        }
+        Ok(guard)
+    }
+
+    /// Whether a fault waits only for the pages it asked for, or for the whole region the widening
+    /// below adds around them. See the note at `required` inside [Object::ensure_in_core_pager].
+    const SPLIT_ON_REQUIRED: bool = true;
+
+    /// How many large-page regions a touch of an empty region is widened to. See the note at the
+    /// clamp in [Object::ensure_in_core_pager]; `2` is the historical behaviour.
+    pub(crate) const READAHEAD_REGIONS: usize = 2;
+
+    /// `flags` distinguishes a demand fault from speculation. It changes nothing about which pages
+    /// are requested -- the point of driving this path with [PagerFlags::PREFETCH] rather than
+    /// hand-rolling a range is that a prefetch then asks for *exactly* what the fault it is trying
+    /// to pre-empt would ask for, presence checks and widening included, so the two coalesce in
+    /// `InflightManager::add_request` instead of paging the same range twice. It only decides
+    /// whether the caller waits.
     pub fn ensure_in_core_pager<'a>(
         self: &'a ObjectRef,
         mut guard: LockGuard<'a, ObjectPageTable>,
@@ -438,9 +523,49 @@ impl Object {
         mut page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
+        flags: PagerFlags,
+        speculative: bool,
     ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
         *all_were_present = true;
         assert!(self.use_pager());
+
+        // Past the end of the store's data there is nothing to read -- the kernel is the only thing
+        // that extends it -- so the pager has nothing to say and the round trip is pure latency.
+        // This is what would make appending to a file cost no pager traffic until it is synced.
+        //
+        // Deliberately only the caller's own range, never the widening below: a small file's
+        // widened request runs a thousand pages past EOF, and committing a zeroed frame for each
+        // would turn a 64 KB file into 4 MB of resident memory.
+        //
+        // **Off, because "past the data length" is not "absent from the store".** An object's
+        // metadata lives at the *top* of its address range: the meta page at `MAX_SIZE - PAGE`,
+        // and the FOT growing *downward* from it (`resolve_fot` reads
+        // `meta.cast::<FotEntry>().sub(idx + 1)`). All of that is on disk and all of it is past
+        // `known_len`, which describes only the data at the bottom. Excluding the meta page alone
+        // still zero-filled the FOT, so every library's foreign-object table read back as zeros
+        // and the guest died with `failed to enumerate dependencies for libtwz_rt.so`
+        // (`pagerperf.md` 20). Turning this on needs a real bound on where the metadata region
+        // starts -- `MetaInfo::fotcount` gives it, at the cost of a meta-page read on the fault
+        // path -- not a wider exclusion.
+        const ZERO_FILL_PAST_EOF: bool = false;
+        if ZERO_FILL_PAST_EOF
+            && page != PageNumber::meta_page()
+            && self
+                .known_len()
+                .is_some_and(|len| page.as_byte_offset() as u64 >= len)
+        {
+            return self.fill_zero_pages(guard, page, page_count, all_were_present);
+        }
+        // What the caller asked for, captured before the widening below rewrites `page` and
+        // `page_count`. Everything the widening adds is speculative: it exists to install a large
+        // page and to save later faults, and nothing is blocked on it. Handing it to
+        // `ensure_in_core` is what lets the wait end when this range is backed rather than when
+        // the whole widened region is (`pagerperf.md` 11).
+        //
+        // `None` reproduces the old behaviour exactly -- an empty required range on the wire makes
+        // the pager serve the request in address order as one segment, and the kernel wait for all
+        // of it -- so this is a one-rebuild A/B, in the habit of `PIPELINE_DEPTH`.
+        let required = Self::SPLIT_ON_REQUIRED.then_some((page, page_count));
         log::debug!(
             "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
@@ -455,7 +580,25 @@ impl Object {
             let large_page = page.align_down(nr_pages_for_large);
             let pre_covered = page - large_page;
             page = large_page;
-            page_count += pre_covered.max(nr_pages_for_large);
+            // Moving the start back to `large_page` needs `pre_covered` more pages to cover the
+            // same tail; the clamp is what rounds the whole thing up to the read-ahead window.
+            //
+            // This used to read `page_count += pre_covered.max(nr_pages_for_large)`, which clamps
+            // the wrong operand: `pre_covered` is an offset within the region, so it is always
+            // under `nr_pages_for_large` and that `max` is the constant `nr_pages_for_large`. A
+            // one-page touch came out at 513 -- one page into the *next* region, which the loop
+            // below then rounded up to a whole second one. That is where the 1024-page first-touch
+            // request every note about this path describes comes from, against prose that says one
+            // region everywhere.
+            //
+            // `READAHEAD_REGIONS = 2` keeps that window deliberately rather than by accident, and
+            // is what the measurements in `pagerperf.md` and `mapperf.md` were taken against. It is
+            // not free to lower: object page 0 is never delivered, so a run covering region 0
+            // starts at page 1 and fails the 2MB-alignment test in `pager_compl_handle_page_data`.
+            // The spill into region 1 is the only reason a first-touch fault installs a large page
+            // at all, so 1 trades that -- and half the read-ahead -- for half the transfer.
+            page_count =
+                (page_count + pre_covered).max(nr_pages_for_large * Self::READAHEAD_REGIONS);
             log::debug!(
                 "paging in large page at offset {:x} in object {} ({} pages, {} pages pre-covered)",
                 large_page.as_byte_offset(),
@@ -522,8 +665,10 @@ impl Object {
                     self,
                     guard,
                     &reqs,
-                    PagerFlags::empty(),
+                    flags,
+                    speculative,
                     pager_was_used,
+                    required,
                 )?;
                 reqs.clear();
             }
@@ -535,8 +680,10 @@ impl Object {
                 self,
                 guard,
                 &reqs,
-                PagerFlags::empty(),
+                flags,
+                speculative,
                 pager_was_used,
+                required,
             )?;
         }
 

@@ -27,10 +27,31 @@ impl Inflight {
         Self { id, rk, needs_send }
     }
 
-    pub(super) fn for_each_pager_req(&self, mut f: impl FnMut(RequestFromKernel)) {
+    /// Build the wire requests for this inflight entry.
+    ///
+    /// `required` is the page range the submitting thread is actually blocked on, in absolute
+    /// object pages. Like the requester flags below it is applied *here* rather than carried in the
+    /// [ReqKind], because [ReqKind] is the coalescing key and this varies per requesting thread --
+    /// putting it in the key would leave two entries in flight for one range. This runs on the
+    /// thread that is about to wait, and only for the request that actually sends, so a coalescing
+    /// waiter inherits the first submitter's required range. That is a latency choice, not a
+    /// correctness one: it only decides which pages the pager hurries.
+    pub(super) fn for_each_pager_req(
+        &self,
+        required: Option<(usize, usize)>,
+        mut f: impl FnMut(RequestFromKernel),
+    ) {
         if !self.needs_send {
             return;
         }
+        let required = required
+            .map(|(start, len)| {
+                ObjectRange::new(
+                    (start * NULLPAGE_SIZE) as u64,
+                    ((start + len) * NULLPAGE_SIZE) as u64,
+                )
+            })
+            .unwrap_or(ObjectRange::new(0, 0));
         let cmd = match &self.rk {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(*obj_id),
             // The requester tag is added here rather than in the `ReqKind` because `ReqKind` is the
@@ -44,6 +65,7 @@ impl Inflight {
                 *obj_id,
                 ObjectRange::new((s * NULLPAGE_SIZE) as u64, ((s + l) * NULLPAGE_SIZE) as u64),
                 *f | crate::pager::requester_flags(),
+                required,
             ),
             ReqKind::Sync(obj_id) => KernelCommand::ObjectEvict(ObjectEvictInfo {
                 obj_id: *obj_id,
@@ -113,6 +135,25 @@ impl InflightManager {
             return Ok(Inflight::new(req.id, rk, false));
         }
 
+        // A demand fault whose range is already being prefetched waits on that request rather than
+        // issuing a second one for the same pages. Returning the *prefetch's* key is what makes the
+        // rest work unchanged: `setup_wait` compares against it, and the completion the pager sends
+        // removes and signals under it.
+        //
+        // Worst case is a prefetch the pager declines over `MAX_INFLIGHT_PREFETCH`, which is acked
+        // DONE with no pages: the waiter wakes, finds its pages absent, and the fault retries and
+        // issues its own request. One extra fault, not a stall.
+        if let Some(twin) = rk.prefetch_twin() {
+            if let Some(req) = self.req_map.find(&twin).get() {
+                log::trace!(
+                    "demand request {:?} coalescing onto prefetch {:?}",
+                    rk,
+                    twin
+                );
+                return Ok(Inflight::new(req.id, twin, false));
+            }
+        }
+
         let mut id = None;
         for b in 0..NR_REQUESTS {
             if self.avail.bit_test(b) {
@@ -141,6 +182,12 @@ impl InflightManager {
             let id = request.id;
             self.avail.bit_set(id);
             self.requests[id] = None;
+        } else {
+            // Every completion the pager marks DONE lands here, so a miss means a request that has
+            // been answered is still in the map: its waiters will never be signalled and its slot
+            // is leaked. This was silent, which is most of why the comparator bug it reports (see
+            // `ReqKind`) took two attempts to find.
+            log::warn!("completed a pager request that is not in the map: {:?}", rk);
         }
     }
 
@@ -152,6 +199,21 @@ impl InflightManager {
         let Some(Some(request)) = self.requests.get_mut(inflight.id) else {
             return None;
         };
+        // The slot index does not identify a request on its own. Every caller drops the manager
+        // lock between `add_request` and here in order to submit, and in that window the request
+        // can complete, be removed, and have its slot handed to something else -- at which point
+        // parking on the occupant means waiting for a completion that has nothing to do with us,
+        // and being woken (or not) by it. Declining to wait is always safe: every caller re-checks
+        // its own condition, and the ones that loop will simply come back round.
+        if request.reqkind() != &inflight.rk {
+            log::warn!(
+                "pager request slot {} was recycled under a waiter: wanted {:?}, found {:?}",
+                inflight.id,
+                inflight.rk,
+                request.reqkind()
+            );
+            return None;
+        }
         request.setup_wait(thread)
     }
 

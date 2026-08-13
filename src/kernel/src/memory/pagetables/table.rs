@@ -15,6 +15,24 @@ use crate::{
 
 const LOG_LEVEL: log::Level = log::Level::Debug;
 
+/// Large pages taken apart again.
+///
+/// Every split undoes a large page, so this is the drain against which any large-page win has to be
+/// read: a boot that makes hundreds of them and splits hundreds is standing still. `cow_copy` used
+/// to split unconditionally on any write path, which made that the normal outcome.
+mod splits {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static SPLITS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record() {
+        let n = SPLITS.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            log::info!("SPLITS: {} large pages split back to 4 KiB", n);
+        }
+    }
+}
+
 impl Table {
     pub(super) fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
         let entry = self[index];
@@ -142,6 +160,7 @@ impl Table {
         let large_frame = get_frame(start_paddr).unwrap();
         let flags = entry.flags();
         assert!(large_frame.size() == Self::level_to_page_size(level));
+        splits::record();
 
         let new_table_frame = fa.try_allocate().ok_or(ResourceError::OutOfMemory)?;
         new_table_frame.set_pt(true);
@@ -191,7 +210,16 @@ impl Table {
                     frame.size(),
                 );
                 frame.inc_refcount();
-                next_table[i] = Entry::new(frame.start_address(), flags - EntryFlags::huge());
+                // Write access comes back with the copy. This branch runs because the entry was
+                // read-only, which for an object table means COW -- and copying the contents into
+                // private frames *is* the copy-on-write. Carrying the read-only flags across leaves
+                // the faulting write with a private page it still cannot write and nothing left to
+                // resolve, so it refaults forever. Only reachable at all once large pages survive
+                // long enough to be COW'd.
+                next_table[i] = Entry::new(
+                    frame.start_address(),
+                    (flags - EntryFlags::huge()) | EntryFlags::WRITE,
+                );
             }
             consist.free_frame(large_frame);
         }
@@ -315,6 +343,20 @@ impl Table {
             return Ok(false);
         }
         if self[index].is_huge() && level != Self::last_level() {
+            // A writable entry over a frame nobody shares has no copy to make, and splitting it
+            // only demotes the page: every write path reaches here through `maybe_cow_at` --
+            // `write_bytes`, `set_bytes`, and every atomic through `with_ref` -- so splitting
+            // unconditionally means no large page survives being written to.
+            //
+            // Anything else still splits. A read-only entry means a COW is in progress or has just
+            // been resolved, and `do_cow_copy` (which asserts against a huge entry) is what
+            // restores write access, so short-circuiting there would leave a write fault with
+            // nothing to fix and no way to make progress.
+            let writable = self[index].flags().contains(EntryFlags::WRITE);
+            let shared = get_frame(self[index].addr(level)).is_some_and(|frame| frame.is_cow());
+            if writable && !shared {
+                return Ok(false);
+            }
             self.split_huge(index, level, consist, cursor.start(), fa)?;
         } else {
             did_cow |= self.do_cow_copy(index, level, consist, cursor.start(), mark_dirty, fa)?;

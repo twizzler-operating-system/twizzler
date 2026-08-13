@@ -192,12 +192,17 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// `release-kvm-smp1` lost all four while every other configuration passed.
 const UDP_SEND_COUNT: usize = 20;
 
-/// How long a `connect-idle` peer holds its connection open.
+/// Upper bound on how long a `connect-idle` peer holds its connection open.
 ///
-/// Must comfortably outlast the parent's accept, which is bounded by `PEER_TIMEOUT`: if the peer
-/// exits first its connection is torn down, and a test waiting to accept a *pending* connection
-/// then has nothing to take.
-const HOLD_MS: u64 = 4000;
+/// A cap, not a duration: the peer holds until we drop our end and falls back on this only if that
+/// never comes (`wait_for_close` in the peer). Every test below therefore drops its stream before
+/// waiting on the peer, and pays a poll interval instead of this whole span.
+///
+/// Being a cap is also what lets it exceed `PEER_TIMEOUT`, which it must: the peer has to outlast
+/// the parent's accept, and an accept is allowed to take `PEER_TIMEOUT`. At the old 4s a slow
+/// enough boot could have the peer hang up *before* the accept it was waiting for -- costing 4s on
+/// every passing run to buy a bound that was too short for the failing one.
+const HOLD_MS: u64 = 20_000;
 
 // --- listener readiness -------------------------------------------------------------------
 
@@ -251,7 +256,7 @@ fn clear_listener_rearms_across_accepts() {
     let listener = TcpListener::bind("0.0.0.0:7702").expect("bind");
     let kq = register(listener.as_raw_fd(), EVFILT_READ, true);
 
-    let peer = spawn_peer(
+    let mut peer = spawn_peer(
         "10.0.2.102",
         "connect-n",
         "10.0.2.100:7702",
@@ -267,12 +272,20 @@ fn clear_listener_rearms_across_accepts() {
 
     let mut accepted = 0;
     while accepted < REARM_CONNECTIONS {
-        assert!(
-            wait_ready(kq, PEER_TIMEOUT),
-            "EV_CLEAR listener went silent after {} of {} connections (LISTENER-REARM)",
-            accepted,
-            REARM_CONNECTIONS
-        );
+        if !wait_ready(kq, PEER_TIMEOUT) {
+            // Two unrelated faults both show up as silence here, and the message has to say which:
+            // if the level-triggered probe reports a connection pending *right now*, the EV_CLEAR
+            // registration is stuck suppressed and this is LISTENER-REARM proper; if it does not,
+            // nothing ever arrived and the fault is below the readiness layer (a lost SYN, a
+            // handshake stalled in SYN-RECEIVED, a peer that never got the previous close).
+            let pending = wait_ready(probe, Duration::ZERO);
+            let peer_exited = peer.try_wait().ok().flatten();
+            panic!(
+                "EV_CLEAR listener went silent after {} of {} connections (LISTENER-REARM); \
+                 level says pending: {}, peer: {:?}",
+                accepted, REARM_CONNECTIONS, pending, peer_exited
+            );
+        }
         while accepted < REARM_CONNECTIONS && wait_ready(probe, Duration::ZERO) {
             let mut stream = accept_within(&listener, PEER_TIMEOUT, "rearm accept");
             let mut buf = [0u8; 64];
@@ -371,10 +384,15 @@ fn idle_stream_read_waits_out_its_timeout() {
 /// How long the `connect-drop` peer stays alive after dropping its stream.
 ///
 /// What it has to cover is the gap between the drop and the engine's next poll pass putting the FIN
-/// on the wire -- milliseconds -- because nothing drains the engine at compartment exit. It is not
-/// required to outlast our read below: the two clocks start at different times (the peer drops
-/// before our accept completes), and once the FIN is on the wire the peer's exit cannot retract it.
-const LINGER_MS: u64 = 8000;
+/// on the wire, because nothing drains the engine at compartment exit. That pass is not waiting on
+/// a timer: `TcpStreamInner::drop` calls `ENGINE.wake()` right after closing the socket, so the FIN
+/// goes out within a poll iteration and this is three orders of magnitude of margin on top.
+///
+/// It is not required to outlast our read below: the two clocks start at different times (the peer
+/// drops before our accept completes), and once the FIN is on the wire the peer's exit cannot
+/// retract it. That asymmetry is why this can shrink while `EOF_TIMEOUT` stays generous -- the
+/// budget for *detecting* the FIN is separate from the budget for emitting it.
+const LINGER_MS: u64 = 500;
 const EOF_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Dropping a `TcpStream` must emit a FIN, so the other end sees EOF.
@@ -515,7 +533,7 @@ fn stream_survives_a_third_networked_compartment() {
         "10.0.2.100:7708",
         &HOLD_MS.to_string(),
     );
-    let _held = accept_within(&holder_listener, PEER_TIMEOUT, "third-compartment holder");
+    let held = accept_within(&holder_listener, PEER_TIMEOUT, "third-compartment holder");
 
     // With the holder's stack live and idle, run a full exchange with a different peer.
     let listener = TcpListener::bind("0.0.0.0:7709").expect("bind");
@@ -529,9 +547,188 @@ fn stream_survives_a_third_networked_compartment() {
     stream.flush().expect("flush");
 
     expect_peer_ok(peer, "connect-echo alongside a third compartment");
+    // Explicit, and it has to come before the wait: the holder holds until we close, so leaving
+    // this to end-of-scope would leave it waiting out `HOLD_MS` with us waiting on it. The echo
+    // above is what this test is about, and it has already happened with the holder live.
+    drop(held);
     expect_peer_ok(holder, "connect-idle holder");
 }
 
 fn main() {
     println!("net_test: run with --test");
+}
+
+// --- coverage the shapes above do not reach --------------------------------------------------
+
+/// The byte a bulk transfer carries at offset `i`. Must match `net_test_peer`'s copy.
+fn bulk_byte(i: usize) -> u8 {
+    (i % 251) as u8
+}
+
+/// Size of the bulk transfer. Chosen to exceed a single segment and a default window by enough to
+/// force segmentation, window updates and multiple poll passes -- everything else in this file
+/// moves eight bytes, which all fit in one segment and never exercise any of that.
+const BULK_LEN: usize = 64 * 1024;
+
+/// Closing a just-accepted connection must deliver a FIN.
+///
+/// The regression test for the accept-in-SYN-RECEIVED bug. `accept()` used to hand back a socket
+/// whose handshake had not finished (`is_active()` is true in SYN-RECEIVED), and closing one in
+/// that state left smoltcp reading the handshake's ACK as an ACK of a FIN it had never sent: the
+/// socket went to FIN-WAIT-2, nothing reached the wire, and the peer hung until its cap.
+///
+/// Distinct from `dropping_a_stream_delivers_eof`, which closes the *connecting* side after it has
+/// sent data. This one closes the *accepted* side with no I/O at all, which is the only shape that
+/// reaches the bug -- the neighbours all hold their stream long enough for the handshake to land.
+#[test]
+fn closing_a_just_accepted_stream_delivers_eof() {
+    setup();
+    let listener = TcpListener::bind("0.0.0.0:7711").expect("bind");
+    let peer = spawn_peer(
+        "10.0.2.111",
+        "connect-idle",
+        "10.0.2.100:7711",
+        &HOLD_MS.to_string(),
+    );
+
+    let stream = accept_within(&listener, PEER_TIMEOUT, "just-accepted close");
+    // No read, no write, no shutdown: straight to close, while the handshake is at its youngest.
+    drop(stream);
+
+    // connect-idle exits nonzero if it hit its cap without seeing EOF, so this is the assertion --
+    // and it fails outright rather than merely running slowly, which is how the bug used to read.
+    expect_peer_ok(peer, "connect-idle after immediate close");
+}
+
+/// A transfer larger than one segment must arrive intact and in order.
+#[test]
+fn bulk_transfer_arrives_intact() {
+    setup();
+    let listener = TcpListener::bind("0.0.0.0:7713").expect("bind");
+    let peer = spawn_peer(
+        "10.0.2.113",
+        "connect-recv",
+        "10.0.2.100:7713",
+        &BULK_LEN.to_string(),
+    );
+
+    let mut stream = accept_within(&listener, PEER_TIMEOUT, "bulk transfer");
+    let data: Vec<u8> = (0..BULK_LEN).map(bulk_byte).collect();
+    stream.write_all(&data).expect("write bulk");
+    stream.flush().expect("flush");
+    // The close is part of the test: the peer requires EOF at exactly BULK_LEN, so the queued data
+    // has to drain ahead of the FIN rather than being cut off by it.
+    drop(stream);
+
+    expect_peer_ok(peer, "connect-recv");
+}
+
+/// Shutting down the write half must deliver EOF without closing the other direction.
+///
+/// The request/response shape: the peer says "that is the whole request" with `shutdown(Write)` and
+/// still expects its answer back. A close that tore down both directions would pass every other
+/// test here and break this one.
+#[test]
+fn half_close_still_allows_a_reply() {
+    setup();
+    let listener = TcpListener::bind("0.0.0.0:7714").expect("bind");
+    let peer = spawn_peer(
+        "10.0.2.114",
+        "connect-halfclose",
+        "10.0.2.100:7714",
+        "request",
+    );
+
+    let stream = accept_within(&listener, PEER_TIMEOUT, "half close");
+    let fd = stream.as_raw_fd();
+
+    // Read to EOF the bounded way, for the reason `dropping_a_stream_delivers_eof` spells out: EOF
+    // is not visible through the readiness path, and a blocking read that never sees the peer's
+    // half-close -- the regression this guards -- would hang the suite.
+    let deadline = Instant::now() + EOF_TIMEOUT;
+    let mut request = Vec::new();
+    let mut eof = false;
+    while Instant::now() < deadline {
+        let mut buf = [0u8; 64];
+        let mut ctx = IoCtx::new(None, IoFlags::NONBLOCKING, None);
+        match twz_rt_fd_pread(fd, &mut buf, &mut ctx) {
+            Ok(0) => {
+                eof = true;
+                break;
+            }
+            Ok(n) => request.extend_from_slice(&buf[..n]),
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    assert!(
+        eof,
+        "shutdown(Write) on the peer never delivered EOF (read {:?})",
+        request
+    );
+    assert_eq!(request, b"request", "half-closed request arrived wrong");
+
+    // The half we were never told about must still work.
+    let mut stream = stream;
+    stream
+        .write_all(b"request")
+        .expect("reply after half close");
+    stream.flush().expect("flush");
+    drop(stream);
+
+    expect_peer_ok(peer, "connect-halfclose");
+}
+
+/// How many pings `udp_round_trip_replies_to_sender` lets its peer try. Same loss reasoning as
+/// `UDP_SEND_COUNT`, but now either direction can drop one, so the peer retries until answered.
+const UDP_ECHO_ATTEMPTS: usize = 20;
+
+/// A datagram must round-trip, and `recv_from` must name the sender well enough to answer it.
+///
+/// The existing UDP test only ever receives, and discards the address it receives from; nothing
+/// covered sending a datagram or the address being right. Replying to whatever `recv_from` reported
+/// tests both at once: a wrong source address means the pong goes nowhere and the peer fails.
+#[test]
+fn udp_round_trip_replies_to_sender() {
+    setup();
+    // Our own address, not the wildcard: a 0.0.0.0 UDP bind currently receives nothing. See the
+    // note in `udp_stops_reporting_readable_once_drained`.
+    let sock = UdpSocket::bind("10.0.2.100:7712").expect("bind");
+    let kq = register(sock.as_raw_fd(), EVFILT_READ, false);
+    let mut peer = spawn_peer(
+        "10.0.2.112",
+        "udp-echo",
+        "10.0.2.100:7712",
+        &UDP_ECHO_ATTEMPTS.to_string(),
+    );
+
+    // Keep answering until the peer is satisfied and exits, rather than replying once and waiting:
+    // if that one pong is lost the peer pings again, and nobody would be listening.
+    let deadline = Instant::now() + PEER_TIMEOUT;
+    let mut answered = 0;
+    let status = loop {
+        if let Some(status) = peer.try_wait().expect("try_wait udp-echo") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "udp-echo peer never finished ({} pings answered)",
+            answered
+        );
+        if !wait_ready(kq, Duration::from_millis(200)) {
+            continue;
+        }
+        let mut buf = [0u8; 64];
+        let (n, from) = sock.recv_from(&mut buf).expect("recv");
+        assert!(buf[..n].starts_with(b"ping"), "unexpected datagram");
+        assert_eq!(
+            from.ip(),
+            "10.0.2.112".parse::<std::net::IpAddr>().unwrap(),
+            "recv_from reported the wrong sender"
+        );
+        sock.send_to(b"pong", from).expect("reply");
+        answered += 1;
+    };
+
+    assert!(answered > 0, "peer exited before any ping arrived");
+    assert!(status.success(), "udp-echo peer failed");
 }

@@ -95,11 +95,34 @@ pub fn min_level_for_len(len: usize) -> Option<usize> {
     None
 }
 
+/// Level-0 frames per level-1 frame, i.e. how many 4 KiB frames have to be free at once before a
+/// group can be coalesced back into one large frame.
+const GROUP_PAGES: usize = PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size();
+
+/// Groups rebuilt into a large frame. Worth a counter of its own: whether large frames come back
+/// at all once the level-1 list has drained is the question this whole mechanism exists to answer,
+/// and it is invisible from the outside -- a boot with none looks exactly like a boot without the
+/// code.
+static COALESCED: AtomicU64 = AtomicU64::new(0);
+
 #[doc(hidden)]
 struct AllocationRegion {
     indexer: FrameIndexer,
     nr_pages: usize,
     levels: [AllocationRegionLevel; NR_LEVELS],
+    /// Free level-0 frames in each level-1-aligned group, indexed from `group_base`.
+    ///
+    /// Splitting is one-way without this: a large frame broken up to satisfy 4 KiB allocations
+    /// never reforms, so the level-1 list drains and every later large-frame request fails --
+    /// which is what makes objects assemble regions 4 KiB at a time (`promote.md`). The
+    /// counter is what lets a fully-free group be *found* rather than scanned for, so the free
+    /// path stays a single increment and all the work happens on the allocation that would
+    /// otherwise fail.
+    ///
+    /// A group only partly inside this region simply never reaches `GROUP_PAGES` and is never a
+    /// candidate.
+    group_free: &'static mut [u16],
+    group_base: PhysAddr,
 }
 
 // Safety: this is needed because of the raw pointer, but the raw pointer is static for the life of
@@ -196,7 +219,11 @@ impl AllocationRegion {
         frame.set_free();
         let level = frame.get_level();
         assert!(level < NR_LEVELS);
+        let addr = frame.start_address();
         self.levels[level].free(frame);
+        if level == 0 {
+            self.group_track(addr, 1);
+        }
     }
 
     fn find_level(&self, layout: Layout) -> Option<usize> {
@@ -205,22 +232,163 @@ impl AllocationRegion {
             .position(|level| level.alloc_size >= layout.size() && level.align >= layout.align())
     }
 
+    fn group_idx(&self, pa: PhysAddr) -> Option<usize> {
+        let idx =
+            (pa.raw().checked_sub(self.group_base.raw())? as usize) / PHYS_LEVEL_LAYOUTS[1].size();
+        (idx < self.group_free.len()).then_some(idx)
+    }
+
+    /// Record that a level-0 frame has entered (`delta > 0`) or left the level-0 free lists.
+    fn group_track(&mut self, pa: PhysAddr, delta: i16) {
+        if let Some(idx) = self.group_idx(pa) {
+            let count = self.group_free[idx] as i16 + delta;
+            assert!(count >= 0 && count as usize <= GROUP_PAGES);
+            self.group_free[idx] = count as u16;
+        }
+    }
+
+    /// Rebuild one fully-free group as a single level-1 frame, and hand it back.
+    ///
+    /// The inverse of [Self::split]. Not [Self::merge_frame], which is for *allocated* runs and
+    /// asserts its children are `ALLOCATED`.
+    fn coalesce_group(&mut self, idx: usize) -> Option<FrameRef> {
+        let base = self
+            .group_base
+            .offset(idx * PHYS_LEVEL_LAYOUTS[1].size())
+            .ok()?;
+
+        // The counter says the group is whole; confirm it against the frames themselves before
+        // unlinking anything, since a wrong count here would corrupt a free list. `is_linked` is
+        // the precise test: an admitted, unallocated frame that is on no list is one this function
+        // has already taken.
+        let mut all_zeroed = true;
+        for i in 0..GROUP_PAGES {
+            let frame = self.indexer.get_frame(base.offset(i * FRAME_SIZE).ok()?)?;
+            if frame.get_level() != 0
+                || frame.refcount() != 0
+                || !frame.link.is_linked()
+                || frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED)
+            {
+                return None;
+            }
+            all_zeroed &= frame.is_zeroed();
+        }
+
+        for i in 0..GROUP_PAGES {
+            // Unwrap-Ok: checked in the loop above.
+            let frame = self
+                .indexer
+                .get_frame(base.offset(i * FRAME_SIZE).unwrap())
+                .unwrap();
+            let level = &mut self.levels[0];
+            let list = if frame.is_zeroed() {
+                &mut level.zeroed
+            } else {
+                &mut level.non_zeroed
+            };
+            // Safety: the frame is linked into this list -- `is_linked` above, and a level-0 frame
+            // is only ever on one of these two, chosen by the same ZEROED test.
+            unsafe { list.cursor_mut_from_ptr(frame as *const Frame).remove() };
+            level.free -= 1;
+
+            if i > 0 {
+                // Leave the children in the state `merge_frame` leaves them: no longer admitted,
+                // and belonging to the frame above rather than to themselves. `split_and_keep`
+                // asserts on exactly this when the large frame is taken apart again, which is what
+                // the pager's donation path does to every large frame it is given.
+                let pa = base.offset(i * FRAME_SIZE).unwrap();
+                let child_flags = if all_zeroed {
+                    PhysicalFrameFlags::ZEROED
+                } else {
+                    PhysicalFrameFlags::empty()
+                };
+                // Safety: same as `merge_frame` -- the frame has just been taken off every list and
+                // is unreachable until the frame above it is split again.
+                let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+                unsafe { child.reset(pa, 0, child_flags, 0) };
+            }
+        }
+        self.group_free[idx] = 0;
+
+        let flags = if all_zeroed {
+            PhysicalFrameFlags::ZEROED
+        } else {
+            PhysicalFrameFlags::empty()
+        };
+        // Safety: every frame in the group is now unreachable -- unlinked and unallocated -- so the
+        // head can be re-admitted at the level above.
+        let head = unsafe { self.get_frame_mut(base) }?;
+        self.levels[1].admit_one(head, base, 1, flags);
+        let count = COALESCED.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_power_of_two() {
+            log::info!("COALESCE: {} groups rebuilt into large frames", count);
+        }
+        self.indexer.get_frame(base)
+    }
+
+    /// Find a fully-free group and coalesce it. Called only when a large-frame request is about to
+    /// fail outright, so the scan is paid for by an allocation that would have returned `None`.
+    ///
+    /// Keeps scanning past a candidate `coalesce_group` rejects: the counter and the frames
+    /// disagreeing is precisely the case that validation exists for, and stopping at the first one
+    /// would leave that index selected forever, killing coalescing for the rest of the boot.
+    fn coalesce_any(&mut self) -> Option<FrameRef> {
+        let mut next = 0;
+        while let Some(off) = self.group_free[next..]
+            .iter()
+            .position(|count| *count as usize == GROUP_PAGES)
+        {
+            let idx = next + off;
+            if let Some(frame) = self.coalesce_group(idx) {
+                return Some(frame);
+            }
+            log::warn!("COALESCE: group {} counted free but was rejected", idx);
+            next = idx + 1;
+        }
+        None
+    }
+
     fn do_allocate(&mut self, try_zero: bool, only_zero: bool, level: usize) -> Option<FrameRef> {
         if level >= NR_LEVELS {
             return None;
         }
         if let Some(frame) = self.levels[level].allocate(try_zero, only_zero) {
+            if level == 0 {
+                self.group_track(frame.start_address(), -1);
+            }
             return Some(frame);
         }
 
         let bigger_frame = self.do_allocate(try_zero, only_zero, level + 1)?;
         self.split(bigger_frame);
-        self.levels[level].allocate(try_zero, only_zero)
+        let frame = self.levels[level].allocate(try_zero, only_zero)?;
+        if level == 0 {
+            self.group_track(frame.start_address(), -1);
+        }
+        Some(frame)
     }
 
     fn allocate(&mut self, try_zero: bool, only_zero: bool, layout: Layout) -> Option<FrameRef> {
         let level = self.find_level(layout)?;
-        let frame = self.do_allocate(try_zero, only_zero, level)?;
+        let frame = match self.do_allocate(try_zero, only_zero, level) {
+            Some(frame) => frame,
+            // Nothing at this level and nothing bigger to split. Before giving up on a large-frame
+            // request, rebuild one from a group that has become entirely free -- this is the point
+            // where the one-way split would otherwise become permanent.
+            //
+            // Gated on the level-1 list being genuinely empty, not just on `do_allocate` failing:
+            // it also fails when frames are there but on the wrong side of the zeroed/non-zeroed
+            // split for this `try_zero`/`only_zero` pair, and rebuilding then would spend a whole
+            // free group to produce what the next pass would have found anyway.
+            None if level == 1 && self.levels[1].free == 0 => {
+                // `coalesce_any` admits the rebuilt frame to the level-1 list rather than handing
+                // it over directly, so take it back out through the normal path -- which is also
+                // what applies `only_zero` to it.
+                self.coalesce_any()?;
+                self.levels[1].allocate(try_zero, only_zero)?
+            }
+            None => return None,
+        };
         assert!(!frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
         frame.set_allocated();
         Some(frame)
@@ -231,33 +399,52 @@ impl AllocationRegion {
             panic!("tried to split a frame within the wrong region");
         }
         let level = frame.get_level();
+        assert!(level + 1 < NR_LEVELS);
 
+        let start = frame.start_address();
+        let child_size = frame.size();
         let new_frame_size = PHYS_LEVEL_LAYOUTS[level + 1].size();
-        let child_count = new_frame_size / frame.size();
+        let child_count = new_frame_size / child_size;
+        // The run has to be the whole of the frame above it, not just its length: merging a
+        // misaligned run yields a large frame whose children straddle two of them, which no mapping
+        // can use and which puts `group_free` out of step with the frames it counts.
+        assert!(start.is_aligned_to(new_frame_size));
+        // Every child is ALLOCATED (asserted below), so none can be on a free list.
+        if level == 0
+            && let Some(idx) = self.group_idx(start)
+        {
+            assert_eq!(self.group_free[idx], 0);
+        }
+
+        // ZEROED describes a whole frame, so the merged frame may only claim it if every child
+        // does. Taking it from the head alone would mark the full run clean on the strength of its
+        // first page, and `alloc` skips `zero()` on the strength of the flag -- handing out a
+        // "fresh" large frame still holding its previous tenant's data.
         // skip the first one for now, as that's our passed in frame.
+        let mut all_zeroed = frame.is_zeroed();
         for child_idx in 1..child_count {
-            let pa = frame
-                .start_address()
-                .offset(child_idx * frame.size())
-                .unwrap();
-            let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+            let pa = start.offset(child_idx * child_size).unwrap();
+            let child = self.get_frame(pa).unwrap();
             assert!(child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
             assert!(child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
-            let child_flags = (frame.get_flags() & PhysicalFrameFlags::ZEROED)
-                & !(PhysicalFrameFlags::ALLOCATED | PhysicalFrameFlags::ADMITTED);
-            unsafe { child.reset(pa, level as u8, child_flags, 0) };
+            all_zeroed &= child.is_zeroed();
         }
-        let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        let merged_flags = if all_zeroed {
+            PhysicalFrameFlags::ZEROED
+        } else {
+            PhysicalFrameFlags::empty()
+        };
+
+        for child_idx in 1..child_count {
+            let pa = start.offset(child_idx * child_size).unwrap();
+            let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+            unsafe { child.reset(pa, level as u8, merged_flags, 0) };
+        }
+        let rc = frame.refcount();
+        let frame = unsafe { self.get_frame_mut(start) }.unwrap();
         assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
         assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
-        unsafe {
-            frame.reset(
-                frame.start_address(),
-                (level + 1) as u8,
-                frame.get_flags() & PhysicalFrameFlags::ZEROED,
-                frame.refcount(),
-            )
-        };
+        unsafe { frame.reset(start, (level + 1) as u8, merged_flags, rc) };
         frame.set_admitted();
         frame.set_allocated();
         frame
@@ -334,14 +521,21 @@ impl AllocationRegion {
                 (level - 1) as u8,
                 frame.get_flags() & PhysicalFrameFlags::ZEROED,
             );
+            if level == 1 {
+                self.group_track(pa, 1);
+            }
         }
-        let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        let start = frame.start_address();
+        let frame = unsafe { self.get_frame_mut(start) }.unwrap();
         self.levels[level - 1].admit_one(
             frame,
-            frame.start_address(),
+            start,
             (level - 1) as u8,
             frame.get_flags() & PhysicalFrameFlags::ZEROED,
         );
+        if level == 1 {
+            self.group_track(start, 1);
+        }
     }
 
     fn new(m: &MemoryRegion) -> Option<Self> {
@@ -352,12 +546,25 @@ impl AllocationRegion {
             return None;
         }
         let frame_array_len = size_of::<Frame>() * nr_pages;
-        let array_pages = ((frame_array_len - 1) / FRAME_SIZE) + 1;
+        // The group counters live in the region's own reserved pages, right behind the frame array,
+        // because this runs before there is a heap worth allocating from.
+        // Over-approximated by two: the first group can start below this region, since it is keyed
+        // to a level-1-aligned address rather than to the region's own start.
+        let nr_groups = nr_pages.div_ceil(GROUP_PAGES) + 2;
+        let group_array_len = size_of::<u16>() * nr_groups;
+        let array_pages = ((frame_array_len + group_array_len - 1) / FRAME_SIZE) + 1;
         if array_pages >= nr_pages {
             return None;
         }
 
-        let frame_array_ptr = phys_to_virt(start).as_mut_ptr();
+        let frame_array_ptr: *mut Frame = phys_to_virt(start).as_mut_ptr();
+        // Safety: the reservation above covers both arrays, and `Frame` is 8-aligned so the frame
+        // array's length keeps the group array aligned for u16.
+        let group_free = unsafe {
+            let ptr = frame_array_ptr.byte_add(frame_array_len) as *mut u16;
+            core::slice::from_raw_parts_mut(ptr, nr_groups)
+        };
+        group_free.fill(0);
 
         let mut levels = [
             AllocationRegionLevel::new(PHYS_LEVEL_LAYOUTS[0]),
@@ -371,13 +578,17 @@ impl AllocationRegion {
                 start.offset(array_pages * FRAME_SIZE).unwrap(),
                 (nr_pages - array_pages) * FRAME_SIZE,
                 frame_array_ptr,
-                frame_array_len,
+                nr_pages,
             )
         };
 
         // Organize into levels.
         let mut cursor = start.offset(array_pages * FRAME_SIZE).unwrap();
         let end = start.offset(nr_pages * FRAME_SIZE).unwrap();
+        // Unwrap-Ok: aligning down cannot leave the canonical range.
+        let group_base = cursor
+            .align_down(PHYS_LEVEL_LAYOUTS[1].size() as u64)
+            .unwrap();
         while cursor < end {
             let remaining = end - cursor;
             // select level based on alignment and space
@@ -405,6 +616,10 @@ impl AllocationRegion {
                 };
             }
             levels[level].admit_one(frame, cursor, level as u8, PhysicalFrameFlags::empty());
+            if level == 0 {
+                let idx = (cursor - group_base) as usize / PHYS_LEVEL_LAYOUTS[1].size();
+                group_free[idx] += 1;
+            }
             cursor = cursor.offset(levels[level].alloc_size).unwrap();
         }
 
@@ -412,6 +627,8 @@ impl AllocationRegion {
             indexer,
             levels,
             nr_pages,
+            group_free,
+            group_base,
         })
     }
 }
@@ -843,6 +1060,8 @@ struct FrameIndexer {
 
 impl FrameIndexer {
     /// Build a new frame indexer.
+    ///
+    /// `frame_array_len` is a count of [Frame]s, not bytes.
     ///
     /// # Safety: The passed pointer and len must point to a valid section of memory reserved for the frame slice, which will last the lifetime of the kernel.
     unsafe fn new(

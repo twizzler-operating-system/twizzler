@@ -55,8 +55,9 @@ pub(super) enum WaitKey {
     Group(u64),
 }
 
-/// A listening socket is readable exactly when `accept()` will return a connection for it, which
-/// smoltcp spells `is_active()` -- true from SynReceived onward, false while it is still in Listen.
+/// A listening socket is readable exactly when `accept()` will return a connection for it: an
+/// established one. Not `is_active()`, which smoltcp makes true from SynReceived onward -- see the
+/// handshake note at the bottom.
 ///
 /// Deliberately a state predicate rather than an event, so the readiness cannot be lost between the
 /// poll pass that observes it and the `accept()` that consumes it. `SmolTcpListener::can_read` must
@@ -69,8 +70,21 @@ pub(super) enum WaitKey {
 /// `accept()` finds nothing active, takes its repair branch, and blocks -- an outright hang, which
 /// is how this was found. The repair still happens, because a blocked `accept()` re-runs on every
 /// `Core::poll` condvar notify rather than waiting on these words.
+///
+/// Excluding SYN-RECEIVED is the handshake note. `is_active()` is already true there, which offers
+/// up a connection whose handshake has not finished; closing such a socket is unrecoverable in
+/// smoltcp 0.11: `close()` moves SYN-RECEIVED straight to FIN-WAIT-1, and FIN-WAIT-1 accounts for
+/// exactly one outstanding control byte, which it attributes to a FIN. The still-unacknowledged SYN
+/// is now invisible, so when the handshake's ACK finally arrives it satisfies
+/// `tx_buffer.len() + 1 == ack_len` and is read as an ACK *of a FIN that was never transmitted*.
+/// The socket settles in FIN-WAIT-2, no FIN ever reaches the wire, and the peer waits for an EOF
+/// that cannot come.
+///
+/// Waiting for the handshake closes that window and is what accept() is supposed to mean anyway.
+/// The connection stays pending in the backlog meanwhile, and the transition to ESTABLISHED happens
+/// inside a poll pass, which republishes readiness -- so a waiter still gets its edge.
 pub(super) fn listener_socket_ready(socket: &Socket<'_>) -> bool {
-    socket.is_active()
+    socket.is_active() && socket.state() != State::SynReceived
 }
 
 pub(super) struct Core {
@@ -100,7 +114,9 @@ impl IfaceSet {
     fn poll(&mut self, socketset: &mut SocketSet<'static>) -> bool {
         let mut ready = false;
         for iface in &mut self.ifaces {
-            ready |= iface.poll(Instant::now(), &mut self.device, socketset);
+            // 0.13 returns PollResult rather than a bool; SocketStateChanged is the old `true`.
+            ready |= iface.poll(Instant::now(), &mut self.device, socketset)
+                == smoltcp::iface::PollResult::SocketStateChanged;
         }
         ready
     }

@@ -431,7 +431,7 @@ def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
 # --- building -----------------------------------------------------------------------------------
 
 
-def build_command_for(profile: str, work: Path) -> List[str]:
+def build_command_for(profile: str, work: Path, autostart: Optional[str] = None) -> List[str]:
     """Build straight into this sweep's own master data image.
 
     `--disk-image` is what keeps a sweep off `target/disk-<triple>.img`. Without it every build
@@ -443,10 +443,15 @@ def build_command_for(profile: str, work: Path) -> List[str]:
     It also removes the snapshot step for the data image: the build writes the master in place, so
     there is nothing to copy out of the build tree afterwards.
     """
+    # --autostart is baked into the *image*'s kernel command line, so it has to be set here rather
+    # than on the run: lanes boot with --boot-image, where the command line is already fixed. It
+    # also replaces --tests, because init runs the suite first and shuts the guest down at the end
+    # of it, so a test-enabled image never reaches the autostart program.
+    mode = ["--autostart", autostart] if autostart else ["--tests"]
     return [
-        "cargo", "xtask", "make-image", "--tests", "--profile", profile,
+        "cargo", "xtask", "make-image", "--profile", profile,
         "--disk-image", str(master_data_image(work, profile)),
-    ]
+    ] + mode
 
 
 def xtask_binary() -> List[str]:
@@ -468,7 +473,7 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
     # outlive a single sweep, which is what protects us from builds this lock cannot see -- a
     # developer's own `cargo start-qemu`, say.
     with master_lock(work, exclusive=True):
-        cmd = build_command_for(profile, work)
+        cmd = build_command_for(profile, work, args.autostart)
         args.results_dir.mkdir(parents=True, exist_ok=True)
         out_path = args.results_dir / f"build-{profile}.out"
         print(f"=== building {profile} (log: {rel(out_path)})", flush=True)
@@ -511,7 +516,12 @@ def masters_present(work: Path, profile: str) -> bool:
 # --- running ------------------------------------------------------------------------------------
 
 
-def command_for(config: Config, lane: Lane, label: str, serial_log: Path) -> List[str]:
+def command_for(config: Config, lane: Lane, label: str, serial_log: Path,
+                autostart: Optional[str] = None) -> List[str]:
+    # --autostart replaces the test suite with one program, and xtask then reports that program's
+    # exit code instead of a test report. Lanes, images, ports and logs are unaffected -- this only
+    # changes what the guest does once it is up.
+    extra = ["--autostart", autostart] if autostart else []
     return xtask_binary() + [
         "test",
         "--scenario",
@@ -538,7 +548,7 @@ def command_for(config: Config, lane: Lane, label: str, serial_log: Path) -> Lis
         "--qemu-options=-smp",
         f"--qemu-options={config.smp}",
         "--qemu-options=--nographic",
-    ]
+    ] + extra
 
 
 def env_for(config: Config, args: argparse.Namespace) -> Dict[str, str]:
@@ -674,7 +684,7 @@ def run_once(
     args.results_dir.mkdir(parents=True, exist_ok=True)
     serial = args.results_dir / f"{name}.log"
     serial.unlink(missing_ok=True)
-    cmd = command_for(config, lane, label, serial)
+    cmd = command_for(config, lane, label, serial, args.autostart)
     emit(f"[lane {lane.index}] start  {name}")
 
     output: List[str] = []
@@ -839,6 +849,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-j", "--jobs", type=int, default=4,
                         help="Concurrent lanes (default: 4). Each holds a private image pair and "
                              "one qemu; smp4 lanes take 4 vcpus apiece.")
+    parser.add_argument("--autostart", default=None, metavar="PROG",
+                        help="Run PROG in init instead of the test suite, and judge each run by "
+                             "its exit code rather than a test report. The first word names the "
+                             "program (a bare name resolves under /initrd) and the rest are its "
+                             "arguments, e.g. --autostart='pagepar /sysroot/lib 4 16'.")
     parser.add_argument("--tag", default=None,
                         help="Names this sweep, keeping its results, lanes and serial-log labels "
                              "clear of any other sweep running at the same time (default: "
@@ -923,7 +938,7 @@ def main() -> int:
     if args.dry_run:
         for profile in needed:
             action = ("reuse snapshot" if args.reuse_images
-                      else " ".join(build_command_for(profile, work)))
+                      else " ".join(build_command_for(profile, work, args.autostart)))
             print(f"                 {profile}: {action}")
         for round_no, config in jobs:
             print(f"round {round_no}  {config.name}")

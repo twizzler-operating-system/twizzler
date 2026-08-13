@@ -149,13 +149,28 @@ impl ThreadSleepLinker {
         self.next.load(Ordering::SeqCst) > 0
     }
 
+    /// Called from `Thread::exit`. This is `reserve`'s hazard on the exit path: a thread that
+    /// leaves a slot in some object's sleep tree -- a force-exit out of a sleep never runs
+    /// `undo_sleep`, and nothing else unlinks it -- turns this free into a dangling node that the
+    /// next `wake_n` on that word walks, whose `owner` then reaches `add_to_requeue` as a garbage
+    /// `ThreadRef`. Leak the slab instead, for the reason `reserve` gives: a leak is bounded by how
+    /// often this happens, and the use-after-free is not recoverable.
     pub fn clear_all_references(&self) {
         let links = self.links.swap(core::ptr::null_mut(), Ordering::SeqCst);
         if links.is_null() {
             return;
         }
-        let links = unsafe { Box::from_raw(links) };
-        drop(links);
+        let stale = unsafe { &*links }.iter().any(|node| node.link.is_linked());
+        if stale {
+            if crate::thread::locktrack::diag::SLEEP_LINK_LEAKED_AT_EXIT.hit() {
+                emerglogln!(
+                    "ThreadSleepLinker::clear_all_references: thread exiting with a sleep link still linked; leaking its slab",
+                );
+            }
+            core::mem::forget(unsafe { Box::from_raw(links) });
+        } else {
+            drop(unsafe { Box::from_raw(links) });
+        }
     }
 }
 

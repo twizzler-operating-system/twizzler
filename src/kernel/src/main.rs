@@ -108,6 +108,17 @@ pub fn no_pcid() -> bool {
     NO_PCID.load(Ordering::SeqCst)
 }
 
+static DIAG_MODE: AtomicBool = AtomicBool::new(false);
+/// Run the idle-loop hang diagnostics outside of test mode.
+///
+/// They are unconditional under `--tests`, which meant an `--autostart` run -- the only way to
+/// drive a workload like `pagepar` -- had no timeout checker, no orphan-thread scan and no hang
+/// report at all. A stall there looked silent because nothing was watching, not because nothing
+/// was stuck.
+pub fn is_diag_mode() -> bool {
+    DIAG_MODE.load(Ordering::SeqCst)
+}
+
 static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
 
 pub fn get_boot_info() -> &'static dyn BootInfo {
@@ -160,6 +171,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--no-pcid" {
             NO_PCID.store(true, Ordering::SeqCst);
+        }
+        if opt == "--diag" {
+            DIAG_MODE.store(true, Ordering::SeqCst);
         }
     }
 
@@ -261,12 +275,14 @@ pub fn idle_main() -> ! {
             // `check_system_hang` additionally reports on threads that are merely idle -- service
             // threads parked on a condvar cross its 25s threshold in every boot, which spent its
             // whole report budget on healthy runs. Restricted to test mode, where a sweep is
-            // reading the transcript and the cost buys something.
-            if is_test_mode() {
+            // reading the transcript and the cost buys something -- or to an explicit `--diag`,
+            // for an autostart run that is being debugged.
+            if is_test_mode() || is_diag_mode() {
                 check_timed_out_mutexes();
                 check_timed_out_requests();
                 check_orphan_threads();
                 crate::thread::check_system_hang();
+                crate::obj::promotion_census();
             }
         }
         iter = iter.wrapping_add(1);

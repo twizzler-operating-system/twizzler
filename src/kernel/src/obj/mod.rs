@@ -45,6 +45,8 @@ pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 /// `OBJ_DELETED`, which means a delete has actually been requested -- an object carrying only this
 /// flag is still live, and in particular is still live before it has ever been mapped.
 const OBJ_DELETE_ON_LAST_UNMAP: u32 = 4;
+/// A map of this object has already tried a speculative page-in. See [Object::claim_map_prefetch].
+const OBJ_MAP_PREFETCHED: u32 = 8;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
@@ -55,6 +57,8 @@ pub struct Object {
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
+    /// The backing store's data length. `u64::MAX` means "never told"; see [Object::known_len].
+    known_len: AtomicU64,
     vnotes: VNotes,
 }
 
@@ -175,8 +179,49 @@ impl Object {
         self.lifetime_type == LifetimeType::Persistent
     }
 
+    /// How far the backing store's data extends, in bytes, or `None` if the kernel has never been
+    /// told.
+    ///
+    /// Authoritative rather than advisory: the store's length changes only when the kernel syncs
+    /// pages to the pager, so the kernel is the only writer and can keep its own copy exact. That
+    /// is what makes it safe to answer a fault past this point *without asking the pager* -- there
+    /// is provably nothing out there to read.
+    ///
+    /// The error direction is what matters. Overstating the length costs a pager round trip for a
+    /// page the kernel could have zero-filled; understating it would serve zeros over real data. So
+    /// every update moves it forward only ([Object::extend_known_len]), and it is set before a sync
+    /// is confirmed rather than after.
+    pub fn known_len(&self) -> Option<u64> {
+        match self.known_len.load(Ordering::Acquire) {
+            u64::MAX => None,
+            len => Some(len),
+        }
+    }
+
+    /// Record the store's length, as reported by the pager for an object it already had, or zero
+    /// for one the kernel just created (nothing is on disk until the first sync).
+    pub fn set_known_len(&self, len: u64) {
+        self.known_len.store(len, Ordering::Release);
+    }
+
+    /// Grow the recorded length to cover `len`, leaving it alone if it already does.
+    pub fn extend_known_len(&self, len: u64) {
+        let _ = self
+            .known_len
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                (cur != u64::MAX && cur < len).then_some(len)
+            });
+    }
+
     pub fn is_kernel_id(&self) -> bool {
         self.id.parts()[0] == 1
+    }
+
+    /// True for exactly one caller, ever: the first map of this object to reach the speculative
+    /// page-in. Concurrent maps of one object are ordinary (four threads opening the same library),
+    /// so this has to be the atomic and not a read followed by a set.
+    pub fn claim_map_prefetch(&self) -> bool {
+        self.flags.fetch_or(OBJ_MAP_PREFETCHED, Ordering::SeqCst) & OBJ_MAP_PREFETCHED == 0
     }
 
     /// Record that this object should be deleted once its last mapping goes away.
@@ -231,6 +276,7 @@ impl Object {
             pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
+            known_len: AtomicU64::new(u64::MAX),
             lifetime_type,
             device_interrupt_info: Box::new(
                 [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
@@ -598,6 +644,67 @@ pub fn no_exist(id: ObjID) {
 
 pub fn is_no_exist(id: ObjID) -> bool {
     obj_manager().no_exist.lock().contains(&id)
+}
+
+/// Report what large-page promotion would win, if the picture has changed since the last report.
+///
+/// Sizing the prize before building it (`largepager.md`): promotion is real mapper work with a
+/// shootdown, and it is only worth it if regions actually end up fully populated with contiguous
+/// aligned 4 KiB frames. This is a scan rather than a hot-path counter because the question is
+/// about *state* -- which regions ended up that way -- and a scan cannot double-count a region that
+/// is touched again later, which an event counter would.
+///
+/// Diagnostic, and not free: called from the idle loop's test/diag block, throttled, and quiet
+/// unless a number moves.
+pub fn promotion_census() {
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    static LAST: Mutex<Option<pagetables::PromotionCensus>> = Mutex::new(None);
+    if !TICK.fetch_add(1, Ordering::Relaxed).is_multiple_of(16) {
+        return;
+    }
+
+    // Never take a per-object lock while holding the global map lock -- see `scan_deleted` for what
+    // that deadlocks against.
+    let objects = obj_manager()
+        .map
+        .lock()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut census = pagetables::PromotionCensus::default();
+    for obj in objects {
+        obj.lock_page_tables().promotion_census(&mut census);
+    }
+
+    let mut last = LAST.lock();
+    if *last == Some(census) {
+        return;
+    }
+    *last = Some(census);
+    // Reported against the allocator's own used-page count, because the region counts are only
+    // believable if the memory they claim exists: a census asserting more pages mapped into objects
+    // than the machine has allocated is measuring something other than what it says.
+    let mut mem = twizzler_abi::syscall::MemoryStats::default();
+    crate::memory::frame::fill_stats(&mut mem);
+    let free = mem
+        .levels()
+        .iter()
+        .map(|level| level.free_pages * (level.page_size / FRAME_SIZE))
+        .sum::<usize>();
+    log::info!(
+        "PROMOTE: {} objects; regions: {} large, {} promotable, {} shared, {} full-but-unaligned, {} partial ({} pages), {} region-0; {} pages in objects, {} of {} used",
+        census.objects,
+        census.large,
+        census.promotable,
+        census.shared,
+        census.unaligned,
+        census.partial,
+        census.partial_pages,
+        census.region0,
+        census.pages(),
+        mem.total_pages.saturating_sub(free),
+        mem.total_pages,
+    );
 }
 
 pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {

@@ -128,8 +128,8 @@ fn client_thread(client: Arc<Client>) {
             let packet = rx.packet;
             rx.consume(|buf| {
                 if false {
-                    let f = EthernetFrame::new_unchecked(&mut *buf);
-                    let pp = PrettyPrinter::<EthernetFrame<&mut [u8]>>::print(&f);
+                    let f = EthernetFrame::new_unchecked(&*buf);
+                    let pp = PrettyPrinter::<EthernetFrame<&[u8]>>::print(&f);
                     eprintln!("client thread got {}", pp);
                 }
                 let dest = classify(buf, &local_macs);

@@ -34,8 +34,12 @@ pub fn read_object(obj: &ObjectRef) -> Vec<u8> {
     let mut offset = PageNumber::base_page().as_byte_offset();
     let mut tree = obj.lock_page_tables();
     while let Some(frame) = tree.get_frame(offset as u64) {
-        v.extend_from_slice(frame.as_byte_slice());
-        offset += frame.size();
+        // A large frame backs the whole 2 MiB region, so its byte slice starts at the region base
+        // rather than at `offset` -- and the first step here starts one page in, past the null
+        // page.
+        let po = offset % frame.size();
+        v.extend_from_slice(&frame.as_byte_slice()[po..]);
+        offset += frame.size() - po;
     }
     v
 }

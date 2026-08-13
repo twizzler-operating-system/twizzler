@@ -12,5 +12,6 @@ twizzler = { workspace = true }
 twizzler-abi = { path = "../../twizzler-abi" }
 tracing = { workspace = true }
 bitflags = "2"
+lru = { workspace = true }
 pager-dynamic = { path = "../../pager/pager-dynamic" }
 libc = "*"

@@ -50,6 +50,9 @@ impl NsNode {
         link_name: Option<L>,
     ) -> Result<Self> {
         let name = name.as_ref().as_os_str().as_encoded_bytes();
+        if name.len() > MAX_KEY_SIZE {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
         Ok(if let Some(link_name) = link_name {
             let lname = link_name.as_ref().as_os_str().as_encoded_bytes();
             if lname.len() + name.len() > MAX_KEY_SIZE {
@@ -129,6 +132,27 @@ mod nsidstats {
     }
 }
 
+/// The name `remove`/`rename` unlinks, taken from the request path rather than from the node the
+/// walk landed on.
+///
+/// The two differ for a path whose last component is not a plain name: "foo/.." resolves to the
+/// node for "foo" *as seen from its parent*, so unlinking by the resolved node's name deletes
+/// "foo" itself, and "." resolves to a namespace's own self-entry, which is written once at
+/// creation and never restored. Both are `EINVAL` under POSIX, and so are they here.
+fn unlink_name(path: &Path) -> Result<&str> {
+    // `components` folds a trailing "." away ("foo/." -> "foo"), so that one has to be caught on
+    // the raw path; every other non-name ending survives as a non-Normal final component.
+    if path.as_os_str().as_encoded_bytes().ends_with(b"/.") {
+        return Err(ArgumentError::InvalidArgument.into());
+    }
+    match path.components().next_back() {
+        Some(Component::Normal(name)) => name
+            .to_str()
+            .ok_or_else(|| ArgumentError::InvalidArgument.into()),
+        _ => Err(ArgumentError::InvalidArgument.into()),
+    }
+}
+
 #[derive(Clone)]
 struct ParentInfo {
     ns: Arc<dyn Namespace>,
@@ -151,7 +175,13 @@ trait Namespace {
 
     fn find(&self, name: &str) -> Option<NsNode>;
 
-    fn insert(&self, node: NsNode) -> Option<NsNode>;
+    /// Bind `node`, failing with `AlreadyExists` if the name is taken. Atomic with respect to
+    /// other operations on the same namespace *object*, which is not the same thing as on the same
+    /// `Namespace` value -- see `nsobj::OBJ_LOCKS`.
+    fn insert(&self, node: NsNode) -> Result<()>;
+
+    /// Bind `node`, evicting any entry of the same name. Atomic in the same sense as `insert`.
+    fn replace(&self, node: NsNode) -> Result<()>;
 
     fn remove(&self, name: &str) -> Option<NsNode>;
 
@@ -186,14 +216,15 @@ impl NameStore {
             dataroot: 0.into(),
         };
         this.nameroot
-            .insert(NsNode::ns("ext", NSID_EXTERNAL).unwrap());
+            .insert(NsNode::ns("ext", NSID_EXTERNAL).unwrap())
+            .unwrap();
         this
     }
 
     // Loads in an existing object store from an Object ID
     pub fn new_with(id: ObjID) -> Result<NameStore> {
         let mut this = Self::new();
-        this.nameroot.insert(NsNode::ns("data", id).unwrap());
+        this.nameroot.insert(NsNode::ns("data", id)?)?;
         this.dataroot = id;
         tracing::debug!(
             "new_with: data={}, data={:?}, root={}",
@@ -360,6 +391,11 @@ impl NameSession<'_> {
                                 lcont = Some(lc);
                             }
                             if !is_last {
+                                if thisnode.kind != NsNodeKind::Namespace {
+                                    return Err(NamingError::WrongNameKind.into());
+                                }
+                                // Parent is where the *target* was found, not where the link was:
+                                // a later ".." has to walk the resolved path back up.
                                 namespace = self.open_namespace(
                                     thisnode.id,
                                     lcont.as_ref().unwrap().persist(),
@@ -370,8 +406,10 @@ impl NameSession<'_> {
                                 )?;
                             }
                         }
-                    }
-                    if !is_last && thisnode.kind == NsNodeKind::Namespace {
+                    } else if !is_last {
+                        if thisnode.kind != NsNodeKind::Namespace {
+                            return Err(NamingError::WrongNameKind.into());
+                        }
                         let parent_info = ParentInfo::new(namespace, thisnode.name()?);
                         namespace = self.open_namespace(
                             thisnode.id,
@@ -419,8 +457,7 @@ impl NameSession<'_> {
                 name.display().to_string(),
             )),
         )?;
-        container.insert(NsNode::ns(name, ns.id())?);
-        Ok(())
+        container.insert(NsNode::ns(name, ns.id())?)
     }
 
     pub fn put<P: AsRef<Path>>(&self, name: P, id: ObjID) -> Result<()> {
@@ -430,8 +467,7 @@ impl NameSession<'_> {
             return Err(NamingError::AlreadyExists.into());
         };
 
-        container.insert(NsNode::obj(name, id)?);
-        Ok(())
+        container.insert(NsNode::obj(name, id)?)
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P, flags: GetFlags) -> Result<NsNode> {
@@ -518,26 +554,36 @@ impl NameSession<'_> {
     }
 
     pub fn remove<P: AsRef<Path>>(&self, name: P) -> Result<()> {
-        let (node, container) = self.namei_exist(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
+        let unlink = unlink_name(name.as_ref())?;
+        let (_node, container) = self.namei_exist(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
         container
-            .remove(node.name()?)
+            .remove(unlink)
             .map(|_| ())
             .ok_or(NamingError::NotFound.into())
     }
 
     pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
         tracing::debug!("rename: {:?} to {:?}", old.as_ref(), new.as_ref());
+        let old_name = unlink_name(old.as_ref())?;
+        let new_name = unlink_name(new.as_ref())?;
+
         // Look up the old entry (don't follow symlinks — we're moving the entry itself)
         let (old_node, old_container) =
             self.namei_exist(None, &old, Self::MAX_SYMLINK_DEREF, false)?;
 
-        let (_new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
-        let new_name = new
-            .as_ref()
-            .file_name()
-            .ok_or(ArgumentError::InvalidArgument)?
-            .to_str()
-            .ok_or(ArgumentError::InvalidArgument)?;
+        let (new_node, new_container) = self.namei(None, &new, Self::MAX_SYMLINK_DEREF, false)?;
+
+        // Source and destination denote the same entry: the replace-then-remove below would remove
+        // the copy it just made and report success, so there is nothing to do but say so.
+        if old_container.id() == new_container.id() && old_name == new_name {
+            return Ok(());
+        }
+
+        // Never clobber a namespace, empty or not. Eviction would orphan everything under it --
+        // there is no recursive delete here -- and nothing reclaims the namespace object itself.
+        if new_node.is_ok_and(|n| n.kind == NsNodeKind::Namespace) {
+            return Err(NamingError::AlreadyExists.into());
+        }
 
         // Create new entry preserving the old node's type and data
         let new_entry = if old_node.kind == NsNodeKind::SymLink {
@@ -557,10 +603,9 @@ impl NameSession<'_> {
             new_container.id()
         );
         // Insert at new location, then remove from old location
-        let _ = new_container.remove(new_name);
-        new_container.insert(new_entry);
+        new_container.replace(new_entry)?;
         old_container
-            .remove(old_node.name()?)
+            .remove(old_name)
             .map(|_| ())
             .ok_or(NamingError::NotFound.into())
     }
@@ -571,8 +616,7 @@ impl NameSession<'_> {
             return Err(NamingError::AlreadyExists.into());
         };
 
-        container.insert(NsNode::symlink(name, link)?);
-        Ok(())
+        container.insert(NsNode::symlink(name, link)?)
     }
 
     pub fn readlink<P: AsRef<Path>>(&self, name: P) -> Result<PathBuf> {

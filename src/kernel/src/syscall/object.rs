@@ -102,6 +102,10 @@ pub fn sys_object_create(
     };
     let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
     let obj = Arc::new(Object::new(id, create.lt, ties));
+    // Nothing is on the store until the first sync, whatever sources were copied in here -- those
+    // land in pages, not on disk. Recording zero rather than leaving it unknown is what lets the
+    // fault path fill a brand-new object without a single pager round trip.
+    obj.set_known_len(0);
     // We just derived the ID from these fields, so the check `check_id` would do is already done.
     // Recording it now saves the first mapper of this object a `read_meta`, which for a
     // pager-backed object is a page-in (mapperf.md).
@@ -242,6 +246,9 @@ pub fn sys_object_map(
             }
         },
     };
+    // Before the mapping, not after: the point is to have the pager working while the rest of the
+    // syscall runs. Submission is a lock and a queue push; nothing here waits.
+    crate::pager::prefetch_on_map(&obj);
     // TODO
     let t_map = crate::instant::Instant::now();
     let _res =
@@ -423,7 +430,9 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
                     guard,
                     &[(PageNumber::from_offset(0), MAX_SIZE / PageNumber::PAGE_SIZE)],
                     PagerFlags::PREFETCH,
+                    true,
                     &mut false,
+                    None,
                 )?;
             }
             let tree = obj.lock_page_tables();
