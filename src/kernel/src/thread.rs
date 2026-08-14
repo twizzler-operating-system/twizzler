@@ -1,6 +1,5 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
-    alloc::Layout,
     cell::UnsafeCell,
     fmt::Debug,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
@@ -31,7 +30,6 @@ use crate::{
     },
     obj::{ThreadSleepLinker, control::ControlObjectCacher},
     processor::{
-        KERNEL_STACK_SIZE,
         ipi::ipi_exec,
         mp::get_processor,
         sched::{SchedFlags, remove_thread, schedule, schedule_resched, with_all_threads},
@@ -43,6 +41,7 @@ use crate::{
     spinlock::Spinlock,
     thread::{
         flags::THREAD_MUST_EXIT,
+        kstack::KernelStack,
         locktrack::{LockTracker, deregister_lock_tracker, register_lock_tracker},
         sctx::{SctxCache, Switch},
     },
@@ -54,6 +53,7 @@ use crate::{
 
 pub mod entry;
 mod flags;
+pub mod kstack;
 pub mod locktrack;
 pub mod priority;
 mod sctx;
@@ -61,57 +61,6 @@ pub mod suspend;
 pub mod time;
 
 pub use flags::{enter_kernel, exit_kernel};
-
-/// Temporary instrumentation: a cross-compartment gate entry is now a single `SetActiveSctxId`
-/// syscall, so what [Thread::switch_sctx] costs is most of what a gate call costs. Separates the
-/// three outcomes, since they differ by an order of magnitude.
-mod switchstats {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static FAST_N: AtomicU64 = AtomicU64::new(0);
-    static FAST_NS: AtomicU64 = AtomicU64::new(0);
-    static SLOW_N: AtomicU64 = AtomicU64::new(0);
-    static SLOW_NS: AtomicU64 = AtomicU64::new(0);
-    static NONE_N: AtomicU64 = AtomicU64::new(0);
-    /// Cost of one back-to-back pair of `Instant::now()` calls, so the figures above can be read
-    /// against the floor of the instrument measuring them.
-    static CLOCK_NS: AtomicU64 = AtomicU64::new(0);
-
-    pub fn fast(ns: u64) {
-        FAST_NS.fetch_add(ns, Ordering::Relaxed);
-        report(FAST_N.fetch_add(1, Ordering::Relaxed) + 1);
-    }
-
-    pub fn slow(ns: u64) {
-        SLOW_NS.fetch_add(ns, Ordering::Relaxed);
-        SLOW_N.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn no_switch() {
-        NONE_N.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn report(n: u64) {
-        let cal = crate::instant::Instant::now();
-        let clock = CLOCK_NS.fetch_add(
-            (crate::instant::Instant::now() - cal).as_nanos() as u64,
-            Ordering::Relaxed,
-        ) + 1;
-        if !n.is_power_of_two() {
-            return;
-        }
-        let slow_n = SLOW_N.load(Ordering::Relaxed).max(1);
-        crate::logln!(
-            "SCTXSWITCHSTATS {} fast @ {} ns, {} slow @ {} ns, {} no-switch, clock read {} ns",
-            n,
-            FAST_NS.load(Ordering::Relaxed) / n,
-            SLOW_N.load(Ordering::Relaxed),
-            SLOW_NS.load(Ordering::Relaxed) / slow_n,
-            NONE_N.load(Ordering::Relaxed),
-            clock / n,
-        );
-    }
-}
 
 pub struct Thread {
     pub arch: crate::arch::thread::ArchThread,
@@ -136,7 +85,7 @@ pub struct Thread {
     sync_sleep_gen: AtomicU64,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
-    pub kernel_stack: Box<[u8; KERNEL_STACK_SIZE]>,
+    pub kernel_stack: KernelStack,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
@@ -340,11 +289,8 @@ impl Thread {
         spawn_args: Option<ThreadSpawnArgs>,
         priority: Priority,
     ) -> Self {
-        /* TODO: dedicated kernel stack allocator, with guard page support */
-        let kernel_stack = unsafe {
-            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-            alloc::alloc::alloc_zeroed(layout)
-        };
+        /* TODO: guard page support */
+        let kernel_stack = KernelStack::new();
         let id = ID_COUNTER.next();
         let lock_tracker = Arc::new(LockTracker::new(id.value()));
         let lock_tracker_index = register_lock_tracker(lock_tracker.clone());
@@ -354,7 +300,7 @@ impl Thread {
             stable_priority: AtomicU32::new(priority.raw()),
             id,
             flags: AtomicU32::new(0),
-            kernel_stack: unsafe { Box::from_raw(core::intrinsics::transmute(kernel_stack)) },
+            kernel_stack,
             critical_counter: AtomicU64::new(0),
             critical_origin: AtomicUsize::new(0),
             switch_lock: AtomicU64::new(0),
@@ -419,7 +365,6 @@ impl Thread {
     /// switch alone whether it may use TLS immediately or must build a region first -- userspace
     /// cannot test for a zero thread pointer, because the read that would test it is the fault.
     pub fn switch_sctx(&self, id: ObjID) -> (SwitchResult, u64) {
-        let t0 = crate::instant::Instant::now();
         // One lock acquisition covers the whole fast path: reading the outgoing context, saving
         // its thread pointer, finding the incoming one, and installing it as active.
         match self.sctx_cache.switch(id, self.get_tls()) {
@@ -427,7 +372,6 @@ impl Thread {
                 // Still load the page tables: being active in a context is not by itself proof
                 // that its root is in cr3.
                 self.memory_context.as_ref().map(|mc| mc.switch_to(id));
-                switchstats::no_switch();
                 (SwitchResult::NoSwitch, self.get_tls())
             }
             Switch::Hit(hit) => {
@@ -437,14 +381,9 @@ impl Thread {
                     // to the security context that keeps its registration alive across this call.
                     unsafe { mc.switch_to_target(&hit.target) };
                 }
-                switchstats::fast((crate::instant::Instant::now() - t0).as_nanos() as u64);
                 (SwitchResult::Switched, hit.tls)
             }
-            Switch::Miss { from } => {
-                let r = self.switch_sctx_slow(from, id);
-                switchstats::slow((crate::instant::Instant::now() - t0).as_nanos() as u64);
-                r
-            }
+            Switch::Miss { from } => self.switch_sctx_slow(from, id),
         }
     }
 

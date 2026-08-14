@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Barrier,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const BUF_BYTES: usize = 64 * 1024;
@@ -111,6 +111,256 @@ fn enum_phase(root: &str, nr_threads: usize) {
     );
 }
 
+/// Compare `Mutex` against `RwLock` under a read-mostly load, both from libstd.
+///
+/// **This phase does not measure contended lock cost, and no number it prints should be quoted as
+/// one.** It is kept because the shape of its output diagnoses *why* -- see the overlap ratio below
+/// -- and because that failure generalizes to any contention benchmark run in a guest. Read
+/// `stdperf.md` item 1 before using it for anything.
+///
+/// Two independent defects, both found only after its numbers had been published and retracted:
+///
+/// - Each thread times its own loop and the phase reports the mean of those, which cannot
+///   distinguish N threads contending from N threads taking turns. Measured overlap is 1.5-3.0x of
+///   `nr_threads`, so every thread spends much of its loop on an *uncontended* lock and the mean
+///   says so, confidently and wrongly.
+/// - The window that was meant to correct this is timed by the parent, which with `nr_threads ==
+///   vCPUs` can be descheduled until the workers finish. One run reported a window of 0 ns.
+///
+/// Fixing it properly means fewer workers than the guest has vCPUs, or computing the aggregate
+/// inside the workers rather than around them.
+///
+/// The question it was built for is still open: `futex_wake` now reports a real wake count, so
+/// libstd's `RwLock` no longer wakes every reader on a write-unlock it could not confirm, and
+/// nothing has measured what that changed.
+fn lock_phase(nr_threads: usize) {
+    use std::sync::{Mutex, RwLock};
+
+    const ITERS: u32 = 20_000;
+    /// One in this many acquisitions is a write. Read-mostly is the case rwlocks exist for.
+    const WRITE_EVERY: u32 = 16;
+
+    let mx = Arc::new((Mutex::new(0u64), RwLock::new(0u64)));
+    // nr_threads + 1: the parent joins the barrier so it can time the whole window from one clock.
+    let barrier = Arc::new(Barrier::new(nr_threads + 1));
+
+    let run = |use_rw: bool| {
+        let mut handles = Vec::new();
+        for _ in 0..nr_threads {
+            let mx = mx.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let t = Instant::now();
+                for i in 0..ITERS {
+                    let write = i % WRITE_EVERY == 0;
+                    if use_rw {
+                        if write {
+                            *mx.1.write().unwrap() += 1;
+                        } else {
+                            std::hint::black_box(*mx.1.read().unwrap());
+                        }
+                    } else {
+                        let mut g = mx.0.lock().unwrap();
+                        if write {
+                            *g += 1;
+                        } else {
+                            std::hint::black_box(*g);
+                        }
+                    }
+                }
+                t.elapsed() / ITERS
+            }));
+        }
+        barrier.wait();
+        let window = Instant::now();
+        let mut v: Vec<Duration> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+        let window = window.elapsed() / ITERS;
+        v.sort();
+        let mean = v
+            .iter()
+            .sum::<Duration>()
+            .checked_div(v.len() as u32)
+            .unwrap_or_default();
+        (mean, window, v)
+    };
+
+    // Report the window alongside the per-thread mean, because the two together are the only way
+    // to tell contention from its opposite. Each thread times its *own* loop, so if the threads
+    // serialize instead of overlapping, every one of them measures an *uncontended* lock and the
+    // mean reports that -- which is how this phase once claimed a 4-thread contended acquire cost
+    // 19 ns. Under full overlap window == mean; under full serialization window == mean x threads.
+    // Quote the ratio, not the mean.
+    let (m_mean, m_window, m_all) = run(false);
+    let (r_mean, r_window, r_all) = run(true);
+    let ratio = |w: Duration, m: Duration| {
+        if m.as_nanos() == 0 {
+            0.0
+        } else {
+            w.as_nanos() as f64 / m.as_nanos() as f64
+        }
+    };
+    println!(
+        "pagepar: LOCK {} threads x {} acquires (1 write in {}): \
+         mutex mean {} ns window {} ns (overlap {:.2}x of {}), \
+         rwlock mean {} ns window {} ns (overlap {:.2}x)",
+        nr_threads,
+        ITERS,
+        WRITE_EVERY,
+        m_mean.as_nanos(),
+        m_window.as_nanos(),
+        ratio(m_window, m_mean),
+        nr_threads,
+        r_mean.as_nanos(),
+        r_window.as_nanos(),
+        ratio(r_window, r_mean),
+    );
+    println!(
+        "pagepar: LOCK per-thread mutex {:?} rwlock {:?}",
+        m_all.iter().map(|d| d.as_nanos()).collect::<Vec<_>>(),
+        r_all.iter().map(|d| d.as_nanos()).collect::<Vec<_>>(),
+    );
+}
+
+/// Time a small warm `read` on an already-open file, alone.
+///
+/// Every `read`/`write`/`seek` in the process goes through the runtime's one global fd table, so
+/// this asks what a read costs when the pages are already resident and nothing is being faulted --
+/// i.e. the fd path itself rather than the pager. Each thread has its own file and re-reads the
+/// first page of it, so the only thing the threads share is that table.
+fn io_phase(files: &[PathBuf], nr_threads: usize) {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const ITERS: u32 = 2048;
+    const READ_BYTES: usize = 4096;
+
+    fn read_loop(path: &PathBuf) -> Option<Duration> {
+        let mut f = File::open(path).ok()?;
+        let mut buf = [0u8; READ_BYTES];
+        // Warm: first touch of each page is a fault, which is not what this measures.
+        for _ in 0..64 {
+            f.seek(SeekFrom::Start(0)).ok()?;
+            f.read(&mut buf).ok()?;
+        }
+        let t = Instant::now();
+        for _ in 0..ITERS {
+            f.seek(SeekFrom::Start(0)).ok()?;
+            std::hint::black_box(f.read(&mut buf).ok()?);
+        }
+        Some(t.elapsed() / ITERS)
+    }
+
+    let Some(solo) = files.first().and_then(read_loop) else {
+        println!("pagepar: IO no file readable, skipping");
+        return;
+    };
+
+    let barrier = Arc::new(Barrier::new(nr_threads));
+    let mut handles = Vec::new();
+    for tid in 0..nr_threads {
+        let barrier = barrier.clone();
+        // Distinct files, so the contention measured is the fd table and not one file's state.
+        let path = files[tid % files.len()].clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            read_loop(&path)
+        }));
+    }
+    let par: Vec<Duration> = handles
+        .into_iter()
+        .filter_map(|h| h.join().ok().flatten())
+        .collect();
+    let par_max = par.iter().max().copied().unwrap_or_default();
+    let par_mean = par
+        .iter()
+        .sum::<Duration>()
+        .checked_div(par.len() as u32)
+        .unwrap_or_default();
+
+    println!(
+        "pagepar: IO {}-byte read+seek x {} iters: solo {} ns, {} threads mean {} ns max {} ns",
+        READ_BYTES,
+        ITERS,
+        solo.as_nanos(),
+        nr_threads,
+        par_mean.as_nanos(),
+        par_max.as_nanos(),
+    );
+}
+
+/// Time a warm naming lookup with nothing else attached to it.
+///
+/// `twz_rt_resolve_name` is one naming `get` gate call and nothing more -- no object map, no
+/// meta-page fault, none of the rest of what `File::open` does. It is therefore the only figure in
+/// this program that is purely the naming service: client wrapper, compartment transition, and
+/// `namei`. Read it, not the open phase, when the question is whether naming got faster.
+///
+/// Paths are cycled rather than repeated, so a per-path memo in the client would show up as an
+/// implausible number rather than as a win.
+fn name_phase(files: &[PathBuf], nr_threads: usize) {
+    const ITERS: u32 = 512;
+    const NR_PATHS: usize = 16;
+
+    let paths: Vec<String> = files
+        .iter()
+        .take(NR_PATHS)
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+
+    fn resolve_loop(paths: &[String]) -> (Duration, u32) {
+        let mut ok = 0;
+        let t = Instant::now();
+        for i in 0..ITERS {
+            let p = &paths[i as usize % paths.len()];
+            if twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), p).is_ok() {
+                ok += 1;
+            }
+        }
+        (t.elapsed() / ITERS, ok)
+    }
+
+    // Warm the server's caches first; a cold external-namespace lookup is a pager round trip and
+    // has nothing to do with the steady-state cost this measures.
+    let (_, ok) = resolve_loop(&paths);
+    if ok == 0 {
+        println!("pagepar: NAME no path resolved, skipping");
+        return;
+    }
+    let (warm, _) = resolve_loop(&paths);
+
+    let barrier = Arc::new(Barrier::new(nr_threads));
+    let paths = Arc::new(paths);
+    let mut handles = Vec::new();
+    for _ in 0..nr_threads {
+        let barrier = barrier.clone();
+        let paths = paths.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            resolve_loop(&paths).0
+        }));
+    }
+    let par: Vec<Duration> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+    let par_max = par.iter().max().copied().unwrap_or_default();
+    let par_mean = par
+        .iter()
+        .sum::<Duration>()
+        .checked_div(par.len() as u32)
+        .unwrap_or_default();
+
+    println!(
+        "pagepar: NAME {} paths x {} iters: warm {} ns, {} threads mean {} ns max {} ns",
+        paths.len(),
+        ITERS,
+        warm.as_nanos(),
+        nr_threads,
+        par_mean.as_nanos(),
+        par_max.as_nanos(),
+    );
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let root = args.next().unwrap_or_else(|| "/sysroot/lib".to_string());
@@ -157,13 +407,28 @@ fn main() {
         nr_threads
     );
 
+    name_phase(&files, nr_threads);
+    io_phase(&files, nr_threads);
+    lock_phase(nr_threads);
+
     // Striped, not a shared cursor. A cursor looks fairer but is not: thread spawn is slow enough
     // in the guest that the first threads to start drain it before the last ones exist, and a
     // measurement of concurrency taken with two of four threads running is worthless. Striping
-    // hands each thread its share up front, and the barrier makes them start together -- which is
-    // the entire point of the workload.
+    // hands each thread its share up front, and the barriers make each phase start together.
+    //
+    // Phases are separated rather than interleaved because open and read have nothing in common.
+    // Interleaved, every per-open figure was a mean over a distribution that turned out to be 25%
+    // cold calls carrying 99% of the time, and ~60% of the "read phase" was actually thread spawn
+    // -- neither of which is visible until the phases are cut apart. Each boundary is stamped in
+    // absolute monotonic microseconds, the same base the runtime's counter records carry, so a
+    // record can be attributed to the phase it happened in.
+    //
+    // The cost of this shape is that every file stays open across the read phase: one mapped
+    // object per file, against 2^17 address-space slots, so a few thousand files is fine.
     let files = Arc::new(files);
-    let barrier = Arc::new(Barrier::new(nr_threads));
+    // nr_threads + 1: the main thread joins each barrier so it can stamp the boundary from one
+    // clock, rather than each worker reporting its own idea of when a phase began.
+    let barrier = Arc::new(Barrier::new(nr_threads + 1));
     let total_bytes = Arc::new(AtomicU64::new(0));
     let total_files = Arc::new(AtomicU64::new(0));
 
@@ -173,7 +438,16 @@ fn main() {
     // separates those two worlds.
     let faults_before = twizzler_abi::syscall::sys_memory_stats();
 
+    let mark = |name: &str| {
+        println!(
+            "pagepar: PHASE {} {} us",
+            name,
+            twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_micros()
+        );
+    };
+
     let start = Instant::now();
+    mark("spawn start");
     let mut handles = Vec::new();
     for tid in 0..nr_threads {
         let files = files.clone();
@@ -183,27 +457,33 @@ fn main() {
         handles.push(std::thread::spawn(move || {
             let mut buf = vec![0u8; BUF_BYTES];
             let mut bytes = 0u64;
-            let mut count = 0u64;
-            // Split open from read. `RawFile::read` is a memcpy out of a mapped object, so if the
-            // wall clock is not in the copy or in faults it has to be in the open -- a naming gate
-            // call plus a monitor map plus the meta-page fault, none of which is paging.
-            let mut open_ns = 0u128;
+            // Per-open times, kept individually rather than summed: the first open on a thread is
+            // its first entry into the naming and monitor compartments and costs milliseconds,
+            // while the rest cost tens of microseconds. A sum reports neither.
+            let mut opens = Vec::new();
             let mut read_ns = 0u128;
+
+            // Spawned. Everything above this is thread startup, which the spawn phase measures.
             barrier.wait();
+
+            // --- open phase ---
+            let mut open_files = Vec::new();
             let mut idx = tid;
-            loop {
-                let Some(path) = files.get(idx) else {
-                    break;
-                };
+            while let Some(path) = files.get(idx) {
                 idx += nr_threads;
                 let t0 = Instant::now();
                 let opened = File::open(path);
-                open_ns += t0.elapsed().as_nanos();
-                let Ok(mut file) = opened else {
-                    continue;
-                };
-                count += 1;
-                let t1 = Instant::now();
+                opens.push(t0.elapsed().as_nanos());
+                if let Ok(file) = opened {
+                    open_files.push(file);
+                }
+            }
+            barrier.wait();
+
+            // --- read phase ---
+            let count = open_files.len() as u64;
+            let t1 = Instant::now();
+            for file in open_files.iter_mut() {
                 loop {
                     match file.read(&mut buf) {
                         Ok(0) => break,
@@ -211,24 +491,46 @@ fn main() {
                         Err(_) => break,
                     }
                 }
-                read_ns += t1.elapsed().as_nanos();
             }
+            read_ns += t1.elapsed().as_nanos();
+            barrier.wait();
+
             total_bytes.fetch_add(bytes, Ordering::Relaxed);
             total_files.fetch_add(count, Ordering::Relaxed);
-            (count, bytes, open_ns, read_ns)
+            (count, bytes, opens, read_ns)
         }));
     }
 
+    // Each of these releases only once every worker has arrived, so the stamp either side of it
+    // bounds a phase in which every thread was inside that phase.
+    barrier.wait();
+    mark("spawn end");
+    mark("open start");
+    barrier.wait();
+    mark("open end");
+    mark("read start");
+    barrier.wait();
+    mark("read end");
+
     for (i, h) in handles.into_iter().enumerate() {
         match h.join() {
-            Ok((count, bytes, open_ns, read_ns)) => println!(
-                "pagepar: thread {} read {} files, {} KB; open {} ms, read {} ms",
-                i,
-                count,
-                bytes / 1024,
-                open_ns / 1_000_000,
-                read_ns / 1_000_000
-            ),
+            Ok((count, bytes, opens, read_ns)) => {
+                let first = opens.first().copied().unwrap_or(0);
+                let rest: u128 = opens.iter().skip(1).sum();
+                let nrest = opens.len().saturating_sub(1).max(1) as u128;
+                println!(
+                    "pagepar: thread {} read {} files, {} KB; open first {} us, rest {} us over {} \
+                     ({} us mean); read {} ms",
+                    i,
+                    count,
+                    bytes / 1024,
+                    first / 1000,
+                    rest / 1000,
+                    opens.len().saturating_sub(1),
+                    rest / nrest / 1000,
+                    read_ns / 1_000_000
+                );
+            }
             Err(_) => println!("pagepar: thread {} panicked", i),
         }
     }

@@ -19,6 +19,7 @@ use crate::{
     mutex::Mutex,
     obj::{LookupFlags, LookupResult, lookup_object},
     once::{Once, OnceWait},
+    spinlock::Spinlock,
 };
 
 #[derive(Clone)]
@@ -42,7 +43,14 @@ pub struct SecCtxMgr {
 /// A single security context.
 pub struct SecurityContext {
     kobj: Option<KernelObject<SecCtxBase>>,
-    cache: Mutex<BTreeMap<ObjID, PermsInfo>>,
+    /// Memoized `lookup` answers.
+    ///
+    /// A `Spinlock`, not a `Mutex`: the page-fault path reads this once per user fault, and a
+    /// sleeping-mutex acquire/release pair around a `BTreeMap::get` is most of what the security
+    /// stage costs. The miss arm below does all of its real work -- object lookups, kernel object
+    /// mapping -- before touching this, so the only thing held under it is the map operation
+    /// itself.
+    cache: Spinlock<BTreeMap<ObjID, PermsInfo>>,
     attached_count: AtomicUsize,
     active_count: AtomicUsize,
 }
@@ -237,7 +245,7 @@ impl SecurityContext {
     pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
         Self {
             kobj,
-            cache: Default::default(),
+            cache: Spinlock::new(BTreeMap::new()),
             attached_count: AtomicUsize::new(0),
             active_count: AtomicUsize::new(0),
         }
@@ -362,12 +370,26 @@ fn global_secctx_mgr() -> &'static GlobalSecCtxMgr {
 }
 
 pub fn get_sctx_stats() -> SctxStats {
-    let global = global_secctx_mgr().contexts.lock();
+    // Derived here rather than maintained by every context switch. Keeping a per-context counter
+    // cost two SeqCst RMWs on a shared cache line per switch -- plus the `Weak::upgrade` of the
+    // outgoing context that existed solely to decrement it -- to feed this one stats call. Asking
+    // the threads instead puts the cost where it is paid once, and this is the only reader.
+    //
+    // Counted before the global lock is taken: this walks the thread list and each thread's own
+    // sctx-cache lock, and nothing else in the system takes those in that order.
     let mut active_count = 0;
+    crate::processor::sched::with_each_thread(|t| {
+        if t.active_sctx_id() != KERNEL_SCTX {
+            active_count += 1;
+        }
+    });
+    let global = global_secctx_mgr().contexts.lock();
     let mut attached_count = 0;
     for (_, ctx) in global.iter() {
-        active_count += ctx.active_count();
         attached_count += ctx.attached_count();
+        // The counter arm of the A/B in `thread::sctx`; when it is maintained it is authoritative
+        // and the thread walk above is the approximation, not the other way round.
+        active_count = active_count.max(ctx.active_count());
     }
     SctxStats {
         nr_sctx: global.len(),

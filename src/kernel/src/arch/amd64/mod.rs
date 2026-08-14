@@ -78,7 +78,7 @@ pub unsafe fn jump_to_user(
                 .arch
                 .user_fs
                 .load(Ordering::SeqCst);
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+            crate::arch::amd64::processor::write_fs_base(user_fs);
         }
         syscall::return_to_user(&ctx as *const syscall::X86SyscallContext);
     }

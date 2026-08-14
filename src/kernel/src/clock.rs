@@ -82,6 +82,14 @@ const NR_WINDOW_ENTRIES: usize = 32;
 #[derive(Debug)]
 struct TimeoutQueue {
     queues: [heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES>; NR_WINDOWS],
+    /// One bit per window, set while that window has entries.
+    ///
+    /// [`TimeoutQueue::get_next_ticks`] asks "which is the next non-empty window", and used to
+    /// answer it by reading `is_empty()` on up to 1023 of the `queues` themselves. Each window is
+    /// a `heapless::Vec` of 32 entries, so consecutive windows are ~1.3 KiB apart: that scan
+    /// touched 1023 distinct cache lines spread over 1.3 MiB, on **every hardtick**. This
+    /// bitmap is 128 bytes -- two cache lines -- and answers the same question.
+    occupied: [u64; NR_WINDOWS / 64],
     current: usize,
     next_wake: usize,
     soft_current: usize,
@@ -109,6 +117,7 @@ impl TimeoutQueue {
         const INIT: heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES> = heapless::Vec::new();
         Self {
             queues: [INIT; NR_WINDOWS],
+            occupied: [0; NR_WINDOWS / 64],
             current: 0,
             next_wake: 0,
             soft_current: 0,
@@ -141,7 +150,9 @@ impl TimeoutQueue {
         let mut wakeup = false;
         for i in 0..(ticks + 1) {
             let window = (self.current + i) % NR_WINDOWS;
-            if !self.queues[window].is_empty() {
+            // Via `occupied` rather than the queue, so the tick path touches none of the 1.3 MiB
+            // `queues` array.
+            if self.occupied[window / 64] & (1u64 << (window % 64)) != 0 {
                 wakeup = true;
                 break;
             }
@@ -152,10 +163,25 @@ impl TimeoutQueue {
         }
     }
 
+    /// Bring `window`'s bit in [`TimeoutQueue::occupied`] back in line with its queue. Call after
+    /// every mutation of `queues[window]`.
+    fn sync_occupied(&mut self, window: usize) {
+        let (word, bit) = (window / 64, 1u64 << (window % 64));
+        if self.queues[window].is_empty() {
+            self.occupied[word] &= !bit;
+        } else {
+            self.occupied[word] |= bit;
+        }
+    }
+
     fn get_next_ticks(&self) -> u64 {
+        // Nothing pending at all is the common case on a tick, and it costs 16 loads to say so.
+        if self.occupied.iter().all(|word| *word == 0) {
+            return NR_WINDOWS as u64;
+        }
         for i in 1..(NR_WINDOWS - 1) {
             let idx = (i + self.current) % NR_WINDOWS;
-            if !self.queues[idx].is_empty() {
+            if self.occupied[idx / 64] & (1u64 << (idx % 64)) != 0 {
                 return i as u64;
             }
         }
@@ -176,6 +202,7 @@ impl TimeoutQueue {
             log::warn!("timeout queue overflow");
             entry.call();
         }
+        self.sync_occupied(window);
         if expire_ticks < self.next_wake {
             // TODO: #41 signal CPU to wake up early.
         }
@@ -191,6 +218,7 @@ impl TimeoutQueue {
         {
             self.queues[key.window].swap_remove(pos);
         }
+        self.sync_occupied(key.window);
         self.release_key(key.key);
         // Did we remove anything?
         old_len != self.queues[key.window].len()
@@ -201,7 +229,9 @@ impl TimeoutQueue {
             let index = self.queues[window]
                 .iter()
                 .position(|x| x.is_ready(self.current as u64));
-            return index.map(|index| self.queues[window].swap_remove(index));
+            let entry = index.map(|index| self.queues[window].swap_remove(index));
+            self.sync_occupied(window);
+            return entry;
         }
         None
     }

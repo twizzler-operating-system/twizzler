@@ -1,4 +1,7 @@
-use core::mem::MaybeUninit;
+use core::{
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use object::{map_ctrl, object_ctrl};
 use twizzler_abi::{
@@ -27,9 +30,8 @@ use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     instant::Instant,
     memory::VirtAddr,
-    once::Once,
+    processor::mp::{current_processor, with_each_active_processor},
     random::getrandom,
-    spinlock::Spinlock,
     thread::current_thread_ref,
     time::{TICK_SOURCES, Ticks, TimeStatCollector},
     trace::{
@@ -322,6 +324,10 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             if context.arg0::<u64>() == 0x12345678 {
                 crate::thread::locktrack::diag::print_counters(true);
                 crate::memory::pagetables::print_switch_counters();
+                print_syscall_profile();
+                crate::memory::context::virtmem::fault::print_fault_profile();
+                crate::interrupt::print_interrupt_profile();
+                crate::pager::print_pager_profile();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
@@ -599,6 +605,33 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         }
     }
 }
+/// Whether syscall durations are being collected.
+///
+/// The clock reads that produce them are not free, and a boot makes ~150,000 syscalls, so timing
+/// every one of them to fill in statistics nobody has asked for is pure overhead. The test has to
+/// be cheaper than what it skips: one relaxed load of a static that is written approximately never,
+/// so it sits shared and clean in every cpu's L1.
+///
+/// Turned on by the first reader ([`get_syscall_stats`]) and by the syscall-exit trace point, so
+/// the very first `SysInfo` after boot reports counts with empty timings and every later one is
+/// populated.
+static TIMING_ON: AtomicBool = AtomicBool::new(SYSCALL_PROFILE);
+
+/// Collect the full per-syscall breakdown from boot -- timings on, `ThreadCtrl` split by command,
+/// `ThreadSync` split by op kind, and every count attributed to both the calling security context
+/// and the calling pc -- and dump it at `debug_shutdown`.
+///
+/// Off by default: it forces [`TIMING_ON`] and adds a lock-protected update per syscall, so the
+/// timings it reports are inflated by its own cost. It answers "what is this workload asking the
+/// kernel for, and from where", which is the question that found the address-space scan in
+/// `bootstrap` -- 88% of every boot's syscalls.
+pub const SYSCALL_PROFILE: bool = false;
+
+#[inline]
+fn timing_on() -> bool {
+    TIMING_ON.load(Ordering::Relaxed)
+}
+
 pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     let data = SyscallEntryEvent {
         ip: context.pc().raw(),
@@ -613,57 +646,288 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         ],
     };
     trace_syscall_entry(data);
-    let start = Instant::now();
+    let start = timing_on().then(Instant::now);
     do_syscall_entry(context);
     let (r1, r2) = context.get_return_values();
-    let end = Instant::now();
-    trace_syscall_exit(data, [r1, r2], (end - start).into());
+    let duration = start.map(|start| (Instant::now() - start).into());
+    trace_syscall_exit(data, [r1, r2], duration);
 }
 
-struct SyscallTracking {
+/// Per-syscall counts and timings.
+///
+/// Lives in [`crate::processor::Processor`], one per cpu. It used to be a single global behind a
+/// `Spinlock`, taken and released on **every syscall** -- and a boot makes ~150,000 of them, so
+/// every cpu in the system serialized on one lock and one cache line at every kernel exit. Nothing
+/// about the data needs to be global: it is summed on the read path, which runs when someone asks
+/// for `SysInfo`.
+pub struct SyscallTracking {
     count: usize,
     per_syscall_count: [usize; Syscall::NumSyscalls as usize],
     per_syscall_stats: [TimeStatCollector; Syscall::NumSyscalls as usize],
+    prof: SyscallProfile,
 }
 
-static SYSSTATS: Once<Spinlock<SyscallTracking>> = Once::new();
+/// Instrumentation half of [`SyscallTracking`], live only under [`SYSCALL_PROFILE`].
+pub struct SyscallProfile {
+    /// `ThreadCtrl` by command number.
+    thread_ctrl: [usize; NR_THREAD_CTRL],
+    /// `ThreadSync` ops, by kind, summed over calls.
+    sync_sleeps: usize,
+    sync_wakes: usize,
+    /// Calls carrying at least one sleep op, and the largest op array seen.
+    sync_sleeping_calls: usize,
+    sync_max_len: usize,
+    /// Per-security-context attribution, i.e. per compartment.
+    sctx: [(ObjID, [usize; Syscall::NumSyscalls as usize]); NR_SCTX_SLOTS],
+    /// Hottest call sites (userspace pc) per syscall.
+    sites: [[(u64, usize); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize],
+}
 
-fn get_sysstats() -> &'static Spinlock<SyscallTracking> {
-    SYSSTATS.call_once(|| {
-        Spinlock::new(SyscallTracking {
+const NR_THREAD_CTRL: usize = 24;
+const NR_SCTX_SLOTS: usize = 16;
+const NR_SITE_SLOTS: usize = 6;
+
+impl SyscallTracking {
+    pub fn new() -> Self {
+        Self {
             count: 0,
             per_syscall_count: [0; Syscall::NumSyscalls as usize],
             per_syscall_stats: core::array::from_fn(|_| TimeStatCollector::new()),
-        })
-    })
+            prof: SyscallProfile {
+                thread_ctrl: [0; NR_THREAD_CTRL],
+                sync_sleeps: 0,
+                sync_wakes: 0,
+                sync_sleeping_calls: 0,
+                sync_max_len: 0,
+                sctx: core::array::from_fn(|_| (ObjID::new(0), [0; Syscall::NumSyscalls as usize])),
+                sites: [[(0, 0); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize],
+            },
+        }
+    }
 }
 
-fn add_syscall_stat_sample(syscall: Syscall, duration: TimeSpan) {
-    let mut stats = get_sysstats().lock();
+impl SyscallProfile {
+    fn note(&mut self, entry: &SyscallEntryEvent, sctx: ObjID) {
+        let syscall: Syscall = entry.num;
+        match syscall {
+            Syscall::ThreadCtrl => {
+                let cmd = entry.args[2] as usize;
+                if cmd < NR_THREAD_CTRL {
+                    self.thread_ctrl[cmd] += 1;
+                }
+            }
+            // ThreadSync's op kinds are counted by the sync path itself (`note_thread_sync_ops`),
+            // which has the validated array; only the length is visible from here.
+            Syscall::ThreadSync => {
+                self.sync_max_len = self.sync_max_len.max(entry.args[1] as usize)
+            }
+            _ => {}
+        }
+        // First-come slots, so a caller that starts late can be missed; with six of them and this
+        // few distinct call sites per syscall, in practice they are not.
+        let sites = &mut self.sites[syscall as usize];
+        if let Some(site) = sites.iter_mut().find(|s| s.0 == entry.ip || s.1 == 0) {
+            site.0 = entry.ip;
+            site.1 += 1;
+        }
 
-    stats.per_syscall_stats[syscall as usize].add_sample(duration);
-    stats.per_syscall_count[syscall as usize] += 1;
-    stats.count += 1;
+        for slot in self.sctx.iter_mut() {
+            if slot.0 == sctx || slot.0.raw() == 0 {
+                slot.0 = sctx;
+                slot.1[syscall as usize] += 1;
+                return;
+            }
+        }
+    }
+}
+
+fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>) {
+    let syscall: Syscall = entry.num;
+    // Outside the lock: reading it takes one of its own, and it is only wanted for instrumentation.
+    let sctx = if SYSCALL_PROFILE {
+        current_thread_ref()
+            .map(|t| t.active_sctx_id())
+            .unwrap_or(ObjID::new(0))
+    } else {
+        ObjID::new(0)
+    };
+    // Interrupts off for the update: it makes the lock uncontended by construction (only this cpu
+    // touches this record, and it cannot be preempted off it mid-update), which is the whole point
+    // of moving the data per-cpu.
+    crate::interrupt::with_disabled(|| {
+        let mut stats = current_processor().syscall_stats.lock();
+        if let Some(duration) = duration {
+            stats.per_syscall_stats[syscall as usize].add_sample(duration);
+        }
+        stats.per_syscall_count[syscall as usize] += 1;
+        stats.count += 1;
+        if SYSCALL_PROFILE {
+            stats.prof.note(entry, sctx);
+        }
+    });
+}
+
+/// Count one `sys_thread_sync` call's ops by kind. See [`SYSCALL_PROFILE`].
+pub fn note_thread_sync_ops(ops: &[twizzler_abi::syscall::ThreadSync]) {
+    if !SYSCALL_PROFILE {
+        return;
+    }
+    let sleeps = ops
+        .iter()
+        .filter(|op| matches!(op, twizzler_abi::syscall::ThreadSync::Sleep(..)))
+        .count();
+    crate::interrupt::with_disabled(|| {
+        let mut stats = current_processor().syscall_stats.lock();
+        stats.prof.sync_sleeps += sleeps;
+        stats.prof.sync_wakes += ops.len() - sleeps;
+        if sleeps > 0 {
+            stats.prof.sync_sleeping_calls += 1;
+        }
+    });
+}
+
+/// Dump the [`SYSCALL_PROFILE`] breakdown, most-frequent first. Called from `debug_shutdown`.
+pub fn print_syscall_profile() {
+    if !SYSCALL_PROFILE {
+        return;
+    }
+    let stats = get_syscall_stats();
+    let mut order: alloc::vec::Vec<usize> = (0..Syscall::NumSyscalls as usize).collect();
+    order.sort_unstable_by_key(|i| core::cmp::Reverse(stats.nr_syscalls_per_type[*i]));
+
+    logln!("== syscall profile: {} total ==", stats.nr_syscalls);
+    for i in order {
+        let count = stats.nr_syscalls_per_type[i];
+        if count == 0 {
+            continue;
+        }
+        let t = &stats.syscall_times[i];
+        logln!(
+            "  {:>7} {:>4}permille  mean {:>7} ns  max {:>9} ns  total {:>8} us  {:?}",
+            count,
+            count * 1000 / stats.nr_syscalls.max(1),
+            t.mean.as_nanos(),
+            t.max.as_nanos(),
+            (t.mean.as_nanos() as usize * count) / 1000,
+            Syscall::from(i)
+        );
+    }
+
+    let mut sites = [[(0u64, 0usize); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize];
+    let mut thread_ctrl = [0usize; NR_THREAD_CTRL];
+    let (mut sleeps, mut wakes, mut sleeping_calls, mut max_len) = (0, 0, 0, 0);
+    let mut sctx: alloc::vec::Vec<(ObjID, [usize; Syscall::NumSyscalls as usize])> =
+        alloc::vec::Vec::new();
+    with_each_active_processor(|p| {
+        let stats = p.syscall_stats.lock();
+        for i in 0..NR_THREAD_CTRL {
+            thread_ctrl[i] += stats.prof.thread_ctrl[i];
+        }
+        sleeps += stats.prof.sync_sleeps;
+        wakes += stats.prof.sync_wakes;
+        sleeping_calls += stats.prof.sync_sleeping_calls;
+        max_len = core::cmp::max(max_len, stats.prof.sync_max_len);
+        for (s, per_cpu) in sites.iter_mut().zip(stats.prof.sites.iter()) {
+            for (ip, count) in per_cpu.iter().filter(|s| s.1 > 0) {
+                if let Some(slot) = s.iter_mut().find(|e| e.0 == *ip || e.1 == 0) {
+                    slot.0 = *ip;
+                    slot.1 += count;
+                }
+            }
+        }
+        for (id, counts) in stats.prof.sctx.iter() {
+            if id.raw() == 0 {
+                continue;
+            }
+            if let Some(e) = sctx.iter_mut().find(|e| e.0 == *id) {
+                for i in 0..Syscall::NumSyscalls as usize {
+                    e.1[i] += counts[i];
+                }
+            } else {
+                sctx.push((*id, *counts));
+            }
+        }
+    });
+
+    logln!("== ThreadCtrl by command ==");
+    let mut order: alloc::vec::Vec<usize> = (0..NR_THREAD_CTRL).collect();
+    order.sort_unstable_by_key(|i| core::cmp::Reverse(thread_ctrl[*i]));
+    for i in order {
+        if thread_ctrl[i] == 0 {
+            continue;
+        }
+        logln!("  {:>7}  cmd {}", thread_ctrl[i], i);
+    }
+    logln!(
+        "== ThreadSync: {} calls, {} sleep ops, {} wake ops, {} calls with a sleep, max array {} ==",
+        stats.nr_syscalls_per_type[Syscall::ThreadSync as usize],
+        sleeps,
+        wakes,
+        sleeping_calls,
+        max_len
+    );
+
+    logln!("== call sites (pc, and offset within its object) ==");
+    for i in 0..Syscall::NumSyscalls as usize {
+        if stats.nr_syscalls_per_type[i] == 0 {
+            continue;
+        }
+        let mut slots = sites[i];
+        slots.sort_unstable_by_key(|s| core::cmp::Reverse(s.1));
+        for (ip, count) in slots.iter().filter(|s| s.1 > 0) {
+            logln!(
+                "  {:>7}  {:?} at {:x} (slot {} off {:x})",
+                count,
+                Syscall::from(i),
+                ip,
+                ip / twizzler_abi::object::MAX_SIZE as u64,
+                ip % twizzler_abi::object::MAX_SIZE as u64
+            );
+        }
+    }
+
+    logln!("== syscalls by security context ==");
+    sctx.sort_unstable_by_key(|e| core::cmp::Reverse(e.1.iter().sum::<usize>()));
+    for (id, counts) in sctx {
+        let total: usize = counts.iter().sum();
+        logln!("  sctx {}: {} total", id, total);
+        let mut order: alloc::vec::Vec<usize> = (0..Syscall::NumSyscalls as usize).collect();
+        order.sort_unstable_by_key(|i| core::cmp::Reverse(counts[*i]));
+        for i in order.into_iter().take(6) {
+            if counts[i] == 0 {
+                continue;
+            }
+            logln!("      {:>7}  {:?}", counts[i], Syscall::from(i));
+        }
+    }
 }
 
 /// Total syscalls executed since boot. The liveness signal for
 /// [`crate::thread::check_system_hang`]: a running system makes thousands a second, and a wedged
 /// one makes none.
 pub fn nr_syscalls() -> usize {
-    get_sysstats().lock().count
+    let mut count = 0;
+    with_each_active_processor(|p| count += p.syscall_stats.lock().count);
+    count
 }
 
 fn get_syscall_stats() -> SyscallStats {
-    let stats = get_sysstats().lock();
-
+    // Asking for the stats is what turns their collection on; see `TIMING_ON`.
+    TIMING_ON.store(true, Ordering::Relaxed);
+    let mut merged: [TimeStatCollector; Syscall::NumSyscalls as usize] =
+        core::array::from_fn(|_| TimeStatCollector::new());
     let mut syscall_stats = SyscallStats::default();
 
-    syscall_stats.nr_syscalls = stats.count;
-    syscall_stats
-        .nr_syscalls_per_type
-        .copy_from_slice(&stats.per_syscall_count);
+    with_each_active_processor(|p| {
+        let stats = p.syscall_stats.lock();
+        syscall_stats.nr_syscalls += stats.count;
+        for i in 0..Syscall::NumSyscalls as usize {
+            syscall_stats.nr_syscalls_per_type[i] += stats.per_syscall_count[i];
+            merged[i].merge(&stats.per_syscall_stats[i]);
+        }
+    });
 
-    for (i, stat) in stats.per_syscall_stats.iter().enumerate() {
+    for (i, stat) in merged.iter().enumerate() {
         syscall_stats.syscall_times[i] = stat.get_stats();
     }
 
@@ -682,13 +946,16 @@ fn trace_syscall_entry(data: SyscallEntryEvent) {
     }
 }
 
-fn trace_syscall_exit(entry: SyscallEntryEvent, ret: [u64; 2], duration: TimeSpan) {
-    add_syscall_stat_sample(entry.num, duration);
+fn trace_syscall_exit(entry: SyscallEntryEvent, ret: [u64; 2], duration: Option<TimeSpan>) {
+    add_syscall_stat_sample(&entry, duration);
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT) {
+        // A sink appeared since the last exit, so nothing timed this one. Report it as zero and
+        // switch timing on; the next syscall carries a real duration.
+        TIMING_ON.store(true, Ordering::Relaxed);
         let data = SyscallExitEvent {
             entry,
             ret,
-            duration,
+            duration: duration.unwrap_or_default(),
         };
         let entry = new_trace_entry(
             TraceKind::Thread,

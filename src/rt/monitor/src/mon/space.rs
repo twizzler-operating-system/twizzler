@@ -39,8 +39,8 @@ mod mapsyscallstats {
     pub fn record(ns: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let t = NS.fetch_add(ns, Ordering::Relaxed) + ns;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!("MAPSYSSTATS {} sys_object_map: {} us", n, t / 1000);
+        if secgate::statcadence::report_now(n) {
+            secgate::statlog::record("MAPSYSST", n, &[t / 1000]);
         }
     }
 }
@@ -79,17 +79,19 @@ mod spacesplit {
         SLOT.fetch_add(s.slot, Ordering::Relaxed);
         SYS.fetch_add(s.sys, Ordering::Relaxed);
         LOCK2.fetch_add(s.lock2, Ordering::Relaxed);
-        if !n.is_power_of_two() {
+        if !secgate::statcadence::report_now(n) {
             return;
         }
-        twizzler_abi::klog_println!(
-            "SPACESPLIT {} maps ({} hits): lock1 {} us, slot {} us, sys {} us, lock2 {} us",
+        secgate::statlog::record(
+            "SPACESPL",
             n,
-            HITS.load(Ordering::Relaxed),
-            LOCK1.load(Ordering::Relaxed) / 1000,
-            SLOT.load(Ordering::Relaxed) / 1000,
-            SYS.load(Ordering::Relaxed) / 1000,
-            LOCK2.load(Ordering::Relaxed) / 1000,
+            &[
+                HITS.load(Ordering::Relaxed),
+                LOCK1.load(Ordering::Relaxed) / 1000,
+                SLOT.load(Ordering::Relaxed) / 1000,
+                SYS.load(Ordering::Relaxed) / 1000,
+                LOCK2.load(Ordering::Relaxed) / 1000,
+            ],
         );
     }
 }

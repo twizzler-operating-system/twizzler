@@ -243,6 +243,9 @@ impl ReferenceRuntime {
     }
 
     pub fn post_main_hook(&self) {
+        // Temporary (pagerperf.md): a program compartment's counters would otherwise sit in the
+        // ring unprinted, since it exits long before the ring fills.
+        secgate::statlog::drain();
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
             .unwrap();
     }

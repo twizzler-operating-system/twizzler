@@ -125,11 +125,9 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
 
         if layout.size() > DIAG_TALC_ABOVE {
             let r = LOCAL_ALLOCATOR.alloc(layout);
-            ferroc::note_alloc(r as usize, layout.size());
             return r;
         }
 
-        ferroc::check_shard_free();
         print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc
@@ -138,8 +136,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             .unwrap_or(core::ptr::null_mut())
             .cast::<u8>();
 
-        ferroc::record_alloc(r as usize, layout.size());
-        ferroc::note_alloc(r as usize, layout.size());
         //let end_time = Instant::now();
         //trace_runtime_alloc(r.addr(), layout, end_time - start_time, false);
         r
@@ -172,7 +168,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
 
         if layout.size() > DIAG_TALC_ABOVE {
             let r = LOCAL_ALLOCATOR.alloc_zeroed(layout);
-            ferroc::note_alloc(r as usize, layout.size());
             return r;
         }
 
@@ -184,8 +179,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             .unwrap_or(core::ptr::null_mut())
             .cast::<u8>();
 
-        ferroc::note_alloc(r as usize, layout.size());
-
         //let end_time = Instant::now();
         //trace_runtime_alloc(r.addr(), layout, end_time - start_time, false);
         r
@@ -195,7 +188,6 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         if !self.state().contains(RuntimeState::READY) {
             return;
         }
-        ferroc::record_free(ptr as usize, layout.size(), false);
 
         if self.state().contains(RuntimeState::IS_MONITOR) {
             return LOCAL_ALLOCATOR.dealloc(ptr, layout);
@@ -222,25 +214,10 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         // Mirrors the routing in `alloc`; must stay after the early-alloc check above, since those
         // pointers are deliberately leaked rather than freed.
         if layout.size() > DIAG_TALC_ABOVE {
-            ferroc::note_free(ptr as usize, layout.size());
             return LOCAL_ALLOCATOR.dealloc(ptr, layout);
         }
 
         if let Some(ptr) = NonNull::new(ptr) {
-            // DIAG (multiputbug): this pointer is about to be freed into ferroc. `dealloc`
-            // routes by pointer slot (`is_ptr_early_alloc`) while `alloc` routes by runtime
-            // state, so a talc-early pointer that is not recognized as early lands here and
-            // gets pushed onto a ferroc free list as memory ferroc never owned.
-            if !ferroc::ptr_in_ferroc_chunk(ptr.as_ptr() as usize) {
-                twizzler_abi::klog_println!(
-                    "FERROC-FOREIGN-FREE: ptr {:p} size {:x} align {:x}",
-                    ptr.as_ptr(),
-                    layout.size(),
-                    layout.align()
-                );
-            }
-            ferroc::record_free(ptr.as_ptr() as usize, layout.size(), true);
-            ferroc::note_free(ptr.as_ptr() as usize, layout.size());
             //let start_time = Instant::now();
             print_comp_name(layout, true);
             ferroc::TwzFerroc.deallocate(ptr, layout);

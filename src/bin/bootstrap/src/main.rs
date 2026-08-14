@@ -14,9 +14,8 @@ use dynlink::{
 use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{
-    arch::SLOTS,
     object::{ObjID, MAX_SIZE},
-    syscall::sys_object_read_map,
+    syscall::sys_enumerate_slots,
 };
 use twizzler_rt_abi::{
     core::{InitInfoPtrs, RuntimeInfo},
@@ -155,16 +154,26 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     };
     let rtinfo_ptr = &mut rtinfo as *mut RuntimeInfo;
 
-    let mut used = vec![];
-    used.reserve(SLOTS);
-    // No more memory allocation after this point. We scan the address space to build a list
-    // of used slots for the next runtime.
-    for slot in 0..SLOTS {
-        let r = sys_object_read_map(None, slot);
-        if r.is_ok() {
-            used.push(slot);
+    // The used-slot list for the next runtime. Asking the kernel which slots are mapped takes one
+    // syscall; probing each slot with `sys_object_read_map` instead took one per *slot*, and there
+    // are 128Ki of those on x86_64 -- 88% of all the syscalls in a boot, ~200 ms of it.
+    //
+    // The list has to be built with no allocation between the enumeration and the handoff: an
+    // allocation can map a new object into a fresh slot, and the list would then be missing it.
+    // So a buffer that came back full means the answer may be truncated -- start over with a
+    // bigger one rather than issuing a second call against a changed address space.
+    let mut cap = 512;
+    let used = loop {
+        let mut buf = vec![0u64; cap];
+        let mut used = Vec::with_capacity(cap);
+        let n = sys_enumerate_slots(&mut buf, 0).expect("failed to enumerate used slots");
+        if n == cap {
+            cap *= 2;
+            continue;
         }
-    }
+        used.extend(buf[..n].iter().map(|slot| *slot as usize));
+        break used;
+    };
     info.used_slots = used;
 
     std::mem::forget(ctx);

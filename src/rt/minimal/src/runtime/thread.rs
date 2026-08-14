@@ -83,13 +83,16 @@ impl MinimalRuntime {
         }
     }
 
-    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> twz_error {
-        let wake = ThreadSync::new_wake(ThreadSyncWake::new(
+    /// Wake up to `count` waiters, reporting how many were actually woken. See the reference
+    /// runtime's copy for why the count comes from the per-operation result and not the return
+    /// value of the syscall.
+    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> Result<usize> {
+        let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
-        ));
-        let _ = twizzler_abi::syscall::sys_thread_sync(&mut [wake], None);
-        TwzError::SUCCESS.raw()
+        ))];
+        twizzler_abi::syscall::sys_thread_sync(&mut ops, None)?;
+        ops[0].get_result()
     }
 
     #[allow(dead_code)]

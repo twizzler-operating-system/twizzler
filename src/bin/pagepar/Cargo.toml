@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = "0.99"

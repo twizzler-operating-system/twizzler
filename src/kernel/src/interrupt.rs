@@ -23,7 +23,7 @@ use crate::{
     once::Once,
     processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
-    syscall::sync::{add_all_to_requeue, requeue_all},
+    syscall::sync::{add_to_requeue, requeue_all},
     thread::{ThreadRef, priority::Priority},
 };
 
@@ -64,6 +64,140 @@ pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
 #[inline]
 pub fn post_interrupt() {
     schedule_maybe_preempt();
+}
+
+/// Count and time every interrupt by vector, per cpu, and dump it at `debug_shutdown`.
+///
+/// Same shape and same caveats as [`crate::syscall::SYSCALL_PROFILE`] and
+/// [`crate::memory::context::virtmem::fault::FAULT_PROFILE`]: off by default, and the timings it
+/// reports include its own cost.
+pub const INTERRUPT_PROFILE: bool = false;
+
+/// Bucket bounds in nanoseconds; the last bucket is everything above. Interrupt handlers here run
+/// the scheduler and the fault path, so the distribution is as tail-heavy as the fault path's.
+const INT_BUCKET_NS: [u64; 3] = [1_000, 10_000, 100_000];
+const NR_INT_BUCKETS: usize = INT_BUCKET_NS.len() + 1;
+
+pub struct InterruptTracking {
+    counts: [usize; NUM_VECTORS],
+    times: [crate::time::TimeStatCollector; NUM_VECTORS],
+    buckets: [[usize; NR_INT_BUCKETS]; NUM_VECTORS],
+    /// Interrupts whose tail actually rescheduled, and what that cost.
+    preempts: usize,
+    preempt_time: crate::time::TimeStatCollector,
+}
+
+impl InterruptTracking {
+    pub fn new() -> Self {
+        Self {
+            counts: [0; NUM_VECTORS],
+            times: core::array::from_fn(|_| crate::time::TimeStatCollector::new()),
+            buckets: [[0; NR_INT_BUCKETS]; NUM_VECTORS],
+            preempts: 0,
+            preempt_time: crate::time::TimeStatCollector::new(),
+        }
+    }
+}
+
+/// Record one interrupt of `vector` that started at `start`. Compiles away when the profile is off.
+pub fn record_interrupt(vector: u64, start: crate::instant::Instant) {
+    if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
+        return;
+    }
+    let vector = vector as usize;
+    if vector >= NUM_VECTORS {
+        return;
+    }
+    let dur: twizzler_abi::syscall::TimeSpan = (crate::instant::Instant::now() - start).into();
+    let ns = dur.as_nanos() as u64;
+    let bucket = INT_BUCKET_NS
+        .iter()
+        .position(|b| ns < *b)
+        .unwrap_or(NR_INT_BUCKETS - 1);
+    with_disabled(|| {
+        let mut stats = crate::processor::mp::current_processor()
+            .interrupt_stats
+            .lock();
+        stats.counts[vector] += 1;
+        stats.times[vector].add_sample(dur);
+        stats.buckets[vector][bucket] += 1;
+    });
+}
+
+/// Record the reschedule that [`post_interrupt`] performed, if it did one.
+pub fn record_preempt(start: crate::instant::Instant) {
+    if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
+        return;
+    }
+    let dur = (crate::instant::Instant::now() - start).into();
+    with_disabled(|| {
+        let mut stats = crate::processor::mp::current_processor()
+            .interrupt_stats
+            .lock();
+        stats.preempts += 1;
+        stats.preempt_time.add_sample(dur);
+    });
+}
+
+pub fn print_interrupt_profile() {
+    if !INTERRUPT_PROFILE {
+        return;
+    }
+    let mut counts = [0usize; NUM_VECTORS];
+    let mut times: [crate::time::TimeStatCollector; NUM_VECTORS] =
+        core::array::from_fn(|_| crate::time::TimeStatCollector::new());
+    let mut buckets = [[0usize; NR_INT_BUCKETS]; NUM_VECTORS];
+    let (mut preempts, mut preempt_time) = (0, crate::time::TimeStatCollector::new());
+    crate::processor::mp::with_each_active_processor(|p| {
+        let stats = p.interrupt_stats.lock();
+        for i in 0..NUM_VECTORS {
+            counts[i] += stats.counts[i];
+            times[i].merge(&stats.times[i]);
+            for b in 0..NR_INT_BUCKETS {
+                buckets[i][b] += stats.buckets[i][b];
+            }
+        }
+        preempts += stats.preempts;
+        preempt_time.merge(&stats.preempt_time);
+    });
+
+    let total: usize = counts.iter().sum();
+    let total_us: usize = (0..NUM_VECTORS)
+        .map(|i| (times[i].get_stats().mean.as_nanos() as usize * counts[i]) / 1000)
+        .sum();
+    logln!(
+        "== interrupt profile: {} interrupts, {} us ==",
+        total,
+        total_us
+    );
+    let mut order: alloc::vec::Vec<usize> = (0..NUM_VECTORS).collect();
+    order.sort_unstable_by_key(|i| core::cmp::Reverse(counts[*i]));
+    for i in order {
+        if counts[i] == 0 {
+            continue;
+        }
+        let stat = times[i].get_stats();
+        logln!(
+            "  vec {:>3}: {:>6} x {:>7} ns = {:>7} us  min {:>6} max {:>9}  [<1us {:>6} <10us {:>5} <100us {:>4} >= {:>4}]",
+            i,
+            counts[i],
+            stat.mean.as_nanos(),
+            (stat.mean.as_nanos() as usize * counts[i]) / 1000,
+            stat.min.as_nanos(),
+            stat.max.as_nanos(),
+            buckets[i][0],
+            buckets[i][1],
+            buckets[i][2],
+            buckets[i][3],
+        );
+    }
+    let stat = preempt_time.get_stats();
+    logln!(
+        "  post_interrupt reschedules: {} x {} ns = {} us",
+        preempts,
+        stat.mean.as_nanos(),
+        (stat.mean.as_nanos() as usize * preempts) / 1000
+    );
 }
 
 #[inline]
@@ -204,15 +338,16 @@ impl GlobalInterruptState {
         if set_sync_sleep {
             thread.set_sync_sleep();
         }
-        // A find-then-insert guard here (as `SleepEntry::add_thread` has) was tried and reverted.
-        // It stops the duplicate insert, but it *keeps* the stale entry -- and `external_interrupt_
-        // entry` requeues every thread in this tree unconditionally, claiming the wake through
-        // `reset_sync_sleep_done` rather than `reset_sync_sleep` the way `wake_n` does. A leftover
-        // entry then fires a spurious wake at whatever that thread is sleeping on next, and if that
-        // is a kernel mutex it wakes still linked on the mutex's wait queue: the assert at the end
-        // of `finish_blocking`. Measured: 0 in ~2950 runs before the guard, 1 in the first 17
-        // after. So the duplicate is a symptom; the fix belongs in how this tree claims its
-        // wakes, and panicking at the insert is the more honest failure until then.
+        // Mirrors `SleepEntry::add_thread`. This guard was tried once on its own and reverted,
+        // because back then `external_interrupt_entry` requeued this tree unconditionally and
+        // claimed through `reset_sync_sleep_done` rather than `reset_sync_sleep`: the entry it left
+        // behind fired a spurious wake at whatever that thread slept on next. That half is fixed
+        // now -- the wake below claims per waiter and removes under this lock -- so a leftover
+        // entry can no longer wake anyone, and stopping the duplicate is what keeps
+        // `remove_from_device_wait`'s single find-and-remove sufficient.
+        if !waiters.find(&thread.objid()).is_null() {
+            return true;
+        }
         waiters.insert(thread);
         true
     }
@@ -354,10 +489,30 @@ pub fn external_interrupt_entry(number: u32) {
             };
         }
         drop(vectors);
+        // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::wake_n` does.
+        //
+        // `take()` used to detach the whole tree and drain it after dropping the lock. Its nodes
+        // stayed linked while unreachable from `device_waiters`, so a concurrent
+        // `remove_from_device_wait` found nothing and silently did nothing -- the waiter then
+        // finished its round believing it was unlinked, `reset` zeroed its slot counter, and the
+        // next round handed out a slot whose link was still in the detached tree. Two trees, one
+        // link. Removing here means a node is either in this tree and removable, or gone and
+        // claimed, with no window in between.
+        //
+        // Claiming through `reset_sync_sleep` rather than `add_all_to_requeue`'s
+        // `reset_sync_sleep_done` matches the flag `setup_device_wait` arms above, so a waiter that
+        // someone else already claimed is left alone instead of woken twice.
         let mut waiters = gi.device_waiters[number as usize].lock();
-        let list = waiters.take();
+        let mut cursor = waiters.front_mut();
+        while !cursor.is_null() {
+            if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
+                let thread = cursor.remove().unwrap();
+                add_to_requeue(thread);
+            } else {
+                cursor.move_next();
+            }
+        }
         drop(waiters);
-        add_all_to_requeue(list);
         requeue_all();
         return;
     }

@@ -11,11 +11,19 @@ use monitor_api::{
     MONITOR_INSTANCE_ID,
 };
 use secgate::util::Descriptor;
-use twizzler_abi::syscall::{sys_thread_change_state_in_sctx, sys_thread_sync, ThreadSync};
+use twizzler_abi::{
+    object::{MAX_SIZE, NULLPAGE_SIZE},
+    syscall::{
+        sys_object_preload_range, sys_thread_change_state_in_sctx, sys_thread_sync,
+        PreloadRangeSpec, ThreadSync, MAX_PRELOAD_RANGES,
+    },
+};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
-    object::ObjID,
+    object::{MapFlags, ObjID},
 };
+
+use super::thread::ThreadMgr;
 
 mod compconfig;
 mod compthread;
@@ -26,6 +34,75 @@ pub use compconfig::*;
 pub(crate) use compthread::StackObject;
 pub use runcomp::*;
 
+/// Switch for prefaulting the root object before a compartment load (`COMPNEW.md` plan A).
+///
+/// A switch rather than a permanent call so the two halves can be measured against each other in
+/// one build lineage: flipping this is the only difference between the `prefon`/`prefoff` runs.
+const PREFAULT_ROOT: bool = false;
+
+/// Prefault the PT_LOAD ranges of a compartment's root object, outside the dynlink lock.
+///
+/// Best-effort throughout: every failure here just leaves the pages to be demand-faulted later,
+/// which is what happened before this existed.
+///
+/// **The returned handle must be held until the load finishes.** `Space::map` refcounts by
+/// `MapInfo`, and this asks for exactly the mapping dynlink's `load_object` asks for moments later.
+/// Dropping it here first takes the count to zero, which removes the cache entry and hands the slot
+/// to the background unmapper -- which then races dynlink's fresh map of the same object onto a
+/// recycled slot and unmaps it underneath. Holding it keeps the count above zero, so dynlink's map
+/// is a cache hit rather than a second syscall.
+#[must_use = "dropping the handle early unmaps the object out from under the load"]
+fn prefault_root_object(root_object: ObjID) -> Option<super::space::MapHandle> {
+    if !PREFAULT_ROOT {
+        return None;
+    }
+    let handle = super::space::Space::map(
+        &super::get_monitor().space,
+        super::space::MapInfo {
+            id: root_object,
+            flags: MapFlags::READ,
+        },
+        ObjID::new(0),
+    )
+    .ok()?;
+
+    // The ELF image starts at the data base, not the slot base: `monitor_data_start` is the
+    // object's null page, which is unmapped by design. This mirrors `dynlink::engines::Backing`,
+    // which stores the slot base and adds NULLPAGE_SIZE in `data()`.
+    let data = unsafe {
+        core::slice::from_raw_parts(
+            handle.monitor_data_base() as *const u8,
+            MAX_SIZE - NULLPAGE_SIZE * 2,
+        )
+    };
+
+    // Every path from here returns the handle, including the failure paths: once the map exists,
+    // dropping it before dynlink takes its own reference is the race described above.
+    match dynlink::library::pt_load_ranges(data) {
+        Err(e) => {
+            tracing::debug!(
+                "prefault {}: could not read program headers: {}",
+                root_object,
+                e
+            );
+        }
+        Ok(ranges) => {
+            // File offset N lives at object offset NULLPAGE_SIZE + N; see `engines::twizzler`.
+            let specs: Vec<_> = ranges
+                .iter()
+                .take(MAX_PRELOAD_RANGES)
+                .map(|(off, len)| PreloadRangeSpec::from_bytes(NULLPAGE_SIZE as u64 + off, *len))
+                .collect();
+            if !specs.is_empty() {
+                let _ = sys_object_preload_range(root_object, &specs)
+                    .inspect_err(|e| tracing::debug!("prefault {} failed: {}", root_object, e));
+            }
+        }
+    }
+
+    Some(handle)
+}
+
 /// Manages compartments.
 #[derive(Default)]
 pub struct CompartmentMgr {
@@ -34,6 +111,9 @@ pub struct CompartmentMgr {
     controllers: HashMap<ObjID, Vec<ObjID>>,
     dynlink_map: HashMap<CompartmentId, ObjID>,
     cleanup_queue: Vec<RunComp>,
+    /// Cleanup passes a queued compartment has waited through, so one that never becomes reapable
+    /// is reported rather than just absent. See [CompartmentMgr::process_cleanup_queue].
+    cleanup_waits: HashMap<ObjID, u32>,
 }
 
 impl CompartmentMgr {
@@ -250,18 +330,22 @@ impl CompartmentMgr {
         }
     }
 
-    pub fn dec_use_count(&mut self, instance: ObjID) {
+    /// Returns whether this drop queued a compartment for teardown, i.e. whether a cleanup pass
+    /// has anything new to do.
+    pub fn dec_use_count(&mut self, instance: ObjID) -> bool {
         let Ok(rc) = self.get_mut(instance) else {
-            return;
+            return false;
         };
 
         let z = rc.dec_use_count();
         let ex = rc.has_flag(COMP_EXITED);
         if z && ex {
             if let Some(rc) = self.remove(instance) {
-                self.cleanup_queue.push(rc)
+                self.cleanup_queue.push(rc);
+                return true;
             }
         }
+        false
     }
 
     pub fn stat(&self) -> CompartmentMgrStats {
@@ -270,13 +354,52 @@ impl CompartmentMgr {
         }
     }
 
+    /// Unload every queued compartment that has no threads left, and keep the rest queued.
+    ///
+    /// `main_thread_exited` requests its threads' exits through `sys_thread_change_state_in_sctx`,
+    /// which the kernel holds until the target is running its own code again -- so a queued
+    /// compartment can still have threads standing on it. Unloading it there dropped its
+    /// `StackObject`'s handle, and the unmapper took a stack out from under a thread that was still
+    /// executing on it: a memory fault in monitor code, reported as an `unwrap` panic in
+    /// `upcall_handle` while the compartment lock was held, which wedged the system.
+    ///
+    /// `use_count` cannot stand in for this: it counts handles and deps, not live threads.
+    ///
+    /// The cleaner thread calls this after reaping each thread, so the last exit of a compartment
+    /// is what drives the pass that finally unloads it.
     pub fn process_cleanup_queue(
         &mut self,
+        tmgr: &ThreadMgr,
         dynlink: &mut Context,
     ) -> (Vec<Option<Compartment>>, Vec<Vec<LoadedOrUnloaded>>) {
-        let (comps, libs) = self
+        let (ready, pending): (Vec<_>, Vec<_>) = self
             .cleanup_queue
             .drain(..)
+            .partition(|rc| tmgr.threads_of(rc.instance).is_empty());
+
+        for rc in &pending {
+            // A thread that never takes its force-exit -- parked on a mutex, the pager, or the
+            // memory tracker, none of which poll for it -- keeps its compartment here forever.
+            // Leaking it beats unmapping under it, but silently leaking it beats nothing.
+            let waits = self.cleanup_waits.entry(rc.instance).or_default();
+            *waits += 1;
+            if *waits % 1000 == 0 {
+                tracing::warn!(
+                    "compartment {} ({}) still has {} live thread(s) after {} cleanup passes",
+                    rc.instance,
+                    rc.name,
+                    tmgr.threads_of(rc.instance).len(),
+                    waits,
+                );
+            }
+        }
+        for rc in &ready {
+            self.cleanup_waits.remove(&rc.instance);
+        }
+
+        self.cleanup_queue = pending;
+        let (comps, libs) = ready
+            .into_iter()
             .map(|c| dynlink.unload_compartment(c.compartment_id))
             .unzip();
         (comps, libs)
@@ -299,41 +422,68 @@ impl super::Monitor {
             thread,
             desc
         );
-        // A read of the whole collection: writing the name into the caller's own simple buffer no
-        // longer needs `&mut RunComp`, and nothing else here mutates.
+        // `dynlink` is needed for exactly one field, `nr_libs`, which only changes when a library
+        // is loaded into the compartment -- so it is cached on the `RunComp` and this reads the two
+        // locks it actually needs. Writing the name into the caller's own simple buffer does not
+        // need `&mut RunComp`, and nothing else here mutates.
+        let build = |comps: &CompartmentMgr,
+                     comphandles: &secgate::util::HandleMgr<CompartmentHandle>,
+                     nr_libs: Option<usize>|
+         -> Result<Result<CompartmentInfoRaw, CompartmentId>, TwzError> {
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(instance))
+                .ok_or(TwzError::INVALID_ARGUMENT)?;
+
+            let comp = comps.get(comp_id)?;
+            let Some(nr_libs) = nr_libs.or_else(|| comp.cached_nr_libs()) else {
+                // Caller must go compute it under `dynlink`.
+                return Ok(Err(comp.compartment_id));
+            };
+
+            let name = comp.name.clone();
+            if comps.get(instance).is_err() {
+                tracing::warn!(
+                    "get_compartment_info: instance {} not found in comps",
+                    instance
+                );
+            }
+            super::ptstats::record(super::ptstats::Site::CompInfo);
+            let pt = comps.get(instance)?.get_per_thread(thread);
+            let name_len = pt.lock().unwrap().write_bytes(name.as_bytes());
+            Ok(Ok(CompartmentInfoRaw {
+                name_len,
+                id: comp_id,
+                sctx: comp.sctx,
+                flags: comp.raw_flags(),
+                nr_libs,
+                exit_code: comp.read_error_code(),
+            }))
+        };
+
+        {
+            let (ref comps, ref comphandles) =
+                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+            if let Ok(info) = build(comps, comphandles, None)? {
+                return Ok(info);
+            }
+        }
+
+        // Cold: count the libraries once, cache it, and answer from the same read.
         let (_, ref comps, ref dynlink, _, ref comphandles) =
             *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
             .ok_or(TwzError::INVALID_ARGUMENT)?;
-
-        let name = comps.get(comp_id)?.name.clone();
-        if comps.get(instance).is_err() {
-            tracing::warn!(
-                "get_compartment_info: instance {} not found in comps",
-                instance
-            );
-        }
-        super::ptstats::record(super::ptstats::Site::CompInfo);
-        let pt = comps.get(instance)?.get_per_thread(thread);
-        let name_len = pt.lock().unwrap().write_bytes(name.as_bytes());
-        let comp = comps.get(comp_id)?;
         let nr_libs = dynlink
-            .get_compartment(comp.compartment_id)
+            .get_compartment(comps.get(comp_id)?.compartment_id)
             .ok()
             .ok_or(TwzError::INVALID_ARGUMENT)?
             .library_ids()
             .count();
-
-        Ok(CompartmentInfoRaw {
-            name_len,
-            id: comp_id,
-            sctx: comp.sctx,
-            flags: comp.raw_flags(),
-            nr_libs,
-            exit_code: comp.read_error_code(),
-        })
+        comps.get(comp_id)?.cache_nr_libs(nr_libs);
+        build(comps, comphandles, Some(nr_libs))?.map_err(|_| GenericError::Internal.into())
     }
 
     /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's
@@ -370,6 +520,22 @@ impl super::Monitor {
         desc: Option<Descriptor>,
         name: &str,
     ) -> Result<usize, TwzError> {
+        // Cache first, under the two locks this actually needs. A gate's address does not move
+        // unless a library is loaded into the compartment, and `RunComp::invalidate_dynlink_cache`
+        // covers that -- so the steady state never reads `dynlink`, and never rescans every
+        // library's gates. See `RunComp::gate_cache`.
+        {
+            let (ref comps, ref comphandles) =
+                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+            let comp_id = desc
+                .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
+                .unwrap_or(Some(instance))
+                .ok_or(TwzError::INVALID_ARGUMENT)?;
+            if let Some(addr) = comps.get(comp_id)?.cached_gate(name) {
+                return Ok(addr);
+            }
+        }
+
         let (_, ref comps, ref dynlink, _, ref comphandles) =
             *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
         let comp_id = desc
@@ -389,6 +555,10 @@ impl super::Monitor {
             if let Some(gates) = lib.iter_secgates() {
                 for gate in gates {
                     if gate.name().to_str() == Ok(name) {
+                        // Only successful lookups are cached: a miss can become a hit when a
+                        // library is loaded, and caching the absence would need invalidation on a
+                        // path that has none.
+                        comp.cache_gate(name, gate.imp);
                         return Ok(gate.imp);
                     }
                 }
@@ -404,8 +574,8 @@ impl super::Monitor {
         caller: ObjID,
         compartment: ObjID,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) =
-            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
+        let (ref mut comps, ref mut ch) =
+            *crate::lockdiag::watched(self.comp_lookup.lock(super::reentrant_key()?));
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
         ch.insert(
@@ -429,8 +599,8 @@ impl super::Monitor {
         thread: ObjID,
         comp: ObjID,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) =
-            *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+        let (ref mut comps, ref mut ch) =
+            *crate::lockdiag::watched(self.comp_lookup.lock(ThreadKey::get().unwrap()));
         let comp = comps.get_mut(comp)?;
         comp.inc_use_count();
         ch.insert(
@@ -470,8 +640,8 @@ impl super::Monitor {
         instance: ObjID,
         name: &str,
     ) -> Result<Descriptor, TwzError> {
-        let (_, ref mut comps, _, _, ref mut ch) =
-            *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+        let (ref mut comps, ref mut ch) =
+            *crate::lockdiag::watched(self.comp_lookup.lock(ThreadKey::get().unwrap()));
         let comp = comps.get_name_mut(name)?;
         comp.inc_use_count();
         ch.insert(
@@ -514,8 +684,11 @@ impl super::Monitor {
         dep_n: usize,
     ) -> Result<Descriptor, TwzError> {
         let dep = {
-            let (_, ref comps, _, _, ref comphandles) =
-                *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            // Reads `comps` and `comphandles` and nothing else, so it takes those two rather than
+            // a read of the whole collection -- which includes `dynlink`, held for a write across a
+            // median 31 ms compartment load (`sysperf.md` round 8).
+            let (ref comps, ref comphandles) =
+                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -536,8 +709,11 @@ impl super::Monitor {
         t_n: usize,
     ) -> Result<ThreadInfo, TwzError> {
         let dep = {
-            let (_, ref comps, _, _, ref comphandles) =
-                *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            // Reads `comps` and `comphandles` and nothing else, so it takes those two rather than
+            // a read of the whole collection -- which includes `dynlink`, held for a write across a
+            // median 31 ms compartment load (`sysperf.md` round 8).
+            let (ref comps, ref comphandles) =
+                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -629,11 +805,21 @@ impl super::Monitor {
             .find(|s| s.to_string_lossy().starts_with("MONDEBUG="))
             .is_some();
 
+        // Make the root binary's loadable pages resident before taking the lock. `load_segments`
+        // installs the new text/data objects as COW copy-specs of this object, so the first write
+        // during relocation faults through to here -- and that used to be a disk read taken under
+        // the dynlink write lock. The root binary is the only library this matters for: the shared
+        // ones are resident after the first compartment (`sysperf.md` round 8).
+        // Held until the end of this function: see `prefault_root_object`.
+        let _prefault = prefault_root_object(root_object);
+
         let _start_2 = Instant::now();
-        let loader = {
+        // Two phases, two locks. Graph mutation needs the write; relocation does not, and is a
+        // median 6.7 ms of the load that every reader of the lock collection used to queue behind.
+        let pending = {
             let mut dynlink =
                 crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
-            loader::RunCompLoader::new(
+            loader::RunCompLoader::load_graph(
                 *dynlink,
                 compname,
                 root,
@@ -644,6 +830,13 @@ impl super::Monitor {
             )
         }
         .inspect_err(|e| tracing::error!("failed to load new compartment: {}", e))
+        .map_err(|_| GenericError::Internal)?;
+
+        let loader = {
+            let dynlink = crate::lockdiag::watched(self.dynlink.read(ThreadKey::get().unwrap()));
+            pending.relocate_and_finish(*dynlink, compname, mondebug)
+        }
+        .inspect_err(|e| tracing::error!("failed to relocate new compartment: {}", e))
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
@@ -704,20 +897,42 @@ impl super::Monitor {
             );
             return;
         };
-        let comps = {
-            let (_, ref mut cmgr, ref mut dynlink, _, ref mut comp_handles) =
-                *crate::lockdiag::watched(self.locks.lock(key));
-            let comp = comp_handles.remove(caller, desc);
-
-            if let Some(comp) = comp {
-                tracing::trace!(
-                    "dropping compartment handle for {}: {:?}",
-                    caller,
-                    cmgr.get(comp.instance).map(|c| c.name.clone()),
-                );
-                cmgr.dec_use_count(comp.instance);
+        // Two phases, because the common drop has nothing to clean up. Dropping a handle only
+        // queues a teardown when it takes the last use of an already-exited compartment; every
+        // other drop leaves the queue exactly as it was. Running the pass anyway took all four
+        // locks -- including `dynlink`, which a compartment load holds for a median 31 ms -- and
+        // re-partitioned every *pending* entry through `threads_of`, an O(live threads) scan that
+        // allocates. A handle drop cannot change thread liveness, so that scan could never find
+        // anything a previous pass had not: only a thread exit turns pending into ready, and the
+        // cleaner wakes on exactly that. Measured at 838 holds of 1-5 ms per pair of runs
+        // (`sysperf.md` round 8).
+        let queued = {
+            let (ref mut cmgr, ref mut comp_handles) =
+                *crate::lockdiag::watched(self.comp_lookup.lock(key));
+            match comp_handles.remove(caller, desc) {
+                Some(comp) => {
+                    tracing::trace!(
+                        "dropping compartment handle for {}: {:?}",
+                        caller,
+                        cmgr.get(comp.instance).map(|c| c.name.clone()),
+                    );
+                    cmgr.dec_use_count(comp.instance)
+                }
+                None => false,
             }
-            cmgr.process_cleanup_queue(&mut *dynlink)
+        };
+        if !queued {
+            return;
+        }
+        // Dropped outside the lock, as before: releasing the unloaded compartments' objects and
+        // handles reaches the unmapper and is not something to do while holding the collection.
+        let comps = {
+            let Ok(key) = super::reentrant_key() else {
+                return;
+            };
+            let (ref tmgr, ref mut cmgr, ref mut dynlink, _, _) =
+                *crate::lockdiag::watched(self.locks.lock(key));
+            cmgr.process_cleanup_queue(tmgr, &mut *dynlink)
         };
         drop(comps);
     }

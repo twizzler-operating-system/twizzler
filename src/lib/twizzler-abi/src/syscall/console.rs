@@ -98,6 +98,12 @@ bitflags! {
     pub struct KernelConsoleWriteFlags: u64 {
         /// If the buffer is full, discard this write instead of overwriting old data.
         const DISCARD_ON_FULL = 1;
+        /// Write only to the console device, skipping the kernel console buffer.
+        ///
+        /// For a write whose whole point is that it reaches the serial transcript in one piece:
+        /// the device write holds the port lock for the entire slice, so nothing can interleave
+        /// into it, while the buffer write is a second step this does not need.
+        const DONT_BUFFER = 2;
     }
 }
 

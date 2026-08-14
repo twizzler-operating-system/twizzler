@@ -32,9 +32,11 @@ use crate::{
 };
 
 mod inflight;
+mod profile;
 mod queues;
 mod request;
 
+pub use profile::print_pager_profile;
 pub use queues::init_pager_queue;
 pub use request::Request;
 
@@ -296,14 +298,53 @@ fn pages_present(obj: &ObjectRef, page: PageNumber, len: usize) -> bool {
 /// map-time head fetch wants the second without the first.
 fn get_pages_and_wait<'a>(
     obj: &'a ObjectRef,
-    page: PageNumber,
-    len: usize,
+    mut page: PageNumber,
+    mut len: usize,
     flags: PagerFlags,
     speculative: bool,
-    tree: LockGuard<'a, ObjectPageTable>,
+    mut tree: LockGuard<'a, ObjectPageTable>,
     used_pager: &mut bool,
     required: Option<(PageNumber, usize)>,
 ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+    // Drop the pages at the head of this range that the object has acquired since the range was
+    // built. `ensure_in_core_pager` filters against the page tables under the lock, but
+    // `ensure_in_core` then drops that lock and can *block* in `provide_pager_memory` waiting for
+    // the pager to ack a donation, and every range after the first waits here as well -- so by the
+    // time a range is submitted its presence data can be several completions old. Asking anyway is
+    // where the residual duplicate transfer came from: pages another request installed during the
+    // window, re-requested and thrown away on arrival (`INPROG.md`).
+    //
+    // Only the head, because that is where they are: the arrivals are the earlier request's range,
+    // which is a prefix of this one. A hole in the middle would need this range to become two, and
+    // nothing measured asks for that.
+    //
+    // Stopping at the first absent page makes this one probe in the common case, and the cap bounds
+    // the worst one: `ObjectControlCmd::Preload` asks for a whole object in a single range without
+    // going through the builder, so on a mostly-resident object an uncapped scan would walk
+    // `MAX_SIZE / PAGE_SIZE` entries before finding a gap. A region is the right bound because a
+    // region is the most staleness ever observed -- rounds 2 and 3 of `dupfix` trimmed exactly 512.
+    {
+        let scan_limit = len.min(PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE);
+        let mut present = 0;
+        while present < scan_limit
+            && !tree.is_empty_at_level(page.offset(present).as_byte_offset() as u64, 0)
+        {
+            present += 1;
+        }
+        if present > 0 {
+            profile::PAGER_PROFILE.asked_for_present(present);
+        }
+        if speculative {
+            profile::PAGER_PROFILE.speculative(len, present >= len);
+        }
+        if present >= len {
+            // All of it arrived while we were on our way here, so there is nothing to ask for.
+            // The caller's own pages are among them, so it has nothing to wait on either.
+            return Ok(tree);
+        }
+        page = page.offset(present);
+        len -= present;
+    }
     let mut mgr = inflight_mgr().lock();
     if !mgr.is_ready() {
         return Err(ResourceError::Unavailable.into());
@@ -314,8 +355,17 @@ fn get_pages_and_wait<'a>(
         page,
         obj.id()
     );
-    let Ok(inflight) = mgr.add_request(ReqKind::new_page_data(obj.id(), page.num(), len, flags))
-    else {
+    // Narrowed against what is already in flight before it is keyed, since the range *is* the key.
+    // Only the speculative part of the range can be given up; `required` is what the caller blocks
+    // on and is never trimmed away.
+    let rk = mgr.page_data_request(
+        obj.id(),
+        page.num(),
+        len,
+        flags,
+        required.map(|(p, l)| (p.num(), l)),
+    );
+    let Ok(inflight) = mgr.add_request(rk) else {
         // Speculation that cannot get a slot is not worth waiting for one: the slots it would spin
         // on belong to demand faults, and nothing is waiting on this request. Drop it.
         if speculative {

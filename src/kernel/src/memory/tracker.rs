@@ -587,6 +587,23 @@ impl FrameAllocator {
         }
     }
 
+    /// Precharge without waiting, returning how many frames are now held.
+    ///
+    /// A caller that already holds a lock can try to get its frames without giving the lock up,
+    /// and find out cheaply whether it has to: waiting for memory is what must not happen under a
+    /// lock, and in the common case there is nothing to wait for.
+    #[track_caller]
+    pub fn precharge_nowait(&mut self, count: usize) -> usize {
+        while self.precharge.len() < count {
+            let Some(frame) = try_alloc_frame(self.flags & !FrameAllocFlags::WAIT_OK, self.layout)
+            else {
+                break;
+            };
+            self.precharge.push(frame);
+        }
+        self.precharge.len()
+    }
+
     #[track_caller]
     pub fn try_allocate(&mut self) -> Option<FrameRef> {
         if !self.abort.is_empty() {

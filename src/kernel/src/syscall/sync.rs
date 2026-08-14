@@ -1,5 +1,5 @@
 use core::{
-    sync::atomic::{AtomicU32, AtomicU64},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -657,8 +657,98 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     }
 }
 
+/// Whether this sleep's condition already fails, i.e. the caller would not block on it. `None`
+/// when the word is not reachable as a plain user address -- the `ObjectRef` case, which has to go
+/// through the object.
+fn sleep_word_ready(sleep: &ThreadSyncSleep) -> Option<bool> {
+    let addr = match sleep.reference {
+        ThreadSyncReference::Virtual(addr) => addr as u64,
+        ThreadSyncReference::Virtual32(addr) => addr as u64,
+        ThreadSyncReference::ObjectRef(..) => return None,
+    };
+    // `get_obj` would reject a kernel address by failing to find a user mapping for it; this read
+    // runs ahead of that, so it has to do its own rejecting.
+    if VirtAddr::new(addr).ok()?.is_kernel() {
+        return None;
+    }
+    Some(match sleep.reference {
+        ThreadSyncReference::Virtual32(_) => {
+            let cur = unsafe { &*(addr as *const AtomicU32) }.load(Ordering::SeqCst);
+            !sleep.op.check(cur, sleep.value as u32, sleep.flags)
+        }
+        _ => {
+            let cur = unsafe { &*(addr as *const AtomicU64) }.load(Ordering::SeqCst);
+            !sleep.op.check(cur, sleep.value, sleep.flags)
+        }
+    })
+}
+
+/// Read every virtually-referenced sleep word before the round opens, taking the whole call if one
+/// of them already says not to sleep.
+///
+/// Two jobs. The cheap one: a caller that would not have blocked skips `reserve`, the slot slab
+/// and the undo bookkeeping.
+///
+/// The load-bearing one: these reads happen *before* `reserve`, so a fault on a pager-backed page
+/// resolves with no round open. Faulting inside the round re-enters `sys_thread_sync` through the
+/// pager's queue wait and trips `reserve`'s mid-round assert. Walking `ops` prefaults the user
+/// slice for the same reason -- `create_user_slice` leaves it in place rather than copying it.
+///
+/// Only an all-sleep array can return early: a `Wake` has to run, and in array order. Writing
+/// `*result` here is safe when we do not, because every arm of the main loop reassigns it.
+fn ready_before_round(ops: &mut [ThreadSync]) -> Option<usize> {
+    let mut ready = 0;
+    let mut can_shortcut = true;
+    for op in &mut *ops {
+        let ThreadSync::Sleep(sleep, result) = op else {
+            can_shortcut = false;
+            continue;
+        };
+        match sleep_word_ready(sleep) {
+            Some(true) => {
+                ready += 1;
+                *result = Ok(1);
+            }
+            Some(false) => *result = Ok(0),
+            None => can_shortcut = false,
+        }
+    }
+    (can_shortcut && ready > 0).then_some(ready)
+}
+
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     let thread = current_thread_ref().unwrap();
+    super::note_thread_sync_ops(ops);
+    // Recursion: a second `sys_thread_sync` entered from inside the first one's round. The way in
+    // is a fault on a pager-backed page the outer round touched, which reaches the pager's queue
+    // wait -- see `ready_before_round`, which exists to make that rarer.
+    //
+    // The slot slab is per round and not reentrant, so sleeping again from here would trip
+    // `reserve`'s assert. Refuse instead and report zero ready: every caller of a sleep re-checks
+    // in a loop (`RawQueue::submit` takes its wait as a closure and calls it from one), so a
+    // refusal costs a spin rather than a lost wakeup. A wake needs no slot, and dropping one would
+    // strand whoever is waiting on it, so those still run.
+    if thread.sync_links.is_linked() {
+        if ops.iter().any(|op| matches!(op, ThreadSync::Sleep(..))) {
+            if crate::thread::locktrack::diag::NESTED_SYNC_SLEEP.hit() {
+                emerglogln!(
+                    "thread {} ({}) recursed into sys_thread_sync with a sleep; refusing to sleep",
+                    thread.id(),
+                    thread.objid(),
+                );
+            }
+            return Ok(0);
+        }
+        return do_sys_thread_sync(ops, timeout);
+    }
+    // Ahead of `reserve`, deliberately: see `ready_before_round`. Oversized arrays are the main
+    // loop's error to report, so leave them alone.
+    if ops.len() <= 1024 {
+        if let Some(ready) = ready_before_round(ops) {
+            thread.maybe_exit();
+            return Ok(ready);
+        }
+    }
     thread.sync_links.reserve(ops.len(), thread);
     thread.set_timed_wait(timeout.is_some());
 

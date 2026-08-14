@@ -1,13 +1,12 @@
 use alloc::boxed::Box;
 use core::{
-    alloc::Layout,
     cell::{RefCell, UnsafeCell},
     ptr::null_mut,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use super::{
-    KERNEL_STACK_SIZE, Processor,
+    Processor,
     sched::{CPUTopoNode, CPUTopoType},
     tls_ready,
 };
@@ -64,11 +63,9 @@ fn start_secondary_cpu(cpu: u32, tls_template: TlsInfo) {
         panic!("TODO: we currently assume the bootstrap processor gets ID 0");
     }
     let tcb_base = crate::arch::image::init_tls(tls_template);
-    /* TODO: dedicated kernel stack allocator, with guard page support */
-    let kernel_stack = unsafe {
-        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-        alloc::alloc::alloc_zeroed(layout)
-    };
+    /* TODO: guard page support */
+    // Never freed: this cpu runs on it until the machine goes down.
+    let kernel_stack = crate::thread::kstack::leak_one();
 
     //logln!("poking cpu {} {:?} {:?}", cpu, tcb_base, kernel_stack);
     unsafe {

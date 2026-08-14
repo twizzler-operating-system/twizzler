@@ -25,6 +25,31 @@ enum ZeroOrFrame {
     Frame(usize, FrameRef),
 }
 
+/// Install a 2 MiB frame on the first fault into an empty 2 MiB region of an anonymous object.
+///
+/// **Off**, measured. The bet is that one fault beats 512, but it is paid up front and in full: the
+/// frame is zeroed synchronously on the faulting thread, and a large frame always comes from a
+/// never-touched buddy region, so the zero is really ~512 host page faults. Measured at ~1.5 ms
+/// each. A thread stack touches a handful of pages out of its whole span, so for that shape the
+/// bet loses badly.
+///
+/// A/B over one boot of the default workload, at the same endpoint:
+///
+/// | | on | off |
+/// |---|---|---|
+/// | page faults | 1,680 | 19,150 |
+/// | total fault time | 744 ms | 600 ms |
+/// | large frames zeroed | 357 / 644 ms | 63 / 86 ms |
+/// | small frames zeroed | 87,244 / 9 ms | 105,515 / 63 ms |
+///
+/// So 11x the faults still comes out ahead, because the zeroing it avoids costs far more than the
+/// extra faults do. Left as a switch because that ranking is workload-dependent: something that
+/// densely touches large regions pays the zeroing either way and would rather have one fault.
+///
+/// Only the anonymous path. The pager path builds its own large pages out of read-ahead, and its
+/// 2 MiB alignment is load-bearing in `pager_compl_handle_page_data`.
+const TRY_LARGE_ANON_PAGES: bool = false;
+
 /// Whether a volatile object's first touch of an empty region actually gets a large frame.
 ///
 /// The allocation below is a non-waiting `try_allocate` at level 1, so it fails silently and falls
@@ -404,17 +429,22 @@ impl Object {
                 false,
             );
         }
-        drop(guard);
         let mut alloc = FrameAllocator::new(
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        if !first_is_present {
+        // Try to get the frames without giving the caller's lock up. Only *waiting* for memory is
+        // unacceptable here -- it would block every other fault on this object -- and there is
+        // normally nothing to wait for, so the unconditional drop-and-retake this used to do cost
+        // an extra acquisition (~750 ns) on every fill fault to insure against the rare case.
+        if !first_is_present && alloc.precharge_nowait(page_count) < page_count {
+            drop(guard);
             alloc.precharge(page_count, FrameAllocFlags::WAIT_OK);
+            guard = self.lock_page_tables();
         }
-        guard = self.lock_page_tables();
 
-        if page != PageNumber::meta_page()
+        if TRY_LARGE_ANON_PAGES
+            && page != PageNumber::meta_page()
             && guard.is_empty_at_level(page.as_byte_offset() as u64, 1)
         {
             let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;

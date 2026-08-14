@@ -15,7 +15,9 @@ pub use consistency::{
 };
 pub use cursor::MappingCursor;
 pub use mapper::Mapper;
-pub use phys_provider::{ContiguousProvider, PhysAddrProvider, PhysMapInfo, ZeroPageProvider};
+pub use phys_provider::{
+    ContiguousProvider, PhysAddrProvider, PhysMapInfo, UninitPageProvider, ZeroPageProvider,
+};
 pub use reader::{MapInfo, MapReader};
 pub use settings::{MappingFlags, MappingSettings};
 

@@ -137,6 +137,8 @@ pub fn sys_debug_shutdown(code: u32) {
 pub enum EnumerateKind {
     Objects,
     Threads,
+    /// Slots of the caller's address space that have an object mapped into them.
+    MappedSlots,
 }
 
 impl From<EnumerateKind> for u64 {
@@ -144,6 +146,7 @@ impl From<EnumerateKind> for u64 {
         match x {
             EnumerateKind::Objects => 0,
             EnumerateKind::Threads => 1,
+            EnumerateKind::MappedSlots => 2,
         }
     }
 }
@@ -155,9 +158,27 @@ impl TryFrom<u64> for EnumerateKind {
         match value {
             0 => Ok(EnumerateKind::Objects),
             1 => Ok(EnumerateKind::Threads),
+            2 => Ok(EnumerateKind::MappedSlots),
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
+}
+
+/// Fill `buf` with the numbers of the address-space slots that currently have an object mapped
+/// into them, in ascending order, skipping the first `offset` of them. Returns how many were
+/// written; fewer than `buf.len()` means the enumeration is complete.
+///
+/// The alternative is one [sys_object_read_map] per slot, and there are `SLOTS` (128Ki on x86_64)
+/// of them -- which is what `bootstrap` used to do, at 88% of all the syscalls in a boot.
+pub fn sys_enumerate_slots(buf: &mut [u64], offset: usize) -> Result<usize, TwzError> {
+    let args = [
+        EnumerateKind::MappedSlots.into(),
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        offset as u64,
+    ];
+    let (code, val) = unsafe { raw_syscall(Syscall::Enumerate, &args) };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
 }
 
 pub fn sys_enumerate(

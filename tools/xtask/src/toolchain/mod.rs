@@ -18,6 +18,68 @@ mod pathfinding;
 mod ports;
 mod utils;
 
+/// A rustflag naming the *installed* toolchain's content, so that replacing it invalidates every
+/// artifact built against the old one.
+///
+/// The toolchain tag (`utils::generate_tag`) names the *sources* a toolchain was built from -- it
+/// is derived from submodule OIDs in HEAD -- so rebuilding the same commits yields the same tag,
+/// the same directory, and different binaries inside it. Cargo cannot see that either: its own
+/// rustc fingerprint is the compiler's version output, which is likewise unchanged. What follows is
+/// a tree of artifacts built by a compiler that no longer exists, which surfaces as `can't find
+/// crate` for something you never touched if you are lucky, and as one build silently linking two
+/// toolchains if you are not. Both happened here; see pagerperf.md section 22.
+///
+/// The flag itself is inert: a path remap from a prefix that cannot occur to itself. What matters
+/// is only that it is part of RUSTFLAGS, which cargo *does* fold into its fingerprints.
+pub fn toolchain_stamp_flag() -> String {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    fn stamp_path(hasher: &mut DefaultHasher, path: &Path) {
+        let Ok(md) = path.metadata() else {
+            // A missing piece is itself a distinguishing fact, and a more alarming one than any
+            // hash: fold in the name so a half-installed toolchain does not collide with a whole
+            // one.
+            path.to_string_lossy().hash(hasher);
+            return;
+        };
+        md.len().hash(hasher);
+        if let Ok(mtime) = md.modified() {
+            if let Ok(since) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                since.as_nanos().hash(hasher);
+            }
+        }
+    }
+
+    let mut hasher = DefaultHasher::new();
+    if let Ok(tc) = pathfinding::get_toolchain_path() {
+        for bin in ["bin/rustc", "bin/rustdoc", "bin/cargo"] {
+            stamp_path(&mut hasher, &tc.join(bin));
+        }
+        // The sysroots are what a target actually links against, and a bootstrap can replace them
+        // without touching the driver binaries above.
+        if let Ok(entries) = std::fs::read_dir(tc.join("sysroots")) {
+            let mut libs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path().join("lib"))
+                .flat_map(|lib| std::fs::read_dir(lib).into_iter().flatten().flatten())
+                .map(|e| e.path())
+                .collect();
+            // Directory order is not stable; a stamp that depends on it would churn for no reason.
+            libs.sort();
+            for lib in libs {
+                lib.file_name().hash(&mut hasher);
+                stamp_path(&mut hasher, &lib);
+            }
+        }
+    }
+    // A prefix that cannot match any real path, so the remap never fires.
+    let stamp = hasher.finish();
+    format!("--remap-path-prefix=/nonexistent-twz-toolchain-{stamp:016x}=/nonexistent-twz-toolchain-{stamp:016x}")
+}
+
 pub use pathfinding::*;
 pub use utils::*;
 
@@ -207,10 +269,11 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
         ""
     };
     let args = format!(
-        "-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr",
+        "-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr {}",
         extra_rustflags,
         sysroot_path.display(),
-        sysroot_path.display()
+        sysroot_path.display(),
+        toolchain_stamp_flag(),
     );
     std::env::set_var("RUSTFLAGS", args);
     std::env::set_var("CARGO_TARGET_DIR", "target/dynamic");
@@ -227,11 +290,12 @@ pub fn set_static(target: &Triple) {
     std::env::set_var(
         "RUSTFLAGS",
         &format!(
-            "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a",
+            "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a {}",
             sysroot_path.display(),
             sysroot_path.display(),
             rustlib_path.display(),
-            sysroot_path.display()
+            sysroot_path.display(),
+            toolchain_stamp_flag(),
         ),
     );
     std::env::set_var("CARGO_TARGET_DIR", "target/static");

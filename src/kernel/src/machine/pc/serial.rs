@@ -32,6 +32,17 @@ const TX_TIMEOUT_CYCLES: u64 = 100_000_000;
 /// subsequent byte pay the full timeout.
 static TX_STUCK: AtomicBool = AtomicBool::new(false);
 
+/// Bytes that may be written after a single OUTPUT_EMPTY check.
+///
+/// On a 16550A, OUTPUT_EMPTY means the whole 16-byte transmit FIFO is empty, not just the holding
+/// register, so the poll is only needed once per FIFO-full rather than once per byte. Both the poll
+/// and the write are port accesses, which under virtualization are vm exits, so this nearly halves
+/// the exits per byte of console output -- and console output is not cheap here: a boot spends
+/// close to a second of wall clock inside `KernelConsoleWrite`.
+///
+/// Stays at 1 unless [`SerialPort::init`] confirms the part actually enabled its FIFO.
+static TX_BURST: AtomicU32 = AtomicU32::new(1);
+
 bitflags::bitflags! {
     /// Line status flags
     struct LineStsFlags: u8 {
@@ -107,6 +118,12 @@ impl SerialPort {
                 self.read_reg(i);
             }
             self.write_reg(Self::MODEM_CTRL, 0x0F);
+
+            // IID bits 7:6 both set is the 16550A's report that the FIFO it was just asked for is
+            // on. Anything else (an 8250, or a 16550 with the broken FIFO) keeps the burst at one.
+            if self.read_reg(Self::IID) & 0xc0 == 0xc0 {
+                TX_BURST.store(16, Ordering::Relaxed);
+            }
         }
     }
 
@@ -169,8 +186,17 @@ impl SerialPort {
 
 impl core::fmt::Write for SerialPort {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for byte in s.bytes() {
-            self.send(byte);
+        for chunk in s
+            .as_bytes()
+            .chunks(TX_BURST.load(Ordering::Relaxed) as usize)
+        {
+            if !self.wait_for_tx() {
+                // Stuck port: dropping the rest is the same trade `send` makes.
+                return Ok(());
+            }
+            for byte in chunk {
+                unsafe { self.write_reg(Self::DATA, *byte) };
+            }
         }
         Ok(())
     }

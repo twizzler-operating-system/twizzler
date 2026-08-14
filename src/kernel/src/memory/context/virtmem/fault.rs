@@ -1,5 +1,8 @@
+use alloc::sync::Arc;
+
 use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
+    trace::{CONTEXT_FAULT, TraceKind},
     upcall::{
         MemoryAccessKind, MemoryContextViolationInfo, ObjectMemoryFaultInfo, SecurityViolationInfo,
         UpcallInfo,
@@ -13,11 +16,11 @@ use crate::{
     instant::Instant,
     memory::context::{ContextRef, kernel_context},
     obj::PageNumber,
-    once::Once,
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
     spinlock::Spinlock,
     thread::{current_memory_context, current_thread_ref, locktrack},
     time::TimeStatCollector,
+    trace::mgr::TRACE_MGR,
 };
 
 /// DIAG (Mode B): the last few (slot, object) pairs removed from any context. A
@@ -81,27 +84,211 @@ fn report_unmap_history(slot: usize) {
     );
 }
 
-struct FaultStats {
+/// Collect a per-stage breakdown of the fault path, per cpu, and dump it at `debug_shutdown`.
+///
+/// Same shape and same reasoning as [`crate::syscall::SYSCALL_PROFILE`]: off by default, because
+/// it times a dozen spans per fault and takes a (per-cpu, so uncontended) lock for each one, and
+/// the numbers it reports include that cost.
+pub const FAULT_PROFILE: bool = false;
+
+/// Stages of one fault, in the order they run. `Total` is the whole of [`page_fault`], so it also
+/// captures whatever is not attributed to a stage.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum FaultStage {
+    /// `log_fault` + `assert_valid` + `check_violations` + `get_context`.
+    Prologue = 0,
+    /// Looking up the faulting address's region, i.e. the `regions` lock plus a `MapRegion` clone.
+    Region,
+    /// `check_security`, which includes a *second* region lookup for the executing object.
+    Security,
+    /// All of `MapRegion::handle_fault`, which the next four break down.
+    Handle,
+    /// Taking the object's page-table lock.
+    PtLock,
+    /// `ensure_in_core`: the fill, including any pager round trip.
+    EnsureCore,
+    Cow,
+    /// `ensure_object_mapped`: installing the object-table entry in the address space.
+    MapObject,
+    Total,
+}
+const NR_STAGES: usize = FaultStage::Total as usize + 1;
+
+/// What kind of fault it was, counted alongside the stages.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub enum FaultClass {
+    User = 0,
+    Kernel,
+    /// The page was already present: a permission or object-table fault, not a fill.
+    Present,
+    Read,
+    Write,
+    Exec,
+    /// Reached the pager.
+    Pager,
+    /// Copied on write.
+    Cow,
+    /// Installed an object-table entry rather than finding one already there.
+    Mapped,
+}
+const NR_CLASSES: usize = FaultClass::Mapped as usize + 1;
+
+/// Bucket bounds for [`FaultTracking::buckets`], in nanoseconds; the last bucket is everything
+/// above. A mutex here is a *sleeping* lock, so an acquisition either costs a few hundred ns or
+/// blocks for as long as the holder takes -- means alone cannot tell those apart, and every stage
+/// in this path has a max in the milliseconds.
+const BUCKET_NS: [u64; 3] = [1_000, 10_000, 100_000];
+const NR_BUCKETS: usize = BUCKET_NS.len() + 1;
+
+pub struct FaultTracking {
+    /// Count and duration of every fault, which `SysInfo` reports. Always collected, unlike the
+    /// rest of this struct.
     count: usize,
     time: TimeStatCollector,
+    stages: [TimeStatCollector; NR_STAGES],
+    buckets: [[usize; NR_BUCKETS]; NR_STAGES],
+    classes: [usize; NR_CLASSES],
 }
 
-static FAULT_STATS: Once<Spinlock<FaultStats>> = Once::new();
-
-fn get_fault_stats() -> &'static Spinlock<FaultStats> {
-    FAULT_STATS.call_once(|| {
-        Spinlock::new(FaultStats {
+impl FaultTracking {
+    pub fn new() -> Self {
+        Self {
             count: 0,
             time: TimeStatCollector::new(),
-        })
-    })
+            stages: core::array::from_fn(|_| TimeStatCollector::new()),
+            buckets: [[0; NR_BUCKETS]; NR_STAGES],
+            classes: [0; NR_CLASSES],
+        }
+    }
+}
+
+/// Read the clock for a stage timing, but only when [`FAULT_PROFILE`] will use the answer.
+///
+/// `Instant::now()` is not free -- an `Arc<dyn ClockHardware>` dispatch, an `rdtsc`, and a u128
+/// multiply-and-divide -- and the fault path takes a dozen of these. `FAULT_PROFILE` is a const,
+/// so with it off both this and the matching [`record_stage`] fold away to nothing.
+#[inline(always)]
+pub fn stage_start() -> Instant {
+    if FAULT_PROFILE {
+        Instant::now()
+    } else {
+        Instant::zero()
+    }
+}
+
+/// Time one stage of the fault path. Compiles away entirely when [`FAULT_PROFILE`] is off.
+pub fn record_stage(stage: FaultStage, start: Instant) {
+    if !FAULT_PROFILE {
+        return;
+    }
+    let dur: twizzler_abi::syscall::TimeSpan = (Instant::now() - start).into();
+    let ns = dur.as_nanos() as u64;
+    let bucket = BUCKET_NS
+        .iter()
+        .position(|b| ns < *b)
+        .unwrap_or(NR_BUCKETS - 1);
+    crate::interrupt::with_disabled(|| {
+        let mut stats = crate::processor::mp::current_processor().fault_stats.lock();
+        stats.stages[stage as usize].add_sample(dur);
+        stats.buckets[stage as usize][bucket] += 1;
+    });
+}
+
+pub fn record_class(class: FaultClass) {
+    if !FAULT_PROFILE {
+        return;
+    }
+    crate::interrupt::with_disabled(|| {
+        crate::processor::mp::current_processor()
+            .fault_stats
+            .lock()
+            .classes[class as usize] += 1;
+    });
+}
+
+pub fn print_fault_profile() {
+    if !FAULT_PROFILE {
+        return;
+    }
+    let mut stages: [TimeStatCollector; NR_STAGES] =
+        core::array::from_fn(|_| TimeStatCollector::new());
+    let mut buckets = [[0usize; NR_BUCKETS]; NR_STAGES];
+    let mut classes = [0usize; NR_CLASSES];
+    crate::processor::mp::with_each_active_processor(|p| {
+        let stats = p.fault_stats.lock();
+        for (i, stage) in stats.stages.iter().enumerate() {
+            stages[i].merge(stage);
+            for (b, count) in stats.buckets[i].iter().enumerate() {
+                buckets[i][b] += count;
+            }
+        }
+        for (i, count) in stats.classes.iter().enumerate() {
+            classes[i] += count;
+        }
+    });
+
+    const STAGE_NAMES: [&str; NR_STAGES] = [
+        "prologue",
+        "region",
+        "security",
+        "handle",
+        "pt_lock",
+        "ensure_core",
+        "cow",
+        "map_object",
+        "TOTAL",
+    ];
+    logln!("== fault profile ==");
+    for (i, name) in STAGE_NAMES.iter().enumerate() {
+        let stat = stages[i].get_stats();
+        let count = stages[i].count();
+        if count == 0 {
+            continue;
+        }
+        logln!(
+            "  {:>11}: {:>6} x {:>7} ns = {:>7} us  min {:>6} max {:>9}  [<1us {:>6} <10us {:>5} <100us {:>4} >= {:>4}]",
+            name,
+            count,
+            stat.mean.as_nanos(),
+            (stat.mean.as_nanos() as usize * count) / 1000,
+            stat.min.as_nanos(),
+            stat.max.as_nanos(),
+            buckets[i][0],
+            buckets[i][1],
+            buckets[i][2],
+            buckets[i][3],
+        );
+    }
+    const CLASS_NAMES: [&str; NR_CLASSES] = [
+        "user", "kernel", "present", "read", "write", "exec", "pager", "cow", "mapped",
+    ];
+    for (i, name) in CLASS_NAMES.iter().enumerate() {
+        logln!("  {:>11}: {}", name, classes[i]);
+    }
 }
 
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
-    let stats_lock = get_fault_stats().lock();
-    stats.page_fault_count = stats_lock.count;
-    stats.page_fault_stats = stats_lock.time.get_stats();
+    // Asking for the stats is what turns their collection on; see `TIMING_ON`.
+    TIMING_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+    let mut time = TimeStatCollector::new();
+    crate::processor::mp::with_each_active_processor(|p| {
+        let per_cpu = p.fault_stats.lock();
+        stats.page_fault_count += per_cpu.count;
+        time.merge(&per_cpu.time);
+    });
+    stats.page_fault_stats = time.get_stats();
 }
+
+/// Whether the per-fault duration is measured at all.
+///
+/// Counting is unconditional and cheap; the two `Instant::now()` calls that bracket the fault are
+/// not, and until someone reads `MemoryStats` nothing looks at what they produce. Same shape and
+/// same reasoning as [`crate::syscall::SYSCALL_PROFILE`]'s `TIMING_ON`: one relaxed load of a
+/// static written approximately never, so it sits shared and clean in every cpu's L1.
+static TIMING_ON: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(FAULT_PROFILE);
 
 /// Consecutive identical faults before the loop is called a loop. Two in a row happen normally (two
 /// threads on one page, a COW retry); a fault that returns `Ok` without mapping anything reaches
@@ -116,15 +303,18 @@ static REFAULT_LOOP: locktrack::diag::Counter =
 #[allow(unused_variables)]
 fn log_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
     if let Some(ct) = current_thread_ref() {
+        // Relaxed: these are one thread's own record of its own previous fault, read only by the
+        // refault detector below and by diagnostics. Nothing orders anything against them, and
+        // SeqCst here is three locked exchanges on every fault in the system.
         let old_addr = ct
             .last_pf_addr
-            .swap(addr.raw(), core::sync::atomic::Ordering::SeqCst);
+            .swap(addr.raw(), core::sync::atomic::Ordering::Relaxed);
         let old_flags = ct
             .last_pf_flags
-            .swap(flags.bits(), core::sync::atomic::Ordering::SeqCst);
+            .swap(flags.bits(), core::sync::atomic::Ordering::Relaxed);
         let old_kind = ct
             .last_pf_kind
-            .swap(cause as u32, core::sync::atomic::Ordering::SeqCst);
+            .swap(cause as u32, core::sync::atomic::Ordering::Relaxed);
         if old_addr == addr.raw() && old_flags == flags.bits() && old_kind == cause as u32 {
             // Counted, not just noticed. Comparing against only the previous fault cannot tell a
             // benign repeat from a livelock, and `log::debug!` is filtered out at the level these
@@ -196,21 +386,30 @@ fn check_violations(
     Ok(())
 }
 
-fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID) {
+/// Resolve the contexts a fault runs against: the one whose regions name the faulting address, the
+/// active security context, and the one a resulting mapping is installed in.
+///
+/// The last is the calling thread's own context, and it is *not* always the first -- a fault on
+/// kernel object memory looks the region up in the kernel context but installs into whatever
+/// context the faulting thread is running under. `MapRegion::handle_fault` used to resolve it
+/// again for itself, which is a second `current_thread_ref` and a second `Arc` clone per fault of
+/// a value this function already had in hand and threw away.
+fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID, ContextRef) {
     let sctx_id = current_thread_ref()
         .map(|ct| ct.active_sctx_id())
         .unwrap_or(KERNEL_SCTX);
     let user_ctx = current_memory_context();
+    let map_ctx = user_ctx.clone().unwrap_or_else(|| kernel_context().clone());
     if addr.is_kernel_object_memory() {
         assert!(!flags.contains(PageFaultFlags::USER));
-        (kernel_context().clone(), KERNEL_SCTX)
+        (kernel_context().clone(), KERNEL_SCTX, map_ctx)
     } else {
         // Seen once, at a user fault with no memory context, and never reproduced -- so say
         // everything that distinguishes the candidates. A thread mid-exit or mid-context-switch
         // has a reason to have dropped its context; a plain running user thread does not, and
         // that is a different bug from a stray kernel access to a non-kernel-object address.
-        match user_ctx.clone() {
-            Some(ctx) => (ctx, sctx_id),
+        match user_ctx {
+            Some(ctx) => (ctx, sctx_id, map_ctx),
             None => {
                 let ct = current_thread_ref();
                 panic!(
@@ -248,12 +447,12 @@ fn check_object_addr(
 }
 
 fn check_security(
-    ctx: &ContextRef,
     user_sctx: ObjID,
     id: ObjID,
     addr: VirtAddr,
     cause: MemoryAccessKind,
     ip: VirtAddr,
+    exec_info: Option<ExecInfo>,
     default_prot: Protections,
 ) -> Result<PermsInfo, UpcallInfo> {
     if ip.is_kernel() || user_sctx.raw() == 0 {
@@ -263,7 +462,11 @@ fn check_security(
             restrict: Protections::empty(),
         });
     }
-    let exec_info = get_map_region(ip, ctx, MemoryAccessKind::InstructionFetch, ip)?;
+    // `needs_exec_info` above agrees with the condition just tested, so this is present whenever
+    // the path gets here.
+    let exec_info = exec_info.ok_or(UpcallInfo::MemoryContextViolation(
+        MemoryContextViolationInfo::new(ip.raw(), MemoryAccessKind::InstructionFetch),
+    ))?;
     let access_kind = match cause {
         MemoryAccessKind::Read => Protections::READ,
         MemoryAccessKind::Write => Protections::WRITE | Protections::READ,
@@ -272,8 +475,8 @@ fn check_security(
     let access_info = AccessInfo {
         target_id: id,
         access_kind,
-        exec_id: Some(exec_info.object().id()),
-        exec_off: ip - exec_info.range.start,
+        exec_id: Some(exec_info.id),
+        exec_off: ip - exec_info.base,
     };
     if let Some(ct) = current_thread_ref() {
         let perms = ct.check_active_access(&access_info, default_prot);
@@ -312,38 +515,51 @@ fn page_fault_to_region(
     cause: MemoryAccessKind,
     flags: PageFaultFlags,
     ip: VirtAddr,
-    ctx: ContextRef,
     sctx_id: ObjID,
-    info: MapRegion,
+    info: Arc<MapRegion>,
+    exec_info: Option<ExecInfo>,
+    map_ctx: ContextRef,
 ) -> Result<(), UpcallInfo> {
-    let start_time = Instant::now();
+    // Only for `trace_fault`, which is off unless a sink is listening -- so ask first rather than
+    // reading the clock on every fault to hand it a number nobody looks at.
+    let start_time = if TRACE_MGR.any_enabled(TraceKind::Context, CONTEXT_FAULT) {
+        Instant::now()
+    } else {
+        Instant::zero()
+    };
     let id = info.object.id();
     let page_number = PageNumber::from_address(addr);
 
     // Step 1: Check for address validity and check for security violations.
     check_object_addr(page_number, id, cause, addr)?;
 
-    let (_id_ok, default_prot) = info.object.check_id();
-
-    // TODO: enforce id_ok
-
-    let perms = check_security(&ctx, sctx_id, id.clone(), addr, cause, ip, default_prot)?;
+    // `check_id` used to run here, per fault, to recover the object's default protections. It is
+    // memoized in a `Once` that `insert_object` has already filled, so the region carries the
+    // answer instead. TODO: enforce the id check itself.
+    let t = stage_start();
+    let perms = check_security(
+        sctx_id,
+        id.clone(),
+        addr,
+        cause,
+        ip,
+        exec_info,
+        info.default_prot,
+    );
+    record_stage(FaultStage::Security, t);
+    let perms = perms?;
 
     // Do we need to switch contexts?
     if perms.ctx != sctx_id {
         current_thread_ref().map(|ct| ct.switch_sctx(perms.ctx));
     }
 
-    if let Err(e) = info.handle_fault(
-        addr,
-        ip,
-        cause,
-        flags,
-        start_time,
-        perms,
-        default_prot,
-        perms.ctx,
-    ) {
+    let t = stage_start();
+    let res = info.handle_fault(
+        addr, ip, cause, flags, start_time, perms, perms.ctx, map_ctx,
+    );
+    record_stage(FaultStage::Handle, t);
+    if let Err(e) = res {
         return Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
             id,
             e,
@@ -354,26 +570,72 @@ fn page_fault_to_region(
     Ok(())
 }
 
+/// What [`check_security`] needs about the object the faulting thread is executing in: enough to
+/// name the access, and no more. Deliberately not a `MapRegion`: cloning one is four `Arc` bumps
+/// and four matching drops, for two fields.
+#[derive(Clone, Copy)]
+struct ExecInfo {
+    id: ObjID,
+    base: VirtAddr,
+}
+
+/// Whether the fault needs [`ExecInfo`]. Agrees with `check_security`'s early return, which is what
+/// lets the lookup below be skipped rather than performed and discarded.
+fn needs_exec_info(ip: VirtAddr, sctx_id: ObjID) -> bool {
+    !ip.is_kernel() && sctx_id.raw() != 0
+}
+
+/// Look up the faulting address's region and, in the *same* acquisition of the regions lock, the
+/// object executing at `ip`.
+///
+/// These used to be two separate calls -- one here and one from `check_security` -- so every fault
+/// that reached a security check took the regions mutex twice and cloned two `MapRegion`s. The
+/// lock is 750 ns and a lookup-plus-clone is another 650, on a path whose whole floor is ~6 us.
 fn get_map_region(
     addr: VirtAddr,
     ctx: &ContextRef,
     cause: MemoryAccessKind,
-    _ip: VirtAddr,
-) -> Result<MapRegion, UpcallInfo> {
-    let upcall =
-        UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause));
-    let slot: Slot = addr.try_into().map_err(|_| upcall)?;
+    ip: VirtAddr,
+    want_exec: bool,
+) -> Result<(Arc<MapRegion>, Option<ExecInfo>), UpcallInfo> {
+    let violation = |addr: VirtAddr, cause| {
+        UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), cause))
+    };
+    let slot: Slot = addr.try_into().map_err(|_| violation(addr, cause))?;
+    let exec_slot = match want_exec {
+        true => Some(
+            TryInto::<Slot>::try_into(ip)
+                .map_err(|_| violation(ip, MemoryAccessKind::InstructionFetch))?,
+        ),
+        false => None,
+    };
+    let exec_of = |region: &Arc<MapRegion>| ExecInfo {
+        id: region.object.id(),
+        base: region.range.start,
+    };
+
     let mut slot_mgr = ctx.regions.lock();
-    if let Some(region) = slot_mgr.lookup_region(slot.start_vaddr()) {
-        return Ok(region.clone());
-    }
+    let mut region = slot_mgr.lookup_region(slot.start_vaddr()).cloned();
+    let mut exec = exec_slot.and_then(|s| slot_mgr.lookup_region(s.start_vaddr()).map(&exec_of));
     drop(slot_mgr);
-    let kctx = kernel_context();
-    let mut k_regions = kctx.regions.lock();
-    k_regions
-        .lookup_region(slot.start_vaddr())
-        .cloned()
-        .ok_or(upcall)
+
+    // Whatever this context did not have may still be a kernel object.
+    if region.is_none() || (exec_slot.is_some() && exec.is_none()) {
+        let kctx = kernel_context();
+        let mut k_regions = kctx.regions.lock();
+        if region.is_none() {
+            region = k_regions.lookup_region(slot.start_vaddr()).cloned();
+        }
+        if exec.is_none() {
+            exec = exec_slot.and_then(|s| k_regions.lookup_region(s.start_vaddr()).map(&exec_of));
+        }
+    }
+
+    let region = region.ok_or(violation(addr, cause))?;
+    if exec_slot.is_some() && exec.is_none() {
+        return Err(violation(ip, MemoryAccessKind::InstructionFetch));
+    }
+    Ok((region, exec))
 }
 
 pub fn do_page_fault(
@@ -382,23 +644,60 @@ pub fn do_page_fault(
     flags: PageFaultFlags,
     ip: VirtAddr,
 ) -> Result<(), UpcallInfo> {
+    let t = stage_start();
     log_fault(addr, cause, flags, ip);
     assert_valid(addr, cause, flags, ip);
     check_violations(addr, cause, flags, ip)?;
 
-    let (ctx, sctx_id) = get_context(addr, flags);
-    let info = get_map_region(addr, &ctx, cause, ip)?;
-    page_fault_to_region(addr, cause, flags, ip, ctx, sctx_id, info)
+    let (ctx, sctx_id, map_ctx) = get_context(addr, flags);
+    record_stage(FaultStage::Prologue, t);
+    if FAULT_PROFILE {
+        record_class(if flags.contains(PageFaultFlags::USER) {
+            FaultClass::User
+        } else {
+            FaultClass::Kernel
+        });
+        if flags.contains(PageFaultFlags::PRESENT) {
+            record_class(FaultClass::Present);
+        }
+        record_class(match cause {
+            MemoryAccessKind::Read => FaultClass::Read,
+            MemoryAccessKind::Write => FaultClass::Write,
+            MemoryAccessKind::InstructionFetch => FaultClass::Exec,
+        });
+    }
+
+    let t = stage_start();
+    let info = get_map_region(addr, &ctx, cause, ip, needs_exec_info(ip, sctx_id));
+    record_stage(FaultStage::Region, t);
+    let (info, exec_info) = info?;
+    page_fault_to_region(addr, cause, flags, ip, sctx_id, info, exec_info, map_ctx)
 }
 
 pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, ip: VirtAddr) {
-    let start_time = Instant::now();
+    let timing = TIMING_ON.load(core::sync::atomic::Ordering::Relaxed);
+    let start_time = if timing {
+        Instant::now()
+    } else {
+        Instant::zero()
+    };
     let res = do_page_fault(addr, cause, flags, ip);
-    let end_time = Instant::now();
-    let mut stats = get_fault_stats().lock();
-    stats.time.add_sample((end_time - start_time).into());
-    stats.count += 1;
-    drop(stats);
+    record_stage(FaultStage::Total, start_time);
+    // Per-cpu, for the same reason the syscall counters are (see `SyscallTracking`): this used to
+    // be one global spinlock taken on every fault, so every cpu in the system serialized on one
+    // lock and one cache line to record that it had taken one. Summed on the read path, in
+    // `fill_stats`. A fault before this cpu's tls is up goes uncounted; those are early-boot
+    // kernel faults, and the alternative is a null check on the hot path.
+    if crate::processor::tls_ready() {
+        let sample = timing.then(|| (Instant::now() - start_time).into());
+        crate::interrupt::with_disabled(|| {
+            let mut stats = crate::processor::mp::current_processor().fault_stats.lock();
+            if let Some(sample) = sample {
+                stats.time.add_sample(sample);
+            }
+            stats.count += 1;
+        });
+    }
     if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
         log::trace!(
             "done page-fault: {:?} {:?} {:?} ip={:?}",

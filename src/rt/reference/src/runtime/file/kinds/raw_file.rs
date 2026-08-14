@@ -39,14 +39,9 @@ mod objstats {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let m = MAP.fetch_add(map, Ordering::Relaxed) + map;
         let e = META.fetch_add(meta, Ordering::Relaxed) + meta;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "OBJSTATS {} rawfile opens: map {} us, meta {} us",
-                n,
-                m / 1000,
-                e / 1000,
-            );
-        }
+        // Every call, in ns; see OPENSTATS.
+        secgate::statlog::record("OBJSTATS", n, &[map, meta]);
+        let _ = (m, e);
     }
 }
 

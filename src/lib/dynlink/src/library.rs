@@ -2,7 +2,10 @@
 
 use std::{
     fmt::{Debug, Display},
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        OnceLock,
+    },
 };
 
 use elf::{
@@ -27,13 +30,47 @@ use crate::{
 };
 
 #[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
+#[repr(u8)]
 pub(crate) enum RelocState {
     /// Relocation has not started.
-    Unrelocated,
+    Unrelocated = 0,
     /// Relocation has started, but not finished, or failed.
-    PartialRelocation,
+    PartialRelocation = 1,
     /// Relocation completed successfully.
-    Relocated,
+    Relocated = 2,
+}
+
+/// Relocation state, written through a shared reference.
+///
+/// Relocation runs under a dynlink *read* lock, so a library can be present in the graph while
+/// another thread is still relocating it. Readers must gate on [`Library::is_relocated`] before
+/// calling into a library; the release/acquire pair here is what makes the relocation writes
+/// visible to a reader that observes `Relocated`.
+#[repr(transparent)]
+pub(crate) struct AtomicRelocState(AtomicU8);
+
+impl AtomicRelocState {
+    fn new(state: RelocState) -> Self {
+        Self(AtomicU8::new(state as u8))
+    }
+
+    pub(crate) fn get(&self) -> RelocState {
+        match self.0.load(Ordering::Acquire) {
+            0 => RelocState::Unrelocated,
+            1 => RelocState::PartialRelocation,
+            _ => RelocState::Relocated,
+        }
+    }
+
+    pub(crate) fn set(&self, state: RelocState) {
+        self.0.store(state as u8, Ordering::Release);
+    }
+}
+
+impl Debug for AtomicRelocState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.get(), f)
+    }
 }
 
 #[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
@@ -44,6 +81,26 @@ pub enum AllowedGates {
     Public,
     /// Gates are exported to all compartments
     PublicInclSelf,
+}
+
+/// The file ranges an ELF image's PT_LOAD segments occupy, as `(offset, len)` byte pairs.
+///
+/// Parsed straight off a mapped image, with no `Context` and no `Library`: the monitor calls this
+/// to work out what to prefault *before* it takes the dynlink write lock. The loadable part of a
+/// release-built DSO here is under 10% of the file -- the rest is DWARF -- so a whole-object
+/// preload would read an order of magnitude more than the load touches.
+pub fn pt_load_ranges(data: &[u8]) -> Result<std::vec::Vec<(u64, u64)>, ParseError> {
+    let elf = elf::ElfBytes::<NativeEndian>::minimal_parse(data)?;
+    Ok(elf
+        .segments()
+        .map(|phdrs| {
+            phdrs
+                .iter()
+                .filter(|p| p.p_type == elf::abi::PT_LOAD && p.p_filesz > 0)
+                .map(|p| (p.p_offset, p.p_filesz))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 #[repr(C)]
@@ -108,7 +165,7 @@ pub struct Library {
     /// Object containing the full ELF data.
     pub full_obj: Backing,
     /// State of relocation.
-    pub(crate) reloc_state: RelocState,
+    pub(crate) reloc_state: AtomicRelocState,
     allowed_gates: AllowedGates,
 
     pub backings: Vec<Backing>,
@@ -150,7 +207,7 @@ impl Library {
             backings,
             tls_id,
             ctors,
-            reloc_state: RelocState::Unrelocated,
+            reloc_state: AtomicRelocState::new(RelocState::Unrelocated),
             comp_id,
             comp_name,
             secgate_info,
@@ -451,7 +508,7 @@ impl Library {
     }
 
     pub fn is_relocated(&self) -> bool {
-        self.reloc_state == RelocState::Relocated
+        self.reloc_state.get() == RelocState::Relocated
     }
 
     fn is_secgate(&self, name: &str) -> bool {

@@ -534,6 +534,14 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
 
 #[track_caller]
 pub fn schedule_thread(thread: ThreadRef) {
+    // Checked before the state write, not after it in `schedule_thread_on_cpu`. That order is what
+    // `Mutex::lock`'s dead-handoff reclaim depends on: it recognizes an owner that will never take
+    // the mutex by its `Exited` state, and a `set_state(Running)` here overwrites exactly that --
+    // leaving the mutex owned forever by a dead thread, with every later locker asleep behind it
+    // and no path able to notice.
+    if thread.is_exiting() {
+        return;
+    }
     thread.set_state(ExecutionState::Running);
     if thread.is_idle_thread() {
         return;
@@ -873,9 +881,11 @@ pub fn schedule_mark_preempt() {
 
 pub fn schedule_maybe_preempt() {
     if PREEMPT.swap(false, Ordering::SeqCst) {
+        let t = crate::instant::Instant::now();
         let cp = current_processor();
         cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
-        schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT)
+        schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT);
+        crate::interrupt::record_preempt(t);
     }
 }
 
@@ -1004,7 +1014,6 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                     );
                 }
             }
-            //crate::memory::print_fault_stats();
         }
         //crate::clock::print_info();
     }

@@ -6,7 +6,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
     },
 };
@@ -379,7 +379,20 @@ lazy_static! {
 /// against every other one -- at four threads that was two thirds of the cost of `File::open`. A
 /// pool sizes itself to whatever parallelism actually shows up, and a handle costs only a
 /// descriptor now that its buffer is created on demand.
-static HANDLE_POOL: Mutex<Vec<PooledHandle>> = Mutex::new(Vec::new());
+///
+/// Sharded, because with the handle no longer scarce the *lock* became the contended resource: one
+/// mutex took a borrow and a return from every thread in the process, and libstd's mutex parks on
+/// a futex when it collides. Measured at four threads resolving names, a borrow cost 3.6 us and a
+/// return 2.0 us -- 11 us per `resolve_name`, against a 6.7 us gate call. Shards are swept with
+/// `try_lock` so a collision is skipped rather than waited on, which is what removes the futex;
+/// the blocking sweep below it only runs when nothing is idle anywhere, i.e. when a handle is
+/// about to be created anyway.
+const POOL_SHARDS: usize = 8;
+static HANDLE_POOL: [Mutex<Vec<PooledHandle>>; POOL_SHARDS] =
+    [const { Mutex::new(Vec::new()) }; POOL_SHARDS];
+/// Where the next borrow starts its sweep. Spreading the start is what keeps threads off each
+/// other's shards; handles are interchangeable, so which one comes back does not matter.
+static POOL_HINT: AtomicUsize = AtomicUsize::new(0);
 static NAMING_UP: OnceLock<()> = OnceLock::new();
 
 /// The working namespace is per-handle state on the server, but callers expect it to be a property
@@ -398,8 +411,8 @@ fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
 
-/// A naming handle borrowed from the pool, returned when dropped.
-pub struct NamingGuard(Option<PooledHandle>);
+/// A naming handle borrowed from the pool, returned to the shard it came from when dropped.
+pub struct NamingGuard(Option<PooledHandle>, usize);
 
 impl Deref for NamingGuard {
     type Target = DynamicNamingHandle;
@@ -420,14 +433,42 @@ impl DerefMut for NamingGuard {
 impl Drop for NamingGuard {
     fn drop(&mut self) {
         if let Some(handle) = self.0.take() {
-            HANDLE_POOL.lock().unwrap().push(handle);
+            HANDLE_POOL[self.1].lock().unwrap().push(handle);
         }
     }
 }
 
+/// Take an idle handle out of the pool, or say which shard a new one should belong to.
+///
+/// Two sweeps. The first uses `try_lock`, so a shard another thread is touching costs a failed CAS
+/// and not a park -- that is where the win is, since the critical section is a `Vec::pop` and a
+/// collision is over in nanoseconds. The second blocks, and exists so that "no idle handle" is a
+/// fact rather than a guess: without it a lock collision would look like an empty pool and open a
+/// handle that was not needed. It only runs when the first sweep found nothing, which is when a
+/// handle is about to be created anyway.
+fn take_pooled(start: usize) -> (usize, Option<PooledHandle>) {
+    for i in 0..POOL_SHARDS {
+        let s = (start + i) % POOL_SHARDS;
+        if let Ok(mut shard) = HANDLE_POOL[s].try_lock() {
+            if let Some(pooled) = shard.pop() {
+                return (s, Some(pooled));
+            }
+        }
+    }
+    for i in 0..POOL_SHARDS {
+        let s = (start + i) % POOL_SHARDS;
+        if let Some(pooled) = HANDLE_POOL[s].lock().unwrap().pop() {
+            return (s, Some(pooled));
+        }
+    }
+    (start % POOL_SHARDS, None)
+}
+
 pub fn get_naming_handle() -> Option<NamingGuard> {
     let mut fresh = false;
-    let pooled = match HANDLE_POOL.lock().unwrap().pop() {
+    let start = POOL_HINT.fetch_add(1, Ordering::Relaxed);
+    let (shard, taken) = take_pooled(start);
+    let pooled = match taken {
         Some(pooled) => pooled,
         None => {
             fresh = true;
@@ -439,21 +480,13 @@ pub fn get_naming_handle() -> Option<NamingGuard> {
                 }
                 let _ = NAMING_UP.set(());
             }
-            {
-                static CREATED: AtomicU64 = AtomicU64::new(0);
-                let n = CREATED.fetch_add(1, Ordering::Relaxed) + 1;
-                let t0 = std::time::Instant::now();
-                let handle = dynamic_naming_factory()?;
-                twizzler_abi::klog_println!(
-                    "POOLSTATS naming handle #{} created in {} us",
-                    n,
-                    t0.elapsed().as_micros(),
-                );
-                PooledHandle { handle, ns_gen: 0 }
+            PooledHandle {
+                handle: dynamic_naming_factory()?,
+                ns_gen: 0,
             }
         }
     };
-    let mut guard = NamingGuard(Some(pooled));
+    let mut guard = NamingGuard(Some(pooled), shard);
 
     let gen = NS_GEN.load(Ordering::Acquire);
     if guard.0.as_ref().unwrap().ns_gen != gen {
@@ -640,8 +673,11 @@ impl ReferenceRuntime {
         name: &[u8],
     ) -> Result<ObjID> {
         let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
-        let h = get_naming_handle();
-        if h.is_none() {
+        // One acquire, not two. The handle used to be borrowed once to test whether naming was up,
+        // dropped, and borrowed again to do the work -- two round trips through the pool's lock on
+        // the hottest naming call in the system, for a question the first borrow's result already
+        // answers.
+        let Some(mut session) = get_naming_handle() else {
             fn get_kernel_init_info() -> &'static KernelInitInfo {
                 unsafe {
                     (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
@@ -662,8 +698,7 @@ impl ReferenceRuntime {
             }
             let id = find_init_name(name).ok_or(NamingError::NotFound)?;
             return Ok(id.0);
-        }
-        let mut session = get_naming_handle().unwrap();
+        };
         let res = session.get(name, GetFlags::FOLLOW_SYMLINK)?;
         tracing::trace!("resolve got {:?}", res);
         Ok(res.id)
@@ -1237,8 +1272,8 @@ mod enumstats {
         let g = GATE.fetch_add(gate, Ordering::Relaxed) + gate;
         let c = CONV.fetch_add(conv, Ordering::Relaxed) + conv;
         let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
+        if secgate::statcadence::report_now(n) {
+            secgate::statline!(
                 "ENUMSTATS {} calls, {} entries: acquire {} us, gate {} us, convert {} us",
                 n,
                 e,

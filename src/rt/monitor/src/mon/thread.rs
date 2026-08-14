@@ -5,7 +5,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use dynlink::{compartment::Compartment, tls::TlsRegion};
+use dynlink::{
+    compartment::{Compartment, MONITOR_COMPARTMENT_ID},
+    tls::TlsRegion,
+};
 use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
@@ -31,11 +34,336 @@ mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
 
 /// Stack size for the supervisor upcall stack.
-pub const SUPER_UPCALL_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const SUPER_UPCALL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2MB
+/// Zero the whole super stack at spawn, the way this used to. A/B against `false`, which zeroes
+/// only the top.
+const ZERO_WHOLE_SUPER_STACK: bool = false;
+/// How much of the top of the super stack to zero when `ZERO_WHOLE_SUPER_STACK` is false.
+const SUPER_STACK_TOP_ZERO: usize = 0x1000;
 /// Default stack size for the user stack.
-pub const DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+pub const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024; // 2MB
 /// Stack minimium alignment.
 pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
+
+/// Per-spawn phase timings (`SPAWNMON`/`SPAWNMNP`), independent of the global `STATS_ON`.
+///
+/// The spawn path has no cheaper instrument: rounds of this work have shown boot wall clock cannot
+/// resolve ~30 us x ~128 spawns, so an A/B needs these in the build. See `sysperf.md` round 5.
+pub(crate) mod spawnstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Switch for the spawn-path counters only.
+    pub(crate) const ON: bool = false;
+
+    static N: AtomicU64 = AtomicU64::new(0);
+
+    /// Phase timings [`super::ThreadMgr::finish_spawn`] fills in, since it is the only place that
+    /// can bracket them.
+    #[derive(Default)]
+    pub(crate) struct Phases {
+        pub stack: u64,
+        pub sys_spawn: u64,
+        pub reprmap: u64,
+    }
+
+    /// One record per spawn: all phases in ns, tagged by whether the TLS region came from the
+    /// prebuilt pool (`SPAWNMNP`) or was built under the monitor's lock collection (`SPAWNMON`).
+    pub(crate) fn record(
+        pooled: bool,
+        lockwait: u64,
+        tls: u64,
+        stack: u64,
+        sys_spawn: u64,
+        reprmap: u64,
+        register: u64,
+    ) {
+        if !ON {
+            return;
+        }
+        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+        secgate::statlog::record_on(
+            ON,
+            if pooled { "SPAWNMNP" } else { "SPAWNMON" },
+            n,
+            &[lockwait, tls, stack, sys_spawn, reprmap, register],
+        );
+    }
+
+    /// Nanoseconds since `start`. Userspace `Instant::now` memoizes the tickrate, so this is an
+    /// rdtsc and a multiply, not a syscall.
+    pub(crate) fn since(start: std::time::Instant) -> u64 {
+        if !ON {
+            return 0;
+        }
+        start.elapsed().as_nanos() as u64
+    }
+}
+
+/// Supervisor stacks and TLS regions, recycled across spawns.
+///
+/// The monitor's heap is append-only: twz-rt routes every allocation made with
+/// `RuntimeState::IS_MONITOR` set to the *early* talc, and that talc's `dealloc` is a no-op
+/// because `early_allocs_frozen` is only ever set on the path the monitor's own allocations
+/// return before reaching. So a dropped super stack was not reused -- each spawn took another
+/// 2 MiB span of heap nothing had ever touched, and the first write to it was a page fault that
+/// no later spawn could amortize. That is the ~40 us `stack` phase, and 2 MiB of growth per
+/// thread the monitor ever spawns.
+///
+/// Recycling fixes both without touching the allocator: a returned stack is already mapped, so
+/// the next spawn's write to it faults nothing, and the monitor's footprint stops tracking the
+/// number of threads it has ever started. It also retires the TLS-region half of leak M1
+/// (`mleaks.md`) for every thread that exits cleanly.
+mod pool {
+    use std::{
+        alloc::Layout,
+        mem::MaybeUninit,
+        ptr::NonNull,
+        sync::{Mutex, MutexGuard},
+    };
+
+    use dynlink::tls::TlsRegion;
+
+    /// Entries of each kind held before further returns are dropped instead.
+    ///
+    /// Dropping is what happens today for every entry, so overflowing this is exactly the old
+    /// behavior rather than a new leak -- but bound it anyway, since a compartment teardown can
+    /// retire many threads at once and each entry pins 2 MiB.
+    const MAX: usize = 32;
+
+    /// A/B switch for measuring what recycling is worth; `false` restores the old behavior, in
+    /// which every returned stack and TLS region was abandoned.
+    const RECYCLE: bool = true;
+
+    struct Tls {
+        base: NonNull<u8>,
+        layout: Layout,
+    }
+
+    // Safety: a pooled region has no owner -- it is placed here only after its thread has been
+    // observed `Exited`, and handed out to exactly one spawn.
+    unsafe impl Send for Tls {}
+
+    struct Pool {
+        stacks: Vec<Box<[MaybeUninit<u8>]>>,
+        tls: Vec<Tls>,
+    }
+
+    static POOL: Mutex<Pool> = Mutex::new(Pool {
+        stacks: Vec::new(),
+        tls: Vec::new(),
+    });
+
+    fn lock() -> MutexGuard<'static, Pool> {
+        POOL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A recycled supervisor stack of exactly `len` bytes, if one is waiting.
+    pub(super) fn take_stack(len: usize) -> Option<Box<[MaybeUninit<u8>]>> {
+        if !RECYCLE {
+            return None;
+        }
+        let mut pool = lock();
+        let idx = pool.stacks.iter().position(|s| s.len() == len)?;
+        Some(pool.stacks.swap_remove(idx))
+    }
+
+    pub(super) fn put_stack(stack: Box<[MaybeUninit<u8>]>) {
+        if !RECYCLE {
+            return;
+        }
+        let mut pool = lock();
+        if pool.stacks.len() < MAX {
+            // Reserve once, so a return from a thread-exit path never grows this Vec under the
+            // lock.
+            pool.stacks.reserve(MAX);
+            pool.stacks.push(stack);
+        }
+    }
+
+    /// A recycled TLS allocation for exactly `layout`, zeroed.
+    ///
+    /// Zeroing is not optional: `copy_in_module` writes only `template_filesz` bytes per module,
+    /// so the `.tbss` tail of every module is whatever the allocation already held -- which for a
+    /// fresh `alloc_zeroed` is zero and for a recycled region is the previous thread's data.
+    pub(super) fn take_tls(layout: Layout) -> Option<NonNull<u8>> {
+        if !RECYCLE {
+            return None;
+        }
+        let base = {
+            let mut pool = lock();
+            let idx = pool.tls.iter().position(|t| t.layout == layout)?;
+            pool.tls.swap_remove(idx).base
+        };
+        // Safety: the region is `layout.size()` bytes and has no other owner.
+        unsafe { std::ptr::write_bytes(base.as_ptr(), 0, layout.size()) };
+        Some(base)
+    }
+
+    pub(super) fn put_tls(region: &TlsRegion) {
+        if !RECYCLE {
+            return;
+        }
+        let Some(base) = NonNull::new(region.alloc_base()) else {
+            return;
+        };
+        let mut pool = lock();
+        if pool.tls.len() < MAX {
+            pool.tls.reserve(MAX);
+            pool.tls.push(Tls {
+                base,
+                layout: region.alloc_layout(),
+            });
+        }
+    }
+}
+
+/// Super-TLS regions built *before* the spawn that uses them.
+///
+/// [`pool`] above recycles the allocation; this recycles the work. `build_tls_region` needs
+/// `&mut Compartment` out of the monitor's dynlink lock, and happylock hands the monitor's five
+/// locks out as one collection -- so a spawn that builds its own region waits on whatever holds
+/// them, which during a compartment load is up to 12 ms (`sysperf.md` lead 5c). Nothing about that
+/// wait is inherent: the region does not depend on the spawn, only on the compartment's TLS
+/// template, so it can be built at a time nobody is waiting.
+///
+/// The cleaner thread builds them (it is the monitor's existing background worker) and a spawn
+/// pops one under a plain mutex. An empty pool falls back to building inline, so this is an
+/// optimization with a floor, not a new requirement.
+pub(crate) mod readypool {
+    use std::sync::{Mutex, MutexGuard};
+
+    use dynlink::tls::TlsRegion;
+
+    /// Regions kept ready. Each pins one TLS allocation.
+    const MAX: usize = 4;
+    /// Refill when the pool is at or below this. Below `MAX` so a burst of spawns does not have to
+    /// empty the pool completely before a refill starts.
+    const LOW: usize = 2;
+
+    /// A/B switch: `false` sends every spawn down the inline (lock-collection) path.
+    const PREBUILD: bool = true;
+
+    /// A region parked for the next spawn. Every entry was built from `Pool::gen`, which is what
+    /// makes that one field enough to say whether any of them are still valid.
+    struct Ready {
+        region: TlsRegion,
+    }
+
+    // Safety: same argument as `pool::Tls` -- a region parked here has no owner, and is handed to
+    // exactly one spawn.
+    unsafe impl Send for Ready {}
+
+    struct Pool {
+        ready: Vec<Ready>,
+        /// The generation the entries were built from, and the one the next refill compares
+        /// against.
+        gen: u64,
+    }
+
+    static POOL: Mutex<Pool> = Mutex::new(Pool {
+        ready: Vec::new(),
+        gen: 0,
+    });
+
+    fn lock() -> MutexGuard<'static, Pool> {
+        POOL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A prebuilt region, if one is waiting. The TCB still needs its id set.
+    pub(crate) fn take() -> Option<TlsRegion> {
+        if !PREBUILD {
+            return None;
+        }
+        lock().ready.pop().map(|r| r.region)
+    }
+
+    /// How many more regions the pool wants; 0 when it is stocked.
+    pub(super) fn wanted() -> usize {
+        if !PREBUILD {
+            return 0;
+        }
+        let pool = lock();
+        if pool.ready.len() > LOW {
+            0
+        } else {
+            MAX - pool.ready.len()
+        }
+    }
+
+    /// Park a freshly built region. Discards it if the pool is full.
+    ///
+    /// A `gen` that differs from what the pool holds empties it: those regions were built against
+    /// a template that no longer describes the compartment. This can only happen if a library is
+    /// loaded into the *monitor's own* dynlink compartment, which nothing in-tree does after boot
+    /// -- `load_library_by_name` loads into the caller's compartment -- but the check costs one
+    /// comparison and the alternative is handing a thread TLS storage that is missing a module.
+    pub(super) fn put(region: TlsRegion, gen: u64) {
+        if !PREBUILD {
+            return;
+        }
+        let mut pool = lock();
+        if pool.gen != gen {
+            pool.ready.clear();
+            pool.gen = gen;
+        }
+        if pool.ready.len() < MAX {
+            pool.ready.reserve(MAX);
+            pool.ready.push(Ready { region });
+        }
+    }
+}
+
+/// Build one super-TLS region out of the monitor's dynlink compartment.
+///
+/// Allocation comes from [`pool`] when it has one of the right layout, so a region built here
+/// usually writes into pages that are already mapped.
+fn build_super_tls(monitor_dynlink_comp: &mut Compartment) -> Result<TlsRegion, TwzError> {
+    monitor_dynlink_comp
+        .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
+            pool::take_tls(layout).or_else(|| NonNull::new(std::alloc::alloc_zeroed(layout)))
+        })
+        .map_err(|_| GenericError::Internal.into())
+}
+
+/// Stamp a thread id into a region's control block. The last thing a region needs before a thread
+/// can run on it.
+pub(crate) fn init_super_tcb(super_tls: &TlsRegion, super_tid: u32) {
+    unsafe {
+        let tcb = super_tls.get_thread_control_block::<RuntimeThreadControl>();
+        (*tcb).runtime_data.set_id(super_tid);
+    }
+}
+
+/// Top the prebuilt TLS pool back up. Called from the cleaner thread, which is the only place in
+/// the monitor that can take the lock collection without anyone waiting on the result.
+pub(crate) fn refill_ready_tls() {
+    let wanted = readypool::wanted();
+    if wanted == 0 {
+        return;
+    }
+    // The cleaner does not hold the key here, but bail rather than panic if that ever changes:
+    // failing to prebuild costs a spawn the fallback path, and nothing else.
+    let Ok(key) = super::reentrant_key() else {
+        return;
+    };
+    let monitor = get_monitor();
+    let locks = &mut *crate::lockdiag::watched(monitor.locks.lock(key));
+    let Ok(comp) = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID) else {
+        return;
+    };
+    for _ in 0..wanted {
+        match build_super_tls(comp) {
+            Ok(region) => {
+                let gen = region.gen;
+                readypool::put(region, gen);
+            }
+            Err(e) => {
+                tracing::warn!("failed to prebuild a super TLS region: {}", e);
+                break;
+            }
+        }
+    }
+}
 
 /// Manages all threads owned by the monitor. Typically, this is all threads.
 /// Threads are spawned here and tracked in the background by a [cleaner::ThreadCleaner]. The thread
@@ -91,7 +419,7 @@ impl ThreadMgr {
         IdDropper { mgr: self, id }
     }
 
-    fn release_super_tid(&mut self, id: u32) {
+    pub(super) fn release_super_tid(&mut self, id: u32) {
         self.id_stack.push(id);
     }
 
@@ -154,26 +482,63 @@ impl ThreadMgr {
         })
     }
 
-    fn do_spawn(
+    /// The part of a spawn that needs the monitor's locks: a TLS region out of the monitor's
+    /// dynlink compartment, and an id.
+    ///
+    /// Split from [`Self::finish_spawn`] because everything else a spawn does -- allocating the
+    /// super stack, `sys_spawn`, mapping the repr -- needs none of them, and holding the whole
+    /// monitor lock collection across all of it serialized every spawn against every other monitor
+    /// operation in the system. Measured at 3.7 ms per spawn under that lock.
+    pub(super) fn prep_spawn(
         &mut self,
         monitor_dynlink_comp: &mut Compartment,
+    ) -> Result<(TlsRegion, u32), TwzError> {
+        let super_tls = build_super_tls(monitor_dynlink_comp)?;
+        let super_tid = self.take_super_tid();
+        init_super_tcb(&super_tls, super_tid);
+        Ok((super_tls, super_tid))
+    }
+
+    /// An id for a new thread, without the rest of [`Self::prep_spawn`].
+    ///
+    /// The pooled path needs this and nothing else from the monitor's state.
+    pub(super) fn take_super_tid(&mut self) -> u32 {
+        self.next_super_tid().freeze()
+    }
+
+    /// The part of a spawn that holds no monitor lock. See [`Self::prep_spawn`].
+    pub(super) fn finish_spawn(
+        super_tls: TlsRegion,
+        super_tid: u32,
         start: unsafe extern "C" fn(usize) -> !,
         arg: usize,
         main_thread_comp: Option<ObjID>,
         instance: ObjID,
+        phases: &mut spawnstats::Phases,
     ) -> Result<ManagedThread, TwzError> {
-        let super_tls = monitor_dynlink_comp
-            .build_tls_region(RuntimeThreadControl::default(), |layout| unsafe {
-                NonNull::new(std::alloc::alloc_zeroed(layout))
-            })
-            .map_err(|_| GenericError::Internal)?;
-        let super_tid = self.next_super_tid().freeze();
-        unsafe {
-            let tcb = super_tls.get_thread_control_block::<RuntimeThreadControl>();
-            (*tcb).runtime_data.set_id(super_tid);
-        }
         let super_thread_pointer = super_tls.get_thread_pointer_value();
-        let super_stack = Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE);
+        let t_stack = std::time::Instant::now();
+        let super_stack = if ZERO_WHOLE_SUPER_STACK {
+            Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE)
+        } else {
+            let mut stack = pool::take_stack(SUPER_UPCALL_STACK_SIZE)
+                .unwrap_or_else(|| Box::new_uninit_slice(SUPER_UPCALL_STACK_SIZE));
+            // The kernel writes the upcall frame downward from the top of this stack and reads
+            // nothing from it, so only the top needs defined contents. See `STACK_TOP_ZERO` in
+            // twz-rt's thread manager for the full argument; the same one applies here, and this
+            // 8 MiB memset was the other half of what a spawn was paying.
+            let from = SUPER_UPCALL_STACK_SIZE.saturating_sub(SUPER_STACK_TOP_ZERO);
+            unsafe {
+                core::ptr::write_bytes(
+                    stack.as_mut_ptr().add(from).cast::<u8>(),
+                    0,
+                    SUPER_UPCALL_STACK_SIZE - from,
+                );
+            }
+            stack
+        };
+        phases.stack = spawnstats::since(t_stack);
+        let t_spawn = std::time::Instant::now();
         let id = unsafe {
             Self::spawn_thread(
                 start as *const () as usize,
@@ -183,6 +548,8 @@ impl ThreadMgr {
                 instance,
             )?
         };
+        phases.sys_spawn = spawnstats::since(t_spawn);
+        let t_reprmap = std::time::Instant::now();
         // We own this repr object from here: the kernel no longer deletes it when the thread dies
         // (see Thread::drop), so every path out of here has to either hand it to a
         // ManagedThreadRepr, which deletes it on drop, or delete it directly.
@@ -215,27 +582,20 @@ impl ThreadMgr {
                 return Err(e);
             }
         };
+        phases.reprmap = spawnstats::since(t_reprmap);
         Ok(Arc::new(ManagedThreadInner {
             id,
             super_tid,
             repr: ManagedThreadRepr::new(repr),
-            _super_stack: super_stack,
-            _super_tls: super_tls,
+            super_stack: Some(super_stack),
+            super_tls,
             main_thread_comp,
             instance,
         }))
     }
 
-    /// Start a thread, running the provided Box'd closure. The thread will be running in
-    /// monitor-mode, and will have no connection to any compartment.
-    pub fn start_thread(
-        &mut self,
-        monitor_dynlink_comp: &mut Compartment,
-        main: Box<dyn FnOnce()>,
-        main_thread_comp: Option<ObjID>,
-        instance: ObjID,
-    ) -> Result<ManagedThread, TwzError> {
-        let main_addr = Box::into_raw(Box::new(main)) as usize;
+    /// Wrap `main` into the entry point a spawned monitor thread runs.
+    pub(super) fn entry_for(main: Box<dyn FnOnce()>) -> (unsafe extern "C" fn(usize) -> !, usize) {
         unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
             {
                 let main = Box::from_raw(main as *mut Box<dyn FnOnce()>);
@@ -244,21 +604,50 @@ impl ThreadMgr {
 
             sys_thread_exit(0);
         }
+        (managed_thread_entry, Box::into_raw(Box::new(main)) as usize)
+    }
 
-        let mt = self.do_spawn(
-            monitor_dynlink_comp,
-            managed_thread_entry,
-            main_addr,
+    /// Start a thread with the monitor's locks already held.
+    ///
+    /// The compartment loader is inside them for its own reasons, so it uses this rather than
+    /// `Monitor::start_thread`'s three-phase version. Compartment loading is rare; ordinary thread
+    /// spawns should not come through here.
+    pub fn start_thread(
+        &mut self,
+        monitor_dynlink_comp: &mut Compartment,
+        main: Box<dyn FnOnce()>,
+        main_thread_comp: Option<ObjID>,
+        instance: ObjID,
+    ) -> Result<ManagedThread, TwzError> {
+        let (start, arg) = Self::entry_for(main);
+        let (super_tls, super_tid) = self.prep_spawn(monitor_dynlink_comp)?;
+        let mut phases = spawnstats::Phases::default();
+        match Self::finish_spawn(
+            super_tls,
+            super_tid,
+            start,
+            arg,
             main_thread_comp,
             instance,
-        );
-        if let Ok(ref mt) = mt {
-            self.all.insert(mt.id, mt.clone());
-            if let Some(cleaner) = self.cleaner.get() {
-                cleaner.track(mt.clone());
+            &mut phases,
+        ) {
+            Ok(mt) => {
+                self.register(&mt);
+                Ok(mt)
+            }
+            Err(e) => {
+                self.release_super_tid(super_tid);
+                Err(e)
             }
         }
-        mt
+    }
+
+    /// Record a thread built by [`Self::finish_spawn`], and start tracking it for cleanup.
+    pub(super) fn register(&mut self, mt: &ManagedThread) {
+        self.all.insert(mt.id, mt.clone());
+        if let Some(cleaner) = self.cleaner.get() {
+            cleaner.track(mt.clone());
+        }
     }
 }
 
@@ -269,8 +658,9 @@ pub struct ManagedThreadInner {
     pub super_tid: u32,
     /// The thread repr.
     pub(crate) repr: ManagedThreadRepr,
-    _super_stack: Box<[MaybeUninit<u8>]>,
-    _super_tls: TlsRegion,
+    /// `None` only after [`Drop`] has handed it back to the [`pool`].
+    super_stack: Option<Box<[MaybeUninit<u8>]>>,
+    super_tls: TlsRegion,
     pub main_thread_comp: Option<ObjID>,
     /// The compartment this thread was spawned for. Recorded so teardown can find every thread of
     /// a compartment: `RunComp::per_thread` only holds threads that have called a gate needing
@@ -304,6 +694,21 @@ impl core::fmt::Debug for ManagedThreadInner {
 impl Drop for ManagedThreadInner {
     fn drop(&mut self) {
         tracing::trace!("dropping ManagedThread {}", self.id);
+        // Recycle only what is provably unowned. A live thread still runs on this stack -- and
+        // takes upcalls on it -- so handing it to the next spawn would put two threads on one
+        // stack. Dropping instead is exactly what happened before there was a pool: the monitor's
+        // allocator does not reclaim it either way, so the unsafe case costs nothing new.
+        if !self.has_exited() {
+            tracing::warn!(
+                "last reference to still-running thread {} dropped; leaking its supervisor stack",
+                self.id
+            );
+            return;
+        }
+        if let Some(stack) = self.super_stack.take() {
+            pool::put_stack(stack);
+        }
+        pool::put_tls(&self.super_tls);
     }
 }
 

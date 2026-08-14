@@ -235,6 +235,20 @@ struct MutexStatCollector {
 
 static MUTEX_STATS: Once<Spinlock<MutexStatCollector>> = Once::new();
 
+/// Whether acquisitions are timed and recorded.
+///
+/// Off until someone reads [`get_lock_stats`]. Every mutex in the kernel used to charge, per
+/// lock/unlock pair, three `Instant::now()` calls and *two acquisitions of one global spinlock* --
+/// so every cpu serialized on one cache line to record that it had taken a lock, on a path the
+/// fault handler crosses four times. Same shape as the syscall path's `TIMING_ON` and the per-cpu
+/// fault counters: cheap to leave available, not cheap to leave on.
+static TIMING_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn timing_on() -> bool {
+    TIMING_ON.load(Ordering::Relaxed)
+}
+
 fn get_mutex_stats() -> &'static Spinlock<MutexStatCollector> {
     MUTEX_STATS.call_once(|| {
         Spinlock::new(MutexStatCollector {
@@ -256,6 +270,8 @@ fn add_lock_time_sample(sample: Duration) {
 }
 
 pub fn get_lock_stats() -> LockStats {
+    // Asking for the stats is what turns their collection on; see `TIMING_ON`.
+    TIMING_ON.store(true, Ordering::Relaxed);
     let stats = get_mutex_stats().lock();
     LockStats {
         mutex_lock_count: stats.nr_locks,
@@ -306,7 +322,14 @@ impl<T> Mutex<T> {
     /// lock guard goes out of scope, the lock will be released.
     #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
-        let start_time = Instant::now();
+        let timing = timing_on();
+        // The tracker stamps its records with this too, so read the clock when either wants it.
+        // Both tests fold to nothing when tracking is compiled out and timing is off.
+        let start_time = if locktrack::enabled() || timing {
+            Instant::now()
+        } else {
+            Instant::zero()
+        };
         let caller = core::panic::Location::caller();
         let current_thread = current_thread_ref();
         let current_donated_priority = current_thread
@@ -376,7 +399,8 @@ impl<T> Mutex<T> {
         // a sleeping owner caught it at 1000 iterations, describing a moment rather than the wedge.
         // Repeat on elapsed time instead, reading the clock every iteration only for the sleeper
         // (where a clock read is lost against a sleep/wake round trip) and rarely for the spinner.
-        let mut last_report = start_time;
+        // Set by the first report, at i == 1000, before any arm below consults it.
+        let mut last_report = Instant::zero();
         let is_spinner = current_thread
             .as_ref()
             .map(|t| t.is_idle_thread())
@@ -526,14 +550,16 @@ impl<T> Mutex<T> {
             ct.set_mutex_wait(false);
         }
 
-        let end_time = Instant::now();
-        add_lock_time_sample(end_time - start_time);
+        if timing {
+            add_lock_time_sample(Instant::now() - start_time);
+        }
         let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
         crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
             start_time,
+            timed: timing,
             tracker_index,
             charged,
         }
@@ -605,6 +631,9 @@ pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
     prev_donated_priority: Option<Priority>,
     start_time: Instant,
+    /// Whether `start_time` is a real reading. Carried rather than re-tested at drop, so a reader
+    /// turning timing on mid-hold cannot record a hold time measured from boot.
+    timed: bool,
     tracker_index: Option<usize>,
     /// Thread charged with `inc_mutex_count` at acquisition, decremented at release regardless of
     /// who is current then.
@@ -638,8 +667,9 @@ impl<T> Drop for LockGuard<'_, T> {
             with_lock_tracker(|lt| lt.record_mutex_unlock(index));
         }
         self.lock.release(self.charged.as_ref());
-        let end_time = Instant::now();
-        add_hold_time_sample(end_time - self.start_time);
+        if self.timed {
+            add_hold_time_sample(Instant::now() - self.start_time);
+        }
     }
 }
 
@@ -702,6 +732,13 @@ mod test {
         utils::quick_random,
     };
 
+    /// How long a batch of workers gets before we call it wedged. A batch is at most a handful of
+    /// threads doing `INNER_ITER` short acquisitions with the occasional 1ms sleep between them, so
+    /// it finishes in tens of milliseconds; this is orders of magnitude above that. Bounding it at
+    /// all is the point -- an unbounded wait turns any lost wakeup into a silent guest that only
+    /// the sweep's watchdog ends, with no backtrace and no idea which thread stopped.
+    const BATCH_LIMIT: Duration = Duration::from_secs(30);
+
     #[kernel_test]
     fn test_mutex() {
         const ITERS: usize = 50;
@@ -719,21 +756,55 @@ mod test {
                     .map(|lock| {
                         run_closure_in_new_thread(Priority::USER, move || {
                             for _ in 0..INNER_ITER {
-                                let mut inner = lock.lock();
+                                *lock.lock() += 1;
+                                // Outside the guard deliberately. Sleeping while holding it makes
+                                // every other worker -- and the parent's wait below -- depend on
+                                // the timeout firing, so a lost timer wake reads here as a mutex
+                                // hang. Between acquisitions it still spreads arrival order out.
                                 if quick_random() % 20 == 0 {
                                     let _ = sys_thread_sync(
                                         &mut [],
                                         Some(&mut Duration::from_millis(1)),
                                     );
                                 }
-                                *inner += 1;
                             }
                         })
                     })
                     .collect();
 
-                for handle in handles {
-                    handle.1.wait();
+                for (nth, (thread, closure)) in handles.into_iter().enumerate() {
+                    if closure.wait_timeout(BATCH_LIMIT).is_some() {
+                        continue;
+                    }
+                    // Sampled and copied out before panicking: the queue spinlock must not be held
+                    // across the unwind, and these are the fields that separate the failure modes
+                    // -- an owner that is gone with `handoff` still set is a lost handoff, waiters
+                    // queued behind a live owner is a lock that is merely held too long.
+                    let (waiters, owned, handoff, owner, owner_state) = {
+                        let queue = lock.queue.lock();
+                        let owner = queue.owner.as_ref();
+                        (
+                            queue.queue.iter().count(),
+                            queue.owned,
+                            queue.handoff,
+                            owner.map(|o| o.id()),
+                            owner.map(|o| o.get_state()),
+                        )
+                    };
+                    panic!(
+                        "test_mutex: worker {} of {} (thread {}, state {:?}) did not finish in \
+                         {:?}; mutex owned {} handoff {} owner {:?} ({:?}) waiters {}",
+                        nth,
+                        nr_threads,
+                        thread.id(),
+                        thread.get_state(),
+                        BATCH_LIMIT,
+                        owned,
+                        handoff,
+                        owner,
+                        owner_state,
+                        waiters,
+                    );
                 }
                 let inner = lock.lock();
                 let val = *inner;

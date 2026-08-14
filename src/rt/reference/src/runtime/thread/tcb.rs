@@ -68,6 +68,94 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
     twizzler_abi::syscall::sys_thread_exit(code);
 }
 
+/// TLS regions from exited threads, waiting for the next spawn.
+///
+/// Same shape as the monitor's super-TLS pool and for the same reason: `SPAWNRT`'s tls phase is
+/// 2.4 us median but 94 us mean with a 31 ms max (`sysperf.md` round 7, lead 4b). A 2-4 us median
+/// is not worth a pool; a mean 40x the median is, and it is the same story as every other
+/// allocation on this path -- a fresh span from the base allocator whose pages nothing has touched,
+/// so the region's first write faults.
+///
+/// Two differences from the monitor's pool, both in this path's favor:
+///
+/// - **No re-zeroing.** [`TlsTemplateInfo::init_new_tls_region`] copies the whole `layout.size()`
+///   prototype over the region and then rewrites the DTV and TCB, so every byte is defined
+///   afterwards no matter what the allocation held. The monitor's path builds its region module by
+///   module, copying only `template_filesz` each, which is why *it* has to zero.
+/// - **No allocation and no `std` sync.** `get_next_tls_info` runs inside
+///   `cross_compartment_entry`'s zero-thread-pointer window: a `Vec` here would allocate through
+///   `ReferenceRuntime::alloc`, which reads the thread control block, and `std::sync::Mutex::lock`
+///   consults `thread::panicking()`. Both read TLS. Hence a fixed array behind the same
+///   `simple_mutex` that guards [`TLS_GEN_MGR`], with `take` doing nothing but a scan and a store.
+///
+/// The safety obligation is the one [`super::internal::InternalThread`]'s `Drop` already meets to
+/// call `dealloc` there: the thread is gone, so nothing is running on this region. Worth naming one
+/// consequence that differs from freeing, though: a recycled region is re-initialized with a valid
+/// TCB whose `self_ptr` points at itself, so a stale thread pointer into it reads as a *plausible*
+/// control block rather than as null. `with_current_thread`'s null check is correspondingly less
+/// likely to catch a use-after-free of a thread pointer -- but `dealloc` hands the same memory to
+/// the allocator for arbitrary reuse, which that check does not reliably catch either.
+pub(super) mod tlspool {
+    use std::alloc::Layout;
+
+    use twizzler_abi::simple_mutex::Mutex;
+
+    /// Regions held before further returns go back to the allocator.
+    const MAX: usize = 8;
+
+    /// A/B switch for measuring what recycling is worth; `false` restores allocating and freeing
+    /// each region.
+    const RECYCLE: bool = true;
+
+    #[derive(Clone, Copy)]
+    struct Entry {
+        base: usize,
+        size: usize,
+        align: usize,
+    }
+
+    static POOL: Mutex<[Option<Entry>; MAX]> = Mutex::new([None; MAX]);
+
+    /// A recycled region for exactly `layout`, if one is waiting.
+    ///
+    /// Keyed on the layout because it is per TLS generation: a region built for one generation is
+    /// the wrong size for another, and matching on the layout is what keeps them apart.
+    pub(in crate::runtime) fn take(layout: Layout) -> Option<*mut u8> {
+        if !RECYCLE {
+            return None;
+        }
+        let mut pool = POOL.lock();
+        for slot in pool.iter_mut() {
+            if let Some(e) = *slot {
+                if e.size == layout.size() && e.align == layout.align() {
+                    *slot = None;
+                    return Some(e.base as *mut u8);
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns false if the pool is full and the caller should free the region itself.
+    pub(in crate::runtime) fn put(base: *mut u8, layout: Layout) -> bool {
+        if !RECYCLE || base.is_null() {
+            return false;
+        }
+        let mut pool = POOL.lock();
+        for slot in pool.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(Entry {
+                    base: base as usize,
+                    size: layout.size(),
+                    align: layout.align(),
+                });
+                return true;
+            }
+        }
+        false
+    }
+}
+
 pub(crate) struct TlsGenMgr {
     /// Deliberately allocator-parameterized: `get_next_tls_info` runs inside
     /// `cross_compartment_entry`'s window, where the thread pointer is zero, and a `BTreeMap` on
@@ -106,7 +194,8 @@ impl TlsGenMgr {
             return None;
         }
 
-        let new = unsafe { LOCAL_ALLOCATOR.alloc(template.layout) };
+        let new = tlspool::take(template.layout)
+            .unwrap_or_else(|| unsafe { LOCAL_ALLOCATOR.alloc(template.layout) });
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,

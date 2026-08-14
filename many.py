@@ -11,22 +11,34 @@ taking the disk's write lock or port 5555 mid-sweep, and when that happened the 
 
 So instead: build each profile once into a work directory -- the ext4 disk directly, via
 `make-image --disk-image`, and the boot image snapshotted out of the build tree right after -- and
-give every lane private copies to run against (`xtask test --boot-image/--disk-image`). Nothing
-in the sweep touches the build tree after the build phase, which both lets lanes run concurrently
--- across different profiles, not just different qemu flags -- and leaves the development tree free
-to build and boot while a sweep is in flight.
+point every lane at those masters (`xtask test --boot-image/--disk-image`). Nothing in the sweep
+touches the build tree after the build phase, which both lets lanes run concurrently -- across
+different profiles, not just different qemu flags -- and leaves the development tree free to build
+and boot while a sweep is in flight.
 
-Lanes reuse their copies across runs and re-sync only when they switch profile, which preserves the
-existing semantics that guest-written disk state carries from one run to the next.
+Lanes share one master pair per profile rather than copying it, which is safe because every run
+passes `--snapshot-disks`: qemu opens both images read-only and puts guest writes in a temporary
+overlay it deletes on exit. Copies used to cost ~6GB and a few seconds per lane per profile on a
+filesystem with no reflink support. The tradeoff is that guest-written disk state no longer carries
+from one run to the next -- every run starts from the master, which is what repeated identical
+boots want anyway.
 
 The same reasoning applies one level up: several sweeps can run at once, and alongside an ordinary
 `cargo xtask test`, because everything a sweep writes is keyed by its `--tag` -- results, lane
-images, the data image its build writes, and the serial-log label xtask writes into the shared
-target/test-logs. The per-profile master snapshots are the one thing sweeps deliberately share,
-guarded by a lock that is exclusive while a build replaces them and shared while lanes copy them.
-The build tree itself is still shared, and sweeps cannot lock each other out of it alone -- xtask
-locks the disk image and the initrd/boot staging on its own account, which is what also covers a
-developer building underneath a sweep.
+images, the data image its build writes, the master snapshots it stages through, and the serial-log
+label xtask writes into the shared target/test-logs. The build tree itself is still shared, and
+sweeps cannot lock each other out of it alone -- xtask locks the disk image and the initrd/boot
+staging on its own account, which is what also covers a developer building underneath a sweep.
+
+Masters used to be one pair per *profile*, shared by every sweep deliberately, with a lock making a
+replacement atomic. Atomic is not the same as yours: a sweep that built an image and then had
+another session's build replace the master before its lanes copied it ran the other session's image
+and *passed*, reporting numbers for a workload it never ran. It happened twice in one night, in both
+directions, to two sessions who each knew about it. Masters are per-tag now, and the build's own
+`image:` line -- not a guessed path -- is what gets snapshotted. What identity remains at the far
+end is the build id every image carries in its kernel command line, which the guest prints at boot:
+a transcript states which artifacts ran and which command line they ran under, and neither has to be
+taken on trust.
 
 The build phase is the exception, and unavoidably so: it writes the one build tree and the one dev
 disk. Sweeps serialize against each other there, but nothing stops a bare `cargo xtask test` from
@@ -149,22 +161,24 @@ class BuildPhase:
 
 @dataclass
 class Lane:
-    """One concurrent slot: a private pair of images, a port, and whatever profile it holds now."""
+    """One concurrent slot: an index and a port.
+
+    Lanes used to own a private pair of images, copied from the masters before every run that
+    changed profile -- ~6GB per lane per profile, on a filesystem with no reflink support. They no
+    longer do: runs pass `--snapshot-disks`, so qemu opens the masters read-only and keeps guest
+    writes in a temporary overlay it discards at exit. One master is then safe to share across every
+    lane, and across concurrent sweeps, because nothing writes to it.
+
+    What this gives up is write-through between runs: a lane used to carry guest-written disk state
+    from one run to the next, and now every run starts from the master's state. For a sweep that
+    measures failure rates across repeated identical boots, starting each round from the same disk
+    is the better default anyway.
+    """
 
     index: int
-    directory: Path
     # 0 asks xtask to allocate dynamically, which is what keeps concurrent sweeps from having to
     # agree on a port range.
     port: int
-    profile: Optional[str] = None
-
-    @property
-    def boot_image(self) -> Path:
-        return self.directory / "boot.img"
-
-    @property
-    def data_image(self) -> Path:
-        return self.directory / "data.img"
 
 
 def is_slow_config(config: Config) -> bool:
@@ -302,27 +316,54 @@ def default_tag() -> str:
     return f"{time.strftime('%m%d-%H%M%S')}-{os.getpid()}"
 
 
-def dev_boot_image(profile: str) -> Path:
-    """Where `xtask make-image` writes, and what we snapshot out of the build tree."""
-    return BOOT_IMAGE_DIR / profile / "disk.img"
+IMAGE_LINE = re.compile(r"^image: (.+)$", re.MULTILINE)
+BUILD_ID_LINE = re.compile(r"^build-id: ([0-9a-f]+)$", re.MULTILINE)
 
 
-def master_boot_image(work: Path, profile: str) -> Path:
-    return work / "images" / f"{profile}-boot.img"
+def built_boot_image(build_output: str) -> Optional[Path]:
+    """The image this build actually wrote, as the build itself reported it.
+
+    `make-image` names images by build id now, so there is no fixed path to snapshot and none to
+    guess: it prints `image: <path>` and this reads it. Guessing was the old behaviour and the bug
+    -- one `disk.img` per profile, whatever command line was baked into it, so two sweeps wanting
+    different images raced for one path and the loser silently booted the winner's.
+    """
+    match = IMAGE_LINE.search(build_output)
+    return Path(match.group(1)) if match else None
 
 
-def master_data_image(work: Path, profile: str) -> Path:
-    return work / "images" / f"{profile}-data.img"
+def built_build_id(build_output: str) -> Optional[str]:
+    match = BUILD_ID_LINE.search(build_output)
+    return match.group(1) if match else None
+
+
+def masters_dir(work: Path, tag: str) -> Path:
+    """This sweep's own staging area, under its lane root.
+
+    Masters used to be one pair per *profile*, shared by every sweep by design. The lock around them
+    made a replacement atomic but could not make it yours: a sweep that built an image, then had
+    another session's build replace the master before its lanes copied it, ran the other session's
+    image and passed. Keyed by tag, that cannot happen. Living under the lane root also means the
+    existing ownership lock and `prune_dead_lanes` clean these up for free.
+    """
+    return work / "lanes" / tag / "masters"
+
+
+def master_boot_image(work: Path, tag: str, profile: str) -> Path:
+    return masters_dir(work, tag) / f"{profile}-boot.img"
+
+
+def master_data_image(work: Path, tag: str, profile: str) -> Path:
+    return masters_dir(work, tag) / f"{profile}-data.img"
 
 
 @contextlib.contextmanager
 def master_lock(work: Path, exclusive: bool) -> Iterator[None]:
-    """Guard the masters, which concurrent sweeps deliberately share rather than duplicate.
+    """Guard the masters while a build is replacing them.
 
-    Snapshotting takes it exclusively; lane copies take it shared, so sweeps only serialize against
-    a build in progress and not against each other. `copy_image` renames into place, so a reader
-    never sees a half-written file -- the lock is what stops it pairing a new boot image with an
-    old data image mid-snapshot.
+    Only the snapshot step takes this now, and only exclusively: lanes used to take it shared while
+    copying, and no longer copy at all. So what remains is serialization between concurrent sweeps'
+    snapshot steps. `copy_image` renames into place, so a reader never sees a half-written file.
     """
     work.mkdir(parents=True, exist_ok=True)
     with (work / ".images.lock").open("w") as handle:
@@ -350,10 +391,6 @@ def free_gb(path: Path) -> float:
     return shutil.disk_usage(probe).free / 2**30
 
 
-class OutOfSpace(Exception):
-    """Raised instead of letting a copy fail partway and look like an unrelated run failure."""
-
-
 def prune_dead_lanes(work: Path, keep_tag: str) -> int:
     """Reclaim lane images left behind by sweeps that were killed rather than interrupted.
 
@@ -379,6 +416,21 @@ def prune_dead_lanes(work: Path, keep_tag: str) -> int:
         shutil.rmtree(tag_dir, ignore_errors=True)
         reclaimed += 1
     return reclaimed
+
+
+def signal_group(proc: "subprocess.Popen", sig: int) -> None:
+    """Signal a child's whole process group, falling back to the child itself.
+
+    Every child here is spawned with `start_new_session=True`, so its group holds the grandchildren
+    that actually do the work -- `make-image` under a build, qemu under a run. Signalling only the
+    child leaves those running: they reparent to init, keep writing to shared images, and burn
+    cores that later sweeps then blame on their own changes.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (OSError, ProcessLookupError):
+        with contextlib.suppress(OSError, ProcessLookupError):
+            proc.send_signal(sig)
 
 
 def kill_stray_qemu(lane_root: Path) -> int:
@@ -414,24 +466,31 @@ def kill_stray_qemu(lane_root: Path) -> int:
 
 
 def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
-    """Rough space needed: two masters per profile in play plus a private pair per lane."""
+    """Rough space needed: one master pair per profile in play.
+
+    Lanes cost nothing now -- they share the masters read-only rather than copying them -- so this
+    no longer scales with `--jobs`. `lanes` is kept in the signature because the callers report it
+    alongside, and because a lane count that stops mattering is worth being explicit about.
+    """
     per_pair = 0
     for profile in profiles:
-        src = dev_boot_image(profile)
-        if src.exists():
+        # Images are named by build id, so there is no single path to size against; the largest
+        # one lying about in the profile's directory is close enough for a warning.
+        for src in (BOOT_IMAGE_DIR / profile).glob("disk-*.img"):
             per_pair = max(per_pair, src.stat().st_blocks * 512)
     # The dev image only stands in for the size a freshly built master will be; sweeps write their
     # own now and it may not exist at all.
     data = DEV_DATA_IMAGE.stat().st_blocks * 512 if DEV_DATA_IMAGE.exists() else 4 << 30
-    need = (per_pair + data) * (len(profiles) + lanes)
+    need = (per_pair + data) * len(profiles)
     free = shutil.disk_usage(work.parent if work.parent.exists() else REPO_ROOT).free
-    return f"~{need / 2**30:.0f}GB of copies against {free / 2**30:.0f}GB free"
+    return f"~{need / 2**30:.0f}GB of masters ({lanes} lanes share them) against {free / 2**30:.0f}GB free"
 
 
 # --- building -----------------------------------------------------------------------------------
 
 
-def build_command_for(profile: str, work: Path, autostart: Optional[str] = None) -> List[str]:
+def build_command_for(profile: str, work: Path, tag: str,
+                      autostart: Optional[str] = None) -> List[str]:
     """Build straight into this sweep's own master data image.
 
     `--disk-image` is what keeps a sweep off `target/disk-<triple>.img`. Without it every build
@@ -450,7 +509,7 @@ def build_command_for(profile: str, work: Path, autostart: Optional[str] = None)
     mode = ["--autostart", autostart] if autostart else ["--tests"]
     return [
         "cargo", "xtask", "make-image", "--profile", profile,
-        "--disk-image", str(master_data_image(work, profile)),
+        "--disk-image", str(master_data_image(work, tag, profile)),
     ] + mode
 
 
@@ -473,7 +532,7 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
     # outlive a single sweep, which is what protects us from builds this lock cannot see -- a
     # developer's own `cargo start-qemu`, say.
     with master_lock(work, exclusive=True):
-        cmd = build_command_for(profile, work, args.autostart)
+        cmd = build_command_for(profile, work, args.tag, args.autostart)
         args.results_dir.mkdir(parents=True, exist_ok=True)
         out_path = args.results_dir / f"build-{profile}.out"
         print(f"=== building {profile} (log: {rel(out_path)})", flush=True)
@@ -484,6 +543,10 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
         proc = subprocess.run(
             cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace",
+            # Its own process group, so an interrupt reaches make-image and not just xtask. A
+            # `make-image` orphaned with ppid 1 kept writing to the shared images directory for
+            # ~100 seconds after its sweep was stopped, and replaced another session's master.
+            start_new_session=True,
         )
         out_path.write_text(proc.stdout or "")
         if args.verbose:
@@ -499,9 +562,18 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
 
         # Only the boot image is snapshotted now: `--disk-image` had the build write the data
         # master itself, in place.
-        print(f"=== snapshotting {profile} boot image", flush=True)
+        built = built_boot_image(proc.stdout or "")
+        if built is None:
+            # Refuse to guess. The old code assumed a path, and assuming it is what let a sweep
+            # snapshot an image some other build had written.
+            print(f"SNAPSHOT FAILED ({profile}): build printed no `image:` line -- xtask too old?",
+                  file=sys.stderr, flush=True)
+            return BuildPhase(profile, False, time.monotonic() - start)
+        build_id = built_build_id(proc.stdout or "") or "unknown"
+        print(f"=== snapshotting {profile} boot image (build {build_id})", flush=True)
         try:
-            copy_image(dev_boot_image(profile), master_boot_image(work, profile))
+            masters_dir(work, args.tag).mkdir(parents=True, exist_ok=True)
+            copy_image(built, master_boot_image(work, args.tag, profile))
         except (OSError, subprocess.CalledProcessError) as e:
             print(f"SNAPSHOT FAILED ({profile}): {e}", file=sys.stderr, flush=True)
             return BuildPhase(profile, False, time.monotonic() - start)
@@ -509,15 +581,46 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
     return BuildPhase(profile, True, time.monotonic() - start)
 
 
-def masters_present(work: Path, profile: str) -> bool:
-    return master_boot_image(work, profile).is_file() and master_data_image(work, profile).is_file()
+def masters_present(work: Path, tag: str, profile: str) -> bool:
+    return (master_boot_image(work, tag, profile).is_file()
+            and master_data_image(work, tag, profile).is_file())
+
+
+def adopt_masters(work: Path, tag: str, profile: str) -> bool:
+    """For --reuse-images: take the newest other sweep's masters as this sweep's own.
+
+    Masters are per-tag now, so "reuse" cannot mean "read someone else's in place" -- that is the
+    sharing this change exists to remove. Copying them in keeps the flag's purpose (skip the build)
+    while leaving this sweep with images nobody else can replace underneath it.
+    """
+    lanes = work / "lanes"
+    if not lanes.is_dir():
+        return False
+    candidates = []
+    for tag_dir in lanes.iterdir():
+        if tag_dir.name == tag:
+            continue
+        boot = tag_dir / "masters" / f"{profile}-boot.img"
+        data = tag_dir / "masters" / f"{profile}-data.img"
+        if boot.is_file() and data.is_file():
+            candidates.append((boot.stat().st_mtime, boot, data))
+    if not candidates:
+        return False
+    _, boot, data = max(candidates)
+    masters_dir(work, tag).mkdir(parents=True, exist_ok=True)
+    try:
+        copy_image(boot, master_boot_image(work, tag, profile))
+        copy_image(data, master_data_image(work, tag, profile))
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
 
 
 # --- running ------------------------------------------------------------------------------------
 
 
-def command_for(config: Config, lane: Lane, label: str, serial_log: Path,
-                autostart: Optional[str] = None) -> List[str]:
+def command_for(config: Config, lane: Lane, boot_image: Path, data_image: Path, label: str,
+                serial_log: Path, autostart: Optional[str] = None) -> List[str]:
     # --autostart replaces the test suite with one program, and xtask then reports that program's
     # exit code instead of a test report. Lanes, images, ports and logs are unaffected -- this only
     # changes what the guest does once it is up.
@@ -533,12 +636,14 @@ def command_for(config: Config, lane: Lane, label: str, serial_log: Path,
         # where a sweep that dies mid-run would strand it.
         "--serial-log",
         str(serial_log),
-        # Private copies: nothing here refers to the build tree, so a sweep and interactive
-        # development can run at the same time.
+        # This sweep's masters, shared by every lane. Nothing here refers to the build tree, so a
+        # sweep and interactive development can run at the same time.
         "--boot-image",
-        str(lane.boot_image),
+        str(boot_image),
         "--disk-image",
-        str(lane.data_image),
+        str(data_image),
+        # What makes sharing safe: qemu opens both images read-only and discards guest writes.
+        "--snapshot-disks",
         "--label",
         label,
         "--ssh-port",
@@ -635,27 +740,6 @@ def store_log(
     return dest
 
 
-def sync_lane(lane: Lane, work: Path, profile: str, min_free_gb: float) -> None:
-    """Give a lane private images for `profile`, reusing what it already has when it can.
-
-    Reuse matters for more than speed: a lane that keeps its data image across runs reproduces the
-    existing behaviour where guest-written disk state carries from one run to the next.
-    """
-    if lane.profile == profile:
-        return
-    if free_gb(lane.directory) < min_free_gb:
-        raise OutOfSpace(
-            f"only {free_gb(lane.directory):.0f}GB free, below the {min_free_gb:.0f}GB floor"
-        )
-    lane.directory.mkdir(parents=True, exist_ok=True)
-    # Shared: concurrent sweeps copy at the same time, but none of them reads a master that a build
-    # is midway through replacing.
-    with master_lock(work, exclusive=False):
-        copy_image(master_boot_image(work, profile), lane.boot_image)
-        copy_image(master_data_image(work, profile), lane.data_image)
-    lane.profile = profile
-
-
 def run_once(
     round_no: int,
     config: Config,
@@ -672,19 +756,18 @@ def run_once(
     label = f"{args.tag}-{name}"
     start = time.monotonic()
 
-    try:
-        sync_lane(lane, work, config.profile, args.min_free_gb)
-    except OutOfSpace as e:
+    # Straight at this sweep's masters -- no per-lane copy, because the run cannot write to them.
+    boot = master_boot_image(work, args.tag, config.profile)
+    data = master_data_image(work, args.tag, config.profile)
+    missing = [p for p in (boot, data) if not p.is_file()]
+    if missing:
         return Result(round_no, config, False, -1, time.monotonic() - start,
-                      f"out of disk: {e}", None, lane.index)
-    except (OSError, subprocess.CalledProcessError) as e:
-        return Result(round_no, config, False, -1, time.monotonic() - start,
-                      f"image copy failed: {e}", None, lane.index)
+                      f"missing image(s): {', '.join(str(p) for p in missing)}", None, lane.index)
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
     serial = args.results_dir / f"{name}.log"
     serial.unlink(missing_ok=True)
-    cmd = command_for(config, lane, label, serial, args.autostart)
+    cmd = command_for(config, lane, boot, data, label, serial, args.autostart)
     emit(f"[lane {lane.index}] start  {name}")
 
     output: List[str] = []
@@ -697,6 +780,9 @@ def run_once(
         text=True,
         errors="replace",
         bufsize=1,
+        # See the build phase: signalling the group is what reaches qemu, which is this driver's
+        # grandchild. `kill_stray_qemu` stays as the backstop for anything that escapes anyway.
+        start_new_session=True,
     )
     with live_lock:
         live[lane.index] = proc
@@ -861,19 +947,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--results-dir", type=Path, default=None,
                         help="Where to write serial logs (default: target/results/many-<tag>).")
     parser.add_argument("--work-dir", type=Path, default=WORK_ROOT,
-                        help=f"Where image copies live (default: {rel(WORK_ROOT)}). The per-profile "
-                             "masters here are shared between sweeps under a lock; lanes are "
-                             "per-sweep.")
+                        help=f"Where images live (default: {rel(WORK_ROOT)}). Each sweep builds its "
+                             "own per-profile masters under its tag, and every lane runs off them "
+                             "read-only.")
     parser.add_argument("--reuse-images", action="store_true",
                         help="Skip the build and reuse the snapshots already in --work-dir. Fast "
                              "path for re-running a sweep against an unchanged tree.")
     parser.add_argument("--keep-lanes", action="store_true",
-                        help="Leave lane image copies behind for inspection instead of deleting "
-                             "them when the sweep ends.")
+                        help="Leave this sweep's tag directory behind when it ends. Lanes hold no "
+                             "images of their own any more, so this only matters for a sweep that "
+                             "died before building; the masters persist either way.")
     parser.add_argument("--min-free-gb", type=float, default=DEFAULT_MIN_FREE_GB,
-                        help=f"Refuse to copy a lane's images below this much free space (default: "
-                             f"{DEFAULT_MIN_FREE_GB:g}GB). Lane data images grow as guests write, "
-                             "so a long sweep can run the disk down.")
+                        help=f"Refuse to start below this much free space (default: "
+                             f"{DEFAULT_MIN_FREE_GB:g}GB). Only the masters are written now, so a "
+                             "sweep no longer grows the disk as it runs.")
     parser.add_argument("--port-base", type=int, default=0,
                         help="First host ssh-forward port; lane N uses base+N. Default 0 lets qemu "
                              "pick, so concurrent sweeps need no agreed port range -- set this only "
@@ -929,7 +1016,6 @@ def main() -> int:
     lanes = [
         Lane(
             index=i,
-            directory=work / "lanes" / args.tag / f"lane{i}",
             port=(args.port_base + i) if args.port_base else 0,
         )
         for i in range(min(args.jobs, len(jobs)))
@@ -938,7 +1024,7 @@ def main() -> int:
     if args.dry_run:
         for profile in needed:
             action = ("reuse snapshot" if args.reuse_images
-                      else " ".join(build_command_for(profile, work, args.autostart)))
+                      else " ".join(build_command_for(profile, work, args.tag, args.autostart)))
             print(f"                 {profile}: {action}")
         for round_no, config in jobs:
             print(f"round {round_no}  {config.name}")
@@ -981,13 +1067,16 @@ def main() -> int:
     broken = set()
 
     # Build phase: strictly sequential, since every profile builds through the same target dir and
-    # the same shared ext4 disk. Everything after this point runs off private copies.
+    # the same shared ext4 disk. Everything after this point runs off this sweep's own masters.
     for profile in needed:
         if args.reuse_images:
-            if masters_present(work, profile):
+            if masters_present(work, args.tag, profile):
                 print(f"=== reusing {profile} snapshot", flush=True)
                 continue
-            print(f"no {profile} snapshot in {rel(work)}; building it", flush=True)
+            if adopt_masters(work, args.tag, profile):
+                print(f"=== adopted an existing {profile} snapshot", flush=True)
+                continue
+            print(f"no {profile} snapshot to reuse; building it", flush=True)
         phase = build_and_snapshot(profile, work, args)
         builds.append(phase)
         if not phase.ok:
@@ -1102,12 +1191,12 @@ def main() -> int:
         stop.set()
         with live_lock:
             for proc in live.values():
-                proc.terminate()
+                signal_group(proc, signal.SIGTERM)
         for t in threads:
             t.join(timeout=30)
         with live_lock:
             for proc in live.values():
-                proc.kill()
+                signal_group(proc, signal.SIGKILL)
         report(results, len(jobs), builds, time.monotonic() - started)
         return 130
     finally:
@@ -1117,9 +1206,11 @@ def main() -> int:
         if strays:
             print(f"killed {strays} stray qemu process(es) still holding this sweep's lanes",
                   flush=True)
+        # Nothing per-lane is left to delete: lanes share the masters rather than copying them. The
+        # masters themselves stay put, as they always have -- `--reuse-images` (adopt_masters) is
+        # what picks them up next, and prune_dead_lanes reclaims them once this sweep's `.owner`
+        # lock is released. The rmdir only bites when a sweep died before building anything.
         if not args.keep_lanes:
-            for lane in lanes:
-                shutil.rmtree(lane.directory, ignore_errors=True)
             with contextlib.suppress(OSError):
                 (work / "lanes" / args.tag).rmdir()
 

@@ -102,9 +102,15 @@ pub struct TestOptions {
     pub serial_log: Option<PathBuf>,
     #[clap(
         long,
-        help = "Use this ext4 disk (nvme + virtio-pmem) instead of the shared target/disk-<triple>.img."
+        help = "Use this ext4 disk (nvme) instead of the shared target/disk-<triple>.img."
     )]
     pub disk_image: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Discard guest writes to the boot and data images, so concurrent runs can share one \
+                image instead of each copying it. See the flag of the same name on start-qemu."
+    )]
+    pub snapshot_disks: bool,
     #[clap(
         long,
         help = "Host port to forward to the guest's ssh port. 0 allocates one dynamically.",
@@ -136,6 +142,7 @@ impl TestOptions {
             no_test_monitor: false,
             kvm: self.kvm.clone(),
             disk_image: self.disk_image.clone(),
+            snapshot_disks: self.snapshot_disks,
             ssh_port: self.ssh_port,
         }
     }

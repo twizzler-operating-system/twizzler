@@ -58,12 +58,24 @@ pub struct Processor {
     exited: Spinlock<Vec<ThreadRef>>,
     is_idle: AtomicBool,
     must_rebalance: AtomicBool,
+    /// This cpu's syscall counts and timings. Per-cpu so the kernel-exit path takes no globally
+    /// shared lock; summed across cpus on the read path. See [`crate::syscall::SyscallTracking`].
+    pub syscall_stats: Spinlock<crate::syscall::SyscallTracking>,
+    /// This cpu's page-fault stage breakdown, on the same per-cpu terms. See
+    /// [`crate::memory::context::virtmem::fault::FaultTracking`].
+    pub fault_stats: Spinlock<crate::memory::context::virtmem::fault::FaultTracking>,
+    /// This cpu's interrupt counts and timings, on the same per-cpu terms. See
+    /// [`crate::interrupt::InterruptTracking`].
+    pub interrupt_stats: Spinlock<crate::interrupt::InterruptTracking>,
 }
 
 impl Processor {
     pub fn new(id: u32, bsp_id: u32) -> Self {
         Self {
             arch: ArchProcessor::default(),
+            syscall_stats: Spinlock::new(crate::syscall::SyscallTracking::new()),
+            fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
+            interrupt_stats: Spinlock::new(crate::interrupt::InterruptTracking::new()),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),
             must_rebalance: AtomicBool::new(false),
@@ -212,7 +224,7 @@ pub fn tls_ready() -> bool {
     crate::arch::processor::tls_ready()
 }
 
-pub const KERNEL_STACK_SIZE: usize = 512 * 1024 * 8; // 4M
+pub const KERNEL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2M
 
 /// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait
 /// code along with the provided pause function. The cond function should not mutate state, and it

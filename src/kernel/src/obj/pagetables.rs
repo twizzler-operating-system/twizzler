@@ -22,6 +22,18 @@ use crate::{
 const MAX_INVL_TARGETS: usize = 8;
 const MAX_INVLS: usize = 4;
 
+/// What became of a page the pager delivered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageInstall {
+    Installed,
+    /// A 4 KiB page was already there.
+    PresentSmall,
+    /// A large page already covers the offset. Worth counting apart from the small case: one
+    /// overlapping request that loses the race to a merge has every one of its pages in that
+    /// 2 MiB region rejected, so a handful of merges can account for a great many duplicates.
+    PresentLarge,
+}
+
 pub struct ObjectPageTable {
     mapper: Mapper,
     invls: heapless::Vec<
@@ -572,6 +584,36 @@ impl Object {
     pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {
         let mut pt = self.lock_page_tables();
         pt.map_page(pn.as_byte_offset() as u64, frame).unwrap();
+    }
+
+    /// Install `frame` at `pn`, unless the object already has a page there. Reports which of the
+    /// two happened, and if the page was lost, to what.
+    ///
+    /// The pager can deliver a page the object acquired between the request being issued and the
+    /// completion landing; two overlapping in-flight requests produce those by construction, since
+    /// `add_request` coalesces only on an exact range. `Table::map` already declines to overwrite a
+    /// present entry, so the frame was dropped either way -- what this skips is doing the whole
+    /// mapping walk to find that out: a frame allocator, a precharge, a consistency pass and its
+    /// invalidation, per duplicate page.
+    pub fn add_frame_if_absent(&self, pn: PageNumber, frame: FrameRef) -> PageInstall {
+        let mut pt = self.lock_page_tables();
+        let offset = pn.as_byte_offset() as u64;
+        if !pt.is_empty_at_level(offset, 0) {
+            // Only walked for a page that is already lost, so this second walk costs nothing that
+            // was going to be useful, and it is the only way to tell the two apart:
+            // `is_empty_at_level` reports a large-page leaf and a present 4 KiB entry alike.
+            let large = pt
+                .readmap(offset, PageNumber::PAGE_SIZE)
+                .next()
+                .is_some_and(|info| info.len() > PageNumber::PAGE_SIZE);
+            return if large {
+                PageInstall::PresentLarge
+            } else {
+                PageInstall::PresentSmall
+            };
+        }
+        pt.map_page(offset, frame).unwrap();
+        PageInstall::Installed
     }
 
     pub fn cow_clone_page_tables(self: &ObjectRef) -> Result<ObjectPageTable, TwzError> {

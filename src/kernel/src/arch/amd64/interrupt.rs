@@ -183,7 +183,7 @@ unsafe extern "C" fn common_handler_entry(
                     user
                 );
             }
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+            super::processor::write_fs_base(kernel_fs);
 
             let t = current_thread_ref().unwrap();
             if (*ctx).get_ip() == 0 {
@@ -208,7 +208,7 @@ unsafe extern "C" fn common_handler_entry(
                     cause,
                 );
             }
-            t.set_entry_registers(Registers::Interrupt(ctx, *ctx));
+            t.set_entry_registers(Registers::Interrupt(ctx));
         }
     }
     generic_isr_handler(ctx, number, user);
@@ -222,7 +222,7 @@ unsafe extern "C" fn common_handler_entry(
                 panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
             }
             t.set_entry_registers(Registers::None);
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+            super::processor::write_fs_base(user_fs);
         } else {
             if (*ctx).get_ip() == 0 {
                 panic!("tried to set IP to 0!");
@@ -499,6 +499,7 @@ fn num_as_exception(n: u64) -> Exception {
 
 fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     assert!(!disable());
+    let t_int = crate::instant::Instant::now();
     let ctx = unsafe { ctx.as_mut().unwrap() };
     if number == Exception::DoubleFault as u64 || number == Exception::MachineCheck as u64 {
         /* diverging */
@@ -606,6 +607,7 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         }
         _ => crate::interrupt::external_interrupt_entry(number as u32),
     }
+    crate::interrupt::record_interrupt(number, t_int);
     crate::interrupt::post_interrupt();
 }
 

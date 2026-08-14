@@ -166,8 +166,12 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
     let ctx = PAGER_CTX.get().unwrap();
 
-    #[allow(unused_variables)]
-    let virtio_store = run_async(init_virtio()).unwrap();
+    // Optional: a guest booted without the virtio-pmem device has no virtio-mem controller to find,
+    // and nothing here consumes the store yet -- `ctx.store` is the ext4 one. Unwrapping made an
+    // absent device fatal, which took pager_start down and init with it.
+    if let Err(e) = run_async(init_virtio()) {
+        tracing::info!("no virtio-mem store ({}); continuing without one", e);
+    }
     let ext4_store = run_async(Ext4Store::new(disk.clone(), "/")).unwrap();
 
     let _ = ctx.store.set(ext4_store);

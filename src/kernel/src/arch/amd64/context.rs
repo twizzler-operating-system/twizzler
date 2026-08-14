@@ -325,6 +325,16 @@ impl ArchContext {
         }
     }
 
+    /// Whether this context already holds the object-table entry [`Self::ensure_object_mapped`]
+    /// would install.
+    ///
+    /// Split out so a caller can ask before precharging a frame allocator: the entry is normally
+    /// already there -- a couple of percent of the faults that reach this install one -- and the
+    /// precharge cannot happen under the lock this takes, so it has to be decided in advance.
+    pub fn is_object_mapped(&self, cursor: MappingCursor, settings: MappingSettings) -> bool {
+        self.inner.lock().is_object_mapped(cursor, settings)
+    }
+
     pub fn ensure_object_mapped(
         &self,
         cursor: MappingCursor,

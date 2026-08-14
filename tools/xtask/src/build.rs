@@ -90,6 +90,15 @@ fn get_cli_configs(
     // add in definition for machine target
     write!(configs, r#""--cfg=machine=\"{}\"""#, target_machine)?;
 
+    // The kernel clears RUSTFLAGS and configures itself here, so it needs the toolchain stamp
+    // passed the same way the rest of the flags are. Without it the kernel is the one collection
+    // that can silently outlive the compiler that built it.
+    write!(
+        configs,
+        r#","{}""#,
+        crate::toolchain::toolchain_stamp_flag()
+    )?;
+
     // finish the cfg string
     write!(configs, "]")?;
 

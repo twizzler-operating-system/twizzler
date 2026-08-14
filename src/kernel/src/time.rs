@@ -82,9 +82,10 @@ impl MovingAverage {
 pub struct TimeStatCollector {
     running: MovingAverage,
     count: usize,
-    mean: u128,
-    running_mean: u128,
-    variance: u128,
+    /// Sum of samples, and sum of their squares. Mean and variance are derived from these in the
+    /// getters; see [`TimeStatCollector::add_sample`].
+    sum: u128,
+    sum_sq: u128,
     min: u128,
     max: u128,
 }
@@ -95,11 +96,10 @@ impl TimeStatCollector {
         Self {
             running,
             count: 0,
-            mean: 0,
-            variance: 0,
+            sum: 0,
+            sum_sq: 0,
             min: u128::MAX,
             max: 0,
-            running_mean: 0,
         }
     }
 
@@ -109,42 +109,32 @@ impl TimeStatCollector {
             return;
         }
         self.running.add(sample as u64);
-        self.running_mean = self.running.get() as u128;
         if sample < self.min {
             self.min = sample;
         }
         if sample > self.max {
             self.max = sample;
         }
-        // Mean and variance are re-derived from `stat * count`, which does not fit u128 for large
-        // samples: at the cap above, delta^2 alone is ~3.4e38 fs^2, and `variance * count` reaches
-        // it far sooner. Drop the sample rather than wrap -- these are diagnostics, and a wrapped
-        // accumulator poisons every value derived from it afterwards. min/max/running are
-        // unaffected and stay updated.
-        let count = self.count as u128;
-        let Some(old_total) = self.mean.checked_mul(count) else {
+        // Sums, not running mean and variance. Deriving those on every sample cost two u128
+        // divisions and two u128 multiplications per call -- and this is called once per syscall,
+        // ~150,000 times a boot. The getters divide instead, and they run when someone asks for
+        // `SysInfo`.
+        //
+        // Overflow is still dropped rather than wrapped, for the reason the previous version gave:
+        // a wrapped accumulator poisons every value derived from it afterwards, while min/max and
+        // the running average stay good.
+        let Some(sum) = self.sum.checked_add(sample) else {
             return;
         };
-        let Some(old_var) = self.variance.checked_mul(count) else {
+        let Some(sq) = sample.checked_mul(sample) else {
             return;
         };
-        let Some(total) = old_total.checked_add(sample) else {
+        let Some(sum_sq) = self.sum_sq.checked_add(sq) else {
             return;
         };
-
-        let new_count = count + 1;
-        let new_mean = total / new_count;
-        let delta = sample as i128 - new_mean as i128;
-        let Some(delta_sq) = delta.checked_mul(delta) else {
-            return;
-        };
-        let Some(var) = old_var.checked_add(delta_sq as u128) else {
-            return;
-        };
-
+        self.sum = sum;
+        self.sum_sq = sum_sq;
         self.count += 1;
-        self.mean = new_mean;
-        self.variance = var / new_count;
     }
 
     pub fn count(&self) -> usize {
@@ -152,11 +142,22 @@ impl TimeStatCollector {
     }
 
     pub fn mean(&self) -> TimeSpan {
-        TimeSpan::from_femtos(self.mean)
+        TimeSpan::from_femtos(if self.count == 0 {
+            0u128
+        } else {
+            self.sum / self.count as u128
+        })
     }
 
     pub fn variance(&self) -> TimeSpan {
-        TimeSpan::from_femtos(self.variance)
+        if self.count == 0 {
+            return TimeSpan::from_femtos(0u128);
+        }
+        let n = self.count as u128;
+        let mean = self.sum / n;
+        // E[x^2] - E[x]^2, saturating: with integer means the subtraction can go slightly negative
+        // for a near-constant series.
+        TimeSpan::from_femtos((self.sum_sq / n).saturating_sub(mean * mean))
     }
 
     pub fn min(&self) -> TimeSpan {
@@ -168,7 +169,23 @@ impl TimeStatCollector {
     }
 
     pub fn running_mean(&self) -> TimeSpan {
-        TimeSpan::from_femtos(self.running_mean)
+        TimeSpan::from_femtos(self.running.get() as u128)
+    }
+
+    /// Fold another collector's samples into this one.
+    ///
+    /// Exact for everything except the running average, which is the caller's own and is left
+    /// alone: summing the sample and squared-sample totals makes the merged mean and variance
+    /// identical to what one collector fed every sample would report.
+    pub fn merge(&mut self, other: &Self) {
+        if other.count == 0 {
+            return;
+        }
+        self.sum = self.sum.saturating_add(other.sum);
+        self.sum_sq = self.sum_sq.saturating_add(other.sum_sq);
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+        self.count += other.count;
     }
 
     pub fn get_stats(&self) -> TimeStat {

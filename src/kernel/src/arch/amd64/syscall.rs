@@ -180,11 +180,11 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 context.as_ref().unwrap(),
             );
         }
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, kernel_fs);
+        super::processor::write_fs_base(kernel_fs);
 
         //let start = Instant::now();
         let t = current_thread_ref().unwrap();
-        t.set_entry_registers(Registers::Syscall(context, *context));
+        t.set_entry_registers(Registers::Syscall(context));
 
         crate::thread::enter_kernel();
         //let init_done = Instant::now();
@@ -226,7 +226,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
                 panic!("tried to set IP to 0! is currently: {:x}", t.read_ip());
             }
 
-            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, up_frame.thread_ptr);
+            super::processor::write_fs_base(up_frame.thread_ptr);
             return_with_frame_to_user(int_frame);
         }
         cur_th.set_entry_registers(Registers::None);
@@ -235,7 +235,7 @@ unsafe extern "C" fn syscall_entry_c(context: *mut X86SyscallContext, kernel_fs:
         if (*context).pc().raw() == 0 || (*context).pc().is_kernel() {
             panic!("tried to set IP to 0 or kernel! {}", (*context).pc().raw());
         }
-        x86::msr::wrmsr(x86::msr::IA32_FS_BASE, user_fs);
+        super::processor::write_fs_base(user_fs);
         return_to_user(context);
     }
 }

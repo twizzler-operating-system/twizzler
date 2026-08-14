@@ -72,17 +72,29 @@ pub(super) enum WaitKey {
 /// `Core::poll` condvar notify rather than waiting on these words.
 ///
 /// Excluding SYN-RECEIVED is the handshake note. `is_active()` is already true there, which offers
-/// up a connection whose handshake has not finished; closing such a socket is unrecoverable in
-/// smoltcp 0.11: `close()` moves SYN-RECEIVED straight to FIN-WAIT-1, and FIN-WAIT-1 accounts for
-/// exactly one outstanding control byte, which it attributes to a FIN. The still-unacknowledged SYN
-/// is now invisible, so when the handshake's ACK finally arrives it satisfies
-/// `tx_buffer.len() + 1 == ack_len` and is read as an ACK *of a FIN that was never transmitted*.
-/// The socket settles in FIN-WAIT-2, no FIN ever reaches the wire, and the peer waits for an EOF
-/// that cannot come.
+/// up a connection whose handshake has not finished; closing such a socket is unrecoverable, and
+/// still is as of smoltcp 0.13.1 (re-checked on upgrade, line numbers from its `socket/tcp.rs`):
+/// `close()` moves SYN-RECEIVED straight to FIN-WAIT-1 (1077), and `(sent_syn, sent_fin)` is
+/// derived from the *current state* rather than from history (1566), so FIN-WAIT-1 reports "sent a
+/// FIN, no outstanding SYN". The still-unacknowledged SYN is now invisible, `tx_buffer_start_seq`
+/// is one too low (1780), and when the handshake's ACK finally arrives it satisfies
+/// `tx_buffer.len() + 1 == ack_len` and is read as an ACK *of a FIN that was never transmitted*
+/// (1787). The socket settles in FIN-WAIT-2 (1941), no FIN ever reaches the wire, and the peer
+/// waits for an EOF that cannot come.
 ///
 /// Waiting for the handshake closes that window and is what accept() is supposed to mean anyway.
 /// The connection stays pending in the backlog meanwhile, and the transition to ESTABLISHED happens
 /// inside a poll pass, which republishes readiness -- so a waiter still gets its edge.
+///
+/// The cost, which is real and currently unmitigated: a handshake that never completes (the client
+/// vanished, or its final ACK is lost for good) pins a backlog slot invisibly and forever. It is
+/// not ready, so it is never accepted; `accept()`'s repair branch only fires on `!is_open()`, and
+/// SYN-RECEIVED is open, so it is never rebound; and smoltcp only reaps such a socket via
+/// `timed_out()`, which needs `Socket::set_timeout`, defaults to `None`, and is never set here.
+/// With `BACKLOG` of them a listener goes silently deaf. The fix would be a timeout on the
+/// *listening* sockets, cleared in `accept()` -- note it must be cleared, because `remote_last_ts`
+/// is refreshed on every received packet, so a timeout left on an accepted socket would abort
+/// idle-but-healthy connections.
 pub(super) fn listener_socket_ready(socket: &Socket<'_>) -> bool {
     socket.is_active() && socket.state() != State::SynReceived
 }

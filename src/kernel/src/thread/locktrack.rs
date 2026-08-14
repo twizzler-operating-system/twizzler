@@ -180,6 +180,13 @@ pub mod diag {
     pub static EXIT_DEFERRED_SCTX: Counter =
         Counter::new("force-exit deferred, thread in another security context");
 
+    /// A `sys_thread_sync` was entered from inside another one's round -- in practice a fault on a
+    /// pager-backed page touched by the outer round, which reaches the pager's queue wait. The slot
+    /// slab is per-round and not reentrant, so the nested sleep is refused rather than allowed to
+    /// trip `reserve`'s assert. Nonzero means the mixing of pager waits and thread-sync waits is
+    /// live and worth designing out; see HANG.md.
+    pub static NESTED_SYNC_SLEEP: Counter = Counter::new("nested sys_thread_sync sleep refused");
+
     /// `maybe_exit` declined to exit a thread that is mid-`sys_thread_sync`, so its sleep links get
     /// unlinked by the round's own cleanup instead of abandoned. Pairs with
     /// [SLEEP_LINK_LEAKED_AT_EXIT]: this counts the deferrals that keep that one at zero.
@@ -223,7 +230,7 @@ pub mod diag {
     pub static CRITICAL_LEAK_AT_EXIT: Counter =
         Counter::new("returning to user with a critical count held");
 
-    static ALL: [&Counter; 27] = [
+    static ALL: [&Counter; 28] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -247,6 +254,7 @@ pub mod diag {
         &EXIT_DEFERRED_MUTEX_HELD,
         &EXIT_DEFERRED_SCTX,
         &EXIT_DEFERRED_SLEEP_LINKED,
+        &NESTED_SYNC_SLEEP,
         &SLEEP_LINK_LEAKED,
         &SLEEP_LINK_LEAKED_AT_EXIT,
         &BLOCK_CHECK_SKIPPED,
@@ -869,7 +877,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions) or test mode;
+const DISABLE_LOCK_TRACKING: bool = true; // !cfg!(debug_assertions) or test mode;
 
 /// The A/B switch for the whole tracker, `DISABLE_LOCK_TRACKING` read the way call sites want it.
 ///

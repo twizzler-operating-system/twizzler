@@ -259,9 +259,28 @@ check_ffi_type!(twz_rt_futex_wait, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_futex_wake(ptr: *mut u32, max: i64) -> twz_error {
-    unsafe { OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize) }
+    unsafe {
+        match OUR_RUNTIME.futex_wake(&*ptr.cast(), max as usize) {
+            Ok(_) => TwzError::SUCCESS.raw(),
+            Err(e) => e.raw(),
+        }
+    }
 }
 check_ffi_type!(twz_rt_futex_wake, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_futex_wake_count(
+    ptr: *mut u32,
+    max: i64,
+) -> twizzler_rt_abi::bindings::u32_result {
+    unsafe {
+        OUR_RUNTIME
+            .futex_wake(&*ptr.cast(), max as usize)
+            .map(|n| n as u32)
+            .into()
+    }
+}
+check_ffi_type!(twz_rt_futex_wake_count, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_yield_now() {

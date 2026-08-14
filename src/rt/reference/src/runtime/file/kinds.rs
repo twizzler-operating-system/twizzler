@@ -60,16 +60,10 @@ mod openstats {
         let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
         let g = GET.fetch_add(get, Ordering::Relaxed) + get;
         let o = OBJ.fetch_add(obj, Ordering::Relaxed) + obj;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "OPENSTATS {} opens: lock {} us, get {} us, obj {} us (per open: {} us)",
-                n,
-                l / 1000,
-                g / 1000,
-                o / 1000,
-                (l + g + o) / (n * 1000),
-            );
-        }
+        // Every call, in ns: the first open on a thread costs milliseconds and the rest tens of
+        // microseconds, so an aggregate reports a number that describes neither.
+        secgate::statlog::record("OPENSTAT", n, &[lock, get, obj]);
+        let _ = (l, g, o);
     }
 }
 

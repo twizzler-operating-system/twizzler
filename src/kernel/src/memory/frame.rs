@@ -993,12 +993,11 @@ impl PhysicalFrameAllocator {
             .fold(0, |acc, region| region.nr_pages + acc)
     }
 
+    /// Take a frame off the free lists. Zeroing, if the caller asked for it, is deliberately *not*
+    /// done here -- see [`raw_alloc_frame`].
     fn alloc(&mut self, flags: PhysicalFrameFlags, layout: Layout) -> Option<FrameRef> {
         let frame = self.__do_alloc(flags, layout)?;
         assert!(frame.refcount() == 0);
-        if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
-            frame.zero();
-        }
         Some(frame)
     }
 
@@ -1140,6 +1139,13 @@ pub fn init(regions: &[MemoryRegion]) {
 
 pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Option<FrameRef> {
     let frame = { PFA.wait().lock().alloc(flags, layout) }?;
+    // Deliberately outside the allocator lock. `alloc` has already taken this frame off the free
+    // lists and marked it allocated with a zero refcount, so nothing else can reach it, and
+    // zeroing is by far the longest thing that used to happen under that lock: a 2 MiB frame
+    // measured at ~1.3 ms, during which every other cpu's frame allocation spun.
+    if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
+        frame.zero();
+    }
     if flags.contains(PhysicalFrameFlags::ZEROED) {
         assert!(frame.is_zeroed());
     }

@@ -1,6 +1,6 @@
 //! Management of global context.
 
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, sync::Mutex};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use stable_vec::StableVec;
@@ -42,6 +42,13 @@ pub struct Context {
     // A library that exports `__TWIZZLER_SECURE_GATE_foo` is also indexed under `foo`, mirroring
     // the prefixed retry in Library::lookup_symbol.
     pub(crate) sym_index: HashMap<String, std::vec::Vec<SymSite>>,
+
+    // Relocation runs under a shared reference, so it is no longer serialized by the caller's
+    // write lock. Two concurrent relocations of a shared dependency would race on its
+    // `reloc_state`, and the loser would observe `PartialRelocation` and report the library as
+    // failed. This restores exactly the mutual exclusion the write lock used to provide, and
+    // nothing else takes it, so readers still proceed during relocation.
+    pub(crate) reloc_lock: Mutex<()>,
 }
 
 /// One place a symbol is defined. `comp` and `has_gates` are carried here so the global search can
@@ -110,6 +117,7 @@ impl Context {
             library_deps: StableDiGraph::new(),
             compartments: StableVec::new(),
             sym_index: HashMap::new(),
+            reloc_lock: Mutex::new(()),
         }
     }
 

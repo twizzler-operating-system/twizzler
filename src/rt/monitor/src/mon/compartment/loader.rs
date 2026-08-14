@@ -38,6 +38,34 @@ pub struct RunCompLoader {
     root_comp: LoadInfo,
 }
 
+struct UnloadOnDrop(TinyVec<[LoadIds; SMALL_VEC_SIZE]>);
+
+impl Drop for UnloadOnDrop {
+    fn drop(&mut self) {
+        tracing::warn!("todo: drop");
+    }
+}
+
+/// A compartment load that has mutated the dynlink graph but has not relocated yet.
+///
+/// Splitting the load here is the point: graph mutation needs the dynlink write lock, relocation
+/// does not (it writes to segment memory and to each library's atomic `reloc_state`). The caller
+/// drops the write lock and re-takes a read lock between the two halves, so the relocation phase --
+/// a median 6.7 ms of a 31 ms load -- no longer blocks `lookup_symbol`, `get_library_info`, and the
+/// compartment getters.
+pub struct PendingCompLoad {
+    loads: UnloadOnDrop,
+    loaded_extras: dynlink::Vec<LoadInfo, SMALL_VEC_SIZE>,
+    extra_lids: Vec<LibraryId>,
+    root_id: LibraryId,
+    rt_id: LibraryId,
+    root_sctx: ObjID,
+    _start_1: Instant,
+    _start_2: Instant,
+    _t_preloads: u64,
+    _t_root: u64,
+}
+
 /// A single compartment, loaded but not yet running.
 #[derive(Debug, Clone)]
 struct LoadInfo {
@@ -78,7 +106,7 @@ impl Default for LoadInfo {
 
 impl LoadInfo {
     fn new(
-        dynlink: &mut Context,
+        dynlink: &Context,
         root_id: LibraryId,
         rt_id: LibraryId,
         sctx_id: ObjID,
@@ -181,6 +209,13 @@ impl Drop for RunCompLoader {
 
 const RUNTIME_NAME: &str = "libtwz_rt.so";
 
+/// Switch for the per-load phase counter (`LOADPHAS`): total / preloads / root load / relocate.
+///
+/// Answered round 8's question -- a compartment load is a median 31 ms, of which the root library's
+/// `load_library_in_compartment` is 24 ms and relocation 6.7 -- so it is off. Left in place because
+/// the next attempt on that 24 ms needs it back.
+const LOAD_PHASE_STATS: bool = true;
+
 impl RunCompLoader {
     // the runtime library might be in the dependency tree from the shared object files.
     // if not, we need to insert it.
@@ -205,9 +240,12 @@ impl RunCompLoader {
         Ok(loads[0].lib)
     }
 
-    /// Build a new RunCompLoader. This will load and relocate libraries in the dynamic linker, but
-    /// won't start compartment threads.
-    pub fn new(
+    /// Load libraries into the dynamic linker, without relocating them.
+    ///
+    /// This is the half of a compartment load that mutates the dynlink graph, and is the only half
+    /// that needs the write lock. Finish with [`PendingCompLoad::relocate_and_finish`] under a read
+    /// lock.
+    pub fn load_graph(
         dynlink: &mut Context,
         comp_name: &str,
         root_unlib: UnloadedLibrary,
@@ -215,14 +253,8 @@ impl RunCompLoader {
         extras_sctx: &[UnloadedLibrary],
         new_comp_flags: NewCompartmentFlags,
         mondebug: bool,
-    ) -> miette::Result<Self> {
+    ) -> miette::Result<PendingCompLoad> {
         let _start_1 = Instant::now();
-        struct UnloadOnDrop(TinyVec<[LoadIds; SMALL_VEC_SIZE]>);
-        impl Drop for UnloadOnDrop {
-            fn drop(&mut self) {
-                tracing::warn!("todo: drop");
-            }
-        }
         let root_comp_id = dynlink.add_compartment(comp_name, new_comp_flags)?;
         let allowed_gates = if new_comp_flags.contains(NewCompartmentFlags::EXPORT_GATES) {
             AllowedGates::Public
@@ -276,12 +308,15 @@ impl RunCompLoader {
             })
             .try_collect()?;
 
+        let _t_preloads = _start_2.elapsed().as_nanos() as u64;
+        let _t_root_start = Instant::now();
         let mut loads = UnloadOnDrop(dynlink.load_library_in_compartment(
             root_comp_id,
             root_unlib.clone(),
             allowed_gates,
             &mut load_ctx,
         )?);
+        let _t_root = _t_root_start.elapsed().as_nanos() as u64;
 
         extra_load_ids.append(&mut extra_sctx_load_ids);
 
@@ -344,18 +379,74 @@ impl RunCompLoader {
             .flatten()
             .map(|x| x.lib)
             .collect::<Vec<_>>();
+
+        Ok(PendingCompLoad {
+            loads,
+            loaded_extras: extra_compartments,
+            extra_lids,
+            root_id,
+            rt_id,
+            root_sctx: *load_ctx.set.get(&root_comp_id).unwrap(),
+            _start_1,
+            _start_2,
+            _t_preloads,
+            _t_root,
+        })
+    }
+}
+
+impl PendingCompLoad {
+    /// Relocate the loaded libraries and finish building the [`RunCompLoader`].
+    ///
+    /// Takes `&Context`: relocation mutates segment memory and each library's atomic relocation
+    /// state, not the graph. A concurrent reader can see these libraries in the graph before this
+    /// returns, which is what `Library::is_relocated` guards.
+    pub fn relocate_and_finish(
+        self,
+        dynlink: &Context,
+        comp_name: &str,
+        mondebug: bool,
+    ) -> miette::Result<RunCompLoader> {
+        let PendingCompLoad {
+            loads,
+            loaded_extras: extra_compartments,
+            extra_lids,
+            root_id,
+            rt_id,
+            root_sctx,
+            _start_1,
+            _start_2,
+            _t_preloads,
+            _t_root,
+        } = self;
+
         let _start_3 = Instant::now();
         for extra in &extra_lids {
             dynlink.relocate_all(*extra)?;
         }
         dynlink.relocate_all(root_id)?;
 
+        let _t_reloc = _start_3.elapsed().as_nanos() as u64;
+        // Where a compartment load's 20-100 ms actually goes (`sysperf.md` round 8). Recorded per
+        // load, deferred through statlog: this runs with the dynlink write lock held, so a console
+        // write here would be charged to the hold being investigated.
+        secgate::statlog::record_on(
+            LOAD_PHASE_STATS,
+            "LOADPHAS",
+            _start_1.elapsed().as_nanos() as u64 / 1000,
+            &[
+                _t_preloads / 1000,
+                _t_root / 1000,
+                _t_reloc / 1000,
+                extra_lids.len() as u64,
+            ],
+        );
         let is_binary = dynlink.get_library(root_id)?.is_binary();
         let root_comp = LoadInfo::new(
             dynlink,
             root_id,
             rt_id,
-            *load_ctx.set.get(&root_comp_id).unwrap(),
+            root_sctx,
             is_binary,
             extra_lids.as_slice(),
         )?;
@@ -418,7 +509,9 @@ impl RunCompLoader {
             root_comp,
         })
     }
+}
 
+impl RunCompLoader {
     pub fn build_rcs(
         self,
         cmp: &mut CompartmentMgr,

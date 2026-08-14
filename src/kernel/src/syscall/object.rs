@@ -8,8 +8,8 @@ use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     pager::PagerFlags,
     syscall::{
-        EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
-        ObjectCreate, ObjectCreateFlags, ObjectInfo,
+        EnumerateKind, HandleType, MAX_PRELOAD_RANGES, MapControlCmd, MapFlags, MapInfo,
+        ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, PreloadRangeSpec,
     },
 };
 use twizzler_rt_abi::{
@@ -162,42 +162,6 @@ pub fn sys_object_create(
     Ok(obj.id())
 }
 
-// Temporary instrumentation, pairing with the monitor's `SPACESPLIT` (pagerperf.md). That counter
-// found `sys_object_map` to be 99.4% of `Space::map` -- locks and slot allocation together were
-// 0.6% -- so the monitor's side is exonerated and the cost is in here. This splits the syscall into
-// the in-kernel object lookup, the pager round trip taken when the lookup misses, and the mapping
-// itself, which decides whether this is a paging problem or a `VirtContext` one.
-mod mapsplit {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static PAGED: AtomicU64 = AtomicU64::new(0);
-    static LOOKUP: AtomicU64 = AtomicU64::new(0);
-    static WAIT: AtomicU64 = AtomicU64::new(0);
-    static MAP: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(lookup: u64, wait: u64, map: u64, paged: bool) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        if paged {
-            PAGED.fetch_add(1, Ordering::Relaxed);
-        }
-        LOOKUP.fetch_add(lookup, Ordering::Relaxed);
-        WAIT.fetch_add(wait, Ordering::Relaxed);
-        MAP.fetch_add(map, Ordering::Relaxed);
-        if !n.is_power_of_two() {
-            return;
-        }
-        crate::logln!(
-            "MAPSYSSPLIT {} sys_object_map ({} paged): lookup {} us, pagerwait {} us, map {} us",
-            n,
-            PAGED.load(Ordering::Relaxed),
-            LOOKUP.load(Ordering::Relaxed) / 1000,
-            WAIT.load(Ordering::Relaxed) / 1000,
-            MAP.load(Ordering::Relaxed) / 1000,
-        );
-    }
-}
-
 pub fn sys_object_map(
     id: ObjID,
     slot: usize,
@@ -211,11 +175,7 @@ pub fn sys_object_map(
     } else {
         current_vmc()?
     };
-    let t_lookup = crate::instant::Instant::now();
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
-    let lookup_ns = (crate::instant::Instant::now() - t_lookup).as_nanos() as u64;
-    let mut wait_ns = 0u64;
-    let mut paged = false;
     let obj = match obj {
         crate::obj::LookupResult::WasDeleted => {
             log::warn!(
@@ -227,13 +187,7 @@ pub fn sys_object_map(
             return Err(ObjectError::NoSuchObject.into());
         }
         crate::obj::LookupResult::Found(obj) => obj,
-        _ => match {
-            paged = true;
-            let t_wait = crate::instant::Instant::now();
-            let r = crate::pager::lookup_object_and_wait(id);
-            wait_ns = (crate::instant::Instant::now() - t_wait).as_nanos() as u64;
-            r
-        } {
+        _ => match crate::pager::lookup_object_and_wait(id) {
             Some(obj) => obj,
             None => {
                 log::warn!(
@@ -250,15 +204,8 @@ pub fn sys_object_map(
     // syscall runs. Submission is a lock and a queue push; nothing here waits.
     crate::pager::prefetch_on_map(&obj);
     // TODO
-    let t_map = crate::instant::Instant::now();
     let _res =
         crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags, target_sctx);
-    mapsplit::record(
-        lookup_ns,
-        wait_ns,
-        (crate::instant::Instant::now() - t_map).as_nanos() as u64,
-        paged,
-    );
     Ok(slot)
 }
 
@@ -441,6 +388,38 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
                 .inspect_err(|e| log::error!("failed to preload object {}: {}", id, e))?;
         }
 
+        ObjectControlCmd::PreloadRange => {
+            let obj = obj
+                .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
+            let nr = (arg2 as usize).min(MAX_PRELOAD_RANGES);
+            let specs = unsafe { core::slice::from_raw_parts(arg as *const PreloadRangeSpec, nr) };
+            const MAX_PAGES: usize = MAX_SIZE / PageNumber::PAGE_SIZE;
+            let mut reqs = heapless::Vec::<_, MAX_PRELOAD_RANGES>::new();
+            for spec in specs {
+                let start = (spec.start_page as usize).min(MAX_PAGES);
+                let nr_pages = (spec.nr_pages as usize).min(MAX_PAGES - start);
+                if nr_pages == 0 {
+                    continue;
+                }
+                let _ = reqs.push((
+                    PageNumber::from_offset(start * PageNumber::PAGE_SIZE),
+                    nr_pages,
+                ));
+            }
+            if !reqs.is_empty() {
+                let guard = obj.lock_page_tables();
+                let _ = crate::pager::ensure_in_core(
+                    &obj,
+                    guard,
+                    reqs.as_slice(),
+                    PagerFlags::PREFETCH,
+                    true,
+                    &mut false,
+                    None,
+                )?;
+            }
+        }
+
         ObjectControlCmd::AddNote => {
             let obj = obj
                 .or_else(|_| crate::pager::lookup_object_and_wait(id).ok_or(TwzError::NOT_FOUND))?;
@@ -497,11 +476,22 @@ pub fn map_ctrl(start: usize, _len: usize, cmd: MapControlCmd, opts: u64) -> Res
 
 pub fn sys_enumerate(arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<usize> {
     let kind = EnumerateKind::try_from(arg0)?;
-    let buf = unsafe { create_user_slice(arg1, arg2).ok_or(TwzError::INVALID_ARGUMENT) }?;
     let offset = arg3 as usize;
 
+    // The buffer's element type is per-kind -- slot numbers, not object ids -- so it is built
+    // inside each arm.
     match kind {
-        EnumerateKind::Objects => crate::obj::enumerate_objects(buf, offset),
-        EnumerateKind::Threads => crate::thread::enumerate_objects(buf, offset),
+        EnumerateKind::Objects => {
+            let buf = unsafe { create_user_slice(arg1, arg2).ok_or(TwzError::INVALID_ARGUMENT) }?;
+            crate::obj::enumerate_objects(buf, offset)
+        }
+        EnumerateKind::Threads => {
+            let buf = unsafe { create_user_slice(arg1, arg2).ok_or(TwzError::INVALID_ARGUMENT) }?;
+            crate::thread::enumerate_objects(buf, offset)
+        }
+        EnumerateKind::MappedSlots => {
+            let buf = unsafe { create_user_slice(arg1, arg2).ok_or(TwzError::INVALID_ARGUMENT) }?;
+            current_vmc()?.enumerate_slots(buf, offset)
+        }
     }
 }

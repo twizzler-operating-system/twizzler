@@ -15,7 +15,11 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
-use crate::runtime::{alloc::LOCAL_ALLOCATOR, thread::MIN_STACK_ALIGN, OUR_RUNTIME};
+use crate::runtime::{
+    alloc::LOCAL_ALLOCATOR,
+    thread::{mgr::stackpool, tcb::tlspool, MIN_STACK_ALIGN},
+    OUR_RUNTIME,
+};
 
 /// Internal representation of a thread, tracking the resources
 /// allocated for this thread.
@@ -102,8 +106,10 @@ impl Drop for InternalThread {
     fn drop(&mut self) {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
-            // Stack is manually allocated, just free it directly.
-            if self.stack_addr != 0 {
+            // Stack is manually allocated, so hand it to the next spawn, or free it directly if
+            // the pool is full. Recycling needs exactly what freeing here already needs: this
+            // thread is gone, so nothing is running on it.
+            if self.stack_addr != 0 && !stackpool::put(self.stack_addr, self.stack_size) {
                 OUR_RUNTIME.dealloc(
                     self.stack_addr as *mut u8,
                     Layout::from_size_align(self.stack_size, MIN_STACK_ALIGN).unwrap(),
@@ -114,7 +120,12 @@ impl Drop for InternalThread {
                 let _args = Box::from_raw(self.args_box as *mut ThreadSpawnArgs);
                 drop(_args);
             }
-            LOCAL_ALLOCATOR.dealloc(self.tls_alloc_base, self.tls_layout);
+            // Same deal as the stack above: hand the TLS region to the next spawn, or free it if
+            // the pool is full. See `tcb::tlspool` for why recycling it needs nothing that freeing
+            // it here did not already need.
+            if !tlspool::put(self.tls_alloc_base, self.tls_layout) {
+                LOCAL_ALLOCATOR.dealloc(self.tls_alloc_base, self.tls_layout);
+            }
         }
     }
 }

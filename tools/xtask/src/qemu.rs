@@ -235,15 +235,26 @@ impl QemuCommand {
         // configure architechture specific parameters
         self.arch_config(options.kvm.mode());
 
+        // Guest writes land in a throwaway overlay and the image itself opens read-only, which is
+        // what lets concurrent runs share one file instead of each copying it.
+        let snapshot = if options.snapshot_disks {
+            ",snapshot=on"
+        } else {
+            ""
+        };
+
         // Connect disk image
         self.cmd.arg("-drive").arg(format!(
-            "format=raw,file={}",
-            disk_image.as_path().display()
+            "format=raw,file={}{}",
+            disk_image.as_path().display(),
+            snapshot
         ));
 
         // qemu takes a write lock on this, so two runs sharing one image is a hard conflict, not a
         // race that usually works. `--disk-image` is how concurrent runs each get a private copy;
-        // the shared per-triple image stays the default for interactive development.
+        // the shared per-triple image stays the default for interactive development. The exception
+        // is `--snapshot-disks`, which opens read-only and takes no write lock, so runs sharing one
+        // image is then the point rather than a conflict.
         let disk_image_path = match &options.disk_image {
             Some(path) => {
                 if !path.is_file() {
@@ -273,21 +284,29 @@ impl QemuCommand {
             }
         };
 
-        let nvme_drive = format!("file={},if=none,id=nvme", disk_image_path);
+        let nvme_drive = format!("file={},if=none,id=nvme{}", disk_image_path, snapshot);
         self.cmd
             .arg("-drive")
             .arg(nvme_drive)
             .arg("-device")
             .arg("nvme,serial=deadbeef,drive=nvme");
 
-        self.cmd
-            .arg("-device")
-            .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
-        let mem_drive = format!(
-            "memory-backend-file,id=dataset,size=107374182400,mem-path={},share=on",
-            disk_image_path
-        );
-        self.cmd.arg("-object").arg(mem_drive);
+        // Temporarily disabled -- to be restored.
+        //
+        // This backed virtio-pmem with the same file the nvme drive uses. `snapshot=on` is a
+        // -drive option and does not reach a memory-backend-file, and `share=on` maps it
+        // MAP_SHARED, so guest writes go straight into the file -- which is exactly what stops
+        // concurrent runs from sharing one image. Restoring it means deciding what the pmem view
+        // should be when the drive above is a snapshot, since the two would no longer be coherent.
+        //
+        // self.cmd
+        //     .arg("-device")
+        //     .arg("virtio-pmem-pci,memdev=dataset,id=nv2");
+        // let mem_drive = format!(
+        //     "memory-backend-file,id=dataset,size=107374182400,mem-path={},share=on",
+        //     disk_image_path
+        // );
+        // self.cmd.arg("-object").arg(mem_drive);
 
         self.cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
 
@@ -472,12 +491,42 @@ pub(crate) fn print_report(report: &ReportInfo) {
 }
 
 /// Where `--no-build` expects to find an already-built boot image.
+/// The image to boot when we were told not to build one.
+///
+/// Images are named by build id now, so there is no fixed path to return: pick the most recently
+/// written one in the profile's directory. That is a guess by construction -- which is why every
+/// boot prints its own id, so a run that guessed wrong says so rather than being believed.
 pub(crate) fn prebuilt_image_path(config: &crate::BuildConfig) -> PathBuf {
-    PathBuf::from(format!(
-        "target/kernel/{}-unknown-none/{}/disk.img",
+    let dir = PathBuf::from(format!(
+        "target/kernel/{}-unknown-none/{}",
         config.arch.to_string(),
         config.profile.to_string()
-    ))
+    ));
+    let newest = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("disk-") && n.ends_with(".img"))
+        })
+        .filter_map(|p| {
+            let mtime = p.metadata().ok()?.modified().ok()?;
+            Some((mtime, p))
+        })
+        .max_by_key(|(mtime, _)| *mtime)
+        .map(|(_, p)| p);
+    match newest {
+        Some(path) => {
+            println!("booting most recent prebuilt image: {}", path.display());
+            path
+        }
+        // Nothing to pick: name the old fixed path, so the error message is about a missing image
+        // rather than about an empty directory.
+        None => dir.join("disk.img"),
+    }
 }
 
 fn serial_log_path(label: &str) -> PathBuf {

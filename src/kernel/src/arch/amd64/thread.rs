@@ -22,10 +22,16 @@ use crate::{
 };
 
 #[derive(Copy, Clone, Debug)]
+/// The register frame a thread entered the kernel with, as a pointer to the frame the entry stub
+/// pushed on the kernel stack.
+///
+/// Deliberately *only* the pointer. This used to carry a by-value copy of the frame alongside it,
+/// written on every syscall and every interrupt from user -- 128 bytes for a syscall, more for an
+/// interrupt -- and nothing ever read it: every match on this enum discards the second field.
 pub enum Registers {
     None,
-    Syscall(*mut X86SyscallContext, X86SyscallContext),
-    Interrupt(*mut IsrContext, IsrContext),
+    Syscall(*mut X86SyscallContext),
+    Interrupt(*mut IsrContext),
 }
 
 #[derive(Debug)]
@@ -290,7 +296,11 @@ where
         let (lower, upper) = xsave_mask();
         // We still need to save the fpu registers / sse state.
         if use_xsave() {
-            core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
+            if use_xsaveopt() {
+                core::arch::asm!("xsaveopt [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
+            } else {
+                core::arch::asm!("xsave [{}]", in(reg) frame.xsave_region.as_ptr(), in("rax") lower, in("rdx") upper);
+            }
         } else {
             core::arch::asm!("fxsave [{}]", in(reg) frame.xsave_region.as_ptr());
         }
@@ -321,10 +331,45 @@ where
 /// hardware that has them -- and latent only because current userspace uses neither. Deriving the
 /// mask in one place is the point: this drifted apart once already.
 pub(super) fn xsave_mask() -> (u64, u64) {
-    // Safe: XCR0 is readable whenever CR4.OSXSAVE is set, which `processor::init` does on every
+    // Cached: XCR0 is set once per cpu in `processor::init` and never changed afterwards, but this
+    // is read on every `xsave` *and* every `xrstor`, i.e. twice per context switch, and `xgetbv`
+    // is not free. Safe to read whenever CR4.OSXSAVE is set, which `processor::init` does on every
     // cpu before any thread runs, and callers are all gated on `use_xsave()`.
-    let bits = unsafe { x86::controlregs::xcr0() }.bits() as u64;
+    static XCR0: AtomicU64 = AtomicU64::new(0);
+    let mut bits = XCR0.load(Ordering::Relaxed);
+    if bits == 0 {
+        bits = unsafe { x86::controlregs::xcr0() }.bits() as u64;
+        XCR0.store(bits, Ordering::Relaxed);
+    }
     (bits & 0xFFFFFFFF, bits >> 32)
+}
+
+/// Whether `xsaveopt` is available.
+///
+/// Same format as `xsave`, so `xrstor` is unchanged, but it skips writing components that are in
+/// their initial state or unmodified since the last `xrstor` from the same buffer -- which for most
+/// threads is nearly all of a 3 KiB region, on every context switch. The "unmodified" half is keyed
+/// on the buffer address, so saving into a *different* buffer (the upcall frame) correctly falls
+/// back to writing the component out.
+pub(super) fn use_xsaveopt() -> bool {
+    /// A/B switch.
+    const USE_XSAVEOPT_IF_AVAILABLE: bool = true;
+    static USE_XSAVEOPT: AtomicU8 = AtomicU8::new(0);
+    if !USE_XSAVEOPT_IF_AVAILABLE {
+        return false;
+    }
+    match USE_XSAVEOPT.load(Ordering::Relaxed) {
+        0 => {
+            let has = x86::cpuid::CpuId::new()
+                .get_extended_state_info()
+                .map(|i| i.has_xsaveopt())
+                .unwrap_or(false);
+            USE_XSAVEOPT.store(if has { 2 } else { 1 }, Ordering::Relaxed);
+            has
+        }
+        1 => false,
+        _ => true,
+    }
 }
 
 pub(super) fn use_xsave() -> bool {
@@ -398,11 +443,11 @@ impl Thread {
                     info
                 );
             }
-            Registers::Interrupt(int, _) => {
+            Registers::Interrupt(int) => {
                 let int = unsafe { &mut *int };
                 set_upcall(int, target, info, source_ctx, self.objid(), sup)
             }
-            Registers::Syscall(sys, _) => {
+            Registers::Syscall(sys) => {
                 let sys = unsafe { &mut *sys };
                 set_upcall(sys, target, info, source_ctx, self.objid(), sup)
             }
@@ -444,7 +489,11 @@ impl Thread {
             let (lower, upper) = xsave_mask();
 
             if do_xsave {
-                core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
+                if use_xsaveopt() {
+                    core::arch::asm!("xsaveopt [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
+                } else {
+                    core::arch::asm!("xsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr(), in("rax") lower, in("rdx") upper);
+                }
             } else {
                 core::arch::asm!("fxsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
             }
@@ -481,7 +530,7 @@ impl Thread {
         assert!(!crate::interrupt::get());
         unsafe {
             set_kernel_stack(
-                VirtAddr::new(self.kernel_stack.as_ref() as *const u8 as u64)
+                VirtAddr::new(self.kernel_stack.as_ptr() as u64)
                     .unwrap()
                     .offset(KERNEL_STACK_SIZE)
                     .unwrap(),
@@ -550,11 +599,11 @@ impl Thread {
                 Registers::None => {
                     return 0;
                 }
-                Registers::Interrupt(int, _) => {
+                Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
                     (*int).get_ip()
                 }
-                Registers::Syscall(sys, _) => {
+                Registers::Syscall(sys) => {
                     let sys = unsafe { &mut *sys };
                     (*sys).pc().raw()
                 }
@@ -570,11 +619,11 @@ impl Thread {
                 Registers::None => {
                     return 0;
                 }
-                Registers::Interrupt(int, _) => {
+                Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
                     (*int).get_stack_top()
                 }
-                Registers::Syscall(sys, _) => {
+                Registers::Syscall(sys) => {
                     let sys = unsafe { &mut *sys };
                     (*sys).get_base_pointer()
                 }
@@ -597,11 +646,11 @@ impl Thread {
                 Registers::None => {
                     unreachable!()
                 }
-                Registers::Interrupt(int, _) => {
+                Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
                     (*int).into()
                 }
-                Registers::Syscall(sys, _) => {
+                Registers::Syscall(sys) => {
                     let sys = unsafe { &mut *sys };
                     (*sys).into()
                 }

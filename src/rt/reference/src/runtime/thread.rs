@@ -64,17 +64,18 @@ impl ReferenceRuntime {
         }
     }
 
-    pub fn futex_wake(
-        &self,
-        futex: &core::sync::atomic::AtomicU32,
-        count: usize,
-    ) -> twizzler_rt_abi::bindings::twz_error {
-        let wake = ThreadSync::new_wake(ThreadSyncWake::new(
+    /// Wake up to `count` waiters, reporting how many were actually woken.
+    ///
+    /// The count comes from the *per-operation* result, not the syscall's return value: that one is
+    /// how many operations were immediately ready, and the single-wake fast path returns 1 for a
+    /// wake that found nobody. `ThreadSync::Wake`'s own result is the thread count.
+    pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> Result<usize> {
+        let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
-        ));
-        let _ = sys_thread_sync(&mut [wake], None);
-        0
+        ))];
+        sys_thread_sync(&mut ops, None)?;
+        ops[0].get_result()
     }
 
     pub fn yield_now(&self) {

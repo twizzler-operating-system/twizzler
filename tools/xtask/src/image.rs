@@ -108,6 +108,45 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
     path
 }
 
+/// Identity of what is about to be packed: the kernel, the initrd, and the command line asked for.
+///
+/// Two things depend on this. The image is named by it, so two builds that differ in *any* of those
+/// three cannot share an output path -- which is what let a `--tests` image be handed to an
+/// `--autostart` sweep out of one fixed `disk.img`. And it is appended to the command line, so the
+/// kernel's existing `boot with cmd` line proves both what was requested and which artifacts
+/// answered, in one string. A transcript is then self-describing: no marker to remember to update,
+/// and no way for the right binaries to be credited with the wrong workload (both failure modes
+/// happened here -- see pagerperf.md section 22).
+fn build_id(kernel: &Path, initrd: &Path, cmdline: &str) -> anyhow::Result<String> {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+        io::Read,
+    };
+
+    fn hash_file(hasher: &mut DefaultHasher, path: &Path) -> anyhow::Result<()> {
+        let mut file = File::open(path)
+            .with_context(|| format!("failed to open {} for the build id", path.display()))?;
+        // Contents, not mtime: two builds of identical artifacts *should* collide, and a rebuild
+        // that changes nothing should not invalidate a measurement taken against it.
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            buf[..n].hash(hasher);
+        }
+        Ok(())
+    }
+
+    let mut hasher = DefaultHasher::new();
+    hash_file(&mut hasher, kernel)?;
+    hash_file(&mut hasher, initrd)?;
+    cmdline.hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
 /// Everything in here is packed into the initrd verbatim, and the initrd is read through UEFI block
 /// I/O at boot (~90MB/s), so a stray file here is paid for on every single boot. `src/data` is
 /// gitignored scratch, which makes that easy to miss -- hence the size warning.
@@ -502,17 +541,26 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
         tc_path
     };
 
-    let image_path = get_genfile_path(&comp, "disk.img");
-    println!(
-        "kernel: {:?}, cmdline: {}",
-        comp.get_kernel_image(cli.tests || cli.benches || cli.bench.is_some()),
-        cmdline
-    );
+    let kernel_image = comp.get_kernel_image(cli.tests || cli.benches || cli.bench.is_some());
+    let requested_cmdline = cmdline.trim().to_string();
+    let build_id = build_id(&kernel_image, &initrd_path, &requested_cmdline)?;
+    // Last, so `--autostart`'s bare program name keeps the position init parses it from, and so the
+    // id is the final word of the line the kernel prints.
+    let cmdline = format!("{} --build-id={}", requested_cmdline, build_id);
+
+    // Named by identity, not by profile: `disk.img` was one path per profile whatever was baked
+    // into it, so two builds wanting different images raced for it and the loser booted the
+    // winner's.
+    let image_path = get_genfile_path(&comp, &format!("disk-{}.img", build_id));
+    println!("kernel: {:?}, cmdline: {}", kernel_image, cmdline);
+    // Machine-readable, and the contract `many.py` reads: never guess this path.
+    println!("build-id: {}", build_id);
+    println!("image: {}", image_path.display());
     let status = Command::new(get_tool_path(&comp, "image_builder")?)
         .arg("--disk-path")
         .arg(&image_path)
         .arg("--kernel-path")
-        .arg(comp.get_kernel_image(cli.tests || cli.benches || cli.bench.is_some()))
+        .arg(&kernel_image)
         .arg("--initrd-path")
         .arg(initrd_path)
         .arg(format!("--cmdline={}", cmdline.trim()))

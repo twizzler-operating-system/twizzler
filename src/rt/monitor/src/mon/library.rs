@@ -136,6 +136,11 @@ impl Monitor {
                 .load_library_in_compartment(comp_id, unlib, AllowedGates::Private, &mut load_ctx)
                 .map_err(|_| TwzError::NOT_FOUND)?;
             tracing::debug!("loaded library '{}'", name);
+            // This compartment's gate addresses and library count were cached on the assumption
+            // that its dynlink state is fixed. This is the one path that adds a library to a
+            // *live* compartment, so it is the one place that assumption breaks. (A compartment
+            // built by `RunCompLoader` starts with an empty cache, and a torn-down one drops it.)
+            rc.invalidate_dynlink_cache();
             let root_id = loads.first().ok_or(GenericError::Internal)?.lib;
             // Relocate the newly loaded library graph.
             dynlink

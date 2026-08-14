@@ -278,10 +278,19 @@ struct QemuOptions {
     kvm: KvmOptions,
     #[clap(
         long,
-        help = "Use this ext4 disk (nvme + virtio-pmem) instead of the shared target/disk-<triple>.img. \
-                Point concurrent runs at private copies; qemu takes a write lock on it."
+        help = "Use this ext4 disk (nvme) instead of the shared target/disk-<triple>.img. \
+                Point concurrent runs at private copies; qemu takes a write lock on it, unless \
+                --snapshot-disks is also given."
     )]
     disk_image: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "Discard guest writes to the boot and data images: qemu opens both read-only and \
+                puts writes in a temporary overlay it deletes on exit. Concurrent runs can then \
+                share one image instead of each copying it. Anything the guest wrote is gone when \
+                it exits."
+    )]
+    snapshot_disks: bool,
     #[clap(
         long,
         help = "Host port to forward to the guest's ssh port. 0 allocates one dynamically. \

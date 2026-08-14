@@ -110,14 +110,35 @@ impl NsNode {
 
 // Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md): opening a
 // namespace by id maps its object, which is a monitor gate call on a cache miss.
+//
+// Gated by a const rather than by `statcadence::STATS_ON`, which suppresses the *output* and leaves
+// the work: this cost two `Instant::now()` and three shared-cacheline RMWs on every readdir chunk,
+// which is the shape sysperf.md round 6 caught doing more harm than the thing it measured.
 mod nsidstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::Instant,
+    };
+
+    pub const NSID_STATS: bool = false;
 
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static OPEN: AtomicU64 = AtomicU64::new(0);
     static ITEMS: AtomicU64 = AtomicU64::new(0);
 
+    /// `None` unless the instrument is on, so the clock read folds away with it.
+    pub fn start() -> Option<Instant> {
+        NSID_STATS.then(Instant::now)
+    }
+
+    pub fn elapsed(t: Option<Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     pub fn record(open: u64, items: u64) {
+        if !NSID_STATS {
+            return;
+        }
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let o = OPEN.fetch_add(open, Ordering::Relaxed) + open;
         let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
@@ -129,6 +150,222 @@ mod nsidstats {
                 i / 1000,
             );
         }
+    }
+}
+
+/// A memo of resolved paths, so a repeated lookup does not re-walk -- and re-lock -- the tree.
+///
+/// `namei` takes on the order of ten process-global mutexes for a warm four-component path: the
+/// root object's pair, twice over because an absolute symlink like `/sysroot` restarts the walk at
+/// the root; the external-namespace registry, once per component in `open_namespace`; and each
+/// namespace's own cache. That is why the namer's cost grows with thread count -- 2.3 us solo
+/// against 8.4 us at four threads (pagerperf.md 21) -- and why 21 concluded the fix had to be
+/// taking fewer locks rather than cheaper ones. A hit here takes exactly one, and which one is
+/// chosen by the path's hash, so threads looking up different paths do not meet at all.
+///
+/// Correctness rests on a single counter: every mutation of every namespace bumps `GEN`, and an
+/// entry is good only for the generation it was recorded in. That makes this strictly more
+/// conservative than the per-namespace caches underneath it, which invalidate only the namespace
+/// that changed.
+///
+/// What the counter cannot see is a change made to the backing store from outside this compartment
+/// -- object-store writes its own files into this tree. `NsCache::by_name` is already exposed to
+/// exactly that and holds positive bindings forever; a whole *path* is more exposed than one
+/// component, because an intermediate directory can be rebound under an entry that still looks
+/// current. Since ext4 reuses inode numbers, the failure that would produce is not a slightly old
+/// answer but the wrong object, so entries here also expire -- cheap insurance the layer below
+/// does not buy, and one clock read on a path that costs microseconds.
+mod memo {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+        num::NonZeroUsize,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Mutex,
+        },
+        time::{Duration, Instant},
+    };
+
+    use lru::LruCache;
+    use twizzler_rt_abi::object::ObjID;
+
+    use super::{GetFlags, NsNode};
+
+    /// A/B knob. `false` restores the pre-memo path exactly.
+    pub const MEMO_ON: bool = true;
+    /// Hit/miss reporting. Off by default and const-folded away when it is: round 6 of sysperf.md
+    /// is a catalogue of counters that became the thing they were measuring.
+    const MEMO_STATS: bool = false;
+
+    const SHARDS: usize = 16;
+    const PER_SHARD: usize = 32;
+
+    /// How long a resolved path stays believed, against changes made to the backing store from
+    /// outside this compartment. Mirrors `ext::NEGATIVE_TTL`: far longer than the repeat-lookup
+    /// patterns this exists for (a loader walking a search path, a readdir followed by opens),
+    /// far shorter than a human noticing a rename.
+    const TTL: Duration = Duration::from_secs(1);
+
+    static GEN: AtomicU64 = AtomicU64::new(1);
+    static TABLE: [Mutex<Option<LruCache<u64, Entry>>>; SHARDS] =
+        [const { Mutex::new(None) }; SHARDS];
+
+    struct Entry {
+        gen: u64,
+        recorded: Instant,
+        ns: ObjID,
+        flags: GetFlags,
+        path: String,
+        node: NsNode,
+    }
+
+    /// What a lookup *is*: where it starts, the path, and the flags that change what the path
+    /// means. Hashed rather than kept as the key so that a lookup allocates nothing; a hit has to
+    /// prove itself against the entry's own copy before it is believed.
+    fn key(ns: ObjID, path: &str, flags: GetFlags) -> u64 {
+        let mut h = DefaultHasher::new();
+        ns.raw().hash(&mut h);
+        path.hash(&mut h);
+        flags.bits().hash(&mut h);
+        h.finish()
+    }
+
+    /// Read before the walk, presented back with the result. A mutation that lands *during* the
+    /// walk leaves the recorded generation behind the current one, so the entry is stale the
+    /// moment it is written rather than being served once from a tree that has already moved.
+    pub fn generation() -> u64 {
+        GEN.load(Ordering::Acquire)
+    }
+
+    /// Retire every entry. Called from the mutation primitives themselves, not from their callers,
+    /// so a new caller cannot forget to.
+    pub fn invalidate() {
+        GEN.fetch_add(1, Ordering::Release);
+    }
+
+    /// Why a lookup did not get an answer. The split is the point: a memo that misses because it
+    /// has not seen a path yet is working as designed, one that misses because the generation moved
+    /// is being destroyed by write traffic elsewhere in the tree, and one that misses on expiry is
+    /// paying for a staleness bound it may not need. Only the first is fixed by running longer.
+    #[derive(Clone, Copy)]
+    enum Miss {
+        /// No entry for this key -- first sight, or evicted by its shard's LRU.
+        Unseen,
+        /// An entry was there, and a mutation somewhere in the tree retired it.
+        StaleGen,
+        /// An entry was there and current, and older than `TTL`.
+        Expired,
+        /// The key collided: same hash, different lookup.
+        Collision,
+    }
+
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    static UNSEEN: AtomicU64 = AtomicU64::new(0);
+    static STALE_GEN: AtomicU64 = AtomicU64::new(0);
+    static EXPIRED: AtomicU64 = AtomicU64::new(0);
+    static COLLISION: AtomicU64 = AtomicU64::new(0);
+
+    /// Folds away entirely with `MEMO_STATS` off, atomics included.
+    fn note(miss: Option<Miss>) {
+        if !MEMO_STATS {
+            return;
+        }
+        match miss {
+            None => HITS.fetch_add(1, Ordering::Relaxed),
+            Some(Miss::Unseen) => UNSEEN.fetch_add(1, Ordering::Relaxed),
+            Some(Miss::StaleGen) => STALE_GEN.fetch_add(1, Ordering::Relaxed),
+            Some(Miss::Expired) => EXPIRED.fetch_add(1, Ordering::Relaxed),
+            Some(Miss::Collision) => COLLISION.fetch_add(1, Ordering::Relaxed),
+        };
+        let h = HITS.load(Ordering::Relaxed);
+        let u = UNSEEN.load(Ordering::Relaxed);
+        let s = STALE_GEN.load(Ordering::Relaxed);
+        let e = EXPIRED.load(Ordering::Relaxed);
+        let c = COLLISION.load(Ordering::Relaxed);
+        let total = h + u + s + e + c;
+        if total.is_power_of_two() {
+            // One write, because `klog_println!` interleaves under concurrency and a torn report
+            // loses every counter in it.
+            twizzler_abi::klog_println!(
+                "MEMOSTATS {} lookups: {} hits ({}%), misses: {} unseen, {} stale-gen, {} expired, \
+                 {} collision; gen {}",
+                total,
+                h,
+                h * 100 / total.max(1),
+                u,
+                s,
+                e,
+                c,
+                generation(),
+            );
+        }
+    }
+
+    pub fn lookup(ns: ObjID, path: &str, flags: GetFlags) -> Option<NsNode> {
+        let k = key(ns, path, flags);
+        let gen = generation();
+        let mut miss = Some(Miss::Unseen);
+        let node = (|| {
+            let mut shard = TABLE[(k as usize) % SHARDS].lock().ok()?;
+            let entry = shard.as_mut()?.get(&k)?;
+            // Order matters only for the diagnosis: the cheapest disqualifier that applies is the
+            // one reported, and identity is checked before staleness so a collision is never
+            // reported as write traffic.
+            if entry.ns != ns || entry.flags != flags || entry.path != path {
+                miss = Some(Miss::Collision);
+                return None;
+            }
+            if entry.gen != gen {
+                miss = Some(Miss::StaleGen);
+                return None;
+            }
+            if entry.recorded.elapsed() >= TTL {
+                miss = Some(Miss::Expired);
+                return None;
+            }
+            miss = None;
+            Some(entry.node)
+        })();
+        note(miss);
+        node
+    }
+
+    pub fn record(gen: u64, ns: ObjID, path: &str, flags: GetFlags, node: NsNode) {
+        let k = key(ns, path, flags);
+        let Ok(mut shard) = TABLE[(k as usize) % SHARDS].lock() else {
+            return;
+        };
+        let cache =
+            shard.get_or_insert_with(|| LruCache::new(NonZeroUsize::new(PER_SHARD).unwrap()));
+        cache.put(
+            k,
+            Entry {
+                gen,
+                recorded: Instant::now(),
+                ns,
+                flags,
+                path: path.to_string(),
+                node,
+            },
+        );
+    }
+}
+
+pub(crate) use memo::invalidate as invalidate_memo;
+
+/// How this binary was built, printed once at startup so a transcript identifies which arm of an
+/// A/B produced it.
+///
+/// A boot's kernel command line proves the *image* was the one asked for; it does not prove the
+/// image contains the binaries you built, which is the failure mode when a shared build tree hands
+/// one session's artifacts to another session's sweep. A marker whose text differs between arms
+/// does prove it, and costs one line per boot.
+pub fn memo_config() -> &'static str {
+    if memo::MEMO_ON {
+        "memo=on shards=16x32 ttl=1s"
+    } else {
+        "memo=off"
     }
 }
 
@@ -470,11 +707,37 @@ impl NameSession<'_> {
         container.insert(NsNode::obj(name, id)?)
     }
 
+    /// Where a relative path starts. Part of the memo key: the same path means different things
+    /// from different working namespaces.
+    fn start_id(&self) -> ObjID {
+        self.working_ns
+            .as_ref()
+            .unwrap_or(&self.store.nameroot)
+            .id()
+    }
+
     pub fn get<P: AsRef<Path>>(&self, name: P, flags: GetFlags) -> Result<NsNode> {
         tracing::debug!("get {:?}: {:?}", name.as_ref(), flags);
+        // Only a plain lookup is memoized. CREATE mutates on a miss, and a path that is not UTF-8
+        // has no key -- both fall through to the walk.
+        let memoized = (memo::MEMO_ON && !flags.contains(GetFlags::CREATE))
+            .then(|| name.as_ref().to_str())
+            .flatten();
+        let start = if memoized.is_some() {
+            self.start_id()
+        } else {
+            ObjID::new(0)
+        };
+        if let Some(path) = memoized {
+            if let Some(node) = memo::lookup(start, path, flags) {
+                return Ok(node);
+            }
+        }
+        let gen = memo::generation();
+
         let (node, container) = self.namei(
             None,
-            name,
+            &name,
             Self::MAX_SYMLINK_DEREF,
             flags.contains(GetFlags::FOLLOW_SYMLINK),
         )?;
@@ -485,7 +748,13 @@ impl NameSession<'_> {
                     .create_file(node_name.to_str().ok_or(ArgumentError::InvalidArgument)?);
             }
         }
-        Ok(node.ok().ok_or(NamingError::NotFound)?)
+        let node = node.ok().ok_or(NamingError::NotFound)?;
+        // Only a hit is remembered: a name that is absent now can appear, and nothing outside this
+        // compartment tells us when it does.
+        if let Some(path) = memoized {
+            memo::record(gen, start, path, flags, node);
+        }
+        Ok(node)
     }
 
     pub fn enumerate_namespace<P: AsRef<Path>>(
@@ -517,12 +786,12 @@ impl NameSession<'_> {
         count: usize,
     ) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("opening namespace-ensid: {} {} {}", id, skip, count);
-        let t_open = std::time::Instant::now();
+        let t_open = nsidstats::start();
         let ns = self.open_namespace(id, false, None)?;
-        let open_ns = t_open.elapsed().as_nanos() as u64;
-        let t_items = std::time::Instant::now();
+        let open_ns = nsidstats::elapsed(t_open);
+        let t_items = nsidstats::start();
         let items = ns.items(skip, count);
-        nsidstats::record(open_ns, t_items.elapsed().as_nanos() as u64);
+        nsidstats::record(open_ns, nsidstats::elapsed(t_items));
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }

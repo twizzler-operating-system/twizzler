@@ -5204,6 +5204,7 @@ name = "pagepar"
 version = "0.1.0"
 dependencies = [
  "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]
@@ -7628,6 +7629,7 @@ dependencies = [
  "monitor-api",
  "serde",
  "serde_json",
+ "twizzler-abi",
  "unittest-report",
 ]
 

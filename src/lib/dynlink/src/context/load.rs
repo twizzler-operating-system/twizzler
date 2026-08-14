@@ -15,6 +15,20 @@ use tracing::{debug, warn};
 use twizzler_rt_abi::{core::CtorSet, object::MAX_SIZE};
 
 use super::{Context, LoadedOrUnloaded};
+/// Switch for the per-library load counter (`LIBLOAD`, plus a record tagged with the library's own
+/// name), for splitting a compartment load's 24 ms root-load phase (`sysperf.md` round 8).
+///
+/// Off when not in use, but it does work: 142 compartment loads and 570 library loads with it on,
+/// suite passing. An earlier run with it enabled failed to boot and was briefly recorded here as
+/// this counter's fault -- dynlink is linked into `bootstrap`, so records are taken before the
+/// monitor exists and `statlog`'s drains cost console time. Re-run on a known-good tree, it boots
+/// fine; that failure belonged to unrelated breakage in the tree.
+///
+/// The early-boot concern is still worth knowing about if the volume here ever grows: `bootstrap`'s
+/// own library loads do record, and a drain before the monitor exists is console time nothing is
+/// accounting for.
+const LIB_LOAD_STATS: bool = true;
+
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::NewCompartmentFlags,
@@ -388,6 +402,7 @@ impl Context {
         );
         let mut ids = Vec::new();
         // First load the main library.
+        let _t_load = std::time::Instant::now();
         let lib = self
             .load(comp_id, root_unlib.clone(), idx, allowed_gates, load_ctx)
             .map_err(|e| {
@@ -398,6 +413,23 @@ impl Context {
                     vec![e],
                 )
             })?;
+        // Per-library load cost, tagged by the first 8 bytes of the library name. A compartment
+        // load is N of these (root plus every dependency, recursively), so this says whether the
+        // 24 ms root-load phase is one slow library or many ordinary ones -- which is what decides
+        // between prefaulting the source objects, restructuring the load into two phases, and
+        // sharing text across compartments. See `sysperf.md` round 8.
+        secgate::statlog::record_on_anon(
+            LIB_LOAD_STATS,
+            "LIBLOAD",
+            _t_load.elapsed().as_nanos() as u64 / 1000,
+            &[root_unlib.name.len() as u64],
+        );
+        secgate::statlog::record_on_anon(
+            LIB_LOAD_STATS,
+            &root_unlib.name,
+            _t_load.elapsed().as_nanos() as u64 / 1000,
+            &[],
+        );
         ids.push((&lib).into());
 
         tracing::debug!("enumerating deps for {}", lib);

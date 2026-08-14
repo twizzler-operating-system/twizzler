@@ -11,32 +11,37 @@ use twizzler_abi::{
     object::{ObjID, Protections},
     syscall::{MapControlCmd, MapFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
     trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
-    upcall::{MemoryAccessKind, MemoryContextViolationInfo, UpcallInfo},
+    upcall::MemoryAccessKind,
 };
 use twizzler_rt_abi::{
     bindings::{SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
     error::{ObjectError, TwzError},
 };
 
-use super::PageFaultFlags;
+use super::{
+    PageFaultFlags,
+    fault::{FaultClass, FaultStage, record_class, record_stage, stage_start},
+};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
-        FAULT_STATS,
-        context::{ObjectContextInfo, kernel_context},
+        context::{ContextRef, ObjectContextInfo},
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
     },
     mutex::Mutex,
     obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
     security::PermsInfo,
     syscall::sync::wakeup,
-    thread::{current_memory_context, current_thread_ref},
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
     },
 };
+
+/// Pages filled per anonymous fault. See [`MapRegion::fault_around`]; 1 restores one page per
+/// fault.
+const ANON_FAULT_AROUND: usize = 4;
 
 #[derive(Clone)]
 pub struct MapRegion {
@@ -47,6 +52,10 @@ pub struct MapRegion {
     pub flags: MapFlags,
     pub range: Range<VirtAddr>,
     pub stable: Option<Arc<Mutex<ObjectPageTable>>>,
+    /// The object's default protections, from [`crate::obj::Object::check_id`] at insert time.
+    /// Memoized there in a `Once`, so this is the same answer the fault path used to recompute per
+    /// fault -- and that recomputation is two `Once` polls and a global counter on every fault.
+    pub default_prot: Protections,
     /// Security context to install this mapping in; zero means the mapping thread's active one.
     pub target_sctx: ObjID,
     pub should_sync: Arc<AtomicBool>,
@@ -65,39 +74,6 @@ impl From<&MapRegion> for ObjectContextInfo {
             target_sctx: value.target_sctx,
         }
     }
-}
-
-fn check_settings(
-    addr: VirtAddr,
-    settings: &MappingSettings,
-    kind: MemoryAccessKind,
-) -> Result<(), UpcallInfo> {
-    if !settings.flags().contains(MappingFlags::USER) {
-        return Ok(());
-    }
-    if current_thread_ref().is_some_and(|ct| ct.active_sctx_id().raw() == 0) {
-        return Ok(());
-    }
-    let upcall =
-        UpcallInfo::MemoryContextViolation(MemoryContextViolationInfo::new(addr.raw(), kind));
-    match kind {
-        MemoryAccessKind::Read => {
-            if !settings.perms().contains(Protections::READ) {
-                return Err(upcall);
-            }
-        }
-        MemoryAccessKind::Write => {
-            if !settings.perms().contains(Protections::WRITE) {
-                return Err(upcall);
-            }
-        }
-        MemoryAccessKind::InstructionFetch => {
-            if !settings.perms().contains(Protections::EXEC) {
-                return Err(upcall);
-            }
-        }
-    }
-    Ok(())
 }
 
 /// An instruction fetch reached the fault handler for a region whose effective protections lack
@@ -178,6 +154,90 @@ impl MapRegion {
         &self.object
     }
 
+    /// Which run of pages to fill for a fault on `page`, as `(first, count, fills_faulting_page)`.
+    ///
+    /// One fault per page charges the whole fault path -- region lookup, security check, object
+    /// page-table lock, ~6 us -- against a single 4 KiB zeroing, and an anonymous object written
+    /// sequentially pays it for every page in turn. Filling a run amortizes that over
+    /// `ANON_FAULT_AROUND` pages.
+    ///
+    /// Which run depends on what is already mapped on either side of the fault, since filling
+    /// ahead of a backward walk allocates pages nothing will touch:
+    ///
+    /// | prev | next | run |
+    /// |---|---|---|
+    /// | absent | absent | forward -- first touch of a fresh region |
+    /// | present | absent | forward -- a forward walk |
+    /// | absent | present | backward -- a backward walk |
+    /// | present | present | just this page -- filling a hole between mapped pages |
+    ///
+    /// The run then stops at the first page that is already there, so every page in it is one
+    /// `ensure_in_core` will fill. Not just tidiness: `ensure_in_core` precharges frames only when
+    /// the *first* page of the run is missing and allocates the rest from under the object's
+    /// page-table lock, so a run starting on a present page would put a frame allocation --
+    /// possibly a waiting one -- under that lock.
+    ///
+    /// Probes are `get_frame` lookups in the object's own tables, which the caller is already
+    /// holding: at most `ANON_FAULT_AROUND + 1` of them, against a fault that costs microseconds.
+    ///
+    /// Runs are bounded to the enclosing 2 MiB block, the alignment the large-page and pager paths
+    /// assume, and stop short of the meta page and the null page. Pager-backed objects are left
+    /// alone: their read-ahead is built in `ensure_in_core_pager` out of what the pager returns.
+    ///
+    /// The third element says the faulting page was absent and so is one of the pages this run
+    /// fills. `handle_fault` uses it to skip the COW check, which a frame allocated moments ago
+    /// cannot need; `false` whenever the answer is not known here, which is the pre-existing
+    /// behaviour.
+    fn fault_around(
+        &self,
+        pt: &mut ObjectPageTable,
+        page: PageNumber,
+    ) -> (PageNumber, usize, bool) {
+        const PAGES_PER_BLOCK: usize = 0x200000 / PageNumber::PAGE_SIZE;
+        if ANON_FAULT_AROUND <= 1 || self.object.use_pager() {
+            return (page, 1, false);
+        }
+        let mut present = |p: PageNumber| pt.get_frame(p.as_byte_offset() as u64).is_some();
+        // The faulting page is already in the object's tables, so this fault is about the address
+        // space rather than the fill. `handle_fault` decides whether to install the object-table
+        // entry from whether *anything* got filled, so filling a neighbour here would make it skip
+        // that and refault. Leave this fault exactly as it was before fault-around existed.
+        if present(page) {
+            return (page, 1, false);
+        }
+        let prev_present = page.prev().is_some_and(&mut present);
+        let next_present = present(page.next());
+        // Both neighbours mapped: a hole, not a run. Filling around it would allocate pages for an
+        // access pattern that has already been served.
+        if prev_present && next_present {
+            return (page, 1, true);
+        }
+
+        let block_start = page.align_down(PAGES_PER_BLOCK).num();
+        if next_present {
+            // Backward: extend behind the fault, never onto the null page.
+            let lowest = block_start
+                .max(1)
+                .max(page.num().saturating_sub(ANON_FAULT_AROUND - 1));
+            let mut first = page.num();
+            while first > lowest && !present((first - 1).into()) {
+                first -= 1;
+            }
+            return (first.into(), page.num() - first + 1, true);
+        }
+        // Forward, starting at the fault itself.
+        let highest = (block_start + PAGES_PER_BLOCK)
+            .min(page.num() + ANON_FAULT_AROUND)
+            .min(PageNumber::meta_page().num());
+        // `next` was probed above and is absent on this branch, so start past it. The `max` keeps
+        // the count at least one where the bounds leave no room (a fault on the meta page).
+        let mut end = (page.num() + 2).min(highest).max(page.num() + 1);
+        while end < highest && !present(end.into()) {
+            end += 1;
+        }
+        (page, end - page.num(), true)
+    }
+
     pub(super) fn handle_fault(
         &self,
         addr: VirtAddr,
@@ -186,8 +246,8 @@ impl MapRegion {
         pfflags: PageFaultFlags,
         start_time: Instant,
         perms: PermsInfo,
-        default_prot: Protections,
         sctxid: ObjID,
+        map_ctx: ContextRef,
     ) -> Result<(), TwzError> {
         let page_number = PageNumber::from_address(addr);
 
@@ -203,11 +263,14 @@ impl MapRegion {
             page_number,
             is_kern_obj
         );
-        FAULT_STATS.count[0].fetch_add(1, Ordering::SeqCst);
 
         let mut used_pager = false;
         let mut all_were_present = true;
+        // Whether the faulting page itself was absent and has just been filled. Such a page is
+        // backed by a frame this thread allocated moments ago, so it cannot be a COW mapping.
+        let mut filled_fault_page = false;
         let needs_fill = !pfflags.contains(PageFaultFlags::PRESENT);
+        let t_pt = stage_start();
         let mut obj_page_tree = match self.stable.as_ref() {
             // A stable region's clone holds only what the object held when it was taken, and
             // nothing refills it afterwards, so a page missing from it has to be brought into the
@@ -216,6 +279,8 @@ impl MapRegion {
             // the order MapControlCmd::Discard uses.
             Some(stable) if needs_fill => {
                 let mut pt = self.object.lock_page_tables();
+                record_stage(FaultStage::PtLock, t_pt);
+                let t = stage_start();
                 pt = self.object.ensure_in_core(
                     pt,
                     page_number,
@@ -223,28 +288,41 @@ impl MapRegion {
                     &mut used_pager,
                     &mut all_were_present,
                 )?;
+                record_stage(FaultStage::EnsureCore, t);
                 let mut clone = stable.lock();
                 let offset = page_number.as_byte_offset() as u64;
                 pt.setup_cow_range(&mut clone, offset, offset, PageNumber::PAGE_SIZE)?;
                 drop(pt);
                 clone
             }
-            Some(stable) => stable.lock(),
+            Some(stable) => {
+                let pt = stable.lock();
+                record_stage(FaultStage::PtLock, t_pt);
+                pt
+            }
             None => {
                 let mut pt = self.object.lock_page_tables();
+                record_stage(FaultStage::PtLock, t_pt);
                 if needs_fill {
+                    let t = stage_start();
+                    let (first, count, fills) = self.fault_around(&mut pt, page_number);
+                    filled_fault_page = fills;
                     pt = self.object.ensure_in_core(
                         pt,
-                        page_number,
-                        1,
+                        first,
+                        count,
                         &mut used_pager,
                         &mut all_were_present,
                     )?;
+                    record_stage(FaultStage::EnsureCore, t);
                 }
                 pt
             }
         };
-        let prot = perms.effective(default_prot, self.prot);
+        if used_pager {
+            record_class(FaultClass::Pager);
+        }
+        let prot = perms.effective(self.default_prot, self.prot);
 
         log::trace!(
             "fault info: addr={:?} cause={:?} flags={:?} ip={:?} page_number={} used_pager={} all_were_present={} prot={:?}",
@@ -304,7 +382,17 @@ impl MapRegion {
                 // TODO
                 return Err(ObjectError::MapFailed.into());
             }
-            did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
+            // Skipped when the fill above allocated this page's frame: `cow_at` would walk the
+            // tables, precharge an allocator, and run a consistency pass only to find a mapping
+            // that was never shared. That is ~700 ns on the majority of write faults.
+            if !filled_fault_page {
+                let t = stage_start();
+                did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
+                record_stage(FaultStage::Cow, t);
+                if did_cow {
+                    record_class(FaultClass::Cow);
+                }
+            }
             log::trace!(
                 "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
                 page_number,
@@ -334,10 +422,14 @@ impl MapRegion {
                 return Ok(());
             }
             let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
-            let ctx = current_memory_context().unwrap_or_else(|| kernel_context().clone());
             // TODO: is this always user?
             let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
-            ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
+            let t = stage_start();
+            let mapped = map_ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
+            record_stage(FaultStage::MapObject, t);
+            if mapped {
+                record_class(FaultClass::Mapped);
+            }
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
@@ -433,9 +525,13 @@ impl MapRegion {
     }
 }
 
+/// Regions are handed out as `Arc`s rather than cloned.
+///
+/// The fault path takes one per fault, and a `MapRegion` clone is four `Arc` bumps (`object`,
+/// `stable`, `should_sync`, `removed`) and four matching drops. One refcount does the same job.
 #[derive(Default)]
 pub struct RegionManager {
-    tree: NonOverlappingIntervalTree<VirtAddr, MapRegion>,
+    tree: NonOverlappingIntervalTree<VirtAddr, Arc<MapRegion>>,
     objects: BTreeMap<ObjID, Vec<Range<VirtAddr>>>,
 }
 
@@ -443,7 +539,7 @@ impl RegionManager {
     pub fn insert_region(&mut self, region: MapRegion) {
         let object_entry = self.objects.entry(region.object.id()).or_default();
         let range = region.range.clone();
-        let old = self.tree.insert_replace(range.clone(), region);
+        let old = self.tree.insert_replace(range.clone(), Arc::new(region));
         for old_region in old {
             let pos = object_entry
                 .iter()
@@ -454,7 +550,7 @@ impl RegionManager {
         object_entry.push(range);
     }
 
-    pub fn remove_region(&mut self, addr: VirtAddr) -> Option<MapRegion> {
+    pub fn remove_region(&mut self, addr: VirtAddr) -> Option<Arc<MapRegion>> {
         if let Some(region) = self.tree.remove(&addr) {
             let object_entry = self.objects.entry(region.object.id()).or_default();
             let pos = object_entry
@@ -468,11 +564,11 @@ impl RegionManager {
         }
     }
 
-    pub fn lookup_region(&mut self, addr: VirtAddr) -> Option<&MapRegion> {
+    pub fn lookup_region(&mut self, addr: VirtAddr) -> Option<&Arc<MapRegion>> {
         self.tree.get(&addr)
     }
 
-    pub fn object_mappings(&mut self, id: ObjID) -> impl Iterator<Item = &MapRegion> {
+    pub fn object_mappings(&mut self, id: ObjID) -> impl Iterator<Item = &Arc<MapRegion>> {
         self.objects.entry(id).or_default().iter().map(|info| {
             self.tree
                 .get(&info.start)
@@ -480,7 +576,7 @@ impl RegionManager {
         })
     }
 
-    pub fn mappings(&self) -> impl Iterator<Item = &MapRegion> {
+    pub fn mappings(&self) -> impl Iterator<Item = &Arc<MapRegion>> {
         self.tree.iter().map(|x| x.1.value())
     }
 

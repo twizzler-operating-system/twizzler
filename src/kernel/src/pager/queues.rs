@@ -1,8 +1,5 @@
 use alloc::sync::Arc;
-use core::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use core::time::Duration;
 
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
@@ -37,7 +34,7 @@ use crate::{
         sim_memory_pressure,
         tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
     },
-    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object, pagetables::PageInstall},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
@@ -171,15 +168,13 @@ pub(super) fn pager_request_handler_main() {
     }
 }
 
-/// Release a frame the pager filled, and count the ones the object already had.
+/// Release the reference the pager handed us for a frame.
 ///
-/// `Table::map` skips an entry that is already present, so `add_frame` for a page that is already
-/// backed leaves the refcount at the single reference the pager handed us, and it drops to zero
-/// here. Safe -- the duplicate is simply freed -- but it is pure waste, and it is exactly what two
-/// overlapping in-flight requests produce. Speculative prefetch creates those by construction:
-/// `add_request` coalesces on an exact `ReqKind`, and a prefetch of a region never compares equal
-/// to a demand fault inside it (`pagerperf.md` 18). This is the counter that says how much.
-static DUP_PAGES: AtomicU64 = AtomicU64::new(0);
+/// Dropping to zero means nothing took the frame: `add_frame_if_absent` declined because the object
+/// already had that page, which is what two overlapping in-flight requests produce by construction
+/// (`add_request` coalesces on an exact `ReqKind`, so a request overlapping another never compares
+/// equal to it -- `pagerperf.md` 18). The waste is counted in [`super::profile`], where it can be
+/// read against what was delivered rather than on its own.
 
 /// Why a large-page merge does or does not happen.
 ///
@@ -217,10 +212,6 @@ mod largepage {
 
 fn release_pager_frame(frame: FrameRef) {
     if frame.dec_refcount() == 0 {
-        let n = DUP_PAGES.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
-            log::info!("pager delivered {} pages the object already had", n);
-        }
         crate::memory::tracker::free_frame(frame);
     }
 }
@@ -231,6 +222,7 @@ fn pager_compl_handle_page_data(
     phys_range: PhysRange,
     flags: PageFlags,
 ) {
+    let handle_start = Instant::now();
     let pcount = phys_range.page_count();
     log::debug!(
         "got : {} {:?} {:?} ({} pages)",
@@ -263,6 +255,10 @@ fn pager_compl_handle_page_data(
     }
 
     let mut count = 0;
+    let mut installed = 0;
+    let mut dup = 0;
+    let mut dup_large = 0;
+    let mut merged = 0;
     let max_obj = obj_range.page_count();
     let max_phys = phys_range.page_count();
     let max = max_obj.min(max_phys);
@@ -327,6 +323,8 @@ fn pager_compl_handle_page_data(
             assert!(frame.size() == PHYS_LEVEL_LAYOUTS[1].size());
             request.obj.as_ref().unwrap().add_frame(pn, frame);
             release_pager_frame(frame);
+            installed += pages_per_large;
+            merged += 1;
             pages_per_large
         } else if flags.contains(PageFlags::WIRED) {
             request
@@ -340,21 +338,57 @@ fn pager_compl_handle_page_data(
                     CacheType::WriteBack,
                 )
                 .unwrap();
+            installed += 1;
             1
         } else {
             let frame = crate::memory::frame::get_frame(pa).unwrap();
             assert!(!frame.is_pt());
             assert_eq!(frame.refcount(), 1);
             assert!(!frame.is_cow());
-            request.obj.as_ref().unwrap().add_frame(pn, frame);
+            // The object may have acquired this page since the request was issued -- two
+            // overlapping requests do it by construction. `map_page` would decline to overwrite
+            // the entry and the frame would come back here to be freed, having cost a mapping walk
+            // and an invalidation pass on the way. Ask instead, under the lock it would have taken
+            // anyway. `release_pager_frame` still runs either way: it holds the reference the pager
+            // handed us, and dropping it is what frees a duplicate.
+            match request.obj.as_ref().unwrap().add_frame_if_absent(pn, frame) {
+                PageInstall::Installed => installed += 1,
+                PageInstall::PresentSmall => dup += 1,
+                PageInstall::PresentLarge => {
+                    dup += 1;
+                    dup_large += 1;
+                }
+            }
             release_pager_frame(frame);
             1
         };
         count += thiscount;
     }
 
+    super::profile::PAGER_PROFILE.completion(max, installed, dup, dup_large, merged);
+    super::profile::PAGER_PROFILE.installed_ns((Instant::now() - handle_start).as_nanos() as u64);
+
     let mut mgr = inflight_mgr().lock();
+    if dup_large > 0 {
+        // Only the large-page case, which is at most a line or two a boot -- logging every
+        // completion hid it (see the note in `get_pages_and_wait`). The counters carry everything
+        // else.
+        let id = request.obj.as_ref().unwrap().id();
+        log::info!(
+            "DUPSRC land: obj {} completion {:?} -- {} delivered, {} installed, {} dup ({} under a \
+             large page) -- served {:?}; page-data still in flight for it: {:?}",
+            id,
+            obj_range,
+            max,
+            installed,
+            dup,
+            dup_large,
+            request.reqkind,
+            mgr.page_data_ranges(id),
+        );
+    }
     mgr.with_request(&request.reqkind, |req| {
+        req.mark_first_completion();
         if req.finished_pages(count) {
             req.mark_done();
         }
@@ -570,6 +604,7 @@ pub(super) fn pager_compl_handler_main() {
 pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
+    let stamp_key = reqkind.clone();
     let mut old = sender.idmap.lock().insert(
         id,
         SentRequestInfo {
@@ -592,6 +627,11 @@ pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, req
         );
     }
     sender.queue.submit(req, id);
+    // After the submit, so the segment covers the enqueue itself, including the overflow wait
+    // above. Every caller drops the inflight lock before submitting, so taking it here is safe.
+    inflight_mgr()
+        .lock()
+        .with_request(&stamp_key, |r| r.mark_submitted());
 }
 
 extern "C" fn pager_compl_handler_entry() {

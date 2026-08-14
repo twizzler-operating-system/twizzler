@@ -257,6 +257,11 @@ pub struct Request {
     remaining_pages: AtomicUsize,
     done: AtomicBool,
     start_time: Instant,
+    /// Nanoseconds after `start_time` at which the request reached the queue, and at which its
+    /// first completion was handled. Zero means "not yet". Offsets rather than `Instant`s so they
+    /// can be stamped through `&self`, which is all the map hands out.
+    submitted_ns: AtomicU64,
+    first_compl_ns: AtomicU64,
     link: RBTreeAtomicLink,
 }
 
@@ -277,8 +282,41 @@ impl Request {
             waiters: Spinlock::new(LinkedList::new(PagerLinkAdapter::NEW)),
             done: AtomicBool::new(false),
             start_time,
+            submitted_ns: AtomicU64::new(0),
+            first_compl_ns: AtomicU64::new(0),
             link: RBTreeAtomicLink::new(),
         }
+    }
+
+    /// Nanoseconds since this request was created.
+    pub fn age_ns(&self) -> u64 {
+        (Instant::now() - self.start_time).as_nanos() as u64
+    }
+
+    /// Stamps the moment this request reached the queue. Only the first call counts: one request
+    /// can produce several wire requests, and the segment being measured ends at the first of them.
+    pub fn mark_submitted(&self) {
+        Self::stamp(&self.submitted_ns, self.age_ns());
+    }
+
+    /// Stamps the first completion handled for this request.
+    pub fn mark_first_completion(&self) {
+        Self::stamp(&self.first_compl_ns, self.age_ns());
+    }
+
+    fn stamp(slot: &AtomicU64, ns: u64) {
+        // `max(1)` keeps a sub-nanosecond stamp from reading as unset.
+        let _ = slot.compare_exchange(0, ns.max(1), Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// Nanoseconds from creation to queue submit, once submitted.
+    pub fn submitted_ns(&self) -> Option<u64> {
+        Some(self.submitted_ns.load(Ordering::Relaxed)).filter(|ns| *ns != 0)
+    }
+
+    /// Nanoseconds from creation to the first completion, once one has landed.
+    pub fn first_compl_ns(&self) -> Option<u64> {
+        Some(self.first_compl_ns.load(Ordering::Relaxed)).filter(|ns| *ns != 0)
     }
 
     pub fn is_timed_out(&self) -> bool {

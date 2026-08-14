@@ -25,7 +25,7 @@ use crate::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::{
             ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
-            PhysAddrProvider, PhysMapInfo, Table, ZeroPageProvider,
+            PhysAddrProvider, PhysMapInfo, Table, UninitPageProvider,
         },
         tracker::{FrameAllocFlags, FrameAllocator, take_or_new_frame_allocator},
     },
@@ -47,6 +47,16 @@ pub use fault::page_fault;
 /// A type that implements [super::Context] for virtual memory systems.
 pub struct VirtContext {
     secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
+    /// The kernel context's arch state, held outside `secctx` because the kernel has exactly one
+    /// security context: there is no map to consult and no lock to take. `Some` here is what makes
+    /// this the kernel context.
+    ///
+    /// Not merely an optimization. Kernel heap growth reaches [`VirtContext::with_arch`] from
+    /// inside the allocator's critical section -- ferroc's base allocator calls `allocate_chunk`,
+    /// which calls [`GlobalPageAlloc::extend`] -- and `secctx` is a *sleeping* mutex, so taking it
+    /// there is the `cannot lock mutex in critical context` panic that `stabilitybugs.md` calls
+    /// Mode C.
+    kernel_arch: Option<ArchContext>,
     // We keep a cache of the actual switch targets so that we don't need to take the above mutex
     // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
     // memory-allocating collection. See register_sctx for details.
@@ -197,126 +207,17 @@ pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
     contexts.iter().for_each(cb);
 }
 
-// Temporary instrumentation (pagerperf.md). `MAPSYSSPLIT` found `map_object_into_context` to be
-// 82% of `sys_object_map`, and that it costs ~27 us per map single-threaded but ~251 us per map
-// once four threads map concurrently -- a 9x that looks like contention or invalidation rather
-// than per-map work. These two counters split `insert_object` and the `map_object` inside it to
-// find which phase carries that scaling.
-mod inssplit {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static CHECKID: AtomicU64 = AtomicU64::new(0);
-    static REGLOCK: AtomicU64 = AtomicU64::new(0);
-    static MAPOBJ: AtomicU64 = AtomicU64::new(0);
-    static INSREG: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(checkid: u64, reglock: u64, mapobj: u64, insreg: u64) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        CHECKID.fetch_add(checkid, Ordering::Relaxed);
-        REGLOCK.fetch_add(reglock, Ordering::Relaxed);
-        MAPOBJ.fetch_add(mapobj, Ordering::Relaxed);
-        INSREG.fetch_add(insreg, Ordering::Relaxed);
-        if !n.is_power_of_two() {
-            return;
-        }
-        crate::logln!(
-            "INSSPLIT {} insert_object: checkid {} us, reglock {} us, mapobj {} us, insreg {} us",
-            n,
-            CHECKID.load(Ordering::Relaxed) / 1000,
-            REGLOCK.load(Ordering::Relaxed) / 1000,
-            MAPOBJ.load(Ordering::Relaxed) / 1000,
-            INSREG.load(Ordering::Relaxed) / 1000,
-        );
-    }
-}
-
-mod mapobjsplit {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static PRE: AtomicU64 = AtomicU64::new(0);
-    static SCTX: AtomicU64 = AtomicU64::new(0);
-    static PTLOCK: AtomicU64 = AtomicU64::new(0);
-    static ARCH: AtomicU64 = AtomicU64::new(0);
-    static PTDROP: AtomicU64 = AtomicU64::new(0);
-    static FADROP: AtomicU64 = AtomicU64::new(0);
-
-    static PROLOGUE: AtomicU64 = AtomicU64::new(0);
-    static GETSCTX: AtomicU64 = AtomicU64::new(0);
-    static OK: AtomicU64 = AtomicU64::new(0);
-    static ERR: AtomicU64 = AtomicU64::new(0);
-    static ERR_KERNEL: AtomicU64 = AtomicU64::new(0);
-    static OK_KERNEL: AtomicU64 = AtomicU64::new(0);
-
-    pub fn got(ok: bool, is_kernel_sctx: bool) {
-        match (ok, is_kernel_sctx) {
-            (true, false) => OK.fetch_add(1, Ordering::Relaxed),
-            (true, true) => OK_KERNEL.fetch_add(1, Ordering::Relaxed),
-            (false, false) => ERR.fetch_add(1, Ordering::Relaxed),
-            (false, true) => ERR_KERNEL.fetch_add(1, Ordering::Relaxed),
-        };
-    }
-
-    fn resolve_line() {
-        crate::logln!(
-            "MAPOBJRESOLVE ok {} (kernel-sctx {}), err {} (kernel-sctx {})",
-            OK.load(Ordering::Relaxed),
-            OK_KERNEL.load(Ordering::Relaxed),
-            ERR.load(Ordering::Relaxed),
-            ERR_KERNEL.load(Ordering::Relaxed),
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn record(
-        prologue: u64,
-        pre: u64,
-        getsctx: u64,
-        sctx: u64,
-        ptlock: u64,
-        arch: u64,
-        ptdrop: u64,
-        fadrop: u64,
-    ) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        PROLOGUE.fetch_add(prologue, Ordering::Relaxed);
-        GETSCTX.fetch_add(getsctx, Ordering::Relaxed);
-        PRE.fetch_add(pre, Ordering::Relaxed);
-        SCTX.fetch_add(sctx, Ordering::Relaxed);
-        PTLOCK.fetch_add(ptlock, Ordering::Relaxed);
-        ARCH.fetch_add(arch, Ordering::Relaxed);
-        PTDROP.fetch_add(ptdrop, Ordering::Relaxed);
-        FADROP.fetch_add(fadrop, Ordering::Relaxed);
-        if !n.is_power_of_two() {
-            return;
-        }
-        crate::logln!(
-            "MAPOBJSPLIT {} map_object: prologue {} us, precharge {} us, getsctx {} us, perms {} us, ptlock {} us, archmap {} us, ptdrop {} us, fadrop {} us",
-            n,
-            PROLOGUE.load(Ordering::Relaxed) / 1000,
-            PRE.load(Ordering::Relaxed) / 1000,
-            GETSCTX.load(Ordering::Relaxed) / 1000,
-            SCTX.load(Ordering::Relaxed) / 1000,
-            PTLOCK.load(Ordering::Relaxed) / 1000,
-            ARCH.load(Ordering::Relaxed) / 1000,
-            PTDROP.load(Ordering::Relaxed) / 1000,
-            FADROP.load(Ordering::Relaxed) / 1000,
-        );
-        resolve_line();
-    }
-}
-
 impl VirtContext {
-    fn __new(is_kernel: bool) -> Self {
+    fn __new(kernel_arch: Option<ArchContext>) -> Self {
         let mut secctx = Mutex::new(BTreeMap::new());
         // We ensure that the BTree never changes while we hold the lock.
         secctx.set_safe_with_spinlocks(true);
         let new = Self {
             regions: Mutex::new(RegionManager::default()),
-            is_kernel,
+            is_kernel: kernel_arch.is_some(),
             id: CONTEXT_IDS.next(),
             secctx,
+            kernel_arch,
             target_cache: Spinlock::new(BTreeMap::new()),
         };
         new
@@ -324,16 +225,15 @@ impl VirtContext {
 
     /// Construct a new context for the kernel.
     pub fn new_kernel() -> Arc<Self> {
-        let this = Arc::new(Self::__new(true));
-        this.register_sctx(KERNEL_SCTX, ArchContext::new_kernel());
+        let this = Arc::new(Self::__new(Some(ArchContext::new_kernel())));
+        let target = this.arch().target;
+        // Built outside the spinlock and swapped in, for the reason `register_sctx` gives: filling
+        // the map allocates, and `target_cache` is a spinlock.
+        let mut targets = BTreeMap::new();
+        targets.insert(KERNEL_SCTX, target);
+        core::mem::swap(&mut *this.target_cache.lock(), &mut targets);
         // Cache the root now, while we're safely outside the thread-switch path.
-        KERNEL_ARCH_TARGET.call_once(|| {
-            *this
-                .target_cache
-                .lock()
-                .get(&KERNEL_SCTX)
-                .expect("kernel sctx just registered")
-        });
+        KERNEL_ARCH_TARGET.call_once(|| target);
         let all = get_all_contexts();
         all.lock().insert(this.id.value(), this.clone());
         this
@@ -359,7 +259,7 @@ impl VirtContext {
 
     /// Construct a new context for userspace.
     pub fn new() -> Arc<Self> {
-        let this = Arc::new(Self::__new(false));
+        let this = Arc::new(Self::__new(None));
         // TODO: remove this once we have full support for user security contexts
         this.register_sctx(KERNEL_SCTX, ArchContext::new());
         let all = get_all_contexts();
@@ -367,23 +267,56 @@ impl VirtContext {
         this
     }
 
+    /// The kernel context's one arch context. Panics on a user context; see
+    /// [`VirtContext::kernel_arch`].
+    fn arch(&self) -> &ArchContext {
+        self.kernel_arch
+            .as_ref()
+            .expect("not the kernel context: its arch contexts live in `secctx`")
+    }
+
+    /// This context's arch state for `sctx`, without a lock, if there is only one of them.
+    fn single_arch(&self, sctx: ObjID) -> Option<&ArchContext> {
+        let arch = self.kernel_arch.as_ref()?;
+        // Any other sctx on the kernel context missed the (empty) map before this existed, so
+        // falling through to it keeps that answer -- `None` from `try_with_arch`, the `expect` from
+        // `with_arch` -- rather than handing back the kernel's tables for something else. No caller
+        // does this today; the assert is there to say so if one starts.
+        debug_assert_eq!(sctx, KERNEL_SCTX);
+        (sctx == KERNEL_SCTX).then_some(arch)
+    }
+
+    /// Run `cb` against every arch context this context owns: the kernel's single one, or a user
+    /// context's one per attached security context.
+    fn for_each_arch(&self, mut cb: impl FnMut(&ArchContext)) {
+        if let Some(arch) = self.kernel_arch.as_ref() {
+            cb(arch);
+            return;
+        }
+        for arch in self.secctx.lock().values() {
+            cb(arch);
+        }
+    }
+
     pub fn try_with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> Option<R> {
+        if let Some(arch) = self.single_arch(sctx) {
+            return Some(cb(arch));
+        }
         let secctx = self.secctx.lock();
         secctx.get(&sctx).map(|arch| cb(arch))
     }
 
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
-        //let sctx = 0.into();
+        if let Some(arch) = self.single_arch(sctx) {
+            return cb(arch);
+        }
         let secctx = self.secctx.lock();
         cb(secctx
             .get(&sctx)
             .expect("cannot get arch mapper for unattached security context"))
     }
 
-    pub fn map_object(&self, info: &MapRegion, default_prots: Protections) {
-        // Prologue timed separately: `secctx.active_id()` goes through `SecCtxMgr`, and it sat
-        // before every timestamp in the first version of this instrumentation.
-        let t_prologue = crate::instant::Instant::now();
+    pub fn map_object(&self, info: &MapRegion) {
         // An explicit target wins; zero means "whatever this thread is running as", which for the
         // monitor is KERNEL_SCTX -- its instance id is zero too. That now resolves (see
         // `security::kernel_sctx`), so those mappings get installed here rather than left to the
@@ -404,72 +337,32 @@ impl VirtContext {
 
         let len = info.range.end - info.range.start;
         let cursor = MappingCursor::new(info.range.start, len);
-        let prologue_ns = (crate::instant::Instant::now() - t_prologue).as_nanos() as u64;
-        let t_pre = crate::instant::Instant::now();
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
             cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
             FrameAllocFlags::WAIT_OK,
         );
-        let pre_ns = (crate::instant::Instant::now() - t_pre).as_nanos() as u64;
-        let mut sctx_ns = 0u64;
-        let mut ptlock_ns = 0u64;
-        let mut arch_ns = 0u64;
-        let mut ptdrop_ns = 0u64;
-        let t_sctx = crate::instant::Instant::now();
         // Reading the thread's own `secctx.active()` instead of `get_sctx(active_id())` is faster
         // (68% of this function). The two used to differ -- `get_sctx(0)` returned `Err` and
         // skipped this whole block -- but both now resolve to the single `kernel_sctx()`, so the
         // swap is available if this shows up in a profile again. See pagerperf.md 17.
-        let got = crate::security::get_sctx(sctx);
-        // Recorded before the branch: the `Err` arm skips the whole body, and assigning inside the
-        // `if let` threw that time away -- which is where 93% of this function was hiding.
-        let getsctx_ns = (crate::instant::Instant::now() - t_sctx).as_nanos() as u64;
-        // Does `get_sctx` actually resolve here? If it does not, this whole block is skipped and
-        // the mapping is left to be faulted in later -- which would make every phase timed inside
-        // it meaningless, and would mean kernel-context maps do no page-table work at all.
-        mapobjsplit::got(got.is_ok(), sctx == crate::security::KERNEL_SCTX);
-        if let Ok(sctx) = got {
-            let t_lookup = crate::instant::Instant::now();
-            let perms = sctx.lookup(info.object().id(), default_prots);
-            sctx_ns = (crate::instant::Instant::now() - t_lookup).as_nanos() as u64;
-            let t_ptlock = crate::instant::Instant::now();
+        if let Ok(sctx) = crate::security::get_sctx(sctx) {
+            let perms = sctx.lookup(info.object().id(), info.default_prot);
             let mut pt = if info.stable.is_some() {
                 info.stable.as_ref().unwrap().lock()
             } else {
                 info.object.lock_page_tables()
             };
-            ptlock_ns = (crate::instant::Instant::now() - t_ptlock).as_nanos() as u64;
-            let t_arch = crate::instant::Instant::now();
             self.try_with_arch(sctx.id(), |arch| {
                 pt.add_invalidate(arch.target, cursor);
                 let settings = MappingSettings::new(
-                    perms.effective(default_prots, info.prot),
+                    perms.effective(info.default_prot, info.prot),
                     info.cache_type,
                     MappingFlags::USER,
                 );
                 arch.object_map(cursor, &mut *pt, settings, &mut fa);
             });
-            arch_ns = (crate::instant::Instant::now() - t_arch).as_nanos() as u64;
-            // Timed explicitly: dropping this guard is where `add_invalidate`'s queued work is
-            // flushed, and 96% of this function was unaccounted for by the four phases above.
-            let t_ptdrop = crate::instant::Instant::now();
-            drop(pt);
-            ptdrop_ns = (crate::instant::Instant::now() - t_ptdrop).as_nanos() as u64;
         };
-        let t_fadrop = crate::instant::Instant::now();
-        drop(fa);
-        let fadrop_ns = (crate::instant::Instant::now() - t_fadrop).as_nanos() as u64;
-        mapobjsplit::record(
-            prologue_ns,
-            pre_ns,
-            getsctx_ns,
-            sctx_ns,
-            ptlock_ns,
-            arch_ns,
-            ptdrop_ns,
-            fadrop_ns,
-        );
     }
 
     pub fn ensure_object_mapped(
@@ -479,6 +372,13 @@ impl VirtContext {
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
     ) -> bool {
+        // Ask before charging for it. Every fault on an already-resident page reaches here, and
+        // only a couple of percent of them install anything, so the frame allocator below was
+        // mostly being taken, precharged, and put back to discover there was nothing to do.
+        if self.try_with_arch(sctxid, |arch| arch.is_object_mapped(cursor, settings)) == Some(true)
+        {
+            return false;
+        }
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
             cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
@@ -502,6 +402,11 @@ impl VirtContext {
     }
 
     pub fn register_sctx(&self, sctx: ObjID, arch: ArchContext) {
+        if self.kernel_arch.is_some() {
+            // The kernel context's one arch context is a field, installed when it was built.
+            debug_assert_eq!(sctx, KERNEL_SCTX);
+            return;
+        }
         let mut secctx = self.secctx.lock();
         if secctx.contains_key(&sctx) {
             return;
@@ -555,7 +460,7 @@ impl VirtContext {
             let capacity = regions.mappings().count();
             drop(regions);
 
-            let mut region_list = alloc::vec::Vec::with_capacity(capacity);
+            let mut region_list = alloc::vec::Vec::<Arc<MapRegion>>::with_capacity(capacity);
             let regions = self.regions.lock();
             for region in regions.mappings() {
                 if region.range.start.raw() == 0 {
@@ -657,12 +562,34 @@ impl VirtContext {
         self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
     }
 
-    pub fn lookup_slot(&self, slot: usize) -> Option<MapRegion> {
+    pub fn lookup_slot(&self, slot: usize) -> Option<Arc<MapRegion>> {
         let slot = &Slot::try_from(slot).ok()?;
         self.regions
             .lock()
             .lookup_region(slot.start_vaddr())
             .cloned()
+    }
+
+    /// Fill `buf` with the numbers of the slots that have something mapped in them, ascending,
+    /// skipping the first `offset`. Returns how many were written; short of `buf.len()` means the
+    /// enumeration is done. Backs `sys_enumerate_slots`.
+    pub fn enumerate_slots(&self, buf: &mut [u64], offset: usize) -> Result<usize, TwzError> {
+        let mut slots = self
+            .regions
+            .lock()
+            .mappings()
+            .filter_map(|region| {
+                Slot::try_from(region.range.start)
+                    .ok()
+                    .map(|s| s.raw() as u64)
+            })
+            .collect::<Vec<_>>();
+        slots.sort_unstable();
+        slots.dedup();
+
+        let count = slots.len().saturating_sub(offset).min(buf.len());
+        buf[..count].copy_from_slice(&slots[offset..(offset + count)]);
+        Ok(count)
     }
 }
 
@@ -717,6 +644,7 @@ impl UserContext for VirtContext {
             )));
         }
 
+        let (_is_ok, default_prot) = object_info.object.check_id();
         let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
@@ -726,35 +654,21 @@ impl UserContext for VirtContext {
             flags: object_info.flags,
             target_sctx: object_info.target_sctx(),
             stable,
+            default_prot,
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),
         };
-
-        let t_checkid = crate::instant::Instant::now();
-        let (_is_ok, default_prots) = object_info.object.check_id();
-        let checkid_ns = (crate::instant::Instant::now() - t_checkid).as_nanos() as u64;
 
         // Check the slot is free before mapping, and hold the lock across the map: otherwise a
         // racing insert can clobber our object table entry, and a Busy return leaves behind a
         // mapping plus the map count taken for it, which keeps the object from ever being reaped.
         // Lock order (regions -> object page tables -> secctx) matches insert_kernel_object.
-        let t_reglock = crate::instant::Instant::now();
         let mut slots = self.regions.lock();
-        let reglock_ns = (crate::instant::Instant::now() - t_reglock).as_nanos() as u64;
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
         }
-        let t_mapobj = crate::instant::Instant::now();
-        self.map_object(&new_slot_info, default_prots);
-        let mapobj_ns = (crate::instant::Instant::now() - t_mapobj).as_nanos() as u64;
-        let t_insreg = crate::instant::Instant::now();
+        self.map_object(&new_slot_info);
         slots.insert_region(new_slot_info);
-        inssplit::record(
-            checkid_ns,
-            reglock_ns,
-            mapobj_ns,
-            (crate::instant::Instant::now() - t_insreg).as_nanos() as u64,
-        );
         Ok(())
     }
 
@@ -765,7 +679,7 @@ impl UserContext for VirtContext {
             let mut slots = self.regions.lock();
             slots
                 .lookup_region(info.start_vaddr())
-                .map(|info| info.into())
+                .map(|info| (&**info).into())
         }
     }
 
@@ -801,8 +715,7 @@ impl UserContext for VirtContext {
             // against the object (see map_object), so there is nothing to give back for them.
             let counted = slot.stable.is_none();
             let obj_table = counted.then(|| pt.context_table_addr()).flatten();
-            let arches = self.secctx.lock();
-            for arch in arches.values() {
+            self.for_each_arch(|arch| {
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
                 if counted {
@@ -814,7 +727,7 @@ impl UserContext for VirtContext {
                         }
                     }
                 }
-            }
+            });
         }
         drop(slots);
 
@@ -865,7 +778,9 @@ impl GlobalPageAlloc {
             CacheType::WriteBack,
             MappingFlags::GLOBAL,
         );
-        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
+        // Uninit, not zeroed: nothing reads kernel heap memory before writing it. The
+        // page-table frames `fa` supplies below are a different matter and stay zeroed.
+        let mut phys = UninitPageProvider::new(FrameAllocFlags::KERNEL, settings);
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
@@ -894,7 +809,9 @@ impl GlobalPageAlloc {
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let mut phys = ZeroPageProvider::new(FrameAllocFlags::KERNEL, settings);
+        // Uninit, not zeroed: nothing reads kernel heap memory before writing it. The
+        // page-table frames `fa` supplies below are a different matter and stay zeroed.
+        let mut phys = UninitPageProvider::new(FrameAllocFlags::KERNEL, settings);
 
         mapper.with_arch(KERNEL_SCTX, |arch| {
             arch.map(cursor, &mut phys, &mut fa);
@@ -987,6 +904,7 @@ impl KernelMemoryContext for VirtContext {
                 }
                 Slot(cur)
             });
+        let (_is_ok, default_prot) = info.object().check_id();
         let new_slot_info = MapRegion {
             object: info.object().clone(),
             range: slot.range(),
@@ -996,11 +914,11 @@ impl KernelMemoryContext for VirtContext {
             flags: info.flags,
             target_sctx: info.target_sctx(),
             stable: None,
+            default_prot,
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),
         };
-        let (_is_ok, default_prots) = info.object().check_id();
-        self.map_object(&new_slot_info, default_prots);
+        self.map_object(&new_slot_info);
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
             info,

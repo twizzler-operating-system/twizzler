@@ -13,7 +13,7 @@ pub const INLINE_PATH_MAX: usize = 256;
 
 pub type Result<T> = std::result::Result<T, TwzError>;
 
-pub use store::{GetFlags, NameSession, NameStore, NsNode, NsNodeKind};
+pub use store::{memo_config, GetFlags, NameSession, NameStore, NsNode, NsNodeKind};
 use twizzler_rt_abi::error::TwzError;
 
 /// A path passed in a gate's arguments rather than through the handle's shared buffer.
@@ -45,10 +45,19 @@ impl InlinePath {
         Some(this)
     }
 
-    pub fn to_path(&self) -> Result<PathBuf> {
+    /// The path as it sits in the gate's own arguments.
+    ///
+    /// `to_path` allocates, and every caller that then hands the result to `NameSession::get` has
+    /// it converted straight back to `&str` -- an allocation and a free per lookup to change type
+    /// and nothing else. That is invisible single-threaded and is compartment-allocator contention
+    /// at four.
+    pub fn as_str(&self) -> Result<&str> {
         let len = (self.len as usize).min(INLINE_PATH_MAX);
-        let s = str::from_utf8(&self.bytes[..len])
-            .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument)?;
-        Ok(PathBuf::from(s))
+        str::from_utf8(&self.bytes[..len])
+            .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument.into())
+    }
+
+    pub fn to_path(&self) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.as_str()?))
     }
 }

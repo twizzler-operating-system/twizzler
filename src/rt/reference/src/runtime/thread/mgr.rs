@@ -36,9 +36,37 @@ use crate::{
     RuntimeState,
 };
 
+/// Zero the whole stack at spawn, the way this used to. `false` zeroes only [`STACK_TOP_ZERO`] at
+/// the top; see there for why the rest does not need it.
+const ZERO_WHOLE_STACK: bool = false;
+
+/// How much of the top of a new stack to zero.
+///
+/// Nothing reads stack memory before writing it: the kernel only computes the initial `rsp` as
+/// `base + size - 8` and jumps (`arch::thread::new_stack_top`), the upcall path writes its frame
+/// downward from the top, and the entry function writes its frame before reading it. So the bulk of
+/// an 8 MiB stack is memset for nothing -- and with ferroc's `IS_ZEROED = false` over reusable
+/// chunks, that memset is real work on every spawn.
+///
+/// What does need defined contents is the 8-byte slot `rsp` points at on entry, which is popped as
+/// a return address if the entry function ever returns: zero faults cleanly at IP 0, while stale
+/// heap bytes could be a live code address. A page rather than a word, so an unwinder walking a
+/// frame past the entry frame also finds zeroes.
+const STACK_TOP_ZERO: usize = 0x1000;
+
+/// Floor on a spawned thread's stack.
+///
+/// This used to be 8 MiB, which is four times what libstd asks for and is charged to every thread
+/// whether or not it wants it -- a caller requesting 64 KiB got 8 MiB. Note that it does *not* land
+/// in ferroc's `Large` class: that tops out at `LARGE_MAX` = 1,966,080 bytes (SLAB_SIZE 4 MiB,
+/// SHARD_SIZE 64 KiB), so 2 MiB still routes to the huge path and takes a chunk from the base
+/// allocator. Dropping to 1,966,080 would land it in `Large`.
+const MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
+
 // Temporary instrumentation for the File::open latency hunt (pagerperf.md). Accumulators only --
 // no TLS, no allocation -- because the cold half of `cross_compartment_entry` runs in the zero-TLS
 // window.
+
 mod entrystats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -54,15 +82,96 @@ mod entrystats {
         if cold {
             COLD.fetch_add(1, Ordering::Relaxed);
         }
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "ENTRYSTATS {} entries ({} cold): enter-sctx {} us, total {} us",
+        if secgate::statcadence::report_now(n) {
+            secgate::statlog::record(
+                "ENTRYSTA",
                 n,
-                COLD.load(Ordering::Relaxed),
-                s / 1000,
-                t / 1000,
+                &[COLD.load(Ordering::Relaxed), s / 1000, t / 1000],
             );
         }
+    }
+}
+
+/// Per-spawn phase timings from the calling compartment (`SPAWNRT`), independent of the global
+/// `STATS_ON` so a spawn-path run does not turn on every other counter in the tree.
+///
+/// The open question this is here to answer is the `tls` phase (`sysperf.md` lead 4): the monitor's
+/// super-TLS region is recycled and prebuilt, but the *caller's* region is still a fresh
+/// `LOCAL_ALLOCATOR.alloc` of the compartment's TLS template on every spawn, freed again in
+/// `InternalThread::drop`. It measured 452 us back when a spawn was 14.9 ms, and has not been
+/// measured since the rounds that took a spawn to ~277 us.
+mod spawnstats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Switch for the spawn-path counters only.
+    pub(super) const ON: bool = false;
+
+    static N: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn record(tls: u64, stack: u64, gate: u64, map: u64) {
+        if !ON {
+            return;
+        }
+        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+        secgate::statlog::record_on(ON, "SPAWNRT", n, &[tls, stack, gate, map]);
+    }
+
+    pub(super) fn since(start: std::time::Instant) -> u64 {
+        if !ON {
+            return 0;
+        }
+        start.elapsed().as_nanos() as u64
+    }
+}
+
+/// Recycled thread stacks.
+///
+/// A spawn's `stack` phase measures 21-40 us, for what is nominally one allocation and a 4 KiB
+/// memset -- because a 2 MiB request clears ferroc's `LARGE_MAX` and takes a fresh span from the
+/// base allocator, whose pages nothing has touched yet. The memset at the top of the stack is
+/// then a page fault, and the thread's first frames fault again.
+///
+/// Handing the stack to the next spawn instead keeps those pages mapped. The safety requirement
+/// is exactly the one [`InternalThread::drop`] already meets by calling `dealloc` there -- the
+/// thread is gone and nothing else names its stack -- so recycling adds no new obligation.
+pub(super) mod stackpool {
+    use std::sync::Mutex;
+
+    /// Stacks held before further returns go back to the allocator. Each pins its whole size,
+    /// which is at least [`super::MIN_STACK_SIZE`].
+    const MAX: usize = 8;
+
+    /// A/B switch for measuring what recycling is worth; `false` restores the old behavior of
+    /// allocating and freeing each stack.
+    const RECYCLE: bool = true;
+
+    static POOL: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+    /// A recycled stack of exactly `size` bytes, if one is waiting.
+    pub(in crate::runtime) fn take(size: usize) -> Option<usize> {
+        if !RECYCLE {
+            return None;
+        }
+        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let idx = pool.iter().position(|(_, s)| *s == size)?;
+        Some(pool.swap_remove(idx).0)
+    }
+
+    /// Returns false if the pool is full and the caller should free the stack itself.
+    pub(in crate::runtime) fn put(addr: usize, size: usize) -> bool {
+        if !RECYCLE {
+            return false;
+        }
+        let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() >= MAX {
+            return false;
+        }
+        // Reserve once, so a return from a thread-exit path never grows this Vec under the lock.
+        if pool.capacity() == 0 {
+            pool.reserve(MAX);
+        }
+        pool.push((addr, size));
+        true
     }
 }
 
@@ -374,11 +483,12 @@ impl ReferenceRuntime {
         &self,
         mut args: twizzler_rt_abi::thread::ThreadSpawnArgs,
     ) -> Result<(u32, *mut c_void)> {
-        if args.stack_size < 1024 * 1024 * 8 {
-            args.stack_size = 1024 * 1024 * 8;
+        if args.stack_size < MIN_STACK_SIZE {
+            args.stack_size = MIN_STACK_SIZE;
         }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
+        let t_tls = std::time::Instant::now();
         let (tls, tls_layout, tls_alloc_base) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
@@ -387,10 +497,24 @@ impl ReferenceRuntime {
         if OUR_RUNTIME.state().contains(RuntimeState::READY) {
             libc_init_tcb(tls);
         }
+        let tls_ns = spawnstats::since(t_tls);
+        let t_stack = std::time::Instant::now();
         let stack_raw = unsafe {
-            OUR_RUNTIME
-                .alloc_zeroed(Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap())
+            let layout = Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap();
+            if ZERO_WHOLE_STACK {
+                OUR_RUNTIME.alloc_zeroed(layout)
+            } else {
+                let p = stackpool::take(args.stack_size)
+                    .map(|p| p as *mut u8)
+                    .unwrap_or_else(|| OUR_RUNTIME.alloc(layout));
+                if !p.is_null() {
+                    let from = args.stack_size.saturating_sub(STACK_TOP_ZERO);
+                    core::ptr::write_bytes(p.add(from), 0, args.stack_size - from);
+                }
+                p
+            }
         } as usize;
+        let stack_ns = spawnstats::since(t_stack);
 
         // Take the thread management lock, so that when the new thread starts we cannot observe
         // that thread running without the management data being recorded.
@@ -419,6 +543,7 @@ impl ReferenceRuntime {
             arg: arg_raw,
         };
 
+        let t_gate = std::time::Instant::now();
         let thid: ObjID = {
             let res: Result<_> =
                 monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
@@ -428,6 +553,7 @@ impl ReferenceRuntime {
                 Err(e) => return Err(e),
             }
         };
+        let gate_ns = spawnstats::since(t_gate);
 
         // Nothing past this point may return `Err`. `monitor_rt_spawn_thread` above has already
         // started the thread, and it is running on `arg_raw` -- a pointer to std's `ThreadInit`,
@@ -438,10 +564,12 @@ impl ReferenceRuntime {
         // The map fails when the thread has already exited and the monitor has deleted its repr,
         // which is a race we lose legitimately for short-lived threads, not an error. A missing
         // handle just means the state has to be read from the object's existence instead.
+        let t_map = std::time::Instant::now();
         let thread_repr_obj = self
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .inspect_err(|e| tracing::debug!("failed to map repr of new thread {}: {}", thid, e))
             .ok();
+        spawnstats::record(tls_ns, stack_ns, gate_ns, spawnstats::since(t_map));
 
         let thread = InternalThread::new(
             thread_repr_obj,

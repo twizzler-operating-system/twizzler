@@ -84,6 +84,9 @@ struct KernelConsoleRef<T: KernelConsoleHardware + 'static, M: MessageLevel + 's
 impl<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> KernelConsoleRef<T, M> {
     pub fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags) -> Result<()> {
         self.console.hardware.write(data, flags);
+        if flags.contains(KernelConsoleWriteFlags::DONT_BUFFER) {
+            return Ok(());
+        }
         self.console.inner.write_buffer(data, flags)
     }
 }
@@ -106,16 +109,20 @@ bitflags::bitflags! {
     #[derive(Clone, Copy)]
     pub struct KernelConsoleWriteFlags: u32 {
         const DISCARD_ON_FULL = 1;
+        const DONT_BUFFER = 2;
     }
 }
 
 impl From<twizzler_abi::syscall::KernelConsoleWriteFlags> for KernelConsoleWriteFlags {
     fn from(x: twizzler_abi::syscall::KernelConsoleWriteFlags) -> Self {
+        let mut flags = Self::empty();
         if x.contains(twizzler_abi::syscall::KernelConsoleWriteFlags::DISCARD_ON_FULL) {
-            Self::DISCARD_ON_FULL
-        } else {
-            Self::empty()
+            flags |= Self::DISCARD_ON_FULL;
         }
+        if x.contains(twizzler_abi::syscall::KernelConsoleWriteFlags::DONT_BUFFER) {
+            flags |= Self::DONT_BUFFER;
+        }
+        flags
     }
 }
 

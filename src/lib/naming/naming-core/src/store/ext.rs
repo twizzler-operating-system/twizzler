@@ -204,10 +204,15 @@ impl NsCache {
 
     /// Drop the enumeration order, an entry having been added or removed. Names stay valid:
     /// binding one name does not change what another resolves to.
+    ///
+    /// Every external mutation reaches here (`invalidate_name` and `clear` both call it, after the
+    /// store call they describe), which makes it the one place the path memo above needs to hear
+    /// about them.
     fn invalidate_order(&mut self) {
         self.order.clear();
         self.complete = false;
         self.generation = self.generation.wrapping_add(1);
+        super::invalidate_memo();
     }
 
     /// Drop everything known about `name` as well, in either direction. ext4 reuses inode numbers,
@@ -223,38 +228,6 @@ impl NsCache {
         self.by_name.clear();
         self.absent.clear();
         self.invalidate_order();
-    }
-}
-
-// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-mod findstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static HITS: AtomicU64 = AtomicU64::new(0);
-    static MISSES: AtomicU64 = AtomicU64::new(0);
-    static HANDLE: AtomicU64 = AtomicU64::new(0);
-    static LOOKUP: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_hit() {
-        HITS.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record_miss(handle: u64, lookup: u64) {
-        let n = MISSES.fetch_add(1, Ordering::Relaxed) + 1;
-        let h = HANDLE.fetch_add(handle, Ordering::Relaxed) + handle;
-        let l = LOOKUP.fetch_add(lookup, Ordering::Relaxed) + lookup;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "FINDSTATS {} misses ({} cache hits): pager-handle {} us, lookup {} us \
-                 (per miss: handle {} us, lookup {} us)",
-                n,
-                HITS.load(Ordering::Relaxed),
-                h / 1000,
-                l / 1000,
-                h / (n * 1000),
-                l / (n * 1000),
-            );
-        }
     }
 }
 
@@ -281,11 +254,9 @@ impl Namespace for ExtNamespace {
         {
             let mut cache = self.cache();
             if let Some(node) = cache.lookup(name) {
-                findstats::record_hit();
                 return Some(node);
             }
             if cache.known_absent(name) {
-                findstats::record_hit();
                 return None;
             }
         }
@@ -294,16 +265,12 @@ impl Namespace for ExtNamespace {
         // tree itself (object-store keeps its per-object files under `ids/`), so a name we have
         // not seen may still exist. Only a lookup that the pager itself answered with NotFound
         // gets to say a name is absent, and only for `NEGATIVE_TTL`.
-        let t_handle = Instant::now();
         let mut guard = pager_handle();
         let Some(h) = guard.as_mut() else {
             tracing::warn!("failed to open handle to pager");
             return None;
         };
-        let handle_ns = t_handle.elapsed().as_nanos() as u64;
-        let t_lookup = Instant::now();
         let res = h.lookup_external(self.id, name);
-        findstats::record_miss(handle_ns, t_lookup.elapsed().as_nanos() as u64);
 
         let file = match res {
             Ok(file) => file,
@@ -580,8 +547,8 @@ mod itemstats {
     pub fn record_cached(ns: u64) {
         let n = CACHED.fetch_add(1, Ordering::Relaxed) + 1;
         let c = CACHED_NS.fetch_add(ns, Ordering::Relaxed) + ns;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!("ITEMSTATS {} cached enumerates: {} us", n, c / 1000);
+        if secgate::statcadence::report_now(n) {
+            secgate::statline!("ITEMSTATS {} cached enumerates: {} us", n, c / 1000);
         }
     }
 
@@ -593,8 +560,8 @@ mod itemstats {
         let l = LINK_NS.fetch_add(link, Ordering::Relaxed) + link;
         let nl = LINKS.fetch_add(links, Ordering::Relaxed) + links;
         let ne = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
+        if secgate::statcadence::report_now(n) {
+            secgate::statline!(
                 "ITEMSTATS {} pager enumerates, {} entries: handle {} us, enumerate {} us, \
                  convert {} us, readlink {} us over {} links",
                 n,

@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, sync::Arc};
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, time::Duration};
 
 use twizzler_abi::{
     object::ObjID,
@@ -10,6 +10,7 @@ use twizzler_rt_abi::error::{ArgumentError, TwzError};
 use super::{Thread, ThreadRef, current_memory_context, current_thread_ref, priority::Priority};
 use crate::{
     condvar::CondVar,
+    instant::Instant,
     memory::{VirtAddr, context::Context},
     processor::{mp::current_processor, sched::schedule_new_thread},
     security::{SecCtxMgr, kernel_sctx},
@@ -132,6 +133,39 @@ impl<F, R> KthreadClosure<F, R> {
                 return unsafe { guard.1.assume_init_read() };
             }
             let _ = self.signal.wait(guard);
+        }
+    }
+
+    /// Like [`Self::wait`], but gives up after `limit` and returns `None`.
+    ///
+    /// For callers that would rather fail loudly than hang: an unbounded `wait` on a closure whose
+    /// thread lost a wakeup is indistinguishable from one that is merely slow, and shows up only as
+    /// a silent guest that some outer watchdog eventually kills.
+    ///
+    /// Giving up consumes nothing -- the result is read only on the `Some` path -- so the closure
+    /// may still complete afterwards.
+    #[track_caller]
+    pub fn wait_timeout(self: Arc<Self>, limit: Duration) -> Option<R> {
+        const POLL: Duration = Duration::from_millis(100);
+        let start = Instant::now();
+        loop {
+            current_processor().cleanup_exited();
+            let guard = self.result.lock();
+            if guard.0 {
+                // Safety: we only assume init if the flag is true, which is only set to true once
+                // we initialize the MaybeUninit.
+                return Some(unsafe { guard.1.assume_init_read() });
+            }
+            // Waits a slice at a time rather than the whole limit at once, so the deadline check
+            // below stays the only thing that ends this loop -- a spurious early return from the
+            // condvar costs another slice, not a bogus timeout.
+            drop(self.signal.wait_waiters(guard, Some(POLL), None).0);
+            if Instant::now()
+                .checked_sub_instant(&start)
+                .is_some_and(|elapsed| elapsed >= limit)
+            {
+                return None;
+            }
         }
     }
 }

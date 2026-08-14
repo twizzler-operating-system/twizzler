@@ -4,7 +4,7 @@ use std::{
     ffi::{CStr, CString},
     ptr::{addr_of, NonNull},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -82,10 +82,71 @@ pub struct RunComp {
     /// `&mut PerThread` require `&mut RunComp` -- and thence the monitor's whole exclusive
     /// `LockCollection` -- for what is otherwise a memcpy into this thread's own object.
     per_thread: Mutex<HashMap<ObjID, Arc<Mutex<PerThread>>>>,
+    /// Answers derived from this compartment's dynlink state, cached so the paths that need them
+    /// do not have to take the dynlink lock.
+    ///
+    /// `gate_address_named` and `get_compartment_info` were reading `dynlink` for facts that do
+    /// not change unless a library is loaded into this compartment: a gate's implementation
+    /// address, and how many libraries there are. Both took a *read* of the whole lock
+    /// collection to get them, and `RunCompLoader::new` holds `dynlink` for a **write** across
+    /// a median 31 ms (`sysperf.md` round 8), so every such call stalled behind any
+    /// compartment load in the system. Worse for `gate_address_named`, which is on the
+    /// dynamic-gate call path and scanned every library's every gate for a name match on each
+    /// call.
+    ///
+    /// Behind their own locks for the same reason `per_thread` and `mapped_objects` are: reaching
+    /// a compartment through a *read* of the manager, rather than needing `&mut RunComp` and
+    /// thence the exclusive collection.
+    ///
+    /// Invalidated by [`Self::invalidate_dynlink_cache`] when a library is loaded into this
+    /// compartment; a compartment that is torn down drops the whole `RunComp` with them.
+    gate_cache: Mutex<HashMap<String, usize>>,
+    /// 0 means "not computed yet" -- a live compartment always has at least one library.
+    nr_libs: AtomicUsize,
     init_info: Option<(StackObject, usize, usize, Vec<CtorSet>)>,
     is_debugging: bool,
     pub(crate) use_count: u64,
     pub controller: Option<ObjID>,
+}
+
+impl RunComp {
+    /// A gate address this compartment has resolved before.
+    pub fn cached_gate(&self, name: &str) -> Option<usize> {
+        self.gate_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .copied()
+    }
+
+    pub fn cache_gate(&self, name: &str, addr: usize) {
+        self.gate_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), addr);
+    }
+
+    /// This compartment's library count, if it has been computed since the last load.
+    pub fn cached_nr_libs(&self) -> Option<usize> {
+        match self.nr_libs.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
+    pub fn cache_nr_libs(&self, n: usize) {
+        self.nr_libs.store(n, Ordering::Relaxed);
+    }
+
+    /// Drop everything derived from dynlink state. Call after loading a library into this
+    /// compartment: a new library can add gates and changes the library count.
+    pub fn invalidate_dynlink_cache(&self) {
+        self.gate_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.nr_libs.store(0, Ordering::Relaxed);
+    }
 }
 
 impl Drop for RunComp {
@@ -201,6 +262,8 @@ impl RunComp {
             mapped_objects: Mutex::new(HashMap::default()),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: Mutex::new(HashMap::new()),
+            gate_cache: Mutex::new(HashMap::new()),
+            nr_libs: AtomicUsize::new(0),
             init_info: Some((main_stack, entry, main_entry, ctors.to_vec())),
             use_count: 0,
             controller,

@@ -563,6 +563,17 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     });
     println!("autostart {} finished with code {}", path, exit_code);
 
+    // Temporary (pagerperf.md): a server's counter ring drains on an interval, but the interval is
+    // checked from a gate entry, and once the program exits nothing enters a server again -- so
+    // its records for the phase just measured would never be printed. Poke the servers on the far
+    // side of the interval so they flush before the guest goes down.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    for _ in 0..4 {
+        let _ = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd");
+        let _ = std::fs::metadata("/initrd");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
     // Same clamp as run_tests: isa-debug-exit reports (code << 1) | 1 in an 8-bit status, so
     // anything above 127 aliases onto another code.
     #[allow(deprecated)]

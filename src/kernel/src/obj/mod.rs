@@ -21,7 +21,10 @@ pub use self::thread_sync::{SleepInfo, ThreadSleepLinker};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     idcounter::{IdCounter, SimpleId},
-    memory::VirtAddr,
+    memory::{
+        VirtAddr,
+        tracker::{FrameAllocFlags, alloc_frame},
+    },
     mutex::{LockGuard, Mutex},
     obj::{control::VNotes, ties::TIE_MGR},
     once::{Once, OnceWait},
@@ -296,10 +299,30 @@ impl Object {
             extcount: 0,
         };
         let obj = Arc::new(obj);
-        while !obj.write_meta(meta) {
-            logln!("failed to write object metadata -- retrying");
-        }
+        obj.init_meta(meta);
         obj
+    }
+
+    /// Install the metadata page of an object that has just been constructed.
+    ///
+    /// [`Object::write_meta`] goes through the generic fill path -- `lock_page_tables` ->
+    /// `ensure_in_core` -> `with_frame` -- which exists to handle pages that may already be
+    /// present, may be COW, may belong to a pager-backed object, and may be raced for by a fault
+    /// on another cpu. None of that can apply here: the object was built moments ago by this
+    /// thread, is not registered, is not mapped, has no pager, and has no frames at all. Measured
+    /// at ~8.8 us against ~1.9 us for allocating the frame and installing it directly, which is
+    /// what [`super::control::ControlObjectCacher`] already does for the base page one call later,
+    /// and it is paid once per kernel object -- so once per thread spawned.
+    ///
+    /// Frame flags deliberately match what `ensure_in_core` would have used, so the frame is
+    /// accounted and reclaimed identically. It is not wired: nothing keeps a pointer to it.
+    fn init_meta(self: &Arc<Self>, meta: MetaInfo) {
+        let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
+        // Safety: a freshly allocated frame, named by nothing else, and `MetaInfo` sits at offset
+        // zero of the meta page -- the offset `write_meta` writes it to.
+        unsafe { frame.virtaddr().as_mut_ptr::<MetaInfo>().write(meta) };
+        self.add_frame(PageNumber::meta_page(), frame);
+        self.note_written_meta(&meta);
     }
 
     pub fn new_kernel() -> Arc<Self> {
@@ -314,9 +337,7 @@ impl Object {
                 extcount: 0,
             };
             let obj = Arc::new(Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]));
-            while !obj.write_meta(meta) {
-                panic!("failed to write object metadata");
-            }
+            obj.init_meta(meta);
             return obj;
         }
         let nonce = u128::from_ne_bytes(bytes);
@@ -334,9 +355,7 @@ impl Object {
             extcount: 0,
         };
         let obj = Arc::new(obj);
-        while !obj.write_meta(meta) {
-            logln!("failed to write object metadata -- retrying");
-        }
+        obj.init_meta(meta);
         obj
     }
 

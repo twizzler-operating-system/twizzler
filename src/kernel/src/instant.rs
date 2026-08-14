@@ -1,15 +1,25 @@
 use alloc::sync::Arc;
 use core::{ops::Sub, time::Duration};
 
-use twizzler_abi::syscall::TimeSpan;
+use twizzler_abi::syscall::{FemtoSeconds, TimeSpan};
 
 use crate::{
     once::Once,
     time::{ClockHardware, TICK_SOURCES, Ticks},
 };
 
+/// A timestamp, held as the raw tick count the clock reported plus the rate to interpret it with.
+///
+/// Deliberately *not* a [`TimeSpan`]. Converting ticks to one costs a u128 multiply and two u128
+/// divisions (`Mul<FemtoSeconds> for u64`), and the overwhelmingly common use of an `Instant` is
+/// to subtract it from another one -- so converting at `now()` pays for that twice per measured
+/// interval, on paths that take a dozen readings. Kept as ticks, `now()` is an `rdtsc` and two
+/// stores, and the conversion happens once, in the subtraction.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Instant(TimeSpan);
+pub struct Instant {
+    ticks: u64,
+    rate: FemtoSeconds,
+}
 
 static BENCH_CLOCK: Once<Arc<dyn ClockHardware + Send + Sync>> = Once::new();
 
@@ -34,13 +44,18 @@ fn get_bench() -> Option<&'static Arc<dyn ClockHardware + Send + Sync>> {
 impl Instant {
     pub fn now() -> Instant {
         let ticks = { get_bench().map(|ts| ts.read()).unwrap_or(Ticks::default()) };
-        let span = ticks.value * ticks.rate;
-        Instant(span)
+        Instant {
+            ticks: ticks.value,
+            rate: ticks.rate,
+        }
     }
 
     #[allow(dead_code)]
     pub const fn zero() -> Instant {
-        Instant(TimeSpan::ZERO)
+        Instant {
+            ticks: 0,
+            rate: FemtoSeconds(0),
+        }
     }
 
     #[allow(dead_code)]
@@ -53,11 +68,16 @@ impl Instant {
     }
 
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {
-        Some(Duration::from(self.0.checked_sub(other.0)?))
+        // `self`'s rate, not `other`'s: a reading taken from a clock is only meaningful against
+        // that clock, and the tick source does not change after boot. An `Instant::zero()`
+        // subtrahend carries no rate at all, which is exactly the case this must not consult.
+        Some(Duration::from(
+            self.ticks.checked_sub(other.ticks)? * self.rate,
+        ))
     }
 
     pub fn into_time_span(self) -> TimeSpan {
-        self.0
+        self.ticks * self.rate
     }
 }
 

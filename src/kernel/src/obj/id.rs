@@ -92,57 +92,6 @@ fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Pr
     id == generated
 }
 
-// Temporary (pagerperf.md): `check_id` was 67% of `insert_object`, and 46x more expensive per map
-// once four threads map cold objects at once. The result is memoized in `verified_id`, so the
-// suspicion is that the whole cost is the first call's `read_meta()` -- a meta-page read that for a
-// cold object is a page-in, i.e. paging charged to the mapping path rather than crypto.
-mod checkidstats {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static HITS: AtomicU64 = AtomicU64::new(0);
-    static MISSES: AtomicU64 = AtomicU64::new(0);
-    static RETRIES: AtomicU64 = AtomicU64::new(0);
-    static READ_NS: AtomicU64 = AtomicU64::new(0);
-    static VERIFY_NS: AtomicU64 = AtomicU64::new(0);
-    static PRESET: AtomicU64 = AtomicU64::new(0);
-
-    /// A memo installed by someone who already knew the answer, rather than by a `check_id` miss.
-    /// Every one of these turns what would have been a miss into a hit; the two counters together
-    /// say whether the presetting sites cover the objects that actually get mapped.
-    pub fn preset() {
-        PRESET.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn hit() {
-        let h = HITS.fetch_add(1, Ordering::Relaxed) + 1;
-        maybe_report(h + MISSES.load(Ordering::Relaxed));
-    }
-
-    pub fn miss(read_ns: u64, verify_ns: u64, retries: u64) {
-        let m = MISSES.fetch_add(1, Ordering::Relaxed) + 1;
-        RETRIES.fetch_add(retries, Ordering::Relaxed);
-        READ_NS.fetch_add(read_ns, Ordering::Relaxed);
-        VERIFY_NS.fetch_add(verify_ns, Ordering::Relaxed);
-        maybe_report(m + HITS.load(Ordering::Relaxed));
-    }
-
-    fn maybe_report(n: u64) {
-        if !n.is_power_of_two() {
-            return;
-        }
-        crate::logln!(
-            "CHECKIDSTATS {} check_id: {} hits, {} misses ({} retries), {} preset, read_meta {} us, verify {} us",
-            n,
-            HITS.load(Ordering::Relaxed),
-            MISSES.load(Ordering::Relaxed),
-            RETRIES.load(Ordering::Relaxed),
-            PRESET.load(Ordering::Relaxed),
-            READ_NS.load(Ordering::Relaxed) / 1000,
-            VERIFY_NS.load(Ordering::Relaxed) / 1000,
-        );
-    }
-}
-
 impl Object {
     pub fn has_checked_id(&self) -> bool {
         self.verified_id.poll().is_some()
@@ -158,7 +107,6 @@ impl Object {
         if self.verified_id.poll().is_some() {
             return;
         }
-        checkidstats::preset();
         self.verified_id.call_once(|| (verified, default_prot));
     }
 
@@ -193,38 +141,24 @@ impl Object {
     }
 
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {
-        if self.verified_id.poll().is_none() {
-            let mut read_ns = 0u64;
-            let mut verify_ns = 0u64;
-            let mut retries = 0u64;
-            let id = loop {
-                let t_read = crate::instant::Instant::now();
-                let meta = self.read_meta();
-                read_ns += (crate::instant::Instant::now() - t_read).as_nanos() as u64;
-                if let Some(meta) = meta {
-                    let t_verify = crate::instant::Instant::now();
-                    let v = (
-                        verify_id(
-                            self.id,
-                            meta.nonce.0,
-                            meta.kuid,
-                            meta.flags,
-                            meta.default_prot,
-                        ),
-                        meta.default_prot,
-                    );
-                    verify_ns = (crate::instant::Instant::now() - t_verify).as_nanos() as u64;
-                    break v;
-                } else {
-                    retries += 1;
-                    logln!("failed to read metadata");
-                }
-            };
-            checkidstats::miss(read_ns, verify_ns, retries);
-            *self.verified_id.call_once(|| id)
-        } else {
-            checkidstats::hit();
-            *self.verified_id.poll().unwrap()
+        if let Some(id) = self.verified_id.poll() {
+            return *id;
         }
+        let id = loop {
+            if let Some(meta) = self.read_meta() {
+                break (
+                    verify_id(
+                        self.id,
+                        meta.nonce.0,
+                        meta.kuid,
+                        meta.flags,
+                        meta.default_prot,
+                    ),
+                    meta.default_prot,
+                );
+            }
+            logln!("failed to read metadata");
+        };
+        *self.verified_id.call_once(|| id)
     }
 }

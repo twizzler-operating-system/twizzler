@@ -112,6 +112,20 @@ def proc_elapsed(pid: int) -> float:
         return 0.0
 
 
+def proc_ppid(pid: int) -> Optional[int]:
+    """Parent pid, from /proc. qemu's parent is the xtask that spawned it."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # Same counting rule as proc_elapsed: comm can contain spaces and parens.
+    fields = stat[stat.rfind(")") + 2 :].split()
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return None
+
+
 def proc_cpu_seconds(pid: int) -> Optional[float]:
     """Cpu time the process has burned so far, user + system."""
     try:
@@ -237,13 +251,19 @@ class LaneProc:
         return f"cpu {self.cpu:.0f}%" if self.cpu is not None else ""
 
 
-def lane_qemus(tag: Optional[str]) -> Dict[int, LaneProc]:
-    """Map lane index to its qemu: what it is, how long it has been up, what it is using.
+def lane_qemus(tag: Optional[str]) -> Dict[str, LaneProc]:
+    """Map run name (`round1-release-kvm-smp4`) to its qemu: what it is, how long it has been up.
 
     The driver log carries no timestamps, so the guest process is what actually knows how long the
     run in that lane has been going.
+
+    Keyed by run name rather than lane index because there is nothing lane-specific left in a qemu
+    command line: lanes stopped copying images and now share one set of masters, so the `lane<N>/`
+    path segment this used to match on is gone. Matching it kept returning nothing, which the
+    caller read as "no qemu yet, so it must still be copying" -- for the whole run. The run name
+    comes from the `--label` on qemu's parent xtask, which many.py sets to `<tag>-<run>`.
     """
-    found: Dict[int, LaneProc] = {}
+    found: Dict[str, LaneProc] = {}
     if not tag:
         return found
     for entry in Path("/proc").iterdir():
@@ -253,11 +273,14 @@ def lane_qemus(tag: Optional[str]) -> Dict[int, LaneProc]:
         argv = proc_cmdline(pid)
         if not argv or "qemu-system" not in argv[0]:
             continue
-        joined = " ".join(argv)
-        m = re.search(rf"/lanes/{re.escape(tag)}/lane(\d+)/", joined)
-        if not m:
+        ppid = proc_ppid(pid)
+        parent = proc_cmdline(ppid) if ppid else []
+        if "--label" not in parent or parent.index("--label") + 1 >= len(parent):
             continue
-        found[int(m.group(1))] = LaneProc(
+        label = parent[parent.index("--label") + 1]
+        if not label.startswith(f"{tag}-"):
+            continue
+        found[label[len(tag) + 1 :]] = LaneProc(
             pid=pid,
             mode="KVM" if "-enable-kvm" in argv else "TCG",
             smp=argv[argv.index("-smp") + 1] if "-smp" in argv else "?",
@@ -384,7 +407,7 @@ def estimates(sweep: "Sweep", history: Dict[str, List[Tuple[float, bool]]]) -> D
 
 def eta_seconds(
     sweep: "Sweep", schedule: Optional[List[str]], est: Dict[str, float],
-    qemus: Dict[int, LaneProc],
+    qemus: Dict[str, LaneProc],
 ) -> Optional[float]:
     """Roughly how much longer the sweep has, in seconds.
 
@@ -402,8 +425,8 @@ def eta_seconds(
     # A run already past its estimate is not a finished one; keep a floor under it so a stuck lane
     # cannot pull the whole estimate to zero.
     tails = []
-    for lane, name in sweep.running.items():
-        ran = qemus[lane].elapsed if lane in qemus else 0.0
+    for _lane, name in sweep.running.items():
+        ran = qemus[name].elapsed if name in qemus else 0.0
         left = max(est.get(config_of(name), 0.0) - ran, 60.0)
         remaining += left
         tails.append(left)
@@ -527,7 +550,7 @@ def cleanup(sweeps: List[Sweep], args: argparse.Namespace) -> int:
         if images.is_dir() and not sweeps:
             victims.append((images, disk_bytes(images), newest_mtime(images)))
         elif images.is_dir():
-            print("keeping master images: a sweep is running and may be copying from them")
+            print("keeping master images: a sweep is running and may be booting from them")
 
     if not victims:
         print("nothing to clean up")
@@ -612,8 +635,10 @@ def main() -> int:
 
         for lane in sorted(sweep.running):
             name = sweep.running[lane]
-            proc = qemus.get(lane)
-            detail = proc.desc if proc else "copying images"
+            proc = qemus.get(name)
+            # No qemu for a started run means it is between "[lane N] start" and qemu coming up --
+            # xtask's own startup. There is no image-copy phase to be in any more.
+            detail = proc.desc if proc else "starting"
             ran = proc.elapsed if proc else 0.0
             # Elapsed against this configuration's usual run time: the two are only meaningful
             # together, so they share a column rather than becoming two.

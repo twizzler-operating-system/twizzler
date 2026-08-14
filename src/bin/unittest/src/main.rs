@@ -4,9 +4,29 @@ use std::{
     time::Instant,
 };
 
+use twizzler_abi::syscall::{
+    sys_kernel_console_write, KernelConsoleSource, KernelConsoleWriteFlags,
+};
 use unittest_report::{Report, ReportInfo, TestResult, TestStatus};
 
 static RESULT: OnceLock<Report> = OnceLock::new();
+
+/// Emit a REPORT line in a single console write.
+///
+/// The host matches this line with `strip_prefix("REPORT ")`, so it has to arrive whole. `println!`
+/// cannot promise that: stdout is line-buffered at 1KiB and a full report runs to several KiB, so
+/// it left as half a dozen writes with room between them. Kernel logging landed inside one, which
+/// the host then could not parse -- a run whose tests had all passed was recorded as "no test
+/// report". One `sys_kernel_console_write` of the whole buffer holds the serial port lock for the
+/// entire slice, so nothing can interleave into it.
+fn emit_report(report: &Report) {
+    let line = format!("REPORT {}\n", serde_json::to_string(report).unwrap());
+    sys_kernel_console_write(
+        KernelConsoleSource::Console,
+        line.as_bytes(),
+        KernelConsoleWriteFlags::DONT_BUFFER,
+    );
+}
 
 /// Directories a test binary may live in, in search order.
 ///
@@ -80,10 +100,18 @@ fn try_bench(path: &str) {
     println!("unittest: benches finished in {:?}", dur);
 }
 
-/// Spawn `name` with `args` and `envs`, and turn the result into a `TestResult`. Shared by the
-/// `#[test]`-binary loop and the standalone-program loop: both are just "run a binary, grade it by
-/// exit status." See [`resolve`] for where `name` is looked up.
-fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
+/// A test binary that has been spawned but not yet waited on.
+struct Pending {
+    path: String,
+    started: Instant,
+    /// The spawn error is carried instead of reported here so a failure to start is graded in
+    /// [`finish_one`] alongside every other outcome.
+    child: std::io::Result<std::process::Child>,
+}
+
+/// Spawn `name` with `args` and `envs` without waiting for it. See [`resolve`] for where `name` is
+/// looked up.
+fn start_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> Pending {
     let path = resolve(name);
     println!("STARTING {}", path);
     let mut cmd = std::process::Command::new(&path);
@@ -92,9 +120,24 @@ fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
         cmd.env(k, v);
     }
     let started = Instant::now();
+    let child = cmd.spawn();
+    Pending {
+        path,
+        started,
+        child,
+    }
+}
+
+/// Wait for a [`Pending`] test and grade it by exit status.
+fn finish_one(pending: Pending) -> TestResult {
+    let Pending {
+        path,
+        started,
+        child,
+    } = pending;
     // Never unwrap the wait: a panic here would discard every result collected so far and
     // the host would report "no report" instead of the actual failure.
-    let status = match cmd.spawn().and_then(|mut test_comp| test_comp.wait()) {
+    let status = match child.and_then(|mut test_comp| test_comp.wait()) {
         Ok(st) if st.success() => TestStatus::Passed,
         Ok(st) => TestStatus::Failed {
             code: st.code().unwrap_or(-1),
@@ -107,6 +150,38 @@ fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
         status,
         duration: started.elapsed(),
     }
+}
+
+/// Spawn `name`, wait for it, and turn the result into a `TestResult`. Used for every test that is
+/// not in [`EARLY_START`].
+fn run_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> TestResult {
+    finish_one(start_one(name, args, envs))
+}
+
+/// Test binaries started before the rest of the suite and collected after it.
+///
+/// `net_test` is wait-bound rather than CPU-bound -- it sits on peer connects and multi-second idle
+/// windows -- so run in turn it leaves the machine idle for most of the ~5s (smp4) to ~8s (smp1) it
+/// takes, against a suite that is otherwise ~3.5s of work. Overlapping it puts the whole suite in
+/// its shadow: 8.9s -> 5.2s on smp4, 16.4s -> 9.6s on smp1.
+///
+/// A test belongs here only if it is safe beside an arbitrary other test: `net_test` binds fixed
+/// ports (7701+) that nothing else in the suite touches.
+///
+/// Adding a *second* entry is where this stops paying. `twizzler_queue_raw` is the other slow test
+/// (5.2s on smp1, where cross-thread wake latency dominates) and starting it early too measured
+/// *worse* on smp1 -- 12.0s, because the two then contend for the single CPU and inflate each other
+/// past what either costs alone. Sequential, it fits inside `net_test`'s window for free.
+const EARLY_START: &[&str] = &["net_test"];
+
+/// Crate name of a test binary, i.e. `net_test` from `net_test-3237d80032434c66`.
+///
+/// Split from the right, since only the trailing `-<hash>` is guaranteed separator; matching whole
+/// names this way keeps `net_test` distinct from `net_test_peer`, which a prefix test would not.
+fn crate_name(bin: &str) -> &str {
+    bin.rsplit_once('-')
+        .map(|(name, _hash)| name)
+        .unwrap_or(bin)
 }
 
 /// Parse `/initrd/standalone_test_bins`: one entry per line, `<binary-name> [arg]...`. Missing
@@ -150,22 +225,38 @@ fn main() {
     let data = file.read_to_end(&mut v).unwrap();
     file.seek(std::io::SeekFrom::Start(0)).unwrap();
     println!("unittest: read {} bytes from test_bins", data);
-    for line in std::io::BufReader::new(file).lines() {
-        println!("got line: {:?}", line);
-        if let Ok(line) = &line {
-            if line.contains("\u{0000}") {
-                continue;
-            }
-            if !line.is_ascii() {
-                continue;
-            }
-            reports.push(run_one(line, &["--test"], &[("TWZ_TEST_MODE", "1")]));
-        }
+    let lines: Vec<String> = std::io::BufReader::new(file)
+        .lines()
+        .filter_map(|line| line.ok())
+        .filter(|line| !line.contains('\u{0000}') && line.is_ascii() && !line.trim().is_empty())
+        .collect();
+
+    // Start the wait-bound tests before anything else, so the rest of the suite runs inside the
+    // windows they spend blocked. They are collected below, after everything sequential is done.
+    let early: Vec<Pending> = lines
+        .iter()
+        .filter(|line| EARLY_START.contains(&crate_name(line.as_str())))
+        .map(|line| start_one(line.as_str(), &["--test"], &[("TWZ_TEST_MODE", "1")]))
+        .collect();
+    println!(
+        "unittest: started {} test(s) in the background",
+        early.len()
+    );
+
+    for line in lines
+        .iter()
+        .filter(|line| !EARLY_START.contains(&crate_name(line.as_str())))
+    {
+        reports.push(run_one(line, &["--test"], &[("TWZ_TEST_MODE", "1")]));
     }
 
     for (name, args) in read_standalone_entries("/initrd/standalone_test_bins") {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         reports.push(run_one(&name, &args, &[]));
+    }
+
+    for pending in early {
+        reports.push(finish_one(pending));
     }
 
     let dur = Instant::now() - start;
@@ -181,10 +272,7 @@ fn main() {
     // `status` once per heartbeat (15s), so waiting for it idled every run for half that on
     // average. `io_heartbeat` still answers polls, and the host keeps the first REPORT it sees, so
     // a poll racing this line just produces a duplicate.
-    println!(
-        "REPORT {}",
-        serde_json::to_string(RESULT.get().unwrap()).unwrap()
-    );
+    emit_report(RESULT.get().unwrap());
 
     // Exit nonzero so init can hand a real code to sys_debug_shutdown; that is the backstop the
     // host falls back on when the REPORT channel produces nothing. Only do this once the report
@@ -211,13 +299,10 @@ fn io_heartbeat() {
             "status" => {
                 if let Some(report) = RESULT.get() {
                     println!("unittest: creating report");
-                    println!("REPORT {}", serde_json::to_string(report).unwrap());
+                    emit_report(report);
                     return;
                 } else {
-                    println!(
-                        "REPORT {}",
-                        serde_json::to_string(&Report::pending()).unwrap()
-                    );
+                    emit_report(&Report::pending());
                 }
             }
             _ => {

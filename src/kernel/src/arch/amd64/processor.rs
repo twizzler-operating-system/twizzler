@@ -100,7 +100,21 @@ pub fn init(tls: VirtAddr) {
         if use_pcid {
             cr4 |= x86::controlregs::Cr4::CR4_ENABLE_PCID;
         }
+        let use_fsgsbase = USE_FSGSBASE_IF_AVAILABLE
+            && x86::cpuid::CpuId::new()
+                .get_extended_feature_info()
+                .map(|f| f.has_fsgsbase())
+                .unwrap_or(false);
+        if use_fsgsbase {
+            cr4 |= x86::controlregs::Cr4::CR4_ENABLE_FSGSBASE;
+        }
         x86::controlregs::cr4_write(cr4);
+        // After the cr4 write, and per-cpu: `write_fs_base` reads this flag, and a cpu that has not
+        // yet been through here would #UD on `wrfsbase`. Nothing runs on a cpu between its
+        // trampoline and this function, so no cpu can consult the flag before setting it.
+        if use_fsgsbase {
+            USE_FSGSBASE.store(true, Ordering::Relaxed);
+        }
         if use_pcid {
             // Turning PCIDE on is not architecturally required to invalidate anything, and every
             // entry from before it went on is tagged PCID 0 -- the fallback PCID. Drop and re-set
@@ -549,6 +563,38 @@ mod tests {
             for id in 1..64u32 {
                 assert_eq!(topo_path(&shifts, Some(0), id).len(), len);
             }
+        }
+    }
+}
+
+/// A/B switch: use `wrfsbase` for FS_BASE writes when the hardware offers it.
+pub const USE_FSGSBASE_IF_AVAILABLE: bool = true;
+
+/// Whether this machine's cpus have CR4.FSGSBASE set, so `wrfsbase` is legal.
+static USE_FSGSBASE: AtomicBool = AtomicBool::new(false);
+
+/// Install a user thread pointer into FS_BASE.
+///
+/// `wrmsr` is serializing and costs ~100 cycles; `wrfsbase` is a handful. This runs twice per
+/// syscall (kernel pointer in, user pointer out) and twice per interrupt from user, and a boot
+/// makes ~150,000 syscalls.
+///
+/// Note that enabling CR4.FSGSBASE also lets *userspace* execute `rdfsbase`/`wrfsbase`, which
+/// previously raised #UD. The kernel keeps its own copy of each thread's user pointer per security
+/// context and reinstalls it on every kernel exit, so a userspace `wrfsbase` is silently discarded
+/// at the next entry rather than honoured.
+/// Whether `wrfsbase` is in use, rather than `wrmsr`. Reporting only.
+pub fn fsgsbase_enabled() -> bool {
+    USE_FSGSBASE.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn write_fs_base(val: u64) {
+    unsafe {
+        if USE_FSGSBASE.load(Ordering::Relaxed) {
+            core::arch::asm!("wrfsbase {}", in(reg) val, options(nostack, preserves_flags));
+        } else {
+            x86::msr::wrmsr(x86::msr::IA32_FS_BASE, val);
         }
     }
 }

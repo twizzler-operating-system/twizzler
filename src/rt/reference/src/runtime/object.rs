@@ -102,19 +102,20 @@ pub(crate) mod mapstats {
     pub fn record(lock: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
-        if n.is_power_of_two() {
+        if secgate::statcadence::report_now(n) {
             // `get_sctx_id` is a bare syscall. Deliberately not `get_comp_config().sctx`, which on
             // first use makes a gate call -- and this runs inside `map_object`, which the heap
             // growth path and the monitor's own compartment both go through.
-            twizzler_abi::klog_println!(
-                "MAPSTATS[{:x}] {} maps ({} hits): lock {} us, gate {} us; {} unmaps {} us",
-                secgate::get_sctx_id().raw() as u16,
+            secgate::statlog::record(
+                "MAPSTATS",
                 n,
-                HITS.load(Ordering::Relaxed),
-                l / 1000,
-                GATE.load(Ordering::Relaxed) / 1000,
-                UNMAPS.load(Ordering::Relaxed),
-                UNMAP_NS.load(Ordering::Relaxed) / 1000,
+                &[
+                    HITS.load(Ordering::Relaxed),
+                    l / 1000,
+                    GATE.load(Ordering::Relaxed) / 1000,
+                    UNMAPS.load(Ordering::Relaxed),
+                    UNMAP_NS.load(Ordering::Relaxed) / 1000,
+                ],
             );
         }
     }

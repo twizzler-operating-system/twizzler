@@ -25,6 +25,8 @@ pub enum ObjectControlCmd {
     Sync,
     /// Preload an object's data
     Preload,
+    /// Preload specific page ranges of an object's data.
+    PreloadRange,
     /// Add a note to an object.
     AddNote,
     /// Remove a note from an object.
@@ -46,6 +48,7 @@ impl From<ObjectControlCmd> for (u64, u64) {
             ObjectControlCmd::RemoveNote(x) => (5, x),
             ObjectControlCmd::GetNote(x) => (6, x),
             ObjectControlCmd::EnumerateNotes(x) => (7, x),
+            ObjectControlCmd::PreloadRange => (8, 0),
         }
     }
 }
@@ -64,6 +67,7 @@ impl TryFrom<(u64, u64)> for ObjectControlCmd {
             5 => ObjectControlCmd::RemoveNote(value.1),
             6 => ObjectControlCmd::GetNote(value.1),
             7 => ObjectControlCmd::EnumerateNotes(value.1),
+            8 => ObjectControlCmd::PreloadRange,
             _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }
@@ -76,6 +80,45 @@ pub fn sys_object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) ->
     let args = [hi, lo, cmd, opts, arg, arg2];
     let (code, val) = unsafe { raw_syscall(Syscall::ObjectCtrl, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
+}
+
+/// One page range for [sys_object_preload_range], in object-relative pages.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PreloadRangeSpec {
+    pub start_page: u64,
+    pub nr_pages: u64,
+}
+
+impl PreloadRangeSpec {
+    /// Build a range covering the bytes `[start, start + len)`, rounded out to page boundaries.
+    pub fn from_bytes(start: u64, len: u64) -> Self {
+        const PAGE_SIZE: u64 = 0x1000;
+        let start_page = start / PAGE_SIZE;
+        let end_page = (start + len).div_ceil(PAGE_SIZE);
+        Self {
+            start_page,
+            nr_pages: end_page.saturating_sub(start_page),
+        }
+    }
+}
+
+/// The most ranges a single [sys_object_preload_range] call will act on. Anything past this is
+/// ignored by the kernel rather than rejected.
+pub const MAX_PRELOAD_RANGES: usize = 16;
+
+/// Preload specific page ranges of an object, instead of the whole thing.
+///
+/// [ObjectControlCmd::Preload] covers the entire object, which for an ELF object carrying
+/// debuginfo means reading roughly 14x the bytes a load actually touches.
+pub fn sys_object_preload_range(id: ObjID, ranges: &[PreloadRangeSpec]) -> Result<()> {
+    sys_object_ctrl(
+        id,
+        ObjectControlCmd::PreloadRange,
+        ranges.as_ptr() as u64,
+        ranges.len() as u64,
+    )
+    .map(|_| ())
 }
 
 /// Add a note to an object. Returns the note key.

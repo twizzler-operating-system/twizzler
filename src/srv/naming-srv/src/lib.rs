@@ -247,6 +247,11 @@ pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
             .finish(),
     );
 
+    // Build identity, not just configuration: a sweep can be handed an image built from another
+    // session's source with the command line it asked for, and nothing else in the transcript
+    // distinguishes that from its own binaries.
+    twizzler_abi::klog_println!("NAMEMEMO {}", naming_core::memo_config());
+
     Ok(NAMINGSERVICE
         .get_or_create(|_| {
             let namer = Namer::new_with(bootstrap)
@@ -356,57 +361,85 @@ pub fn link(desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {
 
 #[secgate::entry(lib = "naming")]
 pub fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
-    let t_start = std::time::Instant::now();
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
     let mut inner = client.inner.lock().unwrap();
-    let lock_ns = t_start.elapsed().as_nanos() as u64;
 
     let path = inner.read_buffer(name_len)?;
 
-    let t_namei = std::time::Instant::now();
-    let res = inner.session.get(path, flags);
-    getstats::record(lock_ns, t_namei.elapsed().as_nanos() as u64);
-    res
+    inner.session.get(path, flags)
 }
 
 #[secgate::entry(lib = "naming")]
 pub fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
-    let t_start = std::time::Instant::now();
+    let t_entry = getphase::start();
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client =
         lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
+    let t_lookup = getphase::lap(&t_entry);
     let inner = client.inner.lock().unwrap();
-    let lock_ns = t_start.elapsed().as_nanos() as u64;
+    let t_innerlock = getphase::lap(&t_entry);
 
-    let path = path.to_path()?;
-
-    let t_namei = std::time::Instant::now();
-    let res = inner.session.get(path, flags);
-    getstats::record(lock_ns, t_namei.elapsed().as_nanos() as u64);
+    // `as_str`, not `to_path`: the path is already sitting in the gate's arguments and
+    // `NameSession::get` wants a `&str` back out of whatever it is handed, so the `PathBuf` was an
+    // allocate-and-free per lookup purely to change type. Kept because it is less work, not because
+    // it is faster -- A/B'd at four rounds a side and the effect is below this instrument's
+    // resolution (22 in this file).
+    let res = inner.session.get(path.as_str()?, flags);
+    getphase::record(t_lookup, t_innerlock, getphase::lap(&t_entry));
     res
 }
 
-// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-mod getstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
+/// Where a warm `get_inline` spends its time *inside the server*, so the gate call's own share can
+/// be had by subtracting from `pagepar`'s NAME figure.
+///
+/// This exists because the NAME phase cannot resolve anything under about a microsecond (22), and
+/// the open question -- 3 us solo against ~7 us at four threads on a path whose only work is a
+/// sharded hash lookup -- lives below that. Three clock reads and four shared-cacheline RMWs per
+/// call, which at four threads is itself a contention term: read the *shares*, and expect the
+/// totals to be inflated relative to an uninstrumented run. sysperf.md round 6 is the cautionary
+/// tale for believing otherwise.
+mod getphase {
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::Instant,
+    };
+
+    pub const GETPHASE_STATS: bool = false;
 
     static COUNT: AtomicU64 = AtomicU64::new(0);
-    static LOCK: AtomicU64 = AtomicU64::new(0);
-    static NAMEI: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP: AtomicU64 = AtomicU64::new(0);
+    static INNERLOCK: AtomicU64 = AtomicU64::new(0);
+    static GET: AtomicU64 = AtomicU64::new(0);
 
-    pub fn record(lock: u64, namei: u64) {
+    pub fn start() -> Option<Instant> {
+        GETPHASE_STATS.then(Instant::now)
+    }
+
+    /// Nanoseconds since `t`, cumulative -- the caller differences them.
+    pub fn lap(t: &Option<Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
+    pub fn record(lookup: u64, innerlock: u64, total: u64) {
+        if !GETPHASE_STATS {
+            return;
+        }
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
-        let m = NAMEI.fetch_add(namei, Ordering::Relaxed) + namei;
+        let l = LOOKUP.fetch_add(lookup, Ordering::Relaxed) + lookup;
+        let i = INNERLOCK.fetch_add(innerlock.saturating_sub(lookup), Ordering::Relaxed)
+            + innerlock.saturating_sub(lookup);
+        let g = GET.fetch_add(total.saturating_sub(innerlock), Ordering::Relaxed)
+            + total.saturating_sub(innerlock);
         if n.is_power_of_two() {
             twizzler_abi::klog_println!(
-                "GETSTATS {} gets: handle-lock {} us, namei {} us (per get: {} us)",
+                "GETPHASE {} calls: caller+handles {} ns, inner-lock {} ns, session-get {} ns \
+                 (per call, means)",
                 n,
-                l / 1000,
-                m / 1000,
-                (l + m) / (n * 1000),
+                l / n,
+                i / n,
+                g / n,
             );
         }
     }
@@ -524,8 +557,8 @@ mod srvenumstats {
         let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
         let w = WRITE.fetch_add(write, Ordering::Relaxed) + write;
         let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
+        if secgate::statcadence::report_now(n) {
+            secgate::statline!(
                 "SRVENUMSTATS {} calls, {} entries: lock {} us, items {} us, write {} us",
                 n,
                 e,

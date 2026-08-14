@@ -31,7 +31,7 @@ use twizzler_rt_abi::{
 use self::{
     compartment::{CompConfigObject, CompartmentHandle, RunComp},
     space::{MapHandle, MapInfo, Unmapper},
-    thread::{ManagedThread, ThreadCleaner},
+    thread::{ManagedThread, ThreadCleaner, ThreadMgr},
 };
 use crate::init::InitDynlinkContext;
 
@@ -68,14 +68,8 @@ mod monmapstats {
         let s = SPACE.fetch_add(space, Ordering::Relaxed) + space;
         let m = MGR.fetch_add(mgr, Ordering::Relaxed) + mgr;
         let r = REC.fetch_add(rec, Ordering::Relaxed) + rec;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "MONMAPSTATS {} maps: space {} us, comp-mgr {} us, record {} us",
-                n,
-                s / 1000,
-                m / 1000,
-                r / 1000,
-            );
+        if secgate::statcadence::report_now(n) {
+            secgate::statlog::record("MONMAPST", n, &[s / 1000, m / 1000, r / 1000]);
         }
     }
 }
@@ -136,7 +130,7 @@ pub(crate) mod ptstats {
     pub fn record(site: Site) {
         SITES[site as usize].fetch_add(1, Ordering::Relaxed);
         let n = TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
-        if !n.is_power_of_two() {
+        if !secgate::statcadence::report_now(n) {
             return;
         }
         let mut line = format!("PTSTATS {} per-thread-buffer calls:", n);
@@ -156,6 +150,19 @@ pub(crate) mod ptstats {
 /// out handles to libraries and compartments to callers.
 pub struct Monitor {
     locks: LockCollection<MonitorLocks<'static>>,
+    /// The two locks a compartment-handle lookup actually touches.
+    ///
+    /// `lookup_compartment_id`, `lookup_compartment_named` and `get_compartment_handle` used
+    /// [`Self::locks`] for this, which takes all five -- so a `comps` lookup and a handle insert
+    /// blocked every spawn (which takes `thread_mgr`) and every library operation for as long as
+    /// they held it. Measured at 502 holds over a millisecond in one boot, 724 ms of collection
+    /// time, none of it needing `thread_mgr`, `dynlink`, or the library handles (`sysperf.md`
+    /// round 8).
+    ///
+    /// A second collection is sound here for the same reason the first one is: happylock hands
+    /// each thread a single key and `lock` consumes it, so no thread can hold two collections and
+    /// no cycle exists to order.
+    comp_lookup: LockCollection<CompLookupLocks<'static>>,
     unmapper: OnceLock<Unmapper>,
     /// Management of address space.
     pub space: &'static Mutex<space::Space>,
@@ -173,6 +180,12 @@ pub struct Monitor {
 
 // We allow locking individually, using eg mon.space.write(key), or locking the collection for more
 // complex operations that touch multiple pieces of state.
+/// The subset [`Monitor::comp_lookup`] takes. Order matches its position in [`MonitorLocks`].
+type CompLookupLocks<'a> = (
+    &'a RwLock<compartment::CompartmentMgr>,
+    &'a RwLock<HandleMgr<CompartmentHandle>>,
+);
+
 type MonitorLocks<'a> = (
     &'a RwLock<thread::ThreadMgr>,
     &'a RwLock<compartment::CompartmentMgr>,
@@ -270,6 +283,7 @@ impl Monitor {
                 &*compartment_handles,
             ))
             .unwrap(),
+            comp_lookup: LockCollection::try_new((&*comp_mgr, &*compartment_handles)).unwrap(),
             unmapper: OnceLock::new(),
             space,
             thread_mgr,
@@ -281,19 +295,88 @@ impl Monitor {
     }
 
     /// Start a managed monitor thread.
+    ///
+    /// Three phases, and only the first and last hold a monitor lock. The middle one -- allocating
+    /// the super stack, `sys_spawn`, and mapping the new thread's repr -- needs nothing from the
+    /// monitor's state, and it is where essentially all of a spawn's time goes. Holding the whole
+    /// lock collection across it, as this used to, meant spawns could not overlap each other and
+    /// every unrelated monitor operation in the system queued behind them.
     #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
     pub fn start_thread(
         &self,
         instance: ObjID,
         main: Box<dyn FnOnce()>,
     ) -> Result<ManagedThread, TwzError> {
-        let key = ThreadKey::get().unwrap();
-        let locks = &mut *crate::lockdiag::watched(self.locks.lock(key));
+        let (start, arg) = ThreadMgr::entry_for(main);
 
-        let monitor_dynlink_comp = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
-        locks
-            .0
-            .start_thread(monitor_dynlink_comp, main, None, instance)
+        // Two ways to get a TLS region. The prebuilt one is the point of the pool: it needs no
+        // dynlink state, so this takes `thread_mgr` alone for an id instead of the whole lock
+        // collection, and stops queueing behind every unrelated monitor operation. Falling back
+        // costs what a spawn always cost.
+        let t_lock = std::time::Instant::now();
+        let (super_tls, super_tid, pooled, lockwait, tls_ns) = match thread::readypool::take() {
+            Some(super_tls) => {
+                let key = ThreadKey::get().unwrap();
+                let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
+                let lockwait = thread::spawnstats::since(t_lock);
+                let super_tid = tmgr.take_super_tid();
+                drop(tmgr);
+                thread::init_super_tcb(&super_tls, super_tid);
+                (super_tls, super_tid, true, lockwait, 0)
+            }
+            None => {
+                let key = ThreadKey::get().unwrap();
+                let locks = &mut *crate::lockdiag::watched(self.locks.lock(key));
+                let lockwait = thread::spawnstats::since(t_lock);
+                let t_tls = std::time::Instant::now();
+                let monitor_dynlink_comp =
+                    locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
+                let (super_tls, super_tid) = locks.0.prep_spawn(monitor_dynlink_comp)?;
+                (
+                    super_tls,
+                    super_tid,
+                    false,
+                    lockwait,
+                    thread::spawnstats::since(t_tls),
+                )
+            }
+        };
+
+        let mut phases = thread::spawnstats::Phases::default();
+        let mt = ThreadMgr::finish_spawn(
+            super_tls,
+            super_tid,
+            start,
+            arg,
+            None,
+            instance,
+            &mut phases,
+        );
+
+        let t_reg = std::time::Instant::now();
+        let key = ThreadKey::get().unwrap();
+        let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
+        match mt {
+            Ok(mt) => {
+                tmgr.register(&mt);
+                drop(tmgr);
+                thread::spawnstats::record(
+                    pooled,
+                    lockwait,
+                    tls_ns,
+                    phases.stack,
+                    phases.sys_spawn,
+                    phases.reprmap,
+                    thread::spawnstats::since(t_reg),
+                );
+                Ok(mt)
+            }
+            Err(e) => {
+                // `prep_spawn` froze this id, so nothing else will hand it back.
+                tmgr.release_super_tid(super_tid);
+                Err(e)
+            }
+        }
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
@@ -352,8 +435,11 @@ impl Monitor {
         let comps = crate::lockdiag::watched(mon.comp_mgr.read(ThreadKey::get().unwrap()));
         let comp = comps.get(instance)?;
         write_note!(thread.id, "thread:{}", comp.name);
-        ptstats::record(ptstats::Site::Spawn);
-        let _pt = comp.get_per_thread(thread.id);
+        // Deliberately does *not* touch `get_per_thread`. That creates and maps a simple-buffer
+        // object, and doing it here did so for every thread ever spawned, when only threads that
+        // make a gate call carrying variable-length data ever read one. `get_per_thread` is an
+        // `entry().or_insert_with()` under the compartment's own lock, so leaving it to the first
+        // caller is both race-free and one object plus one mapping cheaper per spawn.
         // Held by the compartment, not by us: the caller's `map_object` replaces this entry with
         // its own handle for the same `MapInfo`, and the mapping is released when the caller
         // releases that one.
@@ -490,8 +576,18 @@ impl Monitor {
         frame: &mut UpcallFrame,
         info: &UpcallData,
     ) -> Result<Option<ResumeFlags>, TwzError> {
+        // An upcall is delivered on whichever thread faulted, and that thread can already be inside
+        // monitor code holding the key -- `ThreadKey::get` returns None exactly then, and this
+        // unwrapped it. The panic reported itself rather than the fault that caused it, which is
+        // how a compartment stack being unmapped under a running thread surfaced as a bare
+        // `unwrap` on `None`. The `Err` arm in `upcall_monitor_handler` prints `frame` and
+        // `info`, so the real violation reaches the log instead.
+        //
+        // This does not save the thread: it dies here either way, holding whatever monitor lock it
+        // took before faulting. Not faulting is the fix, and it belongs where the unmap happens --
+        // see `CompartmentMgr::process_cleanup_queue`.
         self.comp_mgr
-            .write(ThreadKey::get().unwrap())
+            .write(reentrant_key()?)
             .get_mut(frame.prior_ctx)?
             .upcall_handle(frame, info)
     }

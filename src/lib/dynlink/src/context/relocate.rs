@@ -16,6 +16,7 @@ use elf::{
     symbol::SymbolTable,
 };
 use petgraph::graph::NodeIndex;
+use smallstr::SmallString;
 use tracing::{debug, error, trace};
 
 use super::{Context, Library};
@@ -23,7 +24,7 @@ use crate::{
     compartment::CompartmentId,
     library::{LibraryId, RelocState},
     symbol::RelocatedSymbol,
-    DynlinkError, DynlinkErrorKind, Vec, SMALL_VEC_SIZE,
+    DynlinkError, DynlinkErrorKind, Vec, SMALL_STRING_SIZE, SMALL_VEC_SIZE,
 };
 
 #[derive(Default)]
@@ -235,7 +236,7 @@ impl Context {
     }
 
     pub(crate) fn relocate_single(
-        &mut self,
+        &self,
         lib_id: LibraryId,
         reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
@@ -408,13 +409,13 @@ impl Context {
     }
 
     fn relocate_recursive(
-        &mut self,
+        &self,
         root_id: LibraryId,
         reloc_cache: &mut RelocCache<'_>,
     ) -> Result<(), DynlinkError> {
         let lib = self.get_library(root_id)?;
         let libname = lib.name.to_string();
-        match lib.reloc_state {
+        match lib.reloc_state.get() {
             crate::library::RelocState::Unrelocated => {}
             crate::library::RelocState::PartialRelocation => {
                 error!("{}: tried to relocate a failed library", lib);
@@ -457,25 +458,33 @@ impl Context {
         )?;
 
         // Okay, deps are ready, let's reloc the root.
-        let lib = self.get_library_mut(root_id)?;
-        lib.reloc_state = RelocState::PartialRelocation;
+        let lib = self.get_library(root_id)?;
+        lib.reloc_state.set(RelocState::PartialRelocation);
 
         let res = self.relocate_single(root_id, reloc_cache);
 
-        let lib = self.get_library_mut(root_id)?;
+        let lib = self.get_library(root_id)?;
         if res.is_ok() {
-            lib.reloc_state = RelocState::Relocated;
+            lib.reloc_state.set(RelocState::Relocated);
         } else {
-            lib.reloc_state = RelocState::PartialRelocation;
+            lib.reloc_state.set(RelocState::PartialRelocation);
         }
         res
     }
 
     /// Iterate through all libraries and process relocations for any libraries that haven't yet
     /// been relocated.
-    pub fn relocate_all(&mut self, root_id: LibraryId) -> Result<(), DynlinkError> {
-        let name = self.get_library(root_id)?.name.as_str().into();
+    pub fn relocate_all(&self, root_id: LibraryId) -> Result<(), DynlinkError> {
+        let name: SmallString<[u8; SMALL_STRING_SIZE]> =
+            self.get_library(root_id)?.name.as_str().into();
         let rootname = self.get_library(root_id)?.name.clone();
+        // See `Context::reloc_lock`: relocations serialize against each other, but not against
+        // readers of the context.
+        let _reloc_guard = self.reloc_lock.lock().map_err(|_| {
+            DynlinkError::new(DynlinkErrorKind::RelocationFail {
+                library: name.clone(),
+            })
+        })?;
         let _start = Instant::now();
         let mut reloc_cache = RelocCache::default();
         let res = self

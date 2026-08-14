@@ -145,25 +145,31 @@ impl Namespace for NamespaceObject {
     }
 
     fn insert(&self, node: NsNode) -> Result<()> {
-        self.with_obj(|obj| {
+        // After the write, never before: a reader that sampled the generation *after* an early
+        // bump but walked before the entry landed would record a stale answer as a current one.
+        let res = self.with_obj(|obj| {
             if find_idx(obj, node.name()?).is_some() {
                 return Err(NamingError::AlreadyExists.into());
             }
             obj.push(node)
-        })
+        });
+        super::invalidate_memo();
+        res
     }
 
     fn replace(&self, node: NsNode) -> Result<()> {
-        self.with_obj(|obj| {
+        let res = self.with_obj(|obj| {
             if let Some(idx) = find_idx(obj, node.name()?) {
                 obj.remove(idx)?;
             }
             obj.push(node)
-        })
+        });
+        super::invalidate_memo();
+        res
     }
 
     fn remove(&self, name: &str) -> Option<NsNode> {
-        self.with_obj(|obj| {
+        let res = self.with_obj(|obj| {
             for (idx, entry) in obj.iter().enumerate() {
                 let entry = *entry;
                 let Ok(en) = entry.name() else {
@@ -175,7 +181,9 @@ impl Namespace for NamespaceObject {
                 }
             }
             None
-        })
+        });
+        super::invalidate_memo();
+        res
     }
 
     fn parent(&self) -> Option<&ParentInfo> {
