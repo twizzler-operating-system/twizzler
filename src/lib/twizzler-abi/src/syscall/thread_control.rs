@@ -278,6 +278,10 @@ pub fn sys_thread_write_registers(target: ObjID, regs: &ArchRegisters) -> Result
 }
 
 /// Send a user-defined async or sync event to the thread.
+///
+/// The target's mailbox is a bitmask, so `message` names a bit and must be in `1..64`; anything
+/// else is an invalid-argument error. Pending messages coalesce per bit and are delivered one per
+/// upcall, lowest first, once the thread returns to user in its own security context.
 pub fn sys_thread_send_message(target: ObjID, message: u64, flags: u64) -> Result<(), TwzError> {
     let (code, val) = unsafe {
         raw_syscall(

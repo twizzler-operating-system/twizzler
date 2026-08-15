@@ -21,17 +21,60 @@ use crate::{
     thread::{Thread, current_thread_ref},
 };
 
-#[derive(Copy, Clone, Debug)]
-/// The register frame a thread entered the kernel with, as a pointer to the frame the entry stub
-/// pushed on the kernel stack.
-///
-/// Deliberately *only* the pointer. This used to carry a by-value copy of the frame alongside it,
-/// written on every syscall and every interrupt from user -- 128 bytes for a syscall, more for an
-/// interrupt -- and nothing ever read it: every match on this enum discards the second field.
+#[derive(Debug, Clone, Copy)]
 pub enum Registers {
     None,
     Syscall(*mut X86SyscallContext),
     Interrupt(*mut IsrContext),
+}
+
+#[derive(Debug)]
+struct RegistersPtr {
+    ptr: AtomicU64,
+}
+
+impl RegistersPtr {
+    pub fn new() -> Self {
+        Self {
+            ptr: AtomicU64::new(0),
+        }
+    }
+
+    pub unsafe fn read_syscall(&self) -> Option<*mut X86SyscallContext> {
+        let ptr = self.ptr.load(Ordering::SeqCst);
+        if ptr == 0 || ptr & 1 != 0 {
+            return None;
+        }
+        Some(ptr as *mut X86SyscallContext)
+    }
+
+    pub unsafe fn read_interrupt(&self) -> Option<*mut IsrContext> {
+        let ptr = self.ptr.load(Ordering::SeqCst);
+        if ptr == 0 || ptr & 1 == 0 {
+            return None;
+        }
+        Some((ptr & !1) as *mut IsrContext)
+    }
+
+    pub fn as_registers(&self) -> Registers {
+        let ptr = self.ptr.load(Ordering::SeqCst);
+        if ptr == 0 {
+            return Registers::None;
+        }
+        if ptr & 1 == 0 {
+            Registers::Syscall(ptr as *mut X86SyscallContext)
+        } else {
+            Registers::Interrupt((ptr & !1) as *mut IsrContext)
+        }
+    }
+
+    pub fn set_syscall(&self, ctx: *mut X86SyscallContext) {
+        self.ptr.store(ctx as u64, Ordering::SeqCst);
+    }
+
+    pub fn set_interrupt(&self, ctx: *mut IsrContext) {
+        self.ptr.store((ctx as u64) | 1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug)]
@@ -58,7 +101,7 @@ pub struct ArchThread {
     rsp: core::cell::UnsafeCell<u64>,
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
-    entry_registers: RefCell<Registers>,
+    entry_registers: RegistersPtr,
     /// The frame of an upcall to restore. The restoration path only occurs on the first
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
@@ -147,7 +190,7 @@ impl ArchThread {
             rsp: core::cell::UnsafeCell::new(0),
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
-            entry_registers: RefCell::new(Registers::None),
+            entry_registers: RegistersPtr::new(),
             upcall_restore_frame: RefCell::new(None),
         }
     }
@@ -436,7 +479,7 @@ impl Thread {
             crate::thread::exit(UPCALL_EXIT_CODE);
         }
         let source_ctx = self.active_sctx_id();
-        let ok = match *self.arch.entry_registers.borrow() {
+        let ok = match self.arch.entry_registers.as_registers() {
             Registers::None => {
                 panic!(
                     "tried to upcall {:?} to a thread that hasn't started yet",
@@ -456,7 +499,7 @@ impl Thread {
             logln!(
                 "while trying to generate upcall: {:?} from {:?}",
                 info,
-                self.arch.entry_registers.borrow()
+                self.arch.entry_registers.as_registers()
             );
             return;
         }
@@ -472,7 +515,19 @@ impl Thread {
     }
 
     pub fn set_entry_registers(&self, regs: Registers) {
-        (*self.arch.entry_registers.borrow_mut()) = regs;
+        match regs {
+            Registers::None => {
+                self.arch.entry_registers.ptr.store(0, Ordering::SeqCst);
+            }
+            Registers::Syscall(ctx) => {
+                assert!(!ctx.is_null());
+                self.arch.entry_registers.set_syscall(ctx);
+            }
+            Registers::Interrupt(ctx) => {
+                assert!(!ctx.is_null());
+                self.arch.entry_registers.set_interrupt(ctx);
+            }
+        }
     }
 
     pub fn set_tls(&self, tls: u64) {
@@ -595,7 +650,7 @@ impl Thread {
         use crate::syscall::SyscallContext;
         let frame = &self.arch.upcall_restore_frame.borrow();
         if frame.is_none() {
-            return match *self.arch.entry_registers.borrow() {
+            return match self.arch.entry_registers.as_registers() {
                 Registers::None => {
                     return 0;
                 }
@@ -615,7 +670,7 @@ impl Thread {
     pub fn read_bp(&self) -> u64 {
         let frame = &self.arch.upcall_restore_frame.borrow();
         if frame.is_none() {
-            return match *self.arch.entry_registers.borrow() {
+            return match self.arch.entry_registers.as_registers() {
                 Registers::None => {
                     return 0;
                 }
@@ -642,7 +697,7 @@ impl Thread {
         }
         let frame = &self.arch.upcall_restore_frame.borrow();
         if frame.is_none() {
-            let frame = match *self.arch.entry_registers.borrow() {
+            let frame = match self.arch.entry_registers.as_registers() {
                 Registers::None => {
                     unreachable!()
                 }

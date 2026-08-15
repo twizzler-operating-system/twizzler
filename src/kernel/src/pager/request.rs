@@ -349,6 +349,23 @@ impl Request {
         }
     }
 
+    /// Pages named by this request that never arrived.
+    ///
+    /// `remaining_pages` starts at the *full* asked range, and the pager clamps that range to the
+    /// object's length before transferring, so on any request naming pages past EOF this can never
+    /// reach zero. That makes the count-driven `mark_done` below unreachable for those requests,
+    /// leaving the DONE flag as the only thing that completes them -- which is the question of
+    /// whether over-asking costs anything at runtime or is purely an accounting artifact.
+    pub fn unfulfilled_pages(&self) -> usize {
+        self.remaining_pages.load(Ordering::Acquire)
+    }
+
+    /// Whether anything has marked this request done yet. Read at removal to tell a request the
+    /// page count completed from one only the DONE flag could.
+    pub fn was_done(&self) -> bool {
+        self.done()
+    }
+
     pub fn mark_done(&self) {
         if !self.done() {
             log::trace!(
@@ -363,10 +380,16 @@ impl Request {
 
     pub fn signal(&self) {
         let g = current_thread_ref().unwrap().enter_critical();
-        let mut waiters = self.waiters.lock();
-        add_all_to_requeue(waiters.take().into_iter());
+        // Take under the lock, requeue outside it. Detaching the list *is* the claim -- a waiter
+        // reaches its `ThreadRef` only through this list or through `setup_wait`'s own
+        // `claim_own_wakeup`, and both take it off before acting -- so nothing can reach these
+        // threads between the unlock and the requeue. `add_all_to_requeue` and `requeue_all` run
+        // `schedule_thread` per waiter, which is a topology walk, a remote run queue lock and a
+        // wakeup IPI; under this spinlock that put all of it, once per waiter, in an
+        // interrupts-off region bounded only by the waiter count.
+        let waiters = self.waiters.lock().take();
+        add_all_to_requeue(waiters);
         requeue_all();
-        drop(waiters);
         drop(g);
     }
 

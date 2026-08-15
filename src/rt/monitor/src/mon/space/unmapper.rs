@@ -1,5 +1,7 @@
 use std::{panic::catch_unwind, sync::mpsc::Sender, thread::JoinHandle};
 
+use twizzler_rt_abi::object::ObjID;
+
 use super::MapInfo;
 use crate::mon::get_monitor;
 
@@ -15,6 +17,13 @@ pub enum UnmapCommand {
     /// Unmap one specific slot, owned outright by the handle that enqueued it. Not routed through
     /// the MapInfo-keyed table, which cannot represent more than one mapping per object.
     SlotUnmap(usize),
+    /// Drop a compartment's record of a mapping, for an unmap that arrived on a thread already
+    /// holding a monitor lock and so could not take `comp_mgr` itself. This thread holds no
+    /// happylock key, so it can.
+    CompUnmap {
+        sctx: ObjID,
+        info: MapInfo,
+    },
 }
 
 impl Unmapper {
@@ -37,6 +46,12 @@ impl Unmapper {
                                     }
                                     UnmapCommand::SlotUnmap(slot) => {
                                         drop(super::UnmapOnDrop::new(slot));
+                                    }
+                                    UnmapCommand::CompUnmap { sctx, info } => {
+                                        // Re-enters the ordinary path: the handle it drops may
+                                        // enqueue a `SpaceUnmap` back onto this same channel,
+                                        // which the next iteration picks up.
+                                        monitor.unmap_object(sctx, info);
                                     }
                                 }
                             })
@@ -68,6 +83,20 @@ impl Unmapper {
         // call to clean_call above panics. In any case, handle this gracefully.
         if self.sender.send(UnmapCommand::SpaceUnmap(info)).is_err() {
             tracing::warn!("failed to enqueue Unmap {:?} onto cleaner thread", info);
+        }
+    }
+
+    /// Enqueue a compartment's unmap to be performed on this thread instead of the caller's.
+    pub(crate) fn background_unmap_comp(&self, sctx: ObjID, info: MapInfo) {
+        if self
+            .sender
+            .send(UnmapCommand::CompUnmap { sctx, info })
+            .is_err()
+        {
+            tracing::warn!(
+                "failed to enqueue compartment unmap of {:?} onto cleaner thread",
+                info
+            );
         }
     }
 

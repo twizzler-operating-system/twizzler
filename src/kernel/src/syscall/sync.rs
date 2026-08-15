@@ -60,21 +60,61 @@ fn get_requeue_list() -> &'static Requeue {
     })
 }
 
+/// Threads claimed per pass of [requeue_all].
+const REQUEUE_BATCH: usize = 8;
+
+/// Wake everything on the requeue list that can be woken.
+///
+/// Claim under the lock, schedule outside it. `schedule_thread` is not a small call -- a topology
+/// walk in `select_cpu`, a remote run queue lock, and a wakeup IPI -- and running it per entry
+/// under this spinlock put all of that, once per waiter, in an interrupts-off region with no bound
+/// but the list length.
+///
+/// Correctness of deferring it: claiming means winning THREAD_IS_SYNC_SLEEP_DONE *and* taking the
+/// entry, and every other path to scheduling a thread (`add_to_requeue`'s fast path,
+/// `claim_own_wakeup`) must win that same flag first. So a claimed thread is ours alone until we
+/// schedule it, and holding it in `batch` for a few instructions is not a window anyone else can
+/// use.
+///
+/// Deferring is also what keeps the drop off the lock. Both `schedule_thread` and
+/// `schedule_thread_on_cpu` return early for an exiting thread without storing the reference, so
+/// the last one dies at the call -- `Thread::drop` -> `IdCounter::release` -> a sleeping mutex,
+/// under a spinlock, which is the wedge `remove_from_requeue` documents.
 pub fn requeue_all() {
     let requeue = get_requeue_list();
-    let mut list = requeue.list.lock();
-    let mut cursor = list.front_mut();
-    while !cursor.is_null() {
-        if cursor
-            .get()
-            .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
+    loop {
+        let mut batch = heapless::Vec::<ThreadRef, REQUEUE_BATCH>::new();
         {
-            if let Some(t) = cursor.remove() {
-                assert!(!t.get_mutex_wait());
-                crate::processor::sched::schedule_thread(t);
+            let mut list = requeue.list.lock();
+            let mut cursor = list.front_mut();
+            while !batch.is_full() && !cursor.is_null() {
+                if cursor
+                    .get()
+                    .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
+                {
+                    if let Some(t) = cursor.remove() {
+                        assert!(!t.get_mutex_wait());
+                        // Safety: not full, checked above.
+                        unsafe { batch.push_unchecked(t) };
+                    }
+                } else {
+                    cursor.move_next();
+                }
             }
-        } else {
-            cursor.move_next();
+        }
+        // A short batch means the walk above reached the end of the list, so there is nothing left
+        // to claim. A full one says only that we ran out of room; go back for the rest. Entries
+        // skipped for being critical or already claimed stay at the front and are re-examined,
+        // which is why this terminates on the empty batch rather than on a fixed number of passes.
+        let full = batch.is_full();
+        if batch.is_empty() {
+            return;
+        }
+        for t in batch {
+            crate::processor::sched::schedule_thread(t);
+        }
+        if !full {
+            return;
         }
     }
 }

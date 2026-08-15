@@ -41,9 +41,10 @@ use alloc::vec::Vec;
 use core::{
     alloc::Layout,
     mem::{size_of, transmute},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
+use ferroc::heap;
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
 use twizzler_abi::syscall::MemoryStats;
 
@@ -51,10 +52,14 @@ use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
     arch::{
         VirtAddr,
-        memory::{frame::FRAME_SIZE, phys_to_virt},
+        memory::{
+            frame::{self, FRAME_SIZE},
+            phys_to_virt,
+        },
     },
-    memory::tracker::FrameAllocator,
+    memory::tracker::{FrameAllocator, is_low_mem},
     once::Once,
+    processor::sched::needs_reschedule,
     spinlock::Spinlock,
 };
 
@@ -65,6 +70,7 @@ struct AllocationRegionLevel {
     alloc_size: usize,
     align: usize,
     free: usize,
+    free_zeroed: usize,
     zeroed: LinkedList<FrameAdapter>,
     non_zeroed: LinkedList<FrameAdapter>,
 }
@@ -135,15 +141,25 @@ impl AllocationRegionLevel {
             alloc_size: layout.size(),
             align: layout.align(),
             free: 0,
+            free_zeroed: 0,
             zeroed: LinkedList::new(FrameAdapter::NEW),
             non_zeroed: LinkedList::new(FrameAdapter::NEW),
         }
+    }
+
+    fn allocate_zeroable(&mut self) -> Option<FrameRef> {
+        if let Some(f) = self.non_zeroed.pop_back() {
+            self.free -= 1;
+            return Some(f);
+        }
+        None
     }
 
     fn free(&mut self, frame: FrameRef) {
         assert!(frame.refcount() == 0);
         if frame.is_zeroed() {
             self.zeroed.push_back(frame);
+            self.free_zeroed += 1;
         } else {
             self.non_zeroed.push_back(frame);
         }
@@ -154,6 +170,7 @@ impl AllocationRegionLevel {
         if only_zero {
             if let Some(f) = self.zeroed.pop_back() {
                 self.free -= 1;
+                self.free_zeroed -= 1;
                 return Some(f);
             }
             return None;
@@ -165,6 +182,7 @@ impl AllocationRegionLevel {
         if try_zero {
             if let Some(f) = self.zeroed.pop_back() {
                 self.free -= 1;
+                self.free_zeroed -= 1;
                 return Some(f);
             }
         }
@@ -186,6 +204,7 @@ impl AllocationRegionLevel {
         assert!(frame.refcount() == 0);
         if init_flags.contains(PhysicalFrameFlags::ZEROED) {
             self.zeroed.push_back(frame);
+            self.free_zeroed += 1;
         } else {
             self.non_zeroed.push_back(frame);
         }
@@ -282,6 +301,7 @@ impl AllocationRegion {
                 .unwrap();
             let level = &mut self.levels[0];
             let list = if frame.is_zeroed() {
+                level.free_zeroed -= 1;
                 &mut level.zeroed
             } else {
                 &mut level.non_zeroed
@@ -346,6 +366,29 @@ impl AllocationRegion {
             next = idx + 1;
         }
         None
+    }
+
+    fn collect_zeroable(&mut self, frames: &mut heapless::Vec<FrameRef, 16>) {
+        const MAX_BACKGROUND_ZERO_BYTES: usize = PHYS_LEVEL_LAYOUTS[1].size() * 2;
+        let mut total_bytes = 0;
+        for level in 0..2 {
+            while total_bytes + PHYS_LEVEL_LAYOUTS[level].size() <= MAX_BACKGROUND_ZERO_BYTES
+                && !frames.is_full()
+                && self.levels[level].free > 0
+                && self.levels[level].free_zeroed < self.levels[level].free / 2
+            {
+                if let Some(frame) = self.levels[level].allocate_zeroable() {
+                    total_bytes += frame.size();
+
+                    if level == 0 {
+                        self.group_track(frame.start_address(), -1);
+                    }
+                    frames.push(frame).unwrap();
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     fn do_allocate(&mut self, try_zero: bool, only_zero: bool, level: usize) -> Option<FrameRef> {
@@ -1206,6 +1249,72 @@ pub fn fill_stats(stats: &mut MemoryStats) {
         }
     }
     stats.nr_levels = NR_LEVELS;
+}
+
+static BACKGROUND_ZERO_INDEX: AtomicUsize = AtomicUsize::new(0);
+const MAX_BACKGROUND_ZERO_ITER: usize = 4;
+
+pub fn background_zero_iter() -> bool {
+    if needs_reschedule(false) || is_low_mem() {
+        return true;
+    }
+    let status = BACKGROUND_ZERO_INDEX.fetch_or(1, Ordering::Acquire);
+    if status & 1 == 1 {
+        // another thread is already doing this
+        return false;
+    }
+    const MAX_FRAMES_PER_REG: usize = 16;
+    let pfa = PFA.wait().lock();
+    let region_count = pfa.regions.len();
+    drop(pfa);
+
+    let mut frames_per_region = heapless::Vec::<
+        (usize, heapless::Vec<FrameRef, MAX_FRAMES_PER_REG>),
+        MAX_BACKGROUND_ZERO_ITER,
+    >::new();
+
+    let idx = status >> 1;
+    for i in 0..region_count {
+        if frames_per_region.is_full() || needs_reschedule(false) {
+            break;
+        }
+        let mut pfa = PFA.wait().lock();
+        let reg_idx = (idx + i) % pfa.regions.len();
+        let reg = &mut pfa.regions[reg_idx];
+        let mut frames_this_reg = heapless::Vec::new();
+        reg.collect_zeroable(&mut frames_this_reg);
+        BACKGROUND_ZERO_INDEX.fetch_add(2, Ordering::Relaxed);
+        if !frames_this_reg.is_empty() {
+            frames_per_region.push((reg_idx, frames_this_reg)).unwrap();
+        }
+    }
+    BACKGROUND_ZERO_INDEX.fetch_and(!1, Ordering::Release);
+    let mut total_bytes = 0;
+    assert!(crate::interrupt::get());
+    for (_r, frames) in &frames_per_region {
+        if frames.is_empty() {
+            continue;
+        }
+        for frame in frames {
+            frame.zero();
+            total_bytes += frame.size();
+        }
+    }
+
+    for (reg_idx, frames) in frames_per_region {
+        let mut pfa = PFA.wait().lock();
+        let reg = &mut pfa.regions[reg_idx];
+        for frame in frames {
+            reg.free(frame);
+        }
+    }
+    log::debug!("background zeroed {} bytes of physical memory", total_bytes);
+
+    if total_bytes > 0 {
+        crate::memory::tracker::signal_waiters();
+    }
+
+    total_bytes > 0
 }
 
 #[cfg(test)]

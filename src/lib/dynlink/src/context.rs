@@ -1,9 +1,14 @@
 //! Management of global context.
 
-use std::{collections::HashMap, fmt::Display, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    sync::{Arc, Mutex},
+};
 
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use stable_vec::StableVec;
+use twizzler_abi::object::ObjID;
 
 use crate::{
     compartment::{Compartment, CompartmentId},
@@ -20,6 +25,40 @@ mod syms;
 
 pub use load::LoadIds;
 
+/// Switch for the symbol-indexing counter (`SYMINDEX`): microseconds and symbol count per library.
+///
+/// Measured: was 67% of all library-load time at 871 ns/symbol, when the map owned its keys. With
+/// the hash key it is 40% at 556 ns/symbol. See `COMPNEW.md`.
+///
+/// A companion `SYMFALL` counter established that the global fallback fires ~7416 times a run
+/// against ~309 library loads -- 24 to 1 -- which is why this index is built eagerly rather than
+/// lazily. It was removed after answering that, being loud enough to move the timings it shared a
+/// run with.
+const SYM_INDEX_STATS: bool = false;
+
+/// Switch for the secgate-name-set counter (`SGNAMES`): microseconds and gate count per *build*.
+///
+/// Measured and closed. `Library::secgate_names` is derived per instance from what is really a
+/// property of the source object -- the same shape as the symbol index, which was 88% repeat work
+/// -- so sharing it per object looked like the same win. It is not: the set is built lazily and
+/// only for libraries that actually export gates, so it is built ~8 times a run costing 0.09 ms
+/// total. Sharing it per source object changed the build count not at all (25 vs 27 over three
+/// runs). The shape matched; the volume did not, because `index_library_symbols` ran eagerly for
+/// every library and this does not.
+pub(crate) const SGNAME_STATS: bool = false;
+
+/// FNV-1a over a symbol name: the key for [Context::sym_index].
+///
+/// Must stay identical between insert and lookup; nothing else depends on the value.
+pub(crate) fn sym_hash(name: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in name.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 #[repr(C)]
 /// A dynamic linker context, the main state struct for this crate.
 pub struct Context {
@@ -35,13 +74,15 @@ pub struct Context {
     // cross compartments.
     pub(crate) library_deps: StableDiGraph<LoadedOrUnloaded, ()>,
 
-    // Maps a symbol name to the loaded libraries that define it, so the global fallback search
-    // does not have to walk every node in the graph. Entries are kept sorted by node index to
-    // preserve the "lowest node index wins" resolution order the linear scan had.
+    // One approximate membership filter per *source ELF object*, telling the global fallback
+    // which libraries could define a name. Replaces a name -> instances index that was rebuilt for
+    // every compartment: loading a repeat instance now costs one `Arc` clone instead of an insert
+    // per symbol, and nothing here grows with the number of live compartments.
     //
-    // A library that exports `__TWIZZLER_SECURE_GATE_foo` is also indexed under `foo`, mirroring
-    // the prefixed retry in Library::lookup_symbol.
-    pub(crate) sym_index: HashMap<String, std::vec::Vec<SymSite>>,
+    // TODO: an ObjID can be reused, so this should be keyed by a fingerprint of the object's
+    // contents rather than its ID alone. Safe for read-only `.so` objects within one boot, which
+    // is what exists today.
+    sym_blooms: HashMap<ObjID, Arc<SymBloom>>,
 
     // Relocation runs under a shared reference, so it is no longer serialized by the caller's
     // write lock. Two concurrent relocations of a shared dependency would race on its
@@ -51,18 +92,54 @@ pub struct Context {
     pub(crate) reloc_lock: Mutex<()>,
 }
 
-/// One place a symbol is defined. `comp` and `has_gates` are carried here so the global search can
-/// discard candidates in other compartments without fetching the graph node and probing its hash
-/// table: a library in a different compartment can only satisfy a lookup via the secgate path, and
-/// a library with no gates at all can never do that.
+/// Approximate set of the symbol names one ELF object defines.
 ///
-/// Without this, a symbol like `twz_rt_malloc` accumulates one entry per live compartment (each has
-/// its own libtwz_rt), and the search cost grows with the number of running compartments.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct SymSite {
-    pub idx: NodeIndex,
-    pub comp: CompartmentId,
-    pub has_gates: bool,
+/// Built once per object and shared by every compartment that loads it. A false positive costs one
+/// rejected `Library::lookup_symbol`, which the fallback already does per candidate; false
+/// negatives cannot occur, which is the only direction that would be wrong.
+pub(crate) struct SymBloom {
+    bits: std::vec::Vec<u64>,
+    /// Bit-index mask; `bits.len() * 64` is a power of two.
+    mask: u64,
+}
+
+impl SymBloom {
+    const K: usize = 3;
+    /// ~16 bits per symbol at k=3 puts the false-positive rate near 0.3%.
+    const BITS_PER_SYM: usize = 16;
+
+    fn new(nsyms: usize) -> Self {
+        let nbits = (nsyms.max(1) * Self::BITS_PER_SYM)
+            .next_power_of_two()
+            .max(64);
+        Self {
+            bits: std::vec![0; nbits / 64],
+            mask: nbits as u64 - 1,
+        }
+    }
+
+    /// Three bit positions from one hash, by double hashing.
+    fn positions(&self, hash: u64) -> [u64; Self::K] {
+        let mut h = hash;
+        let mut out = [0u64; Self::K];
+        for slot in out.iter_mut() {
+            *slot = h & self.mask;
+            h = (h ^ (h >> 33)).wrapping_mul(0xff51afd7ed558ccd);
+        }
+        out
+    }
+
+    fn insert(&mut self, hash: u64) {
+        for pos in self.positions(hash) {
+            self.bits[(pos / 64) as usize] |= 1 << (pos % 64);
+        }
+    }
+
+    pub(crate) fn maybe_contains(&self, hash: u64) -> bool {
+        self.positions(hash)
+            .iter()
+            .all(|pos| self.bits[(pos / 64) as usize] & (1 << (pos % 64)) != 0)
+    }
 }
 
 // Libraries in the dependency graph are placed there before loading, so that they can participate
@@ -116,65 +193,60 @@ impl Context {
             compartment_names: HashMap::new(),
             library_deps: StableDiGraph::new(),
             compartments: StableVec::new(),
-            sym_index: HashMap::new(),
+            sym_blooms: HashMap::new(),
             reloc_lock: Mutex::new(()),
         }
     }
 
-    /// Record every symbol a freshly-loaded library defines in the global symbol index.
+    /// Give a freshly-loaded library the membership filter for its ELF object, building it the
+    /// first time that object is seen.
     pub(crate) fn index_library_symbols(&mut self, idx: NodeIndex) {
-        let (site, names): (SymSite, std::vec::Vec<String>) = {
-            let Some(lib) = self.library_deps[idx].loaded() else {
-                return;
-            };
-            let site = SymSite {
-                idx,
-                comp: lib.compartment(),
-                has_gates: lib.secgate_info.num > 0,
-            };
-            let Ok(common) = lib.get_elf_common() else {
-                return;
-            };
-            let (Some(syms), Some(strs)) = (common.dynsyms.as_ref(), common.dynsyms_strs.as_ref())
-            else {
-                return;
-            };
-            (
-                site,
-                syms.iter()
-                    .filter(|sym| !sym.is_undefined())
-                    .filter_map(|sym| strs.get(sym.st_name as usize).ok())
-                    .map(|name| name.to_string())
-                    .collect(),
-            )
+        let _start = std::time::Instant::now();
+        let Some(src_id) = self.library_deps[idx].loaded().map(|lib| lib.full_obj.id()) else {
+            return;
         };
+        // Repeat instances take this branch: one `Arc` clone, no per-symbol work at all.
+        let (bloom, _nsyms) = match self.sym_blooms.get(&src_id) {
+            Some(bloom) => (bloom.clone(), 0),
+            None => {
+                let Some((bloom, nsyms)) = self.build_sym_bloom(idx) else {
+                    return;
+                };
+                self.sym_blooms.insert(src_id, bloom.clone());
+                (bloom, nsyms)
+            }
+        };
+        if let Some(lib) = self.library_deps[idx].loaded_mut() {
+            lib.sym_bloom = Some(bloom);
+        }
+        secgate::statlog::record_on_anon(
+            SYM_INDEX_STATS,
+            "SYMINDEX",
+            _start.elapsed().as_nanos() as u64 / 1000,
+            &[_nsyms as u64],
+        );
+    }
 
-        for name in names {
+    /// Walk an ELF object's dynamic symbols once, filling a filter with every name it defines.
+    fn build_sym_bloom(&self, idx: NodeIndex) -> Option<(Arc<SymBloom>, usize)> {
+        let lib = self.library_deps[idx].loaded()?;
+        let common = lib.get_elf_common().ok()?;
+        let (syms, strs) = (common.dynsyms.as_ref()?, common.dynsyms_strs.as_ref()?);
+        let defined = syms.iter().filter(|sym| !sym.is_undefined()).count();
+        let mut bloom = SymBloom::new(defined * 2);
+        let mut nsyms = 0;
+        for sym in syms.iter().filter(|sym| !sym.is_undefined()) {
+            let Ok(name) = strs.get(sym.st_name as usize) else {
+                continue;
+            };
+            nsyms += 1;
+            // Both spellings, mirroring the prefixed retry in Library::lookup_symbol.
             if let Some(bare) = name.strip_prefix("__TWIZZLER_SECURE_GATE_") {
-                self.index_one(bare.to_string(), site);
+                bloom.insert(sym_hash(bare));
             }
-            self.index_one(name, site);
+            bloom.insert(sym_hash(name));
         }
-    }
-
-    fn index_one(&mut self, name: String, site: SymSite) {
-        let ents = self.sym_index.entry(name).or_default();
-        // Sorted insert by node index: indices are not added in ascending order (dependencies
-        // finish loading before their parent), and resolution order is observable.
-        if let Err(pos) = ents.binary_search_by_key(&site.idx, |s| s.idx) {
-            ents.insert(pos, site);
-        }
-    }
-
-    /// Drop every index entry pointing at `idx`. Required on unload: StableDiGraph hands freed
-    /// node indices back out, so a stale entry would resolve to an unrelated library.
-    pub(crate) fn unindex_library_symbols(&mut self, idx: NodeIndex) {
-        self.sym_index.retain(|_, ents| {
-            if let Ok(pos) = ents.binary_search_by_key(&idx, |s| s.idx) {
-                ents.remove(pos);
-            }
-            !ents.is_empty()
-        });
+        Some((Arc::new(bloom), nsyms))
     }
 
     /// Replace the callback engine for this context.
@@ -310,10 +382,9 @@ impl Context {
         let nodes = ids
             .collect::<Vec<_>>()
             .iter()
-            .filter_map(|id| {
-                self.unindex_library_symbols(id.0);
-                self.library_deps.remove_node(id.0)
-            })
+            // No index to unwind: a library's filter is an `Arc` it owns, so removing the node
+            // drops it. Previously this had to scan the whole name -> instances map per library.
+            .filter_map(|id| self.library_deps.remove_node(id.0))
             .collect();
         self.compartment_names.remove(&name);
         (self.compartments.remove(comp_id.0), nodes)

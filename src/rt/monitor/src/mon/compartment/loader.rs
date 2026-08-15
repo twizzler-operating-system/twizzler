@@ -214,7 +214,7 @@ const RUNTIME_NAME: &str = "libtwz_rt.so";
 /// Answered round 8's question -- a compartment load is a median 31 ms, of which the root library's
 /// `load_library_in_compartment` is 24 ms and relocation 6.7 -- so it is off. Left in place because
 /// the next attempt on that 24 ms needs it back.
-const LOAD_PHASE_STATS: bool = true;
+const LOAD_PHASE_STATS: bool = false;
 
 impl RunCompLoader {
     // the runtime library might be in the dependency tree from the shared object files.

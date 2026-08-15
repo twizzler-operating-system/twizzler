@@ -24,7 +24,7 @@ use crate::{
     processor::sched::schedule_maybe_preempt,
     spinlock::Spinlock,
     syscall::sync::{add_to_requeue, requeue_all},
-    thread::{ThreadRef, priority::Priority},
+    thread::{ThreadRef, current_thread_ref, priority::Priority},
 };
 
 /// Set the current interrupt enable state to disabled and return the old state.
@@ -305,6 +305,11 @@ impl DeviceInterrupter {
 
 const MAX_DEVICE_VECTORS: usize = 16;
 
+/// Waiters claimed per pass of the device-interrupt wake in [external_interrupt_entry]. Matches
+/// `obj::thread_sync`'s batch, and for the same reason: a device word rarely has more than one or
+/// two waiters, and those take a single pass.
+const WAKE_BATCH: usize = 16;
+
 struct GlobalInterruptState {
     ints: Vec<Interrupt>,
     device_vectors:
@@ -489,7 +494,7 @@ pub fn external_interrupt_entry(number: u32) {
             };
         }
         drop(vectors);
-        // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::wake_n` does.
+        // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::claim_n` does.
         //
         // `take()` used to detach the whole tree and drain it after dropping the lock. Its nodes
         // stayed linked while unreachable from `device_waiters`, so a concurrent
@@ -502,17 +507,46 @@ pub fn external_interrupt_entry(number: u32) {
         // Claiming through `reset_sync_sleep` rather than `add_all_to_requeue`'s
         // `reset_sync_sleep_done` matches the flag `setup_device_wait` arms above, so a waiter that
         // someone else already claimed is left alone instead of woken twice.
-        let mut waiters = gi.device_waiters[number as usize].lock();
-        let mut cursor = waiters.front_mut();
-        while !cursor.is_null() {
-            if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
-                let thread = cursor.remove().unwrap();
+        //
+        // Claim under the lock, requeue outside it, exactly as `Object::wakeup_word` does. This
+        // runs in hard interrupt context, and `add_to_requeue`'s fast path is `schedule_thread` --
+        // a topology walk, a remote run queue lock and a wakeup IPI -- so per waiter under this
+        // spinlock it was all inside the interrupt, bounded only by the waiter count. Deferring it
+        // costs nothing here: `schedule_thread` does not switch from an interrupt, it inserts and
+        // either marks preempt or signals, and `post_interrupt` consumes the mark on the way out.
+        //
+        // Critical across the drain for the reason `Object::wakeup_word` gives: a claimed waiter
+        // sits in `batch` on this stack over a window the spinlock used to cover, and this thread
+        // exiting at a poll point in that window would take the stack and the wakeups with it.
+        let _critical = current_thread_ref().map(|ct| ct.enter_critical());
+        loop {
+            let mut batch = heapless::Vec::<ThreadRef, WAKE_BATCH>::new();
+            {
+                let mut waiters = gi.device_waiters[number as usize].lock();
+                let mut cursor = waiters.front_mut();
+                while !batch.is_full() && !cursor.is_null() {
+                    if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
+                        let thread = cursor.remove().unwrap();
+                        // Safety: not full, checked above.
+                        unsafe { batch.push_unchecked(thread) };
+                    } else {
+                        cursor.move_next();
+                    }
+                }
+            }
+            // Entries skipped for being already claimed stay in the tree and are re-walked, so a
+            // full batch says only that we ran out of room -- terminate on the empty one.
+            let full = batch.is_full();
+            if batch.is_empty() {
+                break;
+            }
+            for thread in batch {
                 add_to_requeue(thread);
-            } else {
-                cursor.move_next();
+            }
+            if !full {
+                break;
             }
         }
-        drop(waiters);
         requeue_all();
         return;
     }

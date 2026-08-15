@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use stable_vec::StableVec;
 use twizzler_abi::syscall::sys_object_stat;
-use twizzler_rt_abi::{core::twz_rt_gc, object::ObjID};
+use twizzler_rt_abi::object::ObjID;
 
 /// A handle that can be opened and released.
 pub trait Handle {
@@ -107,6 +107,13 @@ impl<ServerData> HandleMgr<ServerData> {
             .flatten()
     }
 
+    /// Drop handle tables belonging to compartments that are gone.
+    ///
+    /// Deliberately does *not* call `twz_rt_gc`. This runs from `insert`/`remove`, i.e. under
+    /// whatever lock the server holds over its `HandleMgr` -- and in the monitor that is a monitor
+    /// lock, while `twz_rt_gc` reaches `THREAD_MGR` in the monitor's own runtime. A spawn holds
+    /// `THREAD_MGR` and calls a monitor gate, so the pair deadlocked: `lostwake/round765` caught
+    /// `get_compartment_handle` holding `comp_lookup` here and waiting on `THREAD_MGR`.
     pub fn gc_handles(&mut self) {
         fn sctx_still_valid(id: &ObjID) -> bool {
             if id.raw() == 0 {
@@ -117,7 +124,6 @@ impl<ServerData> HandleMgr<ServerData> {
         }
         self.handles
             .retain(|id, sv| !sv.is_empty() && sctx_still_valid(id));
-        twz_rt_gc();
     }
 }
 

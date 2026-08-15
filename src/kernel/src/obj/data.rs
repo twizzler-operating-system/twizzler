@@ -540,6 +540,32 @@ impl Object {
     /// clamp in [Object::ensure_in_core_pager]; `2` is the historical behaviour.
     pub(crate) const READAHEAD_REGIONS: usize = 2;
 
+    /// Whether a widened read-ahead range is submitted as one request per 2 MiB region instead of
+    /// one contiguous request spanning them all.
+    ///
+    /// The point is concurrency, not transfer: the pager serves one request on one lane, so a
+    /// single 1024-page request cannot use more than one of its workers however many it has. Two
+    /// 512-page requests can. Measured against `pagepar`, which is the workload built to have
+    /// several page-ins outstanding at once. Set false to restore the single-request shape.
+    ///
+    /// Measured on: kernel max-outstanding 5 -> 11, `REQSTATS` 3 -> 6, and large-page merges *rose*
+    /// from 8-11 to 32 of 32 candidates -- so cutting on region boundaries demonstrably costs no
+    /// merges, which is the tradeoff `page_data_request` warns about for arbitrary splits.
+    ///
+    /// **Off, because on this workload the depth it bought was phantom.** The first attempt raised
+    /// depth to 11 and merges to 32/32, but also doubled pages delivered (11k -> 24.9k) -- the
+    /// extra pages were holes past EOF, from a short file's second region lying wholly beyond the
+    /// object. With that fixed on both sides (the clamp above, and the `start > max_len` case in
+    /// `handle_page_data_request_task`) delivery came back to 11.6k and *the depth went with it*:
+    /// max-outstanding 11 -> 5, merges 32 -> 8, i.e. exactly the pre-split baseline.
+    ///
+    /// So the concurrency was the hole requests, and the 32 merges were merges of holes. Once the
+    /// widening is correctly trimmed, `pagepar`'s files are smaller than one 2 MiB region and there
+    /// is nothing left to split. The mechanism is sound and costs no merges -- worth revisiting for
+    /// a workload of multi-region objects -- but it does nothing here, and "on" would imply
+    /// otherwise.
+    const SPLIT_REQ_PER_REGION: bool = false;
+
     /// `flags` distinguishes a demand fault from speculation. It changes nothing about which pages
     /// are requested -- the point of driving this path with [PagerFlags::PREFETCH] rather than
     /// hand-rolling a range is that a prefetch then asks for *exactly* what the fault it is trying
@@ -596,6 +622,8 @@ impl Object {
         // the pager serve the request in address order as one segment, and the kernel wait for all
         // of it -- so this is a one-rebuild A/B, in the habit of `PIPELINE_DEPTH`.
         let required = Self::SPLIT_ON_REQUIRED.then_some((page, page_count));
+        // The caller's own end, before the widening moves it. The trim below never goes under this.
+        let asked_end = page.offset(page_count);
         log::debug!(
             "ensure_in_core_pager: ensuring {} pages in core for object {} starting at {:x}",
             page_count,
@@ -644,11 +672,65 @@ impl Object {
             page_count = page_count.max(extra);
         }
 
+        // Drop the part of the *speculative* tail that lies past the store's data length.
+        //
+        // The widening above rounds a touch up to `READAHEAD_REGIONS` whole 2 MiB regions without
+        // regard to how long the object is, so a 64 KiB file is asked for 1024 pages. The pager
+        // clamps the range to the object's bounds and delivers what exists, which is why this has
+        // never been a correctness problem -- but it means the ask is ~4.5x what comes back
+        // (50423 pages requested against 11260 delivered on `pagepar`), the ask is what
+        // `pages_requested` reports, and it is what every read-amplification number is computed
+        // from.
+        //
+        // Emphatically *not* the reasoning behind [ZERO_FILL_PAST_EOF] above, which is off because
+        // it is wrong: "past `known_len`" does not mean "the store has nothing there", since an
+        // object's metadata -- the meta page and the FOT growing down from it -- lives at the top
+        // of the address range and is entirely past the data length. So this fabricates nothing.
+        // All it does is decline to *speculate* past the point where speculation cannot pay.
+        //
+        // `max(asked_end)` is what makes that safe, and it is the whole guard: the caller's own
+        // range survives verbatim however far past `data_end` it reaches, so a fault in the
+        // metadata region still asks for exactly the pages it faulted on. This used to bail out
+        // entirely in that case, which left 33 widenings a boot un-trimmed at their full 1024
+        // pages -- and once `SPLIT_REQ_PER_REGION` cut those into per-region requests, the second
+        // region lay wholly past the length and the pager served it as ~512 pages of holes.
+        match self.known_len() {
+            // Rounded up: a length landing mid-page still has that page's data behind it.
+            Some(len) => {
+                let data_end =
+                    PageNumber::from_offset((len as usize).next_multiple_of(PageNumber::PAGE_SIZE));
+                let trimmed = page.offset(page_count).min(data_end).max(asked_end) - page;
+                if asked_end > data_end {
+                    crate::pager::profile::PAGER_PROFILE.eof_past_end();
+                }
+                crate::pager::profile::PAGER_PROFILE.eof_clamped(page_count - trimmed);
+                page_count = trimmed;
+            }
+            None => crate::pager::profile::PAGER_PROFILE.eof_no_len(),
+        }
+
         let mut reqs = heapless::Vec::<_, 16>::new();
 
         let push_reqs =
             |pn: PageNumber, len: usize, reqs: &mut heapless::Vec<(PageNumber, usize), 16>| {
-                if reqs.is_empty() {
+                // A new 2 MiB region starts a new request rather than extending the last one.
+                //
+                // The widened range is contiguous by construction, so coalescing turned it into a
+                // single request covering every region -- and one request is one unit of work for
+                // the pager, served by one lane. That is why the submit-all-then-wait split in
+                // `ensure_in_core` changed nothing: there was never a second request to overlap
+                // with the first.
+                //
+                // Splitting *here* specifically costs no large-page merges. A merge requires the
+                // object page to be 2 MiB-aligned (`pager_compl_handle_page_data`), so a region
+                // boundary is the one place a request can be cut without ever landing inside a
+                // run that would have merged -- which is what the warning against splitting
+                // freely in `page_data_request` is about.
+                let starts_region = Self::SPLIT_REQ_PER_REGION
+                    && pn
+                        .as_byte_offset()
+                        .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size());
+                if reqs.is_empty() || starts_region {
                     reqs.push((pn, len)).unwrap();
                 } else {
                     let (last_page, last_count) = reqs.last_mut().unwrap();

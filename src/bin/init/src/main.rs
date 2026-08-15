@@ -1,4 +1,8 @@
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
 use tracing::{info, warn};
@@ -13,6 +17,10 @@ use twizzler_abi::{
 };
 use twizzler_io::pty::DEFAULT_TERMIOS;
 use twizzler_queue::Queue;
+
+/// Set once the terminal sends an in-band resize notification, which proves it honors mode 2048
+/// and will report every subsequent resize unprompted. Until then we fall back to polling it.
+static INBAND_RESIZE: AtomicBool = AtomicBool::new(false);
 
 fn initialize_pager() -> ObjID {
     info!("starting pager");
@@ -246,14 +254,18 @@ fn main() {
     let mut autostart_args: Vec<String> = Vec::new();
     let mut start_unittest = false;
     for arg in std::env::args().skip(1) {
+        // Everything past the program name is that program's, long options included: the
+        // autostart string is appended to the command line last precisely so this holds. Ahead of
+        // it, kernel-only flags share the line (`--kernel-arg=--diag`) and must not be mistaken
+        // for the program to run -- the run would die looking up an object called "--diag".
+        if autostart.is_some() {
+            autostart_args.push(arg);
+            continue;
+        }
         match arg.as_str() {
             "--tests" | "--bench" | "--benches" => start_unittest = true,
-            // Kernel-only flags share this command line (`--kernel-arg=--diag`), and the autostart
-            // program is a bare name. Without this any such flag becomes the autostart target and
-            // the run dies looking up an object called "--diag".
             a if a.starts_with("--") => {}
-            _ if autostart.is_none() => autostart = Some(arg),
-            _ => autostart_args.push(arg),
+            _ => autostart = Some(arg),
         }
     }
 
@@ -377,9 +389,13 @@ fn main() {
     let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
 
     std::thread::spawn(move || {
+        // Ask for in-band resize notifications (mode 2048) first: a terminal that honors it
+        // reports its size immediately and again on every resize, which is what makes the
+        // polling query below unnecessary. Terminals that don't know the mode ignore it, so the
+        // explicit size query still covers them.
         twizzler_abi::syscall::sys_kernel_console_write(
             twizzler_abi::syscall::KernelConsoleSource::Console,
-            b"\x1b[18t",
+            b"\x1b[?2048h\x1b[18t",
             KernelConsoleWriteFlags::empty(),
         );
 
@@ -409,34 +425,63 @@ fn main() {
                 } else {
                     ansi_buf.push(b);
                     if ansi_buf.len() == 3 {
-                        if ansi_buf[1] != b'[' || ansi_buf[2] != b'8' {
+                        // `\x1b[8;..t` is the reply to our size query; `\x1b[48;..t` is an
+                        // in-band resize notification. Everything else is real input and must
+                        // not be held up here.
+                        if ansi_buf[1] != b'[' || (ansi_buf[2] != b'8' && ansi_buf[2] != b'4') {
                             out_buf.extend_from_slice(&ansi_buf);
                             intercept_mode = false;
                         }
+                    } else if ansi_buf.len() == 4 && ansi_buf[2] == b'4' && ansi_buf[3] != b'8' {
+                        // A `\x1b[4..` sequence that isn't `48`, such as the End key. Release it
+                        // rather than buffering to the 32-byte cutoff.
+                        out_buf.extend_from_slice(&ansi_buf);
+                        intercept_mode = false;
                     } else if ansi_buf.len() > 3 {
                         if b == b't' {
                             let s = String::from_utf8_lossy(&ansi_buf);
-                            if let Some(inner) = s.strip_prefix("\x1b[8;") {
-                                if let Some(inner) = inner.strip_suffix('t') {
-                                    let parts: Vec<&str> = inner.split(';').collect();
-                                    if parts.len() == 2 {
-                                        if let (Ok(r), Ok(c)) =
-                                            (parts[0].parse::<u16>(), parts[1].parse::<u16>())
-                                        {
-                                            let winsize = libc::winsize {
-                                                ws_row: r,
-                                                ws_col: c,
-                                                ws_xpixel: 0,
-                                                ws_ypixel: 0,
-                                            };
-                                            unsafe {
-                                                let _ = twizzler_rt_abi::bindings::twz_rt_fd_set_config(
-                                                    server_fd,
-                                                    twizzler_rt_abi::bindings::IO_REGISTER_WINSIZE,
-                                                    &winsize as *const _ as *const core::ffi::c_void,
-                                                    std::mem::size_of::<libc::winsize>(),
-                                                );
-                                            }
+                            let body = s
+                                .strip_prefix("\x1b[")
+                                .and_then(|body| body.strip_suffix('t'));
+                            // `48;rows;cols;height;width` is an unprompted resize notification
+                            // and carries pixel dimensions; `8;rows;cols` is the query reply.
+                            let (inband, params) = match body {
+                                Some(body) => match body.strip_prefix("48;") {
+                                    Some(rest) => (true, Some(rest)),
+                                    None => (false, body.strip_prefix("8;")),
+                                },
+                                None => (false, None),
+                            };
+                            if let Some(params) = params {
+                                let parts: Vec<&str> = params.split(';').collect();
+                                if parts.len() >= 2 {
+                                    if let (Ok(r), Ok(c)) =
+                                        (parts[0].parse::<u16>(), parts[1].parse::<u16>())
+                                    {
+                                        let (ws_ypixel, ws_xpixel) = if parts.len() >= 4 {
+                                            (
+                                                parts[2].parse::<u16>().unwrap_or(0),
+                                                parts[3].parse::<u16>().unwrap_or(0),
+                                            )
+                                        } else {
+                                            (0, 0)
+                                        };
+                                        let winsize = libc::winsize {
+                                            ws_row: r,
+                                            ws_col: c,
+                                            ws_xpixel,
+                                            ws_ypixel,
+                                        };
+                                        unsafe {
+                                            let _ = twizzler_rt_abi::bindings::twz_rt_fd_set_config(
+                                                server_fd,
+                                                twizzler_rt_abi::bindings::IO_REGISTER_WINSIZE,
+                                                &winsize as *const _ as *const core::ffi::c_void,
+                                                std::mem::size_of::<libc::winsize>(),
+                                            );
+                                        }
+                                        if inband {
+                                            INBAND_RESIZE.store(true, Ordering::Relaxed);
                                         }
                                     }
                                 }
@@ -478,8 +523,13 @@ fn main() {
     });
 
     std::thread::spawn(move || loop {
-        // Occasional polling to get & update terminal size. A temporary fix.
+        // Fallback for terminals that ignored mode 2048 above: poll for the size, since nothing
+        // else will tell us it changed. A terminal that does support it has already reported in
+        // by now and will keep doing so on its own, so stop querying and leave the line quiet.
         std::thread::sleep(std::time::Duration::from_secs(3));
+        if INBAND_RESIZE.load(Ordering::Relaxed) {
+            return;
+        }
         twizzler_abi::syscall::sys_kernel_console_write(
             twizzler_abi::syscall::KernelConsoleSource::Console,
             b"\x1b[18t",

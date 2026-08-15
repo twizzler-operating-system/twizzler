@@ -103,37 +103,34 @@ impl Context {
         name: &str,
         lookup_flags: LookupFlags,
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
-        // Only libraries that actually define this name are candidates. Previously this walked
-        // every node in the graph, so a name defined nowhere (common: weak undefined symbols) cost
-        // a full sweep with two hash probes and a secgate scan per library.
-        let Some(candidates) = self.sym_index.get(name) else {
-            return Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into());
-        };
+        // Ascending node order, which is the resolution order the name -> instances index existed
+        // to preserve ("lowest node index wins"); `node_indices` yields it directly.
+        let hash = super::sym_hash(name);
         let skip_secgate_check = lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK);
         let start_comp = start_lib.compartment();
-        for site in candidates.iter().copied() {
-            // Cheap reject before touching the graph or its hash tables. Mirrors the
-            // is_local_or_secgate_from() check below: a library in another compartment can only
-            // match via the secgate path, which is impossible if it exports no gates.
-            if !skip_secgate_check && site.comp != start_comp && !site.has_gates {
+        for idx in self.library_deps.node_indices() {
+            let LoadedOrUnloaded::Loaded(dep) = &self.library_deps[idx] else {
+                continue;
+            };
+            // Cheap rejects first, cheapest last-to-fail: a library in another compartment can
+            // only match via the secgate path, which is impossible if it exports no gates.
+            if !skip_secgate_check && dep.compartment() != start_comp && dep.secgate_info.num == 0 {
                 continue;
             }
-            let idx = site.idx;
-            let dep = &self.library_deps[idx];
-            match dep {
-                LoadedOrUnloaded::Unloaded(_) => {}
-                LoadedOrUnloaded::Loaded(dep) => {
-                    if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
-                        || dep.is_local_or_secgate_from(start_lib, name)
-                    {
-                        let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
-                            && dep.in_same_compartment_as(start_lib);
-                        let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
-                            && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
-                        if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
-                            return Ok(sym);
-                        }
-                    }
+            if dep
+                .sym_bloom
+                .as_ref()
+                .is_some_and(|bloom| !bloom.maybe_contains(hash))
+            {
+                continue;
+            }
+            if skip_secgate_check || dep.is_local_or_secgate_from(start_lib, name) {
+                let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK)
+                    && dep.in_same_compartment_as(start_lib);
+                let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
+                    && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
+                if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
+                    return Ok(sym);
                 }
             }
         }

@@ -295,6 +295,55 @@ async fn handle_page_data_request_task(
     if req_range.start == max_len && req_range.end > max_len {
         req_range.end = max_len.next_multiple_of(PAGE) + PAGE;
     }
+    // A range lying *wholly* beyond the object has nothing to serve. The two clamps above cover a
+    // range that straddles `max_len` and one that begins exactly at it, but not one that begins
+    // past it -- which nothing produced while the kernel sent a widened region as a single
+    // contiguous request, since such a request always straddled. Split per region, a short file's
+    // second request starts beyond the end, matched neither case, and was served in full as holes:
+    // pages delivered went 11k -> 24.9k on `pagepar` for the same 8018 the reader wanted.
+    //
+    // "Nothing to serve" is only a safe answer when nothing is *blocked* on it, which is why the
+    // comparison to a declined prefetch does not carry: a prefetch may be declined precisely
+    // because no thread is waiting for it. A demand fault is the opposite case, and acking it
+    // empty wedges the guest outright.
+    //
+    // `ensure_in_core_pager`'s clamp keeps the faulting page in the range it asks for whatever
+    // `known_len` says (that is what its `max(asked_end)` is for, since an object's metadata lives
+    // past the data length), so "a later fault asks again for a range that does exist" is false --
+    // the later fault is the *same* fault, asks the same range, and gets the same empty answer.
+    // Nothing else fills the page: `ZERO_FILL_PAST_EOF` is off on the kernel side, deliberately,
+    // which leaves serving a hole to this side. Observed as an unbounded refault loop on a write
+    // into a sparse region -- 2.1M identical page-data requests, the store never read once, the
+    // faulting thread never advancing.
+    //
+    // So decline only what nobody is waiting for, and serve the blocked pages as holes. Narrowing
+    // to `required` rather than falling through keeps the read amplification this early return was
+    // added to fix: the speculative tail past the end is still never transferred.
+    if req_range.start > max_len {
+        if required.start >= required.end {
+            tracing::debug!(
+                "page-data request for {} starts past the object ({:?} vs len {}); nothing to serve",
+                id,
+                req_range,
+                max_len,
+            );
+            let done =
+                CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);
+            ctx.notify_kernel(qid, done);
+            return;
+        }
+        let start = required.start.max(PAGE).min(MAX_SIZE as u64 - PAGE);
+        let end = required.end.max(start + PAGE).min(MAX_SIZE as u64);
+        tracing::debug!(
+            "page-data request for {} starts past the object ({:?} vs len {}); serving blocked \
+             range {:?} as holes",
+            id,
+            req_range,
+            max_len,
+            ObjectRange::new(start, end),
+        );
+        req_range = ObjectRange::new(start, end);
+    }
     if prefetch {
         tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
         if let Some(len) = obj_len {
@@ -365,7 +414,7 @@ async fn handle_page_data_request(
     flags: PagerFlags,
     required: ObjectRange,
     req: RequestFromKernel,
-) -> Vec<CompletionToKernel> {
+) -> Option<CompletionToKernel> {
     tracing::debug!(
         "{}: {:?} {} pages",
         id,
@@ -381,17 +430,17 @@ async fn handle_page_data_request(
         && REQ_STATS.prefetch.load(Ordering::Acquire) >= MAX_INFLIGHT_PREFETCH
     {
         DECLINED_PREFETCH.fetch_add(1, Ordering::Relaxed);
-        return vec![CompletionToKernel::new(
+        return Some(CompletionToKernel::new(
             KernelCompletionData::Okay,
             KernelCompletionFlags::DONE,
-        )];
+        ));
     }
     // Detached: the caller's `Work` ends when this returns, so the task needs its own.
     spawn_async(async move {
         let _work = watchdog::begin("pagedata-task", qid, req);
         handle_page_data_request_task(ctx, qid, id, req_range, flags, required).await;
     });
-    vec![]
+    None
 }
 
 async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
@@ -409,10 +458,13 @@ async fn handle_object_info_request(
     qid: u32,
     obj_id: ObjID,
     req: RequestFromKernel,
-) -> Vec<CompletionToKernel> {
+) -> Option<CompletionToKernel> {
     // Detached: the caller's `Work` ends when this returns, so the task needs its own.
+    let spawned_at = crate::dispatch_stats::DispatchStats::now_ns();
     spawn_async(async move {
         let _work = watchdog::begin("info-task", qid, req);
+        let start = crate::dispatch_stats::DispatchStats::now_ns();
+        crate::dispatch_stats::DISPATCH_STATS.info_spawn(start - spawned_at);
         let data = match object_info_req(ctx, obj_id).await {
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
             Err(e) => KernelCompletionData::Error(e.into()),
@@ -421,8 +473,10 @@ async fn handle_object_info_request(
             qid,
             CompletionToKernel::new(data, KernelCompletionFlags::DONE),
         );
+        crate::dispatch_stats::DISPATCH_STATS
+            .info_task(crate::dispatch_stats::DispatchStats::now_ns() - start);
     });
-    vec![]
+    None
 }
 
 async fn handle_sync_region(
@@ -459,7 +513,7 @@ pub async fn handle_kernel_request(
     qid: u32,
     request: RequestFromKernel,
     work: &watchdog::Work,
-) -> Vec<CompletionToKernel> {
+) -> Option<CompletionToKernel> {
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range, flags, required) => {
             work.phase("pagedata:spawn");
@@ -549,10 +603,10 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectEvict(info) => {
             work.phase("evict");
-            return vec![handle_sync_region(ctx, qid, info, request, work).await];
+            return Some(handle_sync_region(ctx, qid, info, request, work).await);
         }
     };
 
     tracing::debug!("done; sending response: {:?}", data);
-    vec![CompletionToKernel::new(data, KernelCompletionFlags::DONE)]
+    Some(CompletionToKernel::new(data, KernelCompletionFlags::DONE))
 }

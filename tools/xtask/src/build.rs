@@ -179,7 +179,9 @@ fn build_third_party<'a>(
     let mut options = CompileOptions::new(config, mode)?;
     options.build_config = BuildConfig::new(config, None, false, &[triple.to_string()], mode)?;
     options.build_config.message_format = other_options.message_format;
-    if let Some(profile) = build_config.profile.requested() {
+    // Not `requested()`: each port compiles as an ephemeral workspace over its own manifest, which
+    // knows nothing of the profiles the root one defines.
+    if let Some(profile) = build_config.profile.requested_foreign_manifest() {
         options.build_config.requested_profile = InternedString::new(profile);
     }
     options.build_config.force_rebuild = other_options.needs_full_rebuild;

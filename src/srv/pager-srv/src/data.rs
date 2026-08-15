@@ -7,7 +7,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, MAYHEAP_LEN};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, INLINE_LEN};
 use secgate::util::{Descriptor, HandleMgr};
 use stable_vec::StableVec;
 use twizzler::{
@@ -114,7 +114,7 @@ impl PerObject {
                 .map(|p| {
                     (
                         p.0,
-                        mayheap::Vec::from_slice(&[PagedPhysMem::new(p.1)]).unwrap(),
+                        object_store::Vec::<_, INLINE_LEN>::from_slice(&[PagedPhysMem::new(p.1)]),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -131,7 +131,7 @@ impl PerObject {
                         Err((x, y))
                     }
                 })
-                .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+                .collect::<std::vec::Vec<_>>();
             pages
         };
         let pages_done = Instant::now();
@@ -180,7 +180,7 @@ impl PerObject {
                     None
                 }
             })
-            .collect::<mayheap::Vec<_, MAYHEAP_LEN>>();
+            .collect::<std::vec::Vec<_>>();
         if page_count >= 1024 * 16 {
             tracing::info!(
                 "pager starting large sync for {}: {}MB: {}",
@@ -671,7 +671,7 @@ impl PagerData {
         id: ObjID,
         obj_range: ObjectRange,
         _partial: bool,
-    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
+    ) -> Result<object_store::Vec<PagedPhysMem, INLINE_LEN>> {
         let start_page = obj_range.pages().next().unwrap();
         // For a single-page request the clamp cannot bind -- `1.min(max).max(1)` is 1 for every
         // value of max -- so skip avail_mem(), which folds over every region under the inner
@@ -706,7 +706,7 @@ impl PagerData {
         ctx: &'static PagerContext,
         id: ObjID,
         obj_range: ObjectRange,
-    ) -> Result<mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>> {
+    ) -> Result<object_store::Vec<PagedPhysMem, INLINE_LEN>> {
         // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
@@ -814,10 +814,16 @@ impl PagerData {
                 EXTERNAL_META.default_prot,
             )
             .validated();
+            let len_start = crate::dispatch_stats::DispatchStats::now_ns();
             // Deliberately not `?`: this path never checked existence, and returning an error here
             // would make the kernel cache the ID in `no_exist` permanently. Without a length we
             // just skip the synthesis and the meta page gets faulted in later, as it used to be.
-            return Ok(match ctx.paged_ostore(None)?.len(id.raw()).await {
+            let len = ctx.paged_ostore(None)?.len(id.raw()).await;
+            crate::dispatch_stats::DISPATCH_STATS.info_lookup(
+                crate::dispatch_stats::DispatchStats::now_ns() - len_start,
+                None,
+            );
+            return Ok(match len {
                 Ok(len) => info.synth_meta(len),
                 Err(e) => {
                     tracing::debug!("no length for external file {}: {}", id, e);
@@ -829,24 +835,34 @@ impl PagerData {
         // This length was previously computed purely as an existence check and discarded. Stating
         // it lets the kernel answer faults past the end of the object without a round trip at all;
         // leaving it unstated is what made every stored object look zero-length to the kernel.
+        let len_start = crate::dispatch_stats::DispatchStats::now_ns();
         let base = match ctx.paged_ostore(None)?.len(id.raw()).await {
             Ok(len) => base.with_size(len),
             Err(_) => return Err(ObjectError::NoSuchObject.into()),
         };
+        let meta_start = crate::dispatch_stats::DispatchStats::now_ns();
 
         // Best-effort: a failure here costs the kernel a page-in later, which is what it did
         // before, so it is not worth failing the lookup over.
-        match page_in(
+        let meta = page_in(
             ctx,
             id,
             ObjectRange::new(MAX_SIZE as u64 - PAGE, MAX_SIZE as u64),
         )
-        .await
-        {
-            Ok(meta) => Ok(base.with_meta_page(meta)),
+        .await;
+        crate::dispatch_stats::DISPATCH_STATS.info_lookup(
+            meta_start - len_start,
+            Some(crate::dispatch_stats::DispatchStats::now_ns() - meta_start),
+        );
+        match meta {
+            // Asserted unconditionally: the pager vouches for every object it serves, so the
+            // kernel never hashes to check an id. Where a meta page comes with it, the kernel
+            // takes `default_prot` from that page; where the prefetch failed there is nothing to
+            // take it from and `ObjectInfo`'s zero stands.
+            Ok(meta) => Ok(base.with_meta_page(meta).validated()),
             Err(e) => {
                 tracing::debug!("failed to prefetch meta page for {}: {}", id, e);
-                Ok(base)
+                Ok(base.validated())
             }
         }
     }

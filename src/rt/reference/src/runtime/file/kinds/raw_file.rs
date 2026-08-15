@@ -2,7 +2,7 @@ use std::{
     io::{ErrorKind, SeekFrom},
     ptr::null_mut,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicPtr, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -39,8 +39,15 @@ mod objstats {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let m = MAP.fetch_add(map, Ordering::Relaxed) + map;
         let e = META.fetch_add(meta, Ordering::Relaxed) + meta;
-        // Every call, in ns; see OPENSTATS.
-        secgate::statlog::record("OBJSTATS", n, &[map, meta]);
+        // Every call, in ns; see OPENSTATS. On the open path's own switch, not the global one:
+        // this splits `obj`, which the open measurement showed is ~80-90% of an open, so it has to
+        // come along with that measurement rather than needing STATS_ON turned on for everything.
+        secgate::statlog::record_on(
+            super::super::openstats::OPEN_STATS,
+            "OBJSTATS",
+            n,
+            &[map, meta],
+        );
         let _ = (m, e);
     }
 }
@@ -51,6 +58,17 @@ struct RawFileInner {
     pos: AtomicU64,
     len: AtomicU64,
     flags: AtomicU64,
+    /// The `MEXT_SIZED` extension, resolved once instead of searched for on every call.
+    ///
+    /// `update_len` runs at the top of every read, and `find_meta_ext` is a `SeqCst` scan of the
+    /// meta table -- which sits at the far end of the object, so each call reaches a page a long
+    /// way from the data about to be copied and pays a TLB and cache miss before any bytes move.
+    /// An extension's slot does not move once allocated, so the pointer stays good for the life of
+    /// the mapping and the length can be read with a single load.
+    ///
+    /// Null until resolved: a fresh object has no `MEXT_SIZED` until the first write creates one,
+    /// so this is filled in lazily and re-checked while it is still null.
+    sized: AtomicPtr<MetaExt>,
 }
 
 #[derive(Clone)]
@@ -86,8 +104,24 @@ impl RawFile {
         }
     }
 
+    /// The `MEXT_SIZED` extension, from the cache when it has been resolved.
+    ///
+    /// Safety: the pointer is into the object's meta page, which stays mapped for as long as this
+    /// `RawFile` holds its handle, and an extension slot does not move once allocated.
+    fn sized_ext(&self) -> Option<&MetaExt> {
+        let cached = self.inner.sized.load(Ordering::Relaxed);
+        if !cached.is_null() {
+            return Some(unsafe { &*cached });
+        }
+        let me = self.handle.find_meta_ext(MEXT_SIZED)?;
+        self.inner
+            .sized
+            .store(me as *const MetaExt as *mut _, Ordering::Relaxed);
+        Some(me)
+    }
+
     fn update_len(&self) {
-        if let Some(me) = self.handle.find_meta_ext(MEXT_SIZED) {
+        if let Some(me) = self.sized_ext() {
             self.inner
                 .len
                 .store(me.value.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -100,11 +134,18 @@ impl RawFile {
         let map_ns = t_map.elapsed().as_nanos() as u64;
         // First touch of the meta page: a fault, and on a cold object a pager round trip.
         let t_meta = std::time::Instant::now();
-        let len = if let Some(me) = handle.find_meta_ext(MEXT_SIZED) {
+        let mut sized = handle
+            .find_meta_ext(MEXT_SIZED)
+            .map_or(null_mut(), |me| me as *const MetaExt as *mut MetaExt);
+        let len = if let Some(me) = unsafe { sized.as_ref() } {
             me.value.load(Ordering::SeqCst)
         } else {
             if flags.contains(MapFlags::WRITE) {
                 unsafe { handle.set_meta_ext(MetaExt::new(MEXT_SIZED, 0))? };
+                // Created just now, so resolve it here and skip the lazy path on the first read.
+                sized = handle
+                    .find_meta_ext(MEXT_SIZED)
+                    .map_or(null_mut(), |me| me as *const MetaExt as *mut MetaExt);
             }
             0
         };
@@ -114,6 +155,7 @@ impl RawFile {
                 pos: AtomicU64::new(0),
                 len: AtomicU64::new(len),
                 flags: AtomicU64::new(0),
+                sized: AtomicPtr::new(sized),
             }),
             handle,
         })

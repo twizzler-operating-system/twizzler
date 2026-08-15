@@ -343,16 +343,107 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     if thread.is_exiting() {
         return;
     }
-    let should_signal = processor.id != current_processor().id
-        && (processor.rq.is_empty()
-            || processor.rq.current_priority() <= thread.effective_priority());
-    thread.sched.moving_to_queue(processor.id);
+    let is_remote = processor.id != current_processor().id;
+    let outranks_target =
+        processor.rq.is_empty() || processor.rq.current_priority() <= thread.effective_priority();
+    let should_signal = is_remote && outranks_target;
+    let woken_priority = thread.effective_priority();
 
+    // Classified before the insert moves `thread`, and stamped on it so the latency can be read
+    // when it actually reaches a cpu (`switch_to`). Whole-boot ratios could not attribute the
+    // 3-4 stalls that make every mean in `schedtime.md`; this is per wake.
+    //
+    // A reinsertion is not a wake, and excluding it is load-bearing twice over. `do_schedule`
+    // routes the *current* thread back through here with `is_current = false` on the REINSERT
+    // path, so without this check (a) every preemption-driven reinsertion was stamped and
+    // counted as a wake, which polluted the histogram, and (b) under the `>=` below a
+    // reinserted thread compares equal to *itself* and marks preempt, so each preemption
+    // produces another. That self-sustaining loop is what the first `>=` attempt actually
+    // measured -- 6820 marks against 1129, info pickup 343-467 -> 657-713 us -- rather than the
+    // equal-priority thrash it was blamed on.
+    let is_reinsertion = current_thread_ref().is_some_and(|cur| cur.id() == thread.id());
+    // Strict `>`, and the priority boundary is *not* the lever. `>=` was tried on top of the
+    // reinsertion fix -- matching what `needs_reschedule` does at a tick -- and it moved ~240 wakes
+    // from `lost-pri` into `marked` without moving their latency: `lost-pri` shed 47 stalls over
+    // 1 ms, `marked` gained 33, and info pickup (396-469 -> 451-461 us), `lookup_object_and_wait`
+    // (836-875 -> 815-839 us) and `pagepar` (63 -> 64 ms) were all flat. Marking preempt does not
+    // make a stalled wake fast; the earlier "marked 20 us vs lost 270 us" split was selection, not
+    // causation. Reverted as the smaller change with no measured benefit.
+    let kind = if is_current || is_reinsertion {
+        0
+    } else if is_remote {
+        wakestats::WAKE_REMOTE
+    } else {
+        match current_thread_ref() {
+            Some(cur) if cur.is_idle_thread() => wakestats::WAKE_LOCAL_IDLE,
+            Some(cur) if woken_priority > cur.effective_priority() => wakestats::WAKE_LOCAL_MARKED,
+            Some(_) => wakestats::WAKE_LOCAL_LOST,
+            None => 0,
+        }
+    };
+    if kind != 0 {
+        thread
+            .sched
+            .wake_ns
+            .store(wake_now_ns().max(1), Ordering::Relaxed);
+        thread.sched.wake_kind.store(kind, Ordering::Relaxed);
+    }
+
+    thread.sched.moving_to_queue(processor.id);
     reset_thread_time(&thread, processor);
     processor.rq.insert(thread, is_current);
+
+    if is_remote {
+        wakestats::remote(should_signal);
+    }
     if should_signal {
         processor.wakeup(true);
+        return;
     }
+    if is_remote {
+        return;
+    }
+    // A wake onto *this* cpu used to end here: inserted on the run queue and nothing told the
+    // running thread about it. `should_signal` is false for every local wake by construction, and
+    // `schedule_mark_preempt` has no other caller on any wake path -- so the woken thread waited
+    // for `schedule_hardtick` to notice it, and only then if its priority still won. That is a
+    // millisecond at best (one tick) and a whole timeslice when it does not win the tick's
+    // `rq_pri >= cur_pri` test, against hand-offs whose median is tens of microseconds.
+    //
+    // At smp1 that is *every* wake in the system, which is why `schedtime.md` measures the pager's
+    // lane pickup at 372-456 us there while the same hop costs 25-36 us at smp4.
+    //
+    // Marked rather than switched: this runs inside the waker's critical section on most paths
+    // (`Request::signal`, `requeue_all`), where switching is forbidden. The flag is consumed at the
+    // next interrupt return, which `schedule_maybe_preempt` now defers if we are still critical.
+    //
+    // `is_current` excluded: that is `schedule` reinserting the thread it is already running, not a
+    // wake, and marking preempt for it would ask the scheduler to preempt in favour of itself.
+    match kind {
+        // Waking anything while this cpu is *idling* must preempt, and there is no priority
+        // question to ask: the idle thread has no work and nothing to protect.
+        // `schedule_resched` -- the ipi handler -- already says exactly this (`if is_idle
+        // || needs_reschedule(false)`), but no local wake reached it, so an idling cpu sat
+        // until the next tick with a runnable thread beside it. 367-370 wakes a boot at
+        // smp1, measured at ~400 us mean with a 144-146 ms outlier every run:
+        // the worst latencies anywhere in `schedtime.md`'s data, and the only class where the delay
+        // has no candidate explanation other than "nobody said to stop idling".
+        wakestats::WAKE_LOCAL_IDLE => {
+            wakestats::local(false, true);
+            schedule_mark_preempt();
+        }
+        wakestats::WAKE_LOCAL_MARKED => {
+            wakestats::local(true, false);
+            schedule_mark_preempt();
+        }
+        wakestats::WAKE_LOCAL_LOST => wakestats::local(false, false),
+        _ => {}
+    }
+}
+
+/// Bench-clock reading in nanoseconds, for the wake stamp. One `rdtsc` plus the tick-rate multiply.
+fn wake_now_ns() -> u64 {
+    crate::instant::Instant::now().into_time_span().as_nanos() as u64
 }
 
 fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<ThreadRef> {
@@ -397,10 +488,33 @@ fn try_steal() -> Option<ThreadRef> {
     None
 }
 
+/// Set while a rebalance is in progress. Try-and-skip rather than a lock: this runs from the
+/// statclock interrupt handler, and the loop below is up to `MAX_STEPS` topology searches and
+/// thread migrations -- so a second caller arriving mid-pass has nothing to gain by waiting for
+/// the first to finish. Its own balance would start from a set of loads that the pass it waited on
+/// has already changed, and it waits for that with interrupts masked. Skipping costs one rebalance
+/// interval, which is exactly the granularity this decision is made at anyway.
+static BALANCING: AtomicBool = AtomicBool::new(false);
+
+/// Clears [BALANCING] on every exit from `balance`, including a panic: a leaked flag silently
+/// disables rebalancing for the rest of the boot.
+struct BalanceGuard;
+
+impl Drop for BalanceGuard {
+    fn drop(&mut self) {
+        BALANCING.store(false, Ordering::Release);
+    }
+}
+
 fn balance(topo: &CPUTopoNode) {
-    static BAL_LOCK: Spinlock<()> = Spinlock::new(());
+    if BALANCING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    let _guard = BalanceGuard;
     log::trace!("starting rebalance at {}", get_current_ticks());
-    let _guard = BAL_LOCK.lock();
 
     let mut allowed_set = topo.cpuset;
     const MAX_STEPS: usize = 20;
@@ -621,6 +735,15 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
 
 fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let cp = current_processor();
+    // Close out the wake stamp: this is the one place a thread becomes the running thread, so the
+    // interval from `schedule_thread_on_cpu` to here is exactly wake-to-run. Taken rather than
+    // read, so a thread that is switched to again without an intervening wake is not counted
+    // twice.
+    let wake_ns = thread.sched.wake_ns.swap(0, Ordering::Relaxed);
+    if wake_ns != 0 {
+        let kind = thread.sched.wake_kind.swap(0, Ordering::Relaxed);
+        wakestats::wake_to_run(kind, wake_now_ns().saturating_sub(wake_ns));
+    }
     let oldcpu = thread.sched.moving_to_active(cp.id);
     if old.id() != thread.id() {
         trace_switch(&old, &thread, flags);
@@ -838,8 +961,10 @@ pub fn needs_reschedule(ticking: bool) -> bool {
         cur.unwrap()
     };
     if cur.is_critical() {
+        wakestats::resched(true);
         return false;
     }
+    wakestats::resched(false);
     if cur.check_sampling() {
         return true;
     }
@@ -873,6 +998,152 @@ pub fn schedule_maybe_rebalance(dt: Nanoseconds) {
     }
 }
 
+/// Why a woken thread does or does not get the cpu promptly.
+///
+/// `schedtime.md` measures hand-offs stalling 1-10 ms and, having marked preempt on the local wake
+/// path to no effect, is left with two candidate explanations it cannot separate: the woken thread
+/// loses the priority comparison (so nothing ever wants to preempt for it), or it wins and the mark
+/// is repeatedly swallowed by a critical section. These distinguish them.
+///
+/// A stall is several ticks, and one tick would bound the wait if the priority test passed at the
+/// tick -- so `lost_priority` being the bulk of `local` says the pager's `User + 48` boost is not
+/// producing what `pager-srv/src/threads.rs` assumes, and the problem was never preemption.
+pub mod wakestats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Same-cpu wakes reaching the preempt decision, and how it went.
+    static LOCAL: AtomicU64 = AtomicU64::new(0);
+    static MARKED: AtomicU64 = AtomicU64::new(0);
+    static LOST_PRIORITY: AtomicU64 = AtomicU64::new(0);
+    static CUR_IDLE: AtomicU64 = AtomicU64::new(0);
+    /// Remote wakes, split by whether they actually sent the IPI.
+    static REMOTE: AtomicU64 = AtomicU64::new(0);
+    static REMOTE_SIGNALLED: AtomicU64 = AtomicU64::new(0);
+    /// `schedule_maybe_preempt` found the flag set: acted, or deferred for a critical thread.
+    static PREEMPT_TAKEN: AtomicU64 = AtomicU64::new(0);
+    static PREEMPT_DEFERRED: AtomicU64 = AtomicU64::new(0);
+    /// `needs_reschedule` declined because the current thread was critical. Against the tick count,
+    /// this says whether critical sections span whole ticks.
+    static RESCHED_CRITICAL: AtomicU64 = AtomicU64::new(0);
+    static RESCHED_ASKED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn local(marked: bool, cur_idle: bool) {
+        LOCAL.fetch_add(1, Ordering::Relaxed);
+        if cur_idle {
+            CUR_IDLE.fetch_add(1, Ordering::Relaxed);
+        } else if marked {
+            MARKED.fetch_add(1, Ordering::Relaxed);
+        } else {
+            LOST_PRIORITY.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn remote(signalled: bool) {
+        REMOTE.fetch_add(1, Ordering::Relaxed);
+        if signalled {
+            REMOTE_SIGNALLED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn preempt(taken: bool) {
+        if taken {
+            PREEMPT_TAKEN.fetch_add(1, Ordering::Relaxed);
+        } else {
+            PREEMPT_DEFERRED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn resched(critical: bool) {
+        RESCHED_ASKED.fetch_add(1, Ordering::Relaxed);
+        if critical {
+            RESCHED_CRITICAL.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// How a wake was classified, stamped on the thread and read back when it reaches a cpu.
+    /// `0` is "no wake outstanding".
+    pub const WAKE_LOCAL_MARKED: u32 = 1;
+    pub const WAKE_LOCAL_LOST: u32 = 2;
+    pub const WAKE_LOCAL_IDLE: u32 = 3;
+    pub const WAKE_REMOTE: u32 = 4;
+    const NR_KINDS: usize = 5;
+
+    /// Upper bounds in microseconds; the last bucket is everything above. The interesting boundary
+    /// is one tick (~1 ms): a wake that waited longer than that was not merely un-preempted, it
+    /// missed a tick that would have noticed it.
+    const BOUNDS_US: [u64; 5] = [10, 100, 1_000, 10_000, 100_000];
+    const NR_BUCKETS: usize = BOUNDS_US.len() + 1;
+
+    static LAT_COUNT: [AtomicU64; NR_KINDS] = [const { AtomicU64::new(0) }; NR_KINDS];
+    static LAT_SUM: [AtomicU64; NR_KINDS] = [const { AtomicU64::new(0) }; NR_KINDS];
+    static LAT_MAX: [AtomicU64; NR_KINDS] = [const { AtomicU64::new(0) }; NR_KINDS];
+    static LAT_BUCKET: [[AtomicU64; NR_BUCKETS]; NR_KINDS] =
+        [const { [const { AtomicU64::new(0) }; NR_BUCKETS] }; NR_KINDS];
+
+    /// A thread classified `kind` reached a cpu `ns` after being made runnable.
+    pub fn wake_to_run(kind: u32, ns: u64) {
+        let k = (kind as usize).min(NR_KINDS - 1);
+        LAT_COUNT[k].fetch_add(1, Ordering::Relaxed);
+        LAT_SUM[k].fetch_add(ns, Ordering::Relaxed);
+        LAT_MAX[k].fetch_max(ns, Ordering::Relaxed);
+        let idx = BOUNDS_US
+            .iter()
+            .position(|b| ns / 1000 <= *b)
+            .unwrap_or(BOUNDS_US.len());
+        LAT_BUCKET[k][idx].fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn print_lat(name: &str, k: usize) {
+        let n = LAT_COUNT[k].load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        logln!(
+            "  wake->run {}: n={} mean={}us max={}us [<=10us {} <=100us {} <=1ms {} <=10ms {} \
+             <=100ms {} >100ms {}]",
+            name,
+            n,
+            LAT_SUM[k].load(Ordering::Relaxed) / n / 1000,
+            LAT_MAX[k].load(Ordering::Relaxed) / 1000,
+            LAT_BUCKET[k][0].load(Ordering::Relaxed),
+            LAT_BUCKET[k][1].load(Ordering::Relaxed),
+            LAT_BUCKET[k][2].load(Ordering::Relaxed),
+            LAT_BUCKET[k][3].load(Ordering::Relaxed),
+            LAT_BUCKET[k][4].load(Ordering::Relaxed),
+            LAT_BUCKET[k][5].load(Ordering::Relaxed),
+        );
+    }
+
+    pub fn print() {
+        let local = LOCAL.load(Ordering::Relaxed);
+        if local == 0 && REMOTE.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        logln!(
+            "== wakes: {} local ({} marked preempt, {} lost on priority, {} onto an idle cpu), {} \
+             remote ({} signalled) ==",
+            local,
+            MARKED.load(Ordering::Relaxed),
+            LOST_PRIORITY.load(Ordering::Relaxed),
+            CUR_IDLE.load(Ordering::Relaxed),
+            REMOTE.load(Ordering::Relaxed),
+            REMOTE_SIGNALLED.load(Ordering::Relaxed),
+        );
+        logln!(
+            "  preempt marks: {} acted on, {} deferred for a critical thread; needs_reschedule \
+             asked {} times, declined {} for critical",
+            PREEMPT_TAKEN.load(Ordering::Relaxed),
+            PREEMPT_DEFERRED.load(Ordering::Relaxed),
+            RESCHED_ASKED.load(Ordering::Relaxed),
+            RESCHED_CRITICAL.load(Ordering::Relaxed),
+        );
+        print_lat("local-marked", WAKE_LOCAL_MARKED as usize);
+        print_lat("local-lost-pri", WAKE_LOCAL_LOST as usize);
+        print_lat("local-onto-idle", WAKE_LOCAL_IDLE as usize);
+        print_lat("remote", WAKE_REMOTE as usize);
+    }
+}
+
 #[thread_local]
 static PREEMPT: AtomicBool = AtomicBool::new(false);
 pub fn schedule_mark_preempt() {
@@ -880,13 +1151,27 @@ pub fn schedule_mark_preempt() {
 }
 
 pub fn schedule_maybe_preempt() {
-    if PREEMPT.swap(false, Ordering::SeqCst) {
-        let t = crate::instant::Instant::now();
-        let cp = current_processor();
-        cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
-        schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT);
-        crate::interrupt::record_preempt(t);
+    if !PREEMPT.load(Ordering::SeqCst) {
+        return;
     }
+    // Left set, not consumed, when we cannot act on it. `schedule` refuses outright for a critical
+    // thread, so swapping the flag to false first -- as this did -- threw the preemption away and
+    // the woken thread waited for the next tick to be noticed again. Every wake that matters here
+    // is marked from inside the waker's critical section (`Request::signal`, `requeue_all`), so
+    // that was the common case, not a corner.
+    if current_thread_ref().is_some_and(|cur| cur.is_critical()) {
+        wakestats::preempt(false);
+        return;
+    }
+    if !PREEMPT.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    wakestats::preempt(true);
+    let t = crate::instant::Instant::now();
+    let cp = current_processor();
+    cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
+    schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT);
+    crate::interrupt::record_preempt(t);
 }
 
 pub fn schedule_hardtick() -> Option<u64> {

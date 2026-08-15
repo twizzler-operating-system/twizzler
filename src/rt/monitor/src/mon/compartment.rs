@@ -36,8 +36,15 @@ pub use runcomp::*;
 
 /// Switch for prefaulting the root object before a compartment load (`COMPNEW.md` plan A).
 ///
-/// A switch rather than a permanent call so the two halves can be measured against each other in
-/// one build lineage: flipping this is the only difference between the `prefon`/`prefoff` runs.
+/// **Off because it was measured and does not pay.** release-kvm-smp4, 3 rounds each, ~200
+/// compartment loads per arm, this switch the only difference: whole-load median 16.31 ms on vs
+/// 16.47 ms off. The root-load phase does move the predicted way (7.04 vs 7.75 ms median), but
+/// relocation moves back by about the same (7.63 vs 6.93), so nothing reaches the whole load. The
+/// tail got worse, not better: worst root-load 121.8 ms with it on against 18.6 ms with it off,
+/// which is the "prefetch of a superset" risk the plan flagged.
+///
+/// Left in place, switched off, alongside the counters that measured it: the premise (relocation
+/// waits on source-object COW faults) is only half-refuted, and the next attempt needs this.
 const PREFAULT_ROOT: bool = false;
 
 /// Prefault the PT_LOAD ranges of a compartment's root object, outside the dynlink lock.

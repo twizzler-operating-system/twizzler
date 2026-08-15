@@ -47,12 +47,15 @@ mod mapsyscallstats {
 
 // Temporary: `Space::map` split into its four phases.
 //
-// `MAPSYSSTATS` established that the syscall is only ~40% of this function, but never said what the
-// other 60% is -- the two acquisitions of the one global space mutex, or the slot allocator's own
-// lock. Those want opposite fixes (shard the map table vs. a per-thread cache of free singles), so
-// measure before choosing. `comp_mgr` acquisition is now 45 us against this function's 34.5 ms, so
-// this is where the monitor's side of a map has gone.
-mod spacesplit {
+// Settled, and not where it was expected. `SPACESTAT` (printed at `RuntimePostMain`) reads
+// lock1 ~130 ns, slot ~175 ns, lock2 ~42 ns against a per-miss `sys` of ~110 us -- so the kernel's
+// `sys_object_map_in_sctx` is ~99% of this function and everything the monitor does is rounding.
+//
+// The earlier note here claimed the syscall was "only ~40%" and posed the remainder as a choice
+// between sharding the map table and a per-thread slot cache. That remainder is already gone: the
+// guard is dropped before the slot allocator is taken (see `map` below), so neither of those is
+// worth doing. The cost is inside the kernel.
+pub mod spacesplit {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNT: AtomicU64 = AtomicU64::new(0);
@@ -68,6 +71,27 @@ mod spacesplit {
         pub sys: u64,
         pub lock2: u64,
         pub hit: bool,
+    }
+
+    /// One line, on demand. The accumulators are unconditional relaxed adds, so this costs nothing
+    /// until it prints -- unlike the per-record path below, whose console traffic lands inside the
+    /// monitor while it is servicing the very calls being measured.
+    pub fn report() {
+        let n = COUNT.load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        let miss = n - HITS.load(Ordering::Relaxed);
+        secgate::statcadence::report_forced(format_args!(
+            "SPACESTAT {} maps, {} hits, {} misses; per map ns: lock1 {} slot {} lock2 {};              per miss: sys {} ns",
+            n,
+            HITS.load(Ordering::Relaxed),
+            miss,
+            LOCK1.load(Ordering::Relaxed) / n,
+            SLOT.load(Ordering::Relaxed) / n,
+            LOCK2.load(Ordering::Relaxed) / n,
+            SYS.load(Ordering::Relaxed) / miss.max(1),
+        ));
     }
 
     pub fn record(s: Split) {

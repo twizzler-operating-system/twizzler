@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, RwLock},
     time::{Duration, Instant},
 };
 
@@ -68,12 +68,17 @@ struct NsCache {
 }
 
 struct GlobalCache {
-    namespaces: Mutex<BTreeMap<ObjID, Arc<Mutex<NsCache>>>>,
+    namespaces: RwLock<BTreeMap<ObjID, Arc<Mutex<NsCache>>>>,
 }
 
 impl GlobalCache {
     fn get_namespace_cache(&self, id: ObjID) -> Arc<Mutex<NsCache>> {
-        let mut namespaces = self.namespaces.lock().unwrap();
+        // Once per path component on every lookup, and after the first walk it is always a hit
+        // that mutates nothing -- so the read guard is the path that matters here.
+        if let Some(cache) = self.namespaces.read().unwrap().get(&id) {
+            return cache.clone();
+        }
+        let mut namespaces = self.namespaces.write().unwrap();
         if let Some(cache) = namespaces.get(&id) {
             return cache.clone();
         }
@@ -93,7 +98,7 @@ impl GlobalCache {
     /// Forget a namespace entirely. Caches are keyed by ObjID and ext4 reuses inode numbers, so a
     /// later directory landing on a removed one's inode would otherwise inherit its entries.
     fn forget(&self, id: ObjID) {
-        let entry = self.namespaces.lock().unwrap().remove(&id);
+        let entry = self.namespaces.write().unwrap().remove(&id);
         if let Some(cache) = entry {
             cache.lock().unwrap().clear();
         }
@@ -101,7 +106,7 @@ impl GlobalCache {
 }
 
 static GLOBAL_CACHE: GlobalCache = GlobalCache {
-    namespaces: Mutex::new(BTreeMap::new()),
+    namespaces: RwLock::new(BTreeMap::new()),
 };
 
 /// Opening a pager handle is two gate calls (open, close) plus an object map and unmap, to carry
@@ -470,36 +475,61 @@ impl Namespace for ExtNamespace {
             .iter()
             .zip(known)
             .filter_map(|(i, known)| {
-                i.name().and_then(|name| {
-                    tracing::trace!(
-                        "enumerated {} in external namespace {} with ID {} and kind {:?}",
-                        name,
-                        self.id,
+                let Some(name) = i.name() else {
+                    tracing::warn!(
+                        "dropping unnamed entry (id {:x}) from external namespace {}",
                         i.id,
-                        i.kind
+                        self.id
                     );
-                    match i.kind {
-                        ExternalKind::Directory => NsNode::ns(name, i.id.into()).ok(),
-                        ExternalKind::SymLink => known.or_else(|| {
-                            nr_links += 1;
-                            let t_link = Instant::now();
-                            let link = h.readlink_external(i.id.into());
-                            link_ns += t_link.elapsed().as_nanos() as u64;
-                            match link {
-                                Ok(lname) => NsNode::symlink(name, lname).ok(),
-                                Err(_) => {
-                                    tracing::warn!(
-                                        "failed to readlink for {} in external namespace {}",
-                                        name,
-                                        self.id
-                                    );
-                                    NsNode::obj(name, i.id.into()).ok()
-                                }
-                            }
-                        }),
-                        _ => NsNode::obj(name, i.id.into()).ok(),
-                    }
-                })
+                    return None;
+                };
+                tracing::trace!(
+                    "enumerated {} in external namespace {} with ID {} and kind {:?}",
+                    name,
+                    self.id,
+                    i.id,
+                    i.kind
+                );
+                let node = match i.kind {
+                    ExternalKind::Directory => NsNode::ns(name, i.id.into()).ok(),
+                    ExternalKind::SymLink => known.or_else(|| {
+                        nr_links += 1;
+                        let t_link = Instant::now();
+                        let link = h.readlink_external(i.id.into());
+                        link_ns += t_link.elapsed().as_nanos() as u64;
+                        // A target we cannot read, or cannot store in a node, must not cost the
+                        // entry its place in the listing. The caller advances its readdir cursor
+                        // by the number of entries it received, while the pager's `skip` counts
+                        // what it handed out, so dropping one here slides the window and the tail
+                        // of the namespace comes back again in the next chunk. Report it as a
+                        // plain object instead: a listing is mostly about names, and this keeps
+                        // every one of them.
+                        link.inspect_err(|err| {
+                            tracing::warn!(
+                                "failed to readlink for {} in external namespace {}: {}",
+                                name,
+                                self.id,
+                                err
+                            )
+                        })
+                        .and_then(|lname| {
+                            NsNode::symlink(name, &lname).inspect_err(|err| {
+                                tracing::warn!(
+                                    "{} in external namespace {} has a {}-byte target, too long \
+                                     for a node: {}",
+                                    name,
+                                    self.id,
+                                    lname.len(),
+                                    err
+                                )
+                            })
+                        })
+                        .or_else(|_| NsNode::obj(name, i.id.into()))
+                        .ok()
+                    }),
+                    _ => NsNode::obj(name, i.id.into()).ok(),
+                };
+                node
             })
             .collect();
         itemstats::record_pager(

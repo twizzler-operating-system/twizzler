@@ -34,7 +34,7 @@ use crate::{
         sim_memory_pressure,
         tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
     },
-    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object, pagetables::PageInstall},
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
@@ -210,6 +210,22 @@ mod largepage {
     }
 }
 
+/// A/B knob for the batched install. `1` restores the per-page path this replaced -- one lock, one
+/// presence walk, one mapping walk, one precharge and one TLB invalidation round *per page* -- so
+/// what batching bought can be measured without reverting anything.
+const MAX_INSTALL_RUN: usize = 64;
+
+/// Pages from `pn` to the next 2 MiB object boundary, at least one.
+fn pages_to_large_boundary(pn: PageNumber) -> usize {
+    let off = pn.as_byte_offset();
+    let large = PHYS_LEVEL_LAYOUTS[1].size();
+    ((off + 1).next_multiple_of(large) - off) / PageNumber::PAGE_SIZE
+}
+
+fn page_at(base: PhysAddr, i: usize) -> PhysAddr {
+    base.offset(i * PageNumber::PAGE_SIZE).unwrap()
+}
+
 fn release_pager_frame(frame: FrameRef) {
     if frame.dec_refcount() == 0 {
         crate::memory::tracker::free_frame(frame);
@@ -341,26 +357,35 @@ fn pager_compl_handle_page_data(
             installed += 1;
             1
         } else {
-            let frame = crate::memory::frame::get_frame(pa).unwrap();
-            assert!(!frame.is_pt());
-            assert_eq!(frame.refcount(), 1);
-            assert!(!frame.is_cow());
-            // The object may have acquired this page since the request was issued -- two
-            // overlapping requests do it by construction. `map_page` would decline to overwrite
-            // the entry and the frame would come back here to be freed, having cost a mapping walk
-            // and an invalidation pass on the way. Ask instead, under the lock it would have taken
-            // anyway. `release_pager_frame` still runs either way: it holds the reference the pager
-            // handed us, and dropping it is what frees a duplicate.
-            match request.obj.as_ref().unwrap().add_frame_if_absent(pn, frame) {
-                PageInstall::Installed => installed += 1,
-                PageInstall::PresentSmall => dup += 1,
-                PageInstall::PresentLarge => {
-                    dup += 1;
-                    dup_large += 1;
-                }
+            // Everything up to the next 2 MiB object boundary, in one call. A merge can only
+            // *start* at such a boundary, so stopping there gives up no merge the per-page loop
+            // would have found -- and the run below it is exactly what `add_frames_if_absent`
+            // wants: contiguous in both the object and physical memory, and charged once rather
+            // than 130 times.
+            let run = pages_to_large_boundary(pn)
+                .min(max - count)
+                .min(MAX_INSTALL_RUN);
+            for i in 0..run {
+                let frame = crate::memory::frame::get_frame(page_at(pa, i)).unwrap();
+                assert!(!frame.is_pt());
+                assert_eq!(frame.refcount(), 1);
+                assert!(!frame.is_cow());
             }
-            release_pager_frame(frame);
-            1
+            let tally = request
+                .obj
+                .as_ref()
+                .unwrap()
+                .add_frames_if_absent(pn, pa, run);
+            installed += tally.installed;
+            dup += tally.dup;
+            dup_large += tally.dup_large;
+            // Unconditionally, exactly as when this was per page: this drops the reference the
+            // pager handed us, and for a page that was already present -- which `Table::map`
+            // skipped without referencing -- that drop is what frees it.
+            for i in 0..run {
+                release_pager_frame(crate::memory::frame::get_frame(page_at(pa, i)).unwrap());
+            }
+            run
         };
         count += thiscount;
     }
@@ -494,6 +519,7 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
 }
 
 fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
+    let handle_start = Instant::now();
     let obj = Arc::new(Object::new(id, info.lifetime, &[]));
     // What the store holds right now -- and only when the pager says so. `size` defaults to zero,
     // which is a legitimate length, so acting on an unflagged value reads "the pager did not fill
@@ -510,10 +536,37 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
         synthesize_meta_page(&obj, &info);
     }
     if info.flags.contains(ObjectInfoFlags::VALIDATED) {
-        obj.set_verified_id(true, info.def_prot);
+        // The pager vouches for the id, so the hash is skipped -- but `default_prot` is a separate
+        // question, and `ObjectInfo` only carries it for the backings whose metadata the pager
+        // invents. A stored object's is on its meta page, which the branch above has just made
+        // resident, so read it from there: this is the memoized read `check_id` would have done
+        // anyway, minus the sha256, and taking `info.def_prot` instead would hand every stored
+        // object an empty grant.
+        // Only when a meta page is actually resident -- the branch above has just installed one.
+        // `read_meta` otherwise *populates*, which from inside the pager's own completion handler
+        // means asking the pager for a page while servicing its reply.
+        let has_meta = info
+            .flags
+            .intersects(ObjectInfoFlags::META_PAGE | ObjectInfoFlags::SYNTH_META);
+        let prot = if has_meta {
+            obj.read_meta()
+                .map(|meta| meta.default_prot)
+                .unwrap_or(info.def_prot)
+        } else {
+            info.def_prot
+        };
+        obj.set_verified_id(true, prot);
     }
     crate::obj::register_object(obj);
     inflight_mgr().lock().request_ready(rk);
+    // After `request_ready`, so the stamp is the moment the waiter became runnable rather than the
+    // moment the completion arrived: what the split is for is separating this whole segment from
+    // the wait for a cpu that follows it.
+    let now = Instant::now();
+    super::profile::lookupstats::info_ready(
+        now.into_time_span().as_nanos() as u64,
+        (now - handle_start).as_nanos() as u64,
+    );
 }
 
 fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqKind) {
@@ -527,6 +580,11 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
         }
         _ => {
             log::error!("pager returned error: {} for {:?}", err, request);
+            // Before the manager lock, not under it: recorded so the thread this is about to wake
+            // can be told why its pages never came.
+            if let KernelCommand::PageDataReq(obj_id, ..) = request.cmd() {
+                super::record_page_in_error(obj_id, err);
+            }
             inflight_mgr().lock().request_ready(rk);
         }
     }
@@ -562,10 +620,18 @@ pub(super) fn pager_compl_handler_main() {
             elapsed = 0;
         }
 
-        let Some(request) = sender.idmap.lock().get(&completion.0).cloned() else {
+        let idmap_start = Instant::now();
+        let idmap = sender.idmap.lock();
+        super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - idmap_start).as_nanos() as u64);
+        let Some(request) = idmap.get(&completion.0).cloned() else {
+            drop(idmap);
             logln!("warn -- received completion for unknown request");
             continue;
         };
+        // Immediately, as the temporary this used to be did. Everything below takes the
+        // inflight-manager mutex, and the submit path takes this spinlock while holding nothing --
+        // holding it across that would invert the order.
+        drop(idmap);
         assert!(!current_thread.is_critical());
         log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
 
@@ -601,11 +667,14 @@ pub(super) fn pager_compl_handler_main() {
     }
 }
 
-pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
+pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
     let stamp_key = reqkind.clone();
-    let mut old = sender.idmap.lock().insert(
+    let idmap_start = Instant::now();
+    let mut idmap = sender.idmap.lock();
+    super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - idmap_start).as_nanos() as u64);
+    let mut old = idmap.insert(
         id,
         SentRequestInfo {
             req,
@@ -613,6 +682,8 @@ pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, req
             reqkind,
         },
     );
+    // Before sleeping below, and before the submit: this must not be held across either.
+    drop(idmap);
     while let Err((id, sri)) = old {
         log::warn!("overflowing pager queue, waiting...");
         let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(200)));
@@ -626,6 +697,11 @@ pub fn submit_pager_request(req: RequestFromKernel, obj: Option<&ObjectRef>, req
             req
         );
     }
+    // Stamped here rather than at entry, so the overflow wait above lands in the kernel's own
+    // submit segment (`pre_ns`) instead of being billed to the pager as queue transit. Only the
+    // wire copy carries it; the `idmap` snapshot taken above is for completion handling, which has
+    // no use for it.
+    req.set_submit_ns(Instant::now().into_time_span().as_nanos() as u64);
     sender.queue.submit(req, id);
     // After the submit, so the segment covers the enqueue itself, including the overflow wait
     // above. Every caller drops the inflight lock before submitting, so taking it here is safe.

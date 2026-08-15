@@ -328,6 +328,11 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::context::virtmem::fault::print_fault_profile();
                 crate::interrupt::print_interrupt_profile();
                 crate::pager::print_pager_profile();
+                crate::processor::sched::wakestats::print();
+                crate::memory::context::virtmem::mapprofile::print();
+                crate::memory::context::virtmem::heapprofile::print();
+                crate::obj::id::checkidstats::print();
+                object::mapstats::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(

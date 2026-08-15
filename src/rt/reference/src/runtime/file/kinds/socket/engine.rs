@@ -288,35 +288,34 @@ impl Waiters {
             // unconditionally turns the rare spurious wakeup that sys_thread_sync callers must
             // tolerate into a per-poll-cycle event, which breaks the single-shot
             // poll/select/kevent waits (they would return early with nothing ready).
-            let mut wakes = Vec::with_capacity(2);
-            if rwake {
-                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
-                    ThreadSyncReference::Virtual(&*wait.read),
-                    usize::MAX,
-                )));
-            }
-            if wwake {
-                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
-                    ThreadSyncReference::Virtual(&*wait.write),
-                    usize::MAX,
-                )));
-            }
+            //
             // A falling edge is a wakeup too: an edge-triggered consumer suppressed on this side
             // is blocked on the down counter waiting for exactly this.
-            if rfell {
-                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
-                    ThreadSyncReference::Virtual(&*wait.read_down),
-                    usize::MAX,
-                )));
+            //
+            // Stack-allocated: this runs once per waiter per poll cycle, and the common case
+            // pushes nothing at all, so a Vec here was a heap allocation per socket per poll for
+            // a list that can never exceed four entries.
+            let mut wakes = [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(&*wait.read),
+                usize::MAX,
+            )); 4];
+            let mut n = 0;
+            for (fired, word) in [
+                (rwake, &wait.read),
+                (wwake, &wait.write),
+                (rfell, &wait.read_down),
+                (wfell, &wait.write_down),
+            ] {
+                if fired {
+                    wakes[n] = ThreadSync::new_wake(ThreadSyncWake::new(
+                        ThreadSyncReference::Virtual(&**word),
+                        usize::MAX,
+                    ));
+                    n += 1;
+                }
             }
-            if wfell {
-                wakes.push(ThreadSync::new_wake(ThreadSyncWake::new(
-                    ThreadSyncReference::Virtual(&*wait.write_down),
-                    usize::MAX,
-                )));
-            }
-            if !wakes.is_empty() {
-                let _ = sys_thread_sync(&mut wakes, None);
+            if n > 0 {
+                let _ = sys_thread_sync(&mut wakes[..n], None);
             }
         }
     }
@@ -393,6 +392,9 @@ impl Engine {
                 false
             }
 
+            // Refilled, not rebuilt: the set changes only when an interface comes or goes, but the
+            // loop below runs on every poll cycle.
+            let mut waiters: Vec<ThreadSync> = Vec::new();
             loop {
                 while check_tracking() {}
                 let time = {
@@ -409,11 +411,12 @@ impl Engine {
                 };
 
                 let core = inner.lock().unwrap();
-                let mut waiters = core
-                    .ifaceset
-                    .iter()
-                    .map(|iface| ThreadSync::new_sleep(iface.device.rx_waiter()))
-                    .collect::<Vec<_>>();
+                waiters.clear();
+                waiters.extend(
+                    core.ifaceset
+                        .iter()
+                        .map(|iface| ThreadSync::new_sleep(iface.device.rx_waiter())),
+                );
                 waiters.push(ThreadSync::new_sleep(ThreadSyncSleep::new(
                     ThreadSyncReference::Virtual(&*notify),
                     0,

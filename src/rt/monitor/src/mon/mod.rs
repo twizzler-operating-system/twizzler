@@ -498,7 +498,18 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn unmap_object(&self, sctx: ObjID, info: MapInfo) {
         let Some(key) = ThreadKey::get() else {
-            tracing::warn!("todo: recursive locked unmap");
+            // The caller is monitor code already holding a monitor lock -- it dropped an
+            // `ObjectHandle`, and the runtime's release path came back in through the unmap gate.
+            // `comp_mgr` is not takeable from here (happylock hands each thread one key), and the
+            // old behaviour of returning leaked the mapping outright. Hand it to the unmapper,
+            // which runs on a thread holding no key.
+            crate::lockdiag::note_recursive_unmap();
+            match self.unmapper.get() {
+                Some(unmapper) => unmapper.background_unmap_comp(sctx, info),
+                // Before the unmapper exists there is no thread to defer to, and this is still
+                // better than a silent return.
+                None => tracing::warn!("dropped recursive unmap of {:?}: no unmapper", info),
+            }
             return;
         };
 
@@ -644,6 +655,10 @@ impl Monitor {
                 }
             },
             MonitorCompControlCmd::RuntimePostMain => {
+                // A compartment finishing main is the only moment the monitor is told about that
+                // is also a natural end of a measured workload, so the space counters print here
+                // rather than on a cadence that would land inside what they measure.
+                crate::mon::space::spacesplit::report();
                 // First we want to check if we are a binary, and if so, we don't have to wait
                 // around in here.
                 loop {
@@ -691,6 +706,11 @@ impl Monitor {
         flags: PostSignalFlags,
     ) -> Result<(), TwzError> {
         let target = target.unwrap_or(info.source_context().unwrap_or(MONITOR_INSTANCE_ID));
+        // Both sinks below are bitmasks indexed by the signal number, so bound it here rather
+        // than shifting by whatever the caller passed.
+        if signal == 0 || signal >= u64::BITS as u64 {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
         let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
             tracing::debug!("posting signal {} to {}", sig, target);
             let comp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));

@@ -5,7 +5,7 @@ use std::{
     u32, u64,
 };
 
-use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN};
+use object_store::{DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, INLINE_LEN};
 use twizzler::Result;
 use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
@@ -133,7 +133,7 @@ impl PagedDevice for Disk {
         start_obj_page: i64,
         nr_obj_pages: u32,
         pages: &[DevicePage],
-        phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
+        phys_list: &mut object_store::Vec<PagedPhysMem, INLINE_LEN>,
     ) -> Result<()> {
         assert!(phys_list.is_empty());
         let ctx = PAGER_CTX.get().unwrap();
@@ -174,9 +174,7 @@ impl PagedDevice for Disk {
             if page.as_hole().is_some() {
                 mem.set_completed();
             }
-            if phys_list.push(mem).is_err() {
-                return Ok(());
-            }
+            phys_list.push(mem);
 
             if inner_cursor + alloc.1 as usize >= page.nr_pages() {
                 inner_cursor = 0;

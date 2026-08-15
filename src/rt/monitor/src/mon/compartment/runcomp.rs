@@ -17,8 +17,8 @@ use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
 use twizzler_abi::{
     syscall::{
-        DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        sys_thread_send_message, DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags,
+        ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
     write_note,
@@ -538,7 +538,20 @@ impl RunComp {
             }
         };
         write_note!(mt.thread.id, "thread:{}(main)", self.name);
+        let main_id = mt.thread.id;
         self.main = Some(mt);
+
+        // A compartment is a signal target from the moment it lands in the CompartmentMgr, which
+        // is before this point. Anything posted in that window recorded its bit but had no thread
+        // to be delivered to, so deliver those now. Peek rather than take: the same bits are what
+        // `compartment_wait` reports to whoever is waiting on this compartment.
+        let pending = unsafe { &*self.comp_config_ptr() }.peek_posted_signals();
+        for sig in 1..u64::BITS as u64 {
+            if pending & (1 << sig) != 0 {
+                let _ = sys_thread_send_message(main_id, sig, 0);
+            }
+        }
+
         self.notify_state_changed();
 
         Some(true)

@@ -26,16 +26,25 @@ impl<const N: usize> VolatileBuffer<N> {
         }
     }
 
+    /// The three counters only ever advance, and `tail <= head <= reserve` holds at every instant.
+    /// A pair of loads is not an instant, so which one is read *first* decides whether that
+    /// ordering survives: read the lagging counter first and the later read can only be at or
+    /// ahead of it, so the difference cannot go negative. Read them the other way round and it
+    /// can, which on u64 is a huge positive -- and in a debug build, a subtract-overflow panic.
+    ///
+    /// The difference can still exceed the capacity, since the older read is stale by then, so the
+    /// subtraction from `N - 1` saturates rather than wrapping. Both directions are a momentarily
+    /// pessimistic answer about a value that is racy by construction anyway.
     pub fn avail_space(&self) -> usize {
         let tail = self.tail.load(Ordering::SeqCst);
         let resv = self.reserve.load(Ordering::SeqCst);
 
-        (N - 1) - (resv - tail) as usize
+        (N - 1).saturating_sub((resv - tail) as usize)
     }
 
     pub fn pending_bytes(&self) -> usize {
-        let head = self.head.load(Ordering::SeqCst);
         let tail = self.tail.load(Ordering::SeqCst);
+        let head = self.head.load(Ordering::SeqCst);
 
         (head - tail) as usize
     }
@@ -70,15 +79,16 @@ impl<const N: usize> VolatileBuffer<N> {
     pub fn read_bytes(&self, mut buf: &mut [u8]) -> std::io::Result<usize> {
         let mut count = 0;
         while buf.len() > 0 {
-            let head = self.head.load(Ordering::SeqCst);
+            // tail first: see avail_space. Read head first and a concurrent reader advancing tail
+            // past it makes `head - tail` wrap.
             let tail = self.tail.load(Ordering::SeqCst);
+            let head = self.head.load(Ordering::SeqCst);
 
             // Empty
             if tail == head {
                 return Ok(count);
             }
 
-            assert!(head >= tail);
             let n = std::cmp::min(buf.len(), (head - tail) as usize);
             let n = self.read_from_circle(&mut buf[0..n], tail as usize % N);
 
@@ -99,13 +109,19 @@ impl<const N: usize> VolatileBuffer<N> {
     pub fn write_bytes(&self, mut buf: &[u8]) -> std::io::Result<usize> {
         let mut count = 0;
         while buf.len() > 0 {
-            let resv = self.reserve.load(Ordering::SeqCst);
+            // tail first: see avail_space. This is the pair that actually bites -- with several
+            // writers advancing reserve and a reader consuming past the reserve we observed, a
+            // stale `resv` minus a fresh `tail` wraps.
             let tail = self.tail.load(Ordering::SeqCst);
+            let resv = self.reserve.load(Ordering::SeqCst);
 
-            let avail = (N - 1) - (resv - tail) as usize;
-            if avail == 0 {
+            // Reads full because tail is already stale, not because it is. Reporting a short write
+            // is what the caller retries on, so a spurious one costs a spin.
+            let used = (resv - tail) as usize;
+            if used >= N - 1 {
                 return Ok(count);
             }
+            let avail = (N - 1) - used;
 
             let n = std::cmp::min(buf.len(), avail);
 

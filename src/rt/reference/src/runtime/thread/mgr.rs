@@ -297,6 +297,7 @@ impl ThreadManagerInner {
     fn scan_for_exited_except(&mut self, id: u32) {
         for (_, th) in self.all_threads.extract_if(.., |_, th| {
             th.id != id
+                && !th.is_spawning()
                 && match th.repr() {
                     Some(repr) => repr.get_state() == ExecutionState::Exited,
                     // No mapping to read the state from; fall back to the existence of the repr
@@ -516,31 +517,58 @@ impl ReferenceRuntime {
         } as usize;
         let stack_ns = spawnstats::since(t_stack);
 
-        // Take the thread management lock, so that when the new thread starts we cannot observe
-        // that thread running without the management data being recorded.
-        let mut inner = THREAD_MGR.inner.lock();
-        let id = inner.next_id();
+        // Record the thread before it can run, so it cannot observe itself running with no
+        // management data -- but publish the entry rather than holding the lock across the spawn
+        // gate below. A monitor gate call runs monitor code that reaches back into this runtime,
+        // so a thread holding `inner` across one waits for monitor locks while inside a lock the
+        // monitor's own gates take: `lostwake/round765` deadlocked exactly that way, against
+        // `get_compartment_handle` -> `HandleMgr::insert` -> `gc_handles` -> `twz_rt_gc`. The
+        // `twz_rt_gc` there is gone now; this side of the cycle is the one that has to stay gone
+        // no matter what future monitor code reaches.
+        //
+        // The entry is published `spawning`: visible to the new thread (which is what the lock
+        // was protecting), skipped by the gc scans until the gate returns a repr id.
+        let (id, new_args) = {
+            let mut inner = THREAD_MGR.inner.lock();
+            let id = inner.next_id().freeze();
 
-        // Set the thread's ID. After this the TCB is ready.
-        unsafe {
-            tls.as_mut().unwrap().runtime_data.set_id(id.id);
-        }
+            // Set the thread's ID. After this the TCB is ready.
+            unsafe {
+                tls.as_mut().unwrap().runtime_data.set_id(id);
+            }
 
-        let stack_size = args.stack_size;
-        let arg_raw = Box::into_raw(args) as usize;
+            let stack_size = args.stack_size;
+            let arg_raw = Box::into_raw(args) as usize;
 
-        tracing::debug!(
-            "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
-            id.id,
-            stack_raw,
-            trampoline as *const () as usize,
-            tls,
-        );
+            tracing::debug!(
+                "spawning thread {} with stack {:x}, entry {:x}, and TLS {:p}",
+                id,
+                stack_raw,
+                trampoline as *const () as usize,
+                tls,
+            );
 
-        let new_args = ThreadSpawnArgs {
-            stack_size,
-            start: trampoline as *const () as usize,
-            arg: arg_raw,
+            inner.all_threads.insert(
+                id,
+                InternalThread::new_spawning(
+                    stack_raw,
+                    stack_size,
+                    arg_raw,
+                    id,
+                    tls,
+                    tls_alloc_base,
+                    tls_layout,
+                ),
+            );
+
+            (
+                id,
+                ThreadSpawnArgs {
+                    stack_size,
+                    start: trampoline as *const () as usize,
+                    arg: arg_raw,
+                },
+            )
         };
 
         let t_gate = std::time::Instant::now();
@@ -550,7 +578,18 @@ impl ReferenceRuntime {
 
             match res {
                 Ok(id) => ObjID::from(id),
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Give back the id, but leak the entry's stack, TLS and args box, which is
+                    // what this path did before it published an entry at all. A gate that failed
+                    // after the kernel started the thread would otherwise be handing the stack the
+                    // new thread is running on back to `stackpool`.
+                    let mut inner = THREAD_MGR.inner.lock();
+                    if let Some(th) = inner.all_threads.remove(&id) {
+                        core::mem::forget(th);
+                    }
+                    inner.release_id(id);
+                    return Err(e);
+                }
             }
         };
         let gate_ns = spawnstats::since(t_gate);
@@ -571,19 +610,15 @@ impl ReferenceRuntime {
             .ok();
         spawnstats::record(tls_ns, stack_ns, gate_ns, spawnstats::since(t_map));
 
-        let thread = InternalThread::new(
-            thread_repr_obj,
-            thid,
-            stack_raw,
-            stack_size,
-            arg_raw,
-            id.freeze(),
-            tls,
-            tls_alloc_base,
-            tls_layout,
-        );
-        let id = thread.id;
-        inner.all_threads.insert(thread.id, thread);
+        // Unwrap-Ok: the entry was published above and only the gc scans remove entries, which
+        // skip a `spawning` one.
+        THREAD_MGR
+            .inner
+            .lock()
+            .all_threads
+            .get_mut(&id)
+            .unwrap()
+            .finish_spawn(thid, thread_repr_obj);
 
         Ok((id, tls.cast()))
     }

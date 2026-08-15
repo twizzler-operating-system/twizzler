@@ -261,7 +261,7 @@ logboi-srv = { path = "src/srv/logboi-srv" }
 lru = "0.12"
 ls = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 lwext4-rs = { path = "src/ports/lwext4-rs" }
-mayheap = "0.2"
+smallvec = "1.15"
 memoffset = "0.9.0"
 miette = "7.6.0"
 modular-bitfield = "0.13"

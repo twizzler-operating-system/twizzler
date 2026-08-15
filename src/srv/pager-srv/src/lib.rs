@@ -29,6 +29,7 @@ use crate::data::PagerData;
 
 mod data;
 mod disk;
+mod dispatch_stats;
 mod handle;
 mod helpers;
 // in-progress

@@ -548,15 +548,20 @@ impl NameSession<'_> {
                 .clone()
         });
 
-        let components = name.as_ref().components().collect::<Vec<_>>();
-        if components.is_empty() {
+        // Peeked rather than collected: `is_last` and the trailing component are the only things
+        // the walk ever wanted from the component list, and both are available without putting a
+        // Vec on the heap for every lookup that misses the memo.
+        let mut components = name.as_ref().components().peekable();
+        if components.peek().is_none() {
             return Ok((Err("".into()), namespace));
         }
         tracing::trace!("start search {}", name.as_ref().display());
 
         let mut node = None;
-        for (idx, item) in components.iter().enumerate() {
-            let is_last = idx == components.len() - 1;
+        let mut last_component = None;
+        while let Some(item) = components.next() {
+            let is_last = components.peek().is_none();
+            last_component = Some(item);
             match item {
                 Component::Prefix(_) => continue,
                 Component::RootDir => {
@@ -662,11 +667,8 @@ impl NameSession<'_> {
         if let Some(node) = node {
             Ok((Ok(node), namespace))
         } else {
-            // Unwrap-Ok: we checked if it's empty earlier.
-            Ok((
-                Err(components.last().unwrap().as_os_str().into()),
-                namespace,
-            ))
+            // Unwrap-Ok: we checked if it's empty earlier, so the loop ran at least once.
+            Ok((Err(last_component.unwrap().as_os_str().into()), namespace))
         }
     }
 

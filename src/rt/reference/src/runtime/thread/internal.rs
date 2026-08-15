@@ -28,6 +28,11 @@ pub struct InternalThread {
     /// tracked separately so the thread is still identifiable, and so join can retry the map.
     repr_handle: Option<ObjectHandle>,
     repr_id: ObjID,
+    /// Set between publishing this entry and learning the thread's repr id from the spawn gate.
+    /// The gc scans skip such an entry: its `repr_id` is still 0, which every "is the repr gone?"
+    /// test reads as an exited thread, and reaping it would free the stack and TLS of a thread
+    /// that is about to run on them.
+    spawning: bool,
     stack_addr: usize,
     stack_size: usize,
     args_box: usize,
@@ -61,7 +66,45 @@ impl InternalThread {
             name: Mutex::new(None),
             tls_alloc_base,
             tls_layout,
+            spawning: false,
         }
+    }
+
+    /// An entry for a thread whose spawn gate call has not returned yet, so its repr id is not
+    /// known. See `impl_spawn` for why the entry is published before that call.
+    pub(super) fn new_spawning(
+        stack_addr: usize,
+        stack_size: usize,
+        args_box: usize,
+        id: u32,
+        tls: *mut Tcb<RuntimeThreadControl>,
+        tls_alloc_base: *mut u8,
+        tls_layout: Layout,
+    ) -> Self {
+        let mut th = Self::new(
+            None,
+            0.into(),
+            stack_addr,
+            stack_size,
+            args_box,
+            id,
+            tls,
+            tls_alloc_base,
+            tls_layout,
+        );
+        th.spawning = true;
+        th
+    }
+
+    /// Fill in what the spawn gate returned, and make the entry collectable.
+    pub(super) fn finish_spawn(&mut self, repr_id: ObjID, repr_handle: Option<ObjectHandle>) {
+        self.repr_id = repr_id;
+        self.repr_handle = repr_handle;
+        self.spawning = false;
+    }
+
+    pub(super) fn is_spawning(&self) -> bool {
+        self.spawning
     }
 
     pub(crate) fn objid(&self) -> ObjID {

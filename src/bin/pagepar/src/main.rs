@@ -456,48 +456,79 @@ fn main() {
         let total_files = total_files.clone();
         handles.push(std::thread::spawn(move || {
             let mut buf = vec![0u8; BUF_BYTES];
-            let mut bytes = 0u64;
-            // Per-open times, kept individually rather than summed: the first open on a thread is
-            // its first entry into the naming and monitor compartments and costs milliseconds,
-            // while the rest cost tens of microseconds. A sum reports neither.
-            let mut opens = Vec::new();
-            let mut read_ns = 0u128;
+
+            // Open every file this thread owns, timing each open individually. Kept individually
+            // rather than summed: the first open on a thread is its first entry into the naming
+            // and monitor compartments and costs milliseconds, while the rest cost tens of
+            // microseconds. A sum reports neither.
+            let open_all = |files: &Vec<PathBuf>| {
+                let mut open_files = Vec::new();
+                let mut opens = Vec::new();
+                let mut idx = tid;
+                while let Some(path) = files.get(idx) {
+                    idx += nr_threads;
+                    let t0 = Instant::now();
+                    let opened = File::open(path);
+                    opens.push(t0.elapsed().as_nanos());
+                    if let Ok(file) = opened {
+                        open_files.push(file);
+                    }
+                }
+                (open_files, opens)
+            };
+
+            let read_all = |open_files: &mut Vec<File>, buf: &mut [u8]| {
+                let mut bytes = 0u64;
+                let t = Instant::now();
+                for file in open_files.iter_mut() {
+                    loop {
+                        match file.read(buf) {
+                            Ok(0) => break,
+                            Ok(n) => bytes += n as u64,
+                            Err(_) => break,
+                        }
+                    }
+                }
+                (bytes, t.elapsed().as_nanos())
+            };
 
             // Spawned. Everything above this is thread startup, which the spawn phase measures.
             barrier.wait();
 
-            // --- open phase ---
-            let mut open_files = Vec::new();
-            let mut idx = tid;
-            while let Some(path) = files.get(idx) {
-                idx += nr_threads;
-                let t0 = Instant::now();
-                let opened = File::open(path);
-                opens.push(t0.elapsed().as_nanos());
-                if let Ok(file) = opened {
-                    open_files.push(file);
-                }
-            }
+            // --- cold open ---
+            let (mut open_files, cold_opens) = open_all(&files);
             barrier.wait();
 
-            // --- read phase ---
+            // --- cold read ---
             let count = open_files.len() as u64;
-            let t1 = Instant::now();
-            for file in open_files.iter_mut() {
-                loop {
-                    match file.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => bytes += n as u64,
-                        Err(_) => break,
-                    }
-                }
-            }
-            read_ns += t1.elapsed().as_nanos();
+            let (cold_bytes, cold_read_ns) = read_all(&mut open_files, &mut buf);
             barrier.wait();
 
-            total_bytes.fetch_add(bytes, Ordering::Relaxed);
+            // Closed before the warm pass, so the warm open is a real open -- naming lookup,
+            // monitor gate and object map -- against an object the runtime and kernel have already
+            // seen, rather than a no-op on a handle still held.
+            drop(open_files);
+            barrier.wait();
+
+            // --- warm open ---
+            let (mut open_files, warm_opens) = open_all(&files);
+            barrier.wait();
+
+            // --- warm read ---
+            let (warm_bytes, warm_read_ns) = read_all(&mut open_files, &mut buf);
+            barrier.wait();
+
+            total_bytes.fetch_add(cold_bytes, Ordering::Relaxed);
             total_files.fetch_add(count, Ordering::Relaxed);
-            (count, bytes, opens, read_ns)
+            Pass {
+                count,
+                cold_opens,
+                cold_bytes,
+                cold_read_ns,
+                warm_opens,
+                warm_bytes,
+                warm_read_ns,
+            }
         }));
     }
 
@@ -511,33 +542,61 @@ fn main() {
     mark("read start");
     barrier.wait();
     mark("read end");
+    let faults_after_cold = twizzler_abi::syscall::sys_memory_stats();
+    let cold_elapsed = start.elapsed();
+    barrier.wait();
+    mark("close end");
+    mark("warm open start");
+    barrier.wait();
+    mark("warm open end");
+    mark("warm read start");
+    barrier.wait();
+    mark("warm read end");
 
+    // Aggregated across threads: the per-pass comparison is the point, and four threads' worth of
+    // per-thread lines buries it.
+    let mut cold_open_first = 0u128;
+    let mut cold_open_rest = (0u128, 0u128);
+    let mut warm_open_all = (0u128, 0u128);
+    let mut cold_read_max = 0u128;
+    let mut warm_read_max = 0u128;
+    let mut warm_bytes = 0u64;
     for (i, h) in handles.into_iter().enumerate() {
         match h.join() {
-            Ok((count, bytes, opens, read_ns)) => {
-                let first = opens.first().copied().unwrap_or(0);
-                let rest: u128 = opens.iter().skip(1).sum();
-                let nrest = opens.len().saturating_sub(1).max(1) as u128;
+            Ok(p) => {
+                // The first open on a thread is its first entry into the naming and monitor
+                // compartments and costs milliseconds; averaging it in hides both it and the rest.
+                cold_open_first = cold_open_first.max(p.cold_opens.first().copied().unwrap_or(0));
+                cold_open_rest.0 += p.cold_opens.iter().skip(1).sum::<u128>();
+                cold_open_rest.1 += p.cold_opens.len().saturating_sub(1) as u128;
+                warm_open_all.0 += p.warm_opens.iter().sum::<u128>();
+                warm_open_all.1 += p.warm_opens.len() as u128;
+                cold_read_max = cold_read_max.max(p.cold_read_ns);
+                warm_read_max = warm_read_max.max(p.warm_read_ns);
+                warm_bytes += p.warm_bytes;
                 println!(
-                    "pagepar: thread {} read {} files, {} KB; open first {} us, rest {} us over {} \
-                     ({} us mean); read {} ms",
+                    "pagepar: thread {} {} files; cold open first {} us rest {} us mean, read {} ms; \
+                     warm open {} us mean, read {} ms",
                     i,
-                    count,
-                    bytes / 1024,
-                    first / 1000,
-                    rest / 1000,
-                    opens.len().saturating_sub(1),
-                    rest / nrest / 1000,
-                    read_ns / 1_000_000
+                    p.count,
+                    p.cold_opens.first().copied().unwrap_or(0) / 1000,
+                    p.cold_opens.iter().skip(1).sum::<u128>()
+                        / (p.cold_opens.len().saturating_sub(1).max(1) as u128)
+                        / 1000,
+                    p.cold_read_ns / 1_000_000,
+                    p.warm_opens.iter().sum::<u128>() / (p.warm_opens.len().max(1) as u128) / 1000,
+                    p.warm_read_ns / 1_000_000,
                 );
             }
             Err(_) => println!("pagepar: thread {} panicked", i),
         }
     }
 
-    let elapsed = start.elapsed();
     let faults_after = twizzler_abi::syscall::sys_memory_stats();
     let nr_faults = faults_after
+        .page_fault_count
+        .saturating_sub(faults_before.page_fault_count);
+    let cold_faults = faults_after_cold
         .page_fault_count
         .saturating_sub(faults_before.page_fault_count);
     let bytes = total_bytes.load(Ordering::Relaxed);
@@ -546,17 +605,46 @@ fn main() {
         "pagepar: DONE {} files, {} KB in {} ms",
         total_files.load(Ordering::Relaxed),
         bytes / 1024,
-        elapsed.as_millis()
+        cold_elapsed.as_millis()
+    );
+    // The cold/warm split is what separates the pager from everything else: the same files, the
+    // same opens and the same bytes, with the difference being that the second pass finds the
+    // pages in core and the objects already known. Whatever survives into the warm pass is path
+    // cost that no amount of paging work can remove.
+    println!(
+        "pagepar: PASSES cold open first {} us rest {} us mean / warm open {} us mean; \
+         cold read max {} ms / warm read max {} ms; cold {} KB / warm {} KB; \
+         faults cold {} / warm {}",
+        cold_open_first / 1000,
+        cold_open_rest.0 / cold_open_rest.1.max(1) / 1000,
+        warm_open_all.0 / warm_open_all.1.max(1) / 1000,
+        cold_read_max / 1_000_000,
+        warm_read_max / 1_000_000,
+        bytes / 1024,
+        warm_bytes / 1024,
+        cold_faults,
+        nr_faults.saturating_sub(cold_faults),
     );
     println!(
         "pagepar: FAULTS {} over the read phase ({} pages read, {:.2} faults/page); \
          mean {} us, max {} us; {} us of fault time vs {} us wall",
-        nr_faults,
+        cold_faults,
         bytes / 4096,
-        nr_faults as f64 / ((bytes / 4096).max(1)) as f64,
+        cold_faults as f64 / ((bytes / 4096).max(1)) as f64,
         faults_after.page_fault_stats.mean.as_nanos() / 1000,
         faults_after.page_fault_stats.max.as_nanos() / 1000,
-        (nr_faults as u128) * (faults_after.page_fault_stats.mean.as_nanos() / 1000),
-        elapsed.as_micros(),
+        (cold_faults as u128) * (faults_after.page_fault_stats.mean.as_nanos() / 1000),
+        cold_elapsed.as_micros(),
     );
+}
+
+/// One thread's two passes over its share of the files.
+struct Pass {
+    count: u64,
+    cold_opens: Vec<u128>,
+    cold_bytes: u64,
+    cold_read_ns: u128,
+    warm_opens: Vec<u128>,
+    warm_bytes: u64,
+    warm_read_ns: u128,
 }

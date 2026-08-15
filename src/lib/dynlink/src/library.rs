@@ -184,6 +184,9 @@ pub struct Library {
     /// library on every cross-compartment symbol lookup, and used to be a linear scan with a
     /// byte-compare per gate.
     secgate_names: OnceLock<std::collections::HashSet<Box<str>>>,
+    /// Which names this library's ELF object defines, approximately. Shared with every other
+    /// compartment that loaded the same object; see [crate::context::SymBloom].
+    pub(crate) sym_bloom: Option<std::sync::Arc<crate::context::SymBloom>>,
 }
 
 #[allow(dead_code)]
@@ -215,6 +218,7 @@ impl Library {
             elf: OnceLock::new(),
             elf_common: OnceLock::new(),
             secgate_names: OnceLock::new(),
+            sym_bloom: None,
         }
     }
 
@@ -516,19 +520,27 @@ impl Library {
         if self.secgate_info.num == 0 {
             return false;
         }
-        self.secgate_names
-            .get_or_init(|| {
-                self.iter_secgates()
-                    .map(|gates| {
-                        gates
-                            .iter()
-                            .filter_map(|gate| gate.name().to_str().ok())
-                            .map(Box::from)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            })
-            .contains(name)
+        let build = || {
+            let _start = std::time::Instant::now();
+            let set: std::collections::HashSet<Box<str>> = self
+                .iter_secgates()
+                .map(|gates| {
+                    gates
+                        .iter()
+                        .filter_map(|gate| gate.name().to_str().ok())
+                        .map(Box::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            secgate::statlog::record_on_anon(
+                crate::context::SGNAME_STATS,
+                "SGNAMES",
+                _start.elapsed().as_nanos() as u64 / 1000,
+                &[set.len() as u64],
+            );
+            set
+        };
+        self.secgate_names.get_or_init(build).contains(name)
     }
 
     pub fn iter_secgates(&self) -> Option<&[RawSecGateInfo]> {

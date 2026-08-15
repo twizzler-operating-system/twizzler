@@ -47,6 +47,20 @@ impl Profile {
             Profile::FullDebug => Some("full-debug"),
         }
     }
+
+    /// The profile to request for collections compiled out of a crate's own manifest rather than
+    /// the root workspace's -- see `build::build_third_party`.
+    ///
+    /// Those manifests define only cargo's built-in profiles, so asking for `full-debug` there
+    /// fails the whole build with "profile `full-debug` is not defined". Falling back to `dev` is
+    /// what the profile means anyway: it exists to unoptimize *workspace* code, and a port is a
+    /// dependency however it is built.
+    fn requested_foreign_manifest(&self) -> Option<&'static str> {
+        match self {
+            Profile::FullDebug => Profile::Debug.requested(),
+            other => other.requested(),
+        }
+    }
 }
 
 impl Display for Profile {

@@ -739,8 +739,16 @@ fn read_serial(
         }
         // Keep draining once a report has landed rather than dropping the pipe: anything the
         // guest prints afterwards would otherwise fill it and wedge qemu.
+        //
+        // Found anywhere on the line, not just at its start. A serial console is one stream with
+        // several writers, and a writer that has not terminated its line puts the next message on
+        // it -- libtest emits `test <name> ... ` and its `ok` as two writes, and the kernel used to
+        // reach the uart once per format fragment. Anchoring on the line start cost three runs of a
+        // 4661-run sweep, each of which had passed all 53 tests. The guest keeps its end of this
+        // (one write, starting with a newline); this is what makes the harness stop caring.
         if found.is_none() {
-            if let Some(rest) = line.strip_prefix("REPORT ") {
+            if let Some(idx) = line.find("REPORT ") {
+                let rest = &line[idx + "REPORT ".len()..];
                 if let Ok(ReportStatus::Ready(report)) =
                     unittest_report::Report::from_prefix(rest.trim()).map(|report| report.status)
                 {

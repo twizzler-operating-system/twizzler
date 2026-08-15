@@ -85,9 +85,30 @@ pub(crate) mod mapstats {
     static GATE: AtomicU64 = AtomicU64::new(0);
     static UNMAPS: AtomicU64 = AtomicU64::new(0);
     static UNMAP_NS: AtomicU64 = AtomicU64::new(0);
+    /// Time inside the critical section on a hit, i.e. `cached` + `begin_unmaps`.
+    static CRIT: AtomicU64 = AtomicU64::new(0);
+    /// Lock acquisition on the hit path alone. `LOCK` covers every map, hits and misses together,
+    /// so it cannot be subtracted from a hit-only total.
+    static HIT_LOCK: AtomicU64 = AtomicU64::new(0);
+    /// Whole hit path, lock acquisition through returning the handle. `LOCK` and `CRIT` are the
+    /// two parts anyone has named so far; the remainder is what neither accounts for, which is the
+    /// number this exists to expose rather than leave to inference.
+    static HIT_NS: AtomicU64 = AtomicU64::new(0);
 
     pub fn record_hit() {
         HITS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_crit(ns: u64) {
+        CRIT.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    pub fn record_hit_lock(ns: u64) {
+        HIT_LOCK.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    pub fn record_hit_total(ns: u64) {
+        HIT_NS.fetch_add(ns, Ordering::Relaxed);
     }
 
     pub fn record_gate(ns: u64) {
@@ -97,6 +118,39 @@ pub(crate) mod mapstats {
     pub fn record_unmap(ns: u64) {
         UNMAPS.fetch_add(1, Ordering::Relaxed);
         UNMAP_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// One line at compartment exit, for a compartment that mapped anything.
+    ///
+    /// The accumulators above are unconditional relaxed adds, so this costs nothing until it
+    /// prints -- which makes it the right shape for a hot path, unlike the per-record path below
+    /// whose console traffic lands inside whatever it is measuring.
+    pub fn report() {
+        let n = COUNT.load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        let hits = HITS.load(Ordering::Relaxed).max(1);
+        secgate::statcadence::report_forced(format_args!(
+            "MAPSTAT {} maps, {} hits ({} permille); lock {} us total, {} ns mean; \
+             gate {} us; unmaps {} ({} us); \
+             hit path {} ns mean = lock {} + crit {} + rest {}",
+            n,
+            HITS.load(Ordering::Relaxed),
+            HITS.load(Ordering::Relaxed) * 1000 / n,
+            LOCK.load(Ordering::Relaxed) / 1000,
+            LOCK.load(Ordering::Relaxed) / n,
+            GATE.load(Ordering::Relaxed) / 1000,
+            UNMAPS.load(Ordering::Relaxed),
+            UNMAP_NS.load(Ordering::Relaxed) / 1000,
+            HIT_NS.load(Ordering::Relaxed) / hits,
+            HIT_LOCK.load(Ordering::Relaxed) / hits,
+            CRIT.load(Ordering::Relaxed) / hits,
+            HIT_NS
+                .load(Ordering::Relaxed)
+                .saturating_sub(HIT_LOCK.load(Ordering::Relaxed) + CRIT.load(Ordering::Relaxed))
+                / hits,
+        ));
     }
 
     pub fn record(lock: u64) {
@@ -191,12 +245,20 @@ impl ReferenceRuntime {
             let gen = INFLIGHT_GEN.load(Ordering::SeqCst);
             let mut mgr = self.object_manager.lock();
             lock_ns = t_lock.elapsed().as_nanos() as u64;
+            let t_crit = std::time::Instant::now();
             if let Some(handle) = mgr.cached(key) {
                 let pending = mgr.begin_unmaps();
                 drop(mgr);
+                let crit_ns = t_crit.elapsed().as_nanos() as u64;
                 mapstats::record_hit();
+                mapstats::record_hit_lock(lock_ns);
+                mapstats::record_crit(crit_ns);
                 mapstats::record(lock_ns);
                 self.finish_unmaps(pending);
+                // Taken last so the total covers everything a hit pays, `finish_unmaps` included
+                // -- which is empty in steady state but is exactly the sort of thing that would
+                // otherwise sit in the unexplained remainder without being named.
+                mapstats::record_hit_total(t_lock.elapsed().as_nanos() as u64);
                 return Ok(handle);
             }
             if !mgr.begin_inflight(key) {
@@ -261,6 +323,15 @@ impl ReferenceRuntime {
         if self.is_monitor().is_some() {
             mgr.cache.flush();
         }
+        let pending = mgr.begin_unmaps();
+        drop(mgr);
+        self.finish_unmaps(pending);
+    }
+
+    /// Unmap cached handles that have gone stale. Called from `twz_rt_gc`.
+    pub fn gc_object_cache(&self) {
+        let mut mgr = self.object_manager.lock();
+        mgr.cache.sweep();
         let pending = mgr.begin_unmaps();
         drop(mgr);
         self.finish_unmaps(pending);

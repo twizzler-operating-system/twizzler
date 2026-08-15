@@ -985,7 +985,11 @@ impl ShellCommand {
     }
 }
 
-struct TwzIo;
+struct TwzIo {
+    /// Last byte handed to the line editor. noline reports ^C and ^D-on-an-empty-line as the
+    /// same `Aborted` error, and those mean opposite things to a shell, so record which arrived.
+    last_byte: u8,
+}
 
 impl ErrorType for TwzIo {
     type Error = std::io::Error;
@@ -994,6 +998,9 @@ impl ErrorType for TwzIo {
 impl embedded_io::Read for TwzIo {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let len = std::io::stdin().read(buf)?;
+        if let Some(&b) = buf[..len].last() {
+            self.last_byte = b;
+        }
 
         Ok(len)
     }
@@ -1018,6 +1025,11 @@ unsafe extern "C-unwind" fn upcall_handler(frame: *mut c_void, data: *const c_vo
         twizzler_abi::upcall::UpcallInfo::Mailbox(val) => {
             if val == libc::SIGWINCH as u64 {
                 // Ignores window change signals from other PTY applications
+                return;
+            }
+            if val == libc::SIGINT as u64 || val == libc::SIGTSTP as u64 {
+                // Raised while a child is in the foreground, which is the process that should
+                // act on it. The shell keeps its prompt; say nothing on the console.
                 return;
             }
             twizzler_abi::klog_println!("shell: signal {}", val);
@@ -1046,7 +1058,7 @@ fn main() {
         .finish();
     tracing::subscriber::set_global_default(sub).unwrap();
 
-    let mut io = TwzIo;
+    let mut io = TwzIo { last_byte: 0 };
     let mut buffer = [0; 1024];
     let mut history = [0; 1024];
     let mut editor = noline::builder::EditorBuilder::from_slice(&mut buffer)
@@ -1089,6 +1101,13 @@ fn main() {
                 return;
             }
             let Some(line) = line else {
+                // The prompt runs with ISIG off, so ^C arrives as a byte rather than a signal
+                // and noline aborts the line. That should drop the input and reprompt, not end
+                // the shell -- only ^D on an empty line (or a read error) does that. noline has
+                // already emitted a newline, so the prompt lands in the right place.
+                if io.last_byte == 0x03 {
+                    continue;
+                }
                 return;
             };
             line

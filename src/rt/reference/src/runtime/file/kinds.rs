@@ -47,23 +47,41 @@ fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Re
 }
 
 // Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-mod openstats {
+pub mod openstats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static LOCK: AtomicU64 = AtomicU64::new(0);
-    static GET: AtomicU64 = AtomicU64::new(0);
-    static OBJ: AtomicU64 = AtomicU64::new(0);
+    /// This path's own switch. `statcadence::STATS_ON` is global, so flipping it to measure opens
+    /// turns on every counter in the tree and changes what every other run is measuring.
+    pub const OPEN_STATS: bool = false;
 
-    pub fn record(lock: u64, get: u64, obj: u64) {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static OUTER: AtomicU64 = AtomicU64::new(0);
+
+    /// The three named segments of `open_path`, plus the whole of it -- so what the segments do
+    /// *not* account for is visible rather than inferred.
+    pub fn record(lock: u64, get: u64, obj: u64, total: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
-        let g = GET.fetch_add(get, Ordering::Relaxed) + get;
-        let o = OBJ.fetch_add(obj, Ordering::Relaxed) + obj;
         // Every call, in ns: the first open on a thread costs milliseconds and the rest tens of
         // microseconds, so an aggregate reports a number that describes neither.
-        secgate::statlog::record("OPENSTAT", n, &[lock, get, obj]);
-        let _ = (l, g, o);
+        secgate::statlog::record_on(
+            OPEN_STATS,
+            "OPENPATH",
+            n,
+            &[
+                lock,
+                get,
+                obj,
+                total.saturating_sub(lock + get + obj),
+                total,
+            ],
+        );
+    }
+
+    /// `ReferenceRuntime::open` around `kinds::open`: what the open costs beyond resolving the name
+    /// and opening the object -- `FileDesc::new` and the process-wide fd table.
+    pub fn record_outer(kinds: u64, fdtable: u64, total: u64) {
+        let n = OUTER.fetch_add(1, Ordering::Relaxed) + 1;
+        secgate::statlog::record_on(OPEN_STATS, "OPENFD", n, &[kinds, fdtable, total]);
     }
 }
 
@@ -141,7 +159,12 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
         }
         NsNodeKind::SymLink => Arc::new(SymLinkFile::new(obj_id)?),
     };
-    openstats::record(lock_ns, get_ns, t_obj.elapsed().as_nanos() as u64);
+    openstats::record(
+        lock_ns,
+        get_ns,
+        t_obj.elapsed().as_nanos() as u64,
+        t_start.elapsed().as_nanos() as u64,
+    );
 
     Ok(res)
 }

@@ -230,7 +230,26 @@ pub mod diag {
     pub static CRITICAL_LEAK_AT_EXIT: Counter =
         Counter::new("returning to user with a critical count held");
 
-    static ALL: [&Counter; 28] = [
+    /// `set_state_and_code` reached a transition it would wake for -- a thread going Exited or
+    /// Suspended, or any other change of state -- and dropped the wake because the *calling* thread
+    /// was critical.
+    ///
+    /// The gate there tests the caller's criticality, not the target's, and skipping is silent and
+    /// final: nothing retries the wake, so every thread joining or waiting on that repr sleeps on a
+    /// state change that has already happened. Self-exit cannot reach it (the guard at the top of
+    /// `set_state_and_code` panics instead), which leaves the cross-thread transitions --
+    /// force_exit and the ChangeState syscall -- as the way in.
+    ///
+    /// Probe, not a fix: a zero here across a sweep that reproduces the wedge rules this path out,
+    /// which is worth more than the argument that it should not happen.
+    pub static STATE_WAKE_SKIPPED_CRITICAL: Counter =
+        Counter::new("thread state-change wake skipped, caller critical");
+    /// Same skip, reached with no current thread at all. Counted only once threading is up, since
+    /// before that it is just early boot and says nothing (see [`NO_CURRENT_THREAD`]).
+    pub static STATE_WAKE_SKIPPED_NO_THREAD: Counter =
+        Counter::new("thread state-change wake skipped, no current thread");
+
+    static ALL: [&Counter; 30] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -259,6 +278,8 @@ pub mod diag {
         &SLEEP_LINK_LEAKED_AT_EXIT,
         &BLOCK_CHECK_SKIPPED,
         &BLOCK_CHECK_CLEAR,
+        &STATE_WAKE_SKIPPED_CRITICAL,
+        &STATE_WAKE_SKIPPED_NO_THREAD,
     ];
 
     /// Token identifying who holds a `LockTracker`'s flag: cpu in the high 16 bits (biased by one

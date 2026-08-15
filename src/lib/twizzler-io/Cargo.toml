@@ -8,5 +8,6 @@ twizzler = { path = "../twizzler" }
 tracing = { workspace = true }
 libc = "0.2"
 twizzler-abi = { path = "../twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
 memchr = "*"
 bitset-core = { workspace = true }

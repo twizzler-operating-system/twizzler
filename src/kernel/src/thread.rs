@@ -134,6 +134,9 @@ pub struct Thread {
     /// differed. Written only by the scanning cpu. See `check_system_hang`.
     hang_gen: AtomicU64,
     hang_since: AtomicU64,
+    /// Hang reports this thread has already caused, reset whenever it moves. Written only by the
+    /// scanning cpu. See `check_system_hang`.
+    hang_reports: AtomicU32,
     /// Object and offset of the first sleep word of this thread's current `sys_thread_sync`, as
     /// (lo, hi, offset). Diagnostic only: the user ip of a blocked thread is always the same
     /// syscall wrapper, so it says the thread is in a thread-sync sleep and nothing about *which*
@@ -337,6 +340,7 @@ impl Thread {
             exit_sctx: [const { AtomicU64::new(0) }; 2],
             hang_gen: AtomicU64::new(0),
             hang_since: AtomicU64::new(0),
+            hang_reports: AtomicU32::new(0),
             sleep_word: [const { AtomicU64::new(0) }; 3],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
@@ -619,19 +623,54 @@ impl Thread {
         // Note that since this value can be written to by userspace, we must check if we're
         // critical because we can't rely on userspace following the rules. Same for checking if
         // the state is changing.
-        if !(old_state == ExecutionState::Running && state == ExecutionState::Sleeping
+        //
+        // Split from the wake itself so the *skips* are visible. The criticality test below is on
+        // the calling thread, not on `self`, and dropping the wake is silent and final -- nothing
+        // retries it, so anyone sleeping on this repr sleeps through a change that already
+        // happened. See `diag::STATE_WAKE_SKIPPED_CRITICAL`.
+        let wake_worthy = !(old_state == ExecutionState::Running
+            && state == ExecutionState::Sleeping
             || old_state == ExecutionState::Sleeping && state == ExecutionState::Running)
             && (old_state != state
                 || state == ExecutionState::Exited
                 || state == ExecutionState::Suspended)
-            && !current_thread_ref().map_or(true, |ct| ct.is_critical())
-            && old_state != ExecutionState::Exited
-        {
-            self.control_object
-                .object()
-                .wakeup_word(NULLPAGE_SIZE + offset_of!(ThreadRepr, status), usize::MAX);
-            crate::syscall::sync::requeue_all();
+            && old_state != ExecutionState::Exited;
+        if !wake_worthy {
+            return;
         }
+        let cur = current_thread_ref();
+        // Exactly the original `!current_thread_ref().map_or(true, |ct| ct.is_critical())`.
+        if !cur.as_ref().is_some_and(|ct| !ct.is_critical()) {
+            let counter = match cur {
+                Some(_) => Some(&locktrack::diag::STATE_WAKE_SKIPPED_CRITICAL),
+                // Only a probe once threading is up: before that there is legitimately no current
+                // thread, and nothing is waiting on this repr yet either.
+                None => locktrack::diag::threading_up()
+                    .then_some(&locktrack::diag::STATE_WAKE_SKIPPED_NO_THREAD),
+            };
+            if let Some(counter) = counter
+                && counter.hit()
+            {
+                // emerglogln takes no console lock, which is what makes it usable from here: in the
+                // case worth reporting the caller is critical by construction. The counter's own
+                // name carries which of the two skips this was; `this_thread()` is u64::MAX when
+                // there is no caller at all.
+                emerglogln!(
+                    "thread {} ({}) {:?} -> {:?}: {} (caller thread {})",
+                    self.id(),
+                    self.objid(),
+                    old_state,
+                    state,
+                    counter.name(),
+                    locktrack::diag::this_thread(),
+                );
+            }
+            return;
+        }
+        self.control_object
+            .object()
+            .wakeup_word(NULLPAGE_SIZE + offset_of!(ThreadRepr, status), usize::MAX);
+        crate::syscall::sync::requeue_all();
     }
 
     pub fn is_current_thread(&self) -> bool {
@@ -1137,8 +1176,19 @@ const STUCK_EXIT_SCANS: u32 = 20;
 /// below is printed. Long waits are ordinary here -- sshd waiting for a connection, the cleaner's
 /// 8s poll -- so this is set past anything the test suite does on purpose.
 const HANG_REPORT_SECS: u64 = 25;
-/// Cap, so a system with a legitimately parked thread costs a few tables, not a stream.
-const MAX_HANG_REPORTS: u32 = 4;
+/// Tables one thread may cause per stuck episode, where an episode ends when the thread moves.
+///
+/// A thread parked legitimately never moves, so it spends this much and then goes quiet for the
+/// rest of the boot. That is the whole point: without it, `MAX_HANG_REPORTS` is a shared budget and
+/// the threads that cross the threshold *first* are exactly the ones entitled to -- sshd, the
+/// cleaner, the service threads that park early and stay parked. A sweep transcript shows the
+/// result: four tables at 25s, all for healthy threads, and then silence through a real wedge five
+/// minutes later that had every cpu halted and nothing left to report it.
+const MAX_THREAD_HANG_REPORTS: u32 = 1;
+/// Cap on the total, so the per-thread rule above cannot be multiplied into a stream by a system
+/// with many parked threads. Set well above the number that park in a healthy boot, since spending
+/// it on them is the failure this is built around.
+const MAX_HANG_REPORTS: u32 = 16;
 
 static HANG_REPORTS: AtomicU32 = AtomicU32::new(0);
 
@@ -1172,6 +1222,11 @@ pub fn check_system_hang() {
                 || thread.get_state() != ExecutionState::Sleeping
             {
                 thread.hang_since.store(now, Ordering::Relaxed);
+                // Having moved is what earns a thread its voice back. A thread that ran and then
+                // stopped is the one worth a table; a thread that has been parked since boot has
+                // already had its say, and this is what stops it from taking the budget again
+                // every 25s for the rest of the run.
+                thread.hang_reports.store(0, Ordering::Relaxed);
                 continue;
             }
             let since = thread.hang_since.load(Ordering::Relaxed);
@@ -1180,6 +1235,17 @@ pub fn check_system_hang() {
                 continue;
             }
             if now.saturating_sub(since) >= HANG_REPORT_SECS * 1_000_000_000 {
+                // Restart this thread's window first, so the early return below still puts a
+                // permanently parked thread on an interval rather than on every scan.
+                thread.hang_since.store(now, Ordering::Relaxed);
+                // Only the scanning cpu writes this, so load/store needs no atomicity beyond the
+                // field's; it also keeps a thread parked for the life of the boot from counting
+                // past the cap forever.
+                let reports = thread.hang_reports.load(Ordering::Relaxed);
+                if reports >= MAX_THREAD_HANG_REPORTS {
+                    continue;
+                }
+                thread.hang_reports.store(reports + 1, Ordering::Relaxed);
                 // Record *who* tripped it, not just that something did. Without this the header
                 // says a thread is stuck and the table lists every thread sorted by id, so the one
                 // that actually crossed the threshold is indistinguishable from the dozens parked
@@ -1187,9 +1253,6 @@ pub fn check_system_hang() {
                 // wrong threads entirely.
                 stuck_id = Some((thread.id(), thread.objid()));
                 any_stuck = true;
-                // Restart this thread's window so a permanently parked thread reports on an
-                // interval rather than on every scan.
-                thread.hang_since.store(now, Ordering::Relaxed);
             }
         }
     });
@@ -1234,6 +1297,11 @@ pub fn check_system_hang() {
             );
         }
     });
+    // The counters are otherwise only printed at shutdown, which a wedged boot never reaches -- so
+    // the one run in a thousand that actually hangs is the one that reports none of them. Printing
+    // them here costs a few lines on a boot already in trouble, and makes a hung transcript
+    // self-contained.
+    locktrack::diag::print_counters(true);
 }
 
 pub fn check_orphan_threads() {

@@ -71,6 +71,7 @@ impl ReferenceRuntime {
     pub fn gc(&self) {
         self.gc_threads();
         self.heap_gc();
+        self.gc_object_cache();
     }
 
     pub fn abort(&self) -> ! {
@@ -246,6 +247,7 @@ impl ReferenceRuntime {
         // Temporary (pagerperf.md): a program compartment's counters would otherwise sit in the
         // ring unprinted, since it exits long before the ring fills.
         secgate::statlog::drain();
+        crate::runtime::object::mapstats::report();
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
             .unwrap();
     }
@@ -308,6 +310,11 @@ impl ReferenceRuntime {
         let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         let (tls, tls_layout, tls_alloc_base) = preinit_unwrap(tls);
+        // `init_core_thread` below maps this thread's repr through a monitor gate, and a
+        // runtime-global lock held across a gate call is the shape that deadlocked `comp_lookup`
+        // against `THREAD_MGR` (see `thread::mgr::impl_spawn`). Only `get_next_tls_info` needs the
+        // manager, so it is released here rather than at the end of the function.
+        drop(tg);
         let _start_3 = Instant::now();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
         let _start_4 = Instant::now();

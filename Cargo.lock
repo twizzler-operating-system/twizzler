@@ -4257,15 +4257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mayheap"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acbc2f58104ec9b149972c3b4108ece000cdad4f6df7c2e691fea572aadeba62"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4997,10 +4988,10 @@ dependencies = [
  "libc",
  "lru",
  "lwext4-rs",
- "mayheap",
  "naming-core",
  "pager-dynamic",
  "rand 0.8.5",
+ "smallvec",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -5245,7 +5236,6 @@ dependencies = [
  "heapless 0.9.2",
  "itertools 0.14.0",
  "libc",
- "mayheap",
  "miette",
  "nvme",
  "object-store",
@@ -5254,6 +5244,7 @@ dependencies = [
  "rand 0.9.2",
  "secgate",
  "slab",
+ "smallvec",
  "stable-vec",
  "tracing",
  "tracing-log",
@@ -7367,6 +7358,7 @@ dependencies = [
  "tracing",
  "twizzler",
  "twizzler-abi",
+ "twizzler-rt-abi",
 ]
 
 [[package]]

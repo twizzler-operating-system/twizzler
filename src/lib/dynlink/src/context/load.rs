@@ -27,7 +27,7 @@ use super::{Context, LoadedOrUnloaded};
 /// The early-boot concern is still worth knowing about if the volume here ever grows: `bootstrap`'s
 /// own library loads do record, and a drain before the monitor exists is console time nothing is
 /// accounting for.
-const LIB_LOAD_STATS: bool = true;
+const LIB_LOAD_STATS: bool = false;
 
 use crate::{
     compartment::{Compartment, CompartmentId},

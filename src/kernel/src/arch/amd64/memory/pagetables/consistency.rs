@@ -398,6 +398,16 @@ impl ArchTlbMgr {
         self.data.has_invalidations()
     }
 
+    /// Targets at or below which the shootdown IPI is sent one cpu at a time instead of broadcast.
+    ///
+    /// Sized small deliberately: the cost being avoided is per *bystander* (a spurious vector plus,
+    /// under virtualization, a vm exit), and the cost being paid is per *target* (an ICR write and
+    /// a delivery-status spin, serially). Both scale, so the win is widest when the target set is a
+    /// small fraction of the machine -- which after PCID revocation is the normal case. Above this
+    /// the serial ICR writes start to cost more than the interrupts they save, and one broadcast is
+    /// the better trade.
+    const MAX_TARGETED_IPIS: usize = 4;
+
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
         if !tls_ready() {
@@ -458,8 +468,13 @@ impl ArchTlbMgr {
         // to use the set we actually sent to rather than re-evaluating the predicate against a
         // cr3 that has since moved on.
         let mut targets = CpuSet::empty();
+        let mut others = 0;
         with_each_active_processor(|p| {
-            if p.id != proc.id && self.data.should_target(p) {
+            if p.id == proc.id {
+                return;
+            }
+            others += 1;
+            if self.data.should_target(p) {
                 p.arch.tlb_shootdown_info.insert(self.data.clone());
                 targets.insert(p.id);
                 count += 1;
@@ -469,7 +484,31 @@ impl ArchTlbMgr {
         if count > 0 {
             trace_tlb_shootdown();
             // Send the IPI, and then do local invalidations.
-            super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
+            //
+            // `targets` was already computed precisely; sending to it rather than broadcasting is
+            // just spending that. A broadcast makes every untargeted cpu take the vector and run
+            // `tlb_shootdown_handler`, and `do_invalidation` then discards it outright for not
+            // matching its cr3 -- which under virtualization is a vm exit bought for nothing. The
+            // trade is that `raw_send_ipi` writes the ICR and spins for delivery status, so N
+            // targeted sends pay that serially against one for a broadcast.
+            //
+            // Most shootdowns sit well under the threshold, because the PCID revocation above has
+            // already dropped every cpu not currently running this address space: `count` is the
+            // number executing in it *right now*, which outside the monitor and the pager is zero
+            // or one. `count == others` short-circuits to the broadcast because then there is no
+            // bystander left to spare and the singles would be pure overhead.
+            if count <= Self::MAX_TARGETED_IPIS && count < others {
+                with_each_active_processor(|p| {
+                    if targets.contains(p.id) {
+                        super::super::super::apic::send_ipi(
+                            Destination::Single(p.id),
+                            TLB_SHOOTDOWN_VECTOR,
+                        );
+                    }
+                });
+            } else {
+                super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
+            }
         }
         trace_tlb_invalidation();
         self.data.do_invalidation();

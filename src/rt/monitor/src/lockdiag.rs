@@ -77,7 +77,7 @@ fn self_id() -> u128 {
 /// Holds over a millisecond happen a few times a boot, so this reports per event rather than
 /// through `statlog`'s ring. The clock read this needs is not the syscall the module doc assumed:
 /// userspace `Instant::now` memoizes the tickrate and is an rdtsc plus a multiply (round 5).
-const REPORT_LONG_HOLDS: bool = true;
+const REPORT_LONG_HOLDS: bool = false;
 const LONG_HOLD_NS: u128 = 5_000_000;
 
 /// 16-bit FNV-1a of a file path, so a hold record can name its site in a u64.
@@ -175,6 +175,59 @@ impl<G: std::ops::DerefMut> std::ops::DerefMut for Watched<G> {
         &mut self.inner
     }
 }
+
+/// The acquisition site of a monitor lock this thread is currently holding, if any.
+///
+/// Only this thread writes its own records, and a record is live for exactly the span in which the
+/// caller is asking, so the read needs no more synchronization than the slot's own atomics. Names
+/// the *monitor* code that is holding a lock, which is what a re-entrant arrival from the runtime
+/// otherwise cannot report: the gate call's own stack says only that the runtime called in.
+pub fn current_hold_site() -> Option<&'static Location<'static>> {
+    let id = self_id();
+    for slot in 0..SLOTS {
+        if SLOT_SEQ[slot].load(Ordering::Acquire) == 0 {
+            continue;
+        }
+        let raw = ((SLOT_HI[slot].load(Ordering::Relaxed) as u128) << 64)
+            | SLOT_LO[slot].load(Ordering::Relaxed) as u128;
+        if raw != id {
+            continue;
+        }
+        let site = SLOT_SITE[slot].load(Ordering::Acquire);
+        if site != 0 {
+            return Some(unsafe { &*(site as *const Location<'static>) });
+        }
+    }
+    None
+}
+
+/// Count, and name the holder of, an unmap that arrived on a thread already inside the monitor.
+///
+/// Before this the path was a `tracing::warn!` and a `return`, i.e. the mapping was leaked and
+/// nothing said so at a level anyone reads. The site is the interesting half: it names which
+/// monitor lock holder dropped an `ObjectHandle`, which is the thing to fix.
+pub fn note_recursive_unmap() {
+    let n = RECURSIVE_UNMAPS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n > MAX_REPORTS as u64 {
+        return;
+    }
+    match current_hold_site() {
+        Some(loc) => klog_println!(
+            "MONLOCK: recursive unmap #{} deferred, holder at {}:{}",
+            n,
+            loc.file(),
+            loc.line()
+        ),
+        None => klog_println!("MONLOCK: recursive unmap #{} deferred, holder unknown", n),
+    }
+}
+
+/// Total recursive unmaps seen, including those past the report cap.
+pub fn recursive_unmaps() -> u64 {
+    RECURSIVE_UNMAPS.load(Ordering::Relaxed)
+}
+
+static RECURSIVE_UNMAPS: AtomicU64 = AtomicU64::new(0);
 
 /// Record that the monitor asked the kernel to force-exit this thread.
 pub fn note_killed(id: ObjID) {

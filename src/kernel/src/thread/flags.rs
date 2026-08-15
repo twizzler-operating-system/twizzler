@@ -105,9 +105,17 @@ pub fn exit_kernel() {
                 .map(|ut| ut.self_ctx)
                 .unwrap_or(0.into())
         {
-            let pending_message = thread.pending_message.swap(0, Ordering::SeqCst);
-            if pending_message != 0 {
-                thread.send_upcall(UpcallInfo::Mailbox(pending_message));
+            // One message per upcall: take only the lowest pending bit and leave the rest
+            // for a later return to user, which `must_return_to_user` keeps asking for as
+            // long as any bit is set.
+            if let Ok(prev) =
+                thread
+                    .pending_message
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |m| {
+                        (m != 0).then(|| m & (m - 1))
+                    })
+            {
+                thread.send_upcall(UpcallInfo::Mailbox(prev.trailing_zeros() as u64));
             }
         }
     }

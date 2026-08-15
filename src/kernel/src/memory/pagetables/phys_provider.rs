@@ -116,15 +116,41 @@ impl Drop for ZeroPageProvider {
 pub struct ContiguousProvider {
     next: Option<PhysAddr>,
     rem: usize,
+    max_peek: usize,
     settings: MappingSettings,
 }
 
 impl ContiguousProvider {
-    /// Construct a new [ContiguousProvider].
+    /// Construct a new [ContiguousProvider]. The range is offered whole, so [Table::map] may cover
+    /// it with large pages where alignment allows.
     pub fn new(start: PhysAddr, len: usize, settings: MappingSettings) -> Self {
         Self {
             next: Some(start),
             rem: len,
+            max_peek: usize::MAX,
+            settings,
+        }
+    }
+
+    /// A range that must be mapped one `page_size` entry at a time.
+    ///
+    /// `Table::can_map_at` tests the length the provider *offers* against the level's page size, so
+    /// a range offered whole becomes a huge page as soon as both addresses are aligned to one. That
+    /// is right for a single frame of that size and wrong for a run of separate smaller frames:
+    /// `Table::map` takes a reference on the frame at the entry's physical address and no others,
+    /// so the huge entry would hold one refcount over memory owned by many frames -- and unmapping
+    /// it would free exactly one of them. Capping what is offered keeps the walk at the leaf level
+    /// while still doing the whole run in one descent.
+    pub fn new_of_page_size(
+        start: PhysAddr,
+        len: usize,
+        page_size: usize,
+        settings: MappingSettings,
+    ) -> Self {
+        Self {
+            next: Some(start),
+            rem: len,
+            max_peek: page_size,
             settings,
         }
     }
@@ -134,7 +160,7 @@ impl PhysAddrProvider for ContiguousProvider {
     fn peek(&mut self) -> Option<PhysMapInfo> {
         Some(PhysMapInfo {
             addr: self.next?,
-            len: self.rem,
+            len: self.rem.min(self.max_peek),
             settings: self.settings,
         })
     }

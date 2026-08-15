@@ -47,10 +47,15 @@ pub struct SecurityContext {
     ///
     /// A `Spinlock`, not a `Mutex`: the page-fault path reads this once per user fault, and a
     /// sleeping-mutex acquire/release pair around a `BTreeMap::get` is most of what the security
-    /// stage costs. The miss arm below does all of its real work -- object lookups, kernel object
-    /// mapping -- before touching this, so the only thing held under it is the map operation
-    /// itself.
-    cache: Spinlock<BTreeMap<ObjID, PermsInfo>>,
+    /// stage costs.
+    ///
+    /// Immutable behind the `Arc`, and replaced wholesale rather than mutated in place, because
+    /// `BTreeMap::insert` allocates -- and this lock is taken with interrupts off, so an
+    /// allocation under it can reach `GlobalPageAlloc::extend` and map megabytes of heap before
+    /// releasing. [`SecurityContext::cache_insert`] builds the replacement outside the lock and
+    /// swaps it in under one, the same shape `VirtContext::register_sctx` uses for its target
+    /// cache. Nothing but a pointer move happens while it is held, on either path.
+    cache: Spinlock<Arc<BTreeMap<ObjID, PermsInfo>>>,
     attached_count: AtomicUsize,
     active_count: AtomicUsize,
 }
@@ -138,10 +143,16 @@ impl SecurityContext {
         if self.kobj.is_none() {
             return PermsInfo::new(KERNEL_SCTX, Protections::all(), Protections::empty());
         }
-        // check the cache to see if we already have something
-        if let Some(cache_entry) = self.cache.lock().get(&_id) {
+        // Take a reference to the map, then walk it with the lock released: the hold is one
+        // refcount bump rather than a tree descent.
+        let cache = {
+            let cache = self.cache.lock();
+            Arc::clone(&*cache)
+        };
+        if let Some(cache_entry) = cache.get(&_id) {
             return *cache_entry;
         }
+        drop(cache);
 
         // by default granted permissions are going to be the most restrictive
         let mut granted_perms =
@@ -230,7 +241,7 @@ impl SecurityContext {
             // no mask for target object
             // final perms are granted_perms & global_mask
             granted_perms.provide &= base.global_mask;
-            self.cache.lock().insert(_id, granted_perms.clone());
+            self.cache_insert(_id, granted_perms);
             return granted_perms;
         };
 
@@ -238,14 +249,42 @@ impl SecurityContext {
         // granted_perms & permmask & (global_mask | override_mask)
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
-        self.cache.lock().insert(_id, granted_perms.clone());
+        self.cache_insert(_id, granted_perms);
         granted_perms
+    }
+
+    /// Memoize one `lookup` answer.
+    ///
+    /// Copy-on-write: the replacement map is built and boxed with the lock released, so the only
+    /// thing done under it is the pointer swap. That costs a clone of the map per miss, which is
+    /// noise next to what produced the entry -- a miss has already done an object lookup, a
+    /// kernel-object mapping and an ECDSA verification per capability.
+    ///
+    /// Last writer wins. Two misses for different objects can race, and the loser's entry is then
+    /// absent from the map that lands. That costs a repeat of the lookup it came from and nothing
+    /// else: every entry here is recomputable, which is what makes this a memo rather than state.
+    fn cache_insert(&self, id: ObjID, perms: PermsInfo) {
+        let cur = {
+            let cache = self.cache.lock();
+            Arc::clone(&*cache)
+        };
+        let mut new = (*cur).clone();
+        new.insert(id, perms);
+        let new = Arc::new(new);
+
+        let old = {
+            let mut cache = self.cache.lock();
+            core::mem::replace(&mut *cache, new)
+        };
+        // Freed with the lock released: this can be the last reference, and dropping a whole map
+        // is exactly the work that must not happen under a spinlock.
+        drop(old);
     }
 
     pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
         Self {
             kobj,
-            cache: Spinlock::new(BTreeMap::new()),
+            cache: Spinlock::new(Arc::new(BTreeMap::new())),
             attached_count: AtomicUsize::new(0),
             active_count: AtomicUsize::new(0),
         }

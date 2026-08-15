@@ -270,7 +270,14 @@ pub fn thread_ctrl(
             let Some(thread) = thread else {
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             };
-            thread.pending_message.store(arg, Ordering::SeqCst);
+            // The mailbox is a bitmask, not a slot: a plain store let a second message
+            // overwrite a first that had not been delivered yet, and the window is wide
+            // because delivery waits for the thread to return to user in its own security
+            // context. A message therefore names a bit, and zero means "nothing pending".
+            if arg == 0 || arg >= u64::BITS as u64 {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            }
+            thread.pending_message.fetch_or(1 << arg, Ordering::SeqCst);
             if thread.reset_sync_sleep() {
                 add_to_requeue(thread);
             }

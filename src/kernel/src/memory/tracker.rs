@@ -188,10 +188,13 @@ impl MemoryTracker {
 
     fn wake(&self) {
         let g = current_thread_ref().map(|ct| ct.enter_critical());
-        let mut waiters = self.waiters.lock();
-        add_all_to_requeue(waiters.take().into_iter());
+        // Take under the lock, requeue outside it -- see `Request::signal`, which is the same
+        // shape for the same reason. Detaching the list is the claim: the blocking path above
+        // unlinks itself under this same lock when it decides not to block, so a thread is either
+        // in the list we just took or gone from it, never both.
+        let waiters = self.waiters.lock().take();
+        add_all_to_requeue(waiters);
         requeue_all();
-        drop(waiters);
         drop(g);
     }
 
@@ -409,6 +412,10 @@ pub fn start_reclaim_thread() {
         .poll()
         .expect("page tracker not initialized")
         .start_reclaim_thread();
+}
+
+pub fn signal_waiters() {
+    TRACKER.poll().expect("page tracker not initialized").wake();
 }
 
 /// Hand frames to the reclaim thread.

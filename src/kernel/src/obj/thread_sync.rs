@@ -238,6 +238,13 @@ impl<'a> KeyAdapter<'a> for ThreadSleepAdapter {
     }
 }
 
+/// Waiters claimed per pass of [Object::wakeup_word]. Sized so the overwhelmingly common wake --
+/// one or a handful of threads off a queue doorbell -- takes a single pass and never re-locks.
+const WAKE_BATCH: usize = 16;
+
+/// Threads claimed under `sleep_info` and scheduled after it is dropped.
+type WakeBatch = heapless::Vec<ThreadRef, WAKE_BATCH>;
+
 struct SleepEntry {
     of_obj: ObjID,
     threads: RBTree<ThreadSleepAdapter>,
@@ -265,20 +272,24 @@ impl SleepEntry {
         cursor.remove();
     }
 
-    pub fn wake_n(&mut self, max_count: usize) -> usize {
-        let mut count = 0;
+    /// Claim up to `max_count` waiters into `batch`, stopping early if it fills. Returns whether
+    /// the batch filled, i.e. whether there may be more to claim on another pass.
+    ///
+    /// Claiming is `reset_sync_sleep` plus the removal, both under the caller's `sleep_info` lock;
+    /// scheduling the claimed threads is [Object::wakeup_word]'s job, once that lock is gone.
+    fn claim_n(&mut self, max_count: usize, batch: &mut WakeBatch) -> bool {
         let mut cursor = self.threads.front_mut();
-        while !cursor.is_null() && count < max_count {
+        while !batch.is_full() && batch.len() < max_count && !cursor.is_null() {
             let thread = cursor.get().unwrap();
             if thread.reset_sync_sleep() {
                 let thread = cursor.remove().unwrap();
-                add_to_requeue(thread);
-                count += 1;
+                // Safety: not full, checked above.
+                unsafe { batch.push_unchecked(thread) };
             } else {
                 cursor.move_next();
             }
         }
-        return count;
+        batch.is_full()
     }
 }
 
@@ -348,19 +359,77 @@ impl SleepInfo {
         }
     }
 
-    pub fn wake_n(&mut self, offset: usize, max_count: usize) -> usize {
+    fn claim_n(&mut self, offset: usize, max_count: usize, batch: &mut WakeBatch) -> bool {
         if let Some(se) = self.word(offset) {
-            se.wake_n(max_count)
+            se.claim_n(max_count, batch)
         } else {
-            0
+            false
         }
     }
 }
 
 impl Object {
+    /// Wake up to `count` threads sleeping on `offset`, returning how many were woken.
+    ///
+    /// Claim under `sleep_info`, schedule outside it. `add_to_requeue`'s fast path is
+    /// `schedule_thread` -- a topology walk, a remote run queue lock and a wakeup IPI -- and
+    /// running it per waiter under this spinlock put all of that in an interrupts-off region, on
+    /// the path every `sys_thread_sync` wake in the system takes. It also held a per-object
+    /// spinlock across a run queue lock, which fixes an ordering nothing states or enforces, and
+    /// dropped `ThreadRef`s under it, which is the `Thread::drop` -> `IdCounter::release` ->
+    /// sleeping-mutex wedge `remove_from_requeue` documents.
+    ///
+    /// Correctness of deferring: a claim is winning `reset_sync_sleep` *and* taking the entry, both
+    /// done under the lock here, and every other path to scheduling one of these threads must win
+    /// that same flag first. So a claimed thread is ours alone until we requeue it.
+    ///
+    /// Re-locking between passes is invisible to callers. A `count` at or below `WAKE_BATCH` --
+    /// every bounded wake -- takes one pass and never unlocks mid-walk, so its semantics are
+    /// unchanged outright. Above that, a sleeper cannot slip in between passes and take a wake
+    /// meant for someone already queued: `setup_sleep_word` re-reads the word under this same lock
+    /// and only inserts if the word still says sleep, and the waker writes the word before getting
+    /// here.
     pub fn wakeup_word(&self, offset: usize, count: usize) -> usize {
-        let mut sleep_info = self.sleep_info.lock();
-        sleep_info.wake_n(offset, count)
+        // No critical guard here, and the reason is worth stating because the obvious symmetry with
+        // `Request::signal` and `interrupt.rs` is wrong at this site: `sleep_info` is a *sleeping*
+        // `Mutex`, not a `Spinlock`, and `Mutex::lock` panics outright in a critical context. A
+        // guard around this drain therefore dies on the first thread exit
+        // (`wakeup_word` <- `set_state_and_code` <- `Thread::exit`), deterministically.
+        //
+        // The premise behind wanting one does not hold either. A sleeping mutex masks no
+        // interrupts and prevents no preemption, so the drain this replaced was already
+        // preemptible; what batching adds is only that a claimed waiter now sits in `batch` on
+        // this stack rather than going onto a run queue adjacently. That window is real -- a
+        // preemption that exits this thread mid-drain loses those wakeups with their sleep flags
+        // already consumed -- but it is exactly the exposure `requeue_all` has always carried,
+        // claiming into its own batch with no guard on the same path. Closing it here alone would
+        // buy nothing while `requeue_all` is reached from every one of these callers.
+        //
+        // The fix if it ever needs closing, for both: claim straight onto the requeue list under
+        // the lock rather than onto the stack, and leave only `requeue_all` outside. That trades a
+        // requeue-list insert and removal onto every wake, so it wants measuring rather than
+        // assuming.
+        let mut woken = 0;
+        while woken < count {
+            let mut batch = WakeBatch::new();
+            let maybe_more = {
+                let mut sleep_info = self.sleep_info.lock();
+                sleep_info.claim_n(offset, count - woken, &mut batch)
+            };
+            if batch.is_empty() {
+                break;
+            }
+            woken += batch.len();
+            for thread in batch {
+                add_to_requeue(thread);
+            }
+            // A short batch means the walk reached the end of the sleep entry or ran out of
+            // `count`; only a full one says there may be more waiting.
+            if !maybe_more {
+                break;
+            }
+        }
+        woken
     }
 
     pub fn add_device_interrupt(&self, vector: u32, num: usize, offset: usize) {

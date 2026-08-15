@@ -17,10 +17,22 @@ static RESULT: OnceLock<Report> = OnceLock::new();
 /// cannot promise that: stdout is line-buffered at 1KiB and a full report runs to several KiB, so
 /// it left as half a dozen writes with room between them. Kernel logging landed inside one, which
 /// the host then could not parse -- a run whose tests had all passed was recorded as "no test
-/// report". One `sys_kernel_console_write` of the whole buffer holds the serial port lock for the
-/// entire slice, so nothing can interleave into it.
+/// report". One `sys_kernel_console_write` of the whole buffer fixes the guest's half of that: the
+/// kernel passes the slice to the uart in one call, holding the port lock across it.
+///
+/// It was only half. The kernel's own prints were the fragmented ones -- `core::fmt` calls
+/// `write_str` per format fragment, and each became its own locked write -- so this line could not
+/// be split but could land *inside* one of theirs. Same corruption, other side, and it recurred:
+/// three runs of a 4661-run sweep passed every test and were recorded as "no test report", one of
+/// them inside a line from `emerglogln`, which holds no lock at all and cannot be made to. Kernel
+/// messages are now single writes too (`kernel/src/log.rs`, `LineWriter`).
+///
+/// The leading newline covers the last way to land mid-line, which no amount of atomicity fixes:
+/// being *appended* to a line someone else has not finished. libtest writes `test <name> ... ` and
+/// its `ok` as two writes, so anything emitted between them shares that line -- harmless for the
+/// heartbeats, fatal for this one. Starting our own line costs a blank line per report.
 fn emit_report(report: &Report) {
-    let line = format!("REPORT {}\n", serde_json::to_string(report).unwrap());
+    let line = format!("\nREPORT {}\n", serde_json::to_string(report).unwrap());
     sys_kernel_console_write(
         KernelConsoleSource::Console,
         line.as_bytes(),

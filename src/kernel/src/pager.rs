@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::time::Duration;
 
-use inflight::InflightManager;
+use inflight::{Inflight, InflightManager};
 use itertools::Itertools;
 use request::ReqKind;
 use twizzler_abi::{
@@ -15,6 +15,7 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
+    instant::Instant,
     memory::{
         context::virtmem::region::MapRegion,
         frame::{PHYS_LEVEL_LAYOUTS, get_frame},
@@ -32,7 +33,7 @@ use crate::{
 };
 
 mod inflight;
-mod profile;
+pub(crate) mod profile;
 mod queues;
 mod request;
 
@@ -49,6 +50,43 @@ fn inflight_mgr() -> &'static Mutex<InflightManager> {
     INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
 }
 
+/// Take the inflight-manager lock, timing the acquisition.
+///
+/// One global mutex guards every request's admission, coalescing, wait setup and completion, so it
+/// is on both the submit and the completion path of every page-in and taken again on each turn of
+/// the wait loop. Whether that serializes is a question worth asking only now that requests
+/// actually overlap; the timing is an `Instant::now()` pair, which is two `rdtsc`s.
+fn lock_inflight_mgr() -> LockGuard<'static, InflightManager> {
+    let start = crate::instant::Instant::now();
+    let guard = inflight_mgr().lock();
+    profile::PAGER_PROFILE.mgr_lock((crate::instant::Instant::now() - start).as_nanos() as u64);
+    guard
+}
+
+/// Page-in errors the pager reported, held until the thread that was waiting can be told.
+///
+/// An error completion carries DONE, so the request is removed and its slot cleared before the
+/// waiter it woke gets to run -- leaving that waiter unable to tell "the pages arrived" from "the
+/// pager gave up". It returns Ok with the pages still absent, the faulting instruction retries,
+/// and the fault repeats forever; `log_fault`'s refault counter can see that loop, but nothing
+/// ends it. This bridges the gap so the fault can become a fault.
+///
+/// Deliberately *not* "pages absent after completion", which is a normal outcome: a prefetch the
+/// pager declines is acked DONE with no pages, and the retry that follows is by design. Only an
+/// error recorded here fails the wait, because only an error is reproduced by retrying.
+///
+/// Taken rather than read, so one error faults one waiter and a fault arriving later starts clean
+/// rather than inheriting a failure that may well have been transient.
+static PAGE_IN_ERRORS: Mutex<BTreeMap<ObjID, TwzError>> = Mutex::new(BTreeMap::new());
+
+pub(super) fn record_page_in_error(id: ObjID, err: TwzError) {
+    PAGE_IN_ERRORS.lock().insert(id, err);
+}
+
+fn take_page_in_error(id: ObjID) -> Option<TwzError> {
+    PAGE_IN_ERRORS.lock().remove(&id)
+}
+
 pub fn check_timed_out_requests() {
     // Runs on the idle thread. Calling inflight_mgr() here would let the *lowest priority* thread
     // in the system become the Once initializer; a higher-priority thread reaching
@@ -58,7 +96,7 @@ pub fn check_timed_out_requests() {
     if !INFLIGHT_MGR.is_complete() {
         return;
     }
-    let mgr = inflight_mgr().lock();
+    let mgr = lock_inflight_mgr();
     if !mgr.is_ready() {
         return;
     }
@@ -187,11 +225,19 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     // reached the pager at all), and speculating on every one of those would be speculating on
     // objects that have been resident for a long time already.
     let mut asked_pager = false;
+    let entered = Instant::now();
     loop {
+        let iter_start = Instant::now();
         let lo = crate::obj::lookup_object(id, LookupFlags::empty());
         log::trace!("lookup_object_and_wait: id = {}, result = {:?}", id, lo);
+        let looked_up = Instant::now();
+        profile::lookupstats::iteration((looked_up - iter_start).as_nanos() as u64);
         match lo {
             crate::obj::LookupResult::Found(arc) => {
+                profile::lookupstats::finished(
+                    (looked_up - entered).as_nanos() as u64,
+                    !asked_pager,
+                );
                 if asked_pager {
                     prefetch_first_region(&arc);
                 }
@@ -206,7 +252,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             _ => {}
         }
 
-        let mut mgr = inflight_mgr().lock();
+        let mut mgr = lock_inflight_mgr();
         if !mgr.is_ready() {
             return None;
         }
@@ -221,14 +267,22 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             queues::submit_pager_request(pager_req, None, inflight.rk.clone());
         });
         asked_pager = true;
+        let submitted = Instant::now();
+        profile::lookupstats::submitted((submitted - looked_up).as_nanos() as u64);
 
-        let mut mgr = inflight_mgr().lock();
+        let mut mgr = lock_inflight_mgr();
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
             crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             finish_blocking(guard);
         };
+        let woke = Instant::now();
+        profile::lookupstats::blocked((woke - submitted).as_nanos() as u64);
+        profile::lookupstats::woke(
+            submitted.into_time_span().as_nanos() as u64,
+            woke.into_time_span().as_nanos() as u64,
+        );
     }
 }
 
@@ -296,7 +350,7 @@ fn pages_present(obj: &ObjectRef, page: PageNumber, len: usize) -> bool {
 /// [PagerFlags::PREFETCH], which conflated two independent things: what the *pager* should do with
 /// the request (route it to a bulk lane, cap and decline it) and whether the *caller* waits. A
 /// map-time head fetch wants the second without the first.
-fn get_pages_and_wait<'a>(
+fn submit_page_request<'a>(
     obj: &'a ObjectRef,
     mut page: PageNumber,
     mut len: usize,
@@ -305,6 +359,7 @@ fn get_pages_and_wait<'a>(
     mut tree: LockGuard<'a, ObjectPageTable>,
     used_pager: &mut bool,
     required: Option<(PageNumber, usize)>,
+    out: &mut heapless::Vec<Inflight, MAX_REQ_BATCH>,
 ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
     // Drop the pages at the head of this range that the object has acquired since the range was
     // built. `ensure_in_core_pager` filters against the page tables under the lock, but
@@ -345,7 +400,7 @@ fn get_pages_and_wait<'a>(
         page = page.offset(present);
         len -= present;
     }
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = lock_inflight_mgr();
     if !mgr.is_ready() {
         return Err(ResourceError::Unavailable.into());
     }
@@ -375,7 +430,7 @@ fn get_pages_and_wait<'a>(
         log::warn!("out of pager request slots");
         drop(mgr);
         schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
-        return get_pages_and_wait(
+        return submit_page_request(
             obj,
             page,
             len,
@@ -384,6 +439,7 @@ fn get_pages_and_wait<'a>(
             tree,
             used_pager,
             required,
+            out,
         );
     };
     drop(mgr);
@@ -395,55 +451,133 @@ fn get_pages_and_wait<'a>(
         submitted = true;
         queues::submit_pager_request(pager_req, Some(obj), inflight.rk.clone());
     });
+    let _ = submitted;
+    // Handed back rather than waited on here. See [wait_for_page_requests].
+    let _ = out.push(inflight);
+    return Ok(obj.lock_page_tables());
+}
 
-    if !speculative {
-        // Wait for the pages the caller actually asked for, not for the whole request.
-        //
-        // `ensure_in_core_pager` widens a one-page touch to an entire large-page region -- 1024
-        // pages is the shape that reaches the pager on a first touch (`pagerperf.md` 11) -- and the
-        // request completes as a unit, so a thread that needed one page slept for four megabytes of
-        // transfer. `required` is what that thread asked for before the widening; once it is
-        // backed, the rest of the request is nobody's critical path and finishes behind us.
-        //
-        // Correct against a lost wakeup because the check happens before each `setup_wait`, and
-        // `setup_wait` itself declines to park on a request that is already done -- so a completion
-        // landing in either gap is seen rather than slept through.
-        let mut early = false;
-        loop {
-            if required.is_some_and(|(rp, rlen)| pages_present(obj, rp, rlen)) {
+/// Cap on ranges submitted before waiting. Matches the `reqs` vector `ensure_in_core_pager` fills,
+/// which flushes at 16.
+const MAX_REQ_BATCH: usize = 16;
+
+/// How many times [`wait_for_page_requests`] re-checks its pages after `setup_wait` declines
+/// before handing the fault back to be retried. Small on purpose: this absorbs the race where the
+/// request completes between submit and park, and nothing else. A range that was answered without
+/// our pages needs a fresh request, which only the caller can issue.
+const MAX_WAIT_DECLINES: u32 = 8;
+
+/// Wait until the caller's `required` pages are backed, having already submitted every range.
+///
+/// **The split from [submit_page_request] is the point.** `ensure_in_core` used to call one
+/// submit-and-wait per range in sequence, so a fault whose widened region produced several ranges
+/// issued the first, slept until it landed, issued the second, slept again. That made a faulting
+/// thread a strictly serial pipeline of depth one, and it is why concurrency measured equal to the
+/// thread count at every layer below: `pagepar`'s 4 threads gave the pager `max 4 demand in flight`
+/// and the object store `max 1 in flight`, against a pool sized for 2x the core count.
+///
+/// Parking on the range that actually contains `required` rather than on whichever was submitted
+/// first: any of them would be correct -- the loop re-checks the pages themselves and re-parks --
+/// but waking on an unrelated range's completion just to find our own pages still absent is a
+/// wasted round trip, and with several ranges in flight that is now the common case rather than an
+/// impossible one.
+fn wait_for_page_requests(
+    obj: &ObjectRef,
+    inflights: &[Inflight],
+    required: Option<(PageNumber, usize)>,
+) {
+    if inflights.is_empty() {
+        return;
+    }
+    // The one covering the caller's pages, else the first: with no required range the old
+    // behaviour is to wait for the whole thing, and any of them serves to park on.
+    let target = required
+        .and_then(|(rp, rlen)| {
+            inflights.iter().find(|i| match &i.rk {
+                request::ReqKind::PageData(_, s, l, _) => {
+                    *s <= rp.num() && s + l >= rp.num() + rlen
+                }
+                _ => false,
+            })
+        })
+        .unwrap_or(&inflights[0]);
+
+    // Wait for the pages the caller actually asked for, not for the whole request.
+    //
+    // `ensure_in_core_pager` widens a one-page touch to an entire large-page region -- 1024
+    // pages is the shape that reaches the pager on a first touch (`pagerperf.md` 11) -- and the
+    // request completes as a unit, so a thread that needed one page slept for four megabytes of
+    // transfer. `required` is what that thread asked for before the widening; once it is
+    // backed, the rest of the request is nobody's critical path and finishes behind us.
+    //
+    // Correct against a lost wakeup because the check happens before each `setup_wait`, and
+    // `setup_wait` itself declines to park on a request that is already done -- so a completion
+    // landing in either gap is seen rather than slept through.
+    let mut early = false;
+    let mut declines = 0;
+    match required {
+        Some((rp, rlen)) => loop {
+            if pages_present(obj, rp, rlen) {
                 // Only an early exit if the request is *still running*. "The required pages are
                 // present" is trivially true once the whole request has completed, so counting
                 // that would measure nothing -- and the pager sends one completion per contiguous
                 // run, so a whole transfer can arrive as a single batch, in which case waking on
                 // it saves nothing at all. This is the difference between the two.
-                early = inflight_mgr()
-                    .lock()
-                    .with_request(&inflight.rk, |r| !r.done())
+                early = lock_inflight_mgr()
+                    .with_request(&target.rk, |r| !r.done())
                     .unwrap_or(false);
                 break;
             }
-            let mut mgr = inflight_mgr().lock();
+            let mut mgr = lock_inflight_mgr();
             let thread = current_thread_ref().unwrap();
-            let Some(guard) = mgr.setup_wait(&inflight, &thread) else {
-                break;
+            let Some(guard) = mgr.setup_wait(target, &thread) else {
+                // The request we meant to park on is gone: completed, or its slot recycled under
+                // us (see `InflightManager::setup_wait`, whose comment says callers "re-check
+                // their own condition and come back round" -- this one did not). Returning here
+                // sends the caller back through an entire fault, and the refault re-submits a
+                // request that can collide the same way: `tcgheavy/round3` churned slot 0 that
+                // way 843 times. Re-check the pages instead, since the common reason the request
+                // finished is that they landed.
+                //
+                // Bounded, and a yield rather than a spin: a request that finished without
+                // serving our range never will, and only the caller re-submitting can make
+                // progress. Falling out after that is the old behaviour, kept as the escape.
+                drop(mgr);
+                declines += 1;
+                if declines >= MAX_WAIT_DECLINES {
+                    break;
+                }
+                schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+                continue;
             };
             drop(mgr);
             crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             waitstats::park();
             finish_blocking(guard);
-            // Without a required range there is nothing to re-check: this is the old behaviour of
-            // one wait for the whole request.
-            if required.is_none() {
-                break;
+        },
+        // Nothing narrower to re-check, so every range has to finish: a caller with no required
+        // range (preload, COW clone) wants all of what it asked for, and with the submit loop
+        // above there are now several requests carrying it rather than one.
+        None => {
+            for inflight in inflights {
+                let mut mgr = lock_inflight_mgr();
+                let thread = current_thread_ref().unwrap();
+                // One park per range, exactly as the old single-range path did: `signal` fires on
+                // every batch, so this returns on the first of them rather than at DONE.
+                if let Some(guard) = mgr.setup_wait(inflight, &thread) {
+                    drop(mgr);
+                    crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
+                    waitstats::park();
+                    finish_blocking(guard);
+                }
             }
         }
-        waitstats::finish(early);
     }
-    Ok(obj.lock_page_tables())
+    waitstats::finish(early);
 }
 
 fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = lock_inflight_mgr();
     if !mgr.is_ready() {
         return;
     }
@@ -461,7 +595,7 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
         queues::submit_pager_request(pager_req, obj, inflight.rk.clone());
     });
 
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = lock_inflight_mgr();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -483,7 +617,7 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
 }
 
 fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = lock_inflight_mgr();
     if !mgr.is_ready() {
         return;
     }
@@ -506,7 +640,7 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
         return;
     }
 
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = lock_inflight_mgr();
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -605,8 +739,11 @@ pub fn ensure_in_core<'a>(
         guard = obj.lock_page_tables();
     }
 
+    // Every range onto the queue before parking on any of them. The wait is what used to sit
+    // inside this loop, and moving it out is the whole change: see [wait_for_page_requests].
+    let mut inflights = heapless::Vec::<Inflight, MAX_REQ_BATCH>::new();
     for (req_page, req_len) in reqs {
-        guard = get_pages_and_wait(
+        guard = submit_page_request(
             obj,
             *req_page,
             *req_len,
@@ -615,10 +752,41 @@ pub fn ensure_in_core<'a>(
             guard,
             used_pager,
             required,
+            &mut inflights,
         )?;
+        if inflights.is_full() {
+            break;
+        }
     }
 
-    Ok(guard)
+    if speculative {
+        return Ok(guard);
+    }
+    // `pages_present` and `setup_wait` both take locks this holds, and the thread is about to
+    // sleep -- holding the object's page tables across that is what `get_pages_and_wait` dropped
+    // them for.
+    drop(guard);
+    wait_for_page_requests(obj, &inflights, required);
+
+    // Only when the pages the caller blocked on are still missing: an error against some other
+    // part of a widened request says nothing about whether this thread can proceed.
+    // TODO: remove this.
+    if let Some((rp, rlen)) = required {
+        if !inflights.is_empty() && !pages_present(obj, rp, rlen) {
+            if let Some(err) = take_page_in_error(obj.id()) {
+                log::warn!(
+                    "pager failed to supply pages {}..{} of object {}: {}",
+                    rp,
+                    rp.offset(rlen),
+                    obj.id(),
+                    err
+                );
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(obj.lock_page_tables())
 }
 
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
@@ -712,7 +880,7 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {
-    let mgr = inflight_mgr().lock();
+    let mgr = lock_inflight_mgr();
     if !mgr.is_ready() {
         return;
     }
@@ -730,7 +898,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     let inflights = ranges
         .iter()
         .map(|range| {
-            let mut mgr = inflight_mgr().lock();
+            let mut mgr = lock_inflight_mgr();
             let req = ReqKind::new_pager_memory(*range);
             loop {
                 if let Ok(inflight) = mgr.add_request(req.clone()) {
@@ -739,7 +907,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
                 log::warn!("out of pager request slots");
                 drop(mgr);
                 let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(100)));
-                mgr = inflight_mgr().lock();
+                mgr = lock_inflight_mgr();
             }
         })
         .collect::<Vec<_>>();
@@ -753,7 +921,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
 
     if wait {
         for inflight in &inflights {
-            let mut mgr = inflight_mgr().lock();
+            let mut mgr = lock_inflight_mgr();
             let thread = current_thread_ref().unwrap();
             if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
                 drop(mgr);

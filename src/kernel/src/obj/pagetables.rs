@@ -22,16 +22,16 @@ use crate::{
 const MAX_INVL_TARGETS: usize = 8;
 const MAX_INVLS: usize = 4;
 
-/// What became of a page the pager delivered.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PageInstall {
-    Installed,
-    /// A 4 KiB page was already there.
-    PresentSmall,
-    /// A large page already covers the offset. Worth counting apart from the small case: one
+/// What became of a run of pages the pager delivered.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct InstallTally {
+    pub installed: usize,
+    /// Pages the object already held, so the delivery was wasted.
+    pub dup: usize,
+    /// Of `dup`, those a large page already covers. Worth counting apart from the small case: one
     /// overlapping request that loses the race to a merge has every one of its pages in that
     /// 2 MiB region rejected, so a handful of merges can account for a great many duplicates.
-    PresentLarge,
+    pub dup_large: usize,
 }
 
 pub struct ObjectPageTable {
@@ -325,6 +325,70 @@ impl ObjectPageTable {
         r
     }
 
+    /// Install a contiguous run of 4 KiB frames in one descent of the page tables.
+    ///
+    /// [`Self::map_page`] costs a walk from the root, a frame-allocator precharge and an
+    /// invalidation pass *per page*, and the pager delivers ~130 pages per completion; this pays
+    /// each of those once for the run. `Table::map` skips entries that are already present, taking
+    /// no reference on their frames, so a run can be mapped whole without first being split around
+    /// the pages the object turns out to hold.
+    pub fn map_pages(
+        &mut self,
+        offset: u64,
+        start: PhysAddr,
+        npages: usize,
+    ) -> Result<(), TwzError> {
+        if npages == 0 {
+            return Ok(());
+        }
+        let len = npages * PageNumber::PAGE_SIZE;
+        let mut consist = Consistency::new_object_tables();
+        let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
+        let mut fa = take_or_new_frame_allocator();
+        fa.precharge(
+            cursor.max_number_new_tables(Self::top_level(), 0),
+            FrameAllocFlags::WAIT_OK,
+        );
+        // Page-sized offers, not the whole run: these are separate frames, and a huge entry over
+        // them would hold one refcount over memory owned by 512 of them. See
+        // [`ContiguousProvider::new_of_page_size`].
+        let mut phys = ContiguousProvider::new_of_page_size(
+            start,
+            len,
+            PageNumber::PAGE_SIZE,
+            MappingSettings::default_user(),
+        );
+        let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
+        self.run_consistency(consist).run_all();
+        r
+    }
+
+    /// Which pages of a run the object already holds, and whether to a large entry.
+    ///
+    /// One descent, where asking per page was two of them each -- `is_empty_at_level` and then a
+    /// `readmap` to tell a 4 KiB entry from the large page covering it. The reader yields only
+    /// present entries, so what it does not report is what [`Self::map_pages`] will install.
+    fn tally_present(&mut self, offset: u64, npages: usize) -> InstallTally {
+        let len = npages * PageNumber::PAGE_SIZE;
+        let end = offset + len as u64;
+        let mut tally = InstallTally::default();
+        for info in self.readmap(offset, len) {
+            // A large entry reports its own aligned base and length, either of which can reach
+            // outside the run, so count only the overlap.
+            let lo = info.vaddr().raw().max(offset);
+            let hi = (info.vaddr().raw().saturating_add(info.len() as u64)).min(end);
+            let pages = hi.saturating_sub(lo) as usize / PageNumber::PAGE_SIZE;
+            tally.dup += pages;
+            if info.len() > PageNumber::PAGE_SIZE {
+                tally.dup_large += pages;
+            }
+        }
+        tally.dup = tally.dup.min(npages);
+        tally.dup_large = tally.dup_large.min(tally.dup);
+        tally.installed = npages - tally.dup;
+        tally
+    }
+
     pub fn readmap(&'_ mut self, offset: u64, len: usize) -> MapReader<'_> {
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         self.mapper.readmap(cursor)
@@ -586,34 +650,30 @@ impl Object {
         pt.map_page(pn.as_byte_offset() as u64, frame).unwrap();
     }
 
-    /// Install `frame` at `pn`, unless the object already has a page there. Reports which of the
-    /// two happened, and if the page was lost, to what.
+    /// Install `npages` contiguous frames starting at `start` at object page `pn`, skipping any
+    /// page the object already holds. Reports how the run was disposed of.
     ///
     /// The pager can deliver a page the object acquired between the request being issued and the
     /// completion landing; two overlapping in-flight requests produce those by construction, since
     /// `add_request` coalesces only on an exact range. `Table::map` already declines to overwrite a
-    /// present entry, so the frame was dropped either way -- what this skips is doing the whole
-    /// mapping walk to find that out: a frame allocator, a precharge, a consistency pass and its
-    /// invalidation, per duplicate page.
-    pub fn add_frame_if_absent(&self, pn: PageNumber, frame: FrameRef) -> PageInstall {
+    /// present entry -- and takes no reference on its frame, so the caller's release still frees it
+    /// -- which is what lets the whole run go down in one call rather than being split around them.
+    ///
+    /// Taken as a run rather than per page because everything here is charged per *call*, not per
+    /// page: one lock acquisition, one presence pass, one walk from the root, one precharge, one
+    /// invalidation. At ~130 pages a completion that is the difference between 130 TLB shootdown
+    /// rounds and one.
+    pub fn add_frames_if_absent(
+        &self,
+        pn: PageNumber,
+        start: PhysAddr,
+        npages: usize,
+    ) -> InstallTally {
         let mut pt = self.lock_page_tables();
         let offset = pn.as_byte_offset() as u64;
-        if !pt.is_empty_at_level(offset, 0) {
-            // Only walked for a page that is already lost, so this second walk costs nothing that
-            // was going to be useful, and it is the only way to tell the two apart:
-            // `is_empty_at_level` reports a large-page leaf and a present 4 KiB entry alike.
-            let large = pt
-                .readmap(offset, PageNumber::PAGE_SIZE)
-                .next()
-                .is_some_and(|info| info.len() > PageNumber::PAGE_SIZE);
-            return if large {
-                PageInstall::PresentLarge
-            } else {
-                PageInstall::PresentSmall
-            };
-        }
-        pt.map_page(offset, frame).unwrap();
-        PageInstall::Installed
+        let tally = pt.tally_present(offset, npages);
+        pt.map_pages(offset, start, npages).unwrap();
+        tally
     }
 
     pub fn cow_clone_page_tables(self: &ObjectRef) -> Result<ObjectPageTable, TwzError> {

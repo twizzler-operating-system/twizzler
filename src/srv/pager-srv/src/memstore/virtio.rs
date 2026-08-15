@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_io::block_on;
 use object_store::{
-    DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, MAYHEAP_LEN, PAGE_SIZE,
+    DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, INLINE_LEN, PAGE_SIZE,
 };
 use twizzler::{
     error::{NamingError, ResourceError},
@@ -139,7 +139,7 @@ impl PagedDevice for VirtioMem {
         _obj_start_page: i64,
         _obj_nr_pages: u32,
         pages: &[DevicePage],
-        phys_list: &mut mayheap::Vec<PagedPhysMem, MAYHEAP_LEN>,
+        phys_list: &mut object_store::Vec<PagedPhysMem, INLINE_LEN>,
     ) -> Result<()> {
         // TODO: recover these.
         phys_list.clear();

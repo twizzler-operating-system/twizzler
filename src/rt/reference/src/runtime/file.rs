@@ -769,7 +769,9 @@ impl ReferenceRuntime {
         } else {
             None
         };
+        let t_open = std::time::Instant::now();
         let elem = kinds::open(existing_fd, kind, bind_info, bind_info_len, open_opt)?;
+        let kinds_ns = t_open.elapsed().as_nanos() as u64;
 
         if elem.is_none() && existing_fd.is_none() {
             return Err(TwzError::NOT_SUPPORTED);
@@ -827,6 +829,7 @@ impl ReferenceRuntime {
             elem.flags.store(existing_flags, Ordering::SeqCst);
         }
 
+        let t_fd = std::time::Instant::now();
         let mut binding = get_fd_slots().lock().unwrap();
 
         let fd = if let Some(fd) = existing_fd {
@@ -838,6 +841,11 @@ impl ReferenceRuntime {
         .ok_or(ResourceError::OutOfNames)?;
 
         drop(binding);
+        kinds::openstats::record_outer(
+            kinds_ns,
+            t_fd.elapsed().as_nanos() as u64,
+            t_open.elapsed().as_nanos() as u64,
+        );
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
@@ -1194,6 +1202,12 @@ impl ReferenceRuntime {
         for i in 0..end {
             let name = &names[i];
             let Ok(entry_name) = name.name() else {
+                // The index is the caller's cursor -- it advances `off` by the count returned, so
+                // compacting past a bad name would slide every later entry down and desynchronize
+                // the next chunk. Write an empty name instead: `continue` alone left this slot
+                // holding whatever the previous chunk put there, which a caller reusing its buffer
+                // (libstd's `ReadDir` does) reads back as a duplicate of an unrelated entry.
+                buf[i] = twizzler_rt_abi::fd::NameEntry::default();
                 continue;
             };
             let ne = if name.kind == NsNodeKind::SymLink {

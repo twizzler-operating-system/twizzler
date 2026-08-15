@@ -70,6 +70,130 @@ pub struct VirtContext {
 /// it without taking any lock. See [`VirtContext::switch_to_kernel_context`].
 static KERNEL_ARCH_TARGET: Once<ArchContextTarget> = Once::new();
 
+/// `allocate_chunk` traffic, printed at debug shutdown next to the other kernel profiles.
+///
+/// What this is for: every kernel heap allocation ferroc cannot satisfy from memory it already
+/// holds lands in [`KernelMemoryContext::allocate_chunk`] and takes `GLOBAL_PAGE_ALLOC`, one
+/// spinlock for the whole machine -- and on the growth path it holds that lock across a frame
+/// allocation per page plus a full `arch.map`, TLB shootdown included. Whether that matters
+/// depends entirely on the call rate, which nothing measured: ferroc's slabs may absorb
+/// essentially all of it, in which case the lock is uncontended and the growth path is a boot-time
+/// cost, or they may not.
+///
+/// Counts are unconditional -- a relaxed increment on a path that already takes a global spinlock
+/// is nothing -- but only growth is timed, since it is rare and already expensive enough that two
+/// clock reads are noise. Deliberately no timing on the fast path: that is the hot one, and
+/// `TIMING_ON`-style gating would answer a question (`how long is the lock held`) that the grow
+/// count plus the fast/slow ratio already answers well enough to decide whether to look further.
+pub mod heapprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static FREES: AtomicU64 = AtomicU64::new(0);
+    static GROWS: AtomicU64 = AtomicU64::new(0);
+    static GROW_BYTES: AtomicU64 = AtomicU64::new(0);
+    static GROW_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_alloc(size: usize) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(size as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_free() {
+        FREES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Charged for a growth, which is the arm that maps and shoots down.
+    pub fn record_grow(bytes: usize, start: Instant) {
+        GROWS.fetch_add(1, Ordering::Relaxed);
+        GROW_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+        GROW_NS.fetch_add(
+            (Instant::now() - start).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        if calls == 0 {
+            return;
+        }
+        let bytes = BYTES.load(Ordering::Relaxed);
+        let frees = FREES.load(Ordering::Relaxed);
+        let grows = GROWS.load(Ordering::Relaxed);
+        let grow_bytes = GROW_BYTES.load(Ordering::Relaxed);
+        let grow_ns = GROW_NS.load(Ordering::Relaxed);
+        logln!(
+            "== allocate_chunk: {} calls ({} KB, {} B each), {} frees; {} grows ({} KB, {} us total, {} us each), 1 grow per {} calls ==",
+            calls,
+            bytes / 1024,
+            bytes / calls,
+            frees,
+            grows,
+            grow_bytes / 1024,
+            grow_ns / 1000,
+            if grows == 0 {
+                0
+            } else {
+                grow_ns / grows / 1000
+            },
+            if grows == 0 { 0 } else { calls / grows },
+        );
+    }
+}
+
+/// `insert_object` split, printed at debug shutdown next to the other kernel profiles.
+///
+/// The monitor's `SPACESTAT` put ~110 us per cold map inside this syscall and ~350 ns in the
+/// monitor itself, so this is where that time has to be. `check_id` is the first suspect because
+/// it reads the object's meta page, which for a pager-backed object can be a round trip.
+pub mod mapprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static CHECKID: AtomicU64 = AtomicU64::new(0);
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_checkid(ns: u64) {
+        CHECKID.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// Charges the whole of `insert_object` on drop, so an early return is counted too.
+    pub struct Timer(pub Instant);
+
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            COUNT.fetch_add(1, Ordering::Relaxed);
+            TOTAL.fetch_add(
+                (Instant::now() - self.0).as_nanos() as u64,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    pub fn print() {
+        let n = COUNT.load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        let total = TOTAL.load(Ordering::Relaxed);
+        let check = CHECKID.load(Ordering::Relaxed);
+        logln!(
+            "== insert_object: {} calls, {} us total; per call {} ns = check_id {} + rest {} ==",
+            n,
+            total / 1000,
+            total / n,
+            check / n,
+            total.saturating_sub(check) / n,
+        );
+    }
+}
+
 static CONTEXT_IDS: IdCounter = IdCounter::new();
 
 struct KernelSlotCounter {
@@ -630,6 +754,7 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), TwzError> {
+        let _guard = mapprofile::Timer(crate::instant::Instant::now());
         log::debug!(
             "insert {} to {:?} {:?}",
             object_info.object.id(),
@@ -644,7 +769,9 @@ impl UserContext for VirtContext {
             )));
         }
 
+        let t_check = crate::instant::Instant::now();
         let (_is_ok, default_prot) = object_info.object.check_id();
+        mapprofile::record_checkid((crate::instant::Instant::now() - t_check).as_nanos() as u64);
         let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
@@ -835,6 +962,7 @@ static GLOBAL_PAGE_ALLOC: Spinlock<GlobalPageAlloc> = Spinlock::new(GlobalPageAl
 
 impl KernelMemoryContext for VirtContext {
     fn allocate_chunk(&self, layout: core::alloc::Layout) -> Result<NonNull<u8>, TwzError> {
+        heapprofile::record_alloc(layout.size());
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
         let res = glb.alloc.allocate_first_fit(layout);
         match res {
@@ -844,7 +972,9 @@ impl KernelMemoryContext for VirtContext {
                     .size()
                     .next_multiple_of(Table::level_to_page_size(Table::last_level()))
                     * 2;
+                let start = crate::instant::Instant::now();
                 glb.extend(size, self);
+                heapprofile::record_grow(size, start);
                 glb.alloc
                     .allocate_first_fit(layout)
                     .map_err(|_| ResourceError::OutOfMemory.into())
@@ -854,6 +984,7 @@ impl KernelMemoryContext for VirtContext {
     }
 
     unsafe fn deallocate_chunk(&self, layout: core::alloc::Layout, ptr: NonNull<u8>) {
+        heapprofile::record_free();
         let mut glb = GLOBAL_PAGE_ALLOC.lock();
         unsafe {
             glb.alloc.deallocate(ptr, layout);

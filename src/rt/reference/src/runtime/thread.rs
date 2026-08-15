@@ -1,6 +1,9 @@
 //! Implements thread management routines.
 
-use std::ffi::c_void;
+use std::{
+    ffi::c_void,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
@@ -27,6 +30,15 @@ pub(crate) use tcb::{libc_init_tcb, with_current_thread, TLS_GEN_MGR};
 const MIN_STACK_ALIGN: usize = 128;
 
 static THREAD_MGR: ThreadManager = ThreadManager::new();
+
+/// Counts signal handlers that ran on this thread and that should interrupt a blocking operation.
+///
+/// Nothing here bumps it. POSIX interrupts a blocking call only for a caught handler with
+/// `SA_RESTART` clear, and the handler table lives in libc, so libc calls `twz_rt_interrupt_bump`
+/// when that case applies. The runtime's own default upcall handling either terminates the thread
+/// or ignores the signal, and neither should interrupt anything.
+#[thread_local]
+static INTERRUPT_GEN: AtomicU64 = AtomicU64::new(0);
 
 impl ReferenceRuntime {
     pub fn available_parallelism(&self) -> core::num::NonZeroUsize {
@@ -103,6 +115,14 @@ impl ReferenceRuntime {
 
     pub fn sleep(&self, duration: std::time::Duration) {
         let _ = sys_thread_sync(&mut [], Some(duration));
+    }
+
+    pub fn interrupt_word(&self) -> *const AtomicU64 {
+        &raw const INTERRUPT_GEN
+    }
+
+    pub fn interrupt_bump(&self) {
+        INTERRUPT_GEN.fetch_add(1, Ordering::Release);
     }
 
     pub fn tls_get_addr(&self, index: &TlsIndex) -> Option<*mut u8> {

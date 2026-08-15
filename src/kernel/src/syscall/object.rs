@@ -162,6 +162,77 @@ pub fn sys_object_create(
     Ok(obj.id())
 }
 
+/// Where `sys_object_map` spends its time, split at the one boundary that matters.
+///
+/// `SPACESTAT` measures the monitor's map gate at 103-146 us per miss and `insert_object` accounts
+/// for 4.9 us of it, so ~96% of the syscall is somewhere else. The only other thing it does is find
+/// the object, and for an object the kernel has never seen that is a pager round trip
+/// (`lookup_object_and_wait`). This is the counter that settles it rather than inferring it from
+/// the arithmetic (`INPROG.md`, next step 1).
+pub mod mapstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static PAGER: AtomicU64 = AtomicU64::new(0);
+    /// Resolving the caller's memory context, before any object work. Small by inspection, and
+    /// measured for exactly that reason: the three segments here have to add up to the syscall, or
+    /// the missing ~110 us is somewhere none of them looked.
+    static PRE_NS: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP_HIT_NS: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP_PAGER_NS: AtomicU64 = AtomicU64::new(0);
+    static LOOKUP_PAGER_MAX: AtomicU64 = AtomicU64::new(0);
+    static INSERT_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn pre(ns: u64) {
+        PRE_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    pub fn lookup(ns: u64, used_pager: bool) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        if used_pager {
+            PAGER.fetch_add(1, Ordering::Relaxed);
+            LOOKUP_PAGER_NS.fetch_add(ns, Ordering::Relaxed);
+            LOOKUP_PAGER_MAX.fetch_max(ns, Ordering::Relaxed);
+        } else {
+            LOOKUP_HIT_NS.fetch_add(ns, Ordering::Relaxed);
+        }
+    }
+
+    pub fn insert(ns: u64) {
+        INSERT_NS.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        if calls == 0 {
+            return;
+        }
+        let pager = PAGER.load(Ordering::Relaxed);
+        let hits = calls - pager;
+        logln!(
+            "== sys_object_map: {} calls, {} reached the pager ==",
+            calls,
+            pager,
+        );
+        logln!(
+            "  lookup: hit {} ns/call over {}, pager {} ns/call over {} (max {} us); total {} us",
+            LOOKUP_HIT_NS.load(Ordering::Relaxed) / hits.max(1),
+            hits,
+            LOOKUP_PAGER_NS.load(Ordering::Relaxed) / pager.max(1),
+            pager,
+            LOOKUP_PAGER_MAX.load(Ordering::Relaxed) / 1000,
+            (LOOKUP_HIT_NS.load(Ordering::Relaxed) + LOOKUP_PAGER_NS.load(Ordering::Relaxed))
+                / 1000,
+        );
+        logln!(
+            "  map into context: {} ns/call, {} us total; context lookup {} ns/call",
+            INSERT_NS.load(Ordering::Relaxed) / calls,
+            INSERT_NS.load(Ordering::Relaxed) / 1000,
+            PRE_NS.load(Ordering::Relaxed) / calls,
+        );
+    }
+}
+
 pub fn sys_object_map(
     id: ObjID,
     slot: usize,
@@ -170,11 +241,15 @@ pub fn sys_object_map(
     flags: MapFlags,
     target_sctx: ObjID,
 ) -> Result<usize> {
+    let entered = crate::instant::Instant::now();
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
     } else {
         current_vmc()?
     };
+    let start = crate::instant::Instant::now();
+    mapstats::pre((start - entered).as_nanos() as u64);
+    let mut used_pager = false;
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
         crate::obj::LookupResult::WasDeleted => {
@@ -187,25 +262,31 @@ pub fn sys_object_map(
             return Err(ObjectError::NoSuchObject.into());
         }
         crate::obj::LookupResult::Found(obj) => obj,
-        _ => match crate::pager::lookup_object_and_wait(id) {
-            Some(obj) => obj,
-            None => {
-                log::warn!(
-                    "sys_object_map: object {} not found ({}) [{}]",
-                    id,
-                    crate::obj::describe_missing(id),
-                    MapCaller
-                );
-                return Err(ObjectError::NoSuchObject.into());
+        _ => {
+            used_pager = true;
+            match crate::pager::lookup_object_and_wait(id) {
+                Some(obj) => obj,
+                None => {
+                    log::warn!(
+                        "sys_object_map: object {} not found ({}) [{}]",
+                        id,
+                        crate::obj::describe_missing(id),
+                        MapCaller
+                    );
+                    return Err(ObjectError::NoSuchObject.into());
+                }
             }
-        },
+        }
     };
+    let found = crate::instant::Instant::now();
+    mapstats::lookup((found - start).as_nanos() as u64, used_pager);
     // Before the mapping, not after: the point is to have the pager working while the rest of the
     // syscall runs. Submission is a lock and a queue push; nothing here waits.
     crate::pager::prefetch_on_map(&obj);
     // TODO
     let _res =
         crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags, target_sctx);
+    mapstats::insert((crate::instant::Instant::now() - found).as_nanos() as u64);
     Ok(slot)
 }
 

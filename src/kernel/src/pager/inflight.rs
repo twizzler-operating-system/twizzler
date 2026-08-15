@@ -375,6 +375,12 @@ impl InflightManager {
 
     pub fn remove_request(&mut self, rk: &ReqKind) {
         if let Some(request) = self.req_map.find_mut(rk).remove() {
+            // Before `mark_done`, which would erase the distinction: whether the page count ever
+            // completed this request, and how much of what it asked for never arrived. Together
+            // these say whether the read-ahead over-ask has a runtime consequence or is confined
+            // to the accounting.
+            super::profile::PAGER_PROFILE
+                .fulfillment(request.was_done(), request.unfulfilled_pages());
             request.mark_done();
             request.signal();
             let age = request.age_ns();

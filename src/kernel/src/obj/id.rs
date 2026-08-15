@@ -65,7 +65,64 @@ pub fn calculate_new_id(
     id
 }
 
+/// How often `check_id` has to do real work.
+///
+/// The point of `ObjectInfoFlags::VALIDATED` is that a pager-backed object arrives with its
+/// `verified_id` already settled, so `check_id` is a memo hit on the mapping path. `slow` counts
+/// the calls that instead read the meta page, and `hashed` the subset that also derived an id --
+/// both should be near zero once the pager vouches for what it serves.
+pub mod checkidstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static SLOW: AtomicU64 = AtomicU64::new(0);
+    static HASHED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn call() {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn slow() {
+        SLOW.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn hashed() {
+        HASHED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        if calls == 0 {
+            return;
+        }
+        logln!(
+            "== check_id: {} calls, {} slow (read meta), {} hashed ==",
+            calls,
+            SLOW.load(Ordering::Relaxed),
+            HASHED.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Whether `id` could have been produced by [`gen_id`] at all.
+///
+/// External (pager-backed) objects are named by inode rather than by content:
+/// `pager_dynamic::ino_to_objid` sets bit 127, so their high word is always `0x8000...`. The high
+/// word `1` set is likewise assigned rather than derived. Hashing to compare against an id that
+/// cannot match by construction is pure waste -- and this is exactly the set whose mismatch the
+/// warning below already excuses.
+fn is_content_derived(id: ObjID) -> bool {
+    id.parts()[0] != 0x8000000000000000 && id.parts()[0] != 1
+}
+
 fn verify_id(id: ObjID, nonce: u128, kuid: ObjID, flags: MetaFlags, def_prot: Protections) -> bool {
+    if !is_content_derived(id) {
+        // Same answer the hash would have given, for a fraction of a sha256 per first map of every
+        // file-backed object. Nothing reads it either way: both `check_id` call sites bind the
+        // bool to `_is_ok` and keep only `default_prot`.
+        return false;
+    }
+    checkidstats::hashed();
     let generated = gen_id(nonce, kuid, flags, def_prot);
 
     if id != generated && id.parts()[0] != 0x8000000000000000 && id.parts()[0] != 1 {
@@ -141,9 +198,11 @@ impl Object {
     }
 
     pub fn check_id(self: &ObjectRef) -> (bool, Protections) {
+        checkidstats::call();
         if let Some(id) = self.verified_id.poll() {
             return *id;
         }
+        checkidstats::slow();
         let id = loop {
             if let Some(meta) = self.read_meta() {
                 break (

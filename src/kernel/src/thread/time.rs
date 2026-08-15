@@ -29,6 +29,12 @@ pub struct ThreadSched {
     pub sleep_tick: AtomicU64,
     pub current_processor_queue: AtomicI32,
     pub timeslice: AtomicU32,
+    /// When this thread was last made runnable, in nanoseconds on the bench clock, and how that
+    /// wake was classified. Read and cleared when it next reaches a cpu, giving wake-to-run
+    /// latency per wake rather than per boot -- which is the measurement `schedtime.md` keeps
+    /// needing and inferring around. Zero means "no wake outstanding".
+    pub wake_ns: AtomicU64,
+    pub wake_kind: AtomicU32,
 }
 
 impl Default for ThreadSched {
@@ -40,6 +46,8 @@ impl Default for ThreadSched {
             sleep_tick: AtomicU64::new(0),
             current_processor_queue: AtomicI32::new(-1),
             timeslice: AtomicU32::new(0),
+            wake_ns: AtomicU64::new(0),
+            wake_kind: AtomicU32::new(0),
         }
     }
 }

@@ -18,6 +18,12 @@ use lwext4::{
 #[allow(unused, nonstandard_style)]
 mod lwext4;
 
+/// Size of what a pointer points at, without forming a reference to it -- fields of the packed
+/// on-disk structs cannot be borrowed, even to measure.
+fn size_of_pointee<T>(_: *const T) -> usize {
+    std::mem::size_of::<T>()
+}
+
 fn errno_to_result(errno: i32) -> Result<()> {
     match errno {
         0 => Ok(()),
@@ -543,6 +549,46 @@ impl Ext4Fs {
             name,
             fs: self,
         })
+    }
+
+    /// Read a symlink's target, given its inode number.
+    ///
+    /// `ext4_readlink` takes a path, which a caller holding only an inode number cannot supply.
+    /// The work does not need one: a target shorter than the 60 bytes an inode spends on its block
+    /// map is stored in that array instead, with the extents flag cleared and no data block
+    /// allocated (see `ext4_fsymlink_set`). Reading such a symlink as file data therefore returns
+    /// a block of unrelated bytes rather than the target, so the two storage forms are split here
+    /// the same way the write side splits them.
+    pub fn readlink_from_inode(&mut self, index: u32) -> Result<Vec<u8>> {
+        let inode = self.get_inode(index)?;
+        if !matches!(inode.kind(), FileKind::Symlink) {
+            return Err(ErrorKind::InvalidInput.into());
+        }
+        let len = inode.size() as usize;
+        // `ext4_inode` is packed, so the block array cannot be borrowed -- not even to measure it.
+        let blocks = unsafe { std::ptr::addr_of!((*inode.inode.inode).blocks) };
+        let inline_max = size_of_pointee(blocks);
+        if len < inline_max {
+            // The block array holds the target's bytes literally, so this is a byte copy and not
+            // block numbers needing a byte swap.
+            let inline = unsafe { std::slice::from_raw_parts(blocks.cast::<u8>(), inline_max) };
+            return Ok(inline[..len].to_vec());
+        }
+        // Longer targets do have a data block. Drop the inode ref first: it pins a buffer in
+        // lwext4's block cache, which is not reentrant.
+        drop(inode);
+
+        let mut file = self.open_file_from_inode(index, O_RDONLY)?;
+        let mut buf = vec![0u8; len];
+        let mut total = 0;
+        while total < len {
+            match file.read(&mut buf[total..])? {
+                0 => break,
+                n => total += n,
+            }
+        }
+        buf.truncate(total);
+        Ok(buf)
     }
 
     pub fn get_inode(&mut self, index: u32) -> Result<Ext4InodeRef> {

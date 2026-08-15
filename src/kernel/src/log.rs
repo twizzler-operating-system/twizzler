@@ -91,16 +91,62 @@ impl<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> KernelConsol
     }
 }
 
-impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsoleRef<T, EmergencyMessage> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let _ = self.write(s.as_bytes(), KernelConsoleWriteFlags::empty());
-        Ok(())
+/// Bytes of one formatted message held before it reaches the hardware. Past the longest line the
+/// kernel emits -- the hang scanner's per-thread row, ~400 bytes -- since a message that outgrows
+/// this is flushed in pieces, which is exactly the behaviour being fixed.
+const LINE_BUF_LEN: usize = 1024;
+
+/// Renders a whole `write_fmt` into a single hardware write.
+///
+/// `core::fmt` calls `write_str` once per format fragment, so a `logln!` with N arguments used to
+/// reach the uart as ~2N separate writes. `serial::write` holds the port lock per write, not per
+/// message, so anything else writing could land between two of them -- and one of the things
+/// writing is `sys_kernel_console_write`, which passes a userspace buffer straight through as one
+/// call. That is how a guest's `REPORT` line ended up spliced into the middle of a `PROMOTE` line
+/// and of a hang-scanner row: three runs of a 4661-run sweep were recorded as "no test report"
+/// after passing all 53 tests.
+///
+/// The console lock cannot be what fixes this. `_print_emergency` holds no lock by design, so that
+/// it stays usable from a panic or an interrupt with the lock held -- which is precisely the path
+/// that produced the third of those three. Making each message one write fixes all of them without
+/// asking any writer to take a lock it cannot afford.
+struct LineWriter<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> {
+    inner: KernelConsoleRef<T, M>,
+    flags: KernelConsoleWriteFlags,
+    buf: [u8; LINE_BUF_LEN],
+    len: usize,
+}
+
+impl<T: KernelConsoleHardware, M: MessageLevel> LineWriter<T, M> {
+    fn new(console: &'static KernelConsole<T, M>, flags: KernelConsoleWriteFlags) -> Self {
+        Self {
+            inner: KernelConsoleRef { console },
+            flags,
+            buf: [0; LINE_BUF_LEN],
+            len: 0,
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.len > 0 {
+            let _ = self.inner.write(&self.buf[0..self.len], self.flags);
+            self.len = 0;
+        }
     }
 }
 
-impl<T: KernelConsoleHardware> core::fmt::Write for KernelConsoleRef<T, NormalMessage> {
+impl<T: KernelConsoleHardware, M: MessageLevel> core::fmt::Write for LineWriter<T, M> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let _ = self.write(s.as_bytes(), KernelConsoleWriteFlags::empty());
+        let mut rest = s.as_bytes();
+        while !rest.is_empty() {
+            if self.len == LINE_BUF_LEN {
+                self.flush();
+            }
+            let n = rest.len().min(LINE_BUF_LEN - self.len);
+            self.buf[self.len..(self.len + n)].copy_from_slice(&rest[0..n]);
+            self.len += n;
+            rest = &rest[n..];
+        }
         Ok(())
     }
 }
@@ -322,6 +368,10 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     }
 }
 
+/// One write, of the whole slice, deliberately: `serial::write` holds the port lock across the
+/// entire call, so this is what makes a userspace console write atomic -- at any length, with no
+/// lock taken here. Splitting it (to bound anything, or to take the console lock per piece) would
+/// give that up. The kernel's own prints are what had to be fixed to match; see [`LineWriter`].
 pub fn write_bytes(
     target: KernelConsoleSource,
     slice: &[u8],
@@ -411,10 +461,9 @@ pub fn _print_debug(args: ::core::fmt::Arguments) {
     let istate = interrupt::disable();
     {
         let _guard = DEBUG_CONSOLE.lock.lock();
-        let mut writer = KernelConsoleRef {
-            console: &DEBUG_CONSOLE,
-        };
+        let mut writer = LineWriter::new(&DEBUG_CONSOLE, KernelConsoleWriteFlags::empty());
         writer.write_fmt(args).expect("printing to serial failed");
+        writer.flush();
     }
     interrupt::set(istate);
 }
@@ -424,10 +473,9 @@ pub fn _print_normal(args: ::core::fmt::Arguments) {
     let istate = interrupt::disable();
     {
         let _guard = NORMAL_CONSOLE.lock.lock();
-        let mut writer = KernelConsoleRef {
-            console: &NORMAL_CONSOLE,
-        };
+        let mut writer = LineWriter::new(&NORMAL_CONSOLE, KernelConsoleWriteFlags::empty());
         writer.write_fmt(args).expect("printing to serial failed");
+        writer.flush();
     }
     interrupt::set(istate);
 }
@@ -435,10 +483,12 @@ pub fn _print_normal(args: ::core::fmt::Arguments) {
 pub fn _print_emergency(args: ::core::fmt::Arguments) {
     let istate = interrupt::disable();
     {
-        let mut writer = KernelConsoleRef {
-            console: &NORMAL_CONSOLE,
-        };
+        // No console lock, as ever: this has to work from a panic or an interrupt that landed on a
+        // cpu already holding it. The single write below is what keeps it from being spliced
+        // anyway, which is the whole point of doing it this way rather than with the lock.
+        let mut writer = LineWriter::new(&NORMAL_CONSOLE, KernelConsoleWriteFlags::empty());
         writer.write_fmt(args).expect("printing to serial failed");
+        writer.flush();
     }
     interrupt::set(istate);
 }

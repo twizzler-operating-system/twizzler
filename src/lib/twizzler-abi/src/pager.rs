@@ -22,18 +22,58 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct RequestFromKernel {
     cmd: KernelCommand,
+    submit_ns: u64,
+}
+
+/// Ordering and equality deliberately ignore [`RequestFromKernel::submit_ns`]: it is a measurement
+/// of *this copy*, not part of the request's identity, and two requests naming the same work must
+/// keep comparing equal however far apart they were stamped.
+impl PartialEq for RequestFromKernel {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmd.eq(&other.cmd)
+    }
+}
+
+impl Eq for RequestFromKernel {}
+
+impl PartialOrd for RequestFromKernel {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RequestFromKernel {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.cmd.cmp(&other.cmd)
+    }
 }
 
 impl RequestFromKernel {
     pub fn new(cmd: KernelCommand) -> Self {
-        Self { cmd }
+        Self { cmd, submit_ns: 0 }
     }
 
     pub fn cmd(&self) -> KernelCommand {
         self.cmd
+    }
+
+    /// Stamp the moment this copy reached the queue, as nanoseconds on the monotonic clock.
+    ///
+    /// The pager subtracts this from its own monotonic reading to get queue-transit time. That is a
+    /// direct subtraction across the kernel/userspace boundary, and it is sound because both sides
+    /// read the *same* counter: [`ClockSource::BestMonotonic`](crate::syscall::ClockSource)
+    /// resolves to tick source 0, which is what the kernel's own `Instant` reads, and both
+    /// convert ticks with the same rate from the same zero.
+    pub fn set_submit_ns(&mut self, ns: u64) {
+        self.submit_ns = ns;
+    }
+
+    /// Nanoseconds on the monotonic clock at which this request was queued; `None` if unstamped.
+    pub fn submit_ns(&self) -> Option<u64> {
+        Some(self.submit_ns).filter(|ns| *ns != 0)
     }
 
     pub fn id(&self) -> Option<ObjID> {

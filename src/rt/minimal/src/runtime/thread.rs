@@ -1,6 +1,9 @@
 //! Implementation of the thread runtime.
 
-use core::alloc::Layout;
+use core::{
+    alloc::Layout,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use twizzler_abi::{
     object::Protections,
@@ -19,6 +22,10 @@ use twizzler_rt_abi::{
 };
 
 use super::{MinimalRuntime, idcounter::IdCounter, object::InternalObject};
+
+/// See [MinimalRuntime::interrupt_word]: nothing in this runtime bumps this, so one shared word
+/// reading zero forever is the whole implementation.
+static INTERRUPT_GEN: AtomicU64 = AtomicU64::new(0);
 
 struct InternalThread {
     repr: InternalObject<ThreadRepr>,
@@ -140,6 +147,17 @@ impl MinimalRuntime {
 
     pub fn sleep(&self, duration: core::time::Duration) {
         let _ = twizzler_abi::syscall::sys_thread_sync(&mut [], Some(duration));
+    }
+
+    /// This runtime has no signal dispatch -- its upcall handling panics rather than running
+    /// handlers -- so nothing ever bumps the generation and every thread can safely share one
+    /// always-zero word. Blocking calls read it, compare equal, and never report an interruption.
+    pub fn interrupt_word(&self) -> *const AtomicU64 {
+        &raw const INTERRUPT_GEN
+    }
+
+    pub fn interrupt_bump(&self) {
+        INTERRUPT_GEN.fetch_add(1, Ordering::Release);
     }
 
     pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<()> {

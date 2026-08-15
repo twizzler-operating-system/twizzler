@@ -204,26 +204,45 @@ struct SleepQueue {
 
 impl SleepQueue {
     /// Remove and return the highest-priority waiter, breaking ties in arrival order so that
-    /// equal-priority waiters keep FIFO behavior.
-    fn pop_highest_priority(&mut self) -> Option<ThreadRef> {
+    /// equal-priority waiters keep FIFO behavior, together with the highest priority left behind it
+    /// -- which is what `pri` must become.
+    ///
+    /// The leftover priority is accumulated during the removal walk rather than by a third pass
+    /// over the list. Every pass costs two SeqCst loads per waiter (`effective_priority`) and all
+    /// of them run under the queue spinlock, so the one that can be folded in is worth folding
+    /// in.
+    fn pop_highest_priority(&mut self) -> Option<(ThreadRef, Option<Priority>)> {
         // Recomputed from the list rather than read from `pri`: a donation can raise a waiter's
         // effective priority after `pri` was last written.
         let best = self.queue.iter().map(|t| t.effective_priority()).max()?;
         let mut cursor = self.queue.front_mut();
+        let mut taken = None;
+        let mut rest = None;
         loop {
-            let take = match cursor.get() {
-                Some(t) => t.effective_priority() >= best,
+            let pri = match cursor.get() {
+                Some(t) => t.effective_priority(),
                 None => break,
             };
-            if take {
-                return cursor.remove();
+            if taken.is_none() && pri >= best {
+                // `remove` leaves the cursor on the following element, so don't advance as well.
+                taken = cursor.remove();
+                continue;
             }
+            rest = rest.max(Some(pri));
             cursor.move_next();
         }
-        // A donation raced the scan above, so nothing matched the snapshot. Fall back to FIFO:
-        // returning None here would mark the mutex unowned while waiters are still queued,
-        // stranding them asleep forever.
-        self.queue.pop_front()
+        match taken {
+            Some(thread) => Some((thread, rest)),
+            // A donation raced the scan above, so nothing matched the snapshot. Fall back to FIFO:
+            // returning None here would mark the mutex unowned while waiters are still queued,
+            // stranding them asleep forever. `rest` counted the element this arm removes, so it has
+            // to be recomputed rather than reused.
+            None => {
+                let thread = self.queue.pop_front()?;
+                let rest = self.queue.iter().map(|t| t.effective_priority()).max();
+                Some((thread, rest))
+            }
+        }
     }
 }
 
@@ -566,44 +585,51 @@ impl<T> Mutex<T> {
     }
 
     fn release(&self, charged: Option<&ThreadRef>) {
-        let mut queue = self.queue.lock();
-
+        // Ahead of the queue lock rather than under it, now that the guard has to enclose a scope
+        // the lock does not. Widening it costs nothing -- the extra span is a spinlock acquisition,
+        // which runs with interrupts off regardless -- and it is what covers the schedule below.
         let g = current_thread_ref().map(|ct| ct.enter_critical());
 
-        if let Some(thread) = queue.pop_highest_priority() {
-            // Hand off ownership directly to the next waiter instead of releasing.
-            // This prevents the current thread from immediately re-acquiring and
-            // starving waiters (Bug #9 fairness fix).
-            queue.owner = Some(thread.clone());
-            queue.handoff = true;
-            // queue.owned stays true
-            // Transfer the pending priority donation to the new owner, so it starts
-            // running at the correct priority immediately. This prevents priority
-            // inversion between schedule_thread() and the new owner's lock() call.
-            if let Some(ref pri) = queue.pri {
-                thread.donate_priority(pri.clone());
-            }
-            schedule_thread(thread);
-            // Recalculate queue.pri for remaining waiters after popping.
-            queue.pri = if queue.queue.is_empty() {
-                None
+        let next = {
+            let mut queue = self.queue.lock();
+            if let Some((thread, rest_pri)) = queue.pop_highest_priority() {
+                // Hand off ownership directly to the next waiter instead of releasing.
+                // This prevents the current thread from immediately re-acquiring and
+                // starving waiters (Bug #9 fairness fix).
+                queue.owner = Some(thread.clone());
+                queue.handoff = true;
+                // queue.owned stays true
+                // Transfer the pending priority donation to the new owner, so it starts
+                // running at the correct priority immediately. This prevents priority
+                // inversion between schedule_thread() and the new owner's lock() call.
+                if let Some(ref pri) = queue.pri {
+                    thread.donate_priority(pri.clone());
+                }
+                queue.pri = rest_pri;
+                Some(thread)
             } else {
-                Some(
-                    queue
-                        .queue
-                        .iter()
-                        .map(|t| t.effective_priority())
-                        .max()
-                        .unwrap(),
-                )
-            };
-        } else {
-            queue.owner = None;
-            queue.owned = false;
-            queue.handoff = false;
-            queue.pri = None;
+                queue.owner = None;
+                queue.owned = false;
+                queue.handoff = false;
+                queue.pri = None;
+                None
+            }
+        };
+        // Hand off under the lock, schedule outside it, exactly as `requeue_all` does and for the
+        // same reason: `schedule_thread` is a topology walk, a remote run queue lock and a wakeup
+        // IPI, and running it under this spinlock put all of that in an interrupts-off region on
+        // the contended-release path -- the one path where the queue is longest and the most cpus
+        // are waiting for it.
+        //
+        // Correctness of deferring it: the handoff *is* the claim, and it is fully committed above.
+        // A waiter reaching `lock` finds itself recorded as owner with `handoff` set and takes the
+        // mutex whether or not we have scheduled it yet, and no other thread can take it from it,
+        // so the gap is not a window anyone else can use. The critical guard is what keeps this
+        // thread from being preempted -- and so from exiting at a poll point -- before it
+        // schedules.
+        if let Some(thread) = next {
+            schedule_thread(thread);
         }
-        drop(queue);
         if let Some(ct) = charged {
             let cur = current_thread_ref().map(|c| c.id());
             if cur == Some(ct.id()) {

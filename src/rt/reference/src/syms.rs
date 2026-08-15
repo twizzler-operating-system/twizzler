@@ -270,6 +270,18 @@ pub unsafe extern "C-unwind" fn twz_rt_yield_now() {
 check_ffi_type!(twz_rt_yield_now);
 
 #[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_interrupt_word() -> *mut u64 {
+    OUR_RUNTIME.interrupt_word() as *mut u64
+}
+check_ffi_type!(twz_rt_interrupt_word);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_interrupt_bump() {
+    OUR_RUNTIME.interrupt_bump();
+}
+check_ffi_type!(twz_rt_interrupt_bump);
+
+#[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_set_name(name: *const ::core::ffi::c_char) {
     unsafe {
         OUR_RUNTIME.set_name(core::ffi::CStr::from_ptr(name));

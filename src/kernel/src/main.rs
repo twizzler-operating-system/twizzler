@@ -53,7 +53,10 @@ extern crate alloc;
 extern crate bitflags;
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    time::Duration,
+};
 
 use ::log::LevelFilter;
 use arch::BootInfoSystemTable;
@@ -69,10 +72,15 @@ use syscall::sync::requeue_all;
 
 use crate::{
     arch::PhysAddr,
+    condvar::CondVar,
     obj::scan_deleted,
     pager::check_timed_out_requests,
     processor::mp::current_processor,
-    thread::{check_orphan_threads, entry::start_new_init, locktrack::check_timed_out_mutexes},
+    syscall::sync::sys_thread_sync,
+    thread::{
+        check_orphan_threads, entry::start_new_init, locktrack::check_timed_out_mutexes,
+        priority::Priority,
+    },
 };
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
@@ -240,6 +248,23 @@ pub fn init_threading() -> ! {
     idle_main();
 }
 
+static BG_ZERO_CV: CondVar = CondVar::new();
+// TODO: wake this on an actual condition.
+static BG_ZERO_SPINLOCK: spinlock::Spinlock<()> = spinlock::Spinlock::new(());
+
+extern "C" fn background_worker() {
+    loop {
+        if !memory::frame::background_zero_iter() {
+            let guard = BG_ZERO_SPINLOCK.lock();
+            let _ = BG_ZERO_CV.wait(guard);
+        } else {
+            processor::sched::schedule(
+                SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT,
+            );
+        }
+    }
+}
+
 pub fn idle_main() -> ! {
     interrupt::set(true);
     if current_processor().is_bsp() {
@@ -258,6 +283,7 @@ pub fn idle_main() -> ! {
             .wait();
         }
         start_new_init();
+        let _ = crate::thread::entry::start_new_kernel(Priority::BACKGROUND, background_worker, 0);
     }
     logln!(
         "[kernel::main] processor {} entering main idle loop",
@@ -269,14 +295,16 @@ pub fn idle_main() -> ! {
             current_processor().cleanup_exited();
         }
         if iter % 1000 == 0 && current_processor().is_bsp() {
+            BG_ZERO_CV.signal();
             scan_deleted();
             // The rest are diagnostics, and they are not free: each walks every thread or every
             // inflight request under that structure's lock, from the idle loop, on every scan.
             // `check_system_hang` additionally reports on threads that are merely idle -- service
-            // threads parked on a condvar cross its 25s threshold in every boot, which spent its
-            // whole report budget on healthy runs. Restricted to test mode, where a sweep is
-            // reading the transcript and the cost buys something -- or to an explicit `--diag`,
-            // for an autostart run that is being debugged.
+            // threads parked on a condvar cross its 25s threshold in every boot. They no longer
+            // spend the whole report budget doing it (see `MAX_THREAD_HANG_REPORTS`), but they do
+            // still cost a table each. Restricted to test mode, where a sweep is reading the
+            // transcript and the cost buys something -- or to an explicit `--diag`, for an
+            // autostart run that is being debugged.
             if is_test_mode() || is_diag_mode() {
                 check_timed_out_mutexes();
                 check_timed_out_requests();

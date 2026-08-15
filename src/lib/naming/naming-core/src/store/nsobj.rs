@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
 use twizzler::{
@@ -25,14 +25,19 @@ use crate::Result;
 /// of the same memory behind two unrelated `Mutex`es. `VecObject`'s length lives in that shared
 /// memory and `push` is a read-modify-write of it, so without a lock keyed on the object -- not on
 /// the instance -- two gate calls inserting into one namespace can lose an entry outright.
-static OBJ_LOCKS: Mutex<BTreeMap<ObjID, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+static OBJ_LOCKS: RwLock<BTreeMap<ObjID, Arc<RwLock<()>>>> = RwLock::new(BTreeMap::new());
 
-fn obj_lock(id: ObjID) -> Arc<Mutex<()>> {
+fn obj_lock(id: ObjID) -> Arc<RwLock<()>> {
+    // The hit is the whole workload once a namespace has been seen once, and it needs no mutation
+    // of the map -- so take the read guard first and only fall back to the writer on a miss.
+    if let Some(lock) = OBJ_LOCKS.read().unwrap().get(&id) {
+        return lock.clone();
+    }
     OBJ_LOCKS
-        .lock()
+        .write()
         .unwrap()
         .entry(id)
-        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .or_insert_with(|| Arc::new(RwLock::new(())))
         .clone()
 }
 
@@ -44,8 +49,8 @@ fn find_idx(obj: &VecObject<NsNode, VecObjectAlloc>, name: &str) -> Option<usize
 pub struct NamespaceObject {
     persist: bool,
     id: ObjID,
-    obj: Arc<Mutex<Option<VecObject<NsNode, VecObjectAlloc>>>>,
-    lock: Arc<Mutex<()>>,
+    obj: Arc<RwLock<Option<VecObject<NsNode, VecObjectAlloc>>>>,
+    lock: Arc<RwLock<()>>,
     parent_info: Option<ParentInfo>,
 }
 
@@ -65,7 +70,7 @@ impl NamespaceObject {
             persist,
             id,
             parent_info,
-            obj: Arc::new(Mutex::new(Some(vec))),
+            obj: Arc::new(RwLock::new(Some(vec))),
             lock: obj_lock(id),
         };
         if let Some(parent) = parent {
@@ -77,9 +82,19 @@ impl NamespaceObject {
 
     /// Shared lock first, always. `f` must not re-enter `with_obj`: neither lock is reentrant.
     fn with_obj<R>(&self, f: impl FnOnce(&mut VecObject<NsNode, VecObjectAlloc>) -> R) -> R {
-        let _shared = self.lock.lock().unwrap();
-        let mut g = self.obj.lock().unwrap();
+        let _shared = self.lock.write().unwrap();
+        let mut g = self.obj.write().unwrap();
         f(g.as_mut().unwrap())
+    }
+
+    /// The read-only half of [`Self::with_obj`], for the lookups that only iterate.
+    ///
+    /// Same order and the same non-reentrancy rule. This exists so `find`/`items`/`len` -- which
+    /// are the whole of a namei walk -- do not serialize against each other.
+    fn with_obj_ref<R>(&self, f: impl FnOnce(&VecObject<NsNode, VecObjectAlloc>) -> R) -> R {
+        let _shared = self.lock.read().unwrap();
+        let g = self.obj.read().unwrap();
+        f(g.as_ref().unwrap())
     }
 }
 
@@ -93,7 +108,7 @@ impl Namespace for NamespaceObject {
             persist,
             id,
             parent_info,
-            obj: Arc::new(Mutex::new(Some(VecObject::from(Object::map(
+            obj: Arc::new(RwLock::new(Some(VecObject::from(Object::map(
                 id, map_flags,
             )?)))),
             lock: obj_lock(id),
@@ -130,7 +145,7 @@ impl Namespace for NamespaceObject {
     }
 
     fn find(&self, name: &str) -> Option<NsNode> {
-        self.with_obj(|obj| {
+        self.with_obj_ref(|obj| {
             for entry in obj.iter() {
                 let Ok(en) = entry.name() else {
                     continue;
@@ -195,7 +210,7 @@ impl Namespace for NamespaceObject {
     }
 
     fn len(&self) -> usize {
-        self.with_obj(|obj| obj.len())
+        self.with_obj_ref(|obj| obj.len())
     }
 
     fn persist(&self) -> bool {
@@ -203,6 +218,6 @@ impl Namespace for NamespaceObject {
     }
 
     fn items(&self, skip: usize, count: usize) -> Vec<NsNode> {
-        self.with_obj(|obj| obj.iter().skip(skip).take(count).cloned().collect())
+        self.with_obj_ref(|obj| obj.iter().skip(skip).take(count).cloned().collect())
     }
 }

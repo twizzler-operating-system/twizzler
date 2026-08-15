@@ -26,7 +26,10 @@ use twizzler_abi::{
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::{
-    nvme::controller::MAX_DATA_QUEUES, request_handle::handle_kernel_request, watchdog, PAGER_CTX,
+    dispatch_stats::{DispatchStats, DISPATCH_STATS},
+    nvme::controller::MAX_DATA_QUEUES,
+    request_handle::handle_kernel_request,
+    watchdog, PAGER_CTX,
 };
 
 /// Worker threads per core. Measured: at 1x the blocking NVMe leaf loses to the async one by 2.1x,
@@ -146,6 +149,7 @@ struct LaneStats {
     would_be_fast_unlimited: AtomicU64,
     pages_fast: AtomicU64,
     pages_total: AtomicU64,
+    report_due: std::sync::atomic::AtomicBool,
 }
 
 static LANE_STATS: LaneStats = LaneStats {
@@ -159,6 +163,7 @@ static LANE_STATS: LaneStats = LaneStats {
     would_be_fast_unlimited: AtomicU64::new(0),
     pages_fast: AtomicU64::new(0),
     pages_total: AtomicU64::new(0),
+    report_due: std::sync::atomic::AtomicBool::new(false),
 };
 
 impl LaneStats {
@@ -187,21 +192,35 @@ impl LaneStats {
             }
             self.would_be_fast_unlimited.fetch_add(1, Ordering::Relaxed);
         }
+        // Deferred rather than emitted here. This runs inside `is_fast`, which the dequeue thread
+        // calls to classify a request -- and that call is a timed span (`DISPATCH: probe`). A
+        // console write inside it is charged to the thing being measured, and on the first pass it
+        // produced exactly as many millisecond `probe` outliers as there were reports, which is
+        // indistinguishable from the store probe blocking. Nothing may log inside a timed span.
         if n.is_power_of_two() {
-            tracing::info!(
-                "LANESTATS: {} page-data ({} pages); fast {} ({} pages); rejected {} flags / {} size / {} probe; would be fast at limit 64: {}, 512: {}, unlimited: {}",
-                n,
-                self.pages_total.load(Ordering::Relaxed),
-                self.fast.load(Ordering::Relaxed),
-                self.pages_fast.load(Ordering::Relaxed),
-                self.rejected_flags.load(Ordering::Relaxed),
-                self.rejected_size.load(Ordering::Relaxed),
-                self.rejected_probe.load(Ordering::Relaxed),
-                self.would_be_fast_at_64.load(Ordering::Relaxed),
-                self.would_be_fast_at_512.load(Ordering::Relaxed),
-                self.would_be_fast_unlimited.load(Ordering::Relaxed),
-            );
+            self.report_due.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Emit a pending report. Called from the dequeue loop once a batch is fully dispatched, so the
+    /// write lands outside every span.
+    fn report_if_due(&self) {
+        if !self.report_due.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        tracing::info!(
+            "LANESTATS: {} page-data ({} pages); fast {} ({} pages); rejected {} flags / {} size / {} probe; would be fast at limit 64: {}, 512: {}, unlimited: {}",
+            self.page_data.load(Ordering::Relaxed),
+            self.pages_total.load(Ordering::Relaxed),
+            self.fast.load(Ordering::Relaxed),
+            self.pages_fast.load(Ordering::Relaxed),
+            self.rejected_flags.load(Ordering::Relaxed),
+            self.rejected_size.load(Ordering::Relaxed),
+            self.rejected_probe.load(Ordering::Relaxed),
+            self.would_be_fast_at_64.load(Ordering::Relaxed),
+            self.would_be_fast_at_512.load(Ordering::Relaxed),
+            self.would_be_fast_unlimited.load(Ordering::Relaxed),
+        );
     }
 }
 
@@ -370,6 +389,13 @@ impl WorkerThread {
                     // thread's queue.
                     let wi = run_async(recv.recv()).unwrap();
                     let _depth = DepthGuard::adopt(thread_depth.clone());
+                    // Labelled by the *lane's* class, not the request's: a fast request that
+                    // borrowed an idle bulk lane waited in that lane's queue, which is what this
+                    // measures.
+                    DISPATCH_STATS.pickup(fast, wi.start.elapsed().as_nanos() as u64);
+                    if matches!(wi.req.cmd(), KernelCommand::ObjectInfoReq(_)) {
+                        DISPATCH_STATS.info_pickup(wi.start.elapsed().as_nanos() as u64);
+                    }
                     tracing::trace!(
                         "{}: starting handling after {}us",
                         wi.qid,
@@ -389,7 +415,7 @@ impl WorkerThread {
                         wi.start.elapsed().as_micros()
                     );
                     work.phase("notify-kernel");
-                    for resp in resp {
+                    if let Some(resp) = resp {
                         PAGER_CTX
                             .get()
                             .unwrap()
@@ -485,7 +511,19 @@ impl Workers {
     /// loaded; ties break to the lowest index, and the charge lands before the next decision reads
     /// it, so a run of identical requests still spreads.
     fn dispatch(&self, wi: WorkItem) {
+        let probe_start = DispatchStats::now_ns();
         let fast = is_fast(&wi.req);
+        let send_start = DispatchStats::now_ns();
+        DISPATCH_STATS.probe(send_start - probe_start);
+        self.place(wi, fast);
+        DISPATCH_STATS.send(DispatchStats::now_ns() - send_start);
+    }
+
+    /// Place an already-classified item on a lane. Split out from [`Self::dispatch`] only so the
+    /// lane decision and the placement can be timed apart -- the `is_fast` probe reads the object
+    /// store's caches, and whether a slow dispatch is that probe or a full lane is the whole
+    /// question.
+    fn place(&self, wi: WorkItem, fast: bool) {
         let lane = self.lane(fast);
         let depth = |i: usize| self.threads[i].depth.load(Ordering::Relaxed);
         let mut best = lane
@@ -681,17 +719,21 @@ fn kq_handler_main(
 ) {
     boost_priority(SERVICE_PRIORITY);
     loop {
-        let mut tmp = heapless::Vec::<(u32, RequestFromKernel), 8>::new();
+        // Each entry carries the moment it came off the queue, which is both the end of its transit
+        // and the start of its wait for a lane. Stamped per item rather than per batch because a
+        // batch is drained non-blockingly after the first item wakes this thread, so the last of
+        // eight has been in the queue measurably less long than the first.
+        let mut tmp = heapless::Vec::<(u32, RequestFromKernel, u64), 8>::new();
         while !tmp.is_full() {
             let res = queue.receive(ReceiveFlags::NON_BLOCK);
             match res {
-                Ok((id, req)) => unsafe { tmp.push_unchecked((id, req)) },
+                Ok((id, req)) => unsafe { tmp.push_unchecked((id, req, DispatchStats::now_ns())) },
                 Err(e) if e == QueueError::WouldBlock => {
                     if !tmp.is_empty() {
                         break;
                     }
                     if let Ok((id, req)) = queue.receive(ReceiveFlags::empty()) {
-                        unsafe { tmp.push_unchecked((id, req)) };
+                        unsafe { tmp.push_unchecked((id, req, DispatchStats::now_ns())) };
                     }
                 }
                 Err(e) => {
@@ -700,7 +742,17 @@ fn kq_handler_main(
             }
         }
 
-        for (id, req) in tmp {
+        DISPATCH_STATS.batch(tmp.len());
+        for (id, req, dequeued) in tmp {
+            DISPATCH_STATS.transit(req.submit_ns(), dequeued);
+            if matches!(req.cmd(), KernelCommand::ObjectInfoReq(_)) {
+                DISPATCH_STATS.info_transit(req.submit_ns(), dequeued);
+            }
+            // Everything before this point in the loop body is bookkeeping, but everything before
+            // it in *earlier iterations* is real dispatch work this item has been waiting through.
+            // `ready` separates the two, so a slow placement can be told from a slow batch-mate.
+            let ready = DispatchStats::now_ns();
+            DISPATCH_STATS.batchwait(ready - dequeued);
             // Evicts never go through `dispatch`: a non-fence evict only records the page in
             // `PerObjectInner::sync_map`, and the fence that follows it drains and writes out what
             // was recorded, so the record has to happen first. Handling non-fence evicts inline
@@ -711,6 +763,9 @@ fn kq_handler_main(
                 if evict.flags.contains(ObjectEvictFlags::FENCE) {
                     let hash = req.id().map_or(0, |x| x.parts()[0] ^ x.parts()[1]) + id as u64;
                     workers.dispatch_ordered(WorkItem::new(id, req), hash);
+                    let now = DispatchStats::now_ns();
+                    DISPATCH_STATS.ordered(now - ready);
+                    DISPATCH_STATS.dispatched(now - dequeued);
                 } else {
                     // Handled inline, so anything that blocks here stops the pager dequeuing from
                     // the kernel at all -- worth naming separately from a stuck worker.
@@ -722,7 +777,7 @@ fn kq_handler_main(
                         &work,
                     ));
                     work.phase("notify-kernel");
-                    for resp in resp {
+                    if let Some(resp) = resp {
                         PAGER_CTX
                             .get()
                             .unwrap()
@@ -730,11 +785,21 @@ fn kq_handler_main(
                             .complete(id, resp, SubmissionFlags::empty())
                             .unwrap();
                     }
+                    DISPATCH_STATS.inline(DispatchStats::now_ns() - ready);
                 }
             } else {
                 workers.dispatch(WorkItem::new(id, req));
+                // After the dispatch returns, so a lane full enough to make `dispatch` block shows
+                // up here rather than silently in the next item's transit.
+                DISPATCH_STATS.dispatched(DispatchStats::now_ns() - dequeued);
             }
         }
+
+        // Both reports emit here, with the batch fully dispatched and no span open. Emitting them
+        // where the counters are updated put a console write inside `probe` and inside the
+        // `dispatched` window, which is what the first two rounds of these numbers were measuring.
+        LANE_STATS.report_if_due();
+        DISPATCH_STATS.report_if_due();
     }
 }
 
