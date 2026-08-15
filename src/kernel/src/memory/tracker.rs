@@ -353,6 +353,14 @@ pub fn try_alloc_split_frames(flags: FrameAllocFlags, layout: Layout) -> Option<
 ///
 /// If the frame's flags indicates that it is zeroed, it will be placed on
 /// the zeroed list.
+/// Free a frame.
+///
+/// **Must not synchronously take an object's page-table lock.** This used to be a performance
+/// property; it became a correctness one when the object page-table guard started discharging its
+/// deferred work on release (see `PtGuard`), because that work ends here and can run while a
+/// *second* object's page-table lock is still held. `Mutex` is not reentrant, so a synchronous
+/// acquire from this path would deadlock rather than merely be slow. Waking the reclaim thread is
+/// fine; blocking on a page table is not.
 pub fn free_frame(frame: FrameRef) {
     assert!(
         frame.refcount() == 0,

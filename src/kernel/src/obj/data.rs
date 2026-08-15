@@ -12,9 +12,8 @@ use crate::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
         tracker::{FrameAllocFlags, FrameAllocator},
     },
-    mutex::LockGuard,
     obj::{
-        Object, ObjectRef, PageNumber,
+        Object, ObjectRef, PageNumber, PtGuard,
         pagetables::{FindFrameFlags, ObjectPageTable},
     },
     thread::current_thread_ref,
@@ -401,12 +400,12 @@ impl Object {
     #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a ObjectRef,
-        mut guard: LockGuard<'a, ObjectPageTable>,
+        mut guard: PtGuard<'a>,
         mut page: PageNumber,
         mut page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
-    ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+    ) -> Result<PtGuard<'a>, TwzError> {
         let first_is_present = guard.get_frame(page.as_byte_offset() as u64).is_some();
         *all_were_present = true;
         if page_count <= 1 && first_is_present {
@@ -508,11 +507,11 @@ impl Object {
     /// means serving zeros over real data.
     fn fill_zero_pages<'a>(
         self: &'a ObjectRef,
-        mut guard: LockGuard<'a, ObjectPageTable>,
+        mut guard: PtGuard<'a>,
         page: PageNumber,
         count: usize,
         all_were_present: &mut bool,
-    ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+    ) -> Result<PtGuard<'a>, TwzError> {
         let mut alloc = FrameAllocator::new(
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
@@ -574,14 +573,14 @@ impl Object {
     /// whether the caller waits.
     pub fn ensure_in_core_pager<'a>(
         self: &'a ObjectRef,
-        mut guard: LockGuard<'a, ObjectPageTable>,
+        mut guard: PtGuard<'a>,
         mut page: PageNumber,
         mut page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
         flags: PagerFlags,
         speculative: bool,
-    ) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+    ) -> Result<PtGuard<'a>, TwzError> {
         *all_were_present = true;
         assert!(self.use_pager());
 
@@ -841,7 +840,7 @@ impl Object {
                 &mut false,
             )?;
         }
-        let (mut self_pt, mut dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
+        let (mut self_pt, mut dst_pt) = PtGuard::new_two(&self.tables, &dst.tables);
 
         log::debug!(
             "direct_copy: src_offset {}, dst_offset {}, len {}",
@@ -954,6 +953,9 @@ impl Object {
                 .flatten()?;
         }
 
+        // Both locks off before either one's shootdown wait runs; dropping them implicitly would
+        // run the inner guard's wait under the outer lock.
+        PtGuard::release_two(self_pt, dst_pt);
         Ok(())
     }
 
@@ -990,7 +992,7 @@ impl Object {
             )?;
         }
 
-        let (mut self_pt, mut dst_pt) = crate::utils::lock_two(&self.tables, &dst.tables);
+        let (mut self_pt, mut dst_pt) = PtGuard::new_two(&self.tables, &dst.tables);
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -1003,9 +1005,11 @@ impl Object {
         dst_pt.setup_zero_range(dst_offset as u64, len)?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
 
+        // Both locks off before either one's shootdown wait runs; dropping them implicitly would
+        // run the inner guard's wait under the outer lock.
+        PtGuard::release_two(self_pt, dst_pt);
+
         if false {
-            drop(self_pt);
-            drop(dst_pt);
             let ok = self.obj_memcmp(dst, len, src_offset, dst_offset)?;
             if !ok {
                 log::error!(

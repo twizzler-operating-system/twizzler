@@ -299,7 +299,7 @@ impl ArchContext {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
 
         guard.map(cursor, phys, &mut consist, fa).unwrap();
-        consist.tlb_mut().finish();
+        consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
     }
@@ -315,7 +315,7 @@ impl ArchContext {
         let took_ref = guard
             .object_map(cursor, object_tables, settings, &mut consist, fa)
             .unwrap();
-        consist.tlb_mut().finish();
+        consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
         // Only count a map if we actually took a new reference, so that the single dec_map_count
@@ -347,7 +347,7 @@ impl ArchContext {
             let took_ref = guard
                 .object_map(cursor, object_tables, settings, &mut consist, fa)
                 .unwrap();
-            consist.tlb_mut().finish();
+            consist.finish_send();
             drop(guard);
             consist.into_deferred().run_all();
             if took_ref {
@@ -367,7 +367,7 @@ impl ArchContext {
     ) {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         guard.change(cursor, settings, &mut consist, fa).unwrap();
-        consist.tlb_mut().finish();
+        consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
     }
@@ -375,7 +375,7 @@ impl ArchContext {
     pub fn unmap(&self, cursor: MappingCursor, fa: &mut FrameAllocator) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         let r = guard.unmap(cursor, &mut consist, fa, &mut None).unwrap();
-        consist.tlb_mut().finish();
+        consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
         r
@@ -396,7 +396,7 @@ impl ArchContext {
         let _ = guard
             .unmap(cursor, &mut consist, fa, &mut released)
             .unwrap();
-        consist.tlb_mut().finish();
+        consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
         obj_table.is_some() && released == obj_table
@@ -471,8 +471,62 @@ fn setup_mapper_with_kpages(mapper: &mut Mapper) {
     unsafe { dest.copy_from(start, len) };
 }
 
+/// Report if any processor is still running `target`, whose page tables are about to be freed and
+/// whose PCID is about to go back to the pool.
+///
+/// This is the quiescence claim two separate mechanisms rest on, neither of which can survive it
+/// being wrong: [`ArchContext::drop`] frees the root page table outright, and [`Pcid::alloc`] hands
+/// the PCID to a new context on the strength of "nothing can be running it now" -- it only clears
+/// every cpu's valid bit, which does nothing for a cpu that has this root in cr3 *right now*. The
+/// argument for it is that a `SecurityContext` has no detach, so its last reference drops only when
+/// the last thread attached to it is dropped, which is after that thread is off-cpu -- and
+/// `Thread::switch_thread` switches context-less threads to the kernel context precisely so an idle
+/// cpu is not left sitting on a user root. That argument was never checked anywhere. This checks it.
+///
+/// Reports rather than panics: it runs from a `Drop`, and panicking here would take out the very
+/// teardown path most likely to hold the bug, losing the transcript that names the cpu and the
+/// target. Both failures it detects are unsurvivable anyway, so a run that trips it fails shortly
+/// after on its own -- but with a message that does not name this cause, which is the whole point.
+///
+/// amd64 only: aarch64 keeps no per-cpu record of the root it is running, so there is nothing to
+/// check against there.
+fn check_quiesced(target: ArchContextTarget) {
+    // A processor partway through a switch publishes CR3_IN_TRANSITION, which matches every target
+    // (see `should_target`) and so cannot be told apart from ours. That window is a few
+    // instructions wide and runs with interrupts off, so re-reading resolves it; one that is still
+    // in transition afterwards is reported as indeterminate rather than spun on forever.
+    const TRANSITION_RETRIES: usize = 10000;
+    with_each_active_processor(|p| {
+        let mut active = p.arch.active_cr3.load(Ordering::Acquire);
+        let mut tries = 0;
+        while active == CR3_IN_TRANSITION && tries < TRANSITION_RETRIES {
+            core::hint::spin_loop();
+            active = p.arch.active_cr3.load(Ordering::Acquire);
+            tries += 1;
+        }
+        if active == target.0 {
+            emerglogln!(
+                "context teardown: cpu {} is still running the context being dropped (cr3 {:#x}, pcid {}) -- its root is about to be freed",
+                p.id,
+                target.0,
+                target.pcid(),
+            );
+        } else if active == CR3_IN_TRANSITION {
+            emerglogln!(
+                "context teardown: cpu {} is still mid-switch after {} reads, so whether it is switching into the context being dropped (cr3 {:#x}) is unknown",
+                p.id,
+                TRANSITION_RETRIES,
+                target.0,
+            );
+        }
+    });
+}
+
 impl Drop for ArchContext {
     fn drop(&mut self) {
+        // Before the unmap, not just before the root free: the walk below frees page-table pages
+        // too, so a cpu still on these tables is already unsafe by then.
+        check_quiesced(self.target);
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
             PHYS_LEVEL_LAYOUTS[0],

@@ -5,12 +5,16 @@ use twizzler_abi::device::CacheType;
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
-    arch::{PhysAddr, VirtAddr, context::ArchContextTarget, memory::pagetables::ArchTlbMgr},
+    arch::{
+        PhysAddr, VirtAddr,
+        context::ArchContextTarget,
+        memory::pagetables::{ArchTlbMgr, PendingShootdown},
+    },
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, min_level_for_len},
         pagetables::{
             Consistency, ContiguousProvider, DeferredUnmappingOps, MapInfo, MapReader, Mapper,
-            MappingCursor, MappingSettings, Table,
+            MappingCursor, MappingSettings, Table, TlbOrigin,
         },
         tracker::{
             FrameAllocFlags, FrameAllocator, alloc_frame, free_frame, take_or_new_frame_allocator,
@@ -21,6 +25,29 @@ use crate::{
 
 const MAX_INVL_TARGETS: usize = 8;
 const MAX_INVLS: usize = 4;
+
+/// Second-and-later operations parked under one page-table lock hold, merged into the batch the
+/// guard will discharge. See [ObjectPageTable::park].
+///
+/// Measured at ~150k per boot, which is why `park` merges rather than discharging the older batch
+/// inline: a lock hold runs one consistency-generating operation *per page* of a page-in or copy
+/// loop, not one per hold. Under the discharge-inline design only the last park in a hold survived
+/// to the guard, so on the order of (k-1)/k of all real waits stayed inside the lock -- the thing
+/// the guard exists to prevent. Kept as a counter because it is the number that falsified the
+/// "one operation per hold" assumption, and would catch a future change that reintroduced it.
+pub mod merged_parks {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static N: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record() {
+        N.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn count() -> usize {
+        N.load(Ordering::Relaxed)
+    }
+}
 
 /// What became of a run of pages the pager delivered.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -41,6 +68,14 @@ pub struct ObjectPageTable {
         MAX_INVL_TARGETS,
     >,
     map_count: usize,
+    /// Work that must happen after this object's page-table lock is released: waiting for the
+    /// shootdowns issued under it, and then freeing the frames those shootdowns protect.
+    ///
+    /// Parked here rather than run inline because the wait dominates the lock hold -- a median
+    /// 90 ms per boot of object-origin wait time, all of it with this mutex held (see TLB.md) --
+    /// and none of it needs the lock. [PtGuard] takes it and runs it after unlocking; living behind
+    /// the same mutex as everything else here is what makes that handoff safe.
+    deferred: Option<DeferredUnmappingOps>,
 }
 
 bitflags::bitflags! {
@@ -61,7 +96,12 @@ impl Drop for ObjectPageTable {
             PHYS_LEVEL_LAYOUTS[0],
         );
         let _ = self.mapper.unmap(cursor, &mut consist, &mut fa, &mut None);
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
+        // No guard is going to come along and discharge this -- the object is going away -- so the
+        // parked work has to run here, before the root frame below is freed.
+        if let Some(ops) = self.deferred.take() {
+            ops.run_all();
+        }
         let root_frame = get_frame(self.mapper.root_address()).expect("root frame should exist");
         root_frame.set_pt(false);
         if root_frame.dec_refcount() == 0 {
@@ -113,7 +153,33 @@ impl ObjectPageTable {
             mapper,
             invls: heapless::Vec::new(),
             map_count: 0,
+            deferred: None,
         }
+    }
+
+    /// Hand post-unlock work to [PtGuard].
+    ///
+    /// Two operations under one lock hold is rare, so rather than merging frame lists the older one
+    /// is discharged inline here -- which is exactly the behaviour every one of these call sites had
+    /// before parking existed.
+    ///
+    /// But that inline discharge runs the shootdown wait and the frame frees back *inside* the hold
+    /// this whole change exists to shorten, so the improvement is conditional on there being one
+    /// consistency-generating operation per lock hold. Counted rather than assumed: zero per boot
+    /// proves the fast path, and anything else names the site, instead of showing up later as an
+    /// unexplained number in the hold-time instrumentation.
+    fn park(&mut self, ops: DeferredUnmappingOps) {
+        match self.deferred.as_mut() {
+            Some(prev) => {
+                prev.absorb(ops);
+                merged_parks::record();
+            }
+            None => self.deferred = Some(ops),
+        }
+    }
+
+    pub fn take_deferred(&mut self) -> Option<DeferredUnmappingOps> {
+        self.deferred.take()
     }
 
     pub fn top_level() -> usize {
@@ -183,15 +249,20 @@ impl ObjectPageTable {
         }
         if self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full()) {
             let mut tlb = ArchTlbMgr::new_full_global();
+            tlb.set_origin(TlbOrigin::Object);
             tlb.finish();
             return;
         }
+        // Same shape as send_consistency: send for every context, then wait once, rather than a
+        // complete IPI-and-wait round per context with the object's page-table lock held.
+        let mut pending = PendingShootdown::none();
         for (target, maps) in self.invls.iter() {
             if maps.is_empty() {
                 continue;
             }
 
             let mut tlb = ArchTlbMgr::new(*target);
+            tlb.set_origin(TlbOrigin::Object);
             for map in maps.iter() {
                 if map.start().is_kernel() {
                     // The kernel half's page tables are shared by every context, so these
@@ -217,8 +288,9 @@ impl ObjectPageTable {
                     min_level_for_len(len).unwrap_or(self.mapper.start_level()),
                 );
             }
-            tlb.finish();
+            pending.absorb(tlb.finish_send());
         }
+        self.park(DeferredUnmappingOps::from_pending(pending));
     }
 
     pub fn invalidate_page(&mut self, pn: PageNumber) {
@@ -231,80 +303,82 @@ impl ObjectPageTable {
         self.invalidate(0, self.max_len());
     }
 
-    pub fn run_consistency2(&self, mut consist: Consistency, other: &Self) -> DeferredUnmappingOps {
-        let tlb = self.do_run_consistency(&mut consist);
-        let other_tlb = other.do_run_consistency(&mut consist);
-        match (tlb, other_tlb) {
-            (Some(mut tlb), Some(other_tlb)) => {
-                tlb.merge(other_tlb);
-                tlb.finish();
-            }
-            (Some(mut tlb), None) => {
-                tlb.finish();
-            }
-            (None, Some(mut other_tlb)) => {
-                other_tlb.finish();
-            }
-            (None, None) => {}
-        }
-        consist.into_deferred()
+    pub fn run_consistency2(&mut self, mut consist: Consistency, other: &Self) {
+        // Both objects get sent to. They did not before: `do_run_consistency` reset the accumulated
+        // invalidations at the end, so the second call always found nothing pending and `other`'s
+        // contexts were never invalidated at all -- visible in the old code as a `(None, Some(_))`
+        // arm that could not be reached. The reset now happens once, after both.
+        let mut pending = self.send_consistency(&mut consist);
+        pending.absorb(other.send_consistency(&mut consist));
+        consist.tlb_mut().reset();
+        consist.set_pending(pending);
+        let ops = consist.into_deferred();
+        self.park(ops);
     }
 
-    pub fn run_consistency(&self, mut consist: Consistency) -> DeferredUnmappingOps {
-        let tlb = self.do_run_consistency(&mut consist);
-        if let Some(mut tlb) = tlb {
-            tlb.finish();
-        }
-        consist.into_deferred()
+    pub fn run_consistency(&mut self, mut consist: Consistency) {
+        let pending = self.send_consistency(&mut consist);
+        consist.tlb_mut().reset();
+        consist.set_pending(pending);
+        let ops = consist.into_deferred();
+        self.park(ops);
     }
 
-    pub fn do_run_consistency(&self, consist: &mut Consistency) -> Option<ArchTlbMgr> {
+    /// Send the accumulated invalidations to every context this object is mapped into -- one
+    /// shootdown per context -- and return their combined obligation, unwaited.
+    ///
+    /// One per context rather than one merged across all of them, because `ArchTlbMgr::merge` on
+    /// two different `target_cr3`s has no precise common representation and degrades to full *and*
+    /// global. Global is the expensive word: `should_target` returns true for every processor when
+    /// it is set, which defeats the PCID revocation that normally reduces the target set to zero or
+    /// one, and every receiver then does a CR4.PGE toggle and a full flush. Measured at ~2200 of
+    /// those per boot against the arch mapper's ~320 (see TLB.md). Sending all of them before
+    /// waiting for any is what keeps the precise version from costing N serial rounds instead.
+    fn send_consistency(&self, consist: &mut Consistency) -> PendingShootdown {
+        if !consist.tlb().has_pending() {
+            return PendingShootdown::none();
+        }
         // `add_invalidate` drops silently once its bounded lists fill, so past MAX_INVL_TARGETS
         // contexts (or MAX_INVLS cursors within one) this object no longer knows where all of its
         // mappings live. Retargeting precisely would then reach only the contexts that happened to
         // fit and skip the rest entirely -- the same reason `invalidate` gives up and goes global.
         let overflowed = self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full());
-        let tlb = if !consist.tlb().is_full() && !overflowed {
-            if consist.tlb().has_pending() {
-                let mut final_tlb: Option<ArchTlbMgr> = None;
-                'out: for (target, maps) in self.invls.iter() {
-                    if maps.is_empty() {
-                        continue;
-                    }
+        if consist.tlb().is_full() || overflowed {
+            let mut tlb = ArchTlbMgr::new_full_global();
+            tlb.set_origin(TlbOrigin::Object);
+            return tlb.finish_send();
+        }
 
-                    consist.tlb_mut().set_target(*target);
-
-                    for map in maps.iter() {
-                        // For each map, copy, offset, and merge.
-                        let mut tlb = consist.tlb().apply_offset_from_map(map);
-                        // See Self::invalidate: a kernel-range mapping is visible under every PCID,
-                        // so precise invalidation cannot reach all of its copies.
-                        if map.start().is_kernel() {
-                            tlb.set_full_global();
-                        }
-
-                        if let Some(ref mut final_tlb) = final_tlb {
-                            final_tlb.merge(tlb);
-                        } else {
-                            final_tlb = Some(tlb);
-                        }
-
-                        if final_tlb.as_ref().unwrap().is_full() {
-                            break 'out;
-                        }
-                    }
-                }
-                final_tlb
-            } else {
-                None
+        let mut pending = PendingShootdown::none();
+        for (target, maps) in self.invls.iter() {
+            if maps.is_empty() {
+                continue;
             }
-        } else if consist.tlb().has_pending() {
-            Some(ArchTlbMgr::new_full_global())
-        } else {
-            None
-        };
-        consist.tlb_mut().reset();
-        tlb
+
+            consist.tlb_mut().set_target(*target);
+
+            // Merging within one target stays precise -- same `target_cr3` -- so the per-context
+            // send still covers all of that context's cursors in one round.
+            let mut per_target: Option<ArchTlbMgr> = None;
+            for map in maps.iter() {
+                let mut tlb = consist.tlb().apply_offset_from_map(map);
+                // See Self::invalidate: a kernel-range mapping is visible under every PCID, so
+                // precise invalidation cannot reach all of its copies. Now this makes only its own
+                // context's send global rather than poisoning every other context's too.
+                if map.start().is_kernel() {
+                    tlb.set_full_global();
+                }
+
+                match per_target {
+                    Some(ref mut acc) => acc.merge(tlb),
+                    None => per_target = Some(tlb),
+                }
+            }
+            if let Some(mut tlb) = per_target {
+                pending.absorb(tlb.finish_send());
+            }
+        }
+        pending
     }
 
     pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
@@ -321,7 +395,7 @@ impl ObjectPageTable {
             MappingSettings::default_user(),
         );
         let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
         r
     }
 
@@ -359,7 +433,7 @@ impl ObjectPageTable {
             MappingSettings::default_user(),
         );
         let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
         r
     }
 
@@ -486,7 +560,7 @@ impl ObjectPageTable {
 
         dirty_list.pages.sort_unstable_by_key(|x| x.0);
 
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
 
         r?;
         Ok(dirty_list)
@@ -506,7 +580,7 @@ impl ObjectPageTable {
             .mapper
             .cow_at(cursor, &mut consist, mark_dirty, &mut fa);
 
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
 
         did_cow
     }
@@ -578,7 +652,7 @@ impl ObjectPageTable {
             &mut consist,
             &mut fa,
         );
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
         r
     }
 
@@ -603,7 +677,7 @@ impl ObjectPageTable {
             &mut consist,
             &mut fa,
         )?;
-        self.run_consistency2(consist, dest).run_all();
+        self.run_consistency2(consist, dest);
         Ok(())
     }
 
@@ -616,7 +690,7 @@ impl ObjectPageTable {
         );
         let mut consist = Consistency::new_object_tables();
         let ops = self.mapper.setup_zero_range(cursor, &mut consist, &mut fa);
-        self.run_consistency(consist).run_all();
+        self.run_consistency(consist);
         ops
     }
 }
@@ -641,7 +715,7 @@ impl Object {
             ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
         let mut consist = Consistency::new_object_tables();
         let r = pt.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
-        pt.run_consistency(consist).run_all();
+        pt.run_consistency(consist);
         r
     }
 
@@ -703,7 +777,7 @@ impl Object {
             &mut consist,
             &mut fa,
         );
-        old_pt.run_consistency(consist).run_all();
+        old_pt.run_consistency(consist);
         r.map(|_| new_pt)
     }
 }

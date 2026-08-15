@@ -10,8 +10,9 @@ mod settings;
 mod table;
 
 pub use consistency::{
-    Consistency, DeferredUnmappingOps, fill_stats, print_switch_counters, tlb_shootdown_inc_count,
-    trace_tlb_invalidation, trace_tlb_shootdown,
+    Consistency, DeferredUnmappingOps, TlbOrigin, fill_stats, print_shootdown_counters,
+    print_switch_counters, tlb_shootdown_inc_count, tlb_wait_record, trace_tlb_invalidation,
+    trace_tlb_shootdown,
 };
 pub use cursor::MappingCursor;
 pub use mapper::Mapper;

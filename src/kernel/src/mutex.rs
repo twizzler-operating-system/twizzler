@@ -92,6 +92,8 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
     // with the tracker edge below means the tracker is lying about this owner, not that the owner
     // is running freely -- which is the one way "not waiting on a mutex" can hide a cycle.
     let mutex_wait = owner.get_mutex_wait();
+    // Read after the flag, per `set_mutex_wait`'s store order.
+    let waiting_at = owner.mutex_wait_at();
     let complete = if tracker.is_complete() {
         "complete"
     } else {
@@ -181,11 +183,22 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
         // disagreeing means the owner *is* in a mutex wait whose intent record was lost, and the
         // chain continues past a point this report cannot name. Called out rather than left to
         // read as "waiting for nothing", which is what made one observed chain ambiguous.
-        Some((None, None)) if mutex_wait => stall!(
-            "is in a mutex wait with no intent recorded -- edge unknown, chain is longer than shown",
-        ),
+        //
+        // `mutex_wait_at` is set by `lock` rather than by the tracker, so it survives
+        // `DISABLE_LOCK_TRACKING` -- which is on in every build, making this the arm that every
+        // observed chain-through-an-owner actually takes. It names the site but not the holder;
+        // the holder needs the tracker.
+        Some((None, None)) if mutex_wait => match waiting_at {
+            Some(at) => stall!("is itself waiting for a mutex at {}, holder unknown", at),
+            None => stall!(
+                "is in a mutex wait with no intent recorded -- edge unknown, chain is longer than shown",
+            ),
+        },
         Some((None, None)) => stall!("is not waiting on a mutex or a spinlock"),
-        None => stall!("tracker busy"),
+        None => match waiting_at {
+            Some(at) => stall!("tracker busy; is waiting for a mutex at {}", at),
+            None => stall!("tracker busy"),
+        },
     }
 }
 
@@ -534,7 +547,7 @@ impl<T> Mutex<T> {
 
                 let mut reinsert = true;
                 if let Some(thread) = current_thread {
-                    thread.set_mutex_wait(true);
+                    thread.set_mutex_wait(Some(caller));
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
@@ -566,7 +579,7 @@ impl<T> Mutex<T> {
 
         if let Some(ct) = current_thread_ref() {
             assert!(!ct.mutex_link.is_linked());
-            ct.set_mutex_wait(false);
+            ct.set_mutex_wait(None);
         }
 
         if timing {

@@ -30,7 +30,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator, take_or_new_frame_allocator},
     },
     mutex::Mutex,
-    obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
+    obj::{ObjectRef, PageNumber, PtGuard, pagetables::ObjectPageTable},
     once::Once,
     processor::{mp::current_processor, tls_ready},
     security::KERNEL_SCTX,
@@ -440,7 +440,29 @@ impl VirtContext {
             .expect("cannot get arch mapper for unattached security context"))
     }
 
-    pub fn map_object(&self, info: &MapRegion) {
+    /// Page-table frames [`Self::map_object`] can need to map one slot.
+    ///
+    /// The same count for every slot, which is what lets a caller charge before it has picked one
+    /// (`insert_kernel_object` does). A slot is `MAX_SIZE` long and `MAX_SIZE`-aligned, so at each
+    /// level it either covers whole tables from offset zero, or -- above `MAX_SIZE` -- sits wholly
+    /// inside one entry, however far into it. Neither term depends on which slot.
+    /// `test_slot_map_precharge_is_slot_independent` pins that.
+    fn slot_map_tables() -> usize {
+        MappingCursor::new(VirtAddr::start_user_memory(), MAX_SIZE)
+            .max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1)
+    }
+
+    /// Charge `fa` with the frames [`Self::slot_map_tables`] counts.
+    ///
+    /// Callers run this *before* taking the `regions` lock. `WAIT_OK` parks the thread until the
+    /// reclaimer frees memory, and `regions` is on the fault path of the whole context
+    /// (`fault::get_map_region`), so waiting for memory under it stalls every fault in that context
+    /// for the duration. `FrameAllocator::precharge_nowait` names the same rule.
+    fn precharge_slot_map(fa: &mut FrameAllocator) {
+        fa.precharge(Self::slot_map_tables(), FrameAllocFlags::WAIT_OK);
+    }
+
+    pub fn map_object(&self, info: &MapRegion, fa: &mut FrameAllocator) {
         // An explicit target wins; zero means "whatever this thread is running as", which for the
         // monitor is KERNEL_SCTX -- its instance id is zero too. That now resolves (see
         // `security::kernel_sctx`), so those mappings get installed here rather than left to the
@@ -461,11 +483,6 @@ impl VirtContext {
 
         let len = info.range.end - info.range.start;
         let cursor = MappingCursor::new(info.range.start, len);
-        let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
-            FrameAllocFlags::WAIT_OK,
-        );
         // Reading the thread's own `secctx.active()` instead of `get_sctx(active_id())` is faster
         // (68% of this function). The two used to differ -- `get_sctx(0)` returned `Err` and
         // skipped this whole block -- but both now resolve to the single `kernel_sctx()`, so the
@@ -473,7 +490,7 @@ impl VirtContext {
         if let Ok(sctx) = crate::security::get_sctx(sctx) {
             let perms = sctx.lookup(info.object().id(), info.default_prot);
             let mut pt = if info.stable.is_some() {
-                info.stable.as_ref().unwrap().lock()
+                PtGuard::new(info.stable.as_ref().unwrap())
             } else {
                 info.object.lock_page_tables()
             };
@@ -484,7 +501,7 @@ impl VirtContext {
                     info.cache_type,
                     MappingFlags::USER,
                 );
-                arch.object_map(cursor, &mut *pt, settings, &mut fa);
+                arch.object_map(cursor, &mut *pt, settings, fa);
             });
         };
     }
@@ -600,7 +617,7 @@ impl VirtContext {
                 // to be told its mapping is gone, even though it never took a count against the
                 // object and so has nothing to give back.
                 let mut pt = if let Some(stable) = region.stable.as_ref() {
-                    stable.lock()
+                    PtGuard::new(stable)
                 } else {
                     region.object().lock_page_tables()
                 };
@@ -786,6 +803,10 @@ impl UserContext for VirtContext {
             removed: Arc::new(AtomicBool::new(false)),
         };
 
+        // Ahead of the lock: see `precharge_slot_map`.
+        let mut fa = take_or_new_frame_allocator();
+        Self::precharge_slot_map(&mut fa);
+
         // Check the slot is free before mapping, and hold the lock across the map: otherwise a
         // racing insert can clobber our object table entry, and a Busy return leaves behind a
         // mapping plus the map count taken for it, which keeps the object from ever being reaped.
@@ -794,7 +815,7 @@ impl UserContext for VirtContext {
         if slots.lookup_region(slot.start_vaddr()).is_some() {
             return Err(ResourceError::Busy.into());
         }
-        self.map_object(&new_slot_info);
+        self.map_object(&new_slot_info, &mut fa);
         slots.insert_region(new_slot_info);
         Ok(())
     }
@@ -829,7 +850,7 @@ impl UserContext for VirtContext {
             // Whichever page tables the fault path would use for this region -- taking the same
             // one is what makes the `removed` store below and that path's check of it ordered.
             let mut pt = if let Some(stable) = slot.stable.as_ref() {
-                stable.lock()
+                PtGuard::new(stable)
             } else {
                 slot.object().lock_page_tables()
             };
@@ -1015,6 +1036,10 @@ impl KernelMemoryContext for VirtContext {
     type Handle<T> = KernelObjectVirtHandle<T>;
 
     fn insert_kernel_object<T>(&self, info: ObjectContextInfo) -> Self::Handle<T> {
+        // Ahead of the lock: see `precharge_slot_map`.
+        let mut fa = take_or_new_frame_allocator();
+        Self::precharge_slot_map(&mut fa);
+
         let mut slots = self.regions.lock();
         let mut kernel_slots_counter = kernel_slot_counter().lock();
         let slot = kernel_slots_counter
@@ -1049,7 +1074,7 @@ impl KernelMemoryContext for VirtContext {
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),
         };
-        self.map_object(&new_slot_info);
+        self.map_object(&new_slot_info, &mut fa);
         slots.insert_region(new_slot_info);
         KernelObjectVirtHandle {
             info,

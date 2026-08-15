@@ -14,7 +14,8 @@ use crate::{
     },
     interrupt::{self, Destination},
     memory::pagetables::{
-        MappingCursor, tlb_shootdown_inc_count, trace_tlb_invalidation, trace_tlb_shootdown,
+        MappingCursor, TlbOrigin, tlb_shootdown_inc_count, tlb_wait_record,
+        trace_tlb_invalidation, trace_tlb_shootdown,
     },
     processor::{
         Processor,
@@ -328,6 +329,8 @@ impl Drop for ArchCacheLineMgr {
 #[derive(Clone)]
 pub struct ArchTlbMgr {
     data: TlbInvData,
+    /// Statistics only -- see [TlbOrigin]. Defaults to `Arch`; the object side marks its own.
+    origin: TlbOrigin,
 }
 
 impl core::fmt::Debug for ArchTlbMgr {
@@ -346,9 +349,14 @@ impl ArchTlbMgr {
     pub fn new(target: ArchContextTarget) -> Self {
         let this = Self {
             data: TlbInvData::new(target.raw()),
+            origin: TlbOrigin::Arch,
         };
         assert!(!this.data.has_invalidations());
         this
+    }
+
+    pub fn set_origin(&mut self, origin: TlbOrigin) {
+        self.origin = origin;
     }
 
     pub fn new_full_global() -> Self {
@@ -376,7 +384,10 @@ impl ArchTlbMgr {
 
     pub fn apply_offset_from_map(&self, map: &MappingCursor) -> Self {
         let data = self.data.apply_offset(map);
-        Self { data }
+        Self {
+            data,
+            origin: self.origin,
+        }
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -408,14 +419,25 @@ impl ArchTlbMgr {
     /// the better trade.
     const MAX_TARGETED_IPIS: usize = 4;
 
-    /// Execute all queued invalidations.
+    /// Execute all queued invalidations, and wait for them to be acknowledged.
     pub fn finish(&mut self) {
+        self.finish_send().wait();
+    }
+
+    /// Distribute the queued invalidations and apply them locally, without waiting for remote
+    /// processors to acknowledge. The returned token must be waited on before the memory this
+    /// invalidation protects is reused; dropping it waits.
+    ///
+    /// Split out from [Self::finish] so a caller can drop its page-table lock across the wait. Only
+    /// the wait moves: the revoke, the fence, the target selection and the send all stay here, so
+    /// the ordering argument below holds exactly as it did when this was one function.
+    pub fn finish_send(&mut self) -> PendingShootdown {
         if !tls_ready() {
             self.reset();
-            return;
+            return PendingShootdown::none();
         }
         if !self.data.has_invalidations() {
-            return;
+            return PendingShootdown::none();
         }
 
         let ct = current_thread_ref();
@@ -480,7 +502,7 @@ impl ArchTlbMgr {
                 count += 1;
             }
         });
-        tlb_shootdown_inc_count(count > 0);
+        tlb_shootdown_inc_count(count, self.origin, self.data.full() && self.data.global());
         if count > 0 {
             trace_tlb_shootdown();
             // Send the IPI, and then do local invalidations.
@@ -513,52 +535,135 @@ impl ArchTlbMgr {
         trace_tlb_invalidation();
         self.data.do_invalidation();
 
-        if count > 0 {
-            // Wait for every targeted processor to report that it is done. This wait must not be
-            // bounded: our caller frees the unmapped frames -- page table pages included -- as soon
-            // as we return, so giving up early lets a processor that still holds stale entries walk
-            // recycled memory. It cannot deadlock, because spin_wait_until services our own
-            // incoming shootdowns on every pass.
-            //
-            // Resend periodically rather than on every pass: a processor that had interrupts
-            // disabled when the broadcast went out needs another nudge, but hammering its APIC only
-            // delays the acknowledgement we're waiting for.
-            // TODO: targeted shootdown and pcid tracking would cut how often we get here at all.
-            const RESEND_INTERVAL: usize = 4096;
-            const WARN_INTERVAL: usize = 1 << 22;
-            with_each_active_processor(|p| {
-                if !targets.contains(p.id) {
-                    return;
-                }
-                let mut iters: usize = 0;
-                spin_wait_until(
-                    || {
-                        if p.arch.tlb_shootdown_info.is_finished() {
-                            return Some(());
-                        }
-                        iters += 1;
-                        if iters % RESEND_INTERVAL == 0 {
-                            super::super::super::apic::send_ipi(
-                                Destination::Single(p.id),
-                                TLB_SHOOTDOWN_VECTOR,
-                            );
-                        }
-                        if iters % WARN_INTERVAL == 0 {
-                            logln!(
-                                "warning -- TLB shootdown stalled on CPUs {} -> {} ({} iterations)",
-                                proc.id,
-                                p.id,
-                                iters
-                            );
-                        }
-                        None
-                    },
-                    || {},
-                );
-            });
-        }
+        // Released before the wait, not after it. It is load-bearing for everything above -- the
+        // revoke, the target selection and the local invalidation all have to happen on one
+        // processor -- but nothing in the wait assumes it is still on the processor that sent.
+        // Targets drain from the IPI whether or not we are on-cpu, `is_finished` reads *their*
+        // state, and landing on a processor that is itself in `targets` resolves itself, since the
+        // resend below is delivered locally and its handler drains. Releasing it here is what lets
+        // a token be held across a sleep, which the object page tables need.
         drop(_guard);
         self.data.reset();
+        PendingShootdown {
+            targets,
+            count,
+            from: proc.id,
+            origin: self.origin,
+        }
+    }
+}
+
+/// A shootdown that has been sent but not yet acknowledged by its targets.
+///
+/// Dropping one waits, so a caller that ignores it gets the old behavior rather than a correctness
+/// bug. That is deliberate: the guarantee this represents -- no processor still holds a stale entry
+/// for the range -- is what makes it safe to free the unmapped frames, and losing it silently would
+/// be a use-after-free rather than a slowdown.
+#[must_use = "the shootdown must be waited for before the memory it protects is reused"]
+pub struct PendingShootdown {
+    targets: CpuSet,
+    count: usize,
+    /// The processor that sent, for the stall message. Recorded rather than read at wait time
+    /// because this may no longer be running there.
+    from: u32,
+    /// Statistics only: which page tables this came out of, so the wait can be attributed. See
+    /// [tlb_wait_record] -- object-origin wait time is what the object page tables would move out
+    /// from under their mutex, and is the number that decides whether that is worth doing.
+    origin: TlbOrigin,
+}
+
+impl PendingShootdown {
+    /// Nothing was sent, so there is nothing to wait for.
+    pub fn none() -> Self {
+        Self {
+            targets: CpuSet::empty(),
+            count: 0,
+            from: 0,
+            origin: TlbOrigin::Arch,
+        }
+    }
+
+    pub fn wait(mut self) {
+        self.do_wait();
+    }
+
+    /// Take on another token's obligation, so that several sends can be waited for once.
+    ///
+    /// Waiting on the union is not weaker than waiting on each: `is_finished` reports on all of a
+    /// processor's slots rather than on a particular sender's entry, so a processor that has
+    /// drained has drained everything either token put there.
+    pub fn absorb(&mut self, mut other: Self) {
+        if self.count == 0 {
+            // Ours is a `none()`, whose `origin` and `from` are placeholders; take the real ones.
+            // `from` matters: both object-side callers accumulate onto a `none()`, so without this
+            // every object-origin stall would report having been sent by cpu 0 -- in the one
+            // message anyone reads while investigating a stall.
+            self.origin = other.origin;
+            self.from = other.from;
+        }
+        // With several real sends absorbed, `origin` and `from` keep the first. Both are reporting
+        // only, and in practice every absorbed set shares an origin.
+        self.targets.union_with(&other.targets);
+        self.count += other.count;
+        // We hold the obligation now; its Drop must not wait for it a second time.
+        other.count = 0;
+    }
+
+    /// Idempotent, so that [Self::wait] and the `Drop` that backs it up cannot double-wait.
+    fn do_wait(&mut self) {
+        if self.count == 0 {
+            return;
+        }
+        let start = crate::instant::Instant::now();
+        // Wait for every targeted processor to report that it is done. This wait must not be
+        // bounded: the caller frees the unmapped frames -- page table pages included -- once it
+        // returns, so giving up early lets a processor that still holds stale entries walk recycled
+        // memory. It cannot deadlock, because spin_wait_until services our own incoming shootdowns
+        // on every pass.
+        //
+        // Resend periodically rather than on every pass: a processor that had interrupts disabled
+        // when the broadcast went out needs another nudge, but hammering its APIC only delays the
+        // acknowledgement we're waiting for.
+        const RESEND_INTERVAL: usize = 4096;
+        const WARN_INTERVAL: usize = 1 << 22;
+        with_each_active_processor(|p| {
+            if !self.targets.contains(p.id) {
+                return;
+            }
+            let mut iters: usize = 0;
+            spin_wait_until(
+                || {
+                    if p.arch.tlb_shootdown_info.is_finished() {
+                        return Some(());
+                    }
+                    iters += 1;
+                    if iters % RESEND_INTERVAL == 0 {
+                        super::super::super::apic::send_ipi(
+                            Destination::Single(p.id),
+                            TLB_SHOOTDOWN_VECTOR,
+                        );
+                    }
+                    if iters % WARN_INTERVAL == 0 {
+                        logln!(
+                            "warning -- TLB shootdown stalled on CPUs {} -> {} ({} iterations)",
+                            self.from,
+                            p.id,
+                            iters
+                        );
+                    }
+                    None
+                },
+                || {},
+            );
+        });
+        tlb_wait_record(self.origin, crate::instant::Instant::now() - start);
+        self.count = 0;
+    }
+}
+
+impl Drop for PendingShootdown {
+    fn drop(&mut self) {
+        self.do_wait();
     }
 }
 

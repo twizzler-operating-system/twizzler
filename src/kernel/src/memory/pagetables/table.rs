@@ -116,14 +116,17 @@ impl Table {
             .settings()
             .flags()
             .contains(MappingFlags::GLOBAL);
-
         // TODO: do we need to decrement the page refcount, etc?
 
         *entry = new_entry;
         let entry_addr = VirtAddr::from(entry as *const _);
         consist.add_cache_line(entry_addr);
 
-        // TODO: if we go from READ to WRITE and the same paddr, can we avoid doing this?
+        // Skipping this for a same-frame permission *widening* is sound on x86 -- a stale, more
+        // restrictive entry just takes a spurious fault and re-walks -- and was measured: it fires
+        // twice per boot, because `do_cow_copy` reaches an entry update only for a frame that is
+        // already IS_COW, and this workload barely clones. Not worth a fast path through the
+        // hottest page-table function. See TLB.md.
         if was_present {
             consist.enqueue(vaddr, was_global, was_terminal, level)
         }

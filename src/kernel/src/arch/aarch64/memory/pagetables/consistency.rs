@@ -162,9 +162,21 @@ impl ArchTlbMgr {
         }
     }
 
+    /// Statistics only on amd64, where a shootdown has a remote half worth attributing. Every
+    /// invalidation here is local, so there is nothing to count.
+    pub fn set_origin(&mut self, _origin: crate::memory::pagetables::TlbOrigin) {}
+
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
         self.queue.drain()
+    }
+
+    /// Counterpart to the amd64 split. Invalidation here is `tlbi ... is` plus a barrier, which
+    /// broadcasts in hardware and needs no acknowledgement from software, so there is no remote
+    /// half to defer and the token is empty.
+    pub fn finish_send(&mut self) -> PendingShootdown {
+        self.finish();
+        PendingShootdown
     }
 }
 
@@ -172,4 +184,19 @@ impl Drop for ArchTlbMgr {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+/// See the amd64 type this mirrors. Nothing to wait for here; it exists so generic code can name
+/// one API.
+#[must_use]
+pub struct PendingShootdown;
+
+impl PendingShootdown {
+    pub fn none() -> Self {
+        Self
+    }
+
+    pub fn wait(self) {}
+
+    pub fn absorb(&mut self, _other: Self) {}
 }

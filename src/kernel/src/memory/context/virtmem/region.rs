@@ -30,7 +30,7 @@ use crate::{
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
     },
     mutex::Mutex,
-    obj::{ObjectRef, PageNumber, pagetables::ObjectPageTable},
+    obj::{ObjectRef, PageNumber, PtGuard, pagetables::ObjectPageTable},
     security::PermsInfo,
     syscall::sync::wakeup,
     trace::{
@@ -289,14 +289,18 @@ impl MapRegion {
                     &mut all_were_present,
                 )?;
                 record_stage(FaultStage::EnsureCore, t);
-                let mut clone = stable.lock();
+                let mut clone = PtGuard::new(stable);
                 let offset = page_number.as_byte_offset() as u64;
                 pt.setup_cow_range(&mut clone, offset, offset, PageNumber::PAGE_SIZE)?;
+                // Unavoidably nested, unlike the two-guard sites that use `release_two`: `clone` is
+                // this block's value and has to outlive `pt`, so `pt`'s shootdown wait runs with
+                // the clone's lock held. Stated rather than left to drop order -- the exposure is
+                // one wait, and closing it would mean restructuring the fault path's return.
                 drop(pt);
                 clone
             }
             Some(stable) => {
-                let pt = stable.lock();
+                let pt = PtGuard::new(stable);
                 record_stage(FaultStage::PtLock, t_pt);
                 pt
             }
@@ -438,7 +442,7 @@ impl MapRegion {
 
     pub fn invalidate(&self) {
         if let Some(stable) = self.stable.as_ref() {
-            let mut stable = stable.lock();
+            let mut stable = PtGuard::new(stable);
             stable.invalidate(self.offset, self.range.end - self.range.start);
         } else {
             self.object()
@@ -451,7 +455,7 @@ impl MapRegion {
         match cmd {
             MapControlCmd::Sync(sync_info_ptr) => {
                 let mut pt = if let Some(stable) = self.stable.as_ref() {
-                    stable.lock()
+                    PtGuard::new(stable)
                 } else {
                     self.object().lock_page_tables()
                 };
@@ -513,10 +517,14 @@ impl MapRegion {
             MapControlCmd::Discard | MapControlCmd::Update => {
                 if let Some(stable) = self.stable.as_ref() {
                     let mut pt = self.object().lock_page_tables();
-                    let mut stable = stable.lock();
+                    let mut stable = PtGuard::new(stable);
                     let len = self.range.end - self.range.start;
                     stable.setup_zero_range(self.offset, len)?;
                     pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
+                    // Both locks off before either one's shootdown wait runs. Letting these drop
+                    // implicitly would run the inner guard's wait under the outer lock, which is
+                    // the nested hold this change exists to remove.
+                    PtGuard::release_two(pt, stable);
                 }
                 self.invalidate();
                 Ok(0)

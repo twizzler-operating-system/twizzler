@@ -23,6 +23,7 @@ use crate::{
     idcounter::{IdCounter, SimpleId},
     memory::{
         VirtAddr,
+        pagetables::DeferredUnmappingOps,
         tracker::{FrameAllocFlags, alloc_frame},
     },
     mutex::{LockGuard, Mutex},
@@ -248,9 +249,10 @@ impl Object {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
+
     #[track_caller]
-    pub fn lock_page_tables(&self) -> LockGuard<'_, pagetables::ObjectPageTable> {
-        self.tables.lock()
+    pub fn lock_page_tables(&self) -> PtGuard<'_> {
+        PtGuard::new(&self.tables)
     }
 
     pub fn id(&self) -> ObjID {
@@ -361,12 +363,12 @@ impl Object {
 
     pub fn print_page_tree(&self) {
         logln!("=== PAGE TREE OBJECT {} ===", self.id());
-        self.tables.lock().print_tree();
+        self.lock_page_tables().print_tree();
     }
 
     pub fn info(&self) -> ObjectInfo {
         let (num_pages, maps) = {
-            let page_tree = self.tables.lock();
+            let page_tree = self.lock_page_tables();
             (page_tree.count_pages(), page_tree.map_count())
         };
         ObjectInfo {
@@ -417,6 +419,101 @@ impl Ord for Object {
 impl core::fmt::Debug for Object {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Object({})", self.id())
+    }
+}
+
+/// A held object page-table lock, which on release discharges whatever the operations under it
+/// parked -- waiting for their TLB shootdowns and then freeing the frames those shootdowns protect.
+///
+/// The order in `drop` is the whole point and is not interchangeable: the mutex is released
+/// *before* the wait. That is what takes a median 90 ms per boot of shootdown spinning out of this
+/// lock's hold (TLB.md).
+///
+/// What makes releasing first *safe* is not that `run_all` waits before it frees -- that only
+/// covers the path where `run_all` is called. It is that [DeferredUnmappingOps] has a backstop for
+/// each of its fields on the path where it isn't: a non-empty `pages` trips its `Drop` assert, and
+/// `pending` discharges through `PendingShootdown`'s own `Drop`. So a parked value that is dropped
+/// rather than run can neither free early nor skip the wait -- it panics or it waits. A field added
+/// to that struct without a comparable backstop would silently break this.
+///
+/// Every path that locks an [ObjectPageTable] must produce one of these rather than a bare
+/// `LockGuard`, or parked work sits until some later guard happens to pick it up.
+pub struct PtGuard<'a> {
+    /// `Option` only so that `drop` can release the mutex before running the parked work.
+    inner: Option<LockGuard<'a, pagetables::ObjectPageTable>>,
+}
+
+impl<'a> PtGuard<'a> {
+    #[track_caller]
+    pub fn new(m: &'a Mutex<pagetables::ObjectPageTable>) -> Self {
+        Self {
+            inner: Some(m.lock()),
+        }
+    }
+
+    /// Two objects' page tables at once, in the address order [crate::utils::lock_two] uses to keep
+    /// deadlock cycles from forming.
+    ///
+    /// Exists so the two-object paths cannot quietly take bare `LockGuard`s: work parked under one
+    /// of those would sit undischarged until some later guard on the same object picked it up,
+    /// which is a delay with no bound rather than a compile error.
+    pub fn new_two<'b>(
+        a: &'a Mutex<pagetables::ObjectPageTable>,
+        b: &'b Mutex<pagetables::ObjectPageTable>,
+    ) -> (Self, PtGuard<'b>) {
+        let (ga, gb) = crate::utils::lock_two(a, b);
+        (Self { inner: Some(ga) }, PtGuard { inner: Some(gb) })
+    }
+
+    /// Release two page-table locks, and only then discharge what either of them parked.
+    ///
+    /// Required wherever two are held at once, and not merely tidier. Rust's drop order releases
+    /// the inner guard first, so its parked work -- a shootdown wait, now preemptible, plus frame
+    /// frees -- would run with the outer lock still held. That is exactly the nested-hold shape
+    /// this change exists to remove, arriving by implicit drop order rather than by any decision in
+    /// the code. There is no ordering of the two drops that avoids it: releasing the outer first
+    /// runs *its* parked work under the inner. The release has to be explicit.
+    ///
+    /// An early `?` between locking and this call falls back to drop order, which is correct but
+    /// nested; that is the error path and is left alone deliberately.
+    pub fn release_two(mut a: Self, mut b: PtGuard<'_>) {
+        let (ops_a, ops_b) = (a.drain(), b.drain());
+        drop(a);
+        drop(b);
+        if let Some(ops) = ops_a {
+            ops.run_all();
+        }
+        if let Some(ops) = ops_b {
+            ops.run_all();
+        }
+    }
+
+    fn drain(&mut self) -> Option<DeferredUnmappingOps> {
+        self.inner.as_mut().unwrap().take_deferred()
+    }
+}
+
+impl core::ops::Deref for PtGuard<'_> {
+    type Target = pagetables::ObjectPageTable;
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap()
+    }
+}
+
+impl core::ops::DerefMut for PtGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().unwrap()
+    }
+}
+
+impl Drop for PtGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.inner.take().unwrap();
+        let ops = guard.take_deferred();
+        drop(guard);
+        if let Some(ops) = ops {
+            ops.run_all();
+        }
     }
 }
 

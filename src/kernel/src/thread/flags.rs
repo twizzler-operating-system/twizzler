@@ -178,16 +178,39 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_ACTIVE_RUNNING != 0
     }
 
-    pub fn set_mutex_wait(&self, set: bool) {
-        if set {
-            self.flags.fetch_or(THREAD_MUTEX_WAIT, Ordering::SeqCst);
-        } else {
-            self.flags.fetch_and(!THREAD_MUTEX_WAIT, Ordering::SeqCst);
+    /// Record that this thread is blocked acquiring a mutex at `at`, or (`None`) that it is not.
+    pub fn set_mutex_wait(&self, at: Option<&'static core::panic::Location<'static>>) {
+        match at {
+            Some(loc) => {
+                // Location first, then the flag. Readers reach the location only after the flag
+                // reads set, so this order is what keeps one from finding "waiting, nowhere".
+                self.mutex_wait_at
+                    .store(loc as *const _ as usize, Ordering::SeqCst);
+                self.flags.fetch_or(THREAD_MUTEX_WAIT, Ordering::SeqCst);
+            }
+            // Conditional because this arm runs on *every* acquisition, uncontended ones included,
+            // where the flag was never raised and there is nothing to clear.
+            None => {
+                if self.flags.fetch_and(!THREAD_MUTEX_WAIT, Ordering::SeqCst) & THREAD_MUTEX_WAIT
+                    != 0
+                {
+                    self.mutex_wait_at.store(0, Ordering::SeqCst);
+                }
+            }
         }
     }
 
     pub fn get_mutex_wait(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_MUTEX_WAIT != 0
+    }
+
+    /// Where this thread is blocked acquiring a mutex, if it is.
+    ///
+    /// The wait edge `report_stuck_owner` cannot get from the lock tracker: intents are recorded
+    /// only when tracking is compiled in, so with it off every chain stops at the first owner.
+    pub fn mutex_wait_at(&self) -> Option<&'static core::panic::Location<'static>> {
+        let p = self.mutex_wait_at.load(Ordering::SeqCst);
+        (p != 0).then(|| unsafe { &*(p as *const core::panic::Location<'static>) })
     }
 
     pub fn set_sync_sleep(&self) {

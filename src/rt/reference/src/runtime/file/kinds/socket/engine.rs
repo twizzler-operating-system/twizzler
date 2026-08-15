@@ -31,6 +31,17 @@ use twizzler_abi::syscall::{
 use twizzler_net::{net_alloc_port, net_release_port, NetClient, NetClientConfig};
 use twizzler_rt_abi::bindings::{wait_kind, WAIT_READ, WAIT_WRITE};
 
+/// POLLWATCH (temporary): cap on an otherwise-untimed park of the polling thread. Long enough that
+/// an idle engine costs one wakeup a second, short enough that a wedge would end in seconds rather
+/// than outliving the test that hit it.
+const POLLWATCH_CAP_MS: u64 = 1000;
+static POLLWATCH_RESCUES: AtomicU64 = AtomicU64::new(0);
+
+/// Threads currently parked in `Engine::blocking`'s condvar wait. Only `Core::poll` reads it, to
+/// tell a poll pass that had nobody to notify from one that dropped a notification on the floor.
+static CV_PARKED: AtomicU64 = AtomicU64::new(0);
+static NOTIFY_DROPS: AtomicU64 = AtomicU64::new(0);
+
 pub struct Engine {
     pub(super) core: Arc<Mutex<Core>>,
     waiter: Arc<Condvar>,
@@ -395,11 +406,21 @@ impl Engine {
             // Refilled, not rebuilt: the set changes only when an interface comes or goes, but the
             // loop below runs on every poll cycle.
             let mut waiters: Vec<ThreadSync> = Vec::new();
+            // POLLWATCH (temporary): set when the park below was untimed and ended with neither rx
+            // nor notify set, i.e. only the cap can have ended it.
+            let mut woke_on_cap = false;
             loop {
                 while check_tracking() {}
                 let time = {
                     let mut inner = inner.lock().unwrap();
-                    inner.poll(&*waiter);
+                    let did = inner.poll(&*waiter);
+                    if std::mem::take(&mut woke_on_cap) && did {
+                        let n = POLLWATCH_RESCUES.fetch_add(1, Ordering::Relaxed) + 1;
+                        twizzler_abi::klog_println!(
+                            "POLLWATCH: cap ended an untimed park that had work pending (#{})",
+                            n
+                        );
+                    }
                     let time = inner.poll_time();
 
                     // We may need to poll immediately!
@@ -431,7 +452,29 @@ impl Engine {
                 drop(core);
                 let n = notify.swap(0, Ordering::SeqCst);
                 if !any_ready && n == 0 {
-                    let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
+                    // POLLWATCH (temporary): every transcript in wedgehunt.md's wedge family has
+                    // this thread parked here with `time` None, so an untimed park is the state to
+                    // interrogate rather than preserve. Capping it makes the run answer which of
+                    // the two it is: if the cap keeps ending parks that had work waiting, a wakeup
+                    // was owed and not delivered; if it never does, the engine genuinely had
+                    // nothing to do and the wedge is not here. Note this also *masks* a lost
+                    // wakeup -- that is the point, a wedge rate that drops to zero under the cap
+                    // is itself the result.
+                    let untimed = time.is_none();
+                    let _ = sys_thread_sync(
+                        &mut waiters,
+                        Some(time.unwrap_or(Duration::from_millis(POLLWATCH_CAP_MS)).into()),
+                    );
+                    // Attribute the wake before anything else can change it: notify still clear
+                    // and no rx pending means neither waker ran, so the cap is what ended it.
+                    woke_on_cap = untimed
+                        && notify.load(Ordering::SeqCst) == 0
+                        && !inner
+                            .lock()
+                            .unwrap()
+                            .ifaceset
+                            .iter()
+                            .any(|iface| iface.device.has_rx_pending());
                 }
             }
         });
@@ -497,6 +540,10 @@ impl Engine {
     ) -> std::io::Result<R> {
         let mut core = self.core.lock().unwrap();
         if let Ok(r) = f(&mut *core) {
+            // Same reason the in-loop Ok arm below gives: the closure may have queued data to send
+            // or drained a buffer, and the polling thread can be parked with no timer to end it
+            // (poll_delay returns None whenever no socket needs one), so nothing else would.
+            self.wake();
             return Ok(r);
         }
         // Immediately poll, since we wait to have as up-to-date state as possible.
@@ -516,7 +563,9 @@ impl Engine {
                         return Err(e);
                     }
                     self.wake();
+                    CV_PARKED.fetch_add(1, Ordering::SeqCst);
                     core = self.waiter.wait(core).unwrap();
+                    CV_PARKED.fetch_sub(1, Ordering::SeqCst);
                 }
                 Err(e) => return Err(e),
             }
@@ -703,9 +752,28 @@ impl Core {
             for (key, (read, write)) in agg {
                 WAITERS.mark_waiter(key, read, write);
             }
-            // Notify the CV so that other waiting threads can retry their blocking operations.
-            waiter.notify_all();
         }
+        // Ungated, unlike the `mark_waiter` publication above, and the asymmetry is the point.
+        // `mark_waiter` drives edge-triggered readiness words, where an unconditional wake would
+        // turn a poll cycle into a spurious edge and break single-shot poll/select/kevent waits --
+        // that is why it stays inside `if res`. This condvar is the opposite: every waiter is in
+        // `blocking`'s loop and re-tests its own predicate on wake, so a wake with nothing ready
+        // costs one retry and nothing else, while a *missed* one is unbounded. Gating it on
+        // smoltcp having done work made notification depend on the wrong question -- a socket's
+        // state can become satisfiable without the interface transmitting or receiving anything,
+        // and the waiters then sleep through it while this thread keeps polling healthily.
+        let parked = CV_PARKED.load(Ordering::SeqCst);
+        if !res && parked > 0 {
+            let n = NOTIFY_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 5 || n % 500 == 0 {
+                twizzler_abi::klog_println!(
+                    "NOTIFYDROP: poll did no work while {} parked on the condvar (#{})",
+                    parked,
+                    n
+                );
+            }
+        }
+        waiter.notify_all();
         res
     }
 

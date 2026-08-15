@@ -56,6 +56,7 @@ swept once. See `parse_config_spec` for the accepted spelling.
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import os
 import re
 import shutil
@@ -157,6 +158,8 @@ class BuildPhase:
     profile: str
     ok: bool
     duration: float
+    # What the source tree looked like when this profile's build started. See source_fingerprint.
+    fingerprint: str = "?"
 
 
 @dataclass
@@ -513,6 +516,47 @@ def build_command_for(profile: str, work: Path, tag: str,
     ] + mode
 
 
+# What the fingerprint covers. Everything the kernel and the tools are built from, and nothing
+# else -- the repo root is full of untracked logs, tarballs and scratch notes whose churn would
+# make the fingerprint change constantly and mean nothing.
+FINGERPRINT_PATHS = ("src", "tools", "Cargo.toml", "Cargo.lock", "rust-toolchain")
+
+
+def source_fingerprint() -> str:
+    """A short hash of the source the next build will compile.
+
+    Exists because a sweep's results are only interpretable if you know what they were built from,
+    and the build id alone cannot tell you: it identifies the artifact, not the tree. The failure
+    this catches is editing the tree while a sweep is still in its build phase -- the second
+    profile then compiles different source than the first, or a "control" arm compiles the
+    treatment, and nothing about the resulting transcripts looks wrong.
+
+    HEAD plus the working-tree diff plus the untracked listing, because this tree is *always*
+    dirty: uncommitted work is the normal state here, so "is it dirty" is the wrong question and
+    "did it change under me" is the right one. Untracked paths are listed, not hashed -- a new file
+    only matters once something references it, which shows up as a tracked diff.
+    """
+    def git(*a: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", *a], cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, errors="replace", timeout=60,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            # No git, or a repo in a state git won't talk about. Better to degrade to "unknown"
+            # than to fail a sweep over its own bookkeeping.
+            return ""
+
+    parts = [
+        git("rev-parse", "HEAD"),
+        git("status", "--porcelain", "--", *FINGERPRINT_PATHS),
+        git("diff", "HEAD", "--", *FINGERPRINT_PATHS),
+    ]
+    if not any(parts):
+        return "unknown"
+    return hashlib.sha256("".join(parts).encode("utf-8", "replace")).hexdigest()[:12]
+
+
 def xtask_binary() -> List[str]:
     """Prefer the built binary over `cargo xtask` so parallel runs don't queue on cargo's lock."""
     built = REPO_ROOT / ".target-xtask" / "release" / "xtask"
@@ -527,6 +571,9 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
     does: the build was pointed at this sweep's master with `--disk-image`.
     """
     start = time.monotonic()
+    # Read before the build, not after: this is the source going in. Compared across profiles and
+    # against the sweep's start by check_tree_stable.
+    fingerprint = source_fingerprint()
     # Exclusive for the whole phase: the build still writes the one shared build tree, even though
     # the data image is now private to this sweep. xtask takes its own locks over the parts that
     # outlive a single sweep, which is what protects us from builds this lock cannot see -- a
@@ -558,7 +605,7 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
             for line in (proc.stdout or "").splitlines():
                 if line.startswith("error"):
                     print(f"    {line}", file=sys.stderr, flush=True)
-            return BuildPhase(profile, False, time.monotonic() - start)
+            return BuildPhase(profile, False, time.monotonic() - start, fingerprint)
 
         # Only the boot image is snapshotted now: `--disk-image` had the build write the data
         # master itself, in place.
@@ -568,7 +615,7 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
             # snapshot an image some other build had written.
             print(f"SNAPSHOT FAILED ({profile}): build printed no `image:` line -- xtask too old?",
                   file=sys.stderr, flush=True)
-            return BuildPhase(profile, False, time.monotonic() - start)
+            return BuildPhase(profile, False, time.monotonic() - start, fingerprint)
         build_id = built_build_id(proc.stdout or "") or "unknown"
         print(f"=== snapshotting {profile} boot image (build {build_id})", flush=True)
         try:
@@ -576,9 +623,9 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
             copy_image(built, master_boot_image(work, args.tag, profile))
         except (OSError, subprocess.CalledProcessError) as e:
             print(f"SNAPSHOT FAILED ({profile}): {e}", file=sys.stderr, flush=True)
-            return BuildPhase(profile, False, time.monotonic() - start)
+            return BuildPhase(profile, False, time.monotonic() - start, fingerprint)
 
-    return BuildPhase(profile, True, time.monotonic() - start)
+    return BuildPhase(profile, True, time.monotonic() - start, fingerprint)
 
 
 def masters_present(work: Path, tag: str, profile: str) -> bool:
@@ -849,6 +896,7 @@ def report(
     for b in builds:
         lines.append(
             f"    build {b.profile:<8} {'ok' if b.ok else 'FAILED'}  {human_time(b.duration):>7}"
+            f"  source {b.fingerprint}"
         )
     for line in lines[-(len(builds) + 2):]:
         print(line)
@@ -1082,6 +1130,33 @@ def main() -> int:
         if not phase.ok:
             broken.add(profile)
 
+    # Did the source move while we were building it? Compared across the profiles' own readings and
+    # against one taken now, so this catches a single-profile sweep too -- where there is no second
+    # build to disagree with.
+    #
+    # This is the failure the build id cannot see. A sweep launched as a control, still building
+    # when the treatment lands, compiles the treatment and reports it as the control; a sweep whose
+    # second profile picks up an edit produces two arms of different code with nothing in either
+    # transcript looking wrong. Both were hit in one day.
+    tree_moved = False
+    if builds:
+        seen = {b.fingerprint for b in builds} | {source_fingerprint()}
+        seen.discard("unknown")
+        tree_moved = len(seen) > 1
+    if tree_moved:
+        print("", flush=True)
+        print("!" * 78, file=sys.stderr, flush=True)
+        print("TREE CHANGED DURING THE BUILD PHASE -- THIS SWEEP'S ARMS ARE NOT COMPARABLE",
+              file=sys.stderr, flush=True)
+        for b in builds:
+            print(f"    {b.profile:<10} built from source {b.fingerprint}",
+                  file=sys.stderr, flush=True)
+        print("Whatever this measured, it did not measure one change. Re-run it, and leave the",
+              file=sys.stderr, flush=True)
+        print("tree alone until round logs appear -- that is when the masters are snapshotted.",
+              file=sys.stderr, flush=True)
+        print("!" * 78, file=sys.stderr, flush=True)
+
     runnable = [(n, c) for n, c in jobs if c.profile not in broken]
     results: List[Result] = [
         Result(n, c, False, -1, 0.0, "skipped: build failed", None)
@@ -1215,6 +1290,12 @@ def main() -> int:
                 (work / "lanes" / args.tag).rmdir()
 
     report(results, len(jobs), builds, time.monotonic() - started)
+    # A moved tree fails the sweep even when every run passed. Passing runs of code you cannot
+    # identify are worse than failing ones, because they get quoted.
+    if tree_moved:
+        print("exit 1: source fingerprints disagree; see the block above", file=sys.stderr,
+              flush=True)
+        return 1
     return 0 if results and all(r.passed for r in results) else 1
 
 

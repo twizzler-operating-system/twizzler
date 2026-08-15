@@ -23,7 +23,7 @@ use crate::{
     },
     mutex::{LockGuard, Mutex},
     obj::{
-        LookupFlags, ObjectRef, PageNumber,
+        LookupFlags, ObjectRef, PageNumber, PtGuard,
         pagetables::{DirtyList, ObjectPageTable},
     },
     once::OnceWait,
@@ -356,11 +356,11 @@ fn submit_page_request<'a>(
     mut len: usize,
     flags: PagerFlags,
     speculative: bool,
-    mut tree: LockGuard<'a, ObjectPageTable>,
+    mut tree: PtGuard<'a>,
     used_pager: &mut bool,
     required: Option<(PageNumber, usize)>,
     out: &mut heapless::Vec<Inflight, MAX_REQ_BATCH>,
-) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+) -> Result<PtGuard<'a>, TwzError> {
     // Drop the pages at the head of this range that the object has acquired since the range was
     // built. `ensure_in_core_pager` filters against the page tables under the lock, but
     // `ensure_in_core` then drops that lock and can *block* in `provide_pager_memory` waiting for
@@ -685,13 +685,13 @@ pub fn sync_region(
 /// clone) wants.
 pub fn ensure_in_core<'a>(
     obj: &'a ObjectRef,
-    mut guard: LockGuard<'a, ObjectPageTable>,
+    mut guard: PtGuard<'a>,
     reqs: &[(PageNumber, usize)],
     flags: PagerFlags,
     speculative: bool,
     used_pager: &mut bool,
     required: Option<(PageNumber, usize)>,
-) -> Result<LockGuard<'a, ObjectPageTable>, TwzError> {
+) -> Result<PtGuard<'a>, TwzError> {
     if !obj.use_pager() {
         log::warn!(
             "ensure_in_core called on object {} that does not use a pager",

@@ -10,7 +10,7 @@ use crate::{
     arch::{
         address::VirtAddr,
         context::ArchContextTarget,
-        memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr},
+        memory::pagetables::{ArchCacheLineMgr, ArchTlbMgr, PendingShootdown},
     },
     memory::frame::{FrameAdapter, FrameRef},
     trace::{
@@ -74,14 +74,121 @@ pub fn print_switch_counters() {
     );
 }
 
-pub fn tlb_shootdown_inc_count(ipi: bool) {
+/// Which page tables an invalidation came out of.
+///
+/// The two are worth telling apart because their costs are unrelated: an arch-mapper shootdown has
+/// been through PCID revocation and normally targets zero or one cpu, while an object-table one is
+/// merged across every context the object is mapped into and degrades to full+global as soon as
+/// there are two of them -- which makes `should_target` true everywhere and costs a CR4.PGE toggle
+/// per cpu. A single count cannot distinguish "most of the invalidations" from "most of the cost".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TlbOrigin {
+    Arch = 0,
+    Object = 1,
+}
+
+const NR_ORIGINS: usize = 2;
+/// Target counts are bucketed as min(count, 7); the interesting resolution is all at the bottom,
+/// since the question `MAX_TARGETED_IPIS` asks is how often the set is small.
+const NR_BUCKETS: usize = 8;
+
+struct ShootdownStats {
+    /// Invalidations that reached the send phase, i.e. had something to invalidate.
+    calls: [AtomicUsize; NR_ORIGINS],
+    /// Of those, the ones that were full *and* global -- every cpu targeted, full flush each.
+    global: [AtomicUsize; NR_ORIGINS],
+    /// Sum of target counts, for a mean to read beside the histogram.
+    targets: [AtomicUsize; NR_ORIGINS],
+    hist: [[AtomicUsize; NR_BUCKETS]; NR_ORIGINS],
+}
+
+static SD_STATS: ShootdownStats = ShootdownStats {
+    calls: [const { AtomicUsize::new(0) }; NR_ORIGINS],
+    global: [const { AtomicUsize::new(0) }; NR_ORIGINS],
+    targets: [const { AtomicUsize::new(0) }; NR_ORIGINS],
+    hist: [const { [const { AtomicUsize::new(0) }; NR_BUCKETS] }; NR_ORIGINS],
+};
+
+pub fn tlb_shootdown_inc_count(count: usize, origin: TlbOrigin, global: bool) {
     TLB_STATS
         .flushes
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    if ipi {
+    if count > 0 {
         TLB_STATS
             .shootdowns
             .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+    let o = origin as usize;
+    SD_STATS.calls[o].fetch_add(1, Ordering::Relaxed);
+    SD_STATS.targets[o].fetch_add(count, Ordering::Relaxed);
+    SD_STATS.hist[o][count.min(NR_BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+    if global {
+        SD_STATS.global[o].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Time actually spent spinning for remote acknowledgement, per origin.
+///
+/// This is the number that decides whether moving the wait out from under the object page-table
+/// mutex is worth the churn: an object-origin wait happens with that mutex held, so this is exactly
+/// the hold time that would be recovered. Measured rather than assumed, because after the
+/// per-context precision fix most sends have no targets at all and cost nothing to "wait" for.
+static WAIT_NS: [AtomicUsize; NR_ORIGINS] = [const { AtomicUsize::new(0) }; NR_ORIGINS];
+static WAIT_N: [AtomicUsize; NR_ORIGINS] = [const { AtomicUsize::new(0) }; NR_ORIGINS];
+/// Longest single wait seen, which a total plus a mean cannot show -- a rare multi-millisecond
+/// stall and a uniform smear have very different consequences for a lock hold.
+static WAIT_MAX_NS: [AtomicUsize; NR_ORIGINS] = [const { AtomicUsize::new(0) }; NR_ORIGINS];
+
+pub fn tlb_wait_record(origin: TlbOrigin, elapsed: core::time::Duration) {
+    let o = origin as usize;
+    let ns = elapsed.as_nanos() as usize;
+    WAIT_NS[o].fetch_add(ns, Ordering::Relaxed);
+    WAIT_N[o].fetch_add(1, Ordering::Relaxed);
+    WAIT_MAX_NS[o].fetch_max(ns, Ordering::Relaxed);
+}
+
+/// Printed beside [print_switch_counters], and for the same reason.
+pub fn print_shootdown_counters() {
+    // Expected large: one lock hold runs many operations. Each is a merge, not a discharge, so no
+    // wait happens inside the lock however big this gets.
+    emerglogln!(
+        "== tlb merged parks: {}",
+        crate::obj::pagetables::merged_parks::count()
+    );
+    for (o, name) in [(0usize, "arch"), (1, "obj")] {
+        let n = WAIT_N[o].load(Ordering::Relaxed);
+        let total = WAIT_NS[o].load(Ordering::Relaxed);
+        emerglogln!(
+            "== tlb waits ({}): {} waits, {} us total, {} ns mean, {} ns max",
+            name,
+            n,
+            total / 1000,
+            if n == 0 { 0 } else { total / n },
+            WAIT_MAX_NS[o].load(Ordering::Relaxed)
+        );
+    }
+    for (o, name) in [(0usize, "arch"), (1, "obj")] {
+        let calls = SD_STATS.calls[o].load(Ordering::Relaxed);
+        if calls == 0 {
+            emerglogln!("== tlb shootdowns ({}): none", name);
+            continue;
+        }
+        let targets = SD_STATS.targets[o].load(Ordering::Relaxed);
+        let global = SD_STATS.global[o].load(Ordering::Relaxed);
+        let mut hist = [0usize; NR_BUCKETS];
+        for (i, h) in hist.iter_mut().enumerate() {
+            *h = SD_STATS.hist[o][i].load(Ordering::Relaxed);
+        }
+        emerglogln!(
+            "== tlb shootdowns ({}): {} sends, {} global ({}%), {} targets total ({}/100 mean), hist[0..6,7+] {} {} {} {} {} {} {} {}",
+            name,
+            calls,
+            global,
+            global * 100 / calls,
+            targets,
+            targets * 100 / calls,
+            hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]
+        );
     }
 }
 
@@ -91,6 +198,9 @@ pub struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
     pages: LinkedList<FrameAdapter>,
+    /// Set by [Self::finish_send], handed to the [DeferredUnmappingOps] so that the frames cannot
+    /// be freed before the shootdown is acknowledged.
+    pending: Option<PendingShootdown>,
 }
 
 impl Consistency {
@@ -99,11 +209,14 @@ impl Consistency {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
             pages: LinkedList::new(FrameAdapter::NEW),
+            pending: None,
         }
     }
 
     pub fn new_object_tables() -> Self {
-        Self::new(ArchContextTarget::null())
+        let mut this = Self::new(ArchContextTarget::null());
+        this.tlb.set_origin(TlbOrigin::Object);
+        this
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -139,9 +252,30 @@ impl Consistency {
         self.tlb.finish();
     }
 
+    /// Send the queued invalidations without waiting for them to be acknowledged, parking the
+    /// obligation to wait on this object. It travels from here into the [DeferredUnmappingOps],
+    /// which discharges it before freeing anything -- so a caller can drop its page-table lock in
+    /// between, and the wait moves out of the lock hold without the ordering being weakened.
+    pub fn finish_send(&mut self) {
+        let pending = self.tlb.finish_send();
+        self.set_pending(pending);
+    }
+
+    /// Park an obligation produced elsewhere -- the object page tables build their own
+    /// [ArchTlbMgr]s per context rather than sending this object's.
+    pub fn set_pending(&mut self, pending: PendingShootdown) {
+        assert!(self.pending.is_none(), "shootdown already in flight");
+        self.pending = Some(pending);
+    }
+
+    /// Note that `!has_pending()` no longer means "the shootdown is complete" -- the send half
+    /// resets the invalidation data. What guarantees completion is the token moved out below.
     pub fn into_deferred(self) -> DeferredUnmappingOps {
         assert!(!self.tlb.has_pending());
-        DeferredUnmappingOps { pages: self.pages }
+        DeferredUnmappingOps {
+            pages: self.pages,
+            pending: self.pending,
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -160,6 +294,7 @@ impl Consistency {
 
 pub struct DeferredUnmappingOps {
     pages: LinkedList<FrameAdapter>,
+    pending: Option<PendingShootdown>,
 }
 
 impl Debug for DeferredUnmappingOps {
@@ -175,7 +310,40 @@ impl Drop for DeferredUnmappingOps {
 }
 
 impl DeferredUnmappingOps {
+    /// Work consisting only of a shootdown to wait for, with no frames to free -- what
+    /// [ObjectPageTable::invalidate] produces, so that it can be parked the same way.
+    pub fn from_pending(pending: PendingShootdown) -> Self {
+        Self {
+            pages: LinkedList::new(FrameAdapter::NEW),
+            pending: Some(pending),
+        }
+    }
+
+    /// Take on another batch's work, so that several operations under one lock hold discharge once
+    /// at the end rather than each displacing the last.
+    ///
+    /// Both halves are O(1) and allocation-free: [PendingShootdown::absorb] unions the target sets,
+    /// and `pages` is an intrusive list, so joining two is a pointer splice. That is what makes
+    /// merging strictly better than the discharge-the-old-one-inline alternative -- it removes the
+    /// in-lock wait *by construction*, rather than by relying on lock holds being short. They are
+    /// not: a hold runs one consistency-generating operation per page of a page-in or copy loop.
+    pub fn absorb(&mut self, mut other: Self) {
+        self.pages.back_mut().splice_after(other.pages.take());
+        match (self.pending.as_mut(), other.pending.take()) {
+            (Some(ours), Some(theirs)) => ours.absorb(theirs),
+            (None, theirs) => self.pending = theirs,
+            (Some(_), None) => {}
+        }
+    }
+
     pub fn run_all(mut self) {
+        // Wait first, free second, and in that order for two reasons: no frame may go back to the
+        // allocator while a processor can still reach it through a stale entry, and the wait is
+        // also what ends the shootdown -- freeing reaches the tracker, which can wake the reclaim
+        // thread, and that belongs outside rather than inside.
+        if let Some(pending) = self.pending.take() {
+            pending.wait();
+        }
         while let Some(page) = self.pages.pop_back() {
             page.set_pt(false);
             crate::memory::tracker::free_frame(page)

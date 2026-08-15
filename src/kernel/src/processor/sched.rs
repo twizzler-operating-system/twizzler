@@ -106,6 +106,12 @@ impl CpuSet {
         self.set.bit_test(id as usize)
     }
 
+    pub fn union_with(&mut self, other: &Self) {
+        for (a, b) in self.set.iter_mut().zip(other.set.iter()) {
+            *a |= *b;
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         !self.set.bit_any()
     }

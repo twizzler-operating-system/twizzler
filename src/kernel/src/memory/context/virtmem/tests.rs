@@ -84,4 +84,41 @@ mod test {
         arch.object_map(cursor, &mut b.lock_page_tables(), settings, &mut fa);
         assert!(arch.unmap_object(cursor, b_table, &mut fa));
     }
+
+    /// `insert_kernel_object` charges for its mapping before it knows which slot it will get, so a
+    /// slot needing more tables than [`VirtContext::slot_map_tables`] reports would silently
+    /// under-charge -- and an under-charged `map_object` falls through to a non-waiting allocation
+    /// that can simply fail. Checked at the boundaries the count could plausibly differ at: the
+    /// first and last slot of a top-level entry, and the first of the next one.
+    #[kernel_test]
+    fn test_slot_map_precharge_is_slot_independent() {
+        use twizzler_abi::object::MAX_SIZE;
+
+        use super::super::{Slot, VirtContext};
+
+        let expected = VirtContext::slot_map_tables();
+        let per_top_entry = Table::level_to_page_size(Table::top_level()) / MAX_SIZE;
+        let last_user_slot = Slot::try_from(VirtAddr::end_user_memory().offset(-1isize).unwrap())
+            .unwrap()
+            .raw();
+        for slot in [
+            0,
+            1,
+            per_top_entry - 1,
+            per_top_entry,
+            per_top_entry + 1,
+            last_user_slot,
+        ] {
+            let Ok(slot) = Slot::try_from(slot) else {
+                continue;
+            };
+            let cursor = MappingCursor::new(slot.start_vaddr(), MAX_SIZE);
+            assert_eq!(
+                cursor.max_number_new_tables(Table::top_level(), ObjectPageTable::top_level() - 1),
+                expected,
+                "slot at {:?} needs a different precharge",
+                slot.start_vaddr(),
+            );
+        }
+    }
 }

@@ -324,6 +324,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             if context.arg0::<u64>() == 0x12345678 {
                 crate::thread::locktrack::diag::print_counters(true);
                 crate::memory::pagetables::print_switch_counters();
+                crate::memory::pagetables::print_shootdown_counters();
                 print_syscall_profile();
                 crate::memory::context::virtmem::fault::print_fault_profile();
                 crate::interrupt::print_interrupt_profile();

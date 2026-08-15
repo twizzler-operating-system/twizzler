@@ -74,6 +74,11 @@ pub struct Thread {
     /// none). Diagnostic only: Mode C surfaces at whichever mutex a thread with a leaked count
     /// happens to take next, which never names the entry that leaked it. This does.
     critical_origin: AtomicUsize,
+    /// Where this thread is blocked in `Mutex::lock`, as a `&'static Location` pointer (0 = not
+    /// blocked). Set by `lock` itself rather than by the lock tracker, which is what makes it the
+    /// only wait edge available in a build with `DISABLE_LOCK_TRACKING` on -- and that is every
+    /// build today, which is why `mutex stall` reports read "edge unknown" without it.
+    mutex_wait_at: AtomicUsize,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
     /// Set the first time this thread is switched to. Until then it has never executed, so it
@@ -306,6 +311,7 @@ impl Thread {
             kernel_stack,
             critical_counter: AtomicU64::new(0),
             critical_origin: AtomicUsize::new(0),
+            mutex_wait_at: AtomicUsize::new(0),
             switch_lock: AtomicU64::new(0),
             has_run: AtomicBool::new(false),
             sync_sleep_gen: AtomicU64::new(0),
