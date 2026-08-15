@@ -80,11 +80,23 @@ const REQUEUE_BATCH: usize = 8;
 /// `schedule_thread_on_cpu` return early for an exiting thread without storing the reference, so
 /// the last one dies at the call -- `Thread::drop` -> `IdCounter::release` -> a sleeping mutex,
 /// under a spinlock, which is the wedge `remove_from_requeue` documents.
+///
+/// Critical across the handoff, though, and that part is not optional. A claimed thread is on no
+/// list at all until `schedule_thread` runs -- the flag is consumed and the entry is gone -- so
+/// this thread exiting at a poll point in that window (an interrupt return ->
+/// `schedule_maybe_preempt` -> `schedule(REINSERT)` -> `maybe_exit` -> `exit`, which never
+/// returns) takes the batch and its wakeups with it, unrecoverably: the hardtick backstop drains
+/// the requeue *list*, and these are not on it. Before batching the guard came for free -- the
+/// walk and `schedule_thread` both ran under `requeue.list.lock()`, and `Spinlock::lock` masks
+/// interrupts for the guard's lifetime, so no interrupt return could land mid-drain. Same guard,
+/// same reason, as the device-interrupt drain in `interrupt.rs` and the handoff in
+/// `Mutex::release`.
 pub fn requeue_all() {
     let requeue = get_requeue_list();
     loop {
         let mut batch = heapless::Vec::<ThreadRef, REQUEUE_BATCH>::new();
-        {
+        // Declared after `batch` so it drops first: see the loop body below.
+        let _critical = {
             let mut list = requeue.list.lock();
             let mut cursor = list.front_mut();
             while !batch.is_full() && !cursor.is_null() {
@@ -101,7 +113,10 @@ pub fn requeue_all() {
                     cursor.move_next();
                 }
             }
-        }
+            // Taken while the lock still covers the claim, so there is no instant in which a
+            // claimed thread is exposed to this thread's own exit.
+            current_thread_ref().map(|ct| ct.enter_critical())
+        };
         // A short batch means the walk above reached the end of the list, so there is nothing left
         // to claim. A full one says only that we ran out of room; go back for the rest. Entries
         // skipped for being critical or already claimed stay at the front and are re-examined,
@@ -110,8 +125,12 @@ pub fn requeue_all() {
         if batch.is_empty() {
             return;
         }
-        for t in batch {
-            crate::processor::sched::schedule_thread(t);
+        // Cloned rather than moved, so `batch` outlives `_critical` and no reference can reach zero
+        // inside the guard: `schedule_thread` drops the one it is given for an exiting thread, and
+        // that last drop reaches `IdCounter::release`, which takes a sleeping mutex -- and
+        // `Mutex::lock` panics outright in a critical context.
+        for t in &batch {
+            crate::processor::sched::schedule_thread(t.clone());
         }
         if !full {
             return;
@@ -141,8 +160,15 @@ pub fn add_to_requeue(thread: ThreadRef) {
         assert!(!thread.get_mutex_wait());
         crate::processor::sched::schedule_thread(thread);
         let requeue = get_requeue_list();
-        let mut list = requeue.list.lock();
-        let _ = list.find_mut(&id).remove();
+        // See `remove_from_requeue`: the removed reference must not be dropped under the spinlock.
+        // `schedule_thread` above returns early for an exiting thread without storing the one it
+        // was given, so a stale entry here can hold the last reference, and `Thread::drop` ->
+        // `IdCounter::release` takes a sleeping mutex.
+        let removed = {
+            let mut list = requeue.list.lock();
+            list.find_mut(&id).remove()
+        };
+        drop(removed);
         return;
     }
     log::trace!(

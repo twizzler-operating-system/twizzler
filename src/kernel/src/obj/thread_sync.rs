@@ -389,39 +389,43 @@ impl Object {
     /// meant for someone already queued: `setup_sleep_word` re-reads the word under this same lock
     /// and only inserts if the word still says sleep, and the waker writes the word before getting
     /// here.
+    ///
+    /// Critical across the handoff, and the guard cannot simply wrap the loop: `sleep_info` is a
+    /// *sleeping* `Mutex`, not a `Spinlock`, and `Mutex::lock` panics outright in a critical
+    /// context. It is taken while the lock still covers the claim and released before the next
+    /// pass re-takes it, which leaves no instant in which a claimed waiter is exposed.
+    ///
+    /// It is needed because a claimed waiter is on no list at all -- off the sleep tree with its
+    /// SYNC_SLEEP flag already consumed -- until `add_to_requeue` runs. This thread exiting at a
+    /// poll point in that window (an interrupt return -> `schedule_maybe_preempt` ->
+    /// `schedule(REINSERT)` -> `maybe_exit` -> `exit`, which never returns) takes the batch and
+    /// those wakeups with it, and nothing recovers them: the hardtick backstop drains the requeue
+    /// list, and a batched waiter never reached it. The drain this replaced was covered by
+    /// accident -- it ran with `sleep_info` held, and `maybe_exit` defers while
+    /// `get_mutex_count() > 0` -- so the batch is what opened the poll point, by doing the handoff
+    /// after the unlock. Same guard, same reason, as the device-interrupt drain in `interrupt.rs`
+    /// and the handoff in `Mutex::release`.
     pub fn wakeup_word(&self, offset: usize, count: usize) -> usize {
-        // No critical guard here, and the reason is worth stating because the obvious symmetry with
-        // `Request::signal` and `interrupt.rs` is wrong at this site: `sleep_info` is a *sleeping*
-        // `Mutex`, not a `Spinlock`, and `Mutex::lock` panics outright in a critical context. A
-        // guard around this drain therefore dies on the first thread exit
-        // (`wakeup_word` <- `set_state_and_code` <- `Thread::exit`), deterministically.
-        //
-        // The premise behind wanting one does not hold either. A sleeping mutex masks no
-        // interrupts and prevents no preemption, so the drain this replaced was already
-        // preemptible; what batching adds is only that a claimed waiter now sits in `batch` on
-        // this stack rather than going onto a run queue adjacently. That window is real -- a
-        // preemption that exits this thread mid-drain loses those wakeups with their sleep flags
-        // already consumed -- but it is exactly the exposure `requeue_all` has always carried,
-        // claiming into its own batch with no guard on the same path. Closing it here alone would
-        // buy nothing while `requeue_all` is reached from every one of these callers.
-        //
-        // The fix if it ever needs closing, for both: claim straight onto the requeue list under
-        // the lock rather than onto the stack, and leave only `requeue_all` outside. That trades a
-        // requeue-list insert and removal onto every wake, so it wants measuring rather than
-        // assuming.
         let mut woken = 0;
         while woken < count {
             let mut batch = WakeBatch::new();
-            let maybe_more = {
+            let maybe_more;
+            // Declared after `batch` so it drops first: see the requeue loop below.
+            let _critical = {
                 let mut sleep_info = self.sleep_info.lock();
-                sleep_info.claim_n(offset, count - woken, &mut batch)
+                maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch);
+                current_thread_ref().map(|ct| ct.enter_critical())
             };
             if batch.is_empty() {
                 break;
             }
             woken += batch.len();
-            for thread in batch {
-                add_to_requeue(thread);
+            // Cloned rather than moved, so `batch` outlives `_critical` and no reference can reach
+            // zero inside the guard: `add_to_requeue`'s fast path hands the reference to
+            // `schedule_thread`, which drops it for an exiting thread, and that last drop reaches
+            // `IdCounter::release` -- a sleeping mutex, and `Mutex::lock` panics when critical.
+            for thread in &batch {
+                add_to_requeue(thread.clone());
             }
             // A short batch means the walk reached the end of the sleep entry or ran out of
             // `count`; only a full one says there may be more waiting.
