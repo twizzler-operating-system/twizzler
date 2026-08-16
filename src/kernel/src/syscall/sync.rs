@@ -1,5 +1,5 @@
 use core::{
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -19,7 +19,10 @@ use crate::{
     instant::Instant,
     memory::{
         VirtAddr,
-        context::{UserContext, kernel_context},
+        context::{
+            kernel_context,
+            virtmem::{RESOLVE_CHUNK, Slot},
+        },
     },
     obj::{LookupFlags, ObjectRef},
     once::Once,
@@ -34,11 +37,33 @@ use crate::{
 
 pub struct Requeue {
     list: Spinlock<RBTree<RequeueLinkAdapter>>,
+    /// Entries on `list`, readable without taking it.
+    ///
+    /// Exists for [requeue_all]'s early-out. That runs from every futex wake, every device
+    /// interrupt, `set_state_and_code` and the timeout callback, and took this global spinlock at
+    /// least once per call *even when the list was empty* -- which is the overwhelmingly common
+    /// case. One cache line, serializing every wake in the system, to discover there was nothing
+    /// to do.
+    ///
+    /// **Ordering.** Maintained strictly under `list`'s lock, so it is exact with respect to any
+    /// holder of that lock; only the early-out reads it unlocked. A racing reader can see it
+    /// stale-low, and that is harmless for a reason the *callers* supply rather than a memory
+    /// ordering one: every site that inserts (`add_to_requeue`, `add_all_to_requeue`) calls
+    /// `requeue_all` immediately afterwards, and an inserter trivially observes its own increment,
+    /// so no entry is left undrained by the pass that put it there. The hardtick backstop in
+    /// `oneshot_clock_hardtick` remains as the second line of defence it always was.
+    ///
+    /// **Bias.** Discrepancies are upward, as with `Object::sleepers`: a thread skipped for being
+    /// critical stays counted and costs a later pass a lock it would have taken anyway. The
+    /// opposite error -- reading zero with a thread still queued -- is a lost wakeup.
+    count: AtomicUsize,
 }
 
 impl Requeue {
+    /// Was `self.list.lock().iter().count()` -- an O(n) walk under the global lock, for a
+    /// diagnostic.
     pub fn len(&self) -> usize {
-        self.list.lock().iter().count()
+        self.count.load(Ordering::SeqCst)
     }
 }
 
@@ -57,6 +82,7 @@ static REQUEUE: Once<Requeue> = Once::new();
 fn get_requeue_list() -> &'static Requeue {
     REQUEUE.call_once(|| Requeue {
         list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
+        count: AtomicUsize::new(0),
     })
 }
 
@@ -93,6 +119,12 @@ const REQUEUE_BATCH: usize = 8;
 /// `Mutex::release`.
 pub fn requeue_all() {
     let requeue = get_requeue_list();
+    // Nothing queued, so nothing to drain -- and finding that out used to cost this global lock,
+    // on every wake in the system. See the ordering and bias notes on `Requeue::count`: a reader
+    // can only be stale *low*, and every inserter drains after its own insert.
+    if requeue.count.load(Ordering::SeqCst) == 0 {
+        return;
+    }
     loop {
         let mut batch = heapless::Vec::<ThreadRef, REQUEUE_BATCH>::new();
         // Declared after `batch` so it drops first: see the loop body below.
@@ -113,6 +145,9 @@ pub fn requeue_all() {
                     cursor.move_next();
                 }
             }
+            // Under the same lock as the claim, so the count can never describe a list this
+            // thread has already emptied.
+            requeue.count.fetch_sub(batch.len(), Ordering::SeqCst);
             // Taken while the lock still covers the claim, so there is no instant in which a
             // claimed thread is exposed to this thread's own exit.
             current_thread_ref().map(|ct| ct.enter_critical())
@@ -138,13 +173,18 @@ pub fn requeue_all() {
     }
 }
 
-fn do_add_to_requeue(list: &mut RBTree<RequeueLinkAdapter>, thread: ThreadRef) {
+/// Returns whether an entry was actually inserted, so the caller can keep [`Requeue::count`] in
+/// step while it still holds the lock. A duplicate must not be counted, or the count never returns
+/// to zero and the early-out is dead.
+#[must_use]
+fn do_add_to_requeue(list: &mut RBTree<RequeueLinkAdapter>, thread: ThreadRef) -> bool {
     // If already on the list, skip. This can happen with spurious wakeups.
     // The find() + insert() is protected by the caller's lock, so no TOCTOU race.
     if !list.find(&thread.objid()).is_null() {
-        return;
+        return false;
     }
     list.insert(thread);
+    true
 }
 
 #[track_caller]
@@ -166,7 +206,11 @@ pub fn add_to_requeue(thread: ThreadRef) {
         // `IdCounter::release` takes a sleeping mutex.
         let removed = {
             let mut list = requeue.list.lock();
-            list.find_mut(&id).remove()
+            let removed = list.find_mut(&id).remove();
+            if removed.is_some() {
+                requeue.count.fetch_sub(1, Ordering::SeqCst);
+            }
+            removed
         };
         drop(removed);
         return;
@@ -179,7 +223,9 @@ pub fn add_to_requeue(thread: ThreadRef) {
     );
     let requeue = get_requeue_list();
     let mut list = requeue.list.lock();
-    do_add_to_requeue(&mut *list, thread);
+    if do_add_to_requeue(&mut *list, thread) {
+        requeue.count.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
@@ -196,7 +242,9 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
         } else {
             // Need to take the lock if we haven't yet.
             let list = list.get_or_insert_with(|| requeue.list.lock());
-            do_add_to_requeue(&mut *list, thread);
+            if do_add_to_requeue(&mut *list, thread) {
+                requeue.count.fetch_add(1, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -210,7 +258,14 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
     // spinlock, which wedges every cpu that later wants the requeue lock.
     let removed = {
         let mut list = requeue.list.lock();
-        list.find_mut(&thread.objid()).remove()
+        let removed = list.find_mut(&thread.objid()).remove();
+        if removed.is_some() {
+            requeue.count.fetch_sub(1, Ordering::SeqCst);
+        }
+        if removed.is_some() {
+            requeue.count.fetch_sub(1, Ordering::SeqCst);
+        }
+        removed
     };
     drop(removed);
 }
@@ -244,6 +299,9 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
     let (removed, claimed) = {
         let mut list = requeue.list.lock();
         let removed = list.find_mut(&thread.objid()).remove();
+        if removed.is_some() {
+            requeue.count.fetch_sub(1, Ordering::SeqCst);
+        }
         // Both under the lock, so no other holder of it can catch the half-state where the entry is
         // gone but the flag is still set: against `requeue_all` and the two slow paths, taking the
         // entry and taking the flag are one step. Order still matters within it -- the flag is
@@ -307,6 +365,26 @@ pub(crate) fn force_exit_wake_ns(thread: &ThreadRef) -> u64 {
     FORCE_EXIT_WAKE_NS * (1 + thread.id() % FORCE_EXIT_WAKE_SPREAD)
 }
 
+/// A clock reading for the `log::trace!` timing breakdowns below, taken only when that log is
+/// actually enabled.
+///
+/// `Instant::now()` is a `Once` poll, an indirect call through the registered tick source and an
+/// `rdtsc`, and the compiler cannot see through the virtual call to elide it -- so the readings
+/// were taken whether or not anything consumed them. `sys_thread_sync` is the busiest syscall in
+/// the system and these paths take up to four apiece, which made an untraced futex operation pay
+/// for four clock reads it then threw away.
+///
+/// The zero fallback only ever reaches a `log::trace!` that is not being emitted;
+/// `checked_sub_instant` yields `Duration::ZERO` against it rather than a wrong number.
+#[inline]
+fn trace_now() -> Instant {
+    if log::log_enabled!(log::Level::Trace) {
+        Instant::now()
+    } else {
+        Instant::zero()
+    }
+}
+
 pub fn trace_block(_th: &ThreadRef, name: impl AsRef<str>) {
     if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_BLOCK) {
         let name = name.as_ref();
@@ -342,7 +420,12 @@ pub fn trace_resume(_th: &ThreadRef, duration: TimeSpan) {
 // schedule until I say so".
 pub fn finish_blocking(guard: CriticalGuard) {
     let thread = current_thread_ref().unwrap();
-    let start = Instant::now();
+    // Only `trace_resume` consumes this, and it is gated on a sink existing. Reading the clock
+    // unconditionally charged every block -- the one path where a wasted indirect call is on the
+    // critical latency, not beside it.
+    let start = TRACE_MGR
+        .any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_RESUME)
+        .then(Instant::now);
     trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
         if must_not_block(thread) {
@@ -368,8 +451,12 @@ pub fn finish_blocking(guard: CriticalGuard) {
         thread.set_state(ExecutionState::Running);
         assert!(!thread.mutex_link.is_linked());
     });
-    let end = Instant::now();
-    trace_resume(&thread, (end - start).into());
+    // A sink that appeared while we were blocked still gets its event, with a zero duration --
+    // same treatment the syscall-exit trace gives a call nothing timed.
+    let duration = start
+        .map(|start| (Instant::now() - start).into())
+        .unwrap_or_default();
+    trace_resume(&thread, duration);
 }
 
 // TODO: uses-virtaddr
@@ -381,11 +468,11 @@ fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize, Option<*const
         .as_ref()
         .map(|x| &**x)
         .unwrap_or_else(|| &kernel_context());
-    let mapping = vmc
-        .lookup_object(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
+    let object = vmc
+        .lookup_object_ref_cached(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
         .ok_or(ArgumentError::InvalidAddress)?;
     let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
-    Ok((mapping.object().clone(), offset, Some(addr.as_ptr())))
+    Ok((object, offset, Some(addr.as_ptr())))
 }
 
 fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize, Option<*const u8>)> {
@@ -397,12 +484,16 @@ fn get_obj(reference: ThreadSyncReference) -> Result<(ObjectRef, usize, Option<*
             };
             (obj, offset, None)
         }
-        ThreadSyncReference::Virtual(addr) => {
-            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
-        }
-        ThreadSyncReference::Virtual32(addr) => {
-            get_obj_and_offset(VirtAddr::new(addr as u64).unwrap())?
-        }
+        // Not `unwrap`: the address comes straight from userspace, and `VirtAddr::new` rejects a
+        // non-canonical one -- which made a bad pointer here a kernel panic rather than an `EINVAL`
+        // for the op. The batched path in `resolve_ops` cannot panic on this by construction, so
+        // this also keeps the two agreeing.
+        ThreadSyncReference::Virtual(addr) => get_obj_and_offset(
+            VirtAddr::new(addr as u64).map_err(|_| ArgumentError::InvalidAddress)?,
+        )?,
+        ThreadSyncReference::Virtual32(addr) => get_obj_and_offset(
+            VirtAddr::new(addr as u64).map_err(|_| ArgumentError::InvalidAddress)?,
+        )?,
     })
 }
 
@@ -412,8 +503,18 @@ struct SleepEvent {
     did_sleep: bool,
 }
 
+type Resolved = Result<(ObjectRef, usize, Option<*const u8>)>;
+
 fn prep_sleep(sleep: &ThreadSyncSleep, first_sleep: bool) -> Result<SleepEvent> {
-    let (obj, offset, vaddr) = get_obj(sleep.reference)?;
+    prep_sleep_with(sleep, first_sleep, get_obj(sleep.reference))
+}
+
+fn prep_sleep_with(
+    sleep: &ThreadSyncSleep,
+    first_sleep: bool,
+    resolved: Resolved,
+) -> Result<SleepEvent> {
+    let (obj, offset, vaddr) = resolved?;
     if first_sleep {
         if let Some(thread) = current_thread_ref() {
             thread.note_sleep_word(obj.id(), offset);
@@ -458,8 +559,89 @@ fn undo_sleep(sleep: &SleepEvent) {
 }
 
 pub fn wakeup(wake: &ThreadSyncWake) -> Result<usize> {
-    let (obj, offset, _) = get_obj(wake.reference)?;
+    wakeup_with(wake, get_obj(wake.reference))
+}
+
+fn wakeup_with(wake: &ThreadSyncWake, resolved: Resolved) -> Result<usize> {
+    let (obj, offset, _) = resolved?;
     Ok(obj.wakeup_word(offset, wake.count))
+}
+
+/// Resolve a chunk of ops' references together, so the virtual ones share one `regions`
+/// acquisition instead of taking it apiece.
+///
+/// Pure: it reads the slot -> object mapping and nothing else, which is what makes hoisting it out
+/// of `prep_sleep`/`wakeup` safe. Errors stay per-op -- a reference that fails to resolve yields
+/// `Err` in its own slot and the caller writes it to that op's result exactly as before, since a
+/// failed `get_obj` was already non-fatal to the rest of the call.
+///
+/// One behavioural difference, stated because it is the only one: a `Wake` earlier in the array
+/// can no longer influence what a later op resolves to. On smp a woken thread could remap a slot
+/// between the two, and previously the later op would have seen the new mapping. Nothing ordered
+/// the mapping against the use before either -- this widens an existing window rather than opening
+/// a new kind.
+fn resolve_ops(ops: &[ThreadSync]) -> heapless::Vec<Resolved, RESOLVE_CHUNK> {
+    let user_vmc = current_memory_context();
+    let vmc = user_vmc
+        .as_ref()
+        .map(|x| &**x)
+        .unwrap_or_else(|| &kernel_context());
+
+    let reference_of = |op: &ThreadSync| match op {
+        ThreadSync::Sleep(sleep, _) => sleep.reference,
+        ThreadSync::Wake(wake, _) => wake.reference,
+    };
+
+    // Dense list of the virtual references, plus which op each came from.
+    let mut slots = heapless::Vec::<Slot, RESOLVE_CHUNK>::new();
+    let mut owners = heapless::Vec::<(usize, u64), RESOLVE_CHUNK>::new();
+    for (i, op) in ops.iter().enumerate() {
+        let addr = match reference_of(op) {
+            ThreadSyncReference::Virtual(addr) => addr as u64,
+            ThreadSyncReference::Virtual32(addr) => addr as u64,
+            ThreadSyncReference::ObjectRef(..) => continue,
+        };
+        let Some(slot) = VirtAddr::new(addr)
+            .ok()
+            .and_then(|va| TryInto::<Slot>::try_into(va).ok())
+        else {
+            continue;
+        };
+        let _ = slots.push(slot);
+        let _ = owners.push((i, addr));
+    }
+
+    let mut objs = [const { None }; RESOLVE_CHUNK];
+    if !slots.is_empty() {
+        vmc.lookup_object_refs_cached(&slots, &mut objs[..slots.len()]);
+    }
+
+    let mut out = heapless::Vec::<Resolved, RESOLVE_CHUNK>::new();
+    for (i, op) in ops.iter().enumerate() {
+        let resolved = match reference_of(op) {
+            ThreadSyncReference::ObjectRef(id, offset) => {
+                match crate::obj::lookup_object(id, LookupFlags::empty()) {
+                    crate::obj::LookupResult::Found(o) => Ok((o, offset, None)),
+                    _ => Err(ArgumentError::InvalidAddress.into()),
+                }
+            }
+            _ => match owners.iter().position(|(owner, _)| *owner == i) {
+                Some(dense) => match objs[dense].take() {
+                    // Same offset arithmetic as `get_obj_and_offset`: the modulus is the slot size,
+                    // so the region is never consulted for it.
+                    Some(obj) => Ok((
+                        obj,
+                        (owners[dense].1 as usize) % (1024 * 1024 * 1024),
+                        Some(owners[dense].1 as *const u8),
+                    )),
+                    None => Err(ArgumentError::InvalidAddress.into()),
+                },
+                None => Err(ArgumentError::InvalidAddress.into()),
+            },
+        };
+        let _ = out.push(resolved);
+    }
+    out
 }
 
 pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
@@ -510,7 +692,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
 }
 
 pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
-    let start = Instant::now();
+    let start = trace_now();
     let se = prep_sleep(&op, true)?;
 
     if !se.did_sleep {
@@ -520,7 +702,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     let guard = thread.enter_critical();
     thread.set_sync_sleep_done();
     requeue_all();
-    let prep_done = Instant::now();
+    let prep_done = trace_now();
     // See simple_timed_sleep: requeue_all() skips critical threads, so it can never rescue the
     // caller. Take a wakeup that raced in ahead of set_sync_sleep_done() ourselves.
     if claim_own_wakeup(&thread) {
@@ -528,7 +710,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     } else {
         finish_blocking(guard);
     }
-    let woke_up = Instant::now();
+    let woke_up = trace_now();
     let _guard = thread.enter_critical();
     thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
@@ -536,7 +718,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     drop(_guard);
     undo_sleep(&se);
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
-    let done = Instant::now();
+    let done = trace_now();
     log::trace!(
         "{}: ts-optimized-sleep: {:7?} {:7?} {:7?}",
         current_thread_ref().unwrap().id(),
@@ -549,10 +731,10 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
 }
 
 pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
-    let start = Instant::now();
+    let start = trace_now();
     let count = wakeup(&op)?;
     requeue_all();
-    let done = Instant::now();
+    let done = trace_now();
     log::trace!(
         "{}: ts-optimized-wake {}: {:7?}",
         current_thread_ref().unwrap().id(),
@@ -604,42 +786,53 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
         return Err(TwzError::INVALID_ARGUMENT);
     }
 
-    let start = Instant::now();
+    let start = trace_now();
     let first = ops[0];
 
     let mut ready_count = 0;
     let mut unsleeps = heapless::Vec::<_, 1024>::new();
     let mut num_sleepers = 0;
 
-    for op in &mut *ops {
-        match op {
-            ThreadSync::Sleep(sleep, result) => match prep_sleep(sleep, unsleeps.is_empty()) {
-                Ok(se) => {
-                    num_sleepers += 1;
-                    *result = Ok(if se.did_sleep { 0 } else { 1 });
-                    if se.did_sleep && !unsleeps.is_full() {
-                        unsafe { unsleeps.push_unchecked(se) };
-                    } else {
-                        ready_count += 1;
+    // Chunked so that each group's virtual references share one `regions` acquisition. The body is
+    // otherwise unchanged, including `unsleeps.is_empty()` as the first-sleep test, which stays
+    // correct across chunk boundaries because it reads accumulated state rather than position.
+    for chunk in ops.chunks_mut(RESOLVE_CHUNK) {
+        let mut resolved = resolve_ops(chunk).into_iter();
+        for op in chunk.iter_mut() {
+            let resolved = resolved
+                .next()
+                .unwrap_or(Err(ArgumentError::InvalidAddress.into()));
+            match op {
+                ThreadSync::Sleep(sleep, result) => {
+                    match prep_sleep_with(sleep, unsleeps.is_empty(), resolved) {
+                        Ok(se) => {
+                            num_sleepers += 1;
+                            *result = Ok(if se.did_sleep { 0 } else { 1 });
+                            if se.did_sleep && !unsleeps.is_full() {
+                                unsafe { unsleeps.push_unchecked(se) };
+                            } else {
+                                ready_count += 1;
+                            }
+                        }
+                        Err(x) => *result = Err(x),
                     }
                 }
-                Err(x) => *result = Err(x),
-            },
-            ThreadSync::Wake(wake, result) => match wakeup(wake) {
-                Ok(count) => {
-                    *result = Ok(count);
-                    if count > 0 {
-                        ready_count += 1;
+                ThreadSync::Wake(wake, result) => match wakeup_with(wake, resolved) {
+                    Ok(count) => {
+                        *result = Ok(count);
+                        if count > 0 {
+                            ready_count += 1;
+                        }
                     }
-                }
-                Err(x) => {
-                    *result = Err(x);
-                }
-            },
+                    Err(x) => {
+                        *result = Err(x);
+                    }
+                },
+            }
         }
     }
 
-    let prep_done = Instant::now();
+    let prep_done = trace_now();
     let thread = current_thread_ref().unwrap();
     assert!(!thread.mutex_link.is_linked());
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
@@ -690,7 +883,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
         (timeout_key, guard)
     };
 
-    let woke_up = Instant::now();
+    let woke_up = trace_now();
     // See simple_timed_sleep: retire any outstanding timeout callback before touching the flags it
     // would otherwise consume.
     thread.end_sync_sleep();
@@ -705,7 +898,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
 
     // If we have a timeout key, AND we don't find it during release, the timeout fired.
     let was_timedout = timeout_key.map(|tk| !tk.release()).unwrap_or(false);
-    let done = Instant::now();
+    let done = trace_now();
     log::trace!(
         "ts[0]: {} {:7?} {:7?} {:7?}",
         match first {
@@ -726,6 +919,73 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
 /// Whether this sleep's condition already fails, i.e. the caller would not block on it. `None`
 /// when the word is not reachable as a plain user address -- the `ObjectRef` case, which has to go
 /// through the object.
+/// How much a one-pass resolution of a call's references would save.
+///
+/// Each virtual-referenced op resolves its slot independently, taking `regions` per op. Resolving
+/// them together under one acquisition would save `n - 1` of them for a call carrying `n`, so this
+/// counts exactly that, rather than a histogram to eyeball. It is an upper bound on the win: it
+/// assumes every op would otherwise have taken the lock, which the memo makes untrue for its hits.
+///
+/// The question it exists to answer is whether the multi-op case is common at all. It may not be:
+/// `do_sys_thread_sync` special-cases `ops.len() == 1` with `optimized_single_sleep`/`_wake`, and
+/// that path was built deliberately. If calls are overwhelmingly single-op, batching is moot no
+/// matter how attractive it looks in the abstract.
+pub mod syncbatch {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use twizzler_abi::syscall::{ThreadSync, ThreadSyncReference};
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static VIRT_OPS: AtomicU64 = AtomicU64::new(0);
+    static SAVEABLE: AtomicU64 = AtomicU64::new(0);
+    static MULTI_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn note_call(ops: &[ThreadSync]) {
+        let nvirt = ops
+            .iter()
+            .filter(|op| {
+                let reference = match op {
+                    ThreadSync::Sleep(sleep, _) => sleep.reference,
+                    ThreadSync::Wake(wake, _) => wake.reference,
+                };
+                matches!(
+                    reference,
+                    ThreadSyncReference::Virtual(_) | ThreadSyncReference::Virtual32(_)
+                )
+            })
+            .count() as u64;
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        VIRT_OPS.fetch_add(nvirt, Ordering::Relaxed);
+        SAVEABLE.fetch_add(nvirt.saturating_sub(1), Ordering::Relaxed);
+        if nvirt > 1 {
+            MULTI_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        if calls == 0 {
+            return;
+        }
+        let virt_ops = VIRT_OPS.load(Ordering::Relaxed);
+        let saveable = SAVEABLE.load(Ordering::Relaxed);
+        let multi = MULTI_CALLS.load(Ordering::Relaxed);
+        logln!(
+            "== sync batching: {} calls ({} with >1 virt op, {}%), {} virt ops, {} of them saveable by one-pass ({}%) ==",
+            calls,
+            multi,
+            calls_pct(multi, calls),
+            virt_ops,
+            saveable,
+            calls_pct(saveable, virt_ops),
+        );
+    }
+
+    fn calls_pct(part: u64, whole: u64) -> u64 {
+        if whole == 0 { 0 } else { part * 100 / whole }
+    }
+}
+
 fn sleep_word_ready(sleep: &ThreadSyncSleep) -> Option<bool> {
     let addr = match sleep.reference {
         ThreadSyncReference::Virtual(addr) => addr as u64,
@@ -785,6 +1045,7 @@ fn ready_before_round(ops: &mut [ThreadSync]) -> Option<usize> {
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     let thread = current_thread_ref().unwrap();
     super::note_thread_sync_ops(ops);
+    syncbatch::note_call(ops);
     // Recursion: a second `sys_thread_sync` entered from inside the first one's round. The way in
     // is a fault on a pager-backed page the outer round touched, which reaches the pager's queue
     // wait -- see `ready_before_round`, which exists to make that rarer.

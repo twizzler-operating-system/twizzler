@@ -544,11 +544,29 @@ pub struct RegionManager {
 }
 
 impl RegionManager {
+    /// Takes a region out of the tree and marks it so.
+    ///
+    /// `MapRegion::removed` is what tells everyone holding a clone that this region is no longer
+    /// what its slot is bound to: the fault path checks it before mapping, and
+    /// [`super::SlotMemo`] validates cached entries against it. Both removal paths already store
+    /// it by hand *after* the tree drops the region; this exists so that the one remaining way a
+    /// binding can disappear -- being replaced under `insert_region` -- cannot skip it.
+    fn mark_removed(region: &Arc<MapRegion>) {
+        region.removed.store(true, Ordering::SeqCst);
+    }
+
     pub fn insert_region(&mut self, region: MapRegion) {
         let object_entry = self.objects.entry(region.object.id()).or_default();
         let range = region.range.clone();
         let old = self.tree.insert_replace(range.clone(), Arc::new(region));
         for old_region in old {
+            // No caller reaches this today -- `insert_object` returns Busy on an occupied slot and
+            // `insert_kernel_object` only takes slots off a free list that is pushed to after the
+            // old region is marked. But `insert_replace` permits it structurally, and a binding
+            // replaced without its region being marked is one the memo would keep answering from
+            // forever. Marking here makes that unconditional rather than a property of two callers
+            // continuing to be careful.
+            Self::mark_removed(&old_region.1);
             let pos = object_entry
                 .iter()
                 .position(|item| item == &old_region.0)
@@ -572,7 +590,7 @@ impl RegionManager {
         }
     }
 
-    pub fn lookup_region(&mut self, addr: VirtAddr) -> Option<&Arc<MapRegion>> {
+    pub fn lookup_region(&self, addr: VirtAddr) -> Option<&Arc<MapRegion>> {
         self.tree.get(&addr)
     }
 

@@ -287,8 +287,10 @@ impl Table {
         if level != 0 {
             assert!(frame.is_pt());
             let next_table = self.next_table_mut(index).unwrap();
+            let mut downgraded = 0usize;
             for i in 0..Table::PAGE_TABLE_ENTRIES {
                 if next_table[i].is_present() {
+                    downgraded += 1;
                     let new_flags = next_table[i].flags() - EntryFlags::WRITE;
                     next_table[i].set_flags(new_flags);
                     // TODO: this is too many flushes.
@@ -299,11 +301,33 @@ impl Table {
                     }
                 }
             }
-            consist.enqueue(vaddr, false, false, level);
+            // The loop above cleared WRITE across every present entry of this sub-table. A single
+            // `invlpg` for `vaddr` covers one page of that, and at level > 1 each downgraded entry
+            // is an intermediate covering 512 further pages, which no address list can express --
+            // so invalidate the target wholesale. Measured at ~11 calls per boot, so the breadth
+            // costs nothing; the previous single enqueue left up to 511 stale *writable* entries on
+            // frames that had just become COW-shared, which is a write landing in the wrong object.
+            //
+            // Global, not just full, so the breadth is decided here rather than two frames away.
+            // Every caller that reaches this arm today already ends up machine-wide --
+            // `send_consistency` replaces a FULL object-side batch with a fresh full+global one,
+            // and `lock_with_consist` starts kernel-range arch batches that way -- so
+            // this is behaviour-neutral. It is written locally anyway because the
+            // alternative is depending on that escalation, on `ArchContext::change`
+            // staying uncalled, and on `unmap`'s `is_object_table` guard being
+            // reproduced in any future descent. See TLB.md.
+            consist.set_full_global();
+            nonleaf_cow::record(downgraded);
         } else {
             assert!(!frame.is_pt());
         }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // No fence here. The ordering between the downgrade loop above and the entry update below
+        // is already established by the loop's `inc_refcount`, which is a `fetch_add(SeqCst)` and
+        // so a full barrier on x86 -- and where an entry resolved no frame, by `clflush`,
+        // which is ordered with respect to writes. That second leg is the fragile one:
+        // CLFLUSHOPT is weakly ordered and would need an explicit SFENCE, so a later
+        // conversion of `ArchCacheLineMgr` to `clflushopt` must restore a fence here. It is
+        // `clflush` specifically that makes this safe, not "x86 orders stores".
         let new_flags = flags
             | EntryFlags::WRITE
             | if mark_dirty {
@@ -1060,5 +1084,44 @@ impl Table {
                 }
             }
         }
+    }
+}
+
+/// Does the non-leaf arm of [Table::do_cow_copy] ever execute, and over how many entries?
+///
+/// That arm clears `WRITE` on every present entry of a whole sub-table and then enqueues a single
+/// `invlpg` for the caller's address, so it downgrades up to 512 pages and invalidates one. Before
+/// fixing that, establish whether anything reaches it: a fix for an invalidation that nothing
+/// exercises cannot be demonstrated to work. See TLB.md.
+pub mod nonleaf_cow {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static ENTRIES: AtomicUsize = AtomicUsize::new(0);
+    static MAX_ENTRIES: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record(downgraded: usize) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        ENTRIES.fetch_add(downgraded, Ordering::Relaxed);
+        MAX_ENTRIES.fetch_max(downgraded, Ordering::Relaxed);
+    }
+
+    pub fn calls() -> usize {
+        CALLS.load(Ordering::Relaxed)
+    }
+
+    pub fn entries() -> usize {
+        ENTRIES.load(Ordering::Relaxed)
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        emerglogln!(
+            "== nonleaf cow: {} calls, {} entries downgraded, {} max per call ({} invalidated)",
+            calls,
+            ENTRIES.load(Ordering::Relaxed),
+            MAX_ENTRIES.load(Ordering::Relaxed),
+            calls,
+        );
     }
 }

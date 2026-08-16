@@ -25,7 +25,7 @@ use crate::{
         VirtAddr,
         context::{
             ContextRef, UserContext,
-            virtmem::{Slot, VirtContext},
+            virtmem::{Slot, SlotMemo, VirtContext},
         },
     },
     obj::{ThreadSleepLinker, control::ControlObjectCacher},
@@ -90,6 +90,8 @@ pub struct Thread {
     sync_sleep_gen: AtomicU64,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
+    /// Slot -> object memo for `sys_thread_sync`, in front of the context's `regions` mutex.
+    pub slot_memo: SlotMemo,
     pub kernel_stack: KernelStack,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
@@ -318,6 +320,7 @@ impl Thread {
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             memory_context: ctx,
+            slot_memo: SlotMemo::new(),
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::default()),
             sched_link: AtomicLink::default(),
@@ -534,32 +537,37 @@ impl Thread {
     {
         self.note_critical_enter(core::panic::Location::caller());
         let res = f(self);
-        self.critical_counter.fetch_sub(1, Ordering::SeqCst);
+        self.critical_counter.fetch_sub(1, Ordering::AcqRel);
         res
     }
 
     /// Increment the critical counter, remembering who took it off zero.
+    ///
+    /// The counter is `AcqRel`: it is the guard, and the section it opens must not be hoisted
+    /// above it. The origin beside it is `Relaxed` -- diagnostic, only ever read to name a site in
+    /// a report, and a `SeqCst` store of a `&'static Location` is an `xchg` charged to every
+    /// critical section (several per wake).
     fn note_critical_enter(&self, loc: &'static core::panic::Location<'static>) {
-        if self.critical_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+        if self.critical_counter.fetch_add(1, Ordering::AcqRel) == 0 {
             self.critical_origin
-                .store(loc as *const _ as usize, Ordering::SeqCst);
+                .store(loc as *const _ as usize, Ordering::Relaxed);
         }
     }
 
     /// The caller that took this thread's critical counter off zero, if it is still nonzero.
     pub fn critical_origin(&self) -> Option<&'static core::panic::Location<'static>> {
-        let p = self.critical_origin.load(Ordering::SeqCst);
+        let p = self.critical_origin.load(Ordering::Relaxed);
         (p != 0).then(|| unsafe { &*(p as *const core::panic::Location<'static>) })
     }
 
     #[inline]
     pub fn is_critical(&self) -> bool {
-        self.critical_counter.load(Ordering::SeqCst) > 0
+        self.critical_counter.load(Ordering::Acquire) > 0
     }
 
     #[track_caller]
     pub fn exit_critical(&self, loc: &'static core::panic::Location) {
-        let res = self.critical_counter.fetch_sub(1, Ordering::SeqCst);
+        let res = self.critical_counter.fetch_sub(1, Ordering::AcqRel);
         if res == 0 {
             panic!(
                 "critical underflow, critical from {}, exit_critical called from {}",
@@ -797,7 +805,7 @@ impl Thread {
         // reset every time the thread actually reaches userspace (`exit_kernel`), so anything
         // past a handful of upcalls without an intervening return is that livelock.
         const MAX_UPCALLS_WITHOUT_RETURN: u32 = 8;
-        if self.upcalls_since_user.fetch_add(1, Ordering::SeqCst) >= MAX_UPCALLS_WITHOUT_RETURN {
+        if self.upcalls_since_user.fetch_add(1, Ordering::Relaxed) >= MAX_UPCALLS_WITHOUT_RETURN {
             log::error!(
                 "thread {}: {} upcalls generated without returning to userspace, killing thread. \
                  last: {:?}",

@@ -23,3 +23,7 @@ pub use reader::{MapInfo, MapReader};
 pub use settings::{MappingFlags, MappingSettings};
 
 pub use crate::arch::memory::pagetables::Table;
+
+pub fn nonleaf_cow_print() {
+    table::nonleaf_cow::print();
+}

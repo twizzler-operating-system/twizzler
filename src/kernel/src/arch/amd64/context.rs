@@ -481,7 +481,8 @@ fn setup_mapper_with_kpages(mapper: &mut Mapper) {
 /// argument for it is that a `SecurityContext` has no detach, so its last reference drops only when
 /// the last thread attached to it is dropped, which is after that thread is off-cpu -- and
 /// `Thread::switch_thread` switches context-less threads to the kernel context precisely so an idle
-/// cpu is not left sitting on a user root. That argument was never checked anywhere. This checks it.
+/// cpu is not left sitting on a user root. That argument was never checked anywhere. This checks
+/// it.
 ///
 /// Reports rather than panics: it runs from a `Drop`, and panicking here would take out the very
 /// teardown path most likely to hold the bug, losing the transcript that names the cpu and the

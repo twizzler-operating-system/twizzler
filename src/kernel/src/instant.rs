@@ -79,6 +79,23 @@ impl Instant {
     pub fn into_time_span(self) -> TimeSpan {
         self.ticks * self.rate
     }
+
+    /// The raw tick count, for stamping somewhere a whole `Instant` will not fit -- an
+    /// `AtomicU64`, principally.
+    ///
+    /// Only meaningful against another reading of the same clock, which after boot is every
+    /// reading: the tick source is registered once and never replaced. Pair with
+    /// [`Instant::ns_since_ticks`] rather than converting the stamp itself, which is the whole
+    /// point -- see the type's own doc comment for what a conversion costs.
+    pub fn raw_ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Nanoseconds from a stamp taken by [`Instant::raw_ticks`] to this reading, saturating at
+    /// zero. One conversion for the interval, rather than one per endpoint.
+    pub fn ns_since_ticks(&self, ticks: u64) -> u64 {
+        (self.ticks.saturating_sub(ticks) * self.rate).as_nanos() as u64
+    }
 }
 
 impl Sub<Instant> for Instant {

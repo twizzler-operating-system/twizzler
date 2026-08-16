@@ -12,13 +12,22 @@
 //! thread will temporarily run with the priority of the thread that just called lock(). In general,
 //! a thread that holds a mutex will run with the highest of the priorities of all threads sleeping
 //! on that mutex.
+//!
+//! Uncontended acquire and release take a fast path: one CAS on a lock word holding the owning
+//! thread's pointer, touching neither the queue spinlock nor the interrupt state. The first
+//! contender converts the word to [`LOCKED_SLOW`] under the queue lock and imports the owner into
+//! the queue, after which that owner's release must come through the queue lock too -- so a
+//! sleeping waiter or a pending handoff can never be bypassed by the bare CAS. One visible
+//! consequence: priority donation to an owner begins at first contention rather than at
+//! acquisition, since an uncontended fast-mode owner is anonymous until a waiter converts it.
 
 // TODO: reenable priority donation, and make it cheaper.
 
+use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
     panic::Location,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -208,7 +217,6 @@ struct SleepQueue {
     queue: LinkedList<MutexLinkAdapter>,
     pri: Option<Priority>,
     owner: Option<ThreadRef>,
-    owned: bool,
     /// When true, release() has handed ownership to a waiter but that waiter
     /// hasn't called lock() yet. Prevents the releasing thread from re-acquiring
     /// and starving waiters (Bug #9 fairness fix).
@@ -315,11 +323,26 @@ pub fn get_lock_stats() -> LockStats {
 
 intrusive_adapter!(pub MutexLinkAdapter = ThreadRef: Thread { mutex_link: intrusive_collections::linked_list::AtomicLink });
 
+/// The lock word's slow-mode value. Any other nonzero value is the owning thread's `Thread`
+/// pointer (fast mode), which cannot collide with this: a `Thread` allocation is word-aligned.
+const LOCKED_SLOW: usize = 1;
+const _: () = assert!(core::mem::align_of::<Thread>() > 1);
+
 /// A container data structure to manage mutual exclusion.
 pub struct Mutex<T> {
+    /// The lock word. 0 = unlocked. [`LOCKED_SLOW`] = held with `queue` authoritative (owner,
+    /// waiters, handoff). Any other value = the owner's `Thread` pointer: held in fast mode with
+    /// the queue untouched (no owner recorded, no waiters, no handoff). Waiters force
+    /// `LOCKED_SLOW` under the queue lock before they ever sleep, and the word stays
+    /// `LOCKED_SLOW` across a handoff, so the fast-path CAS from 0 can never bypass a sleeper or
+    /// a pending handoff.
+    state: AtomicUsize,
     queue: Spinlock<SleepQueue>,
     cell: UnsafeCell<T>,
-    locked_at: UnsafeCell<&'static Location<'static>>,
+    /// Where the lock was last acquired. Atomic rather than queue-lock-protected so the fast
+    /// path can stamp it; diagnostic-only, and a racing reader can see a stamp one acquisition
+    /// stale.
+    locked_at: AtomicPtr<Location<'static>>,
     safe_with_spinlocks: bool,
 }
 
@@ -327,15 +350,15 @@ impl<T> Mutex<T> {
     /// Create a new mutex, moving data `T` into it.
     pub const fn new(data: T) -> Self {
         Self {
+            state: AtomicUsize::new(0),
             queue: Spinlock::new(SleepQueue {
                 queue: LinkedList::new(MutexLinkAdapter::NEW),
                 pri: None,
                 owner: None,
-                owned: false,
                 handoff: false,
             }),
             cell: UnsafeCell::new(data),
-            locked_at: UnsafeCell::new(Location::caller()),
+            locked_at: AtomicPtr::new(Location::caller() as *const _ as *mut _),
             safe_with_spinlocks: false,
         }
     }
@@ -348,6 +371,19 @@ impl<T> Mutex<T> {
     /// have a mut reference to the mutex itself.
     pub fn get_mut(&mut self) -> &mut T {
         self.cell.get_mut()
+    }
+
+    #[inline]
+    fn stamp_locked_at(&self, caller: &'static Location<'static>) {
+        self.locked_at
+            .store(caller as *const _ as *mut _, Ordering::Relaxed);
+    }
+
+    /// Always sound to deref: the field is only ever stamped from a `&'static Location`. Which
+    /// acquisition it names is best-effort (see the field).
+    #[inline]
+    fn locked_at(&self) -> &'static Location<'static> {
+        unsafe { &*self.locked_at.load(Ordering::Relaxed) }
     }
 
     /// Lock the mutex and return a lock guard to manage a reference to the managed data. When the
@@ -422,6 +458,37 @@ impl<T> Mutex<T> {
             lt.intend_to_lock_mutex(caller, start_time)
         });
 
+        // Uncontended fast path: one CAS installs this thread's pointer as the owner. Everything
+        // below is contention machinery -- interrupt masking, the critical section, the queue
+        // spinlock, `set_mutex_wait` -- while everything above (the critical-context panic, the
+        // charged mutex count, the tracker intent) has already run. Losing the CAS proves
+        // nothing beyond "not free right now"; the loop below sorts out why.
+        if let Some(ct) = current_thread {
+            let ptr = Arc::as_ptr(ct) as usize;
+            if self
+                .state
+                .compare_exchange(0, ptr, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                // After the CAS, not before: the stamp is owned along with the lock. A converter
+                // can read the previous acquisition's stamp in the window before this store
+                // lands; diagnostic-only.
+                self.stamp_locked_at(caller);
+                if timing {
+                    add_lock_time_sample(Instant::now() - start_time);
+                }
+                let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
+                return LockGuard {
+                    lock: self,
+                    prev_donated_priority: current_donated_priority,
+                    start_time,
+                    timed: timing,
+                    tracker_index,
+                    charged,
+                };
+            }
+        }
+
         let int_state = crate::interrupt::disable();
         let mut i = 0;
         let mut stuck_owner: Option<ThreadRef> = None;
@@ -457,24 +524,79 @@ impl<T> Mutex<T> {
             // a contended waiter is the wrong place to drive it from. `check_timed_out_mutexes()`
             // above was commented out for the same reason.
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
-            let _reinsert = {
+            {
                 let mut queue = self.queue.lock();
-                if !queue.owned {
-                    queue.owned = true;
-                    if let Some(ref thread) = current_thread {
-                        if let Some(ref pri) = queue.pri {
-                            thread.donate_priority(pri.clone());
+                let state = self.state.load(Ordering::Relaxed);
+                if state == 0 {
+                    // Free. Only a fast locker's CAS can race this one; every slow-path claim is
+                    // serialized by the queue lock.
+                    if self
+                        .state
+                        .compare_exchange(0, LOCKED_SLOW, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        if let Some(ref thread) = current_thread {
+                            if let Some(ref pri) = queue.pri {
+                                thread.donate_priority(pri.clone());
+                            }
+                        }
+
+                        queue.owner = current_thread.cloned();
+                        self.stamp_locked_at(caller);
+                        break;
+                    }
+                    // A fast locker won the word between the load and the CAS. Do not fall
+                    // through to the wait list: until the word reads LOCKED_SLOW, the owner can
+                    // release with a bare CAS that never looks at the queue, so a sleeper
+                    // enqueued now is stranded forever. Retry; the next pass converts the new
+                    // owner.
+                    drop(queue);
+                    crate::arch::processor::spin_wait_iteration();
+                    continue;
+                }
+                if state != LOCKED_SLOW {
+                    // A fast-mode owner: `state` is its `Thread` pointer. The address comparison
+                    // below needs no deref, so re-entrancy is caught before the owner is pinned.
+                    if let Some(ct) = current_thread {
+                        if Arc::as_ptr(ct) as usize == state {
+                            crate::panic::backtrace(false, None);
+                            panic!(
+                                "this mutex is not re-entrant: thread {} ({}) at {}, fast-mode owner recorded at {}",
+                                ct.id(),
+                                ct.objid(),
+                                caller,
+                                self.locked_at(),
+                            );
                         }
                     }
-
-                    queue.owner = current_thread.cloned();
-                    unsafe { self.locked_at.get().write(caller) };
-                    break;
-                } else if let Some(ref cur_owner) = queue.owner {
+                    // Convert to slow mode so the owner's release must come through the queue
+                    // lock. The CAS succeeding is what pins the owner: only from then on is it
+                    // barred from completing a release and dropping its charged ThreadRef, so
+                    // the deref below sits strictly after the CAS.
+                    if self
+                        .state
+                        .compare_exchange(state, LOCKED_SLOW, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_err()
+                    {
+                        // The owner released between the load and the CAS; the word is free now.
+                        drop(queue);
+                        crate::arch::processor::spin_wait_iteration();
+                        continue;
+                    }
+                    // The word held a borrow with no strong count behind it, so reconstruction
+                    // is increment-then-from_raw, sound by the pin above: the Thread stays alive
+                    // at least until this queue lock is dropped, and the new reference keeps it
+                    // alive in the queue past that.
+                    let owner = unsafe {
+                        Arc::increment_strong_count(state as *const Thread);
+                        Arc::from_raw(state as *const Thread)
+                    };
+                    debug_assert!(!queue.handoff);
+                    queue.owner = Some(owner);
+                }
+                if let Some(ref cur_owner) = queue.owner {
                     with_lock_tracker(|lt| {
-                        lt.intended_mutex_owned_by(cur_owner.id(), unsafe {
-                            self.locked_at.get().read()
-                        });
+                        lt.intended_mutex_owned_by(cur_owner.id(), self.locked_at());
                     });
                     // Sampled here where the owner is in hand, reported after the queue lock is
                     // dropped -- emerglogln takes no lock, but holding this one across a console
@@ -500,7 +622,7 @@ impl<T> Mutex<T> {
                                 // This thread was handed ownership by release(). Clear
                                 // the handoff flag and proceed as the new owner.
                                 queue.handoff = false;
-                                unsafe { self.locked_at.get().write(caller) };
+                                self.stamp_locked_at(caller);
                                 break;
                             }
                             crate::panic::backtrace(false, None);
@@ -511,15 +633,14 @@ impl<T> Mutex<T> {
                             // code, so it is not on the wait list and `locked_at` names a site
                             // this thread has not reached in this call.
                             panic!(
-                                "this mutex is not re-entrant: thread {} ({}) at {}, owner recorded at {} (owner state {:?}, on wait list: {}, this thread on wait list: {}, owned {}, handoff {})",
+                                "this mutex is not re-entrant: thread {} ({}) at {}, owner recorded at {} (owner state {:?}, on wait list: {}, this thread on wait list: {}, handoff {})",
                                 cur_thread.id(),
                                 cur_thread.objid(),
                                 caller,
-                                unsafe { self.locked_at.get().read() },
+                                self.locked_at(),
                                 cur_owner.get_state(),
                                 cur_owner.mutex_link.is_linked(),
                                 cur_thread.mutex_link.is_linked(),
-                                queue.owned,
                                 queue.handoff,
                             );
                         }
@@ -535,23 +656,21 @@ impl<T> Mutex<T> {
                             emerglogln!(
                                 "reclaiming mutex handed off to exited thread {} (locked at {})",
                                 cur_owner.id(),
-                                unsafe { self.locked_at.get().read() }
+                                self.locked_at()
                             );
                         }
                         queue.handoff = false;
                         queue.owner = current_thread.cloned();
-                        unsafe { self.locked_at.get().write(caller) };
+                        self.stamp_locked_at(caller);
                         break;
                     }
                 }
 
-                let mut reinsert = true;
                 if let Some(thread) = current_thread {
                     thread.set_mutex_wait(Some(caller));
                     if !thread.is_idle_thread() {
                         thread.set_state(ExecutionState::Sleeping);
                         queue.queue.push_back(thread.clone());
-                        reinsert = false;
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
                             if let Some(ref pri) = queue.pri {
@@ -562,8 +681,7 @@ impl<T> Mutex<T> {
                         }
                     }
                 }
-                reinsert
-            };
+            }
             if let Some(owner) = stuck_owner.take() {
                 report_stuck_owner(caller, i, &owner);
             }
@@ -598,6 +716,25 @@ impl<T> Mutex<T> {
     }
 
     fn release(&self, charged: Option<&ThreadRef>) {
+        // Uncontended fast path: the word still holds this hold's own thread pointer, so no
+        // waiter ever registered -- nothing to pop, no donation to transfer, nothing to
+        // schedule. Failure means the word reads LOCKED_SLOW (a waiter converted this hold, or
+        // it was acquired through the queue), and the queue decides below.
+        if let Some(ct) = charged {
+            if self
+                .state
+                .compare_exchange(
+                    Arc::as_ptr(ct) as usize,
+                    0,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                ct.dec_mutex_count();
+                return;
+            }
+        }
         // Ahead of the queue lock rather than under it, now that the guard has to enclose a scope
         // the lock does not. Widening it costs nothing -- the extra span is a spinlock acquisition,
         // which runs with interrupts off regardless -- and it is what covers the schedule below.
@@ -622,9 +759,11 @@ impl<T> Mutex<T> {
                 Some(thread)
             } else {
                 queue.owner = None;
-                queue.owned = false;
                 queue.handoff = false;
                 queue.pri = None;
+                // Published last, under the queue lock, after the fields above: this store is
+                // what re-opens the word to fast lockers.
+                self.state.store(0, Ordering::Release);
                 None
             }
         };
@@ -758,16 +897,21 @@ impl<T: Default> Default for Mutex<T> {
 
 mod test {
     use alloc::{sync::Arc, vec::Vec};
-    use core::{cmp::max, time::Duration};
+    use core::{
+        cmp::max,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+        time::Duration,
+    };
 
     use twizzler_kernel_macros::kernel_test;
 
     use super::Mutex;
     use crate::{
+        instant::Instant,
         processor::mp::NR_CPUS,
         spinlock::Spinlock,
         syscall::sync::sys_thread_sync,
-        thread::{entry::run_closure_in_new_thread, priority::Priority},
+        thread::{entry::run_closure_in_new_thread, locktrack, priority::Priority},
         utils::quick_random,
     };
 
@@ -819,12 +963,12 @@ mod test {
                     // across the unwind, and these are the fields that separate the failure modes
                     // -- an owner that is gone with `handoff` still set is a lost handoff, waiters
                     // queued behind a live owner is a lock that is merely held too long.
-                    let (waiters, owned, handoff, owner, owner_state) = {
+                    let (waiters, state, handoff, owner, owner_state) = {
                         let queue = lock.queue.lock();
                         let owner = queue.owner.as_ref();
                         (
                             queue.queue.iter().count(),
-                            queue.owned,
+                            lock.state.load(core::sync::atomic::Ordering::Relaxed),
                             queue.handoff,
                             owner.map(|o| o.id()),
                             owner.map(|o| o.get_state()),
@@ -832,13 +976,13 @@ mod test {
                     };
                     panic!(
                         "test_mutex: worker {} of {} (thread {}, state {:?}) did not finish in \
-                         {:?}; mutex owned {} handoff {} owner {:?} ({:?}) waiters {}",
+                         {:?}; mutex state {:#x} handoff {} owner {:?} ({:?}) waiters {}",
                         nth,
                         nr_threads,
                         thread.id(),
                         thread.get_state(),
                         BATCH_LIMIT,
-                        owned,
+                        state,
                         handoff,
                         owner,
                         owner_state,
@@ -905,5 +1049,176 @@ mod test {
             &[2u32, 1][..],
             "release() must hand off to the realtime waiter before the background one"
         );
+    }
+
+    /// Cost of an uncontended lock/unlock pair, printed to serial so every sweep transcript
+    /// carries the number. Timed once per batch (an `Instant::now` is ~40-54 cycles here, so
+    /// per-op reads would swamp the thing measured) and reported as best/median/mean: the best
+    /// batch is the warm floor with interrupt and preemption noise filtered out, and the gap
+    /// between median and best is the tell for how much of the floor is a warm-cache artefact.
+    #[kernel_test]
+    fn bench_uncontended_mutex() {
+        const BATCH: usize = 100;
+        const BATCHES: usize = 1000;
+        let lock = Mutex::new(0usize);
+        for _ in 0..BATCH {
+            *lock.lock() += 1;
+        }
+        let mut samples: Vec<u64> = Vec::with_capacity(BATCHES);
+        for _ in 0..BATCHES {
+            let start = Instant::now();
+            for _ in 0..BATCH {
+                *lock.lock() += 1;
+            }
+            samples.push((Instant::now() - start).as_nanos() as u64);
+        }
+        samples.sort_unstable();
+        let mean = samples.iter().sum::<u64>() / BATCHES as u64;
+        emerglogln!(
+            "bench_uncontended_mutex: best {} median {} mean {} ns/op ({} batches of {})",
+            samples[0] / BATCH as u64,
+            samples[BATCHES / 2] / BATCH as u64,
+            mean / BATCH as u64,
+            BATCHES,
+            BATCH,
+        );
+        let val = *lock.lock();
+        assert_eq!(val, BATCH * (BATCHES + 1));
+    }
+
+    /// Spin until `turn` reads `want`, bounded by wall clock. The ping-pong sides must spin (a
+    /// sleep-poll would put scheduler wakes inside the measured turn), but the driver runs at
+    /// REALTIME under the test harness while its peer is USER -- so a co-scheduled peer starves
+    /// forever and an unbounded spin is a silent sweep wedge (the sleeper-test bug's shape; the
+    /// smp1 guard does not constrain placement above one cpu). The bound is a deadline rather
+    /// than an iteration count: iterations map to very different wall time across profiles, and
+    /// a spurious panic on a slow config would fake a regression. Clock read once per 4096
+    /// spins so the check cannot swamp what the bench measures. Under total co-scheduling only
+    /// the REALTIME side can fire -- a starved peer accrues no spins -- but both sides use this
+    /// for symmetry.
+    fn spin_turn(turn: &core::sync::atomic::AtomicUsize, want: usize) {
+        let mut spins = 0usize;
+        let mut start: Option<Instant> = None;
+        while turn.load(Ordering::Acquire) != want {
+            core::hint::spin_loop();
+            spins += 1;
+            if spins % 4096 == 0 {
+                let now = Instant::now();
+                let s = *start.get_or_insert(now);
+                if now - s > Duration::from_secs(5) {
+                    panic!(
+                        "pingpong turn starved (co-scheduled peer?): {} spins in {:?}",
+                        spins,
+                        now - s
+                    );
+                }
+            }
+        }
+    }
+
+    /// Cross-core uncontended cost: two threads alternate strict turns on one mutex, so nearly
+    /// every acquire finds the lock free but its cache line last written by the other core --
+    /// the shape a real uncontended acquire usually has, and the one the warm single-thread
+    /// bench above cannot see (its line never leaves the local L1). The turn handshake's own
+    /// line transfer is included in the number, but it is a constant across kernels, so deltas
+    /// still isolate the mutex. Skipped on one cpu, where each turn would cost a timeslice and
+    /// the number would measure the scheduler.
+    #[kernel_test]
+    fn bench_pingpong_mutex() {
+        const OPS: usize = 20_000;
+        if NR_CPUS.load(core::sync::atomic::Ordering::SeqCst) < 2 {
+            emerglogln!("bench_pingpong_mutex: skipped (1 cpu)");
+            return;
+        }
+        let lock = Arc::new(Mutex::new(0usize));
+        let turn = Arc::new(AtomicUsize::new(0));
+        // Placement is verified rather than requested: pinning constrains migration but not wake
+        // placement (`select_cpu` discards the hard-pin flag), so a co-scheduled run cannot be
+        // ruled out -- and one would degenerate this bench toward the warm case while wearing the
+        // "no cross-core effect" signature. The peer publishes its cpu each turn; we count turns
+        // where both sides ran on one cpu and print it, so a degenerate run names itself.
+        let peer_cpu = Arc::new(AtomicUsize::new(usize::MAX));
+        let peer = {
+            let (lock, turn, peer_cpu) = (lock.clone(), turn.clone(), peer_cpu.clone());
+            run_closure_in_new_thread(Priority::USER, move || {
+                for _ in 0..OPS {
+                    spin_turn(&turn, 1);
+                    *lock.lock() += 1;
+                    peer_cpu.store(locktrack::diag::this_cpu() as usize, Ordering::Relaxed);
+                    turn.store(0, Ordering::Release);
+                }
+            })
+        };
+        let mut same_cpu = 0usize;
+        let start = Instant::now();
+        for _ in 0..OPS {
+            spin_turn(&turn, 0);
+            *lock.lock() += 1;
+            if locktrack::diag::this_cpu() as usize == peer_cpu.load(Ordering::Relaxed) {
+                same_cpu += 1;
+            }
+            turn.store(1, Ordering::Release);
+        }
+        if peer.1.wait_timeout(BATCH_LIMIT).is_none() {
+            panic!("pingpong peer did not finish in {:?}", BATCH_LIMIT);
+        }
+        let total = Instant::now() - start;
+        emerglogln!(
+            "bench_pingpong_mutex: {} ns/op over {} alternating ops ({} co-scheduled turns)",
+            total.as_nanos() as u64 / (2 * OPS) as u64,
+            2 * OPS,
+            same_cpu,
+        );
+        let val = *lock.lock();
+        assert_eq!(val, 2 * OPS);
+    }
+
+    /// Churn the boundary between uncontended and contended acquisition: a tight loop of short
+    /// holds with one contender arriving at unpredictable intervals. Uniform load (test_mutex)
+    /// settles into one regime; this oscillates, which is where a protocol bug at the
+    /// transition -- a sleeper enqueued that a release never sees, a lost handoff -- actually
+    /// lives. Both sides count their acquisitions and the final sum is asserted, so a lost
+    /// increment is loud and a stranded thread turns into the wait_timeout panic rather than a
+    /// silent guest.
+    #[kernel_test]
+    fn test_mutex_transition_stress() {
+        const MAIN_ITERS: usize = 100_000;
+        let lock = Arc::new(Mutex::new(0usize));
+        let stop = Arc::new(AtomicBool::new(false));
+        let contender_count = Arc::new(AtomicUsize::new(0));
+        let handle = {
+            let (lock, stop, count) = (lock.clone(), stop.clone(), contender_count.clone());
+            run_closure_in_new_thread(Priority::USER, move || {
+                while !stop.load(Ordering::Relaxed) {
+                    *lock.lock() += 1;
+                    count.fetch_add(1, Ordering::Relaxed);
+                    if quick_random() % 8 == 0 {
+                        let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(1)));
+                    } else {
+                        for _ in 0..(quick_random() % 512) {
+                            core::hint::spin_loop();
+                        }
+                    }
+                }
+            })
+        };
+        for i in 0..MAIN_ITERS {
+            *lock.lock() += 1;
+            // Occasional short sleeps so the two threads genuinely interleave on one cpu rather
+            // than the main loop finishing inside a single timeslice.
+            if i % 4096 == 0 {
+                let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(1)));
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        if handle.1.wait_timeout(BATCH_LIMIT).is_none() {
+            panic!(
+                "transition-stress contender did not finish in {:?}",
+                BATCH_LIMIT
+            );
+        }
+        let expected = MAIN_ITERS + contender_count.load(Ordering::Relaxed);
+        let val = *lock.lock();
+        assert_eq!(val, expected);
     }
 }

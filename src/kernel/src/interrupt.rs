@@ -32,24 +32,33 @@ use crate::{
 // LLVM's always-inliner, so a plain `#[inline]` leaves this a real call in the debug build. These
 // three are a handful of instructions each and sit under every spinlock acquire and every critical
 // section, which is exactly where the debug profile spends its time.
+//
+// `compiler_fence`, not `fence`. What these have to guarantee is that the region a caller masks
+// interrupts around does not leak out of it -- that the compiler does not hoist a load above the
+// `cli` or sink a store below the `sti`. That is a compile-time property, and `compiler_fence`
+// emits nothing to enforce it. A `fence(SeqCst)` additionally emits an `mfence`, which buys
+// nothing here: masking is core-local state, it does not change what any *other* core observes,
+// and this core takes traps only at instruction boundaries, so it already sees its own accesses in
+// program order. An `mfence` under every spinlock acquire and release is a real cost for a
+// guarantee nothing needs.
 #[inline(always)]
 pub fn disable() -> bool {
     let state = crate::arch::interrupt::disable();
-    core::sync::atomic::fence(Ordering::SeqCst);
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
     state
 }
 
 /// Set the current interrupt enable state.
 #[inline(always)]
 pub fn set(state: bool) {
-    core::sync::atomic::fence(Ordering::SeqCst);
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
     crate::arch::interrupt::set(state);
 }
 
 /// Get the current interrupt enable state without modifying it.
 #[inline(always)]
 pub fn get() -> bool {
-    core::sync::atomic::fence(Ordering::SeqCst);
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
     crate::arch::interrupt::get()
 }
 
@@ -96,6 +105,22 @@ impl InterruptTracking {
             preempts: 0,
             preempt_time: crate::time::TimeStatCollector::new(),
         }
+    }
+}
+
+/// Timestamp for [`record_interrupt`]/[`record_preempt`], taken only when the profile that
+/// consumes it is on.
+///
+/// The recorders already bail on [`INTERRUPT_PROFILE`], but their *argument* was evaluated
+/// regardless -- and `Instant::now()` is an indirect call through the registered tick source plus
+/// an `rdtsc`, which the compiler cannot see through and so cannot elide. Every interrupt paid for
+/// a reading nothing looked at. A const, so with the profile off this folds to a zero `Instant`.
+#[inline(always)]
+pub fn profile_now() -> crate::instant::Instant {
+    if INTERRUPT_PROFILE {
+        crate::instant::Instant::now()
+    } else {
+        crate::instant::Instant::zero()
     }
 }
 

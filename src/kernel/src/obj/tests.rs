@@ -366,7 +366,8 @@ fn test_object_copy() {
 /// An object created with `ObjectCreateFlags::DELETE` must survive until its creator has had a
 /// chance to map it. The flag means "delete when the last mapping goes away", but a brand-new
 /// object has no mappings, so a reap pass running between the create syscall returning and the
-/// creator's map would otherwise take it -- and `scan_deleted` runs on every unmap syscall.
+/// creator's map would otherwise take it -- and `scan_deleted` runs from the bsp idle loop and
+/// from `ObjectControlCmd::Delete`, neither of which this thread controls the timing of.
 #[twizzler_kernel_macros::kernel_test]
 fn delete_flagged_object_survives_until_mapped() {
     use twizzler_abi::syscall::{BackingType, LifetimeType, ObjectCreate, ObjectCreateFlags};
@@ -395,5 +396,120 @@ fn delete_flagged_object_survives_until_mapped() {
         ),
         "DELETE-flagged object {} was reaped before it was ever mapped",
         id
+    );
+}
+
+/// A sleeper must never be lost to `wakeup_word`'s lock-free early-out, and the count it tests
+/// must return to zero so that the early-out actually engages.
+///
+/// The race this exists for is narrow and one-sided: a waker that reads `sleepers` as zero skips
+/// the mutex entirely, so if the count is published *after* the sleeper commits to blocking rather
+/// than before, the wake is dropped and the sleeper never runs again. That failure needs the waker
+/// and the sleeper to interleave inside a few instructions, which is why this hammers a round trip
+/// rather than testing one -- and why it asserts progress under a deadline instead of asserting a
+/// state, since the symptom of the bug is a thread that stops rather than a value that is wrong.
+///
+/// The zero check is the other half. A count that leaked upward would be *safe* -- every wake just
+/// takes the lock as before -- and therefore silent, leaving the optimization permanently disabled
+/// with nothing to notice it. Asserting it drains is what keeps that from rotting.
+#[twizzler_kernel_macros::kernel_test]
+fn sleeper_count_wakes_and_drains() {
+    use core::{sync::atomic::Ordering, time::Duration};
+
+    use twizzler_abi::syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+    };
+
+    use crate::{
+        syscall::sync::sys_thread_sync,
+        thread::{entry::run_closure_in_new_thread, priority::Priority},
+    };
+
+    const ROUNDS: usize = 200;
+    /// Generous: this is a liveness deadline, not a performance one. A lost wakeup parks the
+    /// worker forever, so any finite bound catches it; the only job of the number is to fail
+    /// rather than hang the machine.
+    const LIMIT: Duration = Duration::from_secs(30);
+
+    let obj = create_blank_object();
+    let id = obj.id();
+    // Page 1, not the null page: offset 0 is not writable object memory.
+    let offset = PageNumber::base_page().as_byte_offset();
+    // The worker's progress word. It exists so this thread can *block* waiting for the worker
+    // instead of spinning on shared memory, which deadlocks whenever there is one cpu: tests run
+    // at REALTIME (see `idle_main`, deliberately, so threads a test spawns cannot preempt it) and
+    // the worker below is USER, and `RunQueue::take` serves realtime first with no aging between
+    // classes. A realtime busy-wait therefore starves the exact thread it is waiting for. That is
+    // what this test did originally, and it hung 6/6 at smp1 while passing at smp2 and smp4.
+    let ack = offset + core::mem::size_of::<u64>();
+    // Also faults the page in, so the worker's first read cannot fail. Both words share it.
+    obj.swap_atomic_64(offset, 0).unwrap();
+    obj.swap_atomic_64(ack, 0).unwrap();
+
+    // Block until `word` reads at least `target`.
+    let wait_for = |word: usize, target: u64| {
+        loop {
+            let cur = obj.read_atomic_64(word).unwrap();
+            if cur >= target {
+                return;
+            }
+            // Sleep only while the word still reads what was just seen, so an update landing
+            // between the read and the sleep declines to block rather than being missed.
+            let sleep = ThreadSyncSleep::new(
+                ThreadSyncReference::ObjectRef(id, word),
+                cur,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            );
+            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], None);
+        }
+    };
+
+    let worker_obj = obj.clone();
+    let (_thread, closure) = run_closure_in_new_thread(Priority::USER, move || {
+        let obj = worker_obj;
+        for round in 1..=ROUNDS as u64 {
+            // Sleep while the word still reads the previous round's value. If the waker's store
+            // beat us here, the op fails its check and we fall straight through, which is the
+            // correct non-blocking outcome rather than a missed wake.
+            let sleep = ThreadSyncSleep::new(
+                ThreadSyncReference::ObjectRef(id, offset),
+                round - 1,
+                ThreadSyncOp::Equal,
+                ThreadSyncFlags::empty(),
+            );
+            while obj.read_atomic_64(offset).unwrap() < round {
+                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], None);
+            }
+            // Publish progress and wake the driver, which is blocked on this word.
+            obj.try_write_val_and_signal(ack, round, usize::MAX)
+                .unwrap();
+        }
+    });
+
+    for round in 1..=ROUNDS as u64 {
+        // Wait until the worker has finished the previous round, so this write races its next
+        // sleep attempt rather than trivially preceding it -- the interleaving the early-out can
+        // get wrong. Round 1 falls straight through, since `ack` already reads 0.
+        wait_for(ack, round - 1);
+        obj.try_write_val_and_signal(offset, round, usize::MAX)
+            .unwrap();
+    }
+
+    assert!(
+        closure.wait_timeout(LIMIT).is_some(),
+        "worker did not finish {} sleep/wake rounds in {:?}: a wake was lost",
+        ROUNDS,
+        LIMIT
+    );
+
+    // Every park must have been released. Nonzero here means the fast path is dead for this
+    // object -- safe, but silently pointless, which is the failure this half exists to catch.
+    assert_eq!(
+        // `tests` is a child of `obj`, so the private field is in scope here.
+        obj.sleepers.load(Ordering::SeqCst),
+        0,
+        "sleeper count did not drain after {} rounds",
+        ROUNDS
     );
 }

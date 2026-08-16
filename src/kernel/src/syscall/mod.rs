@@ -316,7 +316,21 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 Some(handle)
             };
             let result = object::sys_object_unmap(handle, slot);
-            crate::obj::scan_deleted();
+            // No `scan_deleted()` here by default. It walks the *entire* global object map under
+            // the global map lock, then re-takes that lock to remove what it found -- charged to
+            // every unmap, to reap the at-most-one object this unmap could have made reapable.
+            // Reaping is driven by the bsp idle loop instead (see `main`), and by
+            // `ObjectControlCmd::Delete`, which still scans inline.
+            //
+            // A/B arm selector; see entryperf.md, §7 and "§8 under suspicion". `true` restores the
+            // synchronous sweep, i.e. pre-§7 behaviour. The deferral is the one change in this tree
+            // whose shape can plausibly produce a multi-millisecond constant -- reclaim that waits
+            // on the bsp idle loop rather than happening inline -- which is why it is tested first
+            // and the interrupt-mask rework is eliminated on arithmetic instead.
+            const SCAN_ON_UNMAP: bool = false;
+            if SCAN_ON_UNMAP {
+                crate::obj::scan_deleted();
+            }
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
@@ -325,6 +339,12 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::thread::locktrack::diag::print_counters(true);
                 crate::memory::pagetables::print_switch_counters();
                 crate::memory::pagetables::print_shootdown_counters();
+                crate::memory::context::virtmem::unmap_census::print();
+                crate::memory::context::virtmem::slotmemo::print();
+                sync::syncbatch::print();
+                crate::obj::pagetables::invl_overflow::print();
+                crate::obj::pagetables::membership::print();
+                crate::memory::pagetables::nonleaf_cow_print();
                 print_syscall_profile();
                 crate::memory::context::virtmem::fault::print_fault_profile();
                 crate::interrupt::print_interrupt_profile();
@@ -757,20 +777,23 @@ fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>
     } else {
         ObjID::new(0)
     };
-    // Interrupts off for the update: it makes the lock uncontended by construction (only this cpu
-    // touches this record, and it cannot be preempted off it mid-update), which is the whole point
-    // of moving the data per-cpu.
-    crate::interrupt::with_disabled(|| {
-        let mut stats = current_processor().syscall_stats.lock();
-        if let Some(duration) = duration {
-            stats.per_syscall_stats[syscall as usize].add_sample(duration);
-        }
-        stats.per_syscall_count[syscall as usize] += 1;
-        stats.count += 1;
-        if SYSCALL_PROFILE {
-            stats.prof.note(entry, sctx);
-        }
-    });
+    // Interrupts are off for the update: it makes the lock uncontended by construction (only this
+    // cpu touches this record, and it cannot be preempted off it mid-update), which is the whole
+    // point of moving the data per-cpu.
+    //
+    // `Spinlock::lock` masks them for the guard's lifetime, so the `with_disabled` that used to
+    // wrap this was a second, redundant mask -- and this runs on *every* syscall exit, since the
+    // count is unconditional. That is two extra `cli`/restore pairs per syscall, guarding a region
+    // the lock already guards.
+    let mut stats = current_processor().syscall_stats.lock();
+    if let Some(duration) = duration {
+        stats.per_syscall_stats[syscall as usize].add_sample(duration);
+    }
+    stats.per_syscall_count[syscall as usize] += 1;
+    stats.count += 1;
+    if SYSCALL_PROFILE {
+        stats.prof.note(entry, sctx);
+    }
 }
 
 /// Count one `sys_thread_sync` call's ops by kind. See [`SYSCALL_PROFILE`].
@@ -782,14 +805,13 @@ pub fn note_thread_sync_ops(ops: &[twizzler_abi::syscall::ThreadSync]) {
         .iter()
         .filter(|op| matches!(op, twizzler_abi::syscall::ThreadSync::Sleep(..)))
         .count();
-    crate::interrupt::with_disabled(|| {
-        let mut stats = current_processor().syscall_stats.lock();
-        stats.prof.sync_sleeps += sleeps;
-        stats.prof.sync_wakes += ops.len() - sleeps;
-        if sleeps > 0 {
-            stats.prof.sync_sleeping_calls += 1;
-        }
-    });
+    // See `add_syscall_stat_sample`: the lock already masks interrupts.
+    let mut stats = current_processor().syscall_stats.lock();
+    stats.prof.sync_sleeps += sleeps;
+    stats.prof.sync_wakes += ops.len() - sleeps;
+    if sleeps > 0 {
+        stats.prof.sync_sleeping_calls += 1;
+    }
 }
 
 /// Dump the [`SYSCALL_PROFILE`] breakdown, most-frequent first. Called from `debug_shutdown`.

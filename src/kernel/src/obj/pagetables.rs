@@ -23,8 +23,13 @@ use crate::{
     obj::{Object, ObjectRef, PageNumber},
 };
 
+/// Kept at 8: raising it to 16 was measured (`widen2-a`/`widen2-b`) and changed nothing. The same
+/// 18 objects latch either way -- they just latch on `MAX_INVLS` instead, since they exceed both
+/// limits. See unmap.md.
 const MAX_INVL_TARGETS: usize = 8;
 const MAX_INVLS: usize = 4;
+/// Capacity of the membership set. See [ObjectPageTable::members].
+const MAX_MEMBERS: usize = 32;
 
 /// Second-and-later operations parked under one page-table lock hold, merged into the batch the
 /// guard will discharge. See [ObjectPageTable::park].
@@ -49,6 +54,231 @@ pub mod merged_parks {
     }
 }
 
+/// How often an object's `invls` has overflowed -- i.e. it no longer knows every context its
+/// mappings live in -- broken out by what the caller then does about it.
+///
+/// `Remove` is the one to watch. There, overflow makes [ObjectPageTable::remove_invalidate] return
+/// without removing anything, so the object's record of where it is mapped stops shrinking. That is
+/// harmless for invalidation, which only over-invalidates as a result -- but it is the *unsafe*
+/// direction for anything that later treats this as authoritative membership, which is why
+/// unmap.md's stage 2 cannot simply inherit the behaviour. Today the drift is silent; this makes it
+/// a number.
+///
+/// `Invalidate` and `Send` count the two `new_full_global()` fallbacks, so this also prices what a
+/// membership structure that could not overflow would retire.
+pub mod invl_overflow {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Copy)]
+    pub enum Site {
+        Remove = 0,
+        Invalidate = 1,
+        Send = 2,
+    }
+
+    const NR: usize = 3;
+    static CALLS: [AtomicUsize; NR] = [const { AtomicUsize::new(0) }; NR];
+    static OVER: [AtomicUsize; NR] = [const { AtomicUsize::new(0) }; NR];
+
+    /// Distinct objects that have ever latched, and distinct objects seen latched at each site.
+    /// Counted per object rather than per call, because overflow is permanent: a latched object is
+    /// hit on every subsequent call, so a rate cannot distinguish "many objects overflow
+    /// occasionally" from "a handful latched early and are hammered forever". Those want opposite
+    /// fixes.
+    static OBJECTS: AtomicUsize = AtomicUsize::new(0);
+    static OBJECTS_AT: [AtomicUsize; NR] = [const { AtomicUsize::new(0) }; NR];
+    /// Which limit admitted each latching object. `overflowed()` is a disjunction and the two
+    /// routes are unrelated defects: the outer list filling means eight contexts accumulated, while
+    /// an inner list filling means `MAX_INVLS` cursors on a single target and says nothing about
+    /// how many contexts map the object. `BOTH` is kept apart rather than folded into either,
+    /// since an object over both limits does not say which it crossed first.
+    static LATCH_OUTER: AtomicUsize = AtomicUsize::new(0);
+    static LATCH_INNER: AtomicUsize = AtomicUsize::new(0);
+    static LATCH_BOTH: AtomicUsize = AtomicUsize::new(0);
+    /// Live targets at the instant of latching: an object genuinely mapped into eight contexts at
+    /// once against one that cycled through eight and holds two.
+    static LATCH_LIVE_SUM: AtomicUsize = AtomicUsize::new(0);
+    static LATCH_LIVE_MAX: AtomicUsize = AtomicUsize::new(0);
+    /// How close the workload came, over every call rather than only latching ones. Without these a
+    /// reading of zero latched objects cannot be told from a workload that never approached the
+    /// limit -- and zero would read as good news either way.
+    static MAX_LIVE: AtomicUsize = AtomicUsize::new(0);
+    static MAX_LEN: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record(site: Site, overflowed: bool) {
+        CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
+        if overflowed {
+            OVER[site as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Runs on every call, so the maxima are guarded by a relaxed load rather than taken
+    /// unconditionally: `fetch_max` has no native instruction on x86_64 or aarch64 and lowers to a
+    /// `lock cmpxchg` retry loop, which is a different cost class from the `fetch_add`s beside it
+    /// and would put two contended RMWs per call on the TLB-invalidation path. The load-then-CAS
+    /// race is benign because the maxima are monotonic and only read at shutdown: a lost update is
+    /// re-attempted by the next caller to exceed it. After the first few calls neither branch is
+    /// taken.
+    pub fn record_shape(live: usize, len: usize) {
+        if live > MAX_LIVE.load(Ordering::Relaxed) {
+            MAX_LIVE.fetch_max(live, Ordering::Relaxed);
+        }
+        if len > MAX_LEN.load(Ordering::Relaxed) {
+            MAX_LEN.fetch_max(len, Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_latch(live: usize, outer_full: bool, inner_full: bool) {
+        OBJECTS.fetch_add(1, Ordering::Relaxed);
+        LATCH_LIVE_SUM.fetch_add(live, Ordering::Relaxed);
+        LATCH_LIVE_MAX.fetch_max(live, Ordering::Relaxed);
+        match (outer_full, inner_full) {
+            (true, true) => &LATCH_BOTH,
+            (true, false) => &LATCH_OUTER,
+            (false, true) => &LATCH_INNER,
+            (false, false) => return,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_object_at(site: Site) {
+        OBJECTS_AT[site as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set on the `latched` byte when an object first latches, and cleared by the one call site
+    /// that can name it. Bit 7 so it cannot collide with the per-site bits.
+    pub const NOTICE: u8 = 1 << 7;
+
+    /// Names the first few latched objects, so the population can be identified rather than only
+    /// counted. Bounded because the question is identity -- "is the runtime text object among
+    /// these" -- not quantity, which `OBJECTS` already answers.
+    ///
+    /// Only the `remove_invalidate` call site can do this: `ObjectPageTable` has no back-pointer to
+    /// its `Object`, and of the three sites calling `overflowed()` it is the only one in
+    /// `virtmem.rs` with the object in scope. That is sufficient rather than a compromise --
+    /// stage 1b measured `OBJECTS_AT` at 18/0/0, so every latch is first observed there. If that
+    /// ever stops being true, `NAMED` falls short of `OBJECTS` and the gap is the signal.
+    static NAMED: AtomicUsize = AtomicUsize::new(0);
+    const MAX_NAMED: usize = 24;
+
+    pub fn note_object(id: crate::obj::ObjID, live: usize, len: usize) {
+        let n = NAMED.fetch_add(1, Ordering::Relaxed);
+        if n < MAX_NAMED {
+            emerglogln!(
+                "== invls latched object {}: {} live of {} targets",
+                id,
+                live,
+                len
+            );
+        }
+    }
+
+    pub fn named() -> usize {
+        NAMED.load(Ordering::Relaxed)
+    }
+
+    pub fn print() {
+        for (i, name) in ["remove", "invalidate", "send"].iter().enumerate() {
+            emerglogln!(
+                "== invls overflow ({}): {} of {} calls, {} distinct objects",
+                name,
+                OVER[i].load(Ordering::Relaxed),
+                CALLS[i].load(Ordering::Relaxed),
+                OBJECTS_AT[i].load(Ordering::Relaxed),
+            );
+        }
+        let objects = OBJECTS.load(Ordering::Relaxed);
+        emerglogln!(
+            "== invls latched: {} objects (outer {}, inner {}, both {}), live at latch {}/100 mean, {} max; ever seen {} live, {} len",
+            objects,
+            LATCH_OUTER.load(Ordering::Relaxed),
+            LATCH_INNER.load(Ordering::Relaxed),
+            LATCH_BOTH.load(Ordering::Relaxed),
+            if objects == 0 {
+                0
+            } else {
+                LATCH_LIVE_SUM.load(Ordering::Relaxed) * 100 / objects
+            },
+            LATCH_LIVE_MAX.load(Ordering::Relaxed),
+            MAX_LIVE.load(Ordering::Relaxed),
+            MAX_LEN.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Stage 2 bookkeeping: how big membership actually gets, how often it gives up, and whether it
+/// ever disagrees with the ground truth of the existing fan-out.
+///
+/// `MAX_SIZE` is the number nothing else in the tree measures. Every prior attempt to size this
+/// read a container's own capacity back: `live at latch` cannot exceed `MAX_INVL_TARGETS`, and the
+/// census's top bucket is unbounded. This one is capped only at [MAX_MEMBERS], which is set well
+/// above the 13 contexts the shared runtime is known to reach -- so a reading below 32 is a
+/// measurement and a reading of 32 is a ceiling. Read it that way.
+///
+/// `MISSES` is the stage that cannot be skipped: it counts contexts that released a mapping while
+/// *absent* from a known-complete membership set. Any non-zero value means the set cannot be
+/// maintained correctly at the points chosen, and the design needs revisiting rather than patching
+/// -- a stale mapping is not a crash, so nothing else would report it.
+pub mod membership {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static MAX_SIZE: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN: AtomicUsize = AtomicUsize::new(0);
+    static CHECKS: AtomicUsize = AtomicUsize::new(0);
+    static MISSES: AtomicUsize = AtomicUsize::new(0);
+    static SATURATED: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record_size(n: usize) {
+        if n > MAX_SIZE.load(Ordering::Relaxed) {
+            MAX_SIZE.fetch_max(n, Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_unknown() {
+        UNKNOWN.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Times a target could not be recorded because the set was full. Non-zero means `MAX_SIZE` has
+    /// hit [MAX_MEMBERS] and is therefore a ceiling again, not a measurement -- which is the only
+    /// way to tell those apart from the number itself.
+    pub fn record_saturated() {
+        SATURATED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One context that released a mapping, against what membership claimed.
+    pub fn record_check(present: bool) {
+        CHECKS.fetch_add(1, Ordering::Relaxed);
+        if !present {
+            MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn print() {
+        let misses = MISSES.load(Ordering::Relaxed);
+        emerglogln!(
+            "== membership: max {} of {} ({}), {} objects unknown, {} checks, {} MISSES{}",
+            MAX_SIZE.load(Ordering::Relaxed),
+            super::MAX_MEMBERS,
+            // Says outright whether the maximum is data or a ceiling, rather than leaving the
+            // reader to infer it from the number's proximity to the bound -- which is the
+            // inference that went wrong last time.
+            if SATURATED.load(Ordering::Relaxed) == 0 {
+                "measured"
+            } else {
+                "CEILING"
+            },
+            UNKNOWN.load(Ordering::Relaxed),
+            CHECKS.load(Ordering::Relaxed),
+            misses,
+            if misses == 0 {
+                ""
+            } else {
+                "  <-- SET IS WRONG"
+            },
+        );
+    }
+}
+
 /// What became of a run of pages the pager delivered.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct InstallTally {
@@ -67,15 +297,41 @@ pub struct ObjectPageTable {
         (ArchContextTarget, heapless::Vec<MappingCursor, MAX_INVLS>),
         MAX_INVL_TARGETS,
     >,
+    /// Which contexts have this object mapped -- stage 2 of unmap.md, maintained but not yet used.
+    ///
+    /// Deliberately *separate* from `invls` rather than derived from it. `invls` carries two facts
+    /// at once, "which contexts map this" and "which cursors to invalidate", in one bounded
+    /// structure; incompleteness in either therefore poisons both, which is why overflow there has
+    /// to be permanent. Membership is one entry per context and nothing else.
+    ///
+    /// Sized well above `MAX_INVL_TARGETS`, and that is the point: the shared runtime objects
+    /// reach 13 contexts (one per compartment, measured -- see unmap.md), so an 8-entry bound
+    /// is exceeded by arithmetic rather than by load. 32 leaves room for a machine with more
+    /// compartments before `unknown` is reached.
+    members: heapless::Vec<ArchContextTarget, MAX_MEMBERS>,
+    /// Set when membership can no longer be trusted to be complete, and never cleared. Biases
+    /// every discrepancy toward over-inclusion: a consumer seeing this must fall back to
+    /// iterating every context, which is exactly today's behaviour, rather than trusting a
+    /// short list.
+    members_unknown: bool,
     map_count: usize,
     /// Work that must happen after this object's page-table lock is released: waiting for the
     /// shootdowns issued under it, and then freeing the frames those shootdowns protect.
     ///
     /// Parked here rather than run inline because the wait dominates the lock hold -- a median
     /// 90 ms per boot of object-origin wait time, all of it with this mutex held (see TLB.md) --
-    /// and none of it needs the lock. [PtGuard] takes it and runs it after unlocking; living behind
-    /// the same mutex as everything else here is what makes that handoff safe.
+    /// and none of it needs the lock. [PtGuard] takes it and runs it after unlocking; living
+    /// behind the same mutex as everything else here is what makes that handoff safe.
     deferred: Option<DeferredUnmappingOps>,
+    /// Which call sites have observed this object over its `invls` limits, one bit per
+    /// [invl_overflow::Site]. Never cleared, because the condition is permanent (see
+    /// [Self::overflowed]) -- so this is a property of the object rather than of a call, and the
+    /// counters keyed on it count objects rather than rates.
+    ///
+    /// `Cell` because `overflowed()` takes `&self` for `send_consistency`'s benefit. The struct
+    /// lives behind the object's page-table mutex, and `Mutex<T>: Sync` requires only `T: Send`
+    /// (mutex.rs), which `Cell<u8>` satisfies.
+    latched: core::cell::Cell<u8>,
 }
 
 bitflags::bitflags! {
@@ -152,16 +408,19 @@ impl ObjectPageTable {
         Self {
             mapper,
             invls: heapless::Vec::new(),
+            members: heapless::Vec::new(),
+            members_unknown: false,
             map_count: 0,
             deferred: None,
+            latched: core::cell::Cell::new(0),
         }
     }
 
     /// Hand post-unlock work to [PtGuard].
     ///
     /// Two operations under one lock hold is rare, so rather than merging frame lists the older one
-    /// is discharged inline here -- which is exactly the behaviour every one of these call sites had
-    /// before parking existed.
+    /// is discharged inline here -- which is exactly the behaviour every one of these call sites
+    /// had before parking existed.
     ///
     /// But that inline discharge runs the shootdown wait and the frame frees back *inside* the hold
     /// this whole change exists to shorten, so the improvement is conditional on there being one
@@ -206,7 +465,58 @@ impl ObjectPageTable {
         self.map_count -= 1;
     }
 
+    /// Record that `target` maps this object. Idempotent, and biased to over-inclusion: if the set
+    /// is full it goes `unknown` rather than silently dropping the target, which is the failure
+    /// `invls` has and the reason membership is a separate structure.
+    fn add_member(&mut self, target: ArchContextTarget) {
+        if self.members.contains(&target) {
+            return;
+        }
+        // Keep counting past `unknown`. An earlier version returned before this and so stopped
+        // growing the set the moment the object latched -- which made the reported maximum track
+        // `MAX_INVL_TARGETS` rather than the workload, and it was published as a real measurement.
+        // Membership is not *used* once unknown, so continuing to fill it costs nothing and is what
+        // makes the maximum bounded only by `MAX_MEMBERS`.
+        if self.members.push(target).is_err() {
+            if !self.members_unknown {
+                self.members_unknown = true;
+                membership::record_unknown();
+            }
+            membership::record_saturated();
+            return;
+        }
+        membership::record_size(self.members.len());
+    }
+
+    /// Drop `target` from membership, but only when it can be *proved* to hold no more mappings of
+    /// this object -- which means the cursor list for it is authoritative. Once `invls` has
+    /// overflowed it is not, so membership goes `unknown` instead of guessing.
+    ///
+    /// Removing on a lossy cursor list is the one move that would make this unsafe: a context still
+    /// holding a mapping would drop out of the set, and a consumer iterating membership would skip
+    /// its unmap. Over-inclusion costs a wasted acquisition; under-inclusion is a stale mapping.
+    fn drop_member_if_drained(&mut self, target: ArchContextTarget) {
+        if self.members_unknown {
+            return;
+        }
+        let drained = self
+            .invls
+            .iter()
+            .find(|(t, _)| *t == target)
+            .is_none_or(|(_, maps)| maps.is_empty());
+        if drained && let Some(pos) = self.members.iter().position(|t| *t == target) {
+            self.members.swap_remove(pos);
+        }
+    }
+
+    /// Whether membership is complete enough to iterate instead of every attached context. Stage 3
+    /// is what will consult this; stage 2 only maintains it.
+    pub fn members(&self) -> Option<&[ArchContextTarget]> {
+        (!self.members_unknown).then(|| self.members.as_slice())
+    }
+
     pub fn add_invalidate(&mut self, target: ArchContextTarget, cursor: MappingCursor) {
+        self.add_member(target);
         if let Some((_, maps)) = self.invls.iter_mut().find(|(t, _)| *t == target) {
             if !maps.iter().contains(&cursor) {
                 let _ = maps.push(cursor);
@@ -218,9 +528,81 @@ impl ObjectPageTable {
         }
     }
 
+    /// Whether this object has lost track of where its mappings live: either the target list is
+    /// full, or some target's cursor list is. Bounded by construction (`MAX_INVL_TARGETS`,
+    /// `MAX_INVLS`), and `add_invalidate` drops silently once either fills.
+    ///
+    /// One method rather than the predicate written out at each of the three call sites, so that
+    /// every ask is counted and the three cannot drift apart.
+    /// The condition is **permanent** once true: `invls` is append-only -- a `(target, maps)` pair
+    /// is never removed, even after its cursors drain -- and `remove_invalidate` returns early
+    /// while overflowed, so the inner lists cannot drain either. Deliberate rather than an
+    /// oversight: additions were dropped while full, so the list is incomplete, and letting it
+    /// drain back under the limit would resume precise invalidation with a context untracked.
+    /// See unmap.md.
+    fn overflowed(&self, site: invl_overflow::Site) -> bool {
+        // One walk yields all three facts; this runs on every call, not only latching ones.
+        let len = self.invls.len();
+        let (mut live, mut inner_full) = (0usize, false);
+        for (_, maps) in self.invls.iter() {
+            live += !maps.is_empty() as usize;
+            inner_full |= maps.is_full();
+        }
+        let outer_full = self.invls.is_full();
+        let overflowed = outer_full || inner_full;
+
+        invl_overflow::record(site, overflowed);
+        invl_overflow::record_shape(live, len);
+        if overflowed {
+            let seen = self.latched.get();
+            let bit = 1u8 << (site as u8);
+            if seen == 0 {
+                invl_overflow::record_latch(live, outer_full, inner_full);
+                self.latched.set(invl_overflow::NOTICE);
+            }
+            if seen & bit == 0 {
+                self.latched.set(self.latched.get() | bit);
+                invl_overflow::record_object_at(site);
+            }
+        }
+        overflowed
+    }
+
+    /// True exactly once per object, on the first latch, so the one call site that knows this
+    /// object's id can name it. Safe to read `invls` after the `remove_invalidate` that set it:
+    /// that call returns early while overflowed, so it mutates nothing.
+    pub fn take_latch_notice(&self) -> bool {
+        let seen = self.latched.get();
+        if seen & invl_overflow::NOTICE != 0 {
+            self.latched.set(seen & !invl_overflow::NOTICE);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Targets whose cursor list is non-empty, against the number of slots occupied. Both are
+    /// needed to tell a widely-shared object from one that cycled: see unmap.md.
+    pub fn invls_live(&self) -> usize {
+        self.invls
+            .iter()
+            .filter(|(_, maps)| !maps.is_empty())
+            .count()
+    }
+
+    pub fn invls_len(&self) -> usize {
+        self.invls.len()
+    }
+
     pub fn remove_invalidate(&mut self, target: ArchContextTarget, cursor: MappingCursor) {
-        if self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full()) {
-            // We might have hit the limit.
+        if self.overflowed(invl_overflow::Site::Remove) {
+            // We might have hit the limit. Membership cannot be maintained past this point either:
+            // additions were dropped while full, so the cursor list can no longer prove a target
+            // has drained. Say so rather than letting the set quietly go stale.
+            if !self.members_unknown {
+                self.members_unknown = true;
+                membership::record_unknown();
+            }
             return;
         }
         if let Some((_, maps)) = self.invls.iter_mut().find(|(t, _)| *t == target) {
@@ -228,6 +610,7 @@ impl ObjectPageTable {
                 maps.swap_remove(pos);
             }
         }
+        self.drop_member_if_drained(target);
     }
 
     pub fn max_len(&self) -> usize {
@@ -247,7 +630,7 @@ impl ObjectPageTable {
         if self.invls.is_empty() {
             return;
         }
-        if self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full()) {
+        if self.overflowed(invl_overflow::Site::Invalidate) {
             let mut tlb = ArchTlbMgr::new_full_global();
             tlb.set_origin(TlbOrigin::Object);
             tlb.finish();
@@ -342,7 +725,7 @@ impl ObjectPageTable {
         // contexts (or MAX_INVLS cursors within one) this object no longer knows where all of its
         // mappings live. Retargeting precisely would then reach only the contexts that happened to
         // fit and skip the rest entirely -- the same reason `invalidate` gives up and goes global.
-        let overflowed = self.invls.is_full() || self.invls.iter().any(|(_, maps)| maps.is_full());
+        let overflowed = self.overflowed(invl_overflow::Site::Send);
         if consist.tlb().is_full() || overflowed {
             let mut tlb = ArchTlbMgr::new_full_global();
             tlb.set_origin(TlbOrigin::Object);

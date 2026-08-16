@@ -145,6 +145,13 @@ pub fn init(modules: &[BootModule]) {
             if name == "bootstrap" {
                 boot_objects.init = Some(obj.clone());
             }
+            // The only place the initrd's name-to-ObjID mapping exists: userspace gets it via
+            // `KernelInitInfo`, but nothing records it where a kernel-side counter reporting bare
+            // ObjIDs can be read against it. See unmap.md's latched-object identification.
+            // `emerglogln!`, not `info!`: initrd parsing runs before the logger is capturing, which
+            // is why the neighbouring `info!("done, loaded ...")` never appears in a boot log
+            // either. Same reason the shutdown counters use it.
+            emerglogln!("== initrd object {} => {}", name, obj.id());
             boot_objects.name_map.insert(name.to_owned(), obj);
             total_alloc += total;
         }

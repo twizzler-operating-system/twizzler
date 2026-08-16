@@ -388,10 +388,10 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
         }
     };
     if kind != 0 {
-        thread
-            .sched
-            .wake_ns
-            .store(wake_now_ns().max(1), Ordering::Relaxed);
+        thread.sched.wake_ticks.store(
+            crate::instant::Instant::now().raw_ticks().max(1),
+            Ordering::Relaxed,
+        );
         thread.sched.wake_kind.store(kind, Ordering::Relaxed);
     }
 
@@ -445,11 +445,6 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
         wakestats::WAKE_LOCAL_LOST => wakestats::local(false, false),
         _ => {}
     }
-}
-
-/// Bench-clock reading in nanoseconds, for the wake stamp. One `rdtsc` plus the tick-rate multiply.
-fn wake_now_ns() -> u64 {
-    crate::instant::Instant::now().into_time_span().as_nanos() as u64
 }
 
 fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<ThreadRef> {
@@ -745,16 +740,19 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     // interval from `schedule_thread_on_cpu` to here is exactly wake-to-run. Taken rather than
     // read, so a thread that is switched to again without an intervening wake is not counted
     // twice.
-    let wake_ns = thread.sched.wake_ns.swap(0, Ordering::Relaxed);
-    if wake_ns != 0 {
+    let wake_ticks = thread.sched.wake_ticks.swap(0, Ordering::Relaxed);
+    if wake_ticks != 0 {
         let kind = thread.sched.wake_kind.swap(0, Ordering::Relaxed);
-        wakestats::wake_to_run(kind, wake_now_ns().saturating_sub(wake_ns));
+        wakestats::wake_to_run(
+            kind,
+            crate::instant::Instant::now().ns_since_ticks(wake_ticks),
+        );
     }
     let oldcpu = thread.sched.moving_to_active(cp.id);
     if old.id() != thread.id() {
         trace_switch(&old, &thread, flags);
     }
-    cp.stats.switches.fetch_add(1, Ordering::SeqCst);
+    cp.stats.switches.fetch_add(1, Ordering::Relaxed);
 
     if let Some(oldcpu) = oldcpu {
         if oldcpu != cp.id {
@@ -765,7 +763,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
 
     if !thread.is_idle_thread() {
         cp.current_priority
-            .store(thread.effective_priority().raw(), Ordering::SeqCst);
+            .store(thread.effective_priority().raw(), Ordering::Release);
         cp.exit_idle();
         // TODO: we should probably reset the timer here based on rq and priority, but doing so
         // breaks tick counting on the BSP, so that will need to wait until we refactor ticking
@@ -773,7 +771,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         //crate::clock::schedule_oneshot_tick(cp.rq.timeslice(thread.effective_priority().class));
     } else {
         cp.enter_idle();
-        cp.current_priority.store(0, Ordering::SeqCst);
+        cp.current_priority.store(0, Ordering::Release);
     }
     cp.reset_rebalance();
     crate::thread::locktrack::enter_switch_window();
@@ -1153,11 +1151,11 @@ pub mod wakestats {
 #[thread_local]
 static PREEMPT: AtomicBool = AtomicBool::new(false);
 pub fn schedule_mark_preempt() {
-    PREEMPT.store(true, Ordering::SeqCst);
+    PREEMPT.store(true, Ordering::Release);
 }
 
 pub fn schedule_maybe_preempt() {
-    if !PREEMPT.load(Ordering::SeqCst) {
+    if !PREEMPT.load(Ordering::Acquire) {
         return;
     }
     // Left set, not consumed, when we cannot act on it. `schedule` refuses outright for a critical
@@ -1169,13 +1167,13 @@ pub fn schedule_maybe_preempt() {
         wakestats::preempt(false);
         return;
     }
-    if !PREEMPT.swap(false, Ordering::SeqCst) {
+    if !PREEMPT.swap(false, Ordering::AcqRel) {
         return;
     }
     wakestats::preempt(true);
-    let t = crate::instant::Instant::now();
+    let t = crate::interrupt::profile_now();
     let cp = current_processor();
-    cp.stats.preempts.fetch_add(1, Ordering::SeqCst);
+    cp.stats.preempts.fetch_add(1, Ordering::Relaxed);
     schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT);
     crate::interrupt::record_preempt(t);
 }
@@ -1210,7 +1208,7 @@ pub fn schedule_resched() {
     current_processor()
         .stats
         .wakeups
-        .fetch_add(1, Ordering::SeqCst);
+        .fetch_add(1, Ordering::Relaxed);
     let is_idle = current_thread_ref().map_or(true, |t| t.is_idle_thread());
     if is_idle || needs_reschedule(false) {
         schedule_mark_preempt();
@@ -1234,10 +1232,10 @@ const PRINT_STATS: bool = false;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
-    let s = STAT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let s = STAT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let cp = current_processor();
     if cp.is_bsp() {
-        STAT_TICKS.fetch_add(1, Ordering::SeqCst);
+        STAT_TICKS.fetch_add(1, Ordering::Relaxed);
     }
     let cur = current_thread_ref();
     if let Some(cur) = cur {
@@ -1247,24 +1245,25 @@ pub fn schedule_stattick(dt: Nanoseconds) {
             //TRACE_MGR.process_async_and_maybe_flush();
         }
         if cur.is_idle_thread() {
-            cp.stats.idle.fetch_add(1, Ordering::SeqCst);
+            cp.stats.idle.fetch_add(1, Ordering::Relaxed);
         } else {
-            cp.stats.non_idle.fetch_add(1, Ordering::SeqCst);
+            cp.stats.non_idle.fetch_add(1, Ordering::Relaxed);
             /* Update thread stats */
             if cur.is_in_user() {
-                cur.stats.user.fetch_add(1, Ordering::SeqCst);
+                cur.stats.user.fetch_add(1, Ordering::Relaxed);
             } else {
-                cur.stats.sys.fetch_add(1, Ordering::SeqCst);
+                cur.stats.sys.fetch_add(1, Ordering::Relaxed);
             }
 
             // Statticks since we last saw this thread running. The current one is already
             // charged to user/sys above; the rest is time it wasn't scheduled. This keeps
             // idle+user+sys equal to elapsed statticks, which is what `top` divides by.
             let now = current_stat_ticks();
-            let last = cur.stats.last.swap(now, Ordering::SeqCst);
-            cur.stats
-                .idle
-                .fetch_add(now.saturating_sub(last).saturating_sub(1), Ordering::SeqCst);
+            let last = cur.stats.last.swap(now, Ordering::Relaxed);
+            cur.stats.idle.fetch_add(
+                now.saturating_sub(last).saturating_sub(1),
+                Ordering::Relaxed,
+            );
         }
     }
 

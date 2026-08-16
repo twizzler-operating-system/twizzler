@@ -29,11 +29,16 @@ pub struct ThreadSched {
     pub sleep_tick: AtomicU64,
     pub current_processor_queue: AtomicI32,
     pub timeslice: AtomicU32,
-    /// When this thread was last made runnable, in nanoseconds on the bench clock, and how that
-    /// wake was classified. Read and cleared when it next reaches a cpu, giving wake-to-run
-    /// latency per wake rather than per boot -- which is the measurement `schedtime.md` keeps
-    /// needing and inferring around. Zero means "no wake outstanding".
-    pub wake_ns: AtomicU64,
+    /// When this thread was last made runnable, in raw bench-clock ticks, and how that wake was
+    /// classified. Read and cleared when it next reaches a cpu, giving wake-to-run latency per
+    /// wake rather than per boot -- which is the measurement `schedtime.md` keeps needing and
+    /// inferring around. Zero means "no wake outstanding".
+    ///
+    /// Ticks, not nanoseconds. Converting one costs a u128 multiply and two u128 divisions (see
+    /// [`crate::instant::Instant`]), and stamping in nanoseconds paid that at *both* ends of every
+    /// wake -- on the wake path and again at the switch -- to measure an interval that needs one
+    /// conversion in total.
+    pub wake_ticks: AtomicU64,
     pub wake_kind: AtomicU32,
 }
 
@@ -46,7 +51,7 @@ impl Default for ThreadSched {
             sleep_tick: AtomicU64::new(0),
             current_processor_queue: AtomicI32::new(-1),
             timeslice: AtomicU32::new(0),
-            wake_ns: AtomicU64::new(0),
+            wake_ticks: AtomicU64::new(0),
             wake_kind: AtomicU32::new(0),
         }
     }

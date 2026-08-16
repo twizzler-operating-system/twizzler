@@ -5,7 +5,6 @@ use twizzler_abi::{
     kso::{InterruptAllocateOptions, InterruptPriority},
     upcall::{ExceptionInfo, MemoryAccessKind, UpcallFrame, UpcallInfo},
 };
-use x86::current::rflags::RFlags;
 
 use super::{
     gdt::user_selectors,
@@ -498,8 +497,14 @@ fn num_as_exception(n: u64) -> Exception {
 }
 
 fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
-    assert!(!disable());
-    let t_int = crate::instant::Instant::now();
+    // `get()`, not `disable()`: this is asserting a state, and an assertion whose argument also
+    // *changes* that state is not a test, it is the thing it claims to check. Still `assert!` and
+    // not `debug_assert!`, though: "IF is off here by construction, because these are interrupt
+    // gates and every stub starts with `cli`" is exactly the proposition this exists to falsify,
+    // and demoting it trades a loud release failure for a silent release-only divergence. It costs
+    // one `pushfq`/`pop`.
+    assert!(!get());
+    let t_int = crate::interrupt::profile_now();
     let ctx = unsafe { ctx.as_mut().unwrap() };
     if number == Exception::DoubleFault as u64 || number == Exception::MachineCheck as u64 {
         /* diverging */
@@ -1227,21 +1232,32 @@ pub fn init_idt() {
 /// Set the current interrupt enable state to disabled and return the old state.
 // Inlined unconditionally so the debug build does not turn a pushfq/cli pair into a call; see the
 // note on `crate::interrupt::disable`, which wraps this.
+//
+// `cli`/`sti` rather than a read-modify-write of rflags. Writing the register back means `popfq`,
+// which is microcoded and an order of magnitude slower than `cli` -- and the old form paid it
+// unconditionally, including on the overwhelmingly common case where the bit is already what the
+// caller wants. This sits under every spinlock acquire *and* release, so it is charged twice per
+// lock.
+//
+// `preserves_flags` is accurate: it covers the status flags (CF/PF/AF/ZF/SF/OF), which these do not
+// touch. IF is not among them.
 #[inline(always)]
 pub fn disable() -> bool {
-    let mut flags = x86::bits64::rflags::read();
-    let old_if = flags.contains(RFlags::FLAGS_IF);
-    flags.set(RFlags::FLAGS_IF, false);
-    x86::bits64::rflags::set(flags);
+    let old_if = get();
+    unsafe { core::arch::asm!("cli", options(nomem, nostack, preserves_flags)) };
     old_if
 }
 
 /// Set the current interrupt enable state.
 #[inline(always)]
 pub fn set(state: bool) {
-    let mut flags = x86::bits64::rflags::read();
-    flags.set(RFlags::FLAGS_IF, state);
-    x86::bits64::rflags::set(flags);
+    unsafe {
+        if state {
+            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        } else {
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        }
+    }
 }
 
 /// Get the current interrupt enable state without modifying it.

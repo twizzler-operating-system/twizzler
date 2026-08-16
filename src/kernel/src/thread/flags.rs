@@ -93,9 +93,25 @@ pub fn exit_kernel() {
             return;
         }
         report_leaked_critical(&thread, "returning to user", &diag::CRITICAL_LEAK_AT_EXIT);
-        thread.upcalls_since_user.store(0, Ordering::SeqCst);
+        // Relaxed: a per-thread runaway-upcall counter, touched only by the thread itself (here
+        // and in `send_upcall`) and ordered against nothing. `SeqCst` made this an `xchg` on every
+        // return to user, almost always writing the zero that was already there.
+        thread.upcalls_since_user.store(0, Ordering::Relaxed);
         thread.remove_donated_priority();
         if thread.arch.has_upcall_restore_frame() {
+            return;
+        }
+        // Nothing below does anything without a pending mailbox message -- the `fetch_update`
+        // fails outright on a zero mask -- and *testing* for one is a single relaxed load, where
+        // the two lines below are two spinlock acquisitions: `active_sctx_id` takes the sctx
+        // cache's, and `upcall_target` is one itself. Charged to every return to user, to reach a
+        // branch that is almost never taken. `must_return_to_user` already tests in this order;
+        // this is the same short-circuit on the path that actually runs.
+        //
+        // A message landing just after this load is not lost: the mask is sticky, and
+        // `must_return_to_user` keeps asking for a return to user while any bit is set, so it is
+        // delivered at the next one.
+        if thread.pending_message.load(Ordering::Relaxed) == 0 {
             return;
         }
         if thread.active_sctx_id()
@@ -184,24 +200,27 @@ impl Thread {
             Some(loc) => {
                 // Location first, then the flag. Readers reach the location only after the flag
                 // reads set, so this order is what keeps one from finding "waiting, nowhere".
+                // `Relaxed` store published by the `Release` on the flag, which is what actually
+                // enforces that order -- and is a plain store rather than the `xchg` `SeqCst`
+                // compiles to.
                 self.mutex_wait_at
-                    .store(loc as *const _ as usize, Ordering::SeqCst);
-                self.flags.fetch_or(THREAD_MUTEX_WAIT, Ordering::SeqCst);
+                    .store(loc as *const _ as usize, Ordering::Relaxed);
+                self.flags.fetch_or(THREAD_MUTEX_WAIT, Ordering::Release);
             }
             // Conditional because this arm runs on *every* acquisition, uncontended ones included,
             // where the flag was never raised and there is nothing to clear.
             None => {
-                if self.flags.fetch_and(!THREAD_MUTEX_WAIT, Ordering::SeqCst) & THREAD_MUTEX_WAIT
+                if self.flags.fetch_and(!THREAD_MUTEX_WAIT, Ordering::AcqRel) & THREAD_MUTEX_WAIT
                     != 0
                 {
-                    self.mutex_wait_at.store(0, Ordering::SeqCst);
+                    self.mutex_wait_at.store(0, Ordering::Relaxed);
                 }
             }
         }
     }
 
     pub fn get_mutex_wait(&self) -> bool {
-        self.flags.load(Ordering::SeqCst) & THREAD_MUTEX_WAIT != 0
+        self.flags.load(Ordering::Acquire) & THREAD_MUTEX_WAIT != 0
     }
 
     /// Where this thread is blocked acquiring a mutex, if it is.
@@ -209,7 +228,7 @@ impl Thread {
     /// The wait edge `report_stuck_owner` cannot get from the lock tracker: intents are recorded
     /// only when tracking is compiled in, so with it off every chain stops at the first owner.
     pub fn mutex_wait_at(&self) -> Option<&'static core::panic::Location<'static>> {
-        let p = self.mutex_wait_at.load(Ordering::SeqCst);
+        let p = self.mutex_wait_at.load(Ordering::Relaxed);
         (p != 0).then(|| unsafe { &*(p as *const core::panic::Location<'static>) })
     }
 

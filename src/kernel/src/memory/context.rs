@@ -67,6 +67,9 @@ pub trait UserContext {
     /// Lookup an object within this context. Once this function returns, no guarantees are made
     /// about if the object remains mapped as is.
     fn lookup_object(&self, info: Self::MappingInfo) -> Option<ObjectContextInfo>;
+    /// As [Self::lookup_object], but yielding only the object. Callers that want nothing else pay
+    /// one `ObjectRef` clone instead of the two an [ObjectContextInfo] costs them.
+    fn lookup_object_ref(&self, info: Self::MappingInfo) -> Option<ObjectRef>;
     /// Remove an object from the context.
     fn remove_object(&self, info: Self::MappingInfo);
 }

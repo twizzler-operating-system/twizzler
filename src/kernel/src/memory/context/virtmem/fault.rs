@@ -614,7 +614,7 @@ fn get_map_region(
         base: region.range.start,
     };
 
-    let mut slot_mgr = ctx.regions.lock();
+    let slot_mgr = ctx.regions.lock();
     let mut region = slot_mgr.lookup_region(slot.start_vaddr()).cloned();
     let mut exec = exec_slot.and_then(|s| slot_mgr.lookup_region(s.start_vaddr()).map(&exec_of));
     drop(slot_mgr);
@@ -622,7 +622,7 @@ fn get_map_region(
     // Whatever this context did not have may still be a kernel object.
     if region.is_none() || (exec_slot.is_some() && exec.is_none()) {
         let kctx = kernel_context();
-        let mut k_regions = kctx.regions.lock();
+        let k_regions = kctx.regions.lock();
         if region.is_none() {
             region = k_regions.lookup_region(slot.start_vaddr()).cloned();
         }

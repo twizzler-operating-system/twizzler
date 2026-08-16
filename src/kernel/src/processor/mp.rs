@@ -38,6 +38,20 @@ pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
 
 pub static NR_CPUS: AtomicUsize = AtomicUsize::new(1);
 
+/// Highest processor id ever passed to [register], so [with_each_active_processor] can stop there
+/// instead of sweeping all `MAX_CPU_ID + 1` slots to find the handful that exist.
+///
+/// A *max*, not a count: these are APIC ids ([`arch::processor`]'s two `register` calls pass
+/// `local_apic_id`), which are not dense.
+///
+/// Reaching a final value before it is ever read is what makes this trivially safe rather than an
+/// ordering argument: both `register` calls run from ACPI enumeration, which completes before
+/// `boot_all_secondaries` starts a single secondary -- so the machine is still single-threaded
+/// when this settles, and no shootdown, fault or scheduler walk has happened yet. The Release
+/// below and the Acquire in the reader cover the boot path itself, where the BSP registers
+/// processors it will later walk.
+static MAX_REGISTERED_ID: AtomicUsize = AtomicUsize::new(0);
+
 static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
@@ -129,6 +143,9 @@ pub fn register(id: u32, bsp_id: u32) {
             ALL_PROCESSORS[id as usize].as_ref().unwrap().set_running();
         }
     }
+    // After the store, and Release, so an Acquire reader that sees this id also sees the slot.
+    // Bounded by the check above, so the reader's slice index cannot go out of range.
+    MAX_REGISTERED_ID.fetch_max(id as usize, Ordering::Release);
 }
 
 pub const MAX_CPU_ID: usize = 1024;
@@ -167,8 +184,19 @@ pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
     unsafe { ALL_PROCESSORS[id as usize].as_mut().unwrap() }
 }
 
+/// Run `f` on every processor that is up.
+///
+/// Walks only as far as the highest id ever registered, not the whole `MAX_CPU_ID + 1` array.
+/// That matters because this is on the TLB shootdown path -- [`ArchTlbMgr::finish_send`] calls it
+/// three times per send and [`PendingShootdown::do_wait`] a fourth, at ~14 700 object- and
+/// arch-origin sends per boot -- and on the page-fault path. Sweeping 1025 slots to find the four
+/// processors a machine has costs the same whether it has four or a thousand, and it is the
+/// dominant term in a send that targets nobody, which is 83% of them.
+///
+/// See [MAX_REGISTERED_ID] for why the bound is final before anything reads it.
 pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {
-    for p in all_processors() {
+    let max = MAX_REGISTERED_ID.load(Ordering::Acquire);
+    for p in &all_processors()[..=max] {
         if let Some(p) = p {
             if p.is_running() {
                 f(p)

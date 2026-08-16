@@ -1,7 +1,13 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::{marker::PhantomData, mem::size_of, ops::Range, ptr::NonNull, sync::atomic::AtomicBool};
+use core::{
+    marker::PhantomData,
+    mem::size_of,
+    ops::Range,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use region::{MapRegion, RegionManager};
 use twizzler_abi::{
@@ -62,6 +68,14 @@ pub struct VirtContext {
     // memory-allocating collection. See register_sctx for details.
     target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
     regions: Mutex<RegionManager>,
+    /// Identity for [`SlotMemo`] entries, from a counter that never reuses.
+    ///
+    /// Deliberately *not* `id`: `IdCounter::next` pops from a reuse pool, so a dropped context's
+    /// id is handed to a later one. Under the generation scheme that could not bite -- any mapping
+    /// change swept every memo, so no entry survived long enough to meet a recycled id -- but
+    /// per-region validation removes exactly that sweep, and a stale entry matching a recycled id
+    /// would pass a liveness check on a region its context no longer binds.
+    memo_tag: u64,
     id: Id<'static>,
     is_kernel: bool,
 }
@@ -254,6 +268,170 @@ impl TryFrom<VirtAddr> for Slot {
     }
 }
 
+/// Entries per thread, linear-scanned.
+///
+/// Was 2, on the plan's guess that a thread futexes in "very few slots -- its compartment heap,
+/// plus perhaps a shared object". Measured (`slotmemo3`): 98% of misses were capacity, ~520 per
+/// boot compulsory, so threads work materially more slots than that and were thrashing. 8 entries
+/// is ~192 bytes per thread.
+const SLOT_MEMO_LEN: usize = 8;
+
+/// References resolved under one `regions` acquisition by
+/// [`VirtContext::lookup_object_refs_cached`].
+///
+/// Sized off the data rather than guessed: multi-op `sys_thread_sync` calls carry ~10
+/// virtual-referenced ops on average (26 352 ops across 2 620 such calls, `slotmemo3`), so 16
+/// covers essentially all of them in one pass. It also bounds the stack cost of the resolution
+/// array, which at the syscall's 1024-op limit would be ~32 KiB on top of the 24 KiB `unsleeps`
+/// already there.
+pub const RESOLVE_CHUNK: usize = 16;
+
+/// Never reused, unlike `CONTEXT_IDS`. See [`VirtContext::memo_tag`].
+static MEMO_TAGS: AtomicU64 = AtomicU64::new(1);
+
+struct SlotMemoEntry {
+    /// Which context filled this. Region liveness alone is not enough: it answers "is this region
+    /// still alive", not "does *this* context still bind this slot to it", and the two differ
+    /// exactly when a thread's context changes under it -- the region stays legitimately unremoved
+    /// in the old context while the entry is consulted against the new one. That difference is a
+    /// thread sleeping on the wrong word.
+    ///
+    /// The plan for this argued no context tag was needed, on the grounds that there is one real
+    /// context. `sys_new_handle(_, HandleType::VmContext)` falsifies that with one syscall.
+    tag: u64,
+    slot: usize,
+    /// Held rather than just its object, because `removed` on this region is the validity signal.
+    /// Costs a pin on the region (and transitively its object) until the entry is replaced or
+    /// cleared -- bounded at [`SLOT_MEMO_LEN`] regions per thread.
+    region: Arc<MapRegion>,
+    /// `clock` when this was last hit or filled, for LRU eviction.
+    used_at: u64,
+}
+
+/// Slots remembered after eviction, purely to classify later misses. See
+/// [`SlotMemoInner::was_evicted`].
+const VICTIM_LOG: usize = 8;
+
+struct SlotMemoInner {
+    entries: [Option<SlotMemoEntry>; SLOT_MEMO_LEN],
+    /// Per-thread monotonic tick. Only ordered against this thread's own entries, so wrapping is
+    /// not a concern at u64 and no synchronization is needed beyond the enclosing spinlock.
+    clock: u64,
+    /// Slots this thread has evicted, most recent first-ish (ring). A cold miss on a slot in here
+    /// is one a larger memo would have hit.
+    victims: [usize; VICTIM_LOG],
+    victim_pos: usize,
+}
+
+impl SlotMemoInner {
+    /// Answer for `slot` if it is cached and still valid, refreshing its LRU stamp.
+    ///
+    /// Failed validation clears the entry here rather than leaving it for a later refill to
+    /// overwrite: nothing sweeps entries any more, so a dead one would pin its region -- and
+    /// transitively its object -- for as long as the thread lives.
+    fn lookup(&mut self, slot: usize, tag: u64) -> Option<ObjectRef> {
+        self.clock += 1;
+        let clock = self.clock;
+        for entry in self.entries.iter_mut() {
+            let Some(e) = entry else { continue };
+            if e.slot != slot {
+                continue;
+            }
+            if e.tag == tag && !e.region.removed.load(Ordering::Acquire) {
+                e.used_at = clock;
+                slotmemo::record_hit();
+                return Some(e.region.object.clone());
+            }
+            *entry = None;
+            slotmemo::record_invalidated();
+            return None;
+        }
+        // No entry for this slot: distinguish "this thread evicted it recently, so a bigger memo
+        // would have answered" from "genuinely not seen".
+        if self.was_evicted(slot) {
+            slotmemo::record_cold_capacity();
+        } else {
+            slotmemo::record_cold_compulsory();
+        }
+        None
+    }
+
+    fn was_evicted(&self, slot: usize) -> bool {
+        self.victims.contains(&slot)
+    }
+
+    fn insert(&mut self, slot: usize, tag: u64, region: Arc<MapRegion>) {
+        self.clock += 1;
+        // Free entry, or the least recently used one. Round-robin was the first cut and evicts a
+        // thread's hot slot as readily as a one-off; LRU is what keeps a small reused set resident
+        // underneath a stream of slots touched once.
+        let victim = match self.entries.iter().position(|e| e.is_none()) {
+            Some(free) => free,
+            None => {
+                let (idx, evicted) = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, e)| e.as_ref().map(|e| e.used_at).unwrap_or(0))
+                    .map(|(i, e)| (i, e.as_ref().map(|e| e.slot)))
+                    .expect("slot memo is never empty");
+                if let Some(evicted) = evicted {
+                    self.victims[self.victim_pos] = evicted;
+                    self.victim_pos = (self.victim_pos + 1) % VICTIM_LOG;
+                }
+                idx
+            }
+        };
+        self.entries[victim] = Some(SlotMemoEntry {
+            tag,
+            slot,
+            region,
+            used_at: self.clock,
+        });
+    }
+}
+
+/// A per-thread memo of slot -> region, sitting in front of [`VirtContext::lookup_object_ref`]'s
+/// sleeping `regions` mutex on the `sys_thread_sync` path.
+///
+/// Entries are validated per-region, against `MapRegion::removed`. The first version of this used
+/// a per-*context* generation counter instead and managed a 14-22% hit rate: ~3300 mapping changes
+/// per boot each invalidated every thread's memo for every slot, so an entry survived about ten
+/// lookups. Per-region validation means a mapping change to an unrelated slot costs this thread
+/// nothing -- which is also what lets a thread hit *during* `remove_object`'s long hold of
+/// `regions`, the case the generation scheme could not serve by construction, since it invalidated
+/// everything at the head of exactly that hold.
+///
+/// A `Spinlock` rather than the bare array the plan proposed: the entries own `ObjectRef`s, so a
+/// torn read here is not a stale answer but an `Arc` clone off a half-written pointer. The nearest
+/// precedent, [`crate::thread::sctx::SctxCache`], is a spinlock around a fixed array for the same
+/// reason. The lock is per-thread and so never contended; what it costs against the mutex it
+/// replaces is one uncontended atomic instead of an interval-tree walk under a sleeping lock.
+pub struct SlotMemo {
+    inner: Spinlock<SlotMemoInner>,
+}
+
+impl SlotMemo {
+    pub const fn new() -> Self {
+        Self {
+            inner: Spinlock::new(SlotMemoInner {
+                entries: [const { None }; SLOT_MEMO_LEN],
+                clock: 0,
+                // usize::MAX is not a valid slot (SLOTS is 1 << 17), so an unused log entry cannot
+                // be mistaken for a real eviction.
+                victims: [usize::MAX; VICTIM_LOG],
+                victim_pos: 0,
+            }),
+        }
+    }
+}
+
+impl Default for SlotMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 const MAX_OPP_VEC: usize = 128;
 struct ObjectPageProvider {
     pos: usize,
@@ -338,6 +516,7 @@ impl VirtContext {
         secctx.set_safe_with_spinlocks(true);
         let new = Self {
             regions: Mutex::new(RegionManager::default()),
+            memo_tag: MEMO_TAGS.fetch_add(1, Ordering::Relaxed),
             is_kernel: kernel_arch.is_some(),
             id: CONTEXT_IDS.next(),
             secctx,
@@ -625,6 +804,13 @@ impl VirtContext {
                 let obj_table = counted.then(|| pt.context_table_addr()).flatten();
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
                 pt.remove_invalidate(arch.target, cursor);
+                if pt.take_latch_notice() {
+                    crate::obj::pagetables::invl_overflow::note_object(
+                        region.object().id(),
+                        pt.invls_live(),
+                        pt.invls_len(),
+                    );
+                }
                 if counted && released {
                     pt.dec_map_count();
                     if pt.map_count() == 0 {
@@ -701,6 +887,109 @@ impl VirtContext {
         );
 
         self.with_arch(KERNEL_SCTX, |arch| arch.map(cursor, &mut phys, &mut fa));
+    }
+
+    /// [`UserContext::lookup_object_ref`], consulting the calling thread's [`SlotMemo`] first.
+    ///
+    /// For `sys_thread_sync`, which asks this question once per virtual-referenced op and is the
+    /// busiest syscall in the system. A hit costs an uncontended per-thread spinlock, one acquire
+    /// load of the region's `removed` flag, and one `Arc` clone; a miss costs that plus the
+    /// ordinary locked path, and refills.
+    pub fn lookup_object_ref_cached(&self, info: Slot) -> Option<ObjectRef> {
+        let mut out = [None];
+        self.lookup_object_refs_cached(&[info], &mut out);
+        out[0].take()
+    }
+
+    /// [`Self::lookup_object_ref_cached`] for several slots, taking each lock once for the batch
+    /// rather than once per slot.
+    ///
+    /// `sys_thread_sync` resolves every op in a call independently, so a call carrying `n`
+    /// virtual-referenced ops takes `regions` `n` times. Measured (`slotmemo3`): only 7-13% of
+    /// calls carry more than one such op, but those calls carry most of the ops, and 61-65% of all
+    /// virtual-referenced ops are a sibling's acquisition away from being free.
+    ///
+    /// Whatever the memo answers costs no `regions` acquisition at all, so the lock is taken only
+    /// if something misses, and then exactly once.
+    pub fn lookup_object_refs_cached(&self, slots: &[Slot], out: &mut [Option<ObjectRef>]) {
+        assert_eq!(slots.len(), out.len());
+        out.fill(None);
+
+        // Slots this context cannot answer for itself: kernel object memory reaches a *user*
+        // context's `lookup_object_ref` only to be rerouted to `kernel_context()`, so a memo or a
+        // `regions` walk here would answer from the wrong context. The kernel context itself owns
+        // those mappings and takes the ordinary path.
+        //
+        // Computed once and reused by every loop below. Restating the predicate per loop is what
+        // broke `batch-lru`: two of the three dropped the `&& !self.is_kernel` half, so a kernel
+        // thread syncing on a kernel object -- `queue.rs`'s pager queue, at boot -- was skipped by
+        // every phase and fell out as InvalidAddress.
+        let reroute = |slot: &Slot| slot.start_vaddr().is_kernel_object_memory() && !self.is_kernel;
+
+        let mut any_local = false;
+        for (i, slot) in slots.iter().enumerate() {
+            if reroute(slot) {
+                slotmemo::record_skip();
+                out[i] = self.lookup_object_ref(*slot);
+            } else {
+                any_local = true;
+            }
+        }
+        if !any_local {
+            return;
+        }
+        let Some(thread) = current_thread_ref() else {
+            for (i, slot) in slots.iter().enumerate() {
+                if !reroute(slot) {
+                    slotmemo::record_skip();
+                    out[i] = self.lookup_object_ref(*slot);
+                }
+            }
+            return;
+        };
+
+        // One memo acquisition for the batch, not one per slot.
+        {
+            let mut memo = thread.slot_memo.inner.lock();
+            for (i, slot) in slots.iter().enumerate() {
+                if out[i].is_some() || reroute(slot) {
+                    continue;
+                }
+                out[i] = memo.lookup(slot.raw(), self.memo_tag);
+            }
+        }
+
+        if out.iter().all(|o| o.is_some()) {
+            return;
+        }
+
+        // One `regions` acquisition for everything that missed.
+        let mut resolved: [Option<Arc<MapRegion>>; RESOLVE_CHUNK] = [const { None }; RESOLVE_CHUNK];
+        {
+            let regions = self.regions.lock();
+            let mut under_lock = 0;
+            for (i, slot) in slots.iter().enumerate() {
+                if out[i].is_some() || reroute(slot) {
+                    continue;
+                }
+                under_lock += 1;
+                resolved[i] = regions.lookup_region(slot.start_vaddr()).cloned();
+            }
+            // Realized, not hypothetical: `sync batching`'s saveable count is computed at syscall
+            // entry and reports the same number whether this function batches or not. This counts
+            // acquisitions actually taken against slots actually resolved under them, so the
+            // difference is the saving that happened.
+            slotmemo::record_batch(under_lock);
+        }
+
+        let mut memo = thread.slot_memo.inner.lock();
+        for (i, slot) in slots.iter().enumerate() {
+            let Some(region) = resolved[i].take() else {
+                continue;
+            };
+            out[i] = Some(region.object.clone());
+            memo.insert(slot.raw(), self.memo_tag, region);
+        }
     }
 
     pub fn lookup_slot(&self, slot: usize) -> Option<Arc<MapRegion>> {
@@ -824,10 +1113,21 @@ impl UserContext for VirtContext {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
             kernel_context().lookup_object(info)
         } else {
-            let mut slots = self.regions.lock();
+            let slots = self.regions.lock();
             slots
                 .lookup_region(info.start_vaddr())
                 .map(|info| (&**info).into())
+        }
+    }
+
+    fn lookup_object_ref(&self, info: Self::MappingInfo) -> Option<ObjectRef> {
+        if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
+            kernel_context().lookup_object_ref(info)
+        } else {
+            let slots = self.regions.lock();
+            slots
+                .lookup_region(info.start_vaddr())
+                .map(|region| region.object().clone())
         }
     }
 
@@ -863,11 +1163,51 @@ impl UserContext for VirtContext {
             // against the object (see map_object), so there is nothing to give back for them.
             let counted = slot.stable.is_none();
             let obj_table = counted.then(|| pt.context_table_addr()).flatten();
+            let mut n_arches = 0usize;
+            let mut n_mapped = 0usize;
+            // Stage 3: iterate the contexts that actually hold this object rather than every
+            // attached one. The cost being avoided is not the walk -- it is `unmap_object`'s
+            // per-context mapper spinlock, taken 45k times a boot to find nothing 94% of the time
+            // (see unmap.md). So membership filters *before* that call and the walk itself stays.
+            //
+            // Copied out rather than borrowed because the loop body needs `pt` mutably. `None` here
+            // means the set is not known complete, and then this must degrade to exactly the old
+            // behaviour -- visiting everything -- which is what makes a wrong membership set a
+            // wasted acquisition rather than a missed unmap.
+            let members: Option<heapless::Vec<ArchContextTarget, 32>> = (counted)
+                .then(|| pt.members().map(|m| m.iter().copied().collect()))
+                .flatten();
             self.for_each_arch(|arch| {
+                if let Some(members) = members.as_ref()
+                    && !members.contains(&arch.target)
+                {
+                    unmap_census::record_skip();
+                    return;
+                }
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
+                n_arches += 1;
+                if released {
+                    n_mapped += 1;
+                }
                 if counted {
+                    // Stage 2's validation, and the reason the stage exists: this arch just
+                    // released a mapping of this object, so a complete membership set must have
+                    // contained it. Checked *before* the removal below, and only where the set
+                    // claims to be complete. See unmap.md.
+                    if released && let Some(members) = pt.members() {
+                        crate::obj::pagetables::membership::record_check(
+                            members.contains(&arch.target),
+                        );
+                    }
                     pt.remove_invalidate(arch.target, cursor);
+                    if pt.take_latch_notice() {
+                        crate::obj::pagetables::invl_overflow::note_object(
+                            slot.object().id(),
+                            pt.invls_live(),
+                            pt.invls_len(),
+                        );
+                    }
                     if released {
                         pt.dec_map_count();
                         if pt.map_count() == 0 {
@@ -876,6 +1216,7 @@ impl UserContext for VirtContext {
                     }
                 }
             });
+            unmap_census::record(n_arches, n_mapped, counted);
         }
         drop(slots);
 
@@ -1223,5 +1564,228 @@ bitflags::bitflags! {
         const USER = 1;
         const INVALID = 2;
         const PRESENT = 4;
+    }
+}
+
+/// How far `remove_object`'s per-security-context fan-out actually reaches.
+///
+/// `unmap_object` is 88% of all mapper-lock acquisitions because `remove_object` unmaps from
+/// *every* attached security context while `map_object` installs into exactly one. Whether that is
+/// waste depends on a distribution a mean cannot show: "objects live in ~13 contexts" and "most
+/// live in one, a handful live in fifty" produce the same 88% and want opposite fixes -- a reverse
+/// map on the object in the first case, and nothing at all in the second, where the fan-out would
+/// be reaching contexts that genuinely hold the mapping.
+///
+/// `mapped` undercounts by design: a stable (privately-cloned) region never took a count against
+/// the object, so its unmap cannot report having released one. Those are counted separately.
+/// [`SlotMemo`] outcomes, printed at debug shutdown next to the other kernel profiles.
+///
+/// Hits and misses are counted at the same call site, one increment each, so the ratio has a
+/// single denominator. A hit counter incremented only on the hit path reports ~100% by
+/// construction and would say the same thing whether the design worked or not. `skips` counts the
+/// calls the memo declined to answer at all (kernel object memory, or no current thread) and is
+/// separate for the same reason: folded into misses it would understate the hit rate, folded into
+/// hits it would flatter it.
+///
+/// Per the plan: check this before believing any timing result. A rate not near 100% means the
+/// design is wrong, and no A/B will say so.
+pub mod slotmemo {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static HITS: AtomicU64 = AtomicU64::new(0);
+    /// Cold miss with the memo full: the thread works more slots than [`super::SLOT_MEMO_LEN`], so
+    /// this one would have been evicted even if it had been cached. Raising K addresses these.
+    static COLD_CAPACITY: AtomicU64 = AtomicU64::new(0);
+    /// Cold miss with room to spare: this slot was simply never cached by this thread. No cache
+    /// size fixes these; they bound what the design can reach.
+    static COLD_COMPULSORY: AtomicU64 = AtomicU64::new(0);
+    /// Miss with an entry present that failed validation: its region was removed, or it belonged
+    /// to another context.
+    static INVALIDATED: AtomicU64 = AtomicU64::new(0);
+    static SKIPS: AtomicU64 = AtomicU64::new(0);
+    /// `regions` acquisitions taken by the batch resolver, and slots resolved under them.
+    static LOCK_TAKEN: AtomicU64 = AtomicU64::new(0);
+    static LOCK_RESOLVED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_hit() {
+        HITS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_cold_capacity() {
+        COLD_CAPACITY.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_cold_compulsory() {
+        COLD_COMPULSORY.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_invalidated() {
+        INVALIDATED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_skip() {
+        SKIPS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One `regions` acquisition that resolved `slots` of them.
+    pub fn record_batch(slots: u64) {
+        if slots == 0 {
+            return;
+        }
+        LOCK_TAKEN.fetch_add(1, Ordering::Relaxed);
+        LOCK_RESOLVED.fetch_add(slots, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        let hits = HITS.load(Ordering::Relaxed);
+        let capacity = COLD_CAPACITY.load(Ordering::Relaxed);
+        let compulsory = COLD_COMPULSORY.load(Ordering::Relaxed);
+        let cold = capacity + compulsory;
+        let invalidated = INVALIDATED.load(Ordering::Relaxed);
+        let misses = cold + invalidated;
+        let skips = SKIPS.load(Ordering::Relaxed);
+        let taken = LOCK_TAKEN.load(Ordering::Relaxed);
+        let under = LOCK_RESOLVED.load(Ordering::Relaxed);
+        if hits == 0 && misses == 0 && skips == 0 {
+            return;
+        }
+        logln!(
+            "== slot memo locks: {} regions acquisitions resolved {} slots, {} saved ({}%) ==",
+            taken,
+            under,
+            under.saturating_sub(taken),
+            if under == 0 {
+                0
+            } else {
+                under.saturating_sub(taken) * 100 / under
+            },
+        );
+        let looked = hits + misses;
+        let total = looked + skips;
+        // Denominators printed, not just the ratio: a 99% hit rate over 1% of the traffic reads as
+        // success unless the share it was taken over is visible next to it.
+        logln!(
+            "== slot memo: {} hits, {} misses ({} cold = {} capacity + {} compulsory, {} invalidated) = {}% of {} consulted, {} skipped ({}% of {} calls) ==",
+            hits,
+            misses,
+            cold,
+            capacity,
+            compulsory,
+            invalidated,
+            if looked == 0 { 0 } else { hits * 100 / looked },
+            looked,
+            skips,
+            if total == 0 { 0 } else { skips * 100 / total },
+            total,
+        );
+    }
+}
+
+pub mod unmap_census {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Buckets: 0, 1, 2, 3, 4, 5-8, 9-16, 17+.
+    const NR: usize = 8;
+    static ARCHES: [AtomicUsize; NR] = [const { AtomicUsize::new(0) }; NR];
+    static MAPPED: [AtomicUsize; NR] = [const { AtomicUsize::new(0) }; NR];
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static STABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static ARCH_VISITS: AtomicUsize = AtomicUsize::new(0);
+    static ARCH_HITS: AtomicUsize = AtomicUsize::new(0);
+    /// True maxima, because the buckets cannot give one: the top bucket is `17+` and unbounded, so
+    /// an empty 9-16 bucket bounds the answer at `<= 8` rather than reporting it. Sizing a
+    /// fixed-capacity membership structure off a bound inferred from an empty bucket is guessing --
+    /// see unmap.md.
+    static MAX_ARCHES: AtomicUsize = AtomicUsize::new(0);
+    static MAX_MAPPED: AtomicUsize = AtomicUsize::new(0);
+    /// Arch visits membership let us skip -- i.e. mapper-lock acquisitions not taken. Counted apart
+    /// from `ARCH_VISITS` rather than by differencing two runs, so the win is legible within a
+    /// single boot and does not depend on a baseline being comparable.
+    static SKIPPED: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record_skip() {
+        SKIPPED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn bucket(n: usize) -> usize {
+        match n {
+            0..=4 => n,
+            5..=8 => 5,
+            9..=16 => 6,
+            _ => 7,
+        }
+    }
+
+    pub fn record(arches: usize, mapped: usize, counted: bool) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+        if !counted {
+            STABLE_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+        ARCH_VISITS.fetch_add(arches, Ordering::Relaxed);
+        ARCH_HITS.fetch_add(mapped, Ordering::Relaxed);
+        ARCHES[bucket(arches)].fetch_add(1, Ordering::Relaxed);
+        MAPPED[bucket(mapped)].fetch_add(1, Ordering::Relaxed);
+        // Guarded by a relaxed load: `fetch_max` has no native instruction on x86_64 or aarch64 and
+        // lowers to a `lock cmpxchg` retry loop, so taking it unconditionally puts two contended
+        // RMWs on every removal. The race is benign -- the maxima are monotonic and only read at
+        // shutdown, so a lost update is re-attempted by the next caller to exceed it.
+        if arches > MAX_ARCHES.load(Ordering::Relaxed) {
+            MAX_ARCHES.fetch_max(arches, Ordering::Relaxed);
+        }
+        if mapped > MAX_MAPPED.load(Ordering::Relaxed) {
+            MAX_MAPPED.fetch_max(mapped, Ordering::Relaxed);
+        }
+    }
+
+    pub fn print() {
+        let calls = CALLS.load(Ordering::Relaxed);
+        if calls == 0 {
+            emerglogln!("== unmap census: none");
+            return;
+        }
+        let visits = ARCH_VISITS.load(Ordering::Relaxed);
+        let hits = ARCH_HITS.load(Ordering::Relaxed);
+        let g = |a: &[AtomicUsize; NR]| {
+            let mut v = [0usize; NR];
+            for (i, x) in v.iter_mut().enumerate() {
+                *x = a[i].load(Ordering::Relaxed);
+            }
+            v
+        };
+        let (ab, mb) = (g(&ARCHES), g(&MAPPED));
+        emerglogln!(
+            "== unmap census: {} removals ({} stable), {} arch visits ({}/100 mean), {} held a mapping ({}%), {} skipped, max {} arches, max {} mapped",
+            calls,
+            STABLE_CALLS.load(Ordering::Relaxed),
+            visits,
+            visits * 100 / calls,
+            hits,
+            if visits == 0 { 0 } else { hits * 100 / visits },
+            SKIPPED.load(Ordering::Relaxed),
+            MAX_ARCHES.load(Ordering::Relaxed),
+            MAX_MAPPED.load(Ordering::Relaxed),
+        );
+        emerglogln!(
+            "== unmap census arches/removal [0,1,2,3,4,5-8,9-16,17+]: {} {} {} {} {} {} {} {}",
+            ab[0],
+            ab[1],
+            ab[2],
+            ab[3],
+            ab[4],
+            ab[5],
+            ab[6],
+            ab[7]
+        );
+        emerglogln!(
+            "== unmap census mapped/removal  [0,1,2,3,4,5-8,9-16,17+]: {} {} {} {} {} {} {} {}",
+            mb[0],
+            mb[1],
+            mb[2],
+            mb[3],
+            mb[4],
+            mb[5],
+            mb[6],
+            mb[7]
+        );
     }
 }

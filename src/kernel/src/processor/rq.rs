@@ -36,10 +36,21 @@ const RQ_HAS_RT: u32 = 1;
 const RQ_HAS_TS: u32 = 2;
 const RQ_HAS_IL: u32 = 4;
 
+/// Zero-sized alignment boundary; see its use in [RunQueue].
+#[repr(align(64))]
+struct Align64;
+
+#[repr(C)]
 pub struct RunQueue<const N: usize> {
     realtime: SchedSpinlock<PriorityQueue<N>>,
     timeshare: SchedSpinlock<TimeshareQueue<N>>,
     idle: SchedSpinlock<PriorityQueue<N>>,
+    /// Everything below is read by every other cpu's `select_cpu` walk while the fields above
+    /// are written under this cpu's locks. The boundary (with `repr(C)` making declaration
+    /// order the layout) keeps the remotely-read group off the locks' lines now that packed
+    /// tickets (`spinlock::Tickets`) shrank each lock; without it the wake path would inherit
+    /// exactly the false sharing the packing removed elsewhere.
+    _remote_read_split: Align64,
     current_priority: AtomicU32,
     flags: AtomicU32,
     load: AtomicU32,
@@ -180,6 +191,7 @@ impl<const N: usize> RunQueue<N> {
             realtime: SchedSpinlock(GenericSpinlock::new(PriorityQueue::new())),
             timeshare: SchedSpinlock(GenericSpinlock::new(TimeshareQueue::new())),
             idle: SchedSpinlock(GenericSpinlock::new(PriorityQueue::new())),
+            _remote_read_split: Align64,
             current_priority: AtomicU32::new(0),
             flags: AtomicU32::new(0),
             load: AtomicU32::new(0),

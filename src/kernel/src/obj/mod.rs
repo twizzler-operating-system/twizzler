@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::{
     fmt::Display,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use twizzler_abi::{
@@ -56,6 +56,26 @@ pub struct Object {
     flags: AtomicU32,
     tables: Mutex<pagetables::ObjectPageTable>,
     sleep_info: Mutex<SleepInfo>,
+    /// Threads parked anywhere in `sleep_info`, readable *without* taking that mutex.
+    ///
+    /// Exists for [Object::wakeup_word]: a wake that finds nobody waiting is the common case --
+    /// every uncontended futex release takes it -- and discovering that used to cost a full
+    /// sleeping-`Mutex` acquire (an inner spinlock, an `Arc` clone, a mutex-count pair, a critical
+    /// section) to walk to an empty tree and walk back.
+    ///
+    /// **Ordering.** The claim is `fetch_add`ed *before* the word is read under the lock, not
+    /// after the insert, and that order is the whole correctness argument. Waker and sleeper form
+    /// the usual Dekker pair -- waker stores the word then loads this; sleeper increments this
+    /// then loads the word -- so under `SeqCst` a waker that reads zero is ordered before the
+    /// sleeper's increment, hence before its word read, so the sleeper sees the new value and
+    /// declines to sleep. Incrementing after the word read inverts the pair and loses wakes.
+    ///
+    /// **Bias.** Every discrepancy here is deliberately upward. The overflow path in
+    /// `SleepInfo::insert` drains entries via `SleepEntry::drop` without decrementing, and a
+    /// `fetch_sub` underflow would wrap high rather than to zero. Both leave the count nonzero for
+    /// an object that has none, which costs the fast path and nothing else; the opposite error
+    /// would be a lost wakeup.
+    sleepers: AtomicUsize,
     device_interrupt_info: Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>,
     pin_info: Mutex<PinInfo>,
     lifetime_type: LifetimeType,
@@ -249,7 +269,6 @@ impl Object {
         self.flags.fetch_or(OBJ_DELETED, Ordering::SeqCst);
     }
 
-
     #[track_caller]
     pub fn lock_page_tables(&self) -> PtGuard<'_> {
         PtGuard::new(&self.tables)
@@ -278,6 +297,7 @@ impl Object {
             flags: AtomicU32::new(0),
             tables: Mutex::new(pagetables::ObjectPageTable::new()),
             sleep_info: Mutex::new(SleepInfo::new(id)),
+            sleepers: AtomicUsize::new(0),
             pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
@@ -663,9 +683,9 @@ pub fn scan_deleted() {
 /// Ring of the most recent `mark_for_delete` calls, so that a failed lookup can say whether the id
 /// it was handed used to exist and who killed it. Diagnostic only.
 ///
-/// Lock-free on purpose: `scan_deleted` runs on every unmap syscall, so a lock here would
-/// serialize the exact teardown path the races under investigation run through, and perturb what
-/// it is meant to observe. Torn or stale reads only ever cost a missed report.
+/// Lock-free on purpose: this is written from every `mark_for_delete`, i.e. from the teardown path
+/// the races under investigation run through, so a lock here would serialize exactly what it is
+/// meant to observe. Torn or stale reads only ever cost a missed report.
 struct DeleteSlot {
     /// Low 64 bits of the id; ids are random, so this is enough to identify one. 0 means empty.
     id_lo: AtomicU64,

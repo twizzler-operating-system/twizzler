@@ -58,10 +58,13 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
 /// `noflush` the feature is paying for itself and no more.
 pub fn print_switch_counters() {
     let (mut noflush, mut flush, mut revoked) = (0u64, 0u64, 0u64);
+    let (mut reasserted, mut dropped) = (0u64, 0u64);
     crate::processor::mp::with_each_active_processor(|p| {
         noflush += p.stats.aspace_switch_noflush.load(Ordering::Relaxed);
         flush += p.stats.aspace_switch_flush.load(Ordering::Relaxed);
         revoked += p.stats.aspace_flush_revoked.load(Ordering::Relaxed);
+        reasserted += p.stats.aspace_claim_reasserted.load(Ordering::Relaxed);
+        dropped += p.stats.aspace_claim_dropped.load(Ordering::Relaxed);
     });
     let total = noflush + flush;
     emerglogln!(
@@ -71,6 +74,16 @@ pub fn print_switch_counters() {
         if total == 0 { 0 } else { noflush * 100 / total },
         flush,
         revoked
+    );
+    // Printed apart from the line above rather than folded into it, because it is read against a
+    // specific prediction: `revoked` should be unchanged (the sender still revokes everything)
+    // while `flush` falls by roughly `reasserted`. A build where `reasserted` is large and `flush`
+    // has not moved means the reclaimed claims are not the ones that were being spent, and the
+    // mechanism is wrong however green the run is.
+    emerglogln!(
+        "== aspace claims: {} reasserted, {} dropped",
+        reasserted,
+        dropped
     );
 }
 
@@ -187,7 +200,14 @@ pub fn print_shootdown_counters() {
             global * 100 / calls,
             targets,
             targets * 100 / calls,
-            hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7]
+            hist[0],
+            hist[1],
+            hist[2],
+            hist[3],
+            hist[4],
+            hist[5],
+            hist[6],
+            hist[7]
         );
     }
 }
@@ -281,6 +301,11 @@ impl Consistency {
     #[cfg(target_arch = "x86_64")]
     pub fn set_full_global(&mut self) {
         self.tlb.set_full_global();
+    }
+
+    /// See [ArchTlbMgr::set_full].
+    pub fn set_full(&mut self) {
+        self.tlb.set_full();
     }
 
     pub fn tlb(&self) -> &ArchTlbMgr {

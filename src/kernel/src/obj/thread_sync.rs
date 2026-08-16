@@ -257,19 +257,23 @@ impl SleepEntry {
         Self { threads, of_obj }
     }
 
-    pub fn add_thread(&mut self, thread: ThreadRef) {
+    /// Returns whether the thread was actually added, which is what `Object::sleepers` counts --
+    /// a duplicate must not be counted twice or the object never reaches zero again.
+    pub fn add_thread(&mut self, thread: ThreadRef) -> bool {
         // If already on this list, skip -- mirrors do_add_to_requeue's
         // find()+insert() guard in syscall/sync.rs; protected by the
         // caller's sleep_info lock, so no TOCTOU race.
         if !self.threads.find(&thread.objid()).is_null() {
-            return;
+            return false;
         }
         self.threads.insert(thread);
+        true
     }
 
-    pub fn remove_thread(&mut self, id: ObjID) {
+    /// Returns whether an entry was actually removed; see [SleepEntry::add_thread].
+    pub fn remove_thread(&mut self, id: ObjID) -> bool {
         let mut cursor = self.threads.find_mut(&id);
-        cursor.remove();
+        cursor.remove().is_some()
     }
 
     /// Claim up to `max_count` waiters into `batch`, stopping early if it fills. Returns whether
@@ -329,9 +333,13 @@ impl SleepInfo {
         }
     }
 
-    pub fn insert(&mut self, offset: usize, thread: ThreadRef) {
+    /// Returns whether a thread was actually parked, for `Object::sleepers`. Note the overflow
+    /// arm below drops up to `some_words`' whole capacity through `SleepEntry::drop`, waking those
+    /// threads without reporting them -- deliberately, per the bias note on `Object::sleepers`: it
+    /// leaves the count high for an object that has already gone pathological.
+    pub fn insert(&mut self, offset: usize, thread: ThreadRef) -> bool {
         if let Some(se) = self.word(offset) {
-            se.add_thread(thread);
+            return se.add_thread(thread);
         } else {
             if let Some(words) = self.more_words.as_mut() {
                 words.insert(offset, SleepEntry::new(thread, self.of_obj));
@@ -351,11 +359,15 @@ impl SleepInfo {
                 }
             }
         }
+        true
     }
 
-    pub fn remove(&mut self, offset: usize, thread_id: ObjID) {
+    /// Returns whether an entry was actually removed; see [SleepEntry::add_thread].
+    pub fn remove(&mut self, offset: usize, thread_id: ObjID) -> bool {
         if let Some(se) = self.word(offset) {
-            se.remove_thread(thread_id);
+            se.remove_thread(thread_id)
+        } else {
+            false
         }
     }
 
@@ -406,6 +418,40 @@ impl Object {
     /// after the unlock. Same guard, same reason, as the device-interrupt drain in `interrupt.rs`
     /// and the handoff in `Mutex::release`.
     pub fn wakeup_word(&self, offset: usize, count: usize) -> usize {
+        // Nobody is parked anywhere on this object, so there is nothing here to do -- and finding
+        // that out used to cost a full `sleep_info` acquire, on the path every uncontended futex
+        // release in the system takes. See the ordering and bias notes on `Object::sleepers`.
+        //
+        // The fence is load-bearing, not decoration. The word this wake corresponds to was written
+        // by *userspace* before it entered the kernel, so nothing here can assume that store is
+        // `SeqCst`, and on x86 a `SeqCst` load is a plain `mov` that does not order against a
+        // prior store. Without the fence the store-then-load half of the Dekker pair is missing
+        // and a wake can read zero against a sleeper that is about to park. One `mfence` against a
+        // sleeping-mutex acquire is a trade worth making.
+        /// A/B arm selector; see entryperf.md, "§8 under suspicion". `false` sends every wake
+        /// through the `sleep_info` mutex, i.e. pre-§8 behaviour.
+        ///
+        /// **The A/B has been run and this path is exonerated:** 10 boots per arm, and the arms
+        /// were indistinguishable -- 10/10 slow either way, open-phase medians 12646 vs 12778 us,
+        /// and the same ~5.8 cold lookups per boot over 2 ms. The open-phase regression that put
+        /// this under suspicion is not caused by the skip. Kept as a toggle because this path is
+        /// the first suspect whenever a lost wake is suspected, and re-running that experiment
+        /// should cost one character rather than a reconstruction.
+        ///
+        /// The fence is inside the guard, not merely the load. It exists only to pair with that
+        /// load, so with the skip off it has nothing to order against -- and leaving an `mfence` on
+        /// every wake in the control arm would make it slower than the behaviour it is standing in
+        /// for, biasing the comparison toward the skip. The counter is still maintained in both
+        /// arms: only the read is removed, so every increment and decrement path stays exercised
+        /// and a counting bug would still reach the drain assertion in
+        /// `sleeper_count_wakes_and_drains`.
+        const SLEEPERS_SKIP: bool = true;
+        if SLEEPERS_SKIP {
+            core::sync::atomic::fence(Ordering::SeqCst);
+            if self.sleepers.load(Ordering::SeqCst) == 0 {
+                return 0;
+            }
+        }
         let mut woken = 0;
         while woken < count {
             let mut batch = WakeBatch::new();
@@ -419,6 +465,8 @@ impl Object {
             if batch.is_empty() {
                 break;
             }
+            // Claimed under the lock above, so these are ours alone and cannot be double-counted.
+            self.sleepers.fetch_sub(batch.len(), Ordering::SeqCst);
             woken += batch.len();
             // Cloned rather than moved, so `batch` outlives `_critical` and no reference can reach
             // zero inside the guard: `add_to_requeue`'s fast path hands the reference to
@@ -478,10 +526,26 @@ impl Object {
             }
         }
 
+        // Claim before the authoritative word read below, not after the insert. This is the
+        // sleeper half of the Dekker pair described on `Object::sleepers`, and the order is the
+        // correctness argument: a waker that reads zero is then ordered ahead of this increment,
+        // hence ahead of the read, so we observe its store and decline to sleep. Claiming after
+        // the read inverts the pair and loses the wake.
+        self.sleepers.fetch_add(1, Ordering::SeqCst);
         let mut sleep_info = self.sleep_info.lock();
-        let cur = vaddr
+        let cur = match vaddr
             .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
-            .unwrap_or_else(|| self.read_atomic_64(offset))?;
+            .unwrap_or_else(|| self.read_atomic_64(offset))
+        {
+            Ok(cur) => cur,
+            // Release the claim rather than leaking it: a bad offset is a repeatable userspace
+            // error, so leaking here would disable the fast path for this object permanently.
+            Err(e) => {
+                drop(sleep_info);
+                self.sleepers.fetch_sub(1, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
         let res = op.check(cur, val, flags);
         log::trace!(
             "thread {} ({}) setting sleep word on {} (did sleep? {})",
@@ -494,7 +558,12 @@ impl Object {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread.clone());
+            // A duplicate park returns false and is not a second sleeper.
+            if !sleep_info.insert(offset, thread.clone()) {
+                self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            }
+        } else {
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
         }
         Ok(res)
     }
@@ -515,17 +584,35 @@ impl Object {
                 return Ok(false);
             }
         }
+        // Claim before the authoritative word read below, not after the insert. This is the
+        // sleeper half of the Dekker pair described on `Object::sleepers`, and the order is the
+        // correctness argument: a waker that reads zero is then ordered ahead of this increment,
+        // hence ahead of the read, so we observe its store and decline to sleep. Claiming after
+        // the read inverts the pair and loses the wake.
+        self.sleepers.fetch_add(1, Ordering::SeqCst);
         let mut sleep_info = self.sleep_info.lock();
 
-        let cur = vaddr
+        let cur = match vaddr
             .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
-            .unwrap_or_else(|| self.read_atomic_32(offset))?;
+            .unwrap_or_else(|| self.read_atomic_32(offset))
+        {
+            Ok(cur) => cur,
+            Err(e) => {
+                drop(sleep_info);
+                self.sleepers.fetch_sub(1, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
         let res = op.check(cur, val, flags);
         if res {
             if first_sleep {
                 thread.set_sync_sleep();
             }
-            sleep_info.insert(offset, thread.clone());
+            if !sleep_info.insert(offset, thread.clone()) {
+                self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            }
+        } else {
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
         }
         Ok(res)
     }
@@ -533,7 +620,11 @@ impl Object {
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();
         let mut sleep_info = self.sleep_info.lock();
-        sleep_info.remove(offset, thread.objid());
+        // Only on a real removal: a word this thread was already woken off (claimed by
+        // `wakeup_word`, or drained by an overflow) is gone, and was decremented there.
+        if sleep_info.remove(offset, thread.objid()) {
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
+        }
 
         // TODO: I think this only works if the thread waits on one interrupt.
         if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {

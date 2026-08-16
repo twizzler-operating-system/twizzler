@@ -183,6 +183,17 @@ pub mod mapstats {
     static LOOKUP_PAGER_MAX: AtomicU64 = AtomicU64::new(0);
     static INSERT_NS: AtomicU64 = AtomicU64::new(0);
 
+    /// Bucket bounds in ns for the cold (pager) lookup; the last bucket is everything above.
+    ///
+    /// A mean cannot distinguish "every call got slower" from "some calls were rescued by a
+    /// periodic timer at a constant cost", and those imply different bugs. The bounds straddle the
+    /// two modes actually observed (fast ~306-362 us, slow ~1.17-1.44 ms) so a bimodal boot shows
+    /// up as two populated buckets rather than being inferred from an average of the two.
+    const LOOKUP_BUCKET_NS: [u64; 4] = [100_000, 500_000, 1_000_000, 2_000_000];
+    const NR_LOOKUP_BUCKETS: usize = LOOKUP_BUCKET_NS.len() + 1;
+    static LOOKUP_PAGER_HIST: [AtomicU64; NR_LOOKUP_BUCKETS] =
+        [const { AtomicU64::new(0) }; NR_LOOKUP_BUCKETS];
+
     pub fn pre(ns: u64) {
         PRE_NS.fetch_add(ns, Ordering::Relaxed);
     }
@@ -193,6 +204,11 @@ pub mod mapstats {
             PAGER.fetch_add(1, Ordering::Relaxed);
             LOOKUP_PAGER_NS.fetch_add(ns, Ordering::Relaxed);
             LOOKUP_PAGER_MAX.fetch_max(ns, Ordering::Relaxed);
+            let bucket = LOOKUP_BUCKET_NS
+                .iter()
+                .position(|b| ns < *b)
+                .unwrap_or(NR_LOOKUP_BUCKETS - 1);
+            LOOKUP_PAGER_HIST[bucket].fetch_add(1, Ordering::Relaxed);
         } else {
             LOOKUP_HIT_NS.fetch_add(ns, Ordering::Relaxed);
         }
@@ -224,6 +240,24 @@ pub mod mapstats {
             (LOOKUP_HIT_NS.load(Ordering::Relaxed) + LOOKUP_PAGER_NS.load(Ordering::Relaxed))
                 / 1000,
         );
+        // Only when there were cold lookups to bucket. An all-zero histogram for a boot that took
+        // no samples is indistinguishable from a boot whose samples all landed in bucket 0, and
+        // reporting a plausible-looking row for absent data is the failure mode this instrument
+        // exists to avoid rather than reproduce.
+        if pager > 0 {
+            let mut hist = [0u64; NR_LOOKUP_BUCKETS];
+            for (i, h) in hist.iter_mut().enumerate() {
+                *h = LOOKUP_PAGER_HIST[i].load(Ordering::Relaxed);
+            }
+            logln!(
+                "  lookup pager hist (<100us, <500us, <1ms, <2ms, 2ms+): {} {} {} {} {}",
+                hist[0],
+                hist[1],
+                hist[2],
+                hist[3],
+                hist[4],
+            );
+        }
         logln!(
             "  map into context: {} ns/call, {} us total; context lookup {} ns/call",
             INSERT_NS.load(Ordering::Relaxed) / calls,

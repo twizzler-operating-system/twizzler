@@ -14,8 +14,8 @@ use crate::{
     },
     interrupt::{self, Destination},
     memory::pagetables::{
-        MappingCursor, TlbOrigin, tlb_shootdown_inc_count, tlb_wait_record,
-        trace_tlb_invalidation, trace_tlb_shootdown,
+        MappingCursor, TlbOrigin, tlb_shootdown_inc_count, tlb_wait_record, trace_tlb_invalidation,
+        trace_tlb_shootdown,
     },
     processor::{
         Processor,
@@ -171,6 +171,63 @@ impl TlbInvData {
         self.len > 0 || self.full()
     }
 
+    /// Re-assert this processor's no-flush claim on the address space this invalidation names,
+    /// because we have just made our entries for it correct.
+    ///
+    /// [ArchTlbMgr::finish_send] revokes every other processor's claim before it sends, including
+    /// the processors it is about to hand a *precise* invalidation to. That is safe -- and the
+    /// revoke has to stay, since it is what covers a processor the sender then decides not to
+    /// target -- but it charges those processors a full flush on their next switch into an
+    /// address space whose entries this invalidation has just repaired. Measured on
+    /// debug-kvm-smp4: `aspace_flush_revoked` (2925/boot) tracks `aspace_switch_flush` (2949) to
+    /// within 1%, and precise-send targets account for ~86% of it.
+    ///
+    /// What makes this safe is that it asserts a fact about *this* processor, established
+    /// locally: we have just executed every instruction this invalidation carried, or flushed the
+    /// PCID outright. It says nothing about any other processor and takes no lock.
+    ///
+    /// Pairs with [Self::drop_claim_here], and neither is correct without the other -- see there.
+    fn reassert_claim_here(&self) {
+        let pcid = self.pcid();
+        if pcid == 0 || !tls_ready() {
+            return;
+        }
+        let proc = current_processor();
+        // Only count the transitions. An already-set bit is the sender-was-us case and the
+        // repeat-invalidation case, neither of which averted a flush.
+        if !proc.arch.pcid_test_and_set(pcid) {
+            proc.stats
+                .aspace_claim_reasserted
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Drop this processor's claim on the address space this invalidation names, because the
+    /// invalidation turned out not to apply to us.
+    ///
+    /// Without [Self::reassert_claim_here] this would be pure redundancy -- the sender already
+    /// revoked us before sending, so the bit is normally clear and the RMW does nothing. With it,
+    /// it is load-bearing, and this is the one interleaving that needs it: a *different* sender
+    /// revokes our claim and is still between its revoke and its IPI when we reassert on some
+    /// other invalidation for the same PCID. If we then switched away and back we would take
+    /// `CR3_PCID_NOFLUSH` while holding entries that sender is invalidating. Its IPI still
+    /// arrives -- it is spinning for our acknowledgement -- and lands here, on the arm where our
+    /// cr3 no longer matches, and this drops the claim again. Every processor a sender targets
+    /// therefore either applies the invalidation or gives up its claim; there is no third
+    /// outcome, which is the property the sender's unconditional revoke provided before.
+    fn drop_claim_here(&self) {
+        let pcid = self.pcid();
+        if pcid == 0 || !tls_ready() {
+            return;
+        }
+        let proc = current_processor();
+        if proc.arch.pcid_invalidate(pcid) {
+            proc.stats
+                .aspace_claim_dropped
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn reset(&mut self) {
         *self = Self::new(self.target());
         assert!(!self.has_invalidations());
@@ -202,7 +259,9 @@ impl TlbInvData {
         */
         // If none of the commands are global, and it's targeting a different set of
         // page tables than is active, then we can ignore it.
-        if our_cr3 != self.target() && !self.global() {
+        let ours = our_cr3 == self.target();
+        if !ours && !self.global() {
+            self.drop_claim_here();
             return;
         }
 
@@ -212,11 +271,24 @@ impl TlbInvData {
             } else {
                 tlb_non_global_inv();
             }
+            // A global full flush clears every PCID, so our entries for the target are gone
+            // whether or not we are running it. `tlb_non_global_inv` is a cr3 reload and so
+            // reaches only the current PCID, which is the target exactly when `ours`.
+            if ours || self.global() {
+                self.reassert_claim_here();
+            }
             return;
         }
 
         for inst in self.instructions() {
             inst.execute();
+        }
+        // `invlpg` acts on the current PCID plus global entries, so a precise invalidation leaves
+        // the target's entries correct only when the target is what we are running. The global
+        // arm reaching here (a GLOBAL-flagged instruction, without FULL) has not touched the
+        // target PCID's own entries at all.
+        if ours {
+            self.reassert_claim_here();
         }
     }
 
@@ -368,6 +440,15 @@ impl ArchTlbMgr {
     pub fn set_full_global(&mut self) {
         self.data.set_full();
         self.data.set_global();
+    }
+
+    /// Invalidate everything for this manager's target, without going machine-wide.
+    ///
+    /// For a change too broad to express as addresses: `invlpg` takes one page, so a downgrade
+    /// applied across a whole sub-table -- where at level > 1 each entry covers 512 further pages
+    /// -- has no precise encoding. See `do_cow_copy`.
+    pub fn set_full(&mut self) {
+        self.data.set_full();
     }
 
     pub fn is_full(&self) -> bool {

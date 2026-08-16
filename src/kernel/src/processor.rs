@@ -42,6 +42,19 @@ pub struct ProcessorStats {
     /// flush here -- so if this tracks them, invalidation is cancelling the switch saving and
     /// PCIDs are a wash on whatever is running.
     pub aspace_flush_revoked: AtomicU64,
+    /// Times this cpu re-asserted its own claim after applying an invalidation that left its
+    /// entries for that PCID correct. Every one of these is a revocation above that did *not*
+    /// turn into a future flush, so `revoked - reclaimed` is what `aspace_switch_flush` should
+    /// now track instead of `revoked`. That the two used to match exactly is what said this was
+    /// worth doing.
+    pub aspace_claim_reasserted: AtomicU64,
+    /// Times this cpu dropped its own claim because an invalidation sent to it did not apply to
+    /// the address space it turned out to be running. Rare by construction -- the sender only
+    /// targets cpus whose `active_cr3` matched, so this is the window between that read and the
+    /// IPI landing -- but it is what keeps [ProcessorStats::aspace_claim_reasserted] honest, so a
+    /// reading of zero across a whole boot means the window never opened rather than that it does
+    /// not exist.
+    pub aspace_claim_dropped: AtomicU64,
 }
 
 pub struct Processor {
@@ -100,13 +113,13 @@ impl Processor {
     }
 
     pub fn current_priority(&self) -> Priority {
-        let cur = self.current_priority.load(Ordering::SeqCst);
+        let cur = self.current_priority.load(Ordering::Acquire);
         self.rq.current_priority().max(Priority::from_raw(cur))
     }
 
     pub fn current_load(&self) -> u64 {
         self.rq.current_load()
-            + if self.is_idle.load(Ordering::SeqCst) {
+            + if self.is_idle.load(Ordering::Acquire) {
                 0
             } else {
                 1
@@ -116,7 +129,7 @@ impl Processor {
     /// Whether this cpu is currently running its idle thread. Plain atomic read, so it is callable
     /// from contexts that must not take a lock (the mutex wait loop's stall report).
     pub fn is_idle(&self) -> bool {
-        self.is_idle.load(Ordering::SeqCst)
+        self.is_idle.load(Ordering::Acquire)
     }
 
     /// Lock-free run-queue emptiness, for the same reason as [`Processor::is_idle`].
@@ -125,23 +138,23 @@ impl Processor {
     }
 
     pub fn enter_idle(&self) {
-        self.is_idle.store(true, Ordering::SeqCst);
+        self.is_idle.store(true, Ordering::Release);
     }
 
     pub fn exit_idle(&self) {
-        self.is_idle.store(false, Ordering::SeqCst);
+        self.is_idle.store(false, Ordering::Release);
     }
 
     pub fn set_rebalance(&self) {
-        self.must_rebalance.store(true, Ordering::SeqCst);
+        self.must_rebalance.store(true, Ordering::Release);
     }
 
     pub fn reset_rebalance(&self) {
-        self.must_rebalance.store(false, Ordering::SeqCst);
+        self.must_rebalance.store(false, Ordering::Release);
     }
 
     pub fn must_rebalance(&self) -> bool {
-        self.must_rebalance.load(Ordering::SeqCst)
+        self.must_rebalance.load(Ordering::Acquire)
     }
 
     fn set_topology(&self, topo_path: Vec<(usize, bool)>) {
