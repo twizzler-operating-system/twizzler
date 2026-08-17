@@ -15,6 +15,7 @@ use twizzler_rt_abi::{
 
 use super::{CtxMapItem, CtxMapItemType, SecCtxBase, SecCtxFlags};
 use crate::{
+    compossibility::Compossibility,
     sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
     Cap, Del,
 };
@@ -139,7 +140,7 @@ impl SecCtx {
     }
 
     /// Insert a `Del` into this `SecCtx`.
-    pub fn insert_del(&mut self, del: Del) -> Result<(), TwzError> {
+    pub fn insert_del(&mut self, delegation: Del) -> Result<(), TwzError> {
         let mut tx = self.uobj.clone().into_tx()?;
         let mut base = tx.base_mut();
 
@@ -161,7 +162,7 @@ impl SecCtx {
         log::debug!("write offset into object for entry: {:#X}", map_item.offset);
 
         // seeing if a vec already exists for target obj, else create new
-        if let Some(vec) = base.map.get_mut(&del.target) {
+        if let Some(vec) = base.map.get_mut(&delegation.target) {
             vec.push(map_item).map_err(|_| {
                 // only possible error case is it being full
                 TwzError::Resource(ResourceError::OutOfResources)
@@ -169,7 +170,7 @@ impl SecCtx {
         } else {
             let mut new_vec = Vec::<CtxMapItem, MAP_ITEMS_PER_OBJ>::new();
             let _ = new_vec.push(map_item);
-            let _ = base.map.insert(del.target, new_vec).map_err(|_| {
+            let _ = base.map.insert(delegation.target, new_vec).map_err(|_| {
                 // only possible error case is it being full
                 TwzError::Resource(ResourceError::OutOfResources)
             })?;
@@ -183,8 +184,10 @@ impl SecCtx {
         // SAFETY: copies the delegation into the object, we check that the pointer is valid above
         // and fix its alignment
         unsafe {
-            *ptr = del;
+            *ptr = delegation;
         }
+
+        // Now we have to add the compossibilities.
 
         tx.commit()?;
 

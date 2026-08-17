@@ -204,6 +204,7 @@ fn main() {
                         Default::default(),
                         Default::default(),
                         s_key.base(),
+                        &[],
                     )
                     .unwrap();
 
