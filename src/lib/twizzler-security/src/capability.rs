@@ -1,6 +1,5 @@
 #[cfg(feature = "log")]
 use log::debug;
-use sha2::{Digest, Sha256};
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
@@ -81,18 +80,8 @@ impl Cap {
 
         let hash_arr = Cap::serialize(accessor, target, prots, flags, revocation, gates);
 
-        let sig = match hashing_algo {
-            HashingAlgo::Blake3 => {
-                let hash = blake3::hash(&hash_arr);
-                target_priv_key.sign(hash.as_bytes())?
-            }
-            HashingAlgo::Sha256 => {
-                let mut hasher = Sha256::new();
-                hasher.update(hash_arr);
-                let hash = hasher.finalize();
-                target_priv_key.sign(hash.as_slice())?
-            }
-        };
+        let hash = hashing_algo.hash(&hash_arr);
+        let sig = target_priv_key.sign(&hash)?;
 
         Ok(Cap {
             accessor,
@@ -119,24 +108,8 @@ impl Cap {
 
         let hash_algo: HashingAlgo = self.flags.try_into()?;
 
-        match hash_algo {
-            HashingAlgo::Blake3 => {
-                // #[cfg(feature = "log")]
-                // error!("running into problems with blake3 compilation on aarch64");
-                // unimplemented!("running into problems with blake3 compilation on aarch64");
-                let hash = blake3::hash(&hash_arr);
-                let bind = hash.as_bytes();
-                verifying_key.verify(bind.as_slice(), &self.sig)
-            }
-            HashingAlgo::Sha256 => {
-                #[cfg(feature = "log")]
-                debug!("Hashing via Sha256");
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(&hash_arr);
-                let result = hasher.finalize();
-                verifying_key.verify(result.as_slice(), &self.sig)
-            }
-        }
+        let hash = hash_algo.hash(&hash_arr);
+        verifying_key.verify(&hash, &self.sig)
     }
 
     /// checks to see if the specified ptr_offset falls in the capability's gate.

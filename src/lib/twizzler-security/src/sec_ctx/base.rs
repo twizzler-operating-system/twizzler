@@ -3,26 +3,24 @@ use core::fmt::Display;
 use heapless::{index_map::FnvIndexMap, Vec};
 use twizzler_abi::object::{ObjID, Protections, NULLPAGE_SIZE};
 
-/// completely arbitrary amount of mask entries in a security context
+/// Arbitrary amount of mask entries in a security context
 pub const MASKS_MAX: usize = 16;
-/// completely arbitrary amount of capabilites and delegations in a security context
+/// Arbitrary amount of capabilities and delegations in a security context
 pub const SEC_CTX_MAP_LEN: usize = 16;
-/// arbitrary number of map items per target object
+/// Arbitrary number of map items per target object
 pub const MAP_ITEMS_PER_OBJ: usize = 16;
 
 #[derive(Debug)]
 /// Used to store `Mask` data that will be applied to permissions granted by a `SecCtx` for
 /// specific target object.
 pub struct Mask {
-    /// object whose permissions will be masked.
+    /// An object whose permissions will be masked.
     pub target: ObjID,
-    /// Specifies a mask on the permissions granted by capabilties and delegations in this security
-    /// context.
+    /// Specifies a mask on the permissions granted by `Capabilities` and `Delegations` in this
+    /// security context.
     pub permmask: Protections,
-    /// an override mask on the context's global mask.
+    /// An override mask on the context's global mask.
     pub ovrmask: Protections,
-    // not sure what these flags are for?
-    // flags: BitField
 }
 
 impl Mask {
@@ -75,7 +73,7 @@ pub struct SecCtxBase {
     pub map: FnvIndexMap<ObjID, Vec<CtxMapItem, MAP_ITEMS_PER_OBJ>, SEC_CTX_MAP_LEN>,
     /// A map holding masks that apply for a target ObjID.
     pub masks: FnvIndexMap<ObjID, Mask, MASKS_MAX>,
-    /// The global mask that applies to all protections gratned by this Security Context.
+    /// The global mask that applies to all protections granted by this Security Context.
     pub global_mask: Protections,
     /// The running offset into the object where a new entry can be inserted.
     pub offset: usize,
@@ -109,7 +107,6 @@ impl BaseType for SecCtxBase {
         16
     }
 }
-
 impl Display for CtxMapItem {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Item Type: {:?}\n", self.item_type)?;

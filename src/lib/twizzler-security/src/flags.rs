@@ -1,6 +1,7 @@
 use core::fmt::{Debug, Display};
 
 use bitflags::bitflags;
+use sha2::{Digest, Sha256};
 
 use crate::SecurityError;
 
@@ -92,6 +93,16 @@ impl From<HashingAlgo> for SecFlags {
         match value {
             HashingAlgo::Blake3 => SecFlags::Blake3,
             HashingAlgo::Sha256 => SecFlags::Sha256,
+        }
+    }
+}
+
+impl HashingAlgo {
+    /// Hashes `data` with the chosen algorithm.
+    pub(crate) fn hash(self, data: &[u8]) -> sha2::digest::Output<Sha256> {
+        match self {
+            HashingAlgo::Blake3 => blake3::Hasher::digest(data),
+            HashingAlgo::Sha256 => Sha256::digest(data),
         }
     }
 }

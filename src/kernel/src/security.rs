@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use log::{error, trace, warn};
 use twizzler_abi::{
@@ -78,16 +78,61 @@ impl SecurityContext {
         Some(base.flags.clone())
     }
 
+    /// Return the maximum allowed access for this object id that
+    /// is adherent to the compossibilities in this context.
+    pub fn compossibility_check(&self, id: ObjID) -> Protections {
+        let Some(ref obj) = self.kobj else {
+            // we dont care about restricting if we dont have a underlying secuirty context.
+            return Protections::all();
+        };
+        let ctx = obj.base();
+
+        // collect all the offsets for everything that's a del into a vector
+        let del_offsets: Vec<usize> = ctx
+            .map
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| matches!(entry.item_type, CtxMapItemType::Del))
+            .map(|entry| entry.offset)
+            .collect();
+
+        let mut running_prots = Protections::all();
+
+        for offset in del_offsets {
+            let Some(del) = obj.lea_raw(offset as *const Del) else {
+                error!(
+                    "Unable to cast offset into delegation. No protections granted. Obj: {id:#?}, offset: {offset}"
+                );
+                return Protections::empty();
+            };
+
+            for com in &del.compossibilities {
+                // we want the running prots to be and'd with c_mask if the compossibility applies
+                // to it, and if it doesn't it gets the gc_mask.
+                running_prots &= if id == com.target {
+                    com.c_mask
+                } else {
+                    com.gcmask
+                };
+            }
+        }
+        running_prots
+    }
+
     /// Lookup the permission info for an object, and maybe cache it.
-    pub fn lookup(&self, _id: ObjID, default_prots: Protections) -> PermsInfo {
+    pub fn lookup(&self, id: ObjID, default_prots: Protections) -> PermsInfo {
         // check the cache to see if we already have something
-        if let Some(cache_entry) = self.cache.lock().get(&_id) {
+        if let Some(cache_entry) = self.cache.lock().get(&id) {
             return *cache_entry;
         }
 
-        // by default granted permissions are going to be the most restrictive
-        let mut granted_perms =
-            PermsInfo::new(self.id(), Protections::empty(), Protections::empty());
+        let mut granted_perms = PermsInfo::new(
+            self.id(),
+            Protections::empty(),
+            // we want to restrict the granted permissions to the maximum allowed by all the
+            // compossibilities in this security context.
+            self.compossibility_check(id).complement(),
+        );
 
         // add default perms here
         granted_perms.provide = granted_perms.provide | default_prots;
@@ -99,8 +144,10 @@ impl SecurityContext {
 
         let base = obj.base();
 
+        // iterate through
+
         // check for possible items
-        let Some(results) = base.map.get(&_id) else {
+        let Some(results) = base.map.get(&id) else {
             // if there arent any items inside this context, just return default perms
             return granted_perms;
         };
@@ -108,7 +155,7 @@ impl SecurityContext {
         // from now on, whenever we return granted_perms, it must be &'d with the sec_ctx global
         // mask, since there are some entries inside the base.map()
 
-        let Some(v_obj) = fetch_verifying_key_from_obj_id(_id) else {
+        let Some(v_obj) = fetch_verifying_key_from_obj_id(id) else {
             granted_perms.provide &= base.global_mask;
             return granted_perms;
         };
@@ -138,7 +185,7 @@ impl SecurityContext {
 
                     let provider_ctx_v_key = provider_ctx_v_obj.base();
 
-                    if del.verify_sig(provider_ctx_v_key).is_err() || del.target != _id {
+                    if del.verify_sig(provider_ctx_v_key).is_err() || del.target != id {
                         warn!("Signature invalid for del: {del:#?}, moving on to next entry");
                         continue;
                     }
@@ -169,7 +216,7 @@ impl SecurityContext {
                                 let Some(cap) = provider_kobj.lea_raw(offset as *const Cap) else {
                                     break;
                                 };
-                                if cap.verify_sig(v_key).is_ok() && cap.target == _id {
+                                if cap.verify_sig(v_key).is_ok() && cap.target == id {
                                     resolved = Some(cap.prots);
                                 }
                                 break;
@@ -194,7 +241,7 @@ impl SecurityContext {
                                 let provider_ctx_v_key = provider_ctx_v_obj.base();
 
                                 if next_del.verify_sig(provider_ctx_v_key).is_err()
-                                    || next_del.target != _id
+                                    || next_del.target != id
                                 {
                                     break;
                                 }
@@ -228,11 +275,11 @@ impl SecurityContext {
         }
 
         // lookup mask for obj in base
-        let Some(mask) = base.masks.get(&_id) else {
+        let Some(mask) = base.masks.get(&id) else {
             // no mask for target object
             // final perms are granted_perms & global_mask
             granted_perms.provide &= base.global_mask;
-            self.cache.lock().insert(_id, granted_perms.clone());
+            self.cache.lock().insert(id, granted_perms.clone());
             return granted_perms;
         };
 
@@ -240,7 +287,7 @@ impl SecurityContext {
         // granted_perms & permmask & (global_mask | override_mask)
         granted_perms.provide =
             granted_perms.provide & mask.permmask & (base.global_mask | mask.ovrmask);
-        self.cache.lock().insert(_id, granted_perms.clone());
+        self.cache.lock().insert(id, granted_perms.clone());
         granted_perms
     }
 

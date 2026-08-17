@@ -25,6 +25,7 @@ mod benches;
 #[cfg(feature = "user")]
 mod builder_ext;
 mod capability;
+mod compossibility;
 mod delegation;
 mod flags;
 mod gates;

@@ -1,12 +1,17 @@
+use heapless::Vec;
 #[cfg(feature = "log")]
 use log::debug;
-use sha2::{Digest, Sha256};
 use twizzler_abi::object::{ObjID, Protections};
 
 use crate::{
+    compossibility::{Compossibility, COMPOSSIBILITY_SERIALIZED_LEN},
     CtxMapItem, Gate, HashingAlgo, Revoc, SecFlags, SecurityError, Signature, SigningKey,
     VerifyingKey,
 };
+
+/// Arbitrary amount of maximum number of compossibilities per security context, feel free to
+/// change. will change the size of a "Delegation" so it will break ABI.
+pub const MAX_COMPOSSIBILITIES: usize = 4;
 
 #[expect(dead_code)]
 /// A Delegation, which can be used to delegate capabilities into other security contexts.
@@ -43,12 +48,22 @@ pub struct Del {
 
     /// Where the delegated `Cap`/`Del` lives inside `provider`'s security context object.
     pub inner: CtxMapItem,
+
+    /// Holds the compossibilities attached to this delegation. Included in the signed hash,
+    /// so tampering with any of them invalidates `sig`.
+    pub compossibilities: Vec<Compossibility, MAX_COMPOSSIBILITIES>,
 }
 
 /// The maximum nesting of a delegation chain, can be changed as needed.
 pub const MAX_DELEGATION_NEST: usize = 4;
 
-const DEL_SERIALIZED_LEN: usize = 101;
+/// Length of the fixed-size portion of a serialized `Del` (everything except
+/// compossibilities).
+const DEL_HEADER_LEN: usize = 101;
+
+/// Length of a fully serialized delegation.
+const DEL_SERIALIZED_LEN: usize =
+    DEL_HEADER_LEN + 1 + MAX_COMPOSSIBILITIES * COMPOSSIBILITY_SERIALIZED_LEN;
 
 impl Del {
     pub fn new(
@@ -61,6 +76,7 @@ impl Del {
         gates: Gate,
         hashing_algo: HashingAlgo,
         ctx_priv_key: &SigningKey,
+        compossibilities: &[Compossibility],
     ) -> Result<Self, SecurityError> {
         #[cfg(feature = "user")]
         check_nest_depth(provider, inner)?;
@@ -73,22 +89,23 @@ impl Del {
             flags, receiver
         );
 
+        let compossibilities: Vec<Compossibility, MAX_COMPOSSIBILITIES> =
+            compossibilities.iter().cloned().collect();
+
         let hash_arr = Del::serialize(
-            receiver, provider, target, inner, flags, revocation, prot_mask, gates,
+            receiver,
+            provider,
+            target,
+            inner,
+            flags,
+            revocation,
+            prot_mask,
+            gates,
+            &compossibilities,
         );
 
-        let sig = match hashing_algo {
-            HashingAlgo::Blake3 => {
-                let hash = blake3::hash(&hash_arr);
-                ctx_priv_key.sign(hash.as_bytes())?
-            }
-            HashingAlgo::Sha256 => {
-                let mut hasher = Sha256::new();
-                hasher.update(hash_arr);
-                let hash = hasher.finalize();
-                ctx_priv_key.sign(hash.as_slice())?
-            }
-        };
+        let hash = hashing_algo.hash(&hash_arr);
+        let sig = ctx_priv_key.sign(&hash)?;
 
         Ok(Del {
             receiver,
@@ -99,6 +116,7 @@ impl Del {
             gatemask: gates,
             revocation,
             sig,
+            compossibilities,
             inner,
         })
     }
@@ -117,22 +135,13 @@ impl Del {
             self.revocation,
             self.prot_mask,
             self.gatemask,
+            &self.compossibilities,
         );
 
         let hash_algo: HashingAlgo = self.flags.try_into()?;
 
-        match hash_algo {
-            HashingAlgo::Blake3 => {
-                let hash = blake3::hash(&hash_arr);
-                provider_ctx_verifying_key.verify(hash.as_bytes(), &self.sig)
-            }
-            HashingAlgo::Sha256 => {
-                let mut hasher = Sha256::new();
-                hasher.update(&hash_arr);
-                let result = hasher.finalize();
-                provider_ctx_verifying_key.verify(result.as_slice(), &self.sig)
-            }
-        }
+        let hash = hash_algo.hash(&hash_arr);
+        provider_ctx_verifying_key.verify(&hash, &self.sig)
     }
 
     /// Returns all contents other than sig as a buffer ready to hash
@@ -145,6 +154,7 @@ impl Del {
         revocation: Revoc,
         prot_mask: Protections,
         gates: Gate,
+        compossibilities: &[Compossibility],
     ) -> [u8; DEL_SERIALIZED_LEN] {
         let mut hash_arr: [u8; DEL_SERIALIZED_LEN] = [0; DEL_SERIALIZED_LEN];
         hash_arr[0..16].copy_from_slice(
@@ -162,6 +172,18 @@ impl Del {
         hash_arr[90..92].copy_from_slice(&prot_mask.bits().to_le_bytes());
         hash_arr[92] = inner.item_type as u8;
         hash_arr[93..101].copy_from_slice(&(inner.offset as u64).to_le_bytes());
+
+        // distinguishes between no compossibilities and a compossibilitiy thats somehow all zero;
+        hash_arr[DEL_HEADER_LEN] = compossibilities.len() as u8;
+        for (i, c) in compossibilities
+            .iter()
+            .take(MAX_COMPOSSIBILITIES)
+            .enumerate()
+        {
+            let start = DEL_HEADER_LEN + 1 + i * COMPOSSIBILITY_SERIALIZED_LEN;
+            hash_arr[start..start + COMPOSSIBILITY_SERIALIZED_LEN].copy_from_slice(&c.serialize());
+        }
+
         hash_arr
     }
 }
@@ -265,6 +287,7 @@ mod tests {
             Gate::default(),
             HashingAlgo::Sha256,
             s_key,
+            &[],
         )
         .expect("Delegation should have been created.")
     }
@@ -314,6 +337,7 @@ mod tests {
                 Gate::default(),
                 HashingAlgo::Sha256,
                 s.base(),
+                &[],
             )
             .unwrap_or_else(|e| panic!("delegation at hop {hop} should have been created: {e:?}"));
 
@@ -340,6 +364,7 @@ mod tests {
             Gate::default(),
             HashingAlgo::Sha256,
             s.base(),
+            &[],
         ) {
             Err(SecurityError::MaxNestExceeded) => {}
             other => panic!("expected MaxNestExceeded, got {other:?}"),
