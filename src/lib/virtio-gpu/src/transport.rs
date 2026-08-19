@@ -5,7 +5,10 @@ use twizzler_abi::{
     device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags},
     syscall::{sys_thread_sync, ThreadSync},
 };
-use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
+use twizzler_driver::{
+    bus::pcie::PcieCapability,
+    device::{Device, MmioObject},
+};
 use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, InterruptStatus, Transport},
     Error,
@@ -27,6 +30,14 @@ pub struct TwizzlerTransport {
 
     isr_status: CfgLocation,
 
+    /// The BAR mapping `config_space` points into, held for exactly as long as the pointer.
+    ///
+    /// Identical to virtio-net's: every other field is a `CfgLocation` re-resolved against a fresh
+    /// `MmioObject` per access, but `config_space` captures a raw pointer once, so without this the
+    /// mapping is dropped at the end of `new` and the pointer lives on the handle cache's grace
+    /// period alone. It faulted in `display` (`Read: 31c0004000`) once net-srv's copy was fixed and
+    /// display became the first compartment to hit it.
+    _config_space_bar: Option<MmioObject>,
     config_space: Option<NonNull<[u32]>>,
 }
 
@@ -76,6 +87,7 @@ impl TwizzlerTransport {
         let mut notify_offset_multiplier = 0;
         let mut isr_status = None;
         let mut config_space = None;
+        let mut config_space_bar = None;
 
         let mm = device.find_mmio_bar(0xff).unwrap();
         for cap in device.pcie_capabilities(&mm).unwrap() {
@@ -150,6 +162,8 @@ impl TwizzlerTransport {
                         ))
                     };
                     config_space = Some(ptr);
+                    // Keep the mapping alive for as long as `ptr`. See the field comment.
+                    config_space_bar = Some(bar);
                 }
                 _ => {}
             }
@@ -183,6 +197,7 @@ impl TwizzlerTransport {
             notify_region,
             notify_offset_multiplier,
             isr_status,
+            _config_space_bar: config_space_bar,
             config_space,
         })
     }

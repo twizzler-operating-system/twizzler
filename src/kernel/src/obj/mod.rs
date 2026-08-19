@@ -1,7 +1,7 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, btree_set::BTreeSet},
-    sync::Arc,
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use core::{
@@ -15,14 +15,17 @@ use twizzler_abi::{
     object::{MAX_SIZE, ObjID, Protections},
     syscall::{BackingType, LifetimeType, ObjectInfo},
 };
+use intrusive_collections::RBTreeAtomicLink;
 use twizzler_rt_abi::{bindings::object_tie, error::TwzError, object::Nonce};
 
 pub use self::thread_sync::{SleepInfo, ThreadSleepLinker};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
+    condvar::CondVar,
     idcounter::{IdCounter, SimpleId},
     memory::{
         VirtAddr,
+        context::virtmem::region::MapRegion,
         pagetables::DeferredUnmappingOps,
         tracker::{FrameAllocFlags, alloc_frame},
     },
@@ -36,6 +39,7 @@ use crate::{
 pub mod control;
 pub mod data;
 pub mod id;
+pub mod omap;
 pub mod pagetables;
 pub mod thread_sync;
 pub mod ties;
@@ -54,7 +58,11 @@ const OBJ_MAP_PREFETCHED: u32 = 8;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
-    tables: Mutex<pagetables::ObjectPageTable>,
+    /// `Option` only so [Object::drop] can move them to the reaper instead of tearing them down on
+    /// whatever thread released the last reference. `Some` for the whole life of every reachable
+    /// object -- nothing but that drop takes it, and by then no reference remains to reach it
+    /// through. Reach it via [Object::page_tables].
+    tables: Option<Mutex<pagetables::ObjectPageTable>>,
     sleep_info: Mutex<SleepInfo>,
     /// Threads parked anywhere in `sleep_info`, readable *without* taking that mutex.
     ///
@@ -84,12 +92,40 @@ pub struct Object {
     /// The backing store's data length. `u64::MAX` means "never told"; see [Object::known_len].
     known_len: AtomicU64,
     vnotes: VNotes,
+    /// Link into the sharded object map ([omap::ShardedOmap]); unused unless [OMAP_SHARDED].
+    omap_link: RBTreeAtomicLink,
+    /// The regions mapping this object, keyed by slot.
+    ///
+    /// `Weak`, not `Arc`: a [MapRegion] holds an [ObjectRef], so a strong reference here would be
+    /// a cycle -- the object and every frame behind it would stay alive forever on any path that
+    /// dropped the last outside reference without a matching [Object::remove_mapping]. The
+    /// context's slot manager owns the region; this is an index into it.
+    ///
+    /// Lock order: a sleeping mutex, so never taken under a slot shard spinlock, and taken before
+    /// `tables` where the two meet.
+    mappings: Mutex<BTreeMap<usize, Weak<MapRegion>>>,
 }
 
 impl Drop for Object {
     fn drop(&mut self) {
         if self.use_pager() && self.is_pending_delete() {
-            crate::pager::del_object(self.id);
+            // Queued, never issued here: this runs on whichever thread happens to drop the last
+            // reference, which includes the pager completion thread and threads holding spinlocks.
+            // See `pager::Deleter`.
+            crate::pager::queue_del_object(self.id);
+        }
+        // Same reason, and the larger half of it. `ObjectPageTable::drop` unmaps the object's whole
+        // range, runs TLB consistency and frees every frame -- with a `WAIT_OK` allocator, so it
+        // can *sleep waiting for memory*. Running that wherever the last reference happens to die
+        // is the shape that wedged the pager completion thread through the delete path
+        // (`sysbench.md` F7); the sleep would wedge it just as thoroughly, on a resource that
+        // thread is itself needed to replenish. So the drop hands the tables over and the reaper
+        // tears them down.
+        //
+        // Everything else here is bounded frees (sleep trees, notes, the interrupt array), so it
+        // stays inline rather than growing a second handover for work that cannot block.
+        if let Some(tables) = self.tables.take() {
+            defer_teardown(tables);
         }
     }
 }
@@ -271,7 +307,37 @@ impl Object {
 
     #[track_caller]
     pub fn lock_page_tables(&self) -> PtGuard<'_> {
-        PtGuard::new(&self.tables)
+        PtGuard::new(self.page_tables())
+    }
+
+    pub fn add_mapping(&self, slot: usize, region: &Arc<MapRegion>) {
+        self.mappings.lock().insert(slot, Arc::downgrade(region));
+    }
+
+    pub fn remove_mapping(&self, slot: usize) {
+        self.mappings.lock().remove(&slot);
+    }
+
+    /// The live regions mapping this object, pruning any whose region has gone away without a
+    /// matching [Self::remove_mapping].
+    pub fn mappings(&self) -> Vec<Arc<MapRegion>> {
+        let mut mappings = self.mappings.lock();
+        let mut out = Vec::with_capacity(mappings.len());
+        mappings.retain(|_, region| match region.upgrade() {
+            Some(region) => {
+                out.push(region);
+                true
+            }
+            None => false,
+        });
+        out
+    }
+
+    /// This object's page tables. See the field for why it is an `Option`.
+    fn page_tables(&self) -> &Mutex<pagetables::ObjectPageTable> {
+        self.tables
+            .as_ref()
+            .expect("page tables taken from an object that is still reachable")
     }
 
     pub fn id(&self) -> ObjID {
@@ -295,7 +361,7 @@ impl Object {
         Self {
             id,
             flags: AtomicU32::new(0),
-            tables: Mutex::new(pagetables::ObjectPageTable::new()),
+            tables: Some(Mutex::new(pagetables::ObjectPageTable::new())),
             sleep_info: Mutex::new(SleepInfo::new(id)),
             sleepers: AtomicUsize::new(0),
             pin_info: Mutex::new(PinInfo::default()),
@@ -307,6 +373,8 @@ impl Object {
                 [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
             ),
             vnotes: VNotes::new(),
+            omap_link: RBTreeAtomicLink::new(),
+            mappings: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -338,7 +406,10 @@ impl Object {
     ///
     /// Frame flags deliberately match what `ensure_in_core` would have used, so the frame is
     /// accounted and reclaimed identically. It is not wired: nothing keeps a pointer to it.
-    fn init_meta(self: &Arc<Self>, meta: MetaInfo) {
+    ///
+    /// `sys_object_create` qualifies on the same terms and takes it too, which is where the cost
+    /// actually lands: 8.0 us of a 14.8 us `ObjectCreate` (`sysbench.md`).
+    pub(crate) fn init_meta(self: &Arc<Self>, meta: MetaInfo) {
         let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
         // Safety: a freshly allocated frame, named by nothing else, and `MetaInfo` sits at offset
         // zero of the meta page -- the offset `write_meta` writes it to.
@@ -539,8 +610,13 @@ impl Drop for PtGuard<'_> {
 
 pub type ObjectRef = Arc<Object>;
 
+/// Selects the sharded object map ([omap::ShardedOmap]) over the single global
+/// `Mutex<BTreeMap>`. Both are compiled; one tree state builds both A/B arms.
+pub const OMAP_SHARDED: bool = true;
+
 struct ObjectManager {
     map: Mutex<BTreeMap<ObjID, ObjectRef>>,
+    sharded: omap::ShardedOmap,
     no_exist: Mutex<BTreeSet<ObjID>>,
 }
 
@@ -581,21 +657,35 @@ impl ObjectManager {
     fn new() -> Self {
         Self {
             map: Mutex::new(BTreeMap::new()),
+            sharded: omap::ShardedOmap::new(),
             no_exist: Mutex::new(BTreeSet::new()),
         }
     }
 
     fn lookup_object(&self, id: ObjID, _flags: LookupFlags) -> LookupResult {
-        if self.no_exist.lock().contains(&id) {
-            return LookupResult::NotFound;
-        }
-        if let Some(res) = self
-            .map
-            .lock()
-            .get(&id)
-            .map(|obj| LookupResult::Found(obj.clone()))
-        {
-            return res;
+        if OMAP_SHARDED {
+            // The positive map answers first. `no_exist` is a negative cache, and nothing ever
+            // removes an entry from it -- so consulting it first both charged every successful
+            // lookup a second global lock and permanently shadowed any object whose id was
+            // marked nonexistent before it came to exist.
+            if let Some(obj) = self.sharded.lookup(id) {
+                return LookupResult::Found(obj);
+            }
+            if self.no_exist.lock().contains(&id) {
+                return LookupResult::NotFound;
+            }
+        } else {
+            if self.no_exist.lock().contains(&id) {
+                return LookupResult::NotFound;
+            }
+            if let Some(res) = self
+                .map
+                .lock()
+                .get(&id)
+                .map(|obj| LookupResult::Found(obj.clone()))
+            {
+                return res;
+            }
         }
         ties::TIE_MGR
             .lookup_object(id)
@@ -603,18 +693,31 @@ impl ObjectManager {
     }
 
     fn register_object(&self, obj: Arc<Object>) {
-        // TODO: what if it returns an obj
-        self.map.lock().insert(obj.id(), obj);
+        if OMAP_SHARDED {
+            // An evicted duplicate (same-id replacement) drops here, outside the shard lock.
+            drop(self.sharded.insert(obj));
+        } else {
+            // TODO: what if it returns an obj
+            self.map.lock().insert(obj.id(), obj);
+        }
     }
 }
 
 pub fn print_all_objects() {
     let mgr = obj_manager();
-    let map = mgr.map.lock();
-    logln!("=== OBJECTS === ({})", map.len());
+    // Both arms print from a collected snapshot: the sharded map's locks are spinlocks, which
+    // must not be held across console output.
+    let objs: Vec<ObjectRef> = if OMAP_SHARDED {
+        let mut v = Vec::new();
+        mgr.sharded.collect_all(&mut v);
+        v
+    } else {
+        mgr.map.lock().values().cloned().collect()
+    };
+    logln!("=== OBJECTS === ({})", objs.len());
     let mut nn = 0;
-    for (id, obj) in map.iter() {
-        logln!("{}: {:?}", id, obj.info());
+    for obj in objs.iter() {
+        logln!("{}: {:?}", obj.id, obj.info());
         obj.print_notes();
         if obj.enumerate_notes(0, 1).is_empty() {
             nn += 1;
@@ -636,34 +739,28 @@ pub fn print_all_objects() {
     logln!("\n=== DELETED OBJECTS WITH NO NOTES === ({})\n\n", nn);
 }
 
-pub fn scan_deleted() {
-    // Never take a per-object lock while holding the global map lock. An object's page-table lock
-    // can be held by a thread that is asleep waiting on the userspace pager, and blocking on it
-    // here would stall every lookup_object() in the kernel -- including the ones the pager request
-    // handler needs to service that very wait. So: pick candidates using only the cheap test,
-    // release the map lock, then evaluate the blocking predicate.
-    let candidates = {
-        let om = obj_manager().map.lock();
-        om.iter()
-            .filter(|(_, obj)| obj.is_pending_delete())
-            .map(|(id, obj)| (*id, obj.clone()))
-            .collect::<Vec<_>>()
-    };
+/// Whether `obj` can be reaped now: nothing maps it and nothing has it pinned.
+///
+/// Takes the object's own locks, so it must be called with the global map lock *released* -- see
+/// [`scan_deleted`] for what deadlocks otherwise.
+fn is_reapable(obj: &ObjectRef) -> bool {
+    obj.lock_page_tables().map_count() == 0 && obj.pin_info.lock().pins.len() == 0
+}
 
-    let mut deletable = Vec::new();
-    for (id, obj) in candidates {
-        let not_mapped = obj.lock_page_tables().map_count() == 0;
-        if not_mapped && obj.pin_info.lock().pins.len() == 0 {
-            deletable.push((id, obj));
-        }
-    }
-
-    let dobjs = {
+/// Remove `reapable` objects from the map and hand them to the tie manager.
+///
+/// Re-checks each entry under the map lock: it may have been replaced or resurrected while the
+/// predicate above was evaluated unlocked.
+fn reap(reapable: Vec<(ObjID, ObjectRef)>) {
+    let dobjs = if OMAP_SHARDED {
+        reapable
+            .iter()
+            .filter_map(|(id, obj)| obj_manager().sharded.remove_if_pending(*id, obj))
+            .collect()
+    } else {
         let mut om = obj_manager().map.lock();
         let mut dobjs = Vec::new();
-        for (id, obj) in deletable {
-            // Re-check under the map lock: the entry may have been replaced or resurrected while
-            // we were evaluating it unlocked.
+        for (id, obj) in reapable {
             let unchanged = om
                 .get(&id)
                 .is_some_and(|cur| Arc::ptr_eq(cur, &obj) && cur.is_pending_delete());
@@ -678,6 +775,188 @@ pub fn scan_deleted() {
     for dobj in dobjs {
         ties::TIE_MGR.delete_object(dobj);
     }
+}
+
+/// The reap rework (`sysbench.md` F6). On: `ObjectControlCmd::Delete` reaps only the object it just
+/// marked, and the unmap paths hand the reaper thread the object whose last mapping went away. Off,
+/// delete runs a full [`scan_deleted`] inline -- a walk of every object in the system, taking each
+/// one's page-table lock -- and the unmap paths say nothing.
+///
+/// Worth 16.1 us of the 16.6 us a delete used to cost, and ~7 us of `object_create_delete`.
+///
+/// This wedged the machine for as long as it was on, deterministically, and the cause was not
+/// here: prompt reaping merely made it far more likely that an object's last `ObjectRef` died on
+/// the pager completion thread, where `Object::drop`'s blocking delete parked the one thread that
+/// drains completions (see `pager::Deleter`). Bisecting to this switch found the trigger, not the
+/// defect -- which is why three fixes aimed here in turn each still wedged. With the drop deferred,
+/// the sysbench suite passes 5/5 at smp1 and 5/5 at smp4, where it used to stop dead 5 out of 5.
+pub const TARGETED_REAP: bool = true;
+
+/// Background reaper: runs [`scan_deleted`] when an unmap makes something reapable.
+///
+/// Off the unmap paths because reaping walks candidates taking each one's page-table and pin locks,
+/// against the very paths doing the unmapping. It also cannot be left to the idle loop's scan,
+/// which never runs while a cpu stays busy: without any reaper, a create/map/delete/unmap loop
+/// retained every object it made and exhausted memory partway through the suite.
+struct Reaper {
+    work: CondVar,
+    /// The objects an unmap made reapable, and whether the queue overflowed.
+    ///
+    /// A queue, not a "something changed" flag: a flag makes the thread run [`scan_deleted`], and
+    /// under a workload that unmaps constantly that is a walk of every object in the system --
+    /// taking each one's page-table lock -- on a loop, against the very paths doing the unmapping.
+    /// The contended-sync bench wedged outright that way. What the unmap paths actually know is
+    /// *which* object became reapable, so they say so and the thread checks only those.
+    ///
+    /// Behind the lock the thread waits on, not an atomic beside it: `CondVar::wait` registers the
+    /// waiter before releasing the guard, so a requester that takes this lock either enqueues
+    /// before the thread tests the queue or signals after the thread is queued. Tested-then-
+    /// signalled without the lock leaves a window where the wakeup is lost.
+    queue: crate::spinlock::Spinlock<ReapQueue>,
+}
+
+#[derive(Default)]
+struct ReapQueue {
+    objs: Vec<(ObjID, ObjectRef)>,
+    /// Page tables handed over by [Object::drop], to be torn down on the reaper thread.
+    ///
+    /// Deliberately not bounded the way `objs` is. The overflow fallback there is a full scan,
+    /// which re-derives what was dropped; there is no equivalent for these -- the only other way
+    /// to discharge one is to tear it down on the spot, which is exactly what must not happen
+    /// on the thread that handed it over, and least of all when memory is tight enough for a
+    /// burst to have built up. What the depth costs is the frames the queued tables still
+    /// hold, which the reaper is one wake away from returning.
+    graves: Vec<Mutex<pagetables::ObjectPageTable>>,
+    /// Set when [`MAX_REAP_QUEUE`] was hit, so the thread falls back to one full scan rather than
+    /// dropping the objects it was not told about.
+    overflowed: bool,
+}
+
+/// Bounded so a burst of unmaps cannot grow this without limit; past it one scan covers everything.
+const MAX_REAP_QUEUE: usize = 1024;
+
+static REAPER: Once<Reaper> = Once::new();
+
+pub fn start_reaper_thread() {
+    extern "C" fn reaper_entry() {
+        let r = REAPER.wait();
+        let mut guard = r.queue.lock();
+        loop {
+            if guard.objs.is_empty() && guard.graves.is_empty() && !guard.overflowed {
+                guard = r.work.wait(guard);
+                continue;
+            }
+            let objs = core::mem::take(&mut guard.objs);
+            let graves = core::mem::take(&mut guard.graves);
+            let overflowed = core::mem::replace(&mut guard.overflowed, false);
+            drop(guard);
+            // Before the scans: these hold frames, and a scan can take an object's page-table lock
+            // and wait on the pager. Dropping them one at a time rather than the whole `Vec` at
+            // once keeps each teardown's frames returned before the next one starts, which is what
+            // makes a `WAIT_OK` allocation inside one of them mostly self-feeding.
+            for tables in graves {
+                drop(tables);
+            }
+            for (id, obj) in objs {
+                scan_deleted_one(id, &obj);
+            }
+            if overflowed {
+                scan_deleted();
+            }
+            guard = r.queue.lock();
+        }
+    }
+    REAPER.call_once(|| Reaper {
+        work: CondVar::new(),
+        queue: crate::spinlock::Spinlock::new(ReapQueue::default()),
+    });
+    crate::thread::entry::start_new_kernel(
+        crate::thread::priority::Priority::USER,
+        reaper_entry,
+        0,
+    );
+}
+
+/// Ask the reaper to check `obj`, which an unmap may have just made reapable.
+///
+/// Cheap and non-blocking: a push and a signal. The per-object locks the check needs are taken on
+/// the reaper thread instead of on the unmap path.
+pub fn request_reap(id: ObjID, obj: &ObjectRef) {
+    if let Some(reaper) = REAPER.poll() {
+        {
+            let mut q = reaper.queue.lock();
+            if q.objs.len() >= MAX_REAP_QUEUE {
+                q.overflowed = true;
+            } else {
+                q.objs.push((id, obj.clone()));
+            }
+        }
+        reaper.work.signal();
+    }
+}
+
+/// A/B knob for the handover below. `false` restores tearing the tables down on whichever thread
+/// dropped the last reference, which is the behaviour every measurement before it was taken
+/// against -- including the one that says a three-pass sysbench boot exhausts memory.
+pub const DEFER_TEARDOWN: bool = true;
+
+/// Hand an object's page tables to the reaper to tear down. Never blocks: a move and a signal.
+fn defer_teardown(tables: Mutex<pagetables::ObjectPageTable>) {
+    if !DEFER_TEARDOWN {
+        drop(tables);
+        return;
+    }
+    let Some(reaper) = REAPER.poll() else {
+        // Before the reaper thread exists nothing else can free these, so the caller pays. Early
+        // boot only, and the objects that die there are the bootstrap ones -- small, and dropped
+        // by the thread that built them rather than by a service thread.
+        drop(tables);
+        return;
+    };
+    reaper.queue.lock().graves.push(tables);
+    reaper.work.signal();
+}
+
+/// Try to reap one object that has just been marked for deletion.
+///
+/// What [`ObjectControlCmd::Delete`] wants: the object it named is the only one whose reapability
+/// just changed, and a full [`scan_deleted`] to catch it walks the entire global object map under
+/// its lock -- which is most of what a delete syscall cost (18.6 us of a 34.9 us create/delete
+/// pair, `sysbench.md` F6). Objects that become reapable *later*, because someone else's mapping
+/// went away, are still caught by the idle-loop scan.
+pub fn scan_deleted_one(id: ObjID, obj: &ObjectRef) {
+    if !obj.is_pending_delete() || !is_reapable(obj) {
+        return;
+    }
+    reap(alloc::vec![(id, obj.clone())]);
+}
+
+pub fn scan_deleted() {
+    // Never take a per-object lock while holding the global map lock. An object's page-table lock
+    // can be held by a thread that is asleep waiting on the userspace pager, and blocking on it
+    // here would stall every lookup_object() in the kernel -- including the ones the pager request
+    // handler needs to service that very wait. So: pick candidates using only the cheap test,
+    // release the map lock, then evaluate the blocking predicate.
+    let candidates = if OMAP_SHARDED {
+        let mut v = Vec::new();
+        obj_manager().sharded.collect_pending(&mut v);
+        v
+    } else {
+        let om = obj_manager().map.lock();
+        om.iter()
+            .filter(|(_, obj)| obj.is_pending_delete())
+            .map(|(id, obj)| (*id, obj.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut deletable = Vec::new();
+    for (id, obj) in candidates {
+        if is_reapable(&obj) {
+            deletable.push((id, obj));
+        }
+    }
+
+    reap(deletable);
 }
 
 /// Ring of the most recent `mark_for_delete` calls, so that a failed lookup can say whether the id
@@ -856,15 +1135,24 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
 }
 
 pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
-    let mgr = obj_manager().map.lock();
-    let ids = TIE_MGR.with_deleted_map(|dm| {
-        mgr.iter()
-            .chain(dm.iter())
-            .map(|(id, _)| *id)
-            .skip(offset)
-            .take(buf.len())
-            .collect::<Vec<_>>()
-    });
+    let ids = if OMAP_SHARDED {
+        // Shard-major snapshot union; enumerate was never transactional, so this is the same
+        // guarantee class as the single-lock walk.
+        let mut all = Vec::new();
+        obj_manager().sharded.collect_ids(&mut all);
+        TIE_MGR.with_deleted_map(|dm| all.extend(dm.keys().copied()));
+        all.into_iter().skip(offset).take(buf.len()).collect::<Vec<_>>()
+    } else {
+        let mgr = obj_manager().map.lock();
+        TIE_MGR.with_deleted_map(|dm| {
+            mgr.iter()
+                .chain(dm.iter())
+                .map(|(id, _)| *id)
+                .skip(offset)
+                .take(buf.len())
+                .collect::<Vec<_>>()
+        })
+    };
 
     buf[..ids.len()].copy_from_slice(&ids);
     Ok(ids.len())

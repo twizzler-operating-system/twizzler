@@ -67,6 +67,8 @@ pub enum Syscall {
     /// Manage tracing
     Ktrace,
     Enumerate,
+    /// Copy ranges into, or zero ranges within, an object that already exists.
+    ObjectCopy,
     NumSyscalls,
 }
 
@@ -131,6 +133,15 @@ fn twzerr(_: u64, v: u64) -> TwzError {
 pub fn sys_debug_shutdown(code: u32) {
     unsafe {
         raw_syscall(Syscall::Null, &[0x12345678, code as u64]);
+    }
+}
+
+/// Ask the kernel to print the deltas of its internal profiles since the last mark, or (with
+/// `rebaseline`) to silently start a new interval. A diagnostic for phased workloads; a kernel
+/// built without the profiles prints nothing.
+pub fn sys_debug_perfmark(rebaseline: bool) {
+    unsafe {
+        raw_syscall(Syscall::Null, &[0x12345679, rebaseline as u64]);
     }
 }
 

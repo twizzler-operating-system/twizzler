@@ -742,15 +742,29 @@ impl Table {
         level: usize,
         fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
+        // How far the cursor is from the end of the entry it currently sits in.
+        // `advance_until_empty` steps by exactly its argument, so handing it the level's page size
+        // overshoots into the next entry whenever the cursor starts mid-entry.
+        let to_entry_end = |cursor: &MappingCursor| {
+            let size = Self::level_to_page_size(level);
+            size - (cursor.start().raw() as usize % size)
+        };
         let start_index = Self::get_index(cursor.start(), level);
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             if cursor.remaining() == 0 {
                 break;
             }
-            let entry = self[idx];
-            let is_huge = entry.is_huge() && Self::can_map_at_level(level);
+            let mut entry = self[idx];
+            let mut is_huge = entry.is_huge() && Self::can_map_at_level(level);
             if cursor.remaining() < Self::level_to_page_size(level) && is_huge {
                 self.split_huge(idx, level, consist, cursor.start(), fa)?;
+                // `split_huge` replaces this slot with an intermediate entry, so the copy taken
+                // above no longer describes it. Acting on the stale copy would drop the whole huge
+                // region instead of the sub-range asked for, orphan the table `split_huge` just
+                // built along with its children, and free the head child under it. Every other
+                // caller re-reads or descends via `next_table_mut` for the same reason.
+                entry = self[idx];
+                is_huge = entry.is_huge() && Self::can_map_at_level(level);
             }
             if entry.is_present() && (is_huge || level == Self::last_level()) {
                 let frame = get_frame(entry.addr(level));
@@ -773,15 +787,21 @@ impl Table {
                     );
                     consist.free_frame(frame);
                 }
+                *cursor = cursor.advance_until_empty(to_entry_end(cursor));
             } else if entry.is_present() && level != Self::last_level() {
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
                     self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
+                // The child walks the same cursor and leaves it at the end of its own coverage.
+                // Advancing again here would step a second time over an entry nobody visited: a
+                // range spanning two level-1 regions zeroed only the first, and the caller got no
+                // error -- which is what `zero_range` shipped to userspace as "this range is now
+                // zero". Every entry-consuming arm advances for itself instead.
                 next_table.setup_zero_range(consist, cursor, Self::next_level(level), fa)?;
+            } else {
+                *cursor = cursor.advance_until_empty(to_entry_end(cursor));
             }
-
-            *cursor = cursor.advance_until_empty(Self::level_to_page_size(level));
         }
         Ok(())
     }

@@ -37,6 +37,7 @@ mod once;
 mod operations;
 mod pager;
 mod panic;
+mod perfmark;
 mod processor;
 mod queue;
 mod random;
@@ -265,25 +266,39 @@ extern "C" fn background_worker() {
     }
 }
 
+/// Boot sequencing, on its own thread.
+///
+/// This used to run on the bsp's idle thread, which `wait()`ed for the tests here -- ahead of the
+/// idle loop, where every hang diagnostic lives behind `is_bsp()`. So for the whole kernel-test
+/// phase `check_orphan_threads`, `check_system_hang` and `check_timed_out_mutexes` were all
+/// switched off, and that is the window in which a test that wedges the system wedges it: the
+/// transcript simply stops, because nothing was left running that could describe it. `bsp_watchdog`
+/// does not cover it either -- it needs the bsp's tick to stall, and a bsp spinning in that wait
+/// with interrupts on keeps ticking.
+///
+/// REALTIME to preserve the old property that threads a test spawns do not preempt the test thread,
+/// and the order below is the order the idle thread ran these in.
+extern "C" fn boot_sequence() {
+    #[cfg(test)]
+    if is_test_mode() {
+        test_main();
+    }
+    start_new_init();
+    let _ = crate::thread::entry::start_new_kernel(Priority::BACKGROUND, background_worker, 0);
+    crate::thread::exit(0);
+}
+
 pub fn idle_main() -> ! {
     interrupt::set(true);
     if current_processor().is_bsp() {
         machine::machine_post_init();
         start_entropy_contribution_thread();
 
-        #[cfg(test)]
-        if is_test_mode() {
-            // Run tests on a high priority thread, so any threads spawned by tests
-            // don't preempt the testing thread.
-            crate::thread::entry::run_closure_in_new_thread(
-                crate::thread::priority::Priority::REALTIME,
-                || test_main(),
-            )
-            .1
-            .wait();
-        }
-        start_new_init();
-        let _ = crate::thread::entry::start_new_kernel(Priority::BACKGROUND, background_worker, 0);
+        let _ = crate::thread::entry::start_new_kernel(
+            crate::thread::priority::Priority::REALTIME,
+            boot_sequence,
+            0,
+        );
     }
     logln!(
         "[kernel::main] processor {} entering main idle loop",
@@ -291,6 +306,13 @@ pub fn idle_main() -> ! {
     );
     let mut iter = 0u32;
     loop {
+        // Deliver wakeups parked on the requeue list. A signal that lands between a waiter's
+        // setup_wait and its finish_blocking finds the waiter still critical and defers the
+        // wakeup (add_to_requeue); any later requeue_all delivers it, but a system quiescing at
+        // that moment never runs one and the waiter sleeps forever on an idle machine. The cpu
+        // that ran the waiter reaches this loop right after it blocks, so draining here bounds
+        // the loss to one idle pass. Cheap when empty: requeue_all early-outs on the count.
+        crate::syscall::sync::requeue_all();
         if iter % 100 == 0 {
             current_processor().cleanup_exited();
         }
@@ -312,6 +334,27 @@ pub fn idle_main() -> ! {
                 crate::thread::check_system_hang();
                 crate::obj::promotion_census();
             }
+        }
+        // The same diagnostics, from a cpu that still can, when the bsp has stopped ticking. See
+        // `clock::bsp_watchdog`: everything above is gated on `is_bsp()`, so a bsp spinning with
+        // interrupts masked silences the entire diagnostic surface -- which is the one state it
+        // most needs to describe. Fires at most once per boot.
+        if iter % 1000 == 0
+            && !current_processor().is_bsp()
+            && (is_test_mode() || is_diag_mode())
+            && crate::clock::bsp_watchdog::stalled()
+        {
+            emerglogln!(
+                "[watchdog] bsp tick has stopped advancing; reporting from cpu {}",
+                current_processor().id
+            );
+            // Cheap and lock-free first, because everything after this takes a lock the wedged cpu
+            // may be holding, and a watchdog that hangs before printing is no watchdog.
+            crate::thread::locktrack::diag::print_counters(true);
+            crate::thread::check_system_hang();
+            check_timed_out_mutexes();
+            check_orphan_threads();
+            emerglogln!("[watchdog] end of report");
         }
         iter = iter.wrapping_add(1);
         requeue_all();

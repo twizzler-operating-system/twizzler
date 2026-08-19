@@ -47,7 +47,15 @@ static UNMAP_HIST: Spinlock<([UnmapRecord; UNMAP_HIST_LEN], usize)> = Spinlock::
     0,
 ));
 
+/// Whether to keep the unmap history. It costs a global spinlock and a note summarize on *every*
+/// unmap, which is on the measured path of the map/unmap benches; it only pays for itself while
+/// chasing a `MemoryContextViolation`.
+pub const UNMAP_HISTORY: bool = false;
+
 pub(super) fn note_unmap(slot: usize, obj: &crate::obj::ObjectRef) {
+    if !UNMAP_HISTORY {
+        return;
+    }
     let mut note = [0u8; UNMAP_NOTE_LEN];
     let note_len = obj.get_notes().summarize(&mut note);
     let mut hist = UNMAP_HIST.lock();
@@ -91,6 +99,19 @@ fn report_unmap_history(slot: usize) {
 /// the numbers it reports include that cost.
 pub const FAULT_PROFILE: bool = false;
 
+/// A/B: resolve the faulting region through the per-thread slot memo, rather than by taking the
+/// context-wide `regions` mutex on every fault.
+///
+/// Exists because the memo's cost was first measured against a baseline built from a different
+/// tree state, so its uncontended cost and its contended saving were both confounded by unrelated
+/// changes. Flipping this const is the only difference between the two arms.
+/// Off: the memo existed to route around the context-wide `regions` mutex, which the `SlotMgr`
+/// refactor removed. A/B at `memoab-on`/`memoab-off` (3 sequential-lane rounds each, no overlap
+/// between arms): uncontended soft fault 996 -> 936 ns mean, contended flat (7314 -> 7238),
+/// thread_sync_ping_pong 2150 -> 1822 ns -- disabling it wins or ties everywhere measured. The
+/// `SlotMemo` machinery stays for `lookup_object_ref_batch` until that path gets its own A/B.
+pub const FAULT_SLOT_MEMO: bool = false;
+
 /// Stages of one fault, in the order they run. `Total` is the whole of [`page_fault`], so it also
 /// captures whatever is not attributed to a stage.
 #[derive(Clone, Copy)]
@@ -108,12 +129,32 @@ pub enum FaultStage {
     PtLock,
     /// `ensure_in_core`: the fill, including any pager round trip.
     EnsureCore,
+    /// Inside `ensure_in_core`: acquiring the frames for the fill (precharge, plus any wait for
+    /// memory and the lock re-acquisition that a wait costs).
+    Precharge,
+    /// Inside `ensure_in_core`: installing those frames in the object's page table.
+    Fill,
     Cow,
     /// `ensure_object_mapped`: installing the object-table entry in the address space.
     MapObject,
     Total,
 }
-const NR_STAGES: usize = FaultStage::Total as usize + 1;
+pub const NR_STAGES: usize = FaultStage::Total as usize + 1;
+
+/// [`FaultStage`] names, in variant order.
+pub const STAGE_NAMES: [&str; NR_STAGES] = [
+    "prologue",
+    "region",
+    "security",
+    "handle",
+    "pt_lock",
+    "ensure_core",
+    "precharge",
+    "fill",
+    "cow",
+    "map_object",
+    "TOTAL",
+];
 
 /// What kind of fault it was, counted alongside the stages.
 #[derive(Clone, Copy)]
@@ -208,6 +249,25 @@ pub fn record_class(class: FaultClass) {
     });
 }
 
+/// Per-stage (count, total nanoseconds) summed over cpus, for [`crate::perfmark`] to difference.
+///
+/// Cumulative, never reset: the marker subtracts consecutive snapshots, which is the only reading
+/// that survives other cpus faulting between two marks.
+pub fn stage_snapshot() -> [(usize, u64); NR_STAGES] {
+    let mut out = [(0usize, 0u64); NR_STAGES];
+    if !FAULT_PROFILE {
+        return out;
+    }
+    crate::processor::mp::with_each_active_processor(|p| {
+        let stats = p.fault_stats.lock();
+        for (i, stage) in stats.stages.iter().enumerate() {
+            out[i].0 += stage.count();
+            out[i].1 += (stage.sum_femtos() / 1_000_000) as u64;
+        }
+    });
+    out
+}
+
 pub fn print_fault_profile() {
     if !FAULT_PROFILE {
         return;
@@ -229,17 +289,6 @@ pub fn print_fault_profile() {
         }
     });
 
-    const STAGE_NAMES: [&str; NR_STAGES] = [
-        "prologue",
-        "region",
-        "security",
-        "handle",
-        "pt_lock",
-        "ensure_core",
-        "cow",
-        "map_object",
-        "TOTAL",
-    ];
     logln!("== fault profile ==");
     for (i, name) in STAGE_NAMES.iter().enumerate() {
         let stat = stages[i].get_stats();
@@ -614,20 +663,30 @@ fn get_map_region(
         base: region.range.start,
     };
 
-    let slot_mgr = ctx.regions.lock();
-    let mut region = slot_mgr.lookup_region(slot.start_vaddr()).cloned();
-    let mut exec = exec_slot.and_then(|s| slot_mgr.lookup_region(s.start_vaddr()).map(&exec_of));
-    drop(slot_mgr);
+    // Through the per-thread slot memo rather than the context-wide `regions` mutex. The single
+    // acquisition this replaces was already the cheap arrangement -- it exists because these used
+    // to be two -- but it is still one lock every fault in the compartment must pass through, and
+    // under concurrent faults it convoys: 155 ns to 7.5 us per fault at smp4, 58% of the contended
+    // increase. A hit here costs an uncontended per-thread spinlock and an `Arc` clone; a miss
+    // costs that plus the acquisition it would have taken anyway.
+    let (mut region, exec_region) = if FAULT_SLOT_MEMO {
+        ctx.lookup_fault_regions(slot, exec_slot)
+    } else {
+        (
+            ctx.regions.lookup_region(slot),
+            exec_slot.and_then(|s| ctx.regions.lookup_region(s)),
+        )
+    };
+    let mut exec = exec_region.as_ref().map(&exec_of);
 
     // Whatever this context did not have may still be a kernel object.
     if region.is_none() || (exec_slot.is_some() && exec.is_none()) {
         let kctx = kernel_context();
-        let k_regions = kctx.regions.lock();
         if region.is_none() {
-            region = k_regions.lookup_region(slot.start_vaddr()).cloned();
+            region = kctx.regions.lookup_region(slot);
         }
         if exec.is_none() {
-            exec = exec_slot.and_then(|s| k_regions.lookup_region(s.start_vaddr()).map(&exec_of));
+            exec = exec_slot.and_then(|s| kctx.regions.lookup_region(s).as_ref().map(&exec_of));
         }
     }
 

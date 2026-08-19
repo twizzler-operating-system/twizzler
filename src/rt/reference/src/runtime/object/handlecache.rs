@@ -141,6 +141,22 @@ impl HandleCache {
         core::mem::take(&mut self.pending_unmaps)
     }
 
+    /// Put back unmaps the manager could not claim, for a later drain.
+    pub fn requeue_unmaps(&mut self, keys: Vec<Mapping>) {
+        self.pending_unmaps.extend(keys);
+    }
+
+    /// Void a queued unmap for `map`, because the mapping is live again.
+    ///
+    /// A queued unmap says "the runtime no longer holds this key". A map that completes afterwards
+    /// makes that false, and issuing it anyway would take the monitor's handle count for the key
+    /// down past the mapping just established -- unmapping the slot out from under whoever is
+    /// holding the fresh handle. Dropping it is what keeps the count balanced: the clobbering
+    /// insert in `RunComp::map_object` has already released the superseded one.
+    pub fn cancel_pending_unmap(&mut self, map: &Mapping) {
+        self.pending_unmaps.retain(|k| k != map);
+    }
+
     /// Drop every entry idle longer than [IDLE_TTL].
     ///
     /// `queued` is ordered by release time, so this stops at the first entry still within its
@@ -199,6 +215,12 @@ impl HandleCache {
             self.next_seq += 1;
             self.queued.insert(seq, (map, handle, now));
             self.queued_at.insert(map, seq);
+        } else if self.queued_at.contains_key(&map) {
+            // Already released and sitting in the cache. Reachable only via the resurrect path:
+            // `cached` handed this handle out again after its count hit zero, and that holder has
+            // now dropped it too, so the release runs a second time. The queued entry is the live
+            // record -- unmapping here would tear down a mapping the cache still owns.
+            tracing::debug!("release: already queued, leaving cached");
         } else {
             tracing::debug!("do_remove");
             self.do_remove(handle);

@@ -929,7 +929,12 @@ pub(crate) fn run_once(
     })
 }
 
-pub(crate) fn do_start_qemu(cli: QemuOptions) -> anyhow::Result<()> {
+pub(crate) fn do_start_qemu(mut cli: QemuOptions) -> anyhow::Result<()> {
+    // Folded here so everything downstream (image build, exit-code handling, --repeat) sees an
+    // ordinary --bench run.
+    if cli.sysbench {
+        cli.bench = Some("sysbench".to_string());
+    }
     let monitor = cli.tests && !cli.no_test_monitor;
     let image = if cli.no_build {
         prebuilt_image_path(&cli.config)

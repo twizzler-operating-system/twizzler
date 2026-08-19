@@ -135,6 +135,17 @@ impl Clock {
         }
     }
 
+    /// The clock's id, for reading it directly with
+    /// [`sys_read_clock_info`](super::sys_read_clock_info).
+    pub fn id(&self) -> ClockID {
+        self.id
+    }
+
+    /// The kind of clock this is.
+    pub fn kind(&self) -> ClockKind {
+        self.kind
+    }
+
     pub fn info(&self) -> ClockInfo {
         self.info
     }

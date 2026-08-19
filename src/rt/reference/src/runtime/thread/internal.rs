@@ -17,6 +17,7 @@ use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
 use crate::runtime::{
     alloc::LOCAL_ALLOCATOR,
+    core::run_mlibc_thread_dtors,
     thread::{mgr::stackpool, tcb::tlspool, MIN_STACK_ALIGN},
     OUR_RUNTIME,
 };
@@ -149,6 +150,22 @@ impl Drop for InternalThread {
     fn drop(&mut self) {
         trace!("dropping InternalThread {}", self.id);
         unsafe {
+            // mlibc's pthread-key destructors, run from here rather than from the exiting thread
+            // -- the same placement `CrossThread::drop` uses. Ordered before the TLS region is
+            // recycled or freed below, because `run_dtors_for_tcb` reads each key's value out of
+            // that region.
+            //
+            // Only mlibc's. std's list is already drained by the thread itself: `trampoline` calls
+            // std's `thread_start`, which runs `destructors::run()` before `twz_rt_exit`. Nothing
+            // on that path reaches mlibc's `thread_exit`/`run_dtors_for_tcb`, which is where
+            // ferroc's thread-local heap release is registered, and that was the gap.
+            // `CrossThread::drop` needs both only because a thread entering from another
+            // compartment never runs std's `thread_start` in this one.
+            //
+            // Safe to run from the reaping thread only because ferroc's `fini` is guarded to clear
+            // its `HEAP` thread-local when the finalized id is the running thread's; unguarded it
+            // would abandon the reaper's own heap. See `src/ports/ferroc/src/global/thread.rs`.
+            run_mlibc_thread_dtors(self.tls.cast(), 0);
             // Stack is manually allocated, so hand it to the next spawn, or free it directly if
             // the pool is full. Recycling needs exactly what freeing here already needs: this
             // thread is gone, so nothing is running on it.

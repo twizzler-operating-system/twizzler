@@ -2,7 +2,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use log::{debug, warn};
-use twizzler_abi::syscall::{Clock, ClockID, ClockInfo, ClockKind, FemtoSeconds};
+use twizzler_abi::syscall::{
+    Clock, ClockFlags, ClockID, ClockInfo, ClockKind, ClockSource, FemtoSeconds,
+};
 use twizzler_rt_abi::{Result, error::ArgumentError};
 
 use crate::{
@@ -311,6 +313,59 @@ pub fn get_current_ticks() -> u64 {
     BSP_TICK.load(Ordering::SeqCst)
 }
 
+/// Watchdog for a stalled BSP, run from *non-BSP* idle loops.
+///
+/// Every hang diagnostic this kernel has -- `check_timed_out_mutexes`, `check_orphan_threads`,
+/// `check_system_hang` -- runs from the `is_bsp()` arm of `idle_main`, and every timeout is
+/// advanced from the `is_bsp()` arm of `oneshot_clock_hardtick`. So the one failure they exist to
+/// catch, a BSP spinning with interrupts masked, is precisely the one where none of them can run:
+/// the BSP never reaches its idle loop, no timeout fires, and the transcript simply stops. That is
+/// the `test_mutex` smp4 wedge's undiagnosability, and it is structural rather than bad luck.
+///
+/// This closes it from the other side, *partly*. A non-BSP cpu that has work keeps taking its own
+/// hardticks -- each cpu programs and rearms its own LAPIC one-shot -- so it keeps reaching its
+/// idle loop and can notice that `BSP_TICK` has stopped moving. Costs one relaxed load per caller
+/// in the normal case, and reports once per boot.
+///
+/// **Where it does not reach.** An *idle* cpu is halted, and what wakes it is largely the statclock
+/// -- which the PIT delivers to the BSP alone, the BSP re-broadcasting it by IPI (see the
+/// TIMER_VECTOR arm in `arch/amd64/interrupt.rs`). So a BSP that stops taking interrupts also stops
+/// waking the cpus that are supposed to report on it, and they never run this. That is not
+/// hypothetical: across 46 captured wedges this fired zero times. Treat a silent watchdog as no
+/// evidence either way, and note that the wedges it did not catch had a BSP spinning with
+/// interrupts *on* -- ticking normally, which this cannot see by construction.
+pub mod bsp_watchdog {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use super::BSP_TICK;
+
+    /// Idle-loop observations of an unchanged `BSP_TICK` before we call it stalled. The caller runs
+    /// this every 1000 idle iterations, each of which halts until an interrupt, so this is
+    /// deliberately generous: the cost of being late is a slower report, the cost of being early is
+    /// a false alarm in a transcript someone will read as a bug.
+    const STALL_OBSERVATIONS: u64 = 16;
+
+    static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
+    static UNCHANGED: AtomicU64 = AtomicU64::new(0);
+    static FIRED: AtomicBool = AtomicBool::new(false);
+
+    /// True once, when the BSP's tick has stopped advancing for long enough to be a wedge.
+    pub fn stalled() -> bool {
+        let now = BSP_TICK.load(Ordering::Relaxed);
+        let last = LAST_SEEN.swap(now, Ordering::Relaxed);
+        if now != last {
+            UNCHANGED.store(0, Ordering::Relaxed);
+            return false;
+        }
+        // Before the first tick there is nothing to have stalled.
+        if now == 0 {
+            return false;
+        }
+        let n = UNCHANGED.fetch_add(1, Ordering::Relaxed) + 1;
+        n >= STALL_OBSERVATIONS && !FIRED.swap(true, Ordering::Relaxed)
+    }
+}
+
 pub fn schedule_oneshot_tick(next: u64) {
     let time = ticks_to_nano(next).unwrap();
     NEXT_TICK.store(next, Ordering::SeqCst);
@@ -367,10 +422,20 @@ pub fn oneshot_clock_hardtick() {
         sched_next_tick.unwrap_or(u64::MAX),
     );
 
-    if next != u64::MAX {
-        schedule_oneshot_tick(next);
-    }
+    // Always rearm. The timer is one-shot, so a cpu that leaves a hardtick without programming the
+    // next one takes no further timer interrupt for the rest of the boot -- it keeps running, and
+    // keeps answering IPIs, so nothing looks wrong until you notice its timeslices never expire.
+    //
+    // The bsp is already guarded against this (`sched_next_tick = Some(1)` above, unconditionally).
+    // No other cpu was: `to_next_tick` is `None` off-bsp by construction, so a non-bsp cpu that
+    // takes one hardtick while `schedule_hardtick` returns `None` -- which is any hardtick with no
+    // current thread -- retires its own clock permanently. One tick is all it costs.
+    let next = if next == u64::MAX { REARM_TICKS } else { next };
+    schedule_oneshot_tick(next);
 }
+
+/// Fallback rearm interval, in ticks (milliseconds), when nothing else asked for one.
+const REARM_TICKS: u64 = 10;
 
 fn enumerate_hw_clocks() {
     crate::arch::processor::enumerate_clocks();
@@ -409,9 +474,19 @@ fn organize_clock_sources(kind: ClockKind) {
             let mut clock_vec = Vec::new();
             // nothing special here, just a bunch of integers
             // representing the clock ids of the TICK_SOURCES
-            let num_clocks: u64 = { TICK_SOURCES.lock().len() }.try_into().unwrap();
-            for i in CLOCK_OFFSET as u64..num_clocks {
-                clock_vec.push(ClockID(i));
+            // Only slots that actually hold a clock. This used to list every slot up to
+            // `MAX_CLOCKS` unconditionally, which was harmless only because `register_clock` had
+            // a matching bug that filled all of them with copies of the first clock. With that
+            // fixed the unregistered slots are `None`, and the `fill_with_*` readers below
+            // `unwrap()` what they find -- so listing an empty slot here is a kernel panic
+            // reachable by `sys_read_clock_list`. The two bugs concealed each other.
+            {
+                let sources = TICK_SOURCES.lock();
+                for (i, source) in sources.iter().enumerate().skip(CLOCK_OFFSET) {
+                    if source.is_some() {
+                        clock_vec.push(ClockID(i as u64));
+                    }
+                }
             }
             USER_CLOCKS.lock().push(clock_vec)
         }
@@ -430,6 +505,35 @@ impl ClockHardware for SoftClockTick {
     fn info(&self) -> ClockInfo {
         ClockInfo::ZERO
     }
+}
+
+/// Resolve a user-supplied [`ClockSource`] to a tick-source index and the flags to report.
+///
+/// Split out of the syscall handler so the bounds check has somewhere to be tested. The handler
+/// checked `src as usize > clock_list.len()` -- off by one -- and then indexed the array, so
+/// `ClockSource::ID(ClockID(MAX_CLOCKS))` read one past the end of an eight-element array and
+/// panicked the kernel from unprivileged userspace.
+pub fn resolve_clock_source(source: ClockSource) -> Result<(usize, ClockFlags)> {
+    match source {
+        ClockSource::BestMonotonic => Ok((0, ClockFlags::MONOTONIC)),
+        ClockSource::BestRealTime => Ok((1, ClockFlags::empty())),
+        ClockSource::ID(id) => {
+            let idx: usize = id.0.try_into().map_err(|_| ArgumentError::InvalidArgument)?;
+            if idx >= crate::time::MAX_CLOCKS {
+                return Err(ArgumentError::InvalidArgument.into());
+            }
+            Ok((idx, ClockFlags::empty()))
+        }
+    }
+}
+
+/// A registered clock's info, or `None` if that slot holds no clock.
+///
+/// Every caller here used to index `TICK_SOURCES` and `unwrap()`, so a clock id naming an empty
+/// slot took the kernel down rather than returning an error.
+fn clock_info(id: ClockID) -> Option<ClockInfo> {
+    let idx: usize = id.0.try_into().ok()?;
+    Some(TICK_SOURCES.lock().get(idx)?.as_ref()?.info())
 }
 
 // A list of user clocks that are exposed to user space
@@ -452,11 +556,11 @@ pub fn fill_with_every_first(slice: &mut [Clock], start: u64) -> Result<usize> {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
             // does this allocate new kernel memory?
-            let info = {
-                TICK_SOURCES.lock()[clock_list.first().as_ref().unwrap().0 as usize]
-                    .as_ref()
-                    .unwrap()
-                    .info()
+            let Some(id) = clock_list.first().copied() else {
+                continue;
+            };
+            let Some(info) = clock_info(id) else {
+                continue;
             };
             slice[clocks_added].set(
                 // each semantic clock will have at least one element
@@ -487,7 +591,9 @@ pub fn fill_with_kind(slice: &mut [Clock], clock: ClockKind, start: u64) -> Resu
     for id in &clock_list[start as usize..] {
         // check that we don't go out of slice bounds
         if clocks_added < slice.len() {
-            let info = { TICK_SOURCES.lock()[id.0 as usize].as_ref().unwrap().info() };
+            let Some(info) = clock_info(*id) else {
+                continue;
+            };
             slice[clocks_added].set(info, *id, clock);
             clocks_added += 1;
         } else {
@@ -505,8 +611,8 @@ pub fn fill_with_first_kind(slice: &mut [Clock], clock: ClockKind) -> Result<usi
     let clocks_added = 1;
     // check that we don't go out of slice bounds
     if slice.len() >= 1 {
-        let id = clock_list.first().unwrap();
-        let info = { TICK_SOURCES.lock()[id.0 as usize].as_ref().unwrap().info() };
+        let id = clock_list.first().ok_or(ArgumentError::InvalidArgument)?;
+        let info = clock_info(*id).ok_or(ArgumentError::InvalidArgument)?;
         slice[0].set(info, *id, clock);
         return Ok(clocks_added);
     } else {
@@ -521,4 +627,63 @@ pub fn init() {
     TIMEOUT_THREAD.call_once(|| {
         crate::thread::entry::start_new_kernel(Priority::INTERRUPT, soft_timeout_clock, 0)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use twizzler_abi::syscall::{ClockID, ClockSource};
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::*;
+
+    /// The bounds check behind `sys_read_clock_info`. Exercised here rather than through the
+    /// syscall because a kernel test has no user memory context to hand the ABI wrapper.
+    #[kernel_test]
+    fn test_resolve_clock_source_rejects_out_of_range() {
+        for id in [
+            crate::time::MAX_CLOCKS as u64,
+            crate::time::MAX_CLOCKS as u64 + 1,
+            u64::MAX,
+        ] {
+            assert!(
+                resolve_clock_source(ClockSource::ID(ClockID(id))).is_err(),
+                "clock id {} was accepted",
+                id
+            );
+        }
+        // ...and did not simply start rejecting everything.
+        assert!(resolve_clock_source(ClockSource::BestMonotonic).is_ok());
+        assert!(resolve_clock_source(ClockSource::BestRealTime).is_ok());
+        assert!(resolve_clock_source(ClockSource::ID(ClockID(0))).is_ok());
+    }
+
+    /// Every clock the enumeration hands out must be readable.
+    ///
+    /// `register_clock` used to fill all `MAX_CLOCKS` slots with copies of the first clock, and
+    /// the enumeration listed every slot up to that bound. The two bugs concealed each other:
+    /// fixing either alone leaves the list naming empty slots, which the readers `unwrap()`.
+    #[kernel_test]
+    fn test_listed_clocks_are_all_readable() {
+        let lists = USER_CLOCKS.lock().clone();
+        let mut seen = 0;
+        for list in &lists {
+            for id in list {
+                assert!(
+                    clock_info(*id).is_some(),
+                    "clock list names id {} with no registered source",
+                    id.0
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen > 0, "no clocks were enumerated at all");
+    }
+
+    /// The cached read path must agree with the list and refuse out-of-range indices.
+    #[kernel_test]
+    fn test_read_clock_bounds() {
+        assert!(crate::time::read_clock(0).is_some());
+        assert!(crate::time::read_clock(crate::time::MAX_CLOCKS).is_none());
+        assert!(crate::time::read_clock(usize::MAX).is_none());
+    }
 }

@@ -21,18 +21,19 @@ impl TiesStatic {
     }
 
     pub fn delete_object(&self, obj: ObjectRef) {
-        // Dropping the last `ObjectRef` runs `Object::drop`, which calls the *blocking*
-        // `pager::del_object`. Doing that under the ties mutex sleeps a thread on a pager round
-        // trip with `Ties` held, and `Ties` is taken from the object-teardown path the idle
-        // threads run while reaping -- so every reaper queues behind one pager request. Hand the
-        // released refs back and drop them after the guard is gone.
+        // Dropping the last `ObjectRef` runs `Object::drop`, which tells the pager the object is
+        // gone. That no longer blocks (`pager::Deleter`), but `Ties` is held here across the drop
+        // of an arbitrary object graph, and it is taken from the teardown path the idle threads run
+        // while reaping. Hand the released refs back and drop them after the guard is gone.
         let released = self.inner.lock().delete_value(obj.id(), obj);
         drop(released);
     }
 
     pub fn create_object_ties(&self, created_id: ObjID, ties: impl IntoIterator<Item = ObjID>) {
-        let ties = ties.into_iter().collect::<Vec<_>>();
-        if ties.is_empty() {
+        // Peek before collecting: the common case is zero ties, and collecting first charged
+        // every object create a heap allocation to discover that.
+        let mut ties = ties.into_iter().peekable();
+        if ties.peek().is_none() {
             return;
         }
         self.inner.lock().insert_ties(created_id, ties);

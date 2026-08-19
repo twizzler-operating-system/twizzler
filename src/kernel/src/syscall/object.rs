@@ -90,17 +90,119 @@ fn new_nonce() -> Result<u128> {
     }
 }
 
+/// Where `sys_object_create` spends its time, stage by stage.
+///
+/// Off in the tree for the reason F11 documents: two clock reads and a u128 conversion per stage,
+/// on a path `sysbench`'s `object_create_delete` measures. Turned on only for an attribution run.
+pub mod createprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    pub const CREATE_PROFILE: bool = false;
+
+    /// A/B switch for the create-path fast paths, as a bundle: installing the meta page directly
+    /// rather than through the generic fill path (see the call site in `sys_object_create`), and
+    /// skipping the id hash in `note_written_meta` when the verdict is already recorded. Both are
+    /// pure removals of work whose result was discarded; the const exists so one tree state can
+    /// build both arms.
+    pub const OBJ_CREATE_FASTPATHS: bool = true;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Stage {
+        /// `new_nonce`: the CSPRNG under its global mutex.
+        Nonce = 0,
+        /// `calculate_new_id`: one sha256 over 48 bytes (two in debug, via the `debug_assert`).
+        Id,
+        /// `Object::new` plus the `Arc`.
+        New,
+        /// The `srcs` loop: zero/copy ranges into the new object.
+        Srcs,
+        /// `write_meta`, i.e. the generic fill path down to the object's last page.
+        Meta,
+        /// `register_object`: the global id map.
+        Register,
+        Total,
+    }
+
+    pub const NR: usize = Stage::Total as usize + 1;
+    pub const NAMES: [&str; NR] = ["nonce", "id", "new", "srcs", "meta", "register", "TOTAL"];
+
+    static COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+    static NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn start() -> Instant {
+        if CREATE_PROFILE {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record(stage: Stage, start: Instant) {
+        if !CREATE_PROFILE {
+            return;
+        }
+        let dur: twizzler_abi::syscall::TimeSpan = (Instant::now() - start).into();
+        COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
+        NS[stage as usize].fetch_add(dur.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Per-stage (count, nanoseconds), cumulative, for [`crate::perfmark`] to difference.
+    pub fn snapshot() -> [(u64, u64); NR] {
+        let mut out = [(0u64, 0u64); NR];
+        if !CREATE_PROFILE {
+            return out;
+        }
+        for i in 0..NR {
+            out[i] = (
+                COUNT[i].load(Ordering::Relaxed),
+                NS[i].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+
+    pub fn print() {
+        if !CREATE_PROFILE {
+            return;
+        }
+        let total = COUNT[Stage::Total as usize].load(Ordering::Relaxed);
+        if total == 0 {
+            return;
+        }
+        logln!("== sys_object_create profile: {} calls ==", total);
+        for (i, name) in NAMES.iter().enumerate() {
+            let c = COUNT[i].load(Ordering::Relaxed);
+            if c == 0 {
+                continue;
+            }
+            let ns = NS[i].load(Ordering::Relaxed);
+            logln!("  {:>9}: {} calls, {} ns/call, {} us total", name, c, ns / c, ns / 1000);
+        }
+    }
+}
+
 pub fn sys_object_create(
     create: &ObjectCreate,
     srcs: &[object_source],
     ties: &[object_tie],
 ) -> Result<ObjID> {
+    use createprofile::Stage;
+    let t_total = createprofile::start();
+    let t = createprofile::start();
     let nonce = if create.flags.contains(ObjectCreateFlags::NO_NONCE) {
         0
     } else {
         new_nonce()?
     };
+    createprofile::record(Stage::Nonce, t);
+    let t = createprofile::start();
     let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
+    createprofile::record(Stage::Id, t);
+    let t = createprofile::start();
     let obj = Arc::new(Object::new(id, create.lt, ties));
     // Nothing is on the store until the first sync, whatever sources were copied in here -- those
     // land in pages, not on disk. Recording zero rather than leaving it unknown is what lets the
@@ -110,13 +212,48 @@ pub fn sys_object_create(
     // Recording it now saves the first mapper of this object a `read_meta`, which for a
     // pager-backed object is a page-in (mapperf.md).
     obj.set_verified_id(true, create.def_prot);
+    createprofile::record(Stage::New, t);
+    // Bound every source range before applying any of them, so a bad entry rejects the whole call
+    // rather than leaving the earlier ones written into a half-built object.
+    //
+    // `zero_range`/`copy_range` pass the offset through to `setup_zero_range`, which does
+    // `VirtAddr::new(offset).unwrap()` (obj/pagetables.rs) -- so a `dest_start` landing in the
+    // non-canonical hole is a kernel panic reachable from any compartment with a single syscall,
+    // and a merely-too-large one silently builds page-table entries outside the object's range,
+    // which nothing reports at all. `checked_add` is load-bearing rather than tidy: a plain
+    // `start + len <= MAX_SIZE` wraps for a large `len` and *passes*, which is worse than no check
+    // because it reads as validated.
+    //
+    // Bounded at `MAX_SIZE` rather than at the meta page: unlike a copy into a *live* object,
+    // where writing `MetaInfo` is never legitimate, a source here targets an object the kernel is
+    // still building and whose meta page it writes itself immediately below -- so the meta overlap
+    // stays a fall-back-to-`write_meta` case (see `src_wrote_meta`) rather than a rejection.
+    let in_object = |start: u64, len: u64| {
+        start
+            .checked_add(len)
+            .is_some_and(|end| end <= MAX_SIZE as u64)
+    };
+    for src in srcs {
+        if !in_object(src.dest_start, src.len) || !in_object(src.src_start, src.len) {
+            log::warn!(
+                "sys_object_create: source range out of bounds: src_start {:x} dest_start {:x} \
+                 len {:x}",
+                src.src_start,
+                src.dest_start,
+                src.len,
+            );
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+    }
     if obj.use_pager() {
         crate::pager::create_object(id, create, nonce);
         if create.flags.contains(ObjectCreateFlags::DELETE) {
             obj.set_delete_on_last_unmap();
         }
+        createprofile::record(Stage::Total, t_total);
         return Ok(obj.id());
     }
+    let t = createprofile::start();
     for src in srcs {
         if src.id == 0 {
             obj.zero_range(src.dest_start as usize, src.len as usize)
@@ -133,6 +270,16 @@ pub fn sys_object_create(
             .inspect_err(|e| log::error!("failed to copy range from object {}: {}", src.id, e))?;
         }
     }
+    createprofile::record(Stage::Srcs, t);
+    let t = createprofile::start();
+    // Whether anything above put a frame under the meta page, which is the one thing that stops
+    // this object qualifying for `init_meta` -- see below.
+    let meta_offset = PageNumber::meta_page().as_byte_offset();
+    let src_wrote_meta = srcs.iter().any(|src| {
+        let start = src.dest_start as usize;
+        let end = start.saturating_add(src.len as usize);
+        start < meta_offset + PageNumber::PAGE_SIZE && end > meta_offset
+    });
     let meta = MetaInfo {
         nonce: Nonce(nonce),
         kuid: create.kuid,
@@ -141,9 +288,21 @@ pub fn sys_object_create(
         fotcount: 0,
         extcount: 0,
     };
-    while !obj.write_meta(meta) {
-        log::error!("failed to write object metadata -- retrying");
+    // `write_meta` goes through the generic fill path -- `ensure_in_core` plus a fresh
+    // `FrameAllocator` -- which exists for a page that may already be present, may be COW, may
+    // belong to a pager-backed object, and may be raced for by a fault on another cpu. None of
+    // that can apply to an object this thread built moments ago, has not registered, and whose
+    // pager branch returned above: `init_meta` allocates the frame and installs it directly.
+    // The exception is a source that wrote into the meta page, where a frame is already there
+    // and must not be replaced.
+    if src_wrote_meta || !createprofile::OBJ_CREATE_FASTPATHS {
+        while !obj.write_meta(meta) {
+            log::error!("failed to write object metadata -- retrying");
+        }
+    } else {
+        obj.init_meta(meta);
     }
+    createprofile::record(Stage::Meta, t);
     log::trace!(
         "sys_object_create: create={:?}, srcs={}, ties={}: {:?}",
         create,
@@ -151,7 +310,9 @@ pub fn sys_object_create(
         ties.len(),
         obj.id(),
     );
+    let t = createprofile::start();
     crate::obj::register_object(obj.clone());
+    createprofile::record(Stage::Register, t);
     // Deliberately not an immediate delete: `object_ctrl`'s Delete marks the object *and* runs
     // scan_deleted() inline, and a brand-new object has no mappings and no pins, so it was
     // reap-eligible before its creator could map it. The flag means "delete on last unmap", so
@@ -159,6 +320,7 @@ pub fn sys_object_create(
     if create.flags.contains(ObjectCreateFlags::DELETE) {
         obj.set_delete_on_last_unmap();
     }
+    createprofile::record(Stage::Total, t_total);
     Ok(obj.id())
 }
 
@@ -171,6 +333,8 @@ pub fn sys_object_create(
 /// the arithmetic (`INPROG.md`, next step 1).
 pub mod mapstats {
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub use crate::memory::context::virtmem::mapprofile::MAP_STATS;
 
     static CALLS: AtomicU64 = AtomicU64::new(0);
     static PAGER: AtomicU64 = AtomicU64::new(0);
@@ -194,11 +358,36 @@ pub mod mapstats {
     static LOOKUP_PAGER_HIST: [AtomicU64; NR_LOOKUP_BUCKETS] =
         [const { AtomicU64::new(0) }; NR_LOOKUP_BUCKETS];
 
+    /// A clock read the profile will actually use, or nothing. See [`MAP_PROFILE`].
+    #[inline(always)]
+    pub fn stamp() -> crate::instant::Instant {
+        if MAP_STATS {
+            crate::instant::Instant::now()
+        } else {
+            crate::instant::Instant::zero()
+        }
+    }
+
+    #[inline(always)]
+    pub fn delta_ns(from: crate::instant::Instant, to: crate::instant::Instant) -> u64 {
+        if MAP_STATS {
+            (to - from).as_nanos() as u64
+        } else {
+            0
+        }
+    }
+
     pub fn pre(ns: u64) {
+        if !MAP_STATS {
+            return;
+        }
         PRE_NS.fetch_add(ns, Ordering::Relaxed);
     }
 
     pub fn lookup(ns: u64, used_pager: bool) {
+        if !MAP_STATS {
+            return;
+        }
         CALLS.fetch_add(1, Ordering::Relaxed);
         if used_pager {
             PAGER.fetch_add(1, Ordering::Relaxed);
@@ -215,6 +404,9 @@ pub mod mapstats {
     }
 
     pub fn insert(ns: u64) {
+        if !MAP_STATS {
+            return;
+        }
         INSERT_NS.fetch_add(ns, Ordering::Relaxed);
     }
 
@@ -275,14 +467,14 @@ pub fn sys_object_map(
     flags: MapFlags,
     target_sctx: ObjID,
 ) -> Result<usize> {
-    let entered = crate::instant::Instant::now();
+    let entered = mapstats::stamp();
     let vm = if let Some(handle) = handle {
         get_vmcontext_from_handle(handle).ok_or(ObjectError::NoSuchObject)?
     } else {
         current_vmc()?
     };
-    let start = crate::instant::Instant::now();
-    mapstats::pre((start - entered).as_nanos() as u64);
+    let start = mapstats::stamp();
+    mapstats::pre(mapstats::delta_ns(entered, start));
     let mut used_pager = false;
     let obj = crate::obj::lookup_object(id, LookupFlags::empty());
     let obj = match obj {
@@ -312,15 +504,15 @@ pub fn sys_object_map(
             }
         }
     };
-    let found = crate::instant::Instant::now();
-    mapstats::lookup((found - start).as_nanos() as u64, used_pager);
+    let found = mapstats::stamp();
+    mapstats::lookup(mapstats::delta_ns(start, found), used_pager);
     // Before the mapping, not after: the point is to have the pager working while the rest of the
     // syscall runs. Submission is a lock and a queue push; nothing here waits.
     crate::pager::prefetch_on_map(&obj);
     // TODO
     let _res =
         crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags, target_sctx);
-    mapstats::insert((crate::instant::Instant::now() - found).as_nanos() as u64);
+    mapstats::insert(mapstats::delta_ns(found, mapstats::stamp()));
     Ok(slot)
 }
 
@@ -479,8 +671,16 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
             crate::pager::sync_object(&obj?);
         }
         ObjectControlCmd::Delete(_) => {
-            obj?.mark_for_delete();
-            crate::obj::scan_deleted();
+            let obj = obj?;
+            obj.mark_for_delete();
+            if crate::obj::TARGETED_REAP {
+                // Just this object, not a scan of every object in the system: nothing else became
+                // reapable by marking this one, and anything that becomes reapable later is caught
+                // by the reaper thread, which the unmap paths poke.
+                crate::obj::scan_deleted_one(id, &obj);
+            } else {
+                crate::obj::scan_deleted();
+            }
         }
         ObjectControlCmd::Preload => {
             let obj = obj
@@ -609,4 +809,108 @@ pub fn sys_enumerate(arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<usize
             current_vmc()?.enumerate_slots(buf, offset)
         }
     }
+}
+
+/// Copy ranges into, or zero ranges within, an object that already exists.
+///
+/// Same `object_source` shape as [`sys_object_create`]'s sources: a source with id 0 zeroes the
+/// destination range, any other id copies from that object. Zeroing is the point of the call --
+/// `zero_range` drops the frames under whole pages, which is the only way a page that faulted into
+/// a live object is ever given back.
+/// Call accounting for [`sys_object_copy`], printed once at shutdown.
+///
+/// Exists because the console is the wrong instrument for this question: `klog_println` from
+/// userspace interleaves mid-line between threads, so a `grep -c` of a marker undercounts and can
+/// read zero while the code ran -- which it did, twice, while chasing where the runtime's decommit
+/// goes. One print, from one thread, at shutdown, cannot be corrupted that way.
+///
+/// It prints even when the count is zero. "Never called" is the informative outcome here, and a
+/// counter that stays silent in that case is indistinguishable from one that failed to build.
+pub mod copystats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static ZERO_SRCS: AtomicU64 = AtomicU64::new(0);
+    static ZERO_BYTES: AtomicU64 = AtomicU64::new(0);
+    static COPY_SRCS: AtomicU64 = AtomicU64::new(0);
+    static ERRS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn call() {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn zero(len: u64) {
+        ZERO_SRCS.fetch_add(1, Ordering::Relaxed);
+        ZERO_BYTES.fetch_add(len, Ordering::Relaxed);
+    }
+
+    pub fn copy() {
+        COPY_SRCS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn err() {
+        ERRS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        logln!(
+            "== sys_object_copy: {} calls, {} zero srcs ({} KiB), {} copy srcs, {} errors ==",
+            CALLS.load(Ordering::Relaxed),
+            ZERO_SRCS.load(Ordering::Relaxed),
+            ZERO_BYTES.load(Ordering::Relaxed) / 1024,
+            COPY_SRCS.load(Ordering::Relaxed),
+            ERRS.load(Ordering::Relaxed),
+        );
+    }
+}
+
+pub fn sys_object_copy(dest: ObjID, srcs: &[object_source]) -> Result<()> {
+    // Every range has to stop short of the meta page, which is the object's last page. One bound
+    // for three problems: the meta page holds the `MetaInfo` a content-derived id is computed
+    // over, so writing it breaks `check_id` for every later mapper; offsets past the object's end
+    // build page-table entries outside its range, silently; and a large enough offset reaches
+    // `setup_zero_range`'s `VirtAddr::new(..).unwrap()` on a non-canonical address, which panics
+    // the kernel rather than failing the call.
+    const LIMIT: u64 = (MAX_SIZE - PageNumber::PAGE_SIZE) as u64;
+    fn in_range(start: u64, len: u64) -> Result<()> {
+        match start.checked_add(len) {
+            Some(end) if end <= LIMIT => Ok(()),
+            _ => Err(ArgumentError::InvalidArgument.into()),
+        }
+    }
+
+    copystats::call();
+    let obj = lookup_object(dest, LookupFlags::empty())
+        .ok_or(ObjectError::NoSuchObject)
+        .inspect_err(|_| copystats::err())?;
+    for src in srcs {
+        in_range(src.dest_start, src.len).inspect_err(|_| copystats::err())?;
+        if src.id == 0 {
+            copystats::zero(src.len);
+            obj.zero_range(src.dest_start as usize, src.len as usize)
+                .inspect_err(|e| {
+                    copystats::err();
+                    log::error!("failed to zero range in object {}: {}", dest, e)
+                })?;
+        } else {
+            let src_id = ObjID::from(src.id);
+            // Both copy paths take the two objects' page tables through `utils::lock_two`, which
+            // asserts the two locks differ -- an object copying from itself would panic the kernel
+            // instead of failing here.
+            if src_id == dest {
+                return Err(ArgumentError::InvalidArgument.into());
+            }
+            copystats::copy();
+            in_range(src.src_start, src.len).inspect_err(|_| copystats::err())?;
+            let so = lookup_object(src_id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
+            so.copy_range(
+                &obj,
+                src.src_start as usize,
+                src.dest_start as usize,
+                src.len as usize,
+            )
+            .inspect_err(|e| log::error!("failed to copy range from object {}: {}", src_id, e))?;
+        }
+    }
+    Ok(())
 }

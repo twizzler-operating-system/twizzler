@@ -12,7 +12,6 @@ twizzler-kernel-macros = { workspace = true }
 bitflags = "2.4.1"
 memoffset = { workspace = true }
 xmas-elf = { workspace = true }
-nonoverlapping_interval_tree = { workspace = true }
 twizzler-abi = { path = "../lib/twizzler-abi", default-features = false, features = [
     "kernel",
 ] }

@@ -76,7 +76,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 # stability coverage the other two do not already give.
 PROFILES = ("release", "debug")
 ALL_PROFILES = ("release", "debug", "full-debug")
-SMP_COUNTS = (1, 2, 4)
+SMP_COUNTS = (1, 2, 3, 4, 5)
 
 # many.py never passes --arch, so x86_64 is the only target in play.
 TRIPLE = "x86_64-unknown-twizzler"
@@ -493,7 +493,10 @@ def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
 
 
 def build_command_for(profile: str, work: Path, tag: str,
-                      autostart: Optional[str] = None) -> List[str]:
+                      autostart: Optional[str] = None,
+                      bench: Optional[str] = None,
+                      bench_iters: int = 1,
+                      kernel_args: Optional[List[str]] = None) -> List[str]:
     """Build straight into this sweep's own master data image.
 
     `--disk-image` is what keeps a sweep off `target/disk-<triple>.img`. Without it every build
@@ -510,6 +513,16 @@ def build_command_for(profile: str, work: Path, tag: str,
     # also replaces --tests, because init runs the suite first and shuts the guest down at the end
     # of it, so a test-enabled image never reaches the autostart program.
     mode = ["--autostart", autostart] if autostart else ["--tests"]
+    # Same reasoning as --autostart: which benches run is baked into the image (the `bench_bin`
+    # initrd file and the kernel command line), so it belongs to the build, not the run.
+    if bench:
+        mode += [f"--bench={bench}"]
+        if bench_iters and bench_iters != 1:
+            mode += [f"--bench-iters={bench_iters}"]
+    # Baked into the image's kernel command line, so this has to happen at build time: lanes boot
+    # with --boot-image, where that line is already fixed.
+    for arg in kernel_args or []:
+        mode += [f"--kernel-arg={arg}"]
     return [
         "cargo", "xtask", "make-image", "--profile", profile,
         "--disk-image", str(master_data_image(work, tag, profile)),
@@ -579,7 +592,8 @@ def build_and_snapshot(profile: str, work: Path, args: argparse.Namespace) -> Bu
     # outlive a single sweep, which is what protects us from builds this lock cannot see -- a
     # developer's own `cargo start-qemu`, say.
     with master_lock(work, exclusive=True):
-        cmd = build_command_for(profile, work, args.tag, args.autostart)
+        cmd = build_command_for(profile, work, args.tag, args.autostart, args.bench, args.bench_iters,
+                                  args.kernel_arg)
         args.results_dir.mkdir(parents=True, exist_ok=True)
         out_path = args.results_dir / f"build-{profile}.out"
         print(f"=== building {profile} (log: {rel(out_path)})", flush=True)
@@ -667,11 +681,18 @@ def adopt_masters(work: Path, tag: str, profile: str) -> bool:
 
 
 def command_for(config: Config, lane: Lane, boot_image: Path, data_image: Path, label: str,
-                serial_log: Path, autostart: Optional[str] = None) -> List[str]:
+                serial_log: Path, autostart: Optional[str] = None,
+                bench: Optional[str] = None, bench_iters: int = 1) -> List[str]:
     # --autostart replaces the test suite with one program, and xtask then reports that program's
     # exit code instead of a test report. Lanes, images, ports and logs are unaffected -- this only
     # changes what the guest does once it is up.
     extra = ["--autostart", autostart] if autostart else []
+    # A bench run still boots the ordinary test image: unittest runs the named benches first and
+    # the suite afterwards, so a lane reports both its numbers and a normal pass/fail.
+    if bench:
+        extra += [f"--bench={bench}"]
+        if bench_iters and bench_iters != 1:
+            extra += [f"--bench-iters={bench_iters}"]
     return xtask_binary() + [
         "test",
         "--scenario",
@@ -814,7 +835,8 @@ def run_once(
     args.results_dir.mkdir(parents=True, exist_ok=True)
     serial = args.results_dir / f"{name}.log"
     serial.unlink(missing_ok=True)
-    cmd = command_for(config, lane, boot, data, label, serial, args.autostart)
+    cmd = command_for(config, lane, boot, data, label, serial, args.autostart, args.bench,
+                      args.bench_iters)
     emit(f"[lane {lane.index}] start  {name}")
 
     output: List[str] = []
@@ -988,6 +1010,17 @@ def build_parser() -> argparse.ArgumentParser:
                              "its exit code rather than a test report. The first word names the "
                              "program (a bare name resolves under /initrd) and the rest are its "
                              "arguments, e.g. --autostart='pagepar /sysroot/lib 4 16'.")
+    parser.add_argument("--bench", default=None, metavar="SPEC",
+                        help="Run a benchmark crate before the test suite in every lane, e.g. "
+                             "--bench='sysbench page_fault_zero_fill'. Tokens after the crate name "
+                             "are libtest name filters.")
+    parser.add_argument("--kernel-arg", action="append", default=[], metavar="ARG",
+                        help="Append an argument to the guest kernel command line (baked into the "
+                             "image). Repeatable; use the equals form for dashed args, e.g. "
+                             "--kernel-arg=--diag.")
+    parser.add_argument("--bench-iters", type=int, default=1, metavar="N",
+                        help="Run --bench N times in one boot, so later passes see the kernel "
+                             "state the earlier ones left.")
     parser.add_argument("--tag", default=None,
                         help="Names this sweep, keeping its results, lanes and serial-log labels "
                              "clear of any other sweep running at the same time (default: "
@@ -1072,7 +1105,8 @@ def main() -> int:
     if args.dry_run:
         for profile in needed:
             action = ("reuse snapshot" if args.reuse_images
-                      else " ".join(build_command_for(profile, work, args.tag, args.autostart)))
+                      else " ".join(build_command_for(profile, work, args.tag, args.autostart, args.bench, args.bench_iters,
+                                  args.kernel_arg)))
             print(f"                 {profile}: {action}")
         for round_no, config in jobs:
             print(f"round {round_no}  {config.name}")

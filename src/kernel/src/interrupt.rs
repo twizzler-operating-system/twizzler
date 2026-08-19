@@ -124,11 +124,22 @@ pub fn profile_now() -> crate::instant::Instant {
     }
 }
 
+/// Interrupts taken since boot, as a single relaxed counter.
+///
+/// [`snapshot`] sums per-cpu, per-vector collectors and takes a lock to do it, which is fine twice
+/// a mark and far too expensive on a per-page probe. This is the cheap version.
+static TAKEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn taken() -> u64 {
+    TAKEN.load(Ordering::Relaxed)
+}
+
 /// Record one interrupt of `vector` that started at `start`. Compiles away when the profile is off.
 pub fn record_interrupt(vector: u64, start: crate::instant::Instant) {
     if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
         return;
     }
+    TAKEN.fetch_add(1, Ordering::Relaxed);
     let vector = vector as usize;
     if vector >= NUM_VECTORS {
         return;
@@ -162,6 +173,25 @@ pub fn record_preempt(start: crate::instant::Instant) {
         stats.preempts += 1;
         stats.preempt_time.add_sample(dur);
     });
+}
+
+/// (interrupts, nanoseconds in handlers) summed over vectors and cpus, for [`crate::perfmark`].
+///
+/// A fault-path span that loses wall-clock time either spent it in a handler -- which this counts
+/// -- or was not running at all, which is a different diagnosis entirely.
+pub fn snapshot() -> (u64, u64) {
+    let (mut count, mut ns) = (0u64, 0u64);
+    if !INTERRUPT_PROFILE {
+        return (0, 0);
+    }
+    crate::processor::mp::with_each_active_processor(|p| {
+        let stats = p.interrupt_stats.lock();
+        for (i, c) in stats.counts.iter().enumerate() {
+            count += *c as u64;
+            ns += (stats.times[i].sum_femtos() / 1_000_000) as u64;
+        }
+    });
+    (count, ns)
 }
 
 pub fn print_interrupt_profile() {

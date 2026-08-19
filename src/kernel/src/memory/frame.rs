@@ -196,6 +196,15 @@ impl AllocationRegionLevel {
         level: u8,
         init_flags: PhysicalFrameFlags,
     ) -> bool {
+        // `reset` force-unlinks, which would *silently* corrupt whichever list a still-linked
+        // frame is on (a free list, or a deferred-unmap list awaiting shootdown). Every legitimate
+        // caller hands over frames that are off every list, so a linked frame here is a bug worth
+        // a panic that names it, not an unlink that defers the crash.
+        assert!(
+            !frame.link.is_linked(),
+            "admitting frame {:?} that is still linked into a list",
+            frame
+        );
         // Safety: the frame can be reset since during admit_one we are the only ones with access to
         // the frame data.
         unsafe { frame.reset(addr, level, init_flags, 0) };
@@ -465,11 +474,27 @@ impl AllocationRegion {
         // "fresh" large frame still holding its previous tenant's data.
         // skip the first one for now, as that's our passed in frame.
         let mut all_zeroed = frame.is_zeroed();
+        let rc = frame.refcount();
         for child_idx in 1..child_count {
             let pa = start.offset(child_idx * child_size).unwrap();
             let child = self.get_frame(pa).unwrap();
             assert!(child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
             assert!(child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+            // The caller claims every child; a child on a list (free, or deferred-unmap pending
+            // shootdown) or at a different refcount than the head belongs to someone else, and
+            // resetting it would silently corrupt that list or leak that reference.
+            assert!(
+                !child.link.is_linked(),
+                "merging child {:?} that is still linked into a list",
+                child
+            );
+            assert_eq!(
+                child.refcount(),
+                rc,
+                "merging child {:?} whose refcount differs from head {:?}",
+                child,
+                frame
+            );
             all_zeroed &= child.is_zeroed();
         }
         let merged_flags = if all_zeroed {
@@ -815,7 +840,17 @@ impl Frame {
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
         self.set_flags(PhysicalFrameFlags::ZEROED, true);
+        // The contents are no longer the poison pattern; see `FREE_POISON`.
+        self.info.fetch_and(!POISON_BIT, Ordering::SeqCst);
         self.unlock();
+    }
+
+    fn set_poisoned(&self) {
+        self.info.fetch_or(POISON_BIT, Ordering::SeqCst);
+    }
+
+    fn take_poisoned(&self) -> bool {
+        self.info.fetch_and(!POISON_BIT, Ordering::SeqCst) & POISON_BIT != 0
     }
 
     /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this
@@ -876,6 +911,13 @@ impl Frame {
 
     pub fn virtaddr(&'static self) -> VirtAddr {
         phys_to_virt(self.pa)
+    }
+
+    pub fn as_slice<T>(&'static self) -> &'static [T] {
+        let virt = phys_to_virt(self.pa);
+        let ptr: *const T = virt.as_ptr();
+        let len = self.size() / core::mem::size_of::<T>();
+        unsafe { core::slice::from_raw_parts(ptr, len) }
     }
 
     pub fn as_byte_slice(&'static self) -> &'static [u8] {
@@ -1180,14 +1222,174 @@ pub fn init(regions: &[MemoryRegion]) {
     crate::memory::tracker::init(total, total, 0);
 }
 
-pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Option<FrameRef> {
-    let frame = { PFA.wait().lock().alloc(flags, layout) }?;
-    // Deliberately outside the allocator lock. `alloc` has already taken this frame off the free
-    // lists and marked it allocated with a zero refcount, so nothing else can reach it, and
-    // zeroing is by far the longest thing that used to happen under that lock: a 2 MiB frame
-    // measured at ~1.3 ms, during which every other cpu's frame allocation spun.
+/// Frames taken under one acquisition of the allocator lock. Bounded so the batch lives in a
+/// `heapless::Vec`: growing a heap `Vec` inside that lock would reenter the allocator through
+/// `allocate_chunk` and deadlock on a spinlock that is not reentrant.
+const MAX_BULK_ALLOC: usize = 32;
+
+/// Allocate up to `count` frames, taking the allocator lock once per [`MAX_BULK_ALLOC`] rather
+/// than once per frame. Returns how many were appended to `out`.
+///
+/// The lock is the point. At smp4 a bench boot takes it ~3M times, once per frame, and the
+/// per-frame cost measured 1.3-2.8 us against ~300-650 ns of that being the zeroing this still
+/// does per frame -- so the remaining three quarters is the acquisition and the free-list walk.
+///
+/// `out` must have capacity for `count` already: pushing is done outside the lock, but a caller
+/// that lets it grow mid-loop pays a heap allocation per batch for no reason.
+pub(super) fn raw_alloc_frames(
+    flags: PhysicalFrameFlags,
+    layout: Layout,
+    count: usize,
+    out: &mut alloc::vec::Vec<FrameRef>,
+) -> usize {
+    let mut total = 0;
+    while total < count {
+        let want = (count - total).min(MAX_BULK_ALLOC);
+        let mut batch = heapless::Vec::<FrameRef, MAX_BULK_ALLOC>::new();
+        {
+            let mut pfa = PFA.wait().lock();
+            for _ in 0..want {
+                let Some(frame) = pfa.alloc(flags, layout) else {
+                    break;
+                };
+                // Cannot fail: `want <= MAX_BULK_ALLOC` is the vec's capacity.
+                let _ = batch.push(frame);
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        // Zeroing outside the lock, for the same reason `raw_alloc_frame` does it there.
+        for frame in batch {
+            finish_raw_alloc(frame, flags);
+            out.push(frame);
+            total += 1;
+        }
+    }
+    total
+}
+
+/// Cross-level overlap detector. The per-hand-out `!ALLOCATED` assert cannot see a frame handed
+/// out at *two different levels* -- a level-0 frame inside a still-admitted level-1 frame is a
+/// distinct `Frame` struct with its own clean flags. That shape zeroes someone else's live memory
+/// on the very next ZEROED allocation, and the crash it produces (a ret popping 0 off a
+/// heap-backed kernel stack) points nowhere near the allocator. Check at hand-out and free
+/// instead, where both frames can still be named.
+///
+/// Invariants checked, both directions:
+/// - a frame's range must not lie inside a larger frame that is still ADMITTED (a free-listed or
+///   allocated large frame owns its whole range; its children are non-admitted by `reset`);
+/// - a large frame's children must all be non-admitted.
+///
+/// Runs without the allocator lock, which is safe against transients: `split` demotes the head to
+/// level 0 before its children can be handed out, and `coalesce_group`/`merge_frame` only build a
+/// large frame out of a group with no independently-live members -- so any hit is a real overlap,
+/// not a mid-transition read.
+const OVERLAP_CHECK: bool = true;
+
+/// Write-after-free detector. `check_overlap` sees a frame handed out at two levels, but not the
+/// other way corruption enters: a stale free of a frame whose current owner holds it at refcount
+/// zero (a precharge pool, a not-yet-mapped object page) passes every assert on the free path,
+/// puts the frame on the free list with two owners, and the second owner's ZEROED request memsets
+/// the first owner's memory. So: fill every level-0 non-zeroed frame with a pattern as it enters
+/// the free list, and verify the pattern (or, for zeroed-list frames, the zeroes) at the next
+/// hand-out -- any write in between panics at hand-out, naming the frame, instead of surfacing as
+/// a wild jump much later.
+///
+/// The bit tracking "this frame holds the pattern" lives in `info` above the flags byte; `reset`
+/// clears it wholesale, and `zero()` clears it when it rewrites the contents, so split, merge,
+/// coalesce, and the background zeroer only lose coverage, never false-positive.
+///
+/// Costs a 4 KiB write per free and a 4 KiB read per alloc: a diagnostic, not a shipping default.
+/// (A poison-armed sweep also runs slow enough to trip the 25s sleep diagnostics and the bench
+/// watchdog under mass frees -- `fa-poison` round 1.)
+const FREE_POISON: bool = false;
+
+const POISON_BIT: u64 = 1 << 16;
+const POISON_PATTERN: u64 = 0xF4EE_F4EE_F4EE_F4EE;
+
+fn poison_on_free(frame: FrameRef) {
+    if !FREE_POISON || frame.get_level() != 0 || frame.is_zeroed() {
+        return;
+    }
+    let ptr: *mut u64 = frame.virtaddr().as_mut_ptr();
+    let words = frame.size() / size_of::<u64>();
+    unsafe { core::slice::from_raw_parts_mut(ptr, words) }.fill(POISON_PATTERN);
+    frame.set_poisoned();
+}
+
+fn check_poison_on_alloc(frame: FrameRef) {
+    if !FREE_POISON {
+        return;
+    }
+    let expect = if frame.take_poisoned() {
+        POISON_PATTERN
+    } else if frame.is_zeroed() && frame.get_level() == 0 {
+        0
+    } else {
+        return;
+    };
+    let ptr: *const u64 = frame.virtaddr().as_ptr();
+    let words = frame.size() / size_of::<u64>();
+    let slice = unsafe { core::slice::from_raw_parts(ptr, words) };
+    if let Some(idx) = slice.iter().position(|w| *w != expect) {
+        panic!(
+            "frame {:?} was written while on the free list: offset {:x} holds {:x}, expected {:x}",
+            frame,
+            idx * size_of::<u64>(),
+            slice[idx],
+            expect
+        );
+    }
+}
+
+fn check_overlap(frame: FrameRef, whence: &str) {
+    if !OVERLAP_CHECK {
+        return;
+    }
+    let pa = frame.start_address();
+    let level = frame.get_level();
+    for l in (level + 1)..NR_LEVELS {
+        let head_pa = pa.align_down(PHYS_LEVEL_LAYOUTS[l].size() as u64).unwrap();
+        if head_pa == pa {
+            continue;
+        }
+        if let Some(head) = get_frame(head_pa)
+            && head.get_flags().contains(PhysicalFrameFlags::ADMITTED)
+            && head.get_level() >= l
+        {
+            panic!(
+                "physical frame overlap ({}): {:?} lies inside admitted {:?}",
+                whence, frame, head
+            );
+        }
+    }
+    if level > 0 {
+        let child_size = PHYS_LEVEL_LAYOUTS[0].size();
+        for i in 1..(frame.size() / child_size) {
+            let cpa = pa.offset(i * child_size).unwrap();
+            if let Some(child) = get_frame(cpa)
+                && child.get_flags().contains(PhysicalFrameFlags::ADMITTED)
+            {
+                panic!(
+                    "physical frame overlap ({}): admitted child {:?} inside {:?}",
+                    whence, child, frame
+                );
+            }
+        }
+    }
+}
+
+/// The post-allocation half of [`raw_alloc_frame`], shared with [`raw_alloc_frames`].
+fn finish_raw_alloc(frame: FrameRef, flags: PhysicalFrameFlags) {
+    check_overlap(frame, "alloc");
+    check_poison_on_alloc(frame);
     if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
+        use crate::memory::tracker::allocprofile;
+        let t = allocprofile::start();
         frame.zero();
+        allocprofile::add(&allocprofile::ZEROED_INLINE, 1);
+        allocprofile::record(&allocprofile::ZERO_NS, t);
     }
     if flags.contains(PhysicalFrameFlags::ZEROED) {
         assert!(frame.is_zeroed());
@@ -1196,6 +1398,15 @@ pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Opti
     frame.set_not_zero();
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+}
+
+pub(super) fn raw_alloc_frame(flags: PhysicalFrameFlags, layout: Layout) -> Option<FrameRef> {
+    let frame = { PFA.wait().lock().alloc(flags, layout) }?;
+    // Zeroing runs deliberately outside the allocator lock. `alloc` has already taken this frame
+    // off the free lists and marked it allocated with a zero refcount, so nothing else can reach
+    // it, and zeroing is by far the longest thing that used to happen under that lock: a 2 MiB
+    // frame measured at ~1.3 ms, during which every other cpu's frame allocation spun.
+    finish_raw_alloc(frame, flags);
     Some(frame)
 }
 
@@ -1211,6 +1422,8 @@ pub(super) fn raw_free_frame(frame: FrameRef) {
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     assert!(!frame.get_flags().contains(PhysicalFrameFlags::IS_WIRED));
+    check_overlap(frame, "free");
+    poison_on_free(frame);
     frame.set_pt(false);
     frame.set_cow(false);
     assert_eq!(frame.refcount(), 0);
@@ -1324,9 +1537,14 @@ mod tests {
     use twizzler_kernel_macros::kernel_test;
 
     use super::{
-        PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, raw_alloc_frame, raw_free_frame,
+        FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, raw_alloc_frame,
+        raw_free_frame, split_frame,
     };
-    use crate::utils::quick_random;
+    use crate::{
+        memory::tracker::{FrameAllocFlags, free_frame, try_alloc_frames},
+        thread::{entry::run_closure_in_new_thread, priority::Priority},
+        utils::quick_random,
+    };
 
     #[kernel_test]
     fn test_get_frame() {
@@ -1359,6 +1577,86 @@ mod tests {
                     raw_free_frame(frame);
                 }
             }
+        }
+    }
+
+    /// One worker's round of the bulk-allocation stress below. Tags every frame and reads the
+    /// tags back only after the whole batch is placed: a frame handed to two owners gets retagged
+    /// in between and fails the readback, which the per-hand-out `!ALLOCATED` assert cannot see.
+    fn bulk_worker(tid: u64) {
+        const ITERS: usize = 300;
+        let mut out: Vec<FrameRef> = Vec::new();
+        for it in 0..ITERS {
+            out.clear();
+            let want = 1 + (quick_random() as usize % 48);
+            let zeroed = it % 2 == 0;
+            let flags = if zeroed {
+                FrameAllocFlags::ZEROED
+            } else {
+                FrameAllocFlags::empty()
+            };
+            let got = try_alloc_frames(flags, PHYS_LEVEL_LAYOUTS[0], want, &mut out);
+            assert_eq!(got, out.len());
+            for (i, frame) in out.iter().enumerate() {
+                assert_eq!(frame.refcount(), 0);
+                assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
+                assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
+                assert_eq!(frame.size(), PHYS_LEVEL_LAYOUTS[0].size());
+                if zeroed {
+                    assert!(
+                        frame.as_slice::<u64>().iter().all(|x| *x == 0),
+                        "ZEROED frame {:?} contains non-zero data",
+                        frame
+                    );
+                }
+                let tag = (tid << 48) | ((it as u64) << 16) | i as u64;
+                unsafe { *frame.virtaddr().as_mut_ptr::<u64>() = tag };
+            }
+            for (i, frame) in out.iter().enumerate() {
+                let tag = (tid << 48) | ((it as u64) << 16) | i as u64;
+                let seen = unsafe { *frame.virtaddr().as_ptr::<u64>() };
+                assert_eq!(
+                    seen, tag,
+                    "frame {:?} retagged while held (double hand-out)",
+                    frame
+                );
+            }
+            // Churn the split/group-tracking path: take a large frame apart and free its
+            // children one at a time, which restores a fully-free group for coalescing.
+            if it % 16 == 0 {
+                let mut lout: Vec<FrameRef> = Vec::new();
+                if try_alloc_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1], 1, &mut lout)
+                    == 1
+                {
+                    let (head, len) = split_frame(lout[0]);
+                    assert_eq!(len, PHYS_LEVEL_LAYOUTS[1].size());
+                    for i in 0..(len / PHYS_LEVEL_LAYOUTS[0].size()) {
+                        let f = get_frame(
+                            head.start_address()
+                                .offset(i * PHYS_LEVEL_LAYOUTS[0].size())
+                                .unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(f.size(), PHYS_LEVEL_LAYOUTS[0].size());
+                        free_frame(f);
+                    }
+                }
+            }
+            for frame in out.drain(..) {
+                free_frame(frame);
+            }
+        }
+    }
+
+    #[kernel_test]
+    fn stress_test_bulk_alloc() {
+        const WORKERS: u64 = 3;
+        let handles = (1..=WORKERS)
+            .map(|tid| run_closure_in_new_thread(Priority::REALTIME, move || bulk_worker(tid)))
+            .collect::<Vec<_>>();
+        bulk_worker(0);
+        for handle in handles {
+            handle.1.wait();
         }
     }
 }

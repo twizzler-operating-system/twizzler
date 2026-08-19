@@ -358,6 +358,14 @@ impl ReferenceRuntime {
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .unwrap();
         (unsafe { &mut *tls }).runtime_data.set_id(1);
+        // The main thread must take the started-thread allocator path like any trampoline-started
+        // thread: without this flag every main-thread alloc routes to the no-free early allocator
+        // for the life of the program (measured: leakcheck l3x-xfree-seq, 8.64 pages/iter leaked
+        // vs 0.13 on a started thread). TLS and the libc TCB are already installed by our caller.
+        (unsafe { &mut *tls })
+            .runtime_data
+            .flags
+            .fetch_or(THREAD_STARTED, Ordering::SeqCst);
         let thread = InternalThread::new(
             Some(thread_repr_obj),
             thid,

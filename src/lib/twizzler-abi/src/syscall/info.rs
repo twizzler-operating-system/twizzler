@@ -89,6 +89,38 @@ pub struct MemoryStats {
     /// Times a processor's right to take that no-flush path was revoked by an invalidation on
     /// another processor. Read against the two above: this is what eats the saving.
     pub tlb_revoke_count: usize,
+    /// Frame-tracker state, in frames. `free_pages` above is the physical allocator's view; these
+    /// are the tracker's, and the two answer different questions. A frame parked in a thread-local
+    /// precharge pool is neither free nor mapped -- it is counted here under `kernel_used` and is
+    /// absent from `free_pages`, which is how 175k of them once hid in one thread's pool.
+    pub tracker: TrackerStats,
+}
+
+/// The frame tracker's counters, in frames. Invariant the tracker intends to hold:
+/// `idle + kernel_used + page_data == total`, with `pager_outstanding` a subset of `page_data`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct TrackerStats {
+    /// Frames on the allocator's free lists.
+    pub idle: usize,
+    /// Frames charged to the kernel (page tables, kernel heap backing, precharge pools).
+    pub kernel_used: usize,
+    /// Frames holding object page data.
+    pub page_data: usize,
+    /// Every frame the tracker knows about.
+    pub total: usize,
+    /// Frames currently loaned to the userspace pager. A subset of `page_data`.
+    pub pager_outstanding: usize,
+    /// Cumulative frames allocated since boot. Monotone.
+    pub allocated: usize,
+    /// Cumulative frames freed since boot. Monotone.
+    pub freed: usize,
+    /// Cumulative frames recovered by the reclaim thread. Monotone.
+    pub reclaimed: usize,
+    /// Threads currently blocked waiting for a frame.
+    pub waiting: usize,
+    /// Whether the reclaim heuristic is currently latched on.
+    pub reclaiming: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]

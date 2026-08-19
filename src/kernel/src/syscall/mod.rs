@@ -33,7 +33,7 @@ use crate::{
     processor::mp::{current_processor, with_each_active_processor},
     random::getrandom,
     thread::current_thread_ref,
-    time::{TICK_SOURCES, Ticks, TimeStatCollector},
+    time::TimeStatCollector,
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
@@ -103,6 +103,12 @@ fn type_sys_object_create(
     object::sys_object_create(create, srcs, ties)
 }
 
+fn type_sys_object_copy(id: ObjID, src_ptr: u64, src_len: u64) -> Result<()> {
+    let srcs =
+        unsafe { create_user_slice(src_ptr, src_len) }.ok_or(ArgumentError::InvalidArgument)?;
+    object::sys_object_copy(id, srcs)
+}
+
 fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
     let slice = unsafe { create_user_slice(ptr, len) }.ok_or(ArgumentError::InvalidArgument)?;
     let timeout =
@@ -137,54 +143,19 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
     let info_ptr: &mut MaybeUninit<ClockInfo> =
         unsafe { create_user_ptr(info) }.ok_or(ArgumentError::InvalidArgument)?;
 
-    match source {
-        ClockSource::BestMonotonic => {
-            let ticks = {
-                TICK_SOURCES.lock()[src as usize]
-                    .as_ref()
-                    .map_or(Ticks::default(), |c| c.read())
-            };
-            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
-            let precision = FemtoSeconds(1000); // TODO
-            let resolution = ticks.rate;
-            let flags = ClockFlags::MONOTONIC;
-            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
-            info_ptr.write(info);
-            Ok(0)
-        }
-        ClockSource::BestRealTime => {
-            let ticks = {
-                TICK_SOURCES.lock()[src as usize]
-                    .as_ref()
-                    .map_or(Ticks::default(), |c| c.read())
-            };
-            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
-            let precision = FemtoSeconds(1000); // TODO
-            let resolution = ticks.rate;
-            let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
-            info_ptr.write(info);
-            Ok(0)
-        }
-        ClockSource::ID(_) => {
-            let ticks = {
-                let clock_list = TICK_SOURCES.lock();
-                if src as usize > clock_list.len() {
-                    return Err(ArgumentError::InvalidArgument.into());
-                }
-                clock_list[src as usize]
-                    .as_ref()
-                    .map_or(Ticks::default(), |c| c.read())
-            };
-            let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
-            let precision = FemtoSeconds(1000); // TODO
-            let resolution = ticks.rate;
-            let flags = ClockFlags::empty();
-            let info = ClockInfo::new(span, precision, resolution, ticks.rate, flags);
-            info_ptr.write(info);
-            Ok(0)
-        }
-    }
+    // Through the cache, not `TICK_SOURCES.lock()`. Every arm of this used to take that one global
+    // spinlock, so userspace asking the time serialized every cpu in the system against every
+    // other -- the same defect `Instant::now()` had and fixed (see `instant.rs`), left behind on
+    // the syscall path. Userspace clocks now calibrate once and read the tick counter themselves,
+    // so this is no longer hot, but it is reachable by anything that cannot do that and there is
+    // no reason for it to hold a lock: tick sources are registered at boot and never replaced.
+    let (idx, flags) = crate::clock::resolve_clock_source(source)?;
+    let ticks = crate::time::read_clock(idx).ok_or(ArgumentError::InvalidArgument)?;
+    let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
+    let precision = FemtoSeconds(1000); // TODO
+    let resolution = ticks.rate;
+    info_ptr.write(ClockInfo::new(span, precision, resolution, ticks.rate, flags));
+    Ok(0)
 }
 
 fn type_get_random(into_ptr: u64, into_length: u64, flags: u64) -> Result<u64> {
@@ -335,6 +306,10 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             context.set_return_values(code, val);
         }
         Syscall::Null => {
+            if context.arg0::<u64>() == crate::perfmark::MAGIC {
+                crate::perfmark::mark(context.arg1::<u64>() != 0);
+                return;
+            }
             if context.arg0::<u64>() == 0x12345678 {
                 crate::thread::locktrack::diag::print_counters(true);
                 crate::memory::pagetables::print_switch_counters();
@@ -354,6 +329,8 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::context::virtmem::heapprofile::print();
                 crate::obj::id::checkidstats::print();
                 object::mapstats::print();
+                object::createprofile::print();
+                object::copystats::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
@@ -431,6 +408,12 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             let result = type_sys_object_create(create, src_ptr, src_len, tie_ptr, tie_len);
             let (code, val) =
                 convert_result_to_codes(result, |id| (id.parts()[0], id.parts()[1]), zero_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::ObjectCopy => {
+            let id = ObjID::from_parts([context.arg0(), context.arg1()]);
+            let result = type_sys_object_copy(id, context.arg2(), context.arg3());
+            let (code, val) = convert_result_to_codes(result, |_| (0, 0), one_err);
             context.set_return_values(code, val);
         }
         Syscall::Spawn => {
@@ -937,6 +920,32 @@ pub fn nr_syscalls() -> usize {
     let mut count = 0;
     with_each_active_processor(|p| count += p.syscall_stats.lock().count);
     count
+}
+
+/// Per-syscall (count, total nanoseconds) summed over cpus, for [`crate::perfmark`] to difference.
+/// A/B: restore the old behaviour in which taking a snapshot switched timing on, to measure what
+/// the instrument was costing every number ever recorded with it.
+pub const SNAPSHOT_ENABLES_TIMING: bool = false;
+
+pub fn syscall_snapshot() -> [(usize, u64); Syscall::NumSyscalls as usize] {
+    if SNAPSHOT_ENABLES_TIMING {
+        TIMING_ON.store(true, Ordering::Relaxed);
+    }
+    // Deliberately does NOT set `TIMING_ON`, unlike `get_syscall_stats`. `crate::perfmark::mark`
+    // calls this, every sysbench bench brackets its body with a mark, and `Mark::new` runs before
+    // `b.iter()` -- so switching timing on here put two clock reads and a per-cpu lock update on
+    // every syscall of every bench, including the first. The instrument enabled the overhead it
+    // then reported. Counts are collected unconditionally and are what the marker mostly uses;
+    // ask for times with `SYSCALL_PROFILE`.
+    let mut out = [(0usize, 0u64); Syscall::NumSyscalls as usize];
+    with_each_active_processor(|p| {
+        let stats = p.syscall_stats.lock();
+        for (i, slot) in out.iter_mut().enumerate() {
+            slot.0 += stats.per_syscall_count[i];
+            slot.1 += (stats.per_syscall_stats[i].sum_femtos() / 1_000_000) as u64;
+        }
+    });
+    out
 }
 
 fn get_syscall_stats() -> SyscallStats {

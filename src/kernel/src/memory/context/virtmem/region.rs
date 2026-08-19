@@ -1,32 +1,35 @@
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
     usize,
 };
 
-use nonoverlapping_interval_tree::NonOverlappingIntervalTree;
 use twizzler_abi::{
+    arch::SLOTS,
     device::CacheType,
-    object::{ObjID, Protections},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::{MapControlCmd, MapFlags, ThreadSyncReference, ThreadSyncWake, TimeSpan},
     trace::{CONTEXT_FAULT, ContextFaultEvent, FaultFlags, TraceEntryFlags, TraceKind},
     upcall::MemoryAccessKind,
 };
 use twizzler_rt_abi::{
     bindings::{SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
-    error::{ObjectError, TwzError},
+    error::{ObjectError, ResourceError, TwzError},
 };
 
 use super::{
-    PageFaultFlags,
+    PageFaultFlags, Slot,
     fault::{FaultClass, FaultStage, record_class, record_stage, stage_start},
 };
 use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::{
-        context::{ContextRef, ObjectContextInfo},
+        context::{
+            ContextRef, ObjectContextInfo,
+            virtmem::regionmgr::{InsertGuard, RemoveGuard, SlotMgr},
+        },
         pagetables::{MappingCursor, MappingFlags, MappingSettings},
     },
     mutex::Mutex,
@@ -537,76 +540,86 @@ impl MapRegion {
 ///
 /// The fault path takes one per fault, and a `MapRegion` clone is four `Arc` bumps (`object`,
 /// `stable`, `should_sync`, `removed`) and four matching drops. One refcount does the same job.
-#[derive(Default)]
+///
+/// Every operation takes `&self`. What used to be one context-wide sleeping mutex -- taken on
+/// every fault, and measured convoying from 155 ns to 7.5 us per fault at smp4 -- is now a shard
+/// spinlock per slot inside [SlotMgr], plus a per-slot state that carries the exclusion an insert
+/// or a remove needs across its mapping work. See [SlotState] there.
 pub struct RegionManager {
-    tree: NonOverlappingIntervalTree<VirtAddr, Arc<MapRegion>>,
-    objects: BTreeMap<ObjID, Vec<Range<VirtAddr>>>,
+    /// User slots, based at zero.
+    user: SlotMgr,
+    /// Kernel-object slots. Separate because they start around 2^34 (`KOBJ_START / MAX_SIZE`),
+    /// which no two-level table based at zero can reach.
+    kobj: SlotMgr,
+}
+
+impl Default for RegionManager {
+    fn default() -> Self {
+        let kobj_start = VirtAddr::start_kernel_object_memory();
+        let kobj_end = VirtAddr::end_kernel_object_memory();
+        Self {
+            // `SLOTS`, not the width of the user half: it is the ABI's count on both arches and so
+            // is what userspace can name, and it sidesteps `end_user_memory` being exclusive on
+            // amd64 and inclusive on aarch64.
+            user: SlotMgr::new(0, SLOTS),
+            kobj: SlotMgr::new(
+                kobj_start.raw() as usize / MAX_SIZE,
+                (kobj_end.raw() - kobj_start.raw()) as usize / MAX_SIZE,
+            ),
+        }
+    }
 }
 
 impl RegionManager {
-    /// Takes a region out of the tree and marks it so.
-    ///
-    /// `MapRegion::removed` is what tells everyone holding a clone that this region is no longer
-    /// what its slot is bound to: the fault path checks it before mapping, and
-    /// [`super::SlotMemo`] validates cached entries against it. Both removal paths already store
-    /// it by hand *after* the tree drops the region; this exists so that the one remaining way a
-    /// binding can disappear -- being replaced under `insert_region` -- cannot skip it.
-    fn mark_removed(region: &Arc<MapRegion>) {
-        region.removed.store(true, Ordering::SeqCst);
+    /// Which manager answers for `slot`, if either. `None` is an ordinary miss: the fault path
+    /// looks user slots up in the kernel context as a fallback.
+    fn mgr_for(&self, slot: Slot) -> Option<&SlotMgr> {
+        [&self.user, &self.kobj]
+            .into_iter()
+            .find(|mgr| mgr.contains(slot.raw()))
     }
 
-    pub fn insert_region(&mut self, region: MapRegion) {
-        let object_entry = self.objects.entry(region.object.id()).or_default();
-        let range = region.range.clone();
-        let old = self.tree.insert_replace(range.clone(), Arc::new(region));
-        for old_region in old {
-            // No caller reaches this today -- `insert_object` returns Busy on an occupied slot and
-            // `insert_kernel_object` only takes slots off a free list that is pushed to after the
-            // old region is marked. But `insert_replace` permits it structurally, and a binding
-            // replaced without its region being marked is one the memo would keep answering from
-            // forever. Marking here makes that unconditional rather than a property of two callers
-            // continuing to be careful.
-            Self::mark_removed(&old_region.1);
-            let pos = object_entry
-                .iter()
-                .position(|item| item == &old_region.0)
-                .expect("failed to find object range");
-            object_entry.swap_remove(pos);
-        }
-        object_entry.push(range);
+    pub fn lookup_region(&self, slot: Slot) -> Option<Arc<MapRegion>> {
+        self.mgr_for(slot)?.lookup(slot.raw())
     }
 
-    pub fn remove_region(&mut self, addr: VirtAddr) -> Option<Arc<MapRegion>> {
-        if let Some(region) = self.tree.remove(&addr) {
-            let object_entry = self.objects.entry(region.object.id()).or_default();
-            let pos = object_entry
-                .iter()
-                .position(|item| item == &region.range)
-                .expect("failed to find object range");
-            object_entry.swap_remove(pos);
-            Some(region)
-        } else {
-            None
-        }
+    /// Claim `slot` for a mapping that is about to be built. See [SlotMgr::begin_insert].
+    pub fn begin_insert(&self, slot: Slot) -> Result<InsertGuard<'_>, TwzError> {
+        self.mgr_for(slot)
+            .ok_or(ResourceError::OutOfResources)?
+            .begin_insert(slot.raw())
     }
 
-    pub fn lookup_region(&self, addr: VirtAddr) -> Option<&Arc<MapRegion>> {
-        self.tree.get(&addr)
+    /// Take the region out of `slot`, holding it against reuse until the teardown finishes. See
+    /// [SlotMgr::begin_remove].
+    pub fn begin_remove(&self, slot: Slot) -> Option<(Arc<MapRegion>, RemoveGuard<'_>)> {
+        self.mgr_for(slot)?.begin_remove(slot.raw())
     }
 
-    pub fn object_mappings(&mut self, id: ObjID) -> impl Iterator<Item = &Arc<MapRegion>> {
-        self.objects.entry(id).or_default().iter().map(|info| {
-            self.tree
-                .get(&info.start)
-                .expect("failed to lookup mapping")
-        })
+    /// Every region in this context. Cold path: `unregister_sctx` needs a *complete* list, since a
+    /// region missed there never gets its `dec_map_count` and its object is never reaped.
+    pub fn mappings(&self) -> Vec<Arc<MapRegion>> {
+        let mut out = Vec::with_capacity(self.mapping_count());
+        self.user.for_each(|_, region| out.push(region));
+        self.kobj.for_each(|_, region| out.push(region));
+        out
     }
 
-    pub fn mappings(&self) -> impl Iterator<Item = &Arc<MapRegion>> {
-        self.tree.iter().map(|x| x.1.value())
+    /// Approximate; see [SlotMgr]'s count field.
+    pub fn mapping_count(&self) -> usize {
+        self.user.count() + self.kobj.count()
     }
 
-    pub fn objects(&self) -> impl Iterator<Item = &ObjID> {
-        self.objects.keys().into_iter()
+    /// The objects mapped in this context, deduplicated. Debug-only, and derived from the walk
+    /// above rather than tracked, since nothing hot asks.
+    pub fn objects(&self) -> Vec<ObjID> {
+        let mut ids = self
+            .mappings()
+            .iter()
+            .map(|region| region.object.id())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 }

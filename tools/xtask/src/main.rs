@@ -176,6 +176,13 @@ struct ImageOptions {
     benches: bool,
     #[clap(long, short, help = "Select a single program to bench.")]
     bench: Option<String>,
+    #[clap(
+        long,
+        default_value_t = 1,
+        help = "Run --bench this many times in one boot. Later passes see the kernel state the \
+                earlier ones left, which is what surfaces drift within a boot."
+    )]
+    bench_iters: usize,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
@@ -257,10 +264,24 @@ struct QemuOptions {
     benches: bool,
     #[clap(long, short, help = "Select a single program to bench.")]
     bench: Option<String>,
+    #[clap(
+        long,
+        default_value_t = 1,
+        help = "Run --bench this many times in one boot. Later passes see the kernel state the \
+                earlier ones left, which is what surfaces drift within a boot."
+    )]
+    bench_iters: usize,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Share a file/directory with Twizzler")]
     data: Option<PathBuf>,
+    #[clap(
+        long,
+        conflicts_with = "benches",
+        conflicts_with = "bench",
+        help = "Run only the sysbench core-path microbenchmarks (shorthand for --bench sysbench)."
+    )]
+    sysbench: bool,
     #[clap(
         long,
         short,
@@ -325,6 +346,7 @@ impl From<&QemuOptions> for ImageOptions {
             autostart: qo.autostart.clone(),
             kernel_arg: qo.kernel_arg.clone(),
             bench: qo.bench.clone(),
+            bench_iters: qo.bench_iters,
             // Build into the same image we are about to boot. Otherwise `--disk-image` boots a
             // private copy while the build writes its binaries into the shared one, which is both
             // wrong and the collision the flag exists to avoid.

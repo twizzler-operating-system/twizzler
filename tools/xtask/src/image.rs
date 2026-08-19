@@ -348,7 +348,33 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             if let Some(bench) = &cli.bench {
                 let test_file_path = get_genfile_path(comp, "bench_bin");
                 let mut file = File::create(&test_file_path)?;
-                file.write_all(bench.as_bytes())?;
+                // A crate name resolves to the staged binary's exact file name, so unittest runs
+                // the current build rather than every stale prefix match (or a plain binary of
+                // the same name). Tokens after the crate name are bench-name filters, passed
+                // through for unittest to hand to the harness.
+                let (crate_name, filters) = bench.split_once(' ').unwrap_or((bench.as_str(), ""));
+                let canon = test_comp
+                    .tests
+                    .iter()
+                    .find(|bin| {
+                        bin.unit.pkg.name().replace('-', "_") == crate_name.replace('-', "_")
+                    })
+                    .map(|bin| bin.path.file_name().unwrap().to_string_lossy().into_owned())
+                    .unwrap_or_else(|| crate_name.to_owned());
+                let spec = if filters.is_empty() {
+                    canon
+                } else {
+                    format!("{} {}", canon, filters)
+                };
+                // One line per pass. unittest runs each line in turn, so N identical lines means N
+                // runs of the same benches in one boot -- which is what shows drift *within* a
+                // boot (the whole point of `sysbench.md`'s order-sensitivity note) without paying
+                // for a rebuild and reboot per repetition.
+                let passes = cli.bench_iters.max(1);
+                let spec = core::iter::repeat_n(spec.as_str(), passes)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                file.write_all(spec.as_bytes())?;
                 initrd_files.push(test_file_path);
             }
         } else {

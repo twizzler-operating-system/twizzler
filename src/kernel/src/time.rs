@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use twizzler_abi::syscall::{ClockInfo, FEMTOS_PER_NANO, FemtoSeconds, TimeSpan, TimeStat};
 
-use crate::spinlock::Spinlock;
+use crate::{once::Once, spinlock::Spinlock};
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Ticks {
@@ -24,7 +24,7 @@ pub trait ClockHardware {
     }
 }
 
-const MAX_CLOCKS: usize = 8;
+pub const MAX_CLOCKS: usize = 8;
 pub static TICK_SOURCES: Spinlock<[Option<Arc<dyn ClockHardware + Send + Sync>>; MAX_CLOCKS]> =
     Spinlock::new([const { None }; MAX_CLOCKS]);
 pub const CLOCK_OFFSET: usize = 2;
@@ -49,11 +49,44 @@ where
         clock_list[1] = Some(clk.clone());
     }
 
-    for pos in clock_list.iter_mut() {
+    // `break`, which this loop did not have: it filled *every* remaining slot with this one clock,
+    // so the first registration consumed all `MAX_CLOCKS` of them, the clock list reported eight
+    // copies of one clock, and any second `register_clock` found no free slot and was dropped on
+    // the floor without a word.
+    for pos in clock_list.iter_mut().skip(CLOCK_OFFSET) {
         if pos.is_none() {
             *pos = Some(clk.clone());
+            break;
         }
     }
+}
+
+/// The registered tick sources, cached so that reading one is not a lock acquisition.
+///
+/// Sources are registered during boot and never replaced or removed, so a reading taken through
+/// this cache can only be stale in the window before the source exists -- which
+/// [`read_clock`] handles by falling back to the list itself.
+static CLOCK_CACHE: [Once<Arc<dyn ClockHardware + Send + Sync>>; MAX_CLOCKS] =
+    [const { Once::new() }; MAX_CLOCKS];
+
+/// A/B: answer [`read_clock`] from the cache rather than by taking [`TICK_SOURCES`].
+///
+/// With this off, every `sys_read_clock_info` takes the one global tick-source spinlock, which is
+/// what the syscall did before -- so every cpu in the system serialized against every other to ask
+/// the time.
+pub const CACHED_CLOCK_READ: bool = true;
+
+/// Read tick source `idx`, without taking [`TICK_SOURCES`] once it has been read before.
+pub fn read_clock(idx: usize) -> Option<Ticks> {
+    if !CACHED_CLOCK_READ {
+        return Some(TICK_SOURCES.lock().get(idx)?.as_ref()?.read());
+    }
+    let cache = CLOCK_CACHE.get(idx)?;
+    if let Some(clock) = cache.poll() {
+        return Some(clock.read());
+    }
+    let clock = TICK_SOURCES.lock().get(idx)?.clone()?;
+    Some(cache.call_once(|| clock).read())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -139,6 +172,12 @@ impl TimeStatCollector {
 
     pub fn count(&self) -> usize {
         self.count
+    }
+
+    /// Total of every sample, in femtoseconds. What a delta between two snapshots needs; `mean`
+    /// times `count` is the same number only when neither has been rounded.
+    pub fn sum_femtos(&self) -> u128 {
+        self.sum
     }
 
     pub fn mean(&self) -> TimeSpan {

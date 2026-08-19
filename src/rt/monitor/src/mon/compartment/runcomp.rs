@@ -20,7 +20,7 @@ use twizzler_abi::{
         sys_thread_send_message, DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags,
         ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
-    upcall::{ResumeFlags, UpcallData, UpcallFrame},
+    upcall::{ResumeFlags, UpcallData, UpcallFrame, UpcallInfo},
     write_note,
 };
 use twizzler_rt_abi::{
@@ -49,6 +49,15 @@ pub const COMP_DESTRUCTED: u64 = CompartmentFlags::DESTRUCTED.bits();
 /// Compartment thread has exited.
 pub const COMP_EXITED: u64 = CompartmentFlags::EXITED.bits();
 
+/// Exit code reported for a compartment killed by an unhandled supervisor exception.
+///
+/// 128 + SIGSEGV, the convention libstd's Twizzler `ExitStatus::signal` already decodes (it
+/// returns `code - 128` for anything above 128). One value covers every fault variant on purpose:
+/// which kind it was is printed in full on the line right above the store, so encoding it here
+/// buys nothing the log lacks, while guessing a per-variant signal number would put a specific
+/// and possibly wrong claim into `status.signal()`.
+pub const COMP_FAULT_EXIT_CODE: u64 = 128 + 11;
+
 /// A runnable or running compartment.
 pub struct RunComp {
     /// The security context for this compartment.
@@ -60,6 +69,14 @@ pub struct RunComp {
     /// The dynlink ID of this compartment.
     pub compartment_id: CompartmentId,
     main: Option<CompThread>,
+    /// Nonzero once an unhandled supervisor exception has killed this compartment, and read in
+    /// preference to the main thread's code by [`RunComp::read_error_code`].
+    ///
+    /// The faulting thread never reaches an exit path, so nothing writes the main thread's code
+    /// and it stays whatever it was -- zero. A compartment that died of a fault therefore reported
+    /// *success* all the way out through `compartment_wait` and `Child::wait`, which is how
+    /// `unittest` (grading purely on exit status) scored a crashed test binary `Passed`.
+    fault_code: AtomicU64,
     pub deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     alloc: Talc<ErrOnOom>,
@@ -256,6 +273,7 @@ impl RunComp {
             name,
             compartment_id,
             main: None,
+            fault_code: AtomicU64::new(0),
             deps,
             comp_config_object,
             alloc,
@@ -322,6 +340,11 @@ impl RunComp {
             .lock()
             .unwrap()
             .insert(info, handle.clone());
+        // Measured, not assumed: this clobbers ~187 times per boot (2240 across 12), and it is
+        // benign. `Space::map` has already incremented `handle_count` for this same MapInfo before
+        // we get here, so dropping the displaced handle takes the count from C+1 back to C, never
+        // to zero -- the slot cannot be unmapped underneath the caller. Ruled out as a cause of the
+        // extcount fault; left uninstrumented because a per-boot warning is pure noise.
         Ok(handle)
     }
 
@@ -338,13 +361,30 @@ impl RunComp {
     /// Unmap and object from this compartment.
     pub fn unmap_object(&self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.lock().unwrap().remove(&info);
-        if x.is_none() {
-            // TODO:: this happens occasionally, but it doesn't seem to be an issue?
-            tracing::debug!(
-                "tried to comp-unmap an object that was not mapped by compartment ({}): {:?}",
-                self.name,
-                info
-            );
+        match &x {
+            Some(handle) => {
+                // Which slot a compartment-requested unmap is about to release, so the fault dump
+                // can show it against the map of the same slot. This is the path most likely to
+                // race a concurrent `map_object`: the runtime's in-flight guard is what is meant
+                // to keep them apart.
+                crate::mon::space::record_slot_event(
+                    handle.addrs().slot,
+                    info.id,
+                    "comp-unmap requested",
+                );
+            }
+            None => {
+                // Was `debug!` with "happens occasionally, but it doesn't seem to be an issue?" --
+                // invisible at the default level, so nobody has ever seen its rate. It is an unmap
+                // arriving for something this compartment does not have mapped, i.e. an unmap and
+                // a map crossing; the opposite crossing is the fault being hunted. Raised so the
+                // sweep can say how often it happens and whether it coincides.
+                tracing::warn!(
+                    "map-diag: comp-unmap of an object not mapped by compartment ({}): {:?}",
+                    self.name,
+                    info
+                );
+            }
         }
         x
     }
@@ -577,6 +617,10 @@ impl RunComp {
 
     #[allow(dead_code)]
     pub fn read_error_code(&self) -> u64 {
+        let fault = self.fault_code.load(Ordering::SeqCst);
+        if fault != 0 {
+            return fault;
+        }
         let Some(ref main) = self.main else {
             return 0;
         };
@@ -650,6 +694,20 @@ impl RunComp {
                 }
                 Err(_) => tracing::warn!("  (mapped-object list unavailable: lock held)"),
             }
+            // What the monitor did to the faulting slot, to pair with the kernel's UNMAP_HIST
+            // ("what did this slot last hold"). A violation on a slot `map_object` has only just
+            // returned is a map and an unmap overlapping; this is the half that says which ran.
+            if let UpcallInfo::MemoryContextViolation(v) = info.info {
+                tracing::warn!("  map-diag: fault addr {:#x}", v.address);
+                crate::mon::space::report_map_history(
+                    v.address as usize / twizzler_rt_abi::object::MAX_SIZE,
+                );
+            }
+            // Record the death *before* publishing it: `set_flag(COMP_EXITED)` is what unblocks
+            // `compartment_wait`, and a waiter that reads the exit code between the flag and the
+            // code would see the main thread's untouched zero -- the very success this is here to
+            // stop being reported.
+            self.fault_code.store(COMP_FAULT_EXIT_CODE, Ordering::SeqCst);
             // The faulting thread is about to exit without ever reaching the normal exit paths, so
             // nothing else would mark this compartment dead. Without this, anyone in
             // `compartment_wait` (init, and the test runner behind it) blocks forever and the

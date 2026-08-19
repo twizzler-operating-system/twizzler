@@ -36,7 +36,9 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator, take_or_new_frame_allocator},
     },
     mutex::Mutex,
-    obj::{ObjectRef, PageNumber, PtGuard, pagetables::ObjectPageTable},
+    obj::{
+        LookupFlags, ObjectRef, PageNumber, PtGuard, lookup_object, pagetables::ObjectPageTable,
+    },
     once::Once,
     processor::{mp::current_processor, tls_ready},
     security::KERNEL_SCTX,
@@ -46,6 +48,7 @@ use crate::{
 
 pub mod fault;
 pub mod region;
+pub mod regionmgr;
 mod tests;
 
 pub use fault::page_fault;
@@ -67,7 +70,7 @@ pub struct VirtContext {
     // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
     // memory-allocating collection. See register_sctx for details.
     target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
-    regions: Mutex<RegionManager>,
+    regions: RegionManager,
     /// Identity for [`SlotMemo`] entries, from a counter that never reuses.
     ///
     /// Deliberately *not* `id`: `IdCounter::next` pops from a reuse pool, so a dropped context's
@@ -169,11 +172,105 @@ pub mod mapprofile {
 
     use crate::instant::Instant;
 
+    /// Whether the map path keeps the whole-call and `check_id` timings it has always kept.
+    ///
+    /// These were unconditional: `Timer` plus `record_checkid` here, and four more clock reads in
+    /// `sys_object_map`'s `mapstats`. Every one ends in an `as_nanos()`, which is a u128 multiply
+    /// and two u128 divisions (see [`crate::instant::Instant`]'s own comment on why it does not
+    /// convert eagerly) -- roughly seven clock reads and five conversions per map syscall, on the
+    /// path `object_map_unmap_syscall`, `file_open` and `object_create_delete` all measure. That
+    /// is F11's shape exactly, so it is now off by default and this const is the A/B switch back.
+    pub const MAP_STATS: bool = false;
+
+    /// Whether `insert_object` additionally splits itself by stage. Purely an attribution
+    /// instrument, added after `MAP_STATS`; separate from it so a baseline arm can restore the
+    /// old always-on timings without also being charged for this.
+    pub const MAP_PROFILE: bool = false;
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static CHECKID: AtomicU64 = AtomicU64::new(0);
     static TOTAL: AtomicU64 = AtomicU64::new(0);
 
+    /// Stages of `insert_object`, which is ~7.8 us of the ~8.3 us `sys_object_map` costs.
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Stage {
+        /// `cow_clone_page_tables`, for a STABLE mapping only.
+        Stable = 0,
+        /// Building the `MapRegion`: an object `Arc` clone and two fresh `Arc<AtomicBool>`s.
+        Region,
+        /// `take_or_new_frame_allocator` + `precharge_slot_map`, ahead of the lock.
+        Precharge,
+        /// Acquiring the context-wide `regions` mutex -- F9's convoy.
+        Lock,
+        /// `map_object`: the arch mapper walk plus its TLB consistency.
+        MapObj,
+        /// `insert_region` into the interval tree.
+        Insert,
+        Total,
+    }
+
+    pub const NR: usize = Stage::Total as usize + 1;
+    pub const NAMES: [&str; NR] = [
+        "stable",
+        "region",
+        "precharge",
+        "lock",
+        "map_obj",
+        "insert",
+        "TOTAL",
+    ];
+
+    static STAGE_COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+    static STAGE_NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn start() -> Instant {
+        if MAP_PROFILE {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    /// The clock read behind [`MAP_STATS`], as opposed to [`start`]'s behind [`MAP_PROFILE`].
+    #[inline(always)]
+    pub fn stats_stamp() -> Instant {
+        if MAP_STATS {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record(stage: Stage, start: Instant) {
+        if !MAP_PROFILE {
+            return;
+        }
+        let ns = (Instant::now() - start).as_nanos() as u64;
+        STAGE_COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
+        STAGE_NS[stage as usize].fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// Per-stage (count, nanoseconds), cumulative, for [`crate::perfmark`] to difference.
+    pub fn snapshot() -> [(u64, u64); NR] {
+        let mut out = [(0u64, 0u64); NR];
+        if !MAP_PROFILE {
+            return out;
+        }
+        for i in 0..NR {
+            out[i] = (
+                STAGE_COUNT[i].load(Ordering::Relaxed),
+                STAGE_NS[i].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+
     pub fn record_checkid(ns: u64) {
+        if !MAP_STATS {
+            return;
+        }
         CHECKID.fetch_add(ns, Ordering::Relaxed);
     }
 
@@ -182,6 +279,9 @@ pub mod mapprofile {
 
     impl Drop for Timer {
         fn drop(&mut self) {
+            if !MAP_STATS {
+                return;
+            }
             COUNT.fetch_add(1, Ordering::Relaxed);
             TOTAL.fetch_add(
                 (Instant::now() - self.0).as_nanos() as u64,
@@ -192,19 +292,30 @@ pub mod mapprofile {
 
     pub fn print() {
         let n = COUNT.load(Ordering::Relaxed);
-        if n == 0 {
-            return;
+        if n > 0 {
+            let total = TOTAL.load(Ordering::Relaxed);
+            let check = CHECKID.load(Ordering::Relaxed);
+            logln!(
+                "== insert_object: {} calls, {} us total; per call {} ns = check_id {} + rest {} ==",
+                n,
+                total / 1000,
+                total / n,
+                check / n,
+                total.saturating_sub(check) / n,
+            );
         }
-        let total = TOTAL.load(Ordering::Relaxed);
-        let check = CHECKID.load(Ordering::Relaxed);
-        logln!(
-            "== insert_object: {} calls, {} us total; per call {} ns = check_id {} + rest {} ==",
-            n,
-            total / 1000,
-            total / n,
-            check / n,
-            total.saturating_sub(check) / n,
-        );
+        for (i, name) in NAMES.iter().enumerate() {
+            let c = STAGE_COUNT[i].load(Ordering::Relaxed);
+            if c == 0 {
+                continue;
+            }
+            logln!(
+                "  {:>9}: {} calls, {} ns/call",
+                name,
+                c,
+                STAGE_NS[i].load(Ordering::Relaxed) / c
+            );
+        }
     }
 }
 
@@ -286,6 +397,18 @@ const SLOT_MEMO_LEN: usize = 8;
 /// already there.
 pub const RESOLVE_CHUNK: usize = 16;
 
+/// Whether [`VirtContext::lookup_object_refs_cached`] consults the per-thread [`SlotMemo`] or
+/// resolves every op through the plain per-slot lookup. The memo predates the `SlotMgr` refactor;
+/// with the context-wide `regions` mutex gone this was its last runtime user.
+///
+/// Off: A/B at `syncab-on2`/`syncab-off` (one tree state, -j1) -- plain lookup ties or wins on
+/// every bench (sleep_ready 135.8 -> 134.2, wake_no_waiters 234 -> 226, soft fault 959 -> 932 ns
+/// means; ping_pong/map_unmap/contended a wash). With `FAULT_SLOT_MEMO` also off, nothing consults
+/// the memo at runtime and the whole apparatus (`SlotMemo*`, `memo_tag`, `slotmemo` counters, the
+/// per-thread field, both consts) is deletable per regionplan.md §6 -- left in place only so the
+/// validated tree ships exactly the state the A/B measured.
+pub const SYNC_SLOT_MEMO: bool = false;
+
 /// Never reused, unlike `CONTEXT_IDS`. See [`VirtContext::memo_tag`].
 static MEMO_TAGS: AtomicU64 = AtomicU64::new(1);
 
@@ -330,6 +453,15 @@ impl SlotMemoInner {
     /// overwrite: nothing sweeps entries any more, so a dead one would pin its region -- and
     /// transitively its object -- for as long as the thread lives.
     fn lookup(&mut self, slot: usize, tag: u64) -> Option<ObjectRef> {
+        self.lookup_region(slot, tag).map(|r| r.object.clone())
+    }
+
+    /// As [`Self::lookup`], but handing back the region itself.
+    ///
+    /// The entry has always held the region -- it is what `removed` is read from -- and only
+    /// `sys_thread_sync`'s caller wanted the object. The fault path wants the region, so it takes
+    /// this and the object projection stays a one-line wrapper.
+    fn lookup_region(&mut self, slot: usize, tag: u64) -> Option<Arc<MapRegion>> {
         self.clock += 1;
         let clock = self.clock;
         for entry in self.entries.iter_mut() {
@@ -340,7 +472,7 @@ impl SlotMemoInner {
             if e.tag == tag && !e.region.removed.load(Ordering::Acquire) {
                 e.used_at = clock;
                 slotmemo::record_hit();
-                return Some(e.region.object.clone());
+                return Some(e.region.clone());
             }
             *entry = None;
             slotmemo::record_invalidated();
@@ -515,7 +647,7 @@ impl VirtContext {
         // We ensure that the BTree never changes while we hold the lock.
         secctx.set_safe_with_spinlocks(true);
         let new = Self {
-            regions: Mutex::new(RegionManager::default()),
+            regions: RegionManager::default(),
             memo_tag: MEMO_TAGS.fetch_add(1, Ordering::Relaxed),
             is_kernel: kernel_arch.is_some(),
             id: CONTEXT_IDS.next(),
@@ -711,11 +843,12 @@ impl VirtContext {
     }
 
     pub fn print_objects(&self) {
-        let mut slots = self.regions.lock();
-        for obj in slots.objects().copied().collect::<Vec<_>>().iter() {
+        for obj in self.regions.objects() {
             log!("{} => ", obj);
-            for mapping in slots.object_mappings(*obj) {
-                log!("{:?}, ", mapping.range);
+            if let Ok(obj) = lookup_object(obj, LookupFlags::empty()).ok_or(()) {
+                for mapping in obj.mappings() {
+                    log!("{:?}, ", mapping.range);
+                }
             }
             logln!("");
         }
@@ -776,21 +909,7 @@ impl VirtContext {
         drop(new_target_cache);
 
         if let Some(arch) = arch {
-            let regions = self.regions.lock();
-            let capacity = regions.mappings().count();
-            drop(regions);
-
-            let mut region_list = alloc::vec::Vec::<Arc<MapRegion>>::with_capacity(capacity);
-            let regions = self.regions.lock();
-            for region in regions.mappings() {
-                if region.range.start.raw() == 0 {
-                    continue;
-                }
-                region_list.push(region.clone());
-            }
-            drop(regions);
-
-            for region in region_list {
+            for region in self.regions.mappings() {
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
                 // Whichever tree backs this region, as in remove_object: a stable clone still has
                 // to be told its mapping is gone, even though it never took a count against the
@@ -811,11 +930,20 @@ impl VirtContext {
                         pt.invls_len(),
                     );
                 }
-                if counted && released {
+                let last = if counted && released {
                     pt.dec_map_count();
                     if pt.map_count() == 0 {
                         region.object().note_last_unmap();
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                drop(pt);
+                if crate::obj::TARGETED_REAP && last && region.object().is_pending_delete() {
+                    crate::obj::request_reap(region.object().id(), region.object());
                 }
             }
         }
@@ -911,9 +1039,21 @@ impl VirtContext {
     ///
     /// Whatever the memo answers costs no `regions` acquisition at all, so the lock is taken only
     /// if something misses, and then exactly once.
+    ///
+    /// All of the above was written against the context-wide `regions` mutex. With `SlotMgr`
+    /// underneath, `lookup_region` takes a per-slot shard spinlock, so there is no single
+    /// acquisition left to amortize -- [`SYNC_SLOT_MEMO`] is the A/B switch for whether the memo
+    /// still pays.
     pub fn lookup_object_refs_cached(&self, slots: &[Slot], out: &mut [Option<ObjectRef>]) {
         assert_eq!(slots.len(), out.len());
         out.fill(None);
+
+        if !SYNC_SLOT_MEMO {
+            for (i, slot) in slots.iter().enumerate() {
+                out[i] = self.lookup_object_ref(*slot);
+            }
+            return;
+        }
 
         // Slots this context cannot answer for itself: kernel object memory reaches a *user*
         // context's `lookup_object_ref` only to be rerouted to `kernel_context()`, so a memo or a
@@ -963,23 +1103,22 @@ impl VirtContext {
             return;
         }
 
-        // One `regions` acquisition for everything that missed.
+        // Everything that missed.
         let mut resolved: [Option<Arc<MapRegion>>; RESOLVE_CHUNK] = [const { None }; RESOLVE_CHUNK];
         {
-            let regions = self.regions.lock();
-            let mut under_lock = 0;
+            let mut looked_up = 0;
             for (i, slot) in slots.iter().enumerate() {
                 if out[i].is_some() || reroute(slot) {
                     continue;
                 }
-                under_lock += 1;
-                resolved[i] = regions.lookup_region(slot.start_vaddr()).cloned();
+                looked_up += 1;
+                resolved[i] = self.regions.lookup_region(*slot);
             }
             // Realized, not hypothetical: `sync batching`'s saveable count is computed at syscall
             // entry and reports the same number whether this function batches or not. This counts
             // acquisitions actually taken against slots actually resolved under them, so the
             // difference is the saving that happened.
-            slotmemo::record_batch(under_lock);
+            slotmemo::record_batch(looked_up);
         }
 
         let mut memo = thread.slot_memo.inner.lock();
@@ -992,12 +1131,106 @@ impl VirtContext {
         }
     }
 
-    pub fn lookup_slot(&self, slot: usize) -> Option<Arc<MapRegion>> {
-        let slot = &Slot::try_from(slot).ok()?;
-        self.regions
+    /// The region backing `slot` in this context, consulting the calling thread's [`SlotMemo`]
+    /// first.
+    ///
+    /// For the page-fault path, which took `regions` on *every* fault purely to find the region
+    /// and clone it. Measured at smp4 with four threads faulting concurrently on four separate
+    /// objects, that stage went from 155 ns to 7.5 us per fault -- 58% of the whole contended
+    /// increase -- while the per-object page-table lock stayed flat. A convoy on a lock nobody
+    /// needed to hold: the answer is per-slot and the threads shared nothing but the context.
+    ///
+    /// Safe to answer from a memo for the same reason `sys_thread_sync` can: the entry is
+    /// validated against this context's `memo_tag` and the region's own `removed` flag. The fault
+    /// path already had to tolerate a stale region -- it clones one out from under the lock and
+    /// re-checks `removed` before installing a mapping (see `MapRegion::handle_fault`) -- so this
+    /// widens an existing window rather than opening a new one.
+    /// The fault path's two regions -- the faulting address's and the one executing at `ip` --
+    /// taking the memo once and `regions` at most once.
+    ///
+    /// Batched for the same reason [`Self::lookup_object_refs_cached`] is, and measured the same
+    /// way. Resolving them independently costs two per-thread spinlock round trips per fault
+    /// instead of one, and each of those disables and restores interrupts; against the *single*
+    /// `regions` acquisition this replaces, that was a 7% regression on the uncontended fault even
+    /// while it took 26% off the contended one. One acquisition in, one out.
+    pub fn lookup_fault_regions(
+        &self,
+        slot: Slot,
+        exec_slot: Option<Slot>,
+    ) -> (Option<Arc<MapRegion>>, Option<Arc<MapRegion>>) {
+        // Kernel object memory is not this context's to answer; the caller checks the kernel
+        // context itself. Such a slot is never memoized -- an entry for it could only ever miss,
+        // and would evict a live one.
+        let local = |s: &Slot| !(s.start_vaddr().is_kernel_object_memory() && !self.is_kernel);
+        let Some(thread) = current_thread_ref().filter(|_| local(&slot)) else {
+            slotmemo::record_skip();
+            return (
+                self.lookup_slot(slot.raw()),
+                exec_slot.and_then(|s| self.lookup_slot(s.raw())),
+            );
+        };
+        let exec_slot = exec_slot.filter(local);
+
+        let (mut region, mut exec) = {
+            let mut memo = thread.slot_memo.inner.lock();
+            (
+                memo.lookup_region(slot.raw(), self.memo_tag),
+                exec_slot.and_then(|s| memo.lookup_region(s.raw(), self.memo_tag)),
+            )
+        };
+        if region.is_some() && (exec.is_some() || exec_slot.is_none()) {
+            return (region, exec);
+        }
+
+        // Whatever missed.
+        if region.is_none() {
+            region = self.regions.lookup_region(slot);
+        }
+        if exec.is_none() {
+            exec = exec_slot.and_then(|s| self.regions.lookup_region(s));
+        }
+
+        let mut memo = thread.slot_memo.inner.lock();
+        if let Some(r) = &region {
+            memo.insert(slot.raw(), self.memo_tag, r.clone());
+        }
+        if let (Some(s), Some(r)) = (exec_slot, &exec) {
+            memo.insert(s.raw(), self.memo_tag, r.clone());
+        }
+        (region, exec)
+    }
+
+    pub fn lookup_region_cached(&self, slot: Slot) -> Option<Arc<MapRegion>> {
+        // Kernel object memory is not this context's to answer. The caller checks the kernel
+        // context itself when this returns None, so take the plain path and do not memoize a slot
+        // this context can only ever miss on -- an entry for it would evict a live one.
+        if slot.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
+            slotmemo::record_skip();
+            return self.lookup_slot(slot.raw());
+        }
+        let Some(thread) = current_thread_ref() else {
+            slotmemo::record_skip();
+            return self.lookup_slot(slot.raw());
+        };
+        if let Some(region) = thread
+            .slot_memo
+            .inner
             .lock()
-            .lookup_region(slot.start_vaddr())
-            .cloned()
+            .lookup_region(slot.raw(), self.memo_tag)
+        {
+            return Some(region);
+        }
+        let region = self.lookup_slot(slot.raw())?;
+        thread
+            .slot_memo
+            .inner
+            .lock()
+            .insert(slot.raw(), self.memo_tag, region.clone());
+        Some(region)
+    }
+
+    pub fn lookup_slot(&self, slot: usize) -> Option<Arc<MapRegion>> {
+        self.regions.lookup_region(Slot::try_from(slot).ok()?)
     }
 
     /// Fill `buf` with the numbers of the slots that have something mapped in them, ascending,
@@ -1006,8 +1239,8 @@ impl VirtContext {
     pub fn enumerate_slots(&self, buf: &mut [u64], offset: usize) -> Result<usize, TwzError> {
         let mut slots = self
             .regions
-            .lock()
             .mappings()
+            .iter()
             .filter_map(|region| {
                 Slot::try_from(region.range.start)
                     .ok()
@@ -1060,7 +1293,8 @@ impl UserContext for VirtContext {
         slot: Slot,
         object_info: &ObjectContextInfo,
     ) -> Result<(), TwzError> {
-        let _guard = mapprofile::Timer(crate::instant::Instant::now());
+        let _guard = mapprofile::Timer(mapprofile::stats_stamp());
+        let t_total = mapprofile::start();
         log::debug!(
             "insert {} to {:?} {:?}",
             object_info.object.id(),
@@ -1068,16 +1302,23 @@ impl UserContext for VirtContext {
             object_info.prot(),
         );
 
+        let t_stable = mapprofile::start();
         let mut stable = None;
         if object_info.flags.contains(MapFlags::STABLE) {
             stable = Some(Arc::new(Mutex::new(
                 object_info.object().cow_clone_page_tables()?,
             )));
         }
+        mapprofile::record(mapprofile::Stage::Stable, t_stable);
 
-        let t_check = crate::instant::Instant::now();
+        let t_check = mapprofile::stats_stamp();
         let (_is_ok, default_prot) = object_info.object.check_id();
-        mapprofile::record_checkid((crate::instant::Instant::now() - t_check).as_nanos() as u64);
+        mapprofile::record_checkid(if mapprofile::MAP_STATS {
+            (crate::instant::Instant::now() - t_check).as_nanos() as u64
+        } else {
+            0
+        });
+        let t_region = mapprofile::start();
         let new_slot_info = MapRegion {
             prot: object_info.prot(),
             cache_type: object_info.cache(),
@@ -1092,20 +1333,31 @@ impl UserContext for VirtContext {
             removed: Arc::new(AtomicBool::new(false)),
         };
 
+        mapprofile::record(mapprofile::Stage::Region, t_region);
+
         // Ahead of the lock: see `precharge_slot_map`.
+        let t_pre = mapprofile::start();
         let mut fa = take_or_new_frame_allocator();
         Self::precharge_slot_map(&mut fa);
+        mapprofile::record(mapprofile::Stage::Precharge, t_pre);
 
-        // Check the slot is free before mapping, and hold the lock across the map: otherwise a
-        // racing insert can clobber our object table entry, and a Busy return leaves behind a
-        // mapping plus the map count taken for it, which keeps the object from ever being reaped.
-        // Lock order (regions -> object page tables -> secctx) matches insert_kernel_object.
-        let mut slots = self.regions.lock();
-        if slots.lookup_region(slot.start_vaddr()).is_some() {
-            return Err(ResourceError::Busy.into());
-        }
+        // Claim the slot before mapping, and hold the claim across the map: otherwise a racing
+        // insert can clobber our object table entry, and a Busy return leaves behind a mapping
+        // plus the map count taken for it, which keeps the object from ever being reaped. The
+        // claim is a per-slot state rather than a held lock -- `map_object` takes an object's
+        // page-table lock, which is a sleeping mutex. See `SlotState`.
+        let t_lock = mapprofile::start();
+        let guard = self.regions.begin_insert(slot)?;
+        mapprofile::record(mapprofile::Stage::Lock, t_lock);
+        let t_map = mapprofile::start();
         self.map_object(&new_slot_info, &mut fa);
-        slots.insert_region(new_slot_info);
+        mapprofile::record(mapprofile::Stage::MapObj, t_map);
+        let t_ins = mapprofile::start();
+        let region = Arc::new(new_slot_info);
+        region.object().add_mapping(slot.raw(), &region);
+        guard.commit(region);
+        mapprofile::record(mapprofile::Stage::Insert, t_ins);
+        mapprofile::record(mapprofile::Stage::Total, t_total);
         Ok(())
     }
 
@@ -1113,10 +1365,7 @@ impl UserContext for VirtContext {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
             kernel_context().lookup_object(info)
         } else {
-            let slots = self.regions.lock();
-            slots
-                .lookup_region(info.start_vaddr())
-                .map(|info| (&**info).into())
+            self.regions.lookup_region(info).map(|info| (&*info).into())
         }
     }
 
@@ -1124,9 +1373,8 @@ impl UserContext for VirtContext {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
             kernel_context().lookup_object_ref(info)
         } else {
-            let slots = self.regions.lock();
-            slots
-                .lookup_region(info.start_vaddr())
+            self.regions
+                .lookup_region(info)
                 .map(|region| region.object().clone())
         }
     }
@@ -1136,16 +1384,16 @@ impl UserContext for VirtContext {
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let mut slots = self.regions.lock();
-        let Some(slot) = slots.remove_region(info.start_vaddr()) else {
+        let Some((slot, guard)) = self.regions.begin_remove(info) else {
             return;
         };
+        slot.object().remove_mapping(info.raw());
         fault::note_unmap(info.raw(), slot.object());
 
-        // Tear the mapping down while still holding the regions lock: insert_object claims a free
-        // slot under it and maps immediately (see there), so releasing it here would let another
-        // object be mapped into this slot and then have its entry removed by the unmap below.
-        // Lock order (regions -> object page tables -> secctx) matches insert_object.
+        // The slot stays claimed for the whole teardown: insert_object claims a free slot and maps
+        // immediately (see there), so releasing it here would let another object be mapped into
+        // this slot and then have its entry removed by the unmap below. A claim rather than a held
+        // lock because the teardown takes sleeping mutexes -- see `SlotState`.
         {
             // Whichever page tables the fault path would use for this region -- taking the same
             // one is what makes the `removed` store below and that path's check of it ordered.
@@ -1218,7 +1466,7 @@ impl UserContext for VirtContext {
             });
             unmap_census::record(n_arches, n_mapped, counted);
         }
-        drop(slots);
+        guard.finish();
 
         // After the unmap, not before: syncing can block on the pager, and dirty state lives in the
         // object's own page tables, which unmapping a context's reference to them does not touch.
@@ -1226,6 +1474,19 @@ impl UserContext for VirtContext {
             if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
                 log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
             }
+        }
+
+        // An object marked for deletion while it was still mapped becomes reapable exactly here,
+        // and nothing else notices: `ObjectControlCmd::Delete` checks only the object it marks,
+        // and the idle loop's whole-map scan does not run at all while a cpu stays busy. Without
+        // this, a create/map/delete/unmap loop retains every object it ever made -- measured as
+        // `free=0` and memory exhaustion partway through the sysbench suite.
+        //
+        // Handed to the reaper rather than done here: reaping a pager-backed object issues a
+        // delete to the userspace pager, and doing that inline on this path -- with syncs of the
+        // same objects in flight -- wedged the contended-sync bench.
+        if crate::obj::TARGETED_REAP && slot.object().is_pending_delete() {
+            crate::obj::request_reap(slot.object().id(), slot.object());
         }
     }
 }
@@ -1381,7 +1642,6 @@ impl KernelMemoryContext for VirtContext {
         let mut fa = take_or_new_frame_allocator();
         Self::precharge_slot_map(&mut fa);
 
-        let mut slots = self.regions.lock();
         let mut kernel_slots_counter = kernel_slot_counter().lock();
         let slot = kernel_slots_counter
             .kernel_slots_nums
@@ -1415,8 +1675,16 @@ impl KernelMemoryContext for VirtContext {
             should_sync: Arc::new(AtomicBool::new(false)),
             removed: Arc::new(AtomicBool::new(false)),
         };
+        // Slots come off a free list that is only pushed to once an unmap has fully finished (see
+        // `KernelObjectVirtHandle::drop`), so this cannot collide with a teardown in progress.
+        let guard = self
+            .regions
+            .begin_insert(slot)
+            .expect("kernel object slot already occupied");
         self.map_object(&new_slot_info, &mut fa);
-        slots.insert_region(new_slot_info);
+        let region = Arc::new(new_slot_info);
+        region.object().add_mapping(slot.raw(), &region);
+        guard.commit(region);
         KernelObjectVirtHandle {
             info,
             slot,
@@ -1451,12 +1719,12 @@ impl<T> KernelObjectVirtHandle<T> {
 impl<T> Drop for KernelObjectVirtHandle<T> {
     fn drop(&mut self) {
         let kctx = kernel_context();
-        let region = {
-            let mut slots = kctx.regions.lock();
-            // We don't need to tell the object that it's no longer mapped in the kernel context,
-            // since object invalidation always informs the kernel context.
-            slots.remove_region(self.slot.start_vaddr())
-        };
+        // We don't need to tell the object that it's no longer mapped in the kernel context,
+        // since object invalidation always informs the kernel context.
+        let removal = kctx.regions.begin_remove(self.slot);
+        if let Some((region, _)) = &removal {
+            region.object().remove_mapping(self.slot.raw());
+        }
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
@@ -1464,7 +1732,7 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         let mut pt = self.object().lock_page_tables();
         // Under the page tables, as in VirtContext::remove_object: a fault holding a clone of this
         // region must not re-map it behind the unmap below.
-        if let Some(region) = &region {
+        if let Some((region, _)) = &removal {
             region
                 .removed
                 .store(true, core::sync::atomic::Ordering::SeqCst);
@@ -1485,6 +1753,10 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         if last {
             self.object().note_last_unmap();
         }
+        // Release the slot *before* publishing it to the free list. `insert_kernel_object` pops
+        // from that list and claims the slot immediately, and a slot still marked as being torn
+        // down would fail that claim.
+        drop(removal);
         kernel_slot_counter()
             .lock()
             .kernel_slots_nums
@@ -1592,6 +1864,14 @@ bitflags::bitflags! {
 pub mod slotmemo {
     use core::sync::atomic::{AtomicU64, Ordering};
 
+    /// A/B: keep the hit/miss counters below.
+    ///
+    /// They are a single global cache line written by every consultation. Routing the fault path
+    /// through the memo took that from 72k consultations per boot to 2.8M, so on a machine where
+    /// several cpus fault at once every one of these is a contended RMW on one line -- a cost paid
+    /// by the workload for a diagnostic. Off, the counters read zero and [`print`] says nothing.
+    pub const SLOTMEMO_STATS: bool = false;
+
     static HITS: AtomicU64 = AtomicU64::new(0);
     /// Cold miss with the memo full: the thread works more slots than [`super::SLOT_MEMO_LEN`], so
     /// this one would have been evicted even if it had been cached. Raising K addresses these.
@@ -1608,28 +1888,38 @@ pub mod slotmemo {
     static LOCK_RESOLVED: AtomicU64 = AtomicU64::new(0);
 
     pub fn record_hit() {
-        HITS.fetch_add(1, Ordering::Relaxed);
+        if SLOTMEMO_STATS {
+            HITS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_cold_capacity() {
-        COLD_CAPACITY.fetch_add(1, Ordering::Relaxed);
+        if SLOTMEMO_STATS {
+            COLD_CAPACITY.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_cold_compulsory() {
-        COLD_COMPULSORY.fetch_add(1, Ordering::Relaxed);
+        if SLOTMEMO_STATS {
+            COLD_COMPULSORY.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_invalidated() {
-        INVALIDATED.fetch_add(1, Ordering::Relaxed);
+        if SLOTMEMO_STATS {
+            INVALIDATED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_skip() {
-        SKIPS.fetch_add(1, Ordering::Relaxed);
+        if SLOTMEMO_STATS {
+            SKIPS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// One `regions` acquisition that resolved `slots` of them.
     pub fn record_batch(slots: u64) {
-        if slots == 0 {
+        if !SLOTMEMO_STATS || slots == 0 {
             return;
         }
         LOCK_TAKEN.fetch_add(1, Ordering::Relaxed);

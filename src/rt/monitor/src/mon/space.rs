@@ -138,6 +138,96 @@ struct MappedObject {
     handle_count: usize,
 }
 
+/// DIAG: what the monitor did to each slot, dumped for the faulting slot on a compartment fault.
+///
+/// The kernel's `UNMAP_HIST` answers "what did this slot last *hold*". This answers the other half:
+/// what the monitor *did* to that slot, and in what order. A `MemoryContextViolation` on a slot
+/// `map_object` has only just returned is a map and an unmap overlapping, and neither side's
+/// record alone shows which ran when.
+///
+/// Per-slot, not one global ring. The first version was a shared 64-entry ring, and at 2532 maps
+/// per boot arriving in bursts across four cpus it could be overwritten between the map and the
+/// fault it existed to explain. Indexing by slot means no other slot's traffic can evict this
+/// one's. 8192 is ~11x the highest slot ever seen in a fault dump (734); anything above it goes
+/// unrecorded, which `report_map_history` says out loud rather than reporting as "no events".
+/// Off by default: recording costs a `try_lock` and a store on **every** map and unmap in the
+/// monitor, which is directly on the path `object_map_unmap_syscall` and its contended sibling
+/// measure. Same shape and same reasoning as the kernel's `FAULT_PROFILE` and `SLOTMEMO_STATS`
+/// consts -- a diagnostic that has to be asked for. Flip to `true` for a fault hunt, and only for
+/// the duration of one.
+const MAP_HIST_ENABLED: bool = false;
+
+const MAP_HIST_SLOTS: usize = 8192;
+const MAP_HIST_PER_SLOT: usize = 4;
+
+#[derive(Clone, Copy)]
+struct MapEvent {
+    id: ObjID,
+    kind: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct SlotHist {
+    events: [MapEvent; MAP_HIST_PER_SLOT],
+    total: usize,
+}
+
+static MAP_HIST: Mutex<[SlotHist; MAP_HIST_SLOTS]> = Mutex::new(
+    [SlotHist {
+        events: [MapEvent {
+            id: ObjID::new(0),
+            kind: "",
+        }; MAP_HIST_PER_SLOT],
+        total: 0,
+    }; MAP_HIST_SLOTS],
+);
+
+/// `try_lock`, never `lock`: this sits on the map and unmap paths and, via `report_map_history`,
+/// on the fault path -- possibly on a thread already holding it. Dropping an event is acceptable;
+/// deadlocking the fault path, or serializing every map behind one mutex, is not.
+pub(crate) fn record_slot_event(slot: usize, id: ObjID, kind: &'static str) {
+    if !MAP_HIST_ENABLED || slot >= MAP_HIST_SLOTS {
+        return;
+    }
+    let Ok(mut hist) = MAP_HIST.try_lock() else {
+        return;
+    };
+    let h = &mut hist[slot];
+    let idx = h.total % MAP_HIST_PER_SLOT;
+    h.events[idx] = MapEvent { id, kind };
+    h.total += 1;
+}
+
+/// Report this slot's recorded events, most recent first.
+pub(crate) fn report_map_history(slot: usize) {
+    if !MAP_HIST_ENABLED {
+        return;
+    }
+    if slot >= MAP_HIST_SLOTS {
+        tracing::warn!("  map-diag: slot {:x} is above the recorded range", slot);
+        return;
+    }
+    let Ok(hist) = MAP_HIST.try_lock() else {
+        tracing::warn!("  map-diag: slot {:x} history unavailable (lock held)", slot);
+        return;
+    };
+    let h = &hist[slot];
+    if h.total == 0 {
+        tracing::warn!("  map-diag: slot {:x} has no recorded events", slot);
+        return;
+    }
+    for i in 0..MAP_HIST_PER_SLOT.min(h.total) {
+        let e = h.events[(h.total - 1 - i) % MAP_HIST_PER_SLOT];
+        tracing::warn!(
+            "  map-diag: slot {:x} {} {} ({} events ago)",
+            slot,
+            e.kind,
+            e.id,
+            i
+        );
+    }
+}
+
 fn mapflags_into_prot(flags: MapFlags) -> Protections {
     let mut prot = Protections::empty();
     if flags.contains(MapFlags::READ) {
@@ -254,8 +344,14 @@ impl Space {
 
         // New maps will be set to zero, so this is unconditional.
         item.handle_count += 1;
+        let count = item.handle_count;
         let addrs = item.addrs;
         drop(guard);
+        record_slot_event(
+            addrs.slot,
+            info.id,
+            if count == 1 { "mapped" } else { "map-hit" },
+        );
         spacesplit::record(split);
         Ok(Arc::new(MapHandleInner::new(info, addrs)))
     }
@@ -341,8 +437,11 @@ impl Space {
         if item.handle_count == 0 {
             let slot = item.addrs.slot;
             self.maps.remove(&info);
+            record_slot_event(slot, info.id, "count->0, will unmap");
             Some(UnmapOnDrop { slot })
         } else {
+            // Deliberately not recorded: a still-held release is the common case, and logging it
+            // would push the map/unmap pairs this ring exists for out of a 64-entry window.
             None
         }
     }
@@ -421,6 +520,7 @@ impl Drop for UnmapOnDrop {
     fn drop(&mut self) {
         match sys_object_unmap(None, self.slot, UnmapFlags::empty()) {
             Ok(_) => unsafe {
+                record_slot_event(self.slot, ObjID::new(0), "unmapped, slot released");
                 __monitor_release_slot(self.slot);
             },
             Err(e) => {

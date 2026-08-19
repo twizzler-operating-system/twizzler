@@ -9,8 +9,9 @@ use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
     memory::{
+        context::virtmem::fault::{FaultStage, record_stage, stage_start},
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
-        tracker::{FrameAllocFlags, FrameAllocator},
+        tracker::{FrameAllocFlags, FrameAllocator, allocprofile},
     },
     obj::{
         Object, ObjectRef, PageNumber, PtGuard,
@@ -436,11 +437,13 @@ impl Object {
         // unacceptable here -- it would block every other fault on this object -- and there is
         // normally nothing to wait for, so the unconditional drop-and-retake this used to do cost
         // an extra acquisition (~750 ns) on every fill fault to insure against the rare case.
+        let t_pre = stage_start();
         if !first_is_present && alloc.precharge_nowait(page_count) < page_count {
             drop(guard);
             alloc.precharge(page_count, FrameAllocFlags::WAIT_OK);
             guard = self.lock_page_tables();
         }
+        record_stage(FaultStage::Precharge, t_pre);
 
         if TRY_LARGE_ANON_PAGES
             && page != PageNumber::meta_page()
@@ -475,17 +478,45 @@ impl Object {
             current_thread_ref().map(|ct| ct.id()).unwrap_or(0),
             core::panic::Location::caller()
         );
+        let t_fill = stage_start();
+        // Timed with the raw counters rather than `record_stage`: the parts and the whole have to
+        // be measured the same way for "sum of parts against the whole" to mean anything, and a
+        // stage costs an interrupt-disable and a per-cpu lock per call -- five per page here.
+        let t_loop = allocprofile::start();
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
-            if guard.is_empty_at_level(offset, 0) {
+            let t = allocprofile::start();
+            let empty = guard.is_empty_at_level(offset, 0);
+            allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
+            if empty {
+                // The rest of the per-page probes only say anything with timing on, and the
+                // bucket one would report every call as sub-microsecond with it off.
                 log::trace!(
                     "filling frame at offset {:x} in object {}",
                     offset,
                     self.id()
                 );
                 *all_were_present = false;
+                allocprofile::add(&allocprofile::FILL_ITERS, 1);
+                // Back to back: whatever this reads is the floor of every other span here.
+                let t_probe = allocprofile::start();
+                allocprofile::record(&allocprofile::PROBE_NS, t_probe);
+                let t = allocprofile::start();
                 let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                if let Err(e) = guard.map_page(offset, frame) {
+                allocprofile::record(&allocprofile::FILL_TAKE_NS, t);
+                let t = allocprofile::start();
+                let ints = crate::interrupt::taken();
+                let r = guard.map_page(offset, frame);
+                if allocprofile::TIME_ALLOCS {
+                    allocprofile::add(
+                        &allocprofile::FILL_MAP_INTS,
+                        crate::interrupt::taken() - ints,
+                    );
+                    let dur = allocprofile::elapsed_ns(t);
+                    allocprofile::add(&allocprofile::FILL_MAP_NS, dur);
+                    allocprofile::record_map_bucket(dur);
+                }
+                if let Err(e) = r {
                     log::error!(
                         "failed to map page at offset {:x} in object {}",
                         offset,
@@ -496,6 +527,8 @@ impl Object {
                 }
             }
         }
+        allocprofile::record(&allocprofile::FILL_LOOP_NS, t_loop);
+        record_stage(FaultStage::Fill, t_fill);
 
         Ok(guard)
     }
@@ -840,7 +873,7 @@ impl Object {
                 &mut false,
             )?;
         }
-        let (mut self_pt, mut dst_pt) = PtGuard::new_two(&self.tables, &dst.tables);
+        let (mut self_pt, mut dst_pt) = PtGuard::new_two(self.page_tables(), dst.page_tables());
 
         log::debug!(
             "direct_copy: src_offset {}, dst_offset {}, len {}",
@@ -992,7 +1025,7 @@ impl Object {
             )?;
         }
 
-        let (mut self_pt, mut dst_pt) = PtGuard::new_two(&self.tables, &dst.tables);
+        let (mut self_pt, mut dst_pt) = PtGuard::new_two(self.page_tables(), dst.page_tables());
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;

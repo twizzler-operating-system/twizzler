@@ -91,5 +91,6 @@ pub fn get_memory_stats() -> twizzler_abi::syscall::MemoryStats {
     fault::fill_stats(&mut stats);
     pagetables::fill_stats(&mut stats);
     allocator::fill_stats(&mut stats);
+    tracker::fill_stats(&mut stats);
     stats
 }

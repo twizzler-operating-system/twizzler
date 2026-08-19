@@ -53,6 +53,48 @@ fn search_envs_enabled(envp: *mut *mut c_char, name: &str) -> bool {
     }
 }
 
+extern "C" {
+    fn __mlibc_handle_thread_exit(pointer: *mut u8, ret_val: i32);
+}
+
+/// DIAG: which heap object backs `ptr`, if any.
+///
+/// The census names the object a leak lands in; this names it from the *allocation* side, so a
+/// per-spawn cost can be matched to the thing that pays it (heap block, stack, TLS region) rather
+/// than inferred from a page count. Writes the id as two halves because `u128` across an
+/// `extern "C"` boundary is not worth the argument. Not part of the runtime ABI.
+#[no_mangle]
+pub extern "C-unwind" fn __twz_rt_diag_heap_id(ptr: *const u8, hi: *mut u64, lo: *mut u64) -> u32 {
+    match OUR_RUNTIME.get_id_from_heap_ptr(ptr) {
+        Some(id) => {
+            let raw: u128 = id.raw();
+            unsafe {
+                *hi = (raw >> 64) as u64;
+                *lo = raw as u64;
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Run mlibc's pthread-key destructors against `tp`'s TCB.
+///
+/// Nothing on the spawn path reaches mlibc's own `thread_exit`, so without this call a key's
+/// destructor never runs for a thread this compartment spawned: `trampoline` -> std's
+/// `thread_start` -> `twz_rt_exit` -> `sys_thread_exit`. std's Rust-side TLS destructors are
+/// unaffected -- `thread_start` drains those itself, on the thread, which is where they belong.
+///
+/// The one that matters is ferroc's: it releases a thread's heap by registering
+/// `ThreadLocal::put(id)` through `pthread_key_create`, and recycling that id is what lets the next
+/// spawn reuse the dead thread's context and slabs. Without it every spawn took a fresh 4 MiB slab
+/// and never gave it back -- measured at exactly `SLAB_SIZE` of fresh address space per spawn.
+pub(crate) fn run_mlibc_thread_dtors(tp: *mut u8, code: i32) {
+    if !tp.is_null() {
+        unsafe { __mlibc_handle_thread_exit(tp, code) };
+    }
+}
+
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {

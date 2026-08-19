@@ -3972,6 +3972,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
+name = "leakcheck"
+version = "0.1.0"
+dependencies = [
+ "monitor-api",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.178"
 
@@ -4671,12 +4682,6 @@ checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
 ]
-
-[[package]]
-name = "nonoverlapping_interval_tree"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59ed687c051551650b79d7ecbd8915fbbb4476e4a441e9543573040cb72c4e3b"
 
 [[package]]
 name = "normpath"
@@ -6802,6 +6807,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sysbench"
+version = "0.1.0"
+dependencies = [
+ "naming",
+ "pager",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "system-configuration"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7384,7 +7401,6 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "memoffset",
- "nonoverlapping_interval_tree",
  "object",
  "p256",
  "rand_chacha 0.9.0",

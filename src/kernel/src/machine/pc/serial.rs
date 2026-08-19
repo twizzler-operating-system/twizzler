@@ -207,6 +207,10 @@ struct SimpleLock<T> {
     state: AtomicBool,
 }
 
+/// Whether this cpu is already inside a [`SimpleLock`] spin; see the drain in `lock`.
+#[thread_local]
+static IN_SPIN: core::cell::Cell<bool> = core::cell::Cell::new(false);
+
 impl<T> SimpleLock<T> {
     fn new(item: T) -> Self {
         Self {
@@ -219,12 +223,38 @@ impl<T> SimpleLock<T> {
         if is_panicing() {
             return SimpleGuard { lock: self, int };
         }
+        // Interrupts are off for the whole spin, so without draining shootdowns here this cpu is
+        // deaf to them for as long as it waits -- and every console write in the kernel, emergency
+        // ones included, comes through this lock. A sender in `PendingShootdown::do_wait` then
+        // spins until we happen to finish; the sweeps have that on record twice ("TLB shootdown
+        // stalled on CPUs 0 -> 1 (4194304 iterations)").
+        //
+        // Reentrancy is why this is not simply `spin_wait_until`: the drain can reach
+        // `TlbShootdownInfo::complete`, whose stuck-lock report is an `emerglogln!` -- back into
+        // this same lock, which on a ticket lock would be a second ticket and on this one a spin
+        // against ourselves. The flag makes the nested attempt spin plainly, exactly as it did
+        // before; only the outermost waiter drains.
+        // Gated on per-cpu state existing at all. This lock is taken by the very first console
+        // writes in boot -- before TLS, before the APIC -- and both the flag below and the drain
+        // (`current_processor()`, by way of the shootdown handler) need it. Draining early panics
+        // in the interrupt path with "got interrupt before initializing APIC", which is a boot
+        // failure rather than the deadlock it was meant to avoid.
+        let drain = crate::processor::tls_ready();
+        let nested = drain && IN_SPIN.replace(true);
+        let mut iters = 0u32;
         while self
             .state
             .compare_exchange_weak(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
+            iters = iters.wrapping_add(1);
+            if drain && !nested && iters % 100 == 0 {
+                crate::arch::processor::spin_wait_iteration();
+            }
             core::hint::spin_loop()
+        }
+        if drain {
+            IN_SPIN.set(nested);
         }
         SimpleGuard { lock: self, int }
     }

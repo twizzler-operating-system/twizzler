@@ -76,6 +76,12 @@ fn try_bench(path: &str) {
                 continue;
             }
             println!("STARTING {}", line);
+            // A line is `<binary> [filter]...`: everything after the binary name is passed to
+            // the harness after `--bench`, so `--bench "sysbench page_fault_zero_fill"` runs one
+            // bench in a fresh boot instead of the whole suite.
+            let mut tokens = line.split_whitespace();
+            let line = tokens.next().unwrap_or_default().to_owned();
+            let filters: Vec<&str> = tokens.collect();
             // Benches are matched by name prefix rather than looked up exactly, so this searches
             // the same directories as `resolve` instead of just the initrd. A directory that does
             // not exist is skipped: `/pkg/twizzler/test` is absent on an image built before the
@@ -95,9 +101,18 @@ fn try_bench(path: &str) {
                     }
                 }
             }
+            // bench_bins lines are exact staged file names; stale same-crate binaries with older
+            // cargo hashes also prefix-match and would re-run (polluting kernel state) before the
+            // current one. Keep only the exact match when one exists -- a user-typed
+            // `--bench <prefix>` still falls through to the prefix scan.
+            if possibles.iter().any(|p| p.ends_with(&format!("/{}", line))) {
+                possibles.retain(|p| p.ends_with(&format!("/{}", line)));
+                possibles.truncate(1);
+            }
             for (i, exe) in possibles.iter().enumerate() {
                 let mut cmd = std::process::Command::new(exe);
                 cmd.args(["--bench"]);
+                cmd.args(&filters);
                 if let Ok(mut test_comp) = cmd.spawn() {
                     test_comp.wait().unwrap();
                 } else {

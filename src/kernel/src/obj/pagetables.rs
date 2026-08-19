@@ -17,7 +17,8 @@ use crate::{
             MappingCursor, MappingSettings, Table, TlbOrigin,
         },
         tracker::{
-            FrameAllocFlags, FrameAllocator, alloc_frame, free_frame, take_or_new_frame_allocator,
+            FrameAllocFlags, FrameAllocator, alloc_frame, allocprofile, free_frame,
+            take_or_new_frame_allocator,
         },
     },
     obj::{Object, ObjectRef, PageNumber},
@@ -765,6 +766,11 @@ impl ObjectPageTable {
     }
 
     pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
+        // Raw counters, not fault stages: an earlier split of this function with `record_stage`
+        // put 800 ns in the three spans while the call as a whole measured 35 us, and the two
+        // instruments disagreeing is itself the thing to rule out. These are the same probe the
+        // caller times the whole call with.
+        let t = allocprofile::start();
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
         let mut fa = take_or_new_frame_allocator();
@@ -777,8 +783,19 @@ impl ObjectPageTable {
             page.size(),
             MappingSettings::default_user(),
         );
+        allocprofile::record(&allocprofile::MAP_PREP_NS, t);
+        let t = allocprofile::start();
         let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
+        allocprofile::record(&allocprofile::MAP_WALK_NS, t);
+        let t = allocprofile::start();
         self.run_consistency(consist);
+        allocprofile::record(&allocprofile::MAP_CONSIST_NS, t);
+        // Explicit, and timed: everything above sums to well under a microsecond while the call
+        // as a whole measures 35 us after mapping churn, and this drop is the only thing left.
+        let t = allocprofile::start();
+        drop(fa);
+        drop(phys);
+        allocprofile::record(&allocprofile::MAP_DROP_NS, t);
         r
     }
 

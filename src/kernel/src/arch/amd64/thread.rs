@@ -646,9 +646,19 @@ impl Thread {
         }
     }
 
+    /// The thread's instruction pointer, or 0 if it cannot be read right now.
+    ///
+    /// `try_borrow`, not `borrow`, because the callers that matter read this off *another* thread:
+    /// `check_system_hang` walks every thread and prints one of these, and the owning thread can be
+    /// inside `set_upcall_restore_frame`'s `borrow_mut` at that moment. That is a panic --
+    /// "RefCell already mutably borrowed" -- from a diagnostic whose entire job is to describe a
+    /// system that is already in trouble. Zero is what this already returns for a thread with no
+    /// registers to read, so callers have to tolerate it.
     pub fn read_ip(&self) -> u64 {
         use crate::syscall::SyscallContext;
-        let frame = &self.arch.upcall_restore_frame.borrow();
+        let Ok(frame) = self.arch.upcall_restore_frame.try_borrow() else {
+            return 0;
+        };
         if frame.is_none() {
             return match self.arch.entry_registers.as_registers() {
                 Registers::None => {
@@ -667,8 +677,11 @@ impl Thread {
         frame.unwrap().rip
     }
 
+    /// The thread's base pointer, or 0 if it cannot be read right now; see [`Thread::read_ip`].
     pub fn read_bp(&self) -> u64 {
-        let frame = &self.arch.upcall_restore_frame.borrow();
+        let Ok(frame) = self.arch.upcall_restore_frame.try_borrow() else {
+            return 0;
+        };
         if frame.is_none() {
             return match self.arch.entry_registers.as_registers() {
                 Registers::None => {

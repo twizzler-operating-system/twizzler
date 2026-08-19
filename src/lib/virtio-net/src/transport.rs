@@ -5,7 +5,10 @@ use twizzler_abi::{
     device::{bus::pcie::PcieDeviceInfo, DeviceInterruptFlags},
     syscall::ThreadSync,
 };
-use twizzler_driver::{bus::pcie::PcieCapability, device::Device};
+use twizzler_driver::{
+    bus::pcie::PcieCapability,
+    device::{Device, MmioObject},
+};
 use virtio_drivers::{
     transport::{pci::VirtioPciError, DeviceStatus, DeviceType, InterruptStatus, Transport},
     Error,
@@ -27,6 +30,16 @@ pub struct TwizzlerTransport {
 
     isr_status: CfgLocation,
 
+    /// The BAR mapping `config_space` points into, held for exactly as long as the pointer.
+    ///
+    /// Every other field here is a `CfgLocation` -- an offset, re-resolved against a freshly
+    /// obtained `MmioObject` on each access -- but `config_space` is a raw pointer captured once.
+    /// Without keeping its `MmioObject`, the mapping is dropped at the end of `new` and the pointer
+    /// survives only on the runtime handle cache's 2s grace period plus the incidental cache hits
+    /// from other methods re-resolving the same BAR. That is a use-after-release; it faulted
+    /// immediately (`core::ptr::read::<Unalign<Status>>` under `start_network_direct`) as soon as
+    /// that grace period was removed.
+    _config_space_bar: Option<MmioObject>,
     config_space: Option<NonNull<[u32]>>,
 }
 
@@ -75,6 +88,7 @@ impl TwizzlerTransport {
         let mut notify_offset_multiplier = 0;
         let mut isr_status = None;
         let mut config_space = None;
+        let mut config_space_bar = None;
 
         let mm = device.find_mmio_bar(0xff).unwrap();
         for cap in device.pcie_capabilities(&mm).unwrap() {
@@ -149,6 +163,10 @@ impl TwizzlerTransport {
                         ))
                     };
                     config_space = Some(ptr);
+                    // Keep the mapping alive for as long as `ptr` is. `start`'s borrow of `bar`
+                    // has ended by here, so the move is free; the mapping address is a fixed slot
+                    // and does not shift when the `MmioObject` moves.
+                    config_space_bar = Some(bar);
                 }
                 _ => {}
             }
@@ -163,6 +181,7 @@ impl TwizzlerTransport {
             notify_region,
             notify_offset_multiplier,
             isr_status,
+            _config_space_bar: config_space_bar,
             config_space,
         })
     }

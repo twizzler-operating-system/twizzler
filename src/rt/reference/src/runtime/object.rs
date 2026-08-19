@@ -596,12 +596,29 @@ impl ObjectHandleManager {
 
     /// Claim the unmaps the cache has queued, marking each in-flight so the caller can issue their
     /// gate calls with this mutex dropped.
+    /// A key already in-flight is *not* claimed: it is put back for a later drain.
+    ///
+    /// `insert` returning false means a `map_object` for that same key already owns the in-flight
+    /// marker and is inside its gate call. Claiming it anyway did two damaging things: the unmap
+    /// gate call went out concurrently with that map, and the `end_inflight` in `finish_unmaps`
+    /// then cleared the *mapper's* marker, so a third thread could start a second concurrent map
+    /// of a key the monitor tracks by MapInfo alone. The first is the fault caught in
+    /// `many-extcount/round11`: slot 0x125 recorded `mapped -> comp-unmap requested -> count->0 ->
+    /// unmapped`, and the thread still inside `RawFile::open` for that object read its meta page
+    /// (`extcount`, meta+0x26) after the slot had gone.
     pub fn begin_unmaps(&mut self) -> Vec<ObjectMapKey> {
         let pending = self.cache.take_pending_unmaps();
-        for key in &pending {
-            self.inflight.insert(*key);
+        let mut claimed = Vec::with_capacity(pending.len());
+        let mut deferred = Vec::new();
+        for key in pending {
+            if self.inflight.insert(key) {
+                claimed.push(key);
+            } else {
+                deferred.push(key);
+            }
         }
-        pending
+        self.cache.requeue_unmaps(deferred);
+        claimed
     }
 
     /// The handle for `key` if it is already mapped by this compartment.
@@ -615,6 +632,10 @@ impl ObjectHandleManager {
 
     /// Record a mapping this compartment just obtained from the monitor.
     pub fn insert_mapped(&mut self, key: ObjectMapKey, slot: usize) -> ObjectHandle {
+        // This key is mapped again, so any unmap still queued for it is stale -- see
+        // `HandleCache::cancel_pending_unmap`. Deferring rather than dropping it would hand the
+        // next drain an unmap of the mapping being established here.
+        self.cache.cancel_pending_unmap(&key);
         let handle = new_object_handle(key.0, slot, key.1).into_raw();
         self.cache.insert(handle);
         ObjectHandle::from_raw(handle)
@@ -632,10 +653,25 @@ impl ObjectHandleManager {
     /// Release a handle. If all handles have been released, calls to monitor to unmap.
     pub fn release(&mut self, handle: *mut object_handle, mut flags: release_flags) {
         let handle = unsafe { handle.as_mut().unwrap() };
-        if unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() }
-            .is_deleted
-            .load(Ordering::Acquire)
-        {
+        let rhi = unsafe { &*handle.runtime_info.cast::<RuntimeHandleInfo>() };
+        // Resurrect check, and the whole point of doing it here.
+        //
+        // `ObjectHandle::drop` decides to release *outside* this lock: it decrements, sees the old
+        // value was 1, and only then calls in. `cached` hands out a fresh reference to a still-
+        // `active` entry from *inside* this lock. So between the decrement and this call another
+        // thread can legitimately be holding this handle, and releasing anyway unmaps the slot out
+        // from under it -- which is the extcount fault (`many-extcount/round11`,
+        // `many-extfix2/round3`): a thread inside `RawFile::open` read meta+0x26 of a slot whose
+        // mapping had just gone.
+        //
+        // Checking under the lock is what orders the two: either the increment got here first and
+        // we abandon the release, or we got here first and the entry leaves `active`, so no later
+        // `cached` can find it. That ordering is also what makes `clone`'s `Relaxed` increment
+        // sound -- the mutex supplies the edge.
+        if rhi.refs.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        if rhi.is_deleted.load(Ordering::Acquire) {
             flags |= RELEASE_NO_CACHE;
         }
         self.cache.release(handle, flags);

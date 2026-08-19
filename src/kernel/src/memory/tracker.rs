@@ -25,6 +25,154 @@ use crate::{
     thread::{Thread, ThreadRef, current_thread_ref, entry::start_new_kernel, priority::Priority},
 };
 
+/// Counters for the frame-allocation path, differenced by [`crate::perfmark`].
+///
+/// The question they exist to answer: after a workload has churned mappings, a zero-fill fault
+/// costs 20x what it did fresh, and the cost is inside `ensure_in_core`'s frame acquisition
+/// (`sysbench.md` F4). These separate the candidate explanations -- inline zeroing because the
+/// zeroed pool ran dry, waiting for memory, and the reclaim thread being signalled (and spinning)
+/// on every allocation once `should_reclaim` latches true, which it does permanently because
+/// `reclaim_main` frees nothing.
+pub mod allocprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Timing spans, unlike the counts, cost two clock reads per frame allocation.
+    pub const TIME_ALLOCS: bool = false;
+
+    /// Whether `precharge` fills itself through [`crate::memory::tracker::try_alloc_frames`], one
+    /// allocator-lock acquisition per batch, instead of one per frame.
+    ///
+    /// The measurement that motivates it is sound -- a frame allocation costs 1.3-2.8 us of which
+    /// only ~300-650 ns is the zeroing, so three quarters is the per-frame acquisition and
+    /// free-list walk, and 23% of precharge calls fetch ~3.75 frames each.
+    ///
+    /// History: the first enablement (`fa-bulk` round 1) hit `attempted to insert an object that
+    /// is already linked` in the scheduler run queue. The primary event in that log is a
+    /// kernel-mode instruction fetch at rip 0 with rsp in the kernel heap -- a live, heap-backed
+    /// kernel stack read back a zeroed return address -- so the working theory is a physical frame
+    /// reaching two owners, one of them zeroing it. `check_overlap` in `frame.rs` now panics at
+    /// hand-out/free if a frame's range overlaps another admitted frame, naming both. 18 bench
+    /// rounds with this flag on and the detectors armed did not reproduce it (regionremodel.md
+    /// "diagnosis attempt"), and neither did the wide sweep that gated this flag: tag `bulkwide`,
+    /// 2026-08-19, 54 armed rounds at -j6, zero tripwire hits (3 failures, all pre-existing
+    /// families with BULK-off precedent).
+    ///
+    /// On per Daniel 2026-08-19 for soak coverage. The measured A/B is null-to-negative
+    /// (`bulknum-off`/`-on`, -j1: create flat, contended create +22%, map/unmap +9% -- the batch
+    /// holds the allocator lock across up to 32 allocations, lengthening the convoy), so this
+    /// buys exposure, not speed; the win-shaped successor is a persistent per-cpu cache that
+    /// amortizes the lock across operations rather than within one.
+    pub const BULK_PRECHARGE: bool = true;
+
+    macro_rules! counters {
+        ($($name:ident),* $(,)?) => {
+            $(pub static $name: AtomicU64 = AtomicU64::new(0);)*
+            pub const NAMES: &[&str] = &[$(stringify!($name)),*];
+            pub const NR: usize = NAMES.len();
+            /// Snapshot in declaration order, to be differenced against a later one.
+            pub fn snapshot() -> [u64; NR] {
+                [$($name.load(Ordering::Relaxed)),*]
+            }
+        };
+    }
+
+    counters!(
+        ALLOCS,
+        ALLOC_NS,
+        ZEROED_INLINE,
+        ZERO_NS,
+        WAITS,
+        WAIT_NS,
+        FREES,
+        RECLAIM_SIGNALS,
+        RECLAIM_WAKES,
+        RECLAIM_ROUNDS,
+        FILL_ITERS,
+        FILL_LOOP_NS,
+        FILL_EMPTY_NS,
+        FILL_TAKE_NS,
+        FILL_MAP_NS,
+        FILL_MAP_LT1US,
+        FILL_MAP_LT10US,
+        FILL_MAP_LT100US,
+        FILL_MAP_GE100US,
+        FILL_MAP_INTS,
+        MAP_PREP_NS,
+        MAP_WALK_NS,
+        MAP_CONSIST_NS,
+        PROBE_NS,
+        MAP_DROP_NS,
+        FA_DROP_SAVED,
+        FA_DROP_CLEARED,
+        FA_DROP_SAVE_NS,
+        FA_DROP_CLEAR_NS,
+        FA_DROP_FRAMES,
+        FA_TRIMMED,
+        // Appended, not inserted: `perfmark` indexes this snapshot positionally.
+        FA_TAKE_LOCKED,
+        FA_TAKE_NONE,
+        FA_SAVE_LOCKED,
+        FA_ALLOC_POOL,
+        FA_ALLOC_GLOBAL,
+        FA_ALLOC_AVOID_EMPTY,
+        // `precharge` calls served entirely from the pool, versus frames it had to fetch from the
+        // global tracker. The `FA_ALLOC_*` counters above sit in `try_allocate`, which is
+        // downstream of this -- the pool is a staging buffer that `precharge` fills immediately
+        // before use, not a cache that avoids the global allocator.
+        PRECHARGE_CALLS,
+        PRECHARGE_EARLY,
+        PRECHARGE_FETCHED,
+    );
+
+    /// Nanoseconds since `start`, for a caller that wants the number as well as the counter.
+    pub fn elapsed_ns(start: crate::instant::Instant) -> u64 {
+        if !TIME_ALLOCS {
+            return 0;
+        }
+        let dur: twizzler_abi::syscall::TimeSpan = (crate::instant::Instant::now() - start).into();
+        dur.as_nanos() as u64
+    }
+
+    /// Bucket one `map_page` by cost. A 35 us mean is either every call or a few enormous ones,
+    /// and those have opposite explanations. Callers gate this on [`TIME_ALLOCS`]: with timing
+    /// off every `ns` is zero and the histogram would read as uniformly fast.
+    pub fn record_map_bucket(ns: u64) {
+        add(
+            if ns < 1_000 {
+                &FILL_MAP_LT1US
+            } else if ns < 10_000 {
+                &FILL_MAP_LT10US
+            } else if ns < 100_000 {
+                &FILL_MAP_LT100US
+            } else {
+                &FILL_MAP_GE100US
+            },
+            1,
+        );
+    }
+
+    pub fn add(c: &AtomicU64, n: u64) {
+        c.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Read the clock only when the answer will be used.
+    pub fn start() -> crate::instant::Instant {
+        if TIME_ALLOCS {
+            crate::instant::Instant::now()
+        } else {
+            crate::instant::Instant::zero()
+        }
+    }
+
+    pub fn record(c: &AtomicU64, start: crate::instant::Instant) {
+        if !TIME_ALLOCS {
+            return;
+        }
+        let dur: twizzler_abi::syscall::TimeSpan = (crate::instant::Instant::now() - start).into();
+        add(c, dur.as_nanos() as u64);
+    }
+}
+
 pub struct MemoryTracker {
     kernel_used: AtomicUsize,
     page_data: AtomicUsize,
@@ -47,6 +195,7 @@ intrusive_adapter!(pub LinkAdapter = ThreadRef: Thread { memwait_link: intrusive
 
 impl MemoryTracker {
     fn free_frame(&self, frame: FrameRef) {
+        allocprofile::add(&allocprofile::FREES, 1);
         let count = frame.size() / FRAME_SIZE;
         let old = if frame.is_kernel() {
             self.kernel_used.fetch_sub(count, Ordering::SeqCst)
@@ -61,6 +210,90 @@ impl MemoryTracker {
     }
 
     fn try_alloc_frame(&self, flags: FrameAllocFlags, layout: Layout) -> Option<FrameRef> {
+        let t_alloc = allocprofile::start();
+        let r = self.do_try_alloc_frame(flags, layout);
+        allocprofile::add(&allocprofile::ALLOCS, 1);
+        allocprofile::record(&allocprofile::ALLOC_NS, t_alloc);
+        r
+    }
+
+    /// Allocate up to `want` frames in one pass, appending them to `out` and returning how many.
+    ///
+    /// The per-frame path takes the allocator lock, runs `consider_reclaim` and does a CAS on
+    /// `idle` for every single frame. This does each once for the batch, which is what the
+    /// measured cost is made of: 1.3-2.8 us per frame of which only ~300-650 ns is the zeroing
+    /// that still happens per frame.
+    ///
+    /// Best-effort, like the singular version: a short return means memory ran out, and the caller
+    /// decides whether to wait. Never waits itself.
+    fn try_alloc_frames(
+        &self,
+        flags: FrameAllocFlags,
+        layout: Layout,
+        want: usize,
+        out: &mut Vec<FrameRef>,
+    ) -> usize {
+        if want == 0 {
+            return 0;
+        }
+        let pff = if flags.contains(FrameAllocFlags::ZEROED) {
+            PhysicalFrameFlags::ZEROED
+        } else {
+            PhysicalFrameFlags::empty()
+        };
+        let per = layout.size() / FRAME_SIZE;
+        self.consider_reclaim();
+
+        // Reserve the whole batch against `idle` in one CAS. Reserving what is there rather than
+        // failing outright keeps this a best-effort call: the caller asked for `want` and takes
+        // what it gets.
+        let reserved = loop {
+            let idle = self.idle();
+            let can = (idle / per).min(want);
+            if can == 0 {
+                return 0;
+            }
+            if self
+                .idle
+                .compare_exchange(idle, idle - can * per, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                break can;
+            }
+        };
+
+        out.reserve(reserved);
+        let before = out.len();
+        let got = crate::memory::frame::raw_alloc_frames(pff, layout, reserved, out);
+        allocprofile::add(&allocprofile::ALLOCS, got as u64);
+
+        // Hand back what was reserved and not taken, or `idle` leaks by the difference.
+        if got < reserved {
+            self.idle.fetch_add((reserved - got) * per, Ordering::SeqCst);
+        }
+        if got == 0 {
+            return 0;
+        }
+        for frame in &out[before..] {
+            assert!(
+                frame.refcount() == 0,
+                "allocated frame with non-zero refcount: {:?} {}",
+                frame,
+                frame.refcount()
+            );
+            frame.set_kernel(flags.contains(FrameAllocFlags::KERNEL));
+        }
+        let pages = got * per;
+        if flags.contains(FrameAllocFlags::KERNEL) {
+            self.kernel_used.fetch_add(pages, Ordering::SeqCst);
+        } else {
+            self.page_data.fetch_add(pages, Ordering::SeqCst);
+        }
+        self.allocated.fetch_add(pages, Ordering::SeqCst);
+        got
+    }
+
+    fn do_try_alloc_frame(&self, flags: FrameAllocFlags, layout: Layout) -> Option<FrameRef> {
         let pff = if flags.contains(FrameAllocFlags::ZEROED) {
             PhysicalFrameFlags::ZEROED
         } else {
@@ -102,7 +335,10 @@ impl MemoryTracker {
             }
 
             if flags.contains(FrameAllocFlags::WAIT_OK) {
+                let t_wait = allocprofile::start();
                 self.wait(idle);
+                allocprofile::add(&allocprofile::WAITS, 1);
+                allocprofile::record(&allocprofile::WAIT_NS, t_wait);
             } else {
                 return None;
             }
@@ -200,6 +436,25 @@ impl MemoryTracker {
 
     fn trigger_reclaim(&self) {
         if let Some(reclaim) = self.reclaim.poll() {
+            // Only when the thread has something it can actually free.
+            //
+            // `reclaim_main`'s steps 1-5 are unimplemented, so the frames handed to it through
+            // `reclaim()` are the only thing it can release -- and that producer signals for
+            // itself. A pressure-driven wake therefore walks to `thisround == 0`, breaks, and
+            // sleeps again, having preempted the caller at *donated REALTIME priority* to do it.
+            // `should_reclaim` latches true for good once page data passes a third of memory, so
+            // this fires on every allocation from that point on: measured at 361,690 wakes for the
+            // 1.4M allocations of one zero-fill bench, against 0 in a boot that never latched, and
+            // it is the whole of the residual isolated-vs-in-suite gap (2.39us vs 3.08us).
+            //
+            // F4b removed the 1000-round spin *inside* each wake; this removes the wake. When
+            // steps 1-5 land, pressure becomes a reason to wake on its own again and this test has
+            // to go -- it is a statement about what the thread can currently do, not about when
+            // reclaim is wanted.
+            if RECLAIM_NEEDS_WORK && reclaim.queued.load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            allocprofile::add(&allocprofile::RECLAIM_SIGNALS, 1);
             reclaim.cv.signal();
         } else {
             //logln!("warning -- cannot trigger reclaim thread before it is started");
@@ -281,6 +536,35 @@ impl MemoryTracker {
 
 pub static TRACKER: Once<MemoryTracker> = Once::new();
 
+/// (idle, page_data, kernel_used, should_reclaim), in frames. For the perf marker.
+pub fn tracker_snapshot() -> (usize, usize, usize, bool) {
+    let Some(t) = TRACKER.poll() else {
+        return (0, 0, 0, false);
+    };
+    (t.idle(), t.page_data(), t.kernel_used(), t.should_reclaim())
+}
+
+/// Fill in the tracker half of `MemoryStats`. The counters are read without a lock and so are not
+/// mutually consistent; the sum invariant can be off by whatever raced. Consumers wanting a
+/// coherent snapshot should compare successive samples, not audit one.
+pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
+    let Some(t) = TRACKER.poll() else {
+        return;
+    };
+    stats.tracker = twizzler_abi::syscall::TrackerStats {
+        idle: t.idle(),
+        kernel_used: t.kernel_used(),
+        page_data: t.page_data(),
+        total: t.total(),
+        pager_outstanding: t.pager_outstanding(),
+        allocated: t.allocated(),
+        freed: t.freed(),
+        reclaimed: t.reclaimed(),
+        waiting: t.waiting.load(Ordering::SeqCst),
+        reclaiming: t.should_reclaim(),
+    };
+}
+
 pub fn print_tracker_stats() {
     let tracker = TRACKER.poll().expect("page tracker not initialized");
     let total = tracker.total();
@@ -339,6 +623,19 @@ pub fn try_alloc_frame(flags: FrameAllocFlags, layout: Layout) -> Option<FrameRe
         .poll()
         .expect("page tracker not initialized")
         .try_alloc_frame(flags, layout)
+}
+
+/// Bulk counterpart of [`try_alloc_frame`]; see [`MemoryTracker::try_alloc_frames`].
+pub fn try_alloc_frames(
+    flags: FrameAllocFlags,
+    layout: Layout,
+    want: usize,
+    out: &mut Vec<FrameRef>,
+) -> usize {
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .try_alloc_frames(flags, layout, want, out)
 }
 
 /// Try to allocate a physical frame. The flags argument is the same as in [alloc_frame]. Returns
@@ -433,9 +730,18 @@ pub fn signal_waiters() {
 /// panicked outright if reclaim had not been started.)
 pub fn reclaim(frames: impl IntoIterator<Item = FrameRef>) {
     let rt = TRACKER.poll().unwrap().reclaim.wait();
-    rt.state.lock().extend(frames);
+    let mut state = rt.state.lock();
+    state.extend(frames);
+    rt.queued.store(state.len(), Ordering::Relaxed);
+    drop(state);
+    // This is the wake that can do work, so it is never gated on `queued` -- it is what makes
+    // `queued` nonzero.
     rt.cv.signal();
 }
+
+/// A/B knob for the gate in [MemoryTracker::trigger_reclaim]. `false` restores a signal on every
+/// allocation once the reclaim latch trips.
+const RECLAIM_NEEDS_WORK: bool = true;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -452,6 +758,10 @@ bitflags! {
 struct ReclaimThread {
     th: ThreadRef,
     state: Spinlock<Vec<FrameRef>>,
+    /// `state.len()`, readable without the lock. Mirrored under it, so it is exact rather than
+    /// advisory; [MemoryTracker::trigger_reclaim] consults it on every allocation and must not take
+    /// a lock to do so.
+    queued: AtomicUsize,
     cv: CondVar,
 }
 
@@ -463,6 +773,7 @@ impl ReclaimThread {
         Self {
             th: start_new_kernel(Priority::BACKGROUND, reclaim_start, 0),
             state: Spinlock::new(Vec::new()),
+            queued: AtomicUsize::new(0),
             cv: CondVar::new(),
         }
     }
@@ -484,7 +795,9 @@ fn reclaim_main() {
     loop {
         let mut count = 0;
         let mut rounds = 0;
+        allocprofile::add(&allocprofile::RECLAIM_WAKES, 1);
         while tracker.should_reclaim() {
+            allocprofile::add(&allocprofile::RECLAIM_ROUNDS, 1);
             let mut thisround = 0;
             /*
             0. Any directly passed pages-to-reclaim.
@@ -502,9 +815,26 @@ fn reclaim_main() {
                     break;
                 }
             }
+            // Mirrored under the same lock the pops happen under, so an allocator consulting it
+            // lock-free never sees a count for frames this thread has already freed.
+            rt.queued.store(state.len(), Ordering::Relaxed);
 
             if thisround < MAX_PER_ROUND {
                 // TODO
+            }
+
+            // Nothing was reclaimable this round, so going around again cannot help: steps 1-5
+            // above are unimplemented, and `state` is refilled only by another thread handing
+            // frames over -- which a signal will announce.
+            //
+            // Without this the loop spun `MAX_RECLAIM_ROUNDS` times per wake at *realtime*
+            // priority, and `should_reclaim` latches true for good once page data passes a third
+            // of memory (`page_cond`), because nothing here ever brings it back down. Measured on
+            // the sysbench suite: 49,638 wakes, 49.7 million rounds, and a zero-fill fault bench
+            // whose own fault path accounted for 7% of its wall time -- the rest went to this
+            // thread preempting it. See `sysbench.md` F4b.
+            if thisround == 0 {
+                break;
             }
 
             if rounds > MAX_RECLAIM_ROUNDS {
@@ -535,6 +865,11 @@ fn reclaim_main() {
 }
 
 pub fn init(total: usize, idle: usize, kern: usize) {
+    // Provenance line for sweep logs: only a build with the flag on can emit it, so a log's
+    // allocator configuration is decidable from the log alone.
+    if allocprofile::BULK_PRECHARGE {
+        logln!("allocprofile: BULK_PRECHARGE enabled");
+    }
     TRACKER.call_once(|| MemoryTracker {
         kernel_used: AtomicUsize::new(kern),
         page_data: AtomicUsize::new(0),
@@ -551,6 +886,25 @@ pub fn init(total: usize, idle: usize, kern: usize) {
 }
 
 const MAX_FA_FRAMES: usize = 32;
+
+/// Frames the thread-local pool keeps between operations.
+///
+/// The pool only ever grew before this: every operation's unused precharge merged back into it and
+/// nothing ever returned a frame to the allocator, so a mapping-churn workload left 175,308 frames
+/// -- about 700 MB -- parked in one thread's pool. That memory is charged as allocated, so the
+/// tracker's own reclaim heuristics cannot see it as reclaimable, and `kernel_used` reached
+/// 373,274 frames against 90,886 on a fresh boot (`sysbench.md` F4a).
+///
+/// Sized above the largest single precharge in the tree so that no caller re-allocates its surplus
+/// on every call: `setup_cow_range` over a whole object asks for ~1030 (`max_number_new_tables` at
+/// level 1 across MAX_SIZE, for both sides), and everything else asks for a handful.
+const MAX_TLS_PRECHARGE: usize = 2048;
+
+/// How many excess frames one drop returns. Bounded because a drop can run under an object's
+/// page-table mutex, where a free loop over thousands of frames would hold it for milliseconds;
+/// drops are frequent enough (one per mapping operation) that the pool converges in a few thousand
+/// of them regardless.
+const TRIM_PER_DROP: usize = 64;
 
 pub struct FrameAllocator {
     flags: FrameAllocFlags,
@@ -572,9 +926,23 @@ impl FrameAllocator {
     }
 
     pub fn merge(&mut self, other: &mut Self) {
-        // Extend our precharge with abort, since we can just use them.
+        // Take the other's list wholesale when we have none of our own, rather than copying it
+        // into ours. This is the path every `take_or_new_frame_allocator` returns through: the
+        // thread-local pool is moved out at the start of an operation and handed back by
+        // `save_frame_allocator` to a *freshly constructed* allocator, so the destination is
+        // empty essentially every time and `append` was a reserve-and-memcpy of the whole pool.
+        //
+        // That pool is not small. It only ever grows -- nothing trims it -- and after a workload
+        // that churns mappings it was measured at 37,001 frames, making this a ~300 KB copy on
+        // every page installed by a fault: 14.2 us of the 15.2 us a `map_page` cost, against
+        // 0.33 us on a fresh boot where the same pool holds 1.6 frames.
+        if self.precharge.is_empty() {
+            core::mem::swap(&mut self.precharge, &mut other.precharge);
+        } else {
+            self.precharge.append(&mut other.precharge);
+        }
+        // Bounded at `MAX_FA_FRAMES`, so this one stays a copy.
         self.precharge.extend(other.abort.drain(..));
-        self.precharge.append(&mut other.precharge);
     }
 
     #[track_caller]
@@ -589,15 +957,27 @@ impl FrameAllocator {
                 self.precharge.len()
             );
         }
+        allocprofile::add(&allocprofile::PRECHARGE_CALLS, 1);
         if self.precharge.len() >= count {
+            allocprofile::add(&allocprofile::PRECHARGE_EARLY, 1);
             return;
         }
         self.precharge.reserve(count);
-        let remaining = count - self.precharge.len();
+        let all_flags = self.flags | flags;
+        let mut remaining = count - self.precharge.len();
+        if allocprofile::BULK_PRECHARGE {
+            // One acquisition for the batch.
+            let got = try_alloc_frames(all_flags, self.layout, remaining, &mut self.precharge);
+            allocprofile::add(&allocprofile::PRECHARGE_FETCHED, got as u64);
+            remaining -= got;
+        }
+        // The bulk path never waits, so a short return still has to honour `WAIT_OK` -- which only
+        // the singular call implements. Rare by construction: it means memory ran out mid-batch.
         for _ in 0..remaining {
-            let Some(frame) = try_alloc_frame(self.flags | flags, self.layout) else {
+            let Some(frame) = try_alloc_frame(all_flags, self.layout) else {
                 return;
             };
+            allocprofile::add(&allocprofile::PRECHARGE_FETCHED, 1);
             self.precharge.push(frame);
         }
     }
@@ -609,11 +989,27 @@ impl FrameAllocator {
     /// lock, and in the common case there is nothing to wait for.
     #[track_caller]
     pub fn precharge_nowait(&mut self, count: usize) -> usize {
+        allocprofile::add(&allocprofile::PRECHARGE_CALLS, 1);
+        if self.precharge.len() >= count {
+            allocprofile::add(&allocprofile::PRECHARGE_EARLY, 1);
+        }
+        let want = count.saturating_sub(self.precharge.len());
+        if allocprofile::BULK_PRECHARGE && want > 0 {
+            self.precharge.reserve(want);
+            let got = try_alloc_frames(
+                self.flags & !FrameAllocFlags::WAIT_OK,
+                self.layout,
+                want,
+                &mut self.precharge,
+            );
+            allocprofile::add(&allocprofile::PRECHARGE_FETCHED, got as u64);
+        }
         while self.precharge.len() < count {
             let Some(frame) = try_alloc_frame(self.flags & !FrameAllocFlags::WAIT_OK, self.layout)
             else {
                 break;
             };
+            allocprofile::add(&allocprofile::PRECHARGE_FETCHED, 1);
             self.precharge.push(frame);
         }
         self.precharge.len()
@@ -625,7 +1021,9 @@ impl FrameAllocator {
             return self.abort.pop();
         }
         if self.precharge.len() == 0 {
+            allocprofile::add(&allocprofile::FA_ALLOC_GLOBAL, 1);
             if self.avoid_alloc {
+                allocprofile::add(&allocprofile::FA_ALLOC_AVOID_EMPTY, 1);
                 log::warn!(
                     "frame allocator out of precharged frames and avoid_alloc is set, from {}",
                     core::panic::Location::caller()
@@ -636,6 +1034,7 @@ impl FrameAllocator {
                 try_alloc_frame(self.flags, self.layout)
             }
         } else {
+            allocprofile::add(&allocprofile::FA_ALLOC_POOL, 1);
             self.precharge.pop()
         }
     }
@@ -657,6 +1056,26 @@ impl FrameAllocator {
         }
         while let Some(frame) = self.precharge.pop() {
             free_frame(frame);
+        }
+    }
+
+    /// Return up to [`TRIM_PER_DROP`] frames held above [`MAX_TLS_PRECHARGE`] to the allocator.
+    ///
+    /// Runs before the pool goes back to thread-local storage, so the frames it gives up are ones
+    /// no operation asked for.
+    fn trim(&mut self) {
+        let mut excess = self
+            .precharge
+            .len()
+            .saturating_sub(MAX_TLS_PRECHARGE)
+            .min(TRIM_PER_DROP);
+        while excess > 0 {
+            let Some(frame) = self.precharge.pop() else {
+                break;
+            };
+            allocprofile::add(&allocprofile::FA_TRIMMED, 1);
+            free_frame(frame);
+            excess -= 1;
         }
     }
 }
@@ -692,6 +1111,7 @@ pub fn save_frame_allocator(fa: &mut FrameAllocator) -> bool {
             unlock_tls_frame_allocator();
             true
         } else {
+            allocprofile::add(&allocprofile::FA_SAVE_LOCKED, 1);
             false
         }
     })
@@ -732,9 +1152,17 @@ pub fn take_frame_allocator() -> Option<FrameAllocator> {
             unsafe {
                 let fa = TLS_FRAME_ALLOCATOR.take();
                 unlock_tls_frame_allocator();
+                if fa.is_none() {
+                    allocprofile::add(&allocprofile::FA_TAKE_NONE, 1);
+                }
                 fa
             }
         } else {
+            // The pool is `#[thread_local]`, i.e. per-cpu, but the flag guarding it is one global
+            // atomic -- so this arm is another cpu holding it, and the caller goes on to build a
+            // fresh empty allocator whose every precharge reaches the global tracker while this
+            // cpu's own pool sits untouched. Counted to size that effect.
+            allocprofile::add(&allocprofile::FA_TAKE_LOCKED, 1);
             None
         }
     })
@@ -753,12 +1181,28 @@ pub fn take_or_new_frame_allocator() -> FrameAllocator {
 
 impl Drop for FrameAllocator {
     fn drop(&mut self) {
+        allocprofile::add(
+            &allocprofile::FA_DROP_FRAMES,
+            (self.precharge.len() + self.abort.len()) as u64,
+        );
         if tls_ready() && self.layout == PHYS_LEVEL_LAYOUTS[0] {
-            if !save_frame_allocator(self) {
+            self.trim();
+            let t = allocprofile::start();
+            let saved = save_frame_allocator(self);
+            allocprofile::record(&allocprofile::FA_DROP_SAVE_NS, t);
+            if !saved {
+                allocprofile::add(&allocprofile::FA_DROP_CLEARED, 1);
+                let t = allocprofile::start();
                 self.clear();
+                allocprofile::record(&allocprofile::FA_DROP_CLEAR_NS, t);
+            } else {
+                allocprofile::add(&allocprofile::FA_DROP_SAVED, 1);
             }
         } else {
+            allocprofile::add(&allocprofile::FA_DROP_CLEARED, 1);
+            let t = allocprofile::start();
             self.clear();
+            allocprofile::record(&allocprofile::FA_DROP_CLEAR_NS, t);
         }
     }
 }

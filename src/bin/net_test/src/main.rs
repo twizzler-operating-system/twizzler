@@ -192,6 +192,16 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// `release-kvm-smp1` lost all four while every other configuration passed.
 const UDP_SEND_COUNT: usize = 20;
 
+/// How long the UDP drain must go quiet before the socket counts as drained.
+///
+/// `expect_peer_ok` is a send-side barrier only: the peer's last `send_to` hands the datagram to
+/// its own stack, and the 150ms it sleeps before exiting does not cover the trip through net-srv
+/// plus this compartment's next poll pass -- `can_recv`, and so the readiness a drain reads, only
+/// goes true once that pass dispatches the frame. Draining until the first gap in that pipeline
+/// therefore stops short of its end, and the datagram still to come makes the wait after it
+/// legitimately ready. Waiting out a gap this long instead makes "drained" a stable state.
+const UDP_SETTLE: Duration = Duration::from_millis(1500);
+
 /// Upper bound on how long a `connect-idle` peer holds its connection open.
 ///
 /// A cap, not a duration: the peer holds until we drop our end and falls back on this only if that
@@ -480,13 +490,13 @@ fn udp_stops_reporting_readable_once_drained() {
         wait_ready(kq, PEER_TIMEOUT),
         "UDP socket never reported an incoming datagram"
     );
-    // Let the peer finish sending before draining, so "drained" is a stable state rather than a
-    // race against datagrams still in flight.
+    // Let the peer finish sending before draining. Its exit only bounds the sends, not their
+    // delivery, so the drain below waits out `UDP_SETTLE` rather than the first gap.
     expect_peer_ok(peer, "udp-send");
 
     let mut received = 0;
     let mut buf = [0u8; 64];
-    while wait_ready(kq, Duration::ZERO) {
+    while wait_ready(kq, UDP_SETTLE) {
         let (n, _from) = sock.recv_from(&mut buf).expect("recv");
         assert!(buf[..n].starts_with(b"ping"), "unexpected datagram");
         received += 1;
@@ -495,7 +505,16 @@ fn udp_stops_reporting_readable_once_drained() {
 
     let start = Instant::now();
     let ready = wait_ready(kq, Duration::from_millis(800));
-    assert!(!ready, "drained UDP socket still reported readable");
+    // Reporting how late it was is what separates the two explanations if this ever fires again: a
+    // straggling datagram (readable, with something to receive) from the regression this test is
+    // about (readable, with nothing behind it).
+    assert!(
+        !ready,
+        "drained UDP socket reported readable again after {:?}, following a {:?} quiet window ({} datagrams drained)",
+        start.elapsed(),
+        UDP_SETTLE,
+        received
+    );
     assert!(
         start.elapsed() >= Duration::from_millis(700),
         "UDP readiness wait returned early"

@@ -19,8 +19,8 @@ use twizzler_rt_abi::{
 };
 
 use super::{
-    DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, provide_pager_memory,
-    request::ReqKind,
+    DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, request::ReqKind,
+    request_pager_memory,
 };
 use crate::{
     arch::{PhysAddr, memory::phys_to_virt},
@@ -139,9 +139,10 @@ pub(super) fn pager_request_handler_main() {
             PagerRequest::Ready => {
                 log::info!("pager ready");
                 inflight_mgr().lock().set_ready();
-                provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+                request_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
+                crate::obj::start_reaper_thread();
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
@@ -266,7 +267,7 @@ fn pager_compl_handle_page_data(
         if crate::memory::tracker::get_outstanding_pager_pages()
             < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
         {
-            super::provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+            request_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
         }
     }
 
@@ -469,7 +470,7 @@ fn install_meta_page(obj: &ObjectRef, phys_range: PhysRange) {
     }
     if crate::memory::tracker::get_outstanding_pager_pages() < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2
     {
-        provide_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
+        request_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
     }
 }
 
@@ -661,7 +662,11 @@ pub(super) fn pager_compl_handler_main() {
             } else {
                 mgr.remove_request(&request.reqkind);
             }
-            sender.idmap.lock().remove(&completion.0);
+            // Bound, not discarded in the statement: the entry owns an `ObjectRef`, and dropping
+            // the last one runs `Object::drop`. That is deferred now (`pager::queue_del_object`),
+            // but running any object destructor under this spinlock is still the wrong shape.
+            let removed = sender.idmap.lock().remove(&completion.0);
+            drop(removed);
             sender.ids.release_simple(SimpleId::from(completion.0));
         }
     }
@@ -741,6 +746,8 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         RECEIVER.call_once(|| receiver);
     }
     if SENDER.poll().is_some() && RECEIVER.poll().is_some() {
+        super::start_memory_provider();
+        super::start_deleter();
         // TODO: these should be higher?
         start_new_kernel(Priority::REALTIME, pager_compl_handler_entry, 0);
         start_new_kernel(Priority::USER, pager_request_handler_entry, 0);

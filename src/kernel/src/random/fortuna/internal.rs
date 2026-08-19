@@ -77,7 +77,47 @@ impl Generator {
             let leftover_out = &mut out[(n * COUNTER_LENGTH)..];
             leftover_out.copy_from_slice(&buf[..rem]);
         }
+        // 9.4.4: K <- GenerateBlocks(2). This assignment is the whole of the generator's forward
+        // secrecy, and it was missing -- the new key was generated and dropped, so the key never
+        // changed between reseeds. Recovering the key state therefore reproduced every prior
+        // output back to the last reseed, and reseeds come from `contribute_entropy_regularly`,
+        // which runs once every 100 seconds. The two blocks were already being generated and
+        // discarded, so this costs nothing that was not already paid.
         let mut new_key = [0; KEY_LENGTH];
         self.generate_blocks(&mut new_key);
+        self.key = new_key;
+    }
+}
+
+mod test {
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::*;
+
+    /// The generator must rekey after every request. Pinned by a test because the property is
+    /// invisible in the output -- a generator that never rekeys produces a stream that looks
+    /// exactly as random as one that does, so nothing else would notice this regressing.
+    #[kernel_test]
+    fn test_generator_rekeys_after_request() {
+        let mut g = Generator::new();
+        g.reseed(&[0x42; 32]);
+        let key_before = g.key;
+        let mut out = [0u8; 16];
+        g.generate_random_data(&mut out);
+        assert_ne!(
+            g.key, key_before,
+            "generator did not rekey after generating data (9.4.4)"
+        );
+    }
+
+    /// A request smaller than one block still rekeys: the tail path is a separate branch.
+    #[kernel_test]
+    fn test_generator_rekeys_on_partial_block() {
+        let mut g = Generator::new();
+        g.reseed(&[0x17; 32]);
+        let key_before = g.key;
+        let mut out = [0u8; 3];
+        g.generate_random_data(&mut out);
+        assert_ne!(g.key, key_before, "partial-block request did not rekey");
     }
 }

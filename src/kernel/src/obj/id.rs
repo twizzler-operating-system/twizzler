@@ -185,6 +185,15 @@ impl Object {
         if crate::thread::current_thread_ref().is_none() {
             return;
         }
+        // `verify_id` is a sha256 over the very fields the id was derived from, and it is an
+        // argument -- so it runs in full even when `set_verified_id` is about to discard it
+        // because the answer is already recorded. `sys_object_create` records it moments before
+        // writing the meta page, which makes that every object userspace creates.
+        if crate::syscall::object::createprofile::OBJ_CREATE_FASTPATHS
+            && self.verified_id.poll().is_some()
+        {
+            return;
+        }
         self.set_verified_id(
             verify_id(
                 self.id,

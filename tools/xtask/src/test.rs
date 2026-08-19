@@ -107,6 +107,19 @@ pub struct TestOptions {
     pub disk_image: Option<PathBuf>,
     #[clap(
         long,
+        help = "Run this benchmark crate (optionally followed by libtest name filters) before the \
+                test suite, as `start-qemu --bench` does. Quote the whole thing: \
+                --bench=\"sysbench page_fault_zero_fill\"."
+    )]
+    pub bench: Option<String>,
+    #[clap(
+        long,
+        default_value_t = 1,
+        help = "Run --bench this many times in one boot."
+    )]
+    pub bench_iters: usize,
+    #[clap(
+        long,
         help = "Discard guest writes to the boot and data images, so concurrent runs can share one \
                 image instead of each copying it. See the flag of the same name on start-qemu."
     )]
@@ -128,7 +141,9 @@ impl TestOptions {
             qemu_options: self.qemu_options.clone(),
             tests,
             benches: false,
-            bench: None,
+            bench: self.bench.clone(),
+            bench_iters: self.bench_iters,
+            sysbench: false,
             kernel: false,
             data: None,
             repeat: false,

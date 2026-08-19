@@ -269,6 +269,18 @@ impl InflightManager {
         ReqKind::new_page_data(id, lo, hi - lo, flags)
     }
 
+    /// An in-flight region sync for `id`, if any, as a waitable (non-sending) inflight. Full
+    /// scan: the map holds at most NR_REQUESTS entries and this runs once per sync submission,
+    /// which is milliseconds of io.
+    pub fn find_sync_region(&self, id: ObjID) -> Option<Inflight> {
+        self.req_map.iter().find_map(|req| match req.reqkind() {
+            ReqKind::SyncRegion(info) if info.id == id => {
+                Some(Inflight::new(req.id, req.reqkind().clone(), false))
+            }
+            _ => None,
+        })
+    }
+
     pub fn check_timed_out_requests(&self) {
         for req in self.req_map.iter() {
             if req.is_timed_out() {

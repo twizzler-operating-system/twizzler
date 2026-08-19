@@ -1,5 +1,8 @@
 use alloc::{collections::BTreeMap, vec::Vec};
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use inflight::{Inflight, InflightManager};
 use itertools::Itertools;
@@ -15,6 +18,7 @@ use twizzler_rt_abi::{
 };
 
 use crate::{
+    condvar::CondVar,
     instant::Instant,
     memory::{
         context::virtmem::region::MapRegion,
@@ -26,10 +30,15 @@ use crate::{
         LookupFlags, ObjectRef, PageNumber, PtGuard,
         pagetables::{DirtyList, ObjectPageTable},
     },
-    once::OnceWait,
+    once::{Once, OnceWait},
     processor::sched::{SchedFlags, schedule},
+    spinlock::Spinlock,
     syscall::sync::{finish_blocking, sys_thread_sync},
-    thread::{current_thread_ref, priority::PriorityClass},
+    thread::{
+        current_thread_ref,
+        entry::start_new_kernel,
+        priority::{Priority, PriorityClass},
+    },
 };
 
 mod inflight;
@@ -612,15 +621,95 @@ pub fn del_object(id: ObjID) {
     cmd_object(ReqKind::new_del(id), None);
 }
 
+/// Deferred backing-store deletes, and the thread that issues them.
+///
+/// [del_object] blocks on a pager round trip, and its only caller is `Object::drop` -- which runs
+/// wherever the last `ObjectRef` goes away, not on any thread that chose to delete anything. One of
+/// those places is the pager completion thread: `queues`' idmap holds an `ObjectRef` per
+/// outstanding request, so the DONE branch that removes an entry can be the drop that issues the
+/// delete. That parks the *only* thread draining completions on a completion it will never get to
+/// process: the pager finishes the delete and goes idle, the kernel keeps that request and whatever
+/// else was in flight inflight forever, and everything behind the pager stops (`sysbench.md` F7).
+/// The same drop also lands under that map's spinlock, where blocking is not merely a stall.
+///
+/// So the drop only names the object and this thread does the round trip. The delete is
+/// consequently no longer ordered against a later create of the same id, which it never was in any
+/// useful sense -- the drop already ran an unbounded time after the delete syscall.
+struct Deleter {
+    queue: Spinlock<Vec<ObjID>>,
+    work: CondVar,
+}
+
+static DELETER: Once<Deleter> = Once::new();
+
+/// Ask the deleter thread to tell the pager that `id` is gone. Never blocks.
+pub fn queue_del_object(id: ObjID) {
+    let Some(deleter) = DELETER.poll() else {
+        // No pager queues yet, hence no deleter and no pager to tell; `del_object` itself
+        // returns immediately while the inflight manager is not ready.
+        del_object(id);
+        return;
+    };
+    deleter.queue.lock().push(id);
+    deleter.work.signal();
+}
+
+pub(super) fn start_deleter() {
+    extern "C" fn deleter_entry() {
+        let d = DELETER.wait();
+        let mut guard = d.queue.lock();
+        loop {
+            if guard.is_empty() {
+                guard = d.work.wait(guard);
+                continue;
+            }
+            let ids = core::mem::take(&mut *guard);
+            drop(guard);
+            for id in ids {
+                del_object(id);
+            }
+            guard = d.queue.lock();
+        }
+    }
+    DELETER.call_once(|| Deleter {
+        queue: Spinlock::new(Vec::new()),
+        work: CondVar::new(),
+    });
+    start_new_kernel(Priority::USER, deleter_entry, 0);
+}
+
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
     cmd_object(ReqKind::new_create(id, create, nonce), None);
 }
 
 fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
-    let mut mgr = lock_inflight_mgr();
-    if !mgr.is_ready() {
-        return;
-    }
+    // Backpressure: wait for any sync already in flight for this object before submitting
+    // another. Every SyncRegion is unique (see `SyncRegionInfo`), so nothing coalesces them, and
+    // the fire-and-forget path (`wait == false`, a null sync_info) otherwise lets a tight sync
+    // loop grow an unbounded per-object herd -- the pager serializes them per object, the herd
+    // eats all NR_REQUESTS slots, and every other pager op starves behind a minutes-long drain
+    // (sysbench pager_sync_dirty_page). This bounds each object to two outstanding: the one
+    // running and the one being submitted.
+    let mut mgr = loop {
+        let mut mgr = lock_inflight_mgr();
+        if !mgr.is_ready() {
+            return;
+        }
+        let Some(prev) = mgr.find_sync_region(region.object().id()) else {
+            break mgr;
+        };
+        let thread = current_thread_ref().unwrap();
+        if let Some(guard) = mgr.setup_wait(&prev, &thread) {
+            drop(mgr);
+            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
+            finish_blocking(guard);
+        } else {
+            // Declined: the previous sync is done but not yet removed. Give the completion
+            // thread a chance to remove it rather than spinning on the lookup.
+            drop(mgr);
+            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        }
+    };
     let inflight = match mgr.add_request(req) {
         Ok(x) => x,
         Err(rk) => {
@@ -732,7 +821,7 @@ pub fn ensure_in_core<'a>(
         // Never block a thread donating memory on behalf of speculation. The caller here is on its
         // way to map the object, not to read these pages; making it wait for the pager to ack a
         // donation puts a real syscall behind work nobody has asked for.
-        provide_pager_memory(
+        request_pager_memory(
             needed_additional.min(512),
             wait_for_additional && !speculative,
         );
@@ -877,6 +966,75 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
             }
         })
         .collect()
+}
+
+struct MemoryProvider {
+    /// Pages wanted. `fetch_max`, not a sum: every ask is "top the pager up to this much", so
+    /// concurrent askers are naming the same need, not adding debts.
+    requested: AtomicUsize,
+    /// Completed-provision generation, and the lock both condvars pair with -- holding it across
+    /// the provider's check-then-wait is what makes a requester's max-then-signal unlosable.
+    generation: Spinlock<u64>,
+    work: CondVar,
+    done: CondVar,
+}
+
+static MEMORY_PROVIDER: Once<MemoryProvider> = Once::new();
+
+/// Ask the provider thread to top up the pager's donated memory, optionally waiting until a
+/// provision completes.
+///
+/// This exists instead of calling [provide_pager_memory] directly for two reasons. The handler
+/// threads must never block donating: provide can sleep for a request slot and block on queue
+/// space, and the completion handler is the only thread that frees either -- waiting for them
+/// there deadlocks the whole pager once a sync storm fills both (sysbench-syncwedge). And
+/// concurrent askers used to each send their own donation batch, burning a request slot per
+/// range; combining the asks into one atomic and letting the single provider thread send them
+/// bounds outstanding memory requests to one batch in flight.
+///
+/// The wait is advisory backpressure, not a promise of frames: a waiter is released when the
+/// next provision completes, which may be one that was already being built when it asked.
+pub(super) fn request_pager_memory(min_frames: usize, wait: bool) {
+    let Some(p) = MEMORY_PROVIDER.poll() else {
+        return;
+    };
+    p.requested.fetch_max(min_frames, Ordering::SeqCst);
+    let mut genr = p.generation.lock();
+    p.work.signal();
+    if wait {
+        let start = *genr;
+        while *genr == start {
+            genr = p.done.wait(genr);
+        }
+    }
+}
+
+pub(super) fn start_memory_provider() {
+    extern "C" fn provider_entry() {
+        let p = MEMORY_PROVIDER.wait();
+        let mut genr = p.generation.lock();
+        loop {
+            let n = p.requested.swap(0, Ordering::SeqCst);
+            if n == 0 {
+                genr = p.work.wait(genr);
+                continue;
+            }
+            drop(genr);
+            // wait=true is the single-flight bound: the next batch is not built until the pager
+            // has acked this one.
+            provide_pager_memory(n, true);
+            genr = p.generation.lock();
+            *genr += 1;
+            p.done.signal();
+        }
+    }
+    MEMORY_PROVIDER.call_once(|| MemoryProvider {
+        requested: AtomicUsize::new(0),
+        generation: Spinlock::new(0),
+        work: CondVar::new(),
+        done: CondVar::new(),
+    });
+    start_new_kernel(Priority::USER, provider_entry, 0);
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {

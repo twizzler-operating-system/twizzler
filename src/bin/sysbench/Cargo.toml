@@ -1,0 +1,12 @@
+[package]
+name = "sysbench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler = { workspace = true }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { workspace = true }
+pager = { path = "../../lib/pager" }
+naming = { workspace = true }

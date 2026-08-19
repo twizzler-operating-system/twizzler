@@ -1,3 +1,6 @@
+pub mod fast;
+pub use fast::FastClock;
+
 mod clock;
 mod timedefs;
 mod units;

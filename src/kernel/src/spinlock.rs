@@ -102,12 +102,20 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                     //emerglogln!("spinlock pause: {}", caller);
                 }
                 if iters == 100000 {
-                    let locked_from = unsafe { self.locked_from.load(Ordering::Relaxed).as_ref() };
-                    emerglogln!(
-                        "spinlock long pause: {}, locked at {:?}",
-                        caller,
-                        locked_from
-                    );
+                    // Valid while held: `release` clears this, so a site named here is the actual
+                    // holder rather than whoever acquired last. `None` means the holder had not
+                    // recorded itself yet, not that the lock is free.
+                    match unsafe { self.locked_from.load(Ordering::Relaxed).as_ref() } {
+                        Some(held_by) => emerglogln!(
+                            "spinlock long pause: {}, held by {}",
+                            caller,
+                            held_by
+                        ),
+                        None => emerglogln!(
+                            "spinlock long pause: {}, holder not yet recorded",
+                            caller
+                        ),
+                    }
                 }
                 Relax::relax(iters);
             },
@@ -149,6 +157,18 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
     }
 
     fn release(&self) {
+        // Clear the holder record *before* handing the lock on, so that it is never both stale and
+        // non-null. Ordered this way deliberately: clearing after the ticket store would race the
+        // next holder's own write and could wipe it, turning a correct attribution into `None`.
+        // The remaining windows -- between this clear and the ticket store, and between the next
+        // acquisition and its store below -- report `None`, i.e. "unknown", never a wrong site.
+        //
+        // Without this, `locked_from` was a record of the last thread to *acquire*, with no
+        // lifetime bound: the site it named had usually already released, and on a hot lock the
+        // most frequent acquirer named itself in every report regardless of who held it. Three
+        // waiters all reporting one innocent site is what that looked like in practice.
+        self.locked_from
+            .store(core::ptr::null_mut(), Ordering::Relaxed);
         // wrapping_add is load-bearing at u32: a plain `+` is an overflow panic in debug builds
         // at the boundary, once per 2^32 acquisitions -- surfacing rarely and unattributably.
         let next = self.tickets.current.load(Ordering::Relaxed).wrapping_add(1);

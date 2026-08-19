@@ -352,6 +352,16 @@ fn test_object_copy() {
     // Test zeroing with a couple pages, not length aligned.
     zero_ranges_and_check(&dest, ps + abit, ps * 2 + abit);
 
+    // Ranges that cross a level-1 (2 MiB) boundary. Every case above fits inside one level-1
+    // region, which is why they all passed while `setup_zero_range` advanced its cursor twice per
+    // region -- once in the child that walked it and once more in the parent -- and so zeroed only
+    // the first region of any range spanning two. The straddling case is the cheap one to get
+    // wrong: it loses a single page at the boundary rather than half the range.
+    let l1 = PHYS_LEVEL_LAYOUTS[1].size();
+    zero_ranges_and_check(&dest, l1 - ps, ps * 2);
+    zero_ranges_and_check(&dest, l1 * 2, l1 * 2);
+    zero_ranges_and_check(&dest, l1 * 4 + ps, l1 * 2 + ps);
+
     // Test two back-to-back ranges. This first copy will copy (page(2) + abit) -> (page(2) +
     // abit) for a len of a page. So the end point will be (page(3) + abit), which is
     // where the second copy starts.
@@ -512,4 +522,97 @@ fn sleeper_count_wakes_and_drains() {
         "sleeper count did not drain after {} rounds",
         ROUNDS
     );
+}
+
+/// `sys_object_copy`'s argument guards, which exist because most of what they reject panics the
+/// kernel rather than failing the call.
+///
+/// A self-copy reaches `utils::lock_two`'s `assert_ne!`; an offset in the non-canonical hole
+/// reaches `setup_zero_range`'s `VirtAddr::new(..).unwrap()`. A range that merely runs past the
+/// object's end is the quiet one -- nothing panics, it just builds page-table entries outside the
+/// object. The meta page falls under the same bound, being the object's last page, and holds the
+/// `MetaInfo` that a content-derived id is computed over.
+#[twizzler_kernel_macros::kernel_test]
+fn object_copy_rejects_bad_ranges() {
+    use twizzler_abi::object::MAX_SIZE;
+    use twizzler_rt_abi::bindings::object_source;
+
+    use crate::syscall::object::sys_object_copy;
+
+    let dest = create_blank_object();
+    let ps = PageNumber::PAGE_SIZE as u64;
+    let meta = (MAX_SIZE - PageNumber::PAGE_SIZE) as u64;
+    let zero_at = |dest_start, len| object_source {
+        id: 0,
+        src_start: 0,
+        dest_start,
+        len,
+    };
+
+    for (case, src) in [
+        ("the meta page itself", zero_at(meta, ps)),
+        ("a range running into the meta page", zero_at(meta - ps, ps * 2)),
+        ("a range past the end of the object", zero_at(meta + ps * 16, ps)),
+        ("an offset in the non-canonical hole", zero_at(1u64 << 47, ps)),
+        ("a length that overflows its offset", zero_at(u64::MAX - ps, ps * 2)),
+        (
+            "an object copying from itself",
+            object_source {
+                id: dest.id().raw(),
+                src_start: ps,
+                dest_start: ps * 2,
+                len: ps,
+            },
+        ),
+    ] {
+        assert!(
+            sys_object_copy(dest.id(), &[src]).is_err(),
+            "sys_object_copy accepted {}",
+            case
+        );
+    }
+}
+
+/// What the syscall adds over `copy_range`/`zero_range`, which `test_object_copy` already covers:
+/// a source with id 0 zeroes, any other id copies, and both kinds work in one call.
+#[twizzler_kernel_macros::kernel_test]
+fn object_copy_zeroes_and_copies() {
+    use twizzler_rt_abi::bindings::object_source;
+
+    use crate::syscall::object::sys_object_copy;
+
+    let src = create_blank_object();
+    let dest = create_blank_object();
+    let ps = PageNumber::PAGE_SIZE;
+
+    let frame = alloc_frame(FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK);
+    unsafe { frame.as_byte_slice_mut().fill(0x5a) };
+    src.add_frame(PageNumber::from_offset(ps), frame);
+    dest.write_at(&0xffu8, ps * 2).unwrap();
+
+    sys_object_copy(
+        dest.id(),
+        &[
+            object_source {
+                id: src.id().raw(),
+                src_start: ps as u64,
+                dest_start: ps as u64,
+                len: ps as u64,
+            },
+            object_source {
+                id: 0,
+                src_start: 0,
+                dest_start: (ps * 2) as u64,
+                len: ps as u64,
+            },
+        ],
+    )
+    .unwrap();
+
+    let copied: u8 = dest.read_at(ps).unwrap();
+    assert_eq!(copied, 0x5a, "copy source did not land");
+    let zeroed: u8 = dest.read_at(ps * 2).unwrap();
+    assert_eq!(zeroed, 0, "zeroing source did not clear the page");
+    let untouched: u8 = src.read_at(ps).unwrap();
+    assert_eq!(untouched, 0x5a, "copy disturbed its source");
 }
