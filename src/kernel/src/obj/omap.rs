@@ -84,9 +84,14 @@ impl ShardedOmap {
     /// [SCAN_CHUNK] per hold and appends outside the lock.
     pub fn collect_pending(&self, out: &mut Vec<(ObjID, ObjectRef)>) {
         let mut chunk = heapless::Vec::<ObjectRef, SCAN_CHUNK>::new();
-        self.for_chunks(|o| o.is_pending_delete(), &mut chunk, |chunk, out| {
-            out.extend(chunk.drain(..).map(|o| (o.id, o)));
-        }, out);
+        self.for_chunks(
+            |o| o.is_pending_delete(),
+            &mut chunk,
+            |chunk, out| {
+                out.extend(chunk.drain(..).map(|o| (o.id, o)));
+            },
+            out,
+        );
     }
 
     /// Every id, shard-major ascending. Same claim/append shape as [Self::collect_pending];
@@ -94,17 +99,27 @@ impl ShardedOmap {
     /// is chained on.
     pub fn collect_ids(&self, out: &mut Vec<ObjID>) {
         let mut chunk = heapless::Vec::<ObjectRef, SCAN_CHUNK>::new();
-        self.for_chunks(|_| true, &mut chunk, |chunk, out| {
-            out.extend(chunk.drain(..).map(|o| o.id));
-        }, out);
+        self.for_chunks(
+            |_| true,
+            &mut chunk,
+            |chunk, out| {
+                out.extend(chunk.drain(..).map(|o| o.id));
+            },
+            out,
+        );
     }
 
     /// Every object, for diagnostics ([super::print_all_objects]).
     pub fn collect_all(&self, out: &mut Vec<ObjectRef>) {
         let mut chunk = heapless::Vec::<ObjectRef, SCAN_CHUNK>::new();
-        self.for_chunks(|_| true, &mut chunk, |chunk, out| {
-            out.extend(chunk.drain(..));
-        }, out);
+        self.for_chunks(
+            |_| true,
+            &mut chunk,
+            |chunk, out| {
+                out.extend(chunk.drain(..));
+            },
+            out,
+        );
     }
 
     /// Walk every shard claiming matching entries one bounded chunk per hold, flushing each

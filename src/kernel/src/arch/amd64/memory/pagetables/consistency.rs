@@ -750,6 +750,14 @@ impl Drop for PendingShootdown {
 
 impl Drop for ArchTlbMgr {
     fn drop(&mut self) {
+        // Nothing was ever enqueued, so `finish` has nothing to send: `finish_send` returns
+        // `PendingShootdown::none()` at its `has_invalidations` guard and the `wait` on it returns
+        // at its `count == 0` guard. Returning here is the same no-op without building and
+        // destroying a 144-byte token to express it -- and this Drop runs once per `map_page`,
+        // from inside `Consistency::into_deferred`, on a path where nothing is ever enqueued.
+        if !self.data.has_invalidations() {
+            return;
+        }
         // Only matters once other CPUs are setup, which only happens after TLS is ready
         if tls_ready() {
             self.finish();

@@ -117,6 +117,22 @@ pub fn no_pcid() -> bool {
     NO_PCID.load(Ordering::SeqCst)
 }
 
+/// The reaper thread, on unless `--reap=legacy`.
+///
+/// Default-on as of 2026-08-20, after leak30/leak31 measured the legacy paths pinning 2.54 GiB of
+/// kernel stacks under a 2,200-spawn workload with `trk.reclaiming` at zero throughout. Reaping
+/// without this thread is gated on a stattick landing in user mode or a hundredth idle pass, both
+/// anti-correlated with the churn that produces the backlog; with it, `thr.exited_backlog` holds at
+/// slope zero and `thr.reaped` tracks production exactly.
+///
+/// `--reap=legacy` restores the old behaviour, and remains a runtime knob rather than a const so an
+/// A/B can be run from one build and one tree state.
+static REAP_THREAD: AtomicBool = AtomicBool::new(true);
+
+pub fn reap_thread_enabled() -> bool {
+    REAP_THREAD.load(Ordering::SeqCst)
+}
+
 static DIAG_MODE: AtomicBool = AtomicBool::new(false);
 /// Run the idle-loop hang diagnostics outside of test mode.
 ///
@@ -183,11 +199,27 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--diag" {
             DIAG_MODE.store(true, Ordering::SeqCst);
+            memory::frame::enable_pt_zero_check();
+        }
+        if opt == "--pt-zero-check" {
+            memory::frame::enable_pt_zero_check();
+        }
+        if opt == "--reap=legacy" {
+            REAP_THREAD.store(false, Ordering::SeqCst);
+        }
+        if opt == "--kalloc-census" {
+            memory::kalloc_census::enable();
+        }
+        if let Some(spec) = opt.strip_prefix("--kalloc-trap=") {
+            memory::kalloc_census::set_trap(spec);
         }
     }
 
     if is_test_mode() {
         logln!("!!! TEST MODE ACTIVE");
+    }
+    if is_diag_mode() {
+        thread::log_thread_sizes();
     }
     // Before memory::init, which builds the kernel context: a context's PCID is fixed when it is
     // constructed.
@@ -285,6 +317,9 @@ extern "C" fn boot_sequence() {
     }
     start_new_init();
     let _ = crate::thread::entry::start_new_kernel(Priority::BACKGROUND, background_worker, 0);
+    if reap_thread_enabled() {
+        crate::thread::reaper::start();
+    }
     crate::thread::exit(0);
 }
 
@@ -313,6 +348,9 @@ pub fn idle_main() -> ! {
         // that ran the waiter reaches this loop right after it blocks, so draining here bounds
         // the loss to one idle pass. Cheap when empty: requeue_all early-outs on the count.
         crate::syscall::sync::requeue_all();
+        // Covers the case the stattick safe-point reap structurally cannot: a cpu with nothing in
+        // user mode to interrupt. One relaxed load when there is nothing to do.
+        crate::thread::reaper::notify();
         if iter % 100 == 0 {
             current_processor().cleanup_exited();
         }
@@ -333,6 +371,7 @@ pub fn idle_main() -> ! {
                 check_orphan_threads();
                 crate::thread::check_system_hang();
                 crate::obj::promotion_census();
+                crate::processor::report_exited_backlog();
             }
         }
         // The same diagnostics, from a cpu that still can, when the bsp has stopped ticking. See

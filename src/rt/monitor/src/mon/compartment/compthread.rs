@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use dynlink::{compartment::MONITOR_COMPARTMENT_ID, context::Context};
 use miette::IntoDiagnostic;
 use twizzler_abi::{
@@ -10,7 +8,7 @@ use twizzler_rt_abi::object::ObjID;
 
 use crate::mon::{
     space::MapHandle,
-    thread::{ManagedThread, ThreadMgr, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
+    thread::{EntryArgs, ManagedThread, ThreadMgr, DEFAULT_STACK_SIZE, STACK_SIZE_MIN_ALIGN},
 };
 
 #[allow(dead_code)]
@@ -33,29 +31,51 @@ impl CompThread {
         arg: usize,
         suspend_on_start: bool,
     ) -> miette::Result<Self> {
-        let _start = Instant::now();
-        let frame = stack.get_entry_frame(instance, entry, arg);
-        let start = move || {
-            let _enter = Instant::now();
-            tracing::trace!("thread entry took {}ms", (_enter - _start).as_millis());
-            twizzler_abi::syscall::sys_sctx_attach(instance).unwrap();
-
-            let flags = if suspend_on_start {
-                ResumeFlags::SUSPEND
-            } else {
-                ResumeFlags::empty()
-            };
-            unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, flags) };
+        // The old closure captured an `UpcallFrame` (3264 B) and was itself a never-freed
+        // `Box<dyn FnOnce()>`; both are gone. It also carried a `tracing::trace!` of entry latency,
+        // which cannot survive without a capture and is dropped deliberately.
+        let args = EntryArgs {
+            instance,
+            stack_ptr: stack.initial_stack_ptr(),
+            stack_size: stack.stack_size(),
+            thread_ptr: 0,
+            entry,
+            arg,
+            suspend: suspend_on_start,
         };
         let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         let mt = tmgr
-            .start_thread(mon, Box::new(start), main_thread_comp, instance)
+            .start_thread(mon, comp_main_entry, args, main_thread_comp, instance)
             .into_diagnostic()?;
         Ok(Self {
             stack_object: stack,
             thread: mt,
         })
     }
+}
+
+/// Entry point for a compartment's main thread. Plain function, no closure, no allocation.
+///
+/// `args` points at the base of this thread's own super stack. Everything is copied to a local
+/// before the diverging resume, because nothing may be owned across a `-> !` call: a free emitted
+/// there is sunk past the call and deleted as unreachable.
+unsafe extern "C" fn comp_main_entry(args: usize) -> ! {
+    let a = unsafe { core::ptr::read_unaligned(args as *const EntryArgs) };
+    twizzler_abi::syscall::sys_sctx_attach(a.instance).unwrap();
+    let flags = if a.suspend {
+        ResumeFlags::SUSPEND
+    } else {
+        ResumeFlags::empty()
+    };
+    let frame = UpcallFrame::new_entry_frame(
+        a.stack_ptr,
+        a.stack_size,
+        a.thread_ptr,
+        a.instance,
+        a.entry,
+        a.arg,
+    );
+    unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, flags) }
 }
 
 pub(crate) struct StackObject {

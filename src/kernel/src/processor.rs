@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use ipi::IpiTask;
 use rq::{NR_QUEUES, RunQueue};
@@ -69,6 +69,8 @@ pub struct Processor {
     pub stats: ProcessorStats,
     ipi_tasks: Spinlock<Vec<Arc<IpiTask>>>,
     exited: Spinlock<Vec<ThreadRef>>,
+    /// Deepest this cpu's cleanup list has ever been. See [`Processor::push_exited`].
+    exited_max: AtomicUsize,
     is_idle: AtomicBool,
     must_rebalance: AtomicBool,
     /// This cpu's syscall counts and timings. Per-cpu so the kernel-exit path takes no globally
@@ -80,6 +82,11 @@ pub struct Processor {
     /// This cpu's interrupt counts and timings, on the same per-cpu terms. See
     /// [`crate::interrupt::InterruptTracking`].
     pub interrupt_stats: Spinlock<crate::interrupt::InterruptTracking>,
+    /// This cpu's random generator and its batch buffer, on the same per-cpu terms as the stats
+    /// above. See [`crate::random`]: `getrandom` used to route every request -- including the
+    /// nonce for every object create -- through one global sleeping mutex, holding it across the
+    /// whole ChaCha20 generation.
+    pub rng: Spinlock<crate::random::PerCpuRng>,
 }
 
 impl Processor {
@@ -89,6 +96,7 @@ impl Processor {
             syscall_stats: Spinlock::new(crate::syscall::SyscallTracking::new()),
             fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
             interrupt_stats: Spinlock::new(crate::interrupt::InterruptTracking::new()),
+            rng: Spinlock::new(crate::random::PerCpuRng::new()),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),
             must_rebalance: AtomicBool::new(false),
@@ -100,6 +108,7 @@ impl Processor {
             stats: ProcessorStats::default(),
             ipi_tasks: Spinlock::new(Vec::new()),
             exited: Spinlock::new(Vec::new()),
+            exited_max: AtomicUsize::new(0),
             current_priority: AtomicU32::new(0),
         }
     }
@@ -188,16 +197,64 @@ impl Processor {
     }
 
     pub fn push_exited(&self, th: ThreadRef) {
-        self.exited.lock().push(th);
+        let len = {
+            let mut ex = self.exited.lock();
+            ex.push(th);
+            ex.len()
+        };
+        EXITED_BACKLOG.fetch_add(1, Ordering::Relaxed);
+        // Per-cpu, because "reaping everywhere is slow" and "reaping stopped on one cpu" produce
+        // the same global byte count and want different fixes. A cpu that halts without reaching
+        // the reap call again shows a watermark that never comes down; a pacing shortfall shows
+        // similar watermarks on every cpu.
+        self.exited_max.fetch_max(len, Ordering::Relaxed);
     }
 
     pub fn cleanup_exited(&self) {
         let item = self.exited.lock().pop();
         if let Some(item) = item {
+            EXITED_BACKLOG.fetch_sub(1, Ordering::Relaxed);
+            REAPED.fetch_add(1, Ordering::Relaxed);
             let _ = unsafe {
                 Box::<ThreadRef, _>::from_raw(*item.self_reference.get().as_ref().unwrap())
             };
         }
+    }
+
+    /// Take every entry that has finished switching off its stack.
+    ///
+    /// A thread pushes itself here from `do_schedule` *before* it switches away, so for a moment it
+    /// is on this list while still running on the kernel stack that its drop returns to the free
+    /// list. `is_active_running` is cleared by whoever publishes the next thread on that cpu, so an
+    /// entry reading false has completed its switch and is safe to drop from any cpu. That is what
+    /// makes a single reaper thread sound rather than needing one pinned per cpu.
+    pub fn drain_exited(&self, out: &mut Vec<ThreadRef>) {
+        let mut taken = 0;
+        {
+            let mut ex = self.exited.lock();
+            let mut i = 0;
+            while i < ex.len() {
+                if ex[i].is_active_running() {
+                    i += 1;
+                    continue;
+                }
+                out.push(ex.swap_remove(i));
+                taken += 1;
+            }
+        }
+        if taken > 0 {
+            EXITED_BACKLOG.fetch_sub(taken, Ordering::Relaxed);
+        }
+    }
+
+    /// Threads on this processor's cleanup list, for the per-cpu diagnostic.
+    pub fn exited_len(&self) -> usize {
+        self.exited.lock().len()
+    }
+
+    /// Deepest this cpu's cleanup list has been since boot.
+    pub fn exited_max(&self) -> usize {
+        self.exited_max.load(Ordering::Relaxed)
     }
 
     pub fn maybe_wakeup(&self, th: &Thread) {
@@ -209,6 +266,43 @@ impl Processor {
     pub fn has_work(&self) -> bool {
         !self.rq.is_empty() || self.current_priority.load(Ordering::SeqCst) > 0
     }
+}
+
+/// Exited threads waiting for their last reference to be dropped, across all processors.
+///
+/// Each one holds its whole `Thread` allocation and, through it, a [`KERNEL_STACK_SIZE`] kernel
+/// stack that cannot go back on the free list until it is reaped. Neither `nr_threads` nor
+/// `nr_pending_exit` can see them: `exit` removes the thread from `ALL_THREADS` before pushing it
+/// here.
+pub static EXITED_BACKLOG: AtomicUsize = AtomicUsize::new(0);
+/// Threads reaped since boot. Read against the backlog: flat while the backlog is non-zero means
+/// reaping has stopped, not that it is behind.
+pub static REAPED: AtomicUsize = AtomicUsize::new(0);
+
+/// Per-cpu cleanup-list depth, now and at its watermark.
+///
+/// Reported rather than only counted because the aggregate cannot distinguish a pacing shortfall
+/// spread over every cpu from one cpu that has stopped reaping entirely.
+pub fn report_exited_backlog() {
+    let total = EXITED_BACKLOG.load(Ordering::Relaxed);
+    if total == 0 {
+        return;
+    }
+    let mut line = alloc::string::String::new();
+    for (i, p) in mp::all_processors().iter().enumerate() {
+        if let Some(p) = p {
+            if p.is_running() {
+                use core::fmt::Write;
+                let _ = write!(line, " cpu{}={}/{}", i, p.exited_len(), p.exited_max());
+            }
+        }
+    }
+    logln!(
+        "[reap] backlog={} reaped={}{}",
+        total,
+        REAPED.load(Ordering::Relaxed),
+        line
+    );
 }
 
 /// Set once every cpu has installed its thread pointer, after which no cpu can be running with TLS

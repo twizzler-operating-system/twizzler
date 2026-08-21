@@ -57,6 +57,11 @@ counters! {
     "thr.threads": Level,
     "thr.blocked": Level,
     "thr.pending_exit": Level,
+    // The population no global counter could see: `exit` removes a thread from ALL_THREADS before
+    // pushing it to a per-cpu cleanup list, so a thread awaiting reap is in neither `thr.threads`
+    // nor `thr.pending_exit`. Each one holds a 2 MiB kernel stack.
+    "thr.exited_backlog": Level,
+    "thr.reaped": Cumulative,
     "sctx.sctx": Level,
     "sctx.cached": Level,
     // Monitor. space.mapped minus space.active is the deferred-unmap population.
@@ -138,6 +143,8 @@ impl Sample {
                 thr.nr_threads as u64,
                 thr.nr_blocked as u64,
                 thr.nr_pending_exit as u64,
+                thr.nr_exited_backlog as u64,
+                thr.nr_reaped as u64,
                 sctx.nr_sctx as u64,
                 sctx.nr_cached as u64,
                 sm,

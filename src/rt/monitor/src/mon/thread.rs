@@ -33,6 +33,27 @@ use crate::mon::space::Space;
 mod cleaner;
 pub(crate) use cleaner::ThreadCleaner;
 
+/// Everything a freshly spawned monitor thread needs, as plain data.
+///
+/// This replaces a `Box<dyn FnOnce()>` trampoline. That box was never freed: it is invoked through
+/// `FnOnce for Box<F>`, which deallocates *after* the call returns, and every monitor thread's body
+/// ends in `sys_thread_resume_from_upcall` (`-> !`). Boxing less does not help either -- a free
+/// emitted before a diverging call is sunk past it and deleted as unreachable (verified in the
+/// disassembly). The only robust fix is to allocate nothing, which is what this is for: it is
+/// written into the base of the thread's own super stack, which the monitor already owns and
+/// reclaims on reap.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct EntryArgs {
+    pub instance: ObjID,
+    pub stack_ptr: usize,
+    pub stack_size: usize,
+    pub thread_ptr: usize,
+    pub entry: usize,
+    pub arg: usize,
+    pub suspend: bool,
+}
+
 /// Stack size for the supervisor upcall stack.
 pub const SUPER_UPCALL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2MB
 /// Zero the whole super stack at spawn, the way this used to. A/B against `false`, which zeroes
@@ -200,20 +221,24 @@ mod pool {
     }
 
     pub(super) fn put_tls(region: &TlsRegion) {
-        if !RECYCLE {
-            return;
-        }
         let Some(base) = NonNull::new(region.alloc_base()) else {
             return;
         };
-        let mut pool = lock();
-        if pool.tls.len() < MAX {
-            pool.tls.reserve(MAX);
-            pool.tls.push(Tls {
-                base,
-                layout: region.alloc_layout(),
-            });
+        let layout = region.alloc_layout();
+        if RECYCLE {
+            let mut pool = lock();
+            if pool.tls.len() < MAX {
+                pool.tls.reserve(MAX);
+                pool.tls.push(Tls { base, layout });
+                return;
+            }
         }
+        // Terminal owner. Neither `Tls` nor `TlsRegion` owns the block -- both are descriptors --
+        // so a region that lands in no pool must be freed here or it is leaked outright. The
+        // stack path never had this bug because `put_stack` takes an owning `Box`, which frees
+        // itself when the pool is full; this path takes a `&TlsRegion` and dropped it on the floor.
+        // Outside the pool lock: `dealloc` reaches the monitor's allocator, which takes its own.
+        unsafe { std::alloc::dealloc(base.as_ptr(), layout) };
     }
 }
 
@@ -301,14 +326,33 @@ pub(crate) mod readypool {
         if !PREBUILD {
             return;
         }
-        let mut pool = lock();
-        if pool.gen != gen {
-            pool.ready.clear();
-            pool.gen = gen;
+        // Anything that does not end up parked here is handed to `pool::put_tls`, which either
+        // recycles the allocation or frees it. Dropping a `TlsRegion` leaks its block.
+        let mut displaced = Some(region);
+        let mut stale = None;
+        {
+            let mut pool = lock();
+            if pool.gen != gen {
+                // One per call, so the drain never runs a free under this lock. When the last one
+                // is out the generation advances and the next call parks normally.
+                stale = pool.ready.pop().map(|r| r.region);
+                if stale.is_none() {
+                    pool.gen = gen;
+                }
+            }
+            if pool.gen == gen && pool.ready.len() < MAX {
+                pool.ready.reserve(MAX);
+                // Unwrap-Ok: `displaced` is `Some` until this line, which runs at most once.
+                pool.ready.push(Ready {
+                    region: displaced.take().unwrap(),
+                });
+            }
         }
-        if pool.ready.len() < MAX {
-            pool.ready.reserve(MAX);
-            pool.ready.push(Ready { region });
+        if let Some(r) = stale {
+            super::pool::put_tls(&r);
+        }
+        if let Some(r) = displaced {
+            super::pool::put_tls(&r);
         }
     }
 }
@@ -511,14 +555,14 @@ impl ThreadMgr {
         super_tls: TlsRegion,
         super_tid: u32,
         start: unsafe extern "C" fn(usize) -> !,
-        arg: usize,
+        args: EntryArgs,
         main_thread_comp: Option<ObjID>,
         instance: ObjID,
         phases: &mut spawnstats::Phases,
     ) -> Result<ManagedThread, TwzError> {
         let super_thread_pointer = super_tls.get_thread_pointer_value();
         let t_stack = std::time::Instant::now();
-        let super_stack = if ZERO_WHOLE_SUPER_STACK {
+        let mut super_stack = if ZERO_WHOLE_SUPER_STACK {
             Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE)
         } else {
             let mut stack = pool::take_stack(SUPER_UPCALL_STACK_SIZE)
@@ -538,6 +582,18 @@ impl ThreadMgr {
             stack
         };
         phases.stack = spawnstats::since(t_stack);
+        // The thread's args go at the *base* of its own super stack, and the base pointer handed to
+        // `spawn_thread` is unchanged -- no reserve, so nothing has to agree with us about where the
+        // stack top is. The stack grows down from base + SUPER_UPCALL_STACK_SIZE, so reaching these
+        // bytes is already an overflow, and the entry copies them to a local at depth ~0 before
+        // anything else runs.
+        //
+        // Written *after* the branch above, so both positions of `ZERO_WHOLE_SUPER_STACK` work by
+        // construction, and unconditionally, because `pool::take_stack` hands back a recycled stack
+        // holding the previous thread's bytes. Unaligned because `Box<[MaybeUninit<u8>]>` is align 1
+        // by type while `ObjID` is align 16 -- true in practice, not guaranteed by anything.
+        let arg = super_stack.as_ptr() as usize;
+        unsafe { core::ptr::write_unaligned(super_stack.as_mut_ptr().cast::<EntryArgs>(), args) };
         let t_spawn = std::time::Instant::now();
         let id = unsafe {
             Self::spawn_thread(
@@ -594,18 +650,6 @@ impl ThreadMgr {
         }))
     }
 
-    /// Wrap `main` into the entry point a spawned monitor thread runs.
-    pub(super) fn entry_for(main: Box<dyn FnOnce()>) -> (unsafe extern "C" fn(usize) -> !, usize) {
-        unsafe extern "C" fn managed_thread_entry(main: usize) -> ! {
-            {
-                let main = Box::from_raw(main as *mut Box<dyn FnOnce()>);
-                main();
-            }
-
-            sys_thread_exit(0);
-        }
-        (managed_thread_entry, Box::into_raw(Box::new(main)) as usize)
-    }
 
     /// Start a thread with the monitor's locks already held.
     ///
@@ -615,18 +659,18 @@ impl ThreadMgr {
     pub fn start_thread(
         &mut self,
         monitor_dynlink_comp: &mut Compartment,
-        main: Box<dyn FnOnce()>,
+        start: unsafe extern "C" fn(usize) -> !,
+        args: EntryArgs,
         main_thread_comp: Option<ObjID>,
         instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
-        let (start, arg) = Self::entry_for(main);
         let (super_tls, super_tid) = self.prep_spawn(monitor_dynlink_comp)?;
         let mut phases = spawnstats::Phases::default();
         match Self::finish_spawn(
             super_tls,
             super_tid,
             start,
-            arg,
+            args,
             main_thread_comp,
             instance,
             &mut phases,

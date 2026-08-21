@@ -15,8 +15,9 @@ use twizzler_abi::syscall::Syscall;
 
 use crate::{
     memory::{context::virtmem::fault, tracker::allocprofile},
+    obj::pagetables::mapprobe,
     spinlock::Spinlock,
-    syscall::object::createprofile,
+    syscall::object::{createprofile, deleteprofile},
 };
 
 /// `Syscall::Null` arg0 that means "mark", next to `0x12345678`'s "dump everything and shut down".
@@ -25,6 +26,8 @@ pub const MAGIC: u64 = 0x12345679;
 const NR_SYS: usize = Syscall::NumSyscalls as usize;
 const NR_STAGES: usize = fault::NR_STAGES;
 const NR_CREATE: usize = createprofile::NR;
+const NR_DELETE: usize = deleteprofile::NR;
+const NR_MAPPROBE: usize = mapprobe::NR;
 
 struct Prev {
     stages: [(usize, u64); NR_STAGES],
@@ -32,6 +35,8 @@ struct Prev {
     sys: [(usize, u64); NR_SYS],
     ints: (u64, u64),
     create: [(u64, u64); NR_CREATE],
+    delete: [(u64, u64); NR_DELETE],
+    mapprobe: [u64; NR_MAPPROBE],
 }
 
 static PREV: Spinlock<Option<Prev>> = Spinlock::new(None);
@@ -49,6 +54,8 @@ pub fn mark(rebaseline: bool) {
     let sys = crate::syscall::syscall_snapshot();
     let ints = crate::interrupt::snapshot();
     let create = createprofile::snapshot();
+    let delete = deleteprofile::snapshot();
+    let mprobe = mapprobe::snapshot();
 
     let prev = PREV.lock().replace(Prev {
         stages,
@@ -56,6 +63,8 @@ pub fn mark(rebaseline: bool) {
         sys,
         ints,
         create,
+        delete,
+        mapprobe: mprobe,
     });
     let Some(prev) = prev else {
         return;
@@ -72,7 +81,7 @@ pub fn mark(rebaseline: bool) {
     };
     let a = |i: usize| alloc[i].saturating_sub(prev.alloc[i]);
     let (faults, fault_ns) = d_stage(fault::FaultStage::Total as usize);
-    let (idle, page, kern, reclaiming) = crate::memory::tracker::tracker_snapshot();
+    let (idle, page, kern, reclaiming, pooled) = crate::memory::tracker::tracker_snapshot();
 
     let mut stage_line = alloc::string::String::new();
     for i in 0..NR_STAGES {
@@ -102,7 +111,7 @@ pub fn mark(rebaseline: bool) {
         stage_line,
     );
     logln!(
-        "PERFMARK-MEM: alloc={}/{}us zeroed={}/{}us wait={}/{}us free={} | reclaim sig={} wake={} round={} | idle={} page={} kern={} reclaiming={}",
+        "PERFMARK-MEM: alloc={}/{}us zeroed={}/{}us wait={}/{}us free={} | reclaim sig={} wake={} round={} | idle={} page={} kern={} pooled={} reclaiming={}",
         a(0),
         a(1) / 1000,
         a(2),
@@ -116,6 +125,7 @@ pub fn mark(rebaseline: bool) {
         idle,
         page,
         kern,
+        pooled,
         reclaiming,
     );
 
@@ -138,6 +148,71 @@ pub fn mark(rebaseline: bool) {
         ints.saturating_sub(prev.ints.0),
         int_ns.saturating_sub(prev.ints.1) / 1000,
     );
+
+    // Named by span rather than by index, and printed only when the probe is on, because a line
+    // of zeros beside a line of real numbers is how an off instrument gets read as a measurement.
+    // `body` is the whole function; `gap` is what no bracket covers, which is the quantity the
+    // previous split of `map_page` could only reach by subtracting two instruments.
+    if mapprobe::MAP_PROBE {
+        // Counts are counts; every `*_NS` slot holds raw ticks and is converted here, once.
+        let m = |i: usize| mprobe[i].saturating_sub(prev.mapprobe[i]);
+        let calls = m(0);
+        let body = m(1);
+        let spans: u64 = (2..=9).map(m).sum();
+        let per = |v: u64| {
+            if calls > 0 {
+                mapprobe::ticks_to_ns(v / calls)
+            } else {
+                0
+            }
+        };
+        logln!(
+            "PERFMARK-MAPPROBE: calls={} body={}ns | cons_new={} take_fa={} precharge={} prov={} walk={} consist={} drop_fa={} drop_phys={} | gap={}ns probe={}ns populated={}",
+            calls,
+            per(body),
+            per(m(2)),
+            per(m(3)),
+            per(m(4)),
+            per(m(5)),
+            per(m(6)),
+            per(m(7)),
+            per(m(8)),
+            per(m(9)),
+            per(body.saturating_sub(spans)),
+            per(m(15)),
+            m(14),
+        );
+        // `probe_cost` is what one `record` charges the bracket around it. `gap` should be about
+        // `probe_cost` x (number of inner probes) if `map_page` is fully accounted for.
+        logln!(
+            "PERFMARK-MAPPROBE2: probe_interval={}ns probe_cost={}ns | gap={}ns over {} inner probes",
+            per(m(15)),
+            per(m(16).saturating_sub(m(15))),
+            per(body.saturating_sub(spans)),
+            10,
+        );
+        let rc = m(10);
+        let rper = |v: u64| {
+            if rc > 0 {
+                mapprobe::ticks_to_ns(v / rc)
+            } else {
+                0
+            }
+        };
+        logln!(
+            "PERFMARK-RUNCONSIST: calls={} (map_page calls={}) | send={}ns reset={}ns park={}ns",
+            rc,
+            calls,
+            rper(m(11)),
+            rper(m(12)),
+            rper(m(13)),
+        );
+        logln!(
+            "PERFMARK-RUNCONSIST2: trivial={} of {} calls",
+            m(17),
+            rc,
+        );
+    }
 
     logln!(
         "PERFMARK-MAP: prep={}us walk={}us consist={}us | probe floor={}us over {} probes",
@@ -162,7 +237,7 @@ pub fn mark(rebaseline: bool) {
     // obviously so: the pool is `#[thread_local]` (per-cpu) but its guard flag is a single global
     // atomic, so one cpu mid-take makes another fall back to a fresh empty allocator.
     logln!(
-        "PERFMARK-FA: take locked={} empty={} | save locked={} | allocs pool={} global={} avoid-empty={} | precharge calls={} early={} fetched={}",
+        "PERFMARK-FA: take locked={} empty={} | save locked={} | allocs pool={} global={} avoid-empty={} | precharge calls={} early={} fetched={} | parked={} park-locked={} pool-zeroed={}",
         a(31),
         a(32),
         a(33),
@@ -172,6 +247,58 @@ pub fn mark(rebaseline: bool) {
         a(37),
         a(38),
         a(39),
+        a(40),
+        a(41),
+        a(42),
+    );
+
+    // The alloc-side drain. `unparked=` is frames the global entry points served from this cpu's
+    // pool instead of the PFA; `unpark-miss=` is calls that looked and found nothing, which is
+    // what separates a disabled drain from a drained-dry pool.
+    logln!(
+        "PERFMARK-UNPARK: unparked={} miss={} (no-pool={} empty={}) | PFA acquisitions: bulk={} single={}",
+        a(57),
+        a(58),
+        a(59),
+        a(60),
+        a(61),
+        a(62),
+    );
+
+    // Frame-allocation cost, split by path: the batch amortizes one lock acquisition over many
+    // frames, the singular path does not, and the 10us attribution is precisely about that
+    // difference -- so a combined figure would hide it.
+    logln!(
+        "PERFMARK-ALLOCT: allocs={} total | single-path {}us bulk {} frames/{}us | \
+zero={}/{}us wait={}/{}us  (singular frames = allocs - bulk)",
+        a(0),
+        a(1) / 1000,
+        a(56),
+        a(55) / 1000,
+        a(2),
+        a(3) / 1000,
+        a(4),
+        a(5) / 1000,
+    );
+
+    // Why the free path declined to park, and what the save path did. A zero `parked=` with a
+    // large `full=` is a saturated pool, not a disabled feature -- the two look identical in
+    // `parked=` alone. `grew=` is faplan.md's Drop-allocation hazard firing.
+    logln!(
+        "PERFMARK-PARK: declines: not-l0={} no-tls={} pressure={} no-pool={} full={} no-cap={} \
+| save: append={} grew-append={} grew-extend={} leftover={} | pt-zero: checked={} dirty={}",
+        a(43),
+        a(44),
+        a(45),
+        a(46),
+        a(47),
+        a(48),
+        a(49),
+        a(50),
+        a(51),
+        a(54),
+        a(52),
+        a(53),
     );
 
     // Syscalls, biggest time delta first. The point is attribution between phases, so a phase's
@@ -216,5 +343,28 @@ pub fn mark(rebaseline: bool) {
             let _ = write!(create_line, " {}={}ns", createprofile::NAMES[i], ns / c);
         }
         logln!("PERFMARK-CREATE: creates={} |{}", creates, create_line);
+    }
+
+    // Same treatment for `sys_object_ctrl(Delete)`. Note `scan` contains `reap`, so the stages do
+    // not sum to TOTAL -- `scan - reap` is the reapability test on an object that was not reaped.
+    let deletes = delete[deleteprofile::NR - 1].0 - prev.delete[deleteprofile::NR - 1].0;
+    if deletes > 0 {
+        let mut delete_line = alloc::string::String::new();
+        for i in 0..NR_DELETE {
+            let c = delete[i].0 - prev.delete[i].0;
+            if c == 0 {
+                continue;
+            }
+            let ns = delete[i].1.saturating_sub(prev.delete[i].1);
+            use core::fmt::Write;
+            let _ = write!(
+                delete_line,
+                " {}={}ns/{}",
+                deleteprofile::NAMES[i],
+                ns / c,
+                c
+            );
+        }
+        logln!("PERFMARK-DELETE: deletes={} |{}", deletes, delete_line);
     }
 }

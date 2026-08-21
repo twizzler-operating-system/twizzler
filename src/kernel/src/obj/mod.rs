@@ -9,13 +9,13 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
+use intrusive_collections::RBTreeAtomicLink;
 use twizzler_abi::{
     device::NUM_DEVICE_INTERRUPTS,
     meta::{MetaFlags, MetaInfo},
     object::{MAX_SIZE, ObjID, Protections},
     syscall::{BackingType, LifetimeType, ObjectInfo},
 };
-use intrusive_collections::RBTreeAtomicLink;
 use twizzler_rt_abi::{bindings::object_tie, error::TwzError, object::Nonce};
 
 pub use self::thread_sync::{SleepInfo, ThreadSleepLinker};
@@ -928,7 +928,10 @@ pub fn scan_deleted_one(id: ObjID, obj: &ObjectRef) {
     if !obj.is_pending_delete() || !is_reapable(obj) {
         return;
     }
+    use crate::syscall::object::deleteprofile;
+    let t = deleteprofile::start();
     reap(alloc::vec![(id, obj.clone())]);
+    deleteprofile::record(deleteprofile::Stage::Reap, t);
 }
 
 pub fn scan_deleted() {
@@ -1123,11 +1126,29 @@ pub fn promotion_census() {
 }
 
 pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
-    print_all_objects();
+    // Behind `--diag`, because this is the *stats syscall* and it was dumping every object in the
+    // system to the console on every call. `leakcheck`'s sampler calls `sys_object_stats` once per
+    // iteration, so a 220-iteration op emitted ~800 console lines per sample: 115,831 ObjectInfo
+    // lines and 17 MB of serial from one op, which timed out two runs and perturbs every
+    // measurement that samples object stats. Gated rather than deleted -- this file is another
+    // session's uncommitted work and the dump is clearly wanted sometimes; `--diag` is where the
+    // kernel's other walk-everything diagnostics already live.
+    if crate::is_diag_mode() {
+        print_all_objects();
+    }
     let mut stats = twizzler_abi::syscall::ObjectStats::default();
-    let mgr = obj_manager().map.lock();
-    stats.nr_objects = mgr.len();
-    stats.nr_mapped = mgr.values().filter(|obj| obj.is_mapped()).count();
+    if OMAP_SHARDED {
+        // Count from a snapshot taken outside the shard locks: `is_mapped` takes the object's
+        // sleeping page-table mutex, which must not run under a shard spinlock.
+        let mut objs = Vec::new();
+        obj_manager().sharded.collect_all(&mut objs);
+        stats.nr_objects = objs.len();
+        stats.nr_mapped = objs.iter().filter(|obj| obj.is_mapped()).count();
+    } else {
+        let mgr = obj_manager().map.lock();
+        stats.nr_objects = mgr.len();
+        stats.nr_mapped = mgr.values().filter(|obj| obj.is_mapped()).count();
+    }
     stats.nr_handles = count_handles();
     ties::fill_stats(&mut stats);
 
@@ -1141,7 +1162,10 @@ pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzE
         let mut all = Vec::new();
         obj_manager().sharded.collect_ids(&mut all);
         TIE_MGR.with_deleted_map(|dm| all.extend(dm.keys().copied()));
-        all.into_iter().skip(offset).take(buf.len()).collect::<Vec<_>>()
+        all.into_iter()
+            .skip(offset)
+            .take(buf.len())
+            .collect::<Vec<_>>()
     } else {
         let mgr = obj_manager().map.lock();
         TIE_MGR.with_deleted_map(|dm| {

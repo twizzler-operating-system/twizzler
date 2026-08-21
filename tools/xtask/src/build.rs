@@ -143,6 +143,13 @@ fn build_third_party<'a>(
                 let mut cd = current_dir()?;
                 cd.push(path);
                 cd.push("Cargo.toml");
+                if !cd.is_file() {
+                    eprintln!(
+                        "note: skipping third-party package {} (local path {} not present)",
+                        item.0, path
+                    );
+                    return Ok(None);
+                }
                 let package = user_workspace.load(&cd)?;
                 overrides.push(package);
                 None

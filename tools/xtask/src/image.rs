@@ -54,16 +54,45 @@ fn get_third_party_initrd_files(
     comp: &TwizzlerCompilation,
     crate_name: &str,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    comp.borrow_third_party_compilation()
+    // Each third-party package compiles as its own ephemeral workspace; search all of
+    // them rather than requiring every compilation to contain the crate.
+    let found: Vec<PathBuf> = comp
+        .borrow_third_party_compilation()
         .iter()
-        .map(|c| {
-            c.binaries
-                .iter()
-                .find(|item| item.unit.pkg.name() == crate_name)
-                .with_context(|| format!("failed to find initrd third-party crate {}", crate_name))
-                .map(|x| x.path.clone())
-        })
-        .collect()
+        .flat_map(|c| c.binaries.iter())
+        .filter(|item| item.unit.pkg.name() == crate_name)
+        .map(|x| x.path.clone())
+        .collect();
+    if !found.is_empty() {
+        return Ok(found);
+    }
+    if let Some(path) = third_party_absent_path(comp, crate_name) {
+        eprintln!(
+            "note: skipping initrd entry third-party:{} (looked for {}/Cargo.toml, not present)",
+            crate_name, path
+        );
+        return Ok(vec![]);
+    }
+    anyhow::bail!("failed to find initrd third-party crate {}", crate_name)
+}
+
+/// When the third-party metadata entry for `crate_name` names a local path that is
+/// not present (i.e. the build legitimately skipped it), returns that path.
+fn third_party_absent_path(comp: &TwizzlerCompilation, crate_name: &str) -> Option<String> {
+    let path = comp
+        .borrow_user_workspace()
+        .custom_metadata()?
+        .get("third-party")?
+        .as_table()?
+        .get(crate_name)?
+        .as_table()?
+        .get("path")?
+        .as_str()?;
+    if std::path::Path::new(path).join("Cargo.toml").is_file() {
+        None
+    } else {
+        Some(path.to_string())
+    }
 }
 
 fn get_lib_initrd_files(

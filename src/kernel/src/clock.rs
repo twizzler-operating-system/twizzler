@@ -518,7 +518,9 @@ pub fn resolve_clock_source(source: ClockSource) -> Result<(usize, ClockFlags)> 
         ClockSource::BestMonotonic => Ok((0, ClockFlags::MONOTONIC)),
         ClockSource::BestRealTime => Ok((1, ClockFlags::empty())),
         ClockSource::ID(id) => {
-            let idx: usize = id.0.try_into().map_err(|_| ArgumentError::InvalidArgument)?;
+            let idx: usize =
+                id.0.try_into()
+                    .map_err(|_| ArgumentError::InvalidArgument)?;
             if idx >= crate::time::MAX_CLOCKS {
                 return Err(ArgumentError::InvalidArgument.into());
             }

@@ -15,6 +15,8 @@ pub enum InfoKind {
     LockStats = 4,
     SyscallStats = 5,
     ObjectStats = 6,
+    KallocCensus = 7,
+    KallocTrack = 8,
 }
 
 impl TryFrom<u64> for InfoKind {
@@ -29,6 +31,8 @@ impl TryFrom<u64> for InfoKind {
             4 => Ok(InfoKind::LockStats),
             5 => Ok(InfoKind::SyscallStats),
             6 => Ok(InfoKind::ObjectStats),
+            7 => Ok(InfoKind::KallocCensus),
+            8 => Ok(InfoKind::KallocTrack),
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
@@ -178,6 +182,16 @@ pub struct ThreadStats {
     pub nr_running: usize,
     pub nr_blocked: usize,
     pub nr_pending_exit: usize,
+    /// Threads that have exited and are waiting on a processor's cleanup list for their last
+    /// reference to be dropped.
+    ///
+    /// Invisible to `nr_pending_exit`, which counts the registry: `exit` removes a thread from
+    /// `ALL_THREADS` *before* it is pushed here, so a thread waiting to be reaped is in neither.
+    /// Each one holds a 2 MiB kernel stack and its whole `Thread` allocation.
+    pub nr_exited_backlog: usize,
+    /// Threads reaped since boot. A backlog that is not falling while this is flat means reaping
+    /// has stopped, not that it is merely slow.
+    pub nr_reaped: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -322,4 +336,125 @@ pub fn sys_info() -> SysInfo {
         );
         sysinfo.assume_init()
     }
+}
+
+/// Number of size-class buckets in a [`KallocCensus`].
+pub const KALLOC_NR_BUCKETS: usize = 96;
+
+/// Kernel-heap allocation totals for one size class.
+///
+/// Gross counts rather than only a net: a bucket with a small net and huge churn is a different
+/// thing from a bucket allocated a few times and never freed, and a net alone cannot tell them
+/// apart.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KallocBucket {
+    pub alloc_count: u64,
+    pub free_count: u64,
+    pub alloc_bytes: u64,
+    pub free_bytes: u64,
+}
+
+impl KallocBucket {
+    pub fn net_count(&self) -> i64 {
+        self.alloc_count as i64 - self.free_count as i64
+    }
+
+    pub fn net_bytes(&self) -> i64 {
+        self.alloc_bytes as i64 - self.free_bytes as i64
+    }
+}
+
+/// Kernel-heap allocation census by size class: which sizes the kernel allocates and does not
+/// free. `mem.kalloc_bytes` says how many bytes are live; this says which size class they are in.
+///
+/// Bucket index: `size / 16` for sizes under 1024 (16-byte granularity, one bucket per ferroc-ish
+/// small class), then `64 + log2(size)` above that.
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct KallocCensus {
+    pub buckets: [KallocBucket; KALLOC_NR_BUCKETS],
+}
+
+impl Default for KallocCensus {
+    fn default() -> Self {
+        Self {
+            buckets: [KallocBucket::default(); KALLOC_NR_BUCKETS],
+        }
+    }
+}
+
+impl KallocCensus {
+    /// The size class a bucket index covers, as (low, high] bytes -- for reporting only.
+    pub fn bucket_size(idx: usize) -> usize {
+        if idx < 64 {
+            idx * 16
+        } else {
+            1usize << (idx - 64)
+        }
+    }
+}
+
+pub fn sys_kalloc_census() -> KallocCensus {
+    let mut census = core::mem::MaybeUninit::<KallocCensus>::zeroed();
+    unsafe {
+        raw_syscall(
+            Syscall::SysInfo,
+            &[
+                &mut census as *mut core::mem::MaybeUninit<KallocCensus> as u64,
+                InfoKind::KallocCensus as u64,
+            ],
+        );
+        census.assume_init()
+    }
+}
+
+
+/// Control block for the kernel-heap live-block tracker.
+///
+/// [`KallocCensus`] names the size class that fails to balance; it cannot name which blocks in that
+/// class were never freed. This arms a table that records every live allocation in `[lo, hi]` with
+/// its return-address chain, and dumps the survivors to the kernel console. Armed and dumped
+/// entirely through this call, with no kernel command line flag, so the window can be one
+/// operation.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KallocTrackCtl {
+    /// In. 0 = off, 1 = arm (resets the table), 2 = dump the live set.
+    pub cmd: u64,
+    /// In, for `cmd == 1`: inclusive size range to track.
+    pub lo: u64,
+    pub hi: u64,
+    /// Out. Blocks currently tracked and unfreed.
+    pub live: u64,
+    pub inserted: u64,
+    pub removed: u64,
+    /// Out. Allocations the table had no slot for -- a nonzero here means `live` is a lower bound.
+    pub overflow: u64,
+    /// Out. Frees of blocks the table never saw, i.e. allocated before the arm. Expected, and
+    /// reported so a dump can say how much of its own view is missing.
+    pub free_miss: u64,
+}
+
+pub const KALLOC_TRACK_OFF: u64 = 0;
+pub const KALLOC_TRACK_ARM: u64 = 1;
+pub const KALLOC_TRACK_DUMP: u64 = 2;
+
+pub fn sys_kalloc_track(cmd: u64, lo: u64, hi: u64) -> KallocTrackCtl {
+    let mut ctl = KallocTrackCtl {
+        cmd,
+        lo,
+        hi,
+        ..Default::default()
+    };
+    unsafe {
+        raw_syscall(
+            Syscall::SysInfo,
+            &[
+                &mut ctl as *mut KallocTrackCtl as u64,
+                InfoKind::KallocTrack as u64,
+            ],
+        );
+    }
+    ctl
 }

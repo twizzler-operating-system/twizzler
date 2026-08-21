@@ -33,13 +33,14 @@
 //! need to wait for another thread (e.g. in a mutex) donate their priority to the thread they are
 //! waiting on to prevent priority inversion.
 
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
     u64,
 };
 
 use bitset_core::BitSet;
+use intrusive_collections::{KeyAdapter, RBTree, intrusive_adapter};
 use twizzler_abi::{
     object::ObjID,
     thread::ExecutionState,
@@ -597,12 +598,34 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
     res.cpuid
 }
 
-static ALL_THREADS: Spinlock<BTreeMap<u64, ThreadRef>> = Spinlock::new(BTreeMap::new());
-static ALL_THREADS_REPR: Spinlock<BTreeMap<ObjID, ThreadRef>> = Spinlock::new(BTreeMap::new());
+intrusive_adapter!(pub AllThreadsAdapter = ThreadRef: Thread { all_threads_link: intrusive_collections::rbtree::AtomicLink });
+impl<'a> KeyAdapter<'a> for AllThreadsAdapter {
+    type Key = u64;
+    fn get_key(&self, t: &'a Thread) -> u64 {
+        t.id()
+    }
+}
+
+intrusive_adapter!(pub AllThreadsReprAdapter = ThreadRef: Thread { all_threads_repr_link: intrusive_collections::rbtree::AtomicLink });
+impl<'a> KeyAdapter<'a> for AllThreadsReprAdapter {
+    type Key = ObjID;
+    fn get_key(&self, t: &'a Thread) -> ObjID {
+        t.objid()
+    }
+}
+
+/// Every live thread, by [`Thread::id`]. Intrusive rather than a `BTreeMap` so that spawn and exit
+/// neither allocate nor free under this spinlock -- the kernel allocator can re-enter the frame
+/// allocator, and this lock is taken with interrupts off.
+static ALL_THREADS: Spinlock<RBTree<AllThreadsAdapter>> =
+    Spinlock::new(RBTree::new(AllThreadsAdapter::NEW));
+/// The same threads, by control-object id, for [`lookup_thread_repr`].
+static ALL_THREADS_REPR: Spinlock<RBTree<AllThreadsReprAdapter>> =
+    Spinlock::new(RBTree::new(AllThreadsReprAdapter::NEW));
 
 pub fn with_all_threads<F>(mut f: F)
 where
-    F: FnMut(&BTreeMap<u64, ThreadRef>),
+    F: FnMut(&RBTree<AllThreadsAdapter>),
 {
     let guard = ALL_THREADS.lock();
     f(&guard);
@@ -610,34 +633,43 @@ where
 
 pub fn with_each_thread<F>(mut f: F)
 where
-    F: FnMut(&ThreadRef),
+    F: FnMut(&Thread),
 {
     let guard = ALL_THREADS.lock();
-    for (_, th) in guard.iter() {
+    for th in guard.iter() {
         f(th);
     }
 }
 
+/// Take a thread out of both registries.
+///
+/// The refs are dropped *after* their guards, not inside them. `Thread::drop` reaches
+/// `IdCounter::release`'s sleeping mutex -- not from its `Drop` body, which is lock-free and a
+/// spinlock, but from the implicit drop of its `id: Id<'static>` field -- and both locks here are
+/// spinlocks held with interrupts off. That is currently unreachable: the sole caller is `exit()`,
+/// where the exiting thread is `current_thread_ref` and so is a live local, and `self_reference`
+/// holds a second ref that is reclaimed only later, in the reap path. Dropping outside the guards
+/// means a future caller that is *not* the exiting thread does not turn that into a wedge.
 pub fn remove_thread(id: u64) {
-    if let Some(t) = ALL_THREADS.lock().remove(&id) {
-        ALL_THREADS_REPR
-            .lock()
-            .remove(&t.control_object.object().id());
-    }
+    let t = ALL_THREADS.lock().find_mut(&id).remove();
+    let Some(t) = t else {
+        return;
+    };
+    let repr = ALL_THREADS_REPR.lock().find_mut(&t.objid()).remove();
+    drop(repr);
+    drop(t);
 }
 
 pub fn lookup_thread_repr(id: ObjID) -> Option<ThreadRef> {
-    ALL_THREADS_REPR.lock().get(&id).cloned()
+    ALL_THREADS_REPR.lock().find(&id).clone_pointer()
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     thread.set_state(ExecutionState::Running);
     let thread = Arc::new(thread);
     {
-        ALL_THREADS.lock().insert(thread.id(), thread.clone());
-        ALL_THREADS_REPR
-            .lock()
-            .insert(thread.control_object.object().id(), thread.clone());
+        ALL_THREADS.lock().insert(thread.clone());
+        ALL_THREADS_REPR.lock().insert(thread.clone());
     }
     *unsafe { thread.self_reference.get().as_mut().unwrap() } =
         Box::into_raw(Box::new(thread.clone()));
@@ -1290,7 +1322,7 @@ pub fn schedule_stattick(dt: Nanoseconds) {
         }
         if cp.id == 0 {
             let all_threads = ALL_THREADS.lock();
-            for t in all_threads.values() {
+            for t in all_threads.iter() {
                 if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
                     logln!(
                         "thread {} on {}: u {:4} s {:4} i {:4}, {:?}, {:x}",

@@ -1,4 +1,8 @@
-use core::u64;
+use alloc::sync::Arc;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    u64,
+};
 
 use intrusive_collections::{Bound, RBTree};
 use twizzler_abi::{
@@ -17,14 +21,29 @@ use super::{
 use crate::thread::{CriticalGuard, ThreadRef};
 
 pub struct Inflight {
-    id: usize,
-    pub rk: ReqKind,
+    /// The request itself, not an index into a table of them. Holding it is what makes a waiter
+    /// immune to the slot recycling the index-based version had to detect and warn about.
+    request: Arc<Request>,
     needs_send: bool,
 }
 
 impl Inflight {
-    pub(super) fn new(id: usize, rk: ReqKind, needs_send: bool) -> Self {
-        Self { id, rk, needs_send }
+    pub(super) fn new(request: Arc<Request>, needs_send: bool) -> Self {
+        Self { request, needs_send }
+    }
+
+    /// The coalescing key this inflight waits on.
+    ///
+    /// Was a stored `ReqKind` clone. Every construction site passed either the caller's own key or
+    /// the found request's -- and in the coalescing cases those are equal by construction, since
+    /// the request was found *by* that key -- so the copy was always the same value the request
+    /// already holds.
+    pub fn rk(&self) -> &ReqKind {
+        self.request.reqkind()
+    }
+
+    pub(super) fn request(&self) -> &Arc<Request> {
+        &self.request
     }
 
     /// Build the wire requests for this inflight entry.
@@ -52,7 +71,7 @@ impl Inflight {
                 )
             })
             .unwrap_or(ObjectRange::new(0, 0));
-        let cmd = match &self.rk {
+        let cmd = match self.rk() {
             ReqKind::Info(obj_id) => KernelCommand::ObjectInfoReq(*obj_id),
             // The requester tag is added here rather than in the `ReqKind` because `ReqKind` is the
             // coalescing key -- `add_request` finds an existing request by it, using the *derived*
@@ -98,16 +117,44 @@ impl Inflight {
     }
 }
 
+/// Cap on requests outstanding to the pager at once.
+///
+/// Was the length of a fixed slot array; now it is what it always meant -- an admission limit --
+/// compared against `live`. Keeping it as a count rather than a pool of indices is also what lets
+/// the map be sharded later without splitting the pool N ways and letting one hot object starve
+/// its shard while the others idle.
 pub(super) const NR_REQUESTS: usize = 256;
-use bitset_core::BitSet;
+
+/// Source of request ids. Monotonic and never reused, so an id in a log names one request for the
+/// life of the boot -- unlike a slot index, where the same number meant different requests over
+/// time and made the recycled-slot reports ambiguous.
+static NEXT_REQUEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// Requests outstanding across the whole system.
+///
+/// Global rather than per-shard, deliberately: admission is a system-wide budget against the
+/// pager's queue depth, and splitting it N ways would let one busy object exhaust its share while
+/// the rest sat idle. Sharding is about *contention*, not about partitioning the budget.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the pager is up. Global, and an atomic rather than a field, so the not-ready early-out
+/// on every submit path costs no lock at all.
+static PAGER_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn pager_ready() -> bool {
+    PAGER_READY.load(Ordering::Acquire)
+}
+
+pub(super) fn set_pager_ready() {
+    PAGER_READY.store(true, Ordering::Release);
+}
+
+pub(super) fn live_requests() -> usize {
+    LIVE.load(Ordering::Relaxed)
+}
+
 pub(super) struct InflightManager {
-    requests: [Option<Request>; NR_REQUESTS],
-    avail: [u64; NR_REQUESTS / 64],
     req_map: RBTree<RequestMapAdapter>,
-    pager_ready: bool,
-    /// Requests holding a slot right now. Tracked rather than counted off `req_map`, which is a
-    /// tree walk, so that the submit path can report how many were already outstanding.
-    live: usize,
 }
 
 impl InflightManager {
@@ -117,11 +164,7 @@ impl InflightManager {
 
     pub fn new() -> Self {
         Self {
-            requests: [const { None }; NR_REQUESTS],
-            avail: [!0; NR_REQUESTS / 64],
             req_map: RBTree::new(RequestMapAdapter::NEW),
-            pager_ready: false,
-            live: 0,
         }
     }
 
@@ -273,12 +316,16 @@ impl InflightManager {
     /// scan: the map holds at most NR_REQUESTS entries and this runs once per sync submission,
     /// which is milliseconds of io.
     pub fn find_sync_region(&self, id: ObjID) -> Option<Inflight> {
-        self.req_map.iter().find_map(|req| match req.reqkind() {
-            ReqKind::SyncRegion(info) if info.id == id => {
-                Some(Inflight::new(req.id, req.reqkind().clone(), false))
+        let mut cursor = self.req_map.front();
+        while let Some(req) = cursor.get() {
+            if matches!(req.reqkind(), ReqKind::SyncRegion(info) if info.id == id) {
+                // `clone_pointer` rather than `iter()`: the iterator yields borrows, and an
+                // `Inflight` now owns its request.
+                return cursor.clone_pointer().map(|req| Inflight::new(req, false));
             }
-            _ => None,
-        })
+            cursor.move_next();
+        }
+        None
     }
 
     pub fn check_timed_out_requests(&self) {
@@ -290,14 +337,17 @@ impl InflightManager {
     }
 
     pub fn add_request(&mut self, rk: ReqKind) -> Result<Inflight, ReqKind> {
-        if let Some(req) = self.req_map.find(&rk).get() {
-            log::trace!(
-                "found existing request {:?} for request {:?}",
-                req.reqkind(),
-                rk
-            );
-            super::profile::PAGER_PROFILE.coalesced();
-            return Ok(Inflight::new(req.id, rk, false));
+        {
+            let cursor = self.req_map.find(&rk);
+            if let Some(req) = cursor.clone_pointer() {
+                log::trace!(
+                    "found existing request {:?} for request {:?}",
+                    req.reqkind(),
+                    rk
+                );
+                super::profile::PAGER_PROFILE.coalesced();
+                return Ok(Inflight::new(req, false));
+            }
         }
 
         // A demand fault whose range is already being prefetched waits on that request rather than
@@ -309,14 +359,15 @@ impl InflightManager {
         // DONE with no pages: the waiter wakes, finds its pages absent, and the fault retries and
         // issues its own request. One extra fault, not a stall.
         if let Some(twin) = rk.prefetch_twin() {
-            if let Some(req) = self.req_map.find(&twin).get() {
+            let cursor = self.req_map.find(&twin);
+            if let Some(req) = cursor.clone_pointer() {
                 log::trace!(
                     "demand request {:?} coalescing onto prefetch {:?}",
                     rk,
                     twin
                 );
                 super::profile::PAGER_PROFILE.coalesced();
-                return Ok(Inflight::new(req.id, twin, false));
+                return Ok(Inflight::new(req, false));
             }
         }
 
@@ -328,30 +379,35 @@ impl InflightManager {
         // covering request's key is what `setup_wait` compares against and what its
         // completion is removed under.
         if let ReqKind::PageData(id, start, len, _) = &rk {
-            if let Some((req_id, key)) = self.covering_page_data(*id, *start, *len) {
-                log::trace!(
-                    "request {:?} coalescing onto covering request {:?}",
-                    rk,
-                    key
-                );
-                super::profile::PAGER_PROFILE.covered();
-                return Ok(Inflight::new(req_id, key, false));
+            if let Some((_, key)) = self.covering_page_data(*id, *start, *len) {
+                // Second lookup rather than threading an `Arc` out of `page_data_for`, which
+                // yields borrows for the range scans. One tree descent on a path that is already
+                // doing several, and it keeps the scan helpers borrow-only.
+                let cursor = self.req_map.find(&key);
+                if let Some(req) = cursor.clone_pointer() {
+                    log::trace!(
+                        "request {:?} coalescing onto covering request {:?}",
+                        rk,
+                        key
+                    );
+                    super::profile::PAGER_PROFILE.covered();
+                    return Ok(Inflight::new(req, false));
+                }
             }
         }
 
-        let mut id = None;
-        for b in 0..NR_REQUESTS {
-            if self.avail.bit_test(b) {
-                self.avail.bit_reset(b);
-                id = Some(b);
-                break;
-            }
-        }
-
-        let Some(id) = id else {
+        // CAS rather than load-then-add: two shards admitting concurrently would both pass a
+        // plain comparison and overshoot the budget.
+        if LIVE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < NR_REQUESTS).then_some(n + 1)
+            })
+            .is_err()
+        {
             super::profile::PAGER_PROFILE.no_slot();
             return Err(rk);
-        };
+        }
+        let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         // Every page-data request that goes out overlapping one already in flight is a duplicate
         // transfer waiting to happen, and by this point neither coalescing nor narrowing has been
         // able to prevent it. Naming both ranges is what says *which* askers they are -- a demand
@@ -374,15 +430,13 @@ impl InflightManager {
                 );
             }
         }
-        super::profile::PAGER_PROFILE.submitted(self.live, rk.all_pages().count());
-        self.live += 1;
-        let request = Request::new(id, rk.clone());
-        assert!(self.requests[id].is_none());
-        self.requests[id] = Some(request);
-        let request = self.requests[id].as_ref().unwrap();
-        self.req_map
-            .insert(unsafe { (request as *const Request).as_ref().unwrap_unchecked() });
-        Ok(Inflight::new(id, rk, true))
+        // `LIVE` was already incremented by the admission CAS above, so report one less: the
+        // profile field means "how many were outstanding before this one".
+        super::profile::PAGER_PROFILE
+            .submitted(LIVE.load(Ordering::Relaxed).saturating_sub(1), rk.all_pages().count());
+        let request = Arc::new(Request::new(id, rk));
+        self.req_map.insert(request.clone());
+        Ok(Inflight::new(request, true))
     }
 
     pub fn remove_request(&mut self, rk: &ReqKind) {
@@ -405,10 +459,7 @@ impl InflightManager {
             {
                 super::profile::PAGER_PROFILE.completed_split(submitted, first, age);
             }
-            self.live -= 1;
-            let id = request.id;
-            self.avail.bit_set(id);
-            self.requests[id] = None;
+            LIVE.fetch_sub(1, Ordering::AcqRel);
         } else {
             // Every completion the pager marks DONE lands here, so a miss means a request that has
             // been answered is still in the map: its waiters will never be signalled and its slot
@@ -423,25 +474,11 @@ impl InflightManager {
         inflight: &Inflight,
         thread: &'a ThreadRef,
     ) -> Option<CriticalGuard<'a>> {
-        let Some(Some(request)) = self.requests.get_mut(inflight.id) else {
-            return None;
-        };
-        // The slot index does not identify a request on its own. Every caller drops the manager
-        // lock between `add_request` and here in order to submit, and in that window the request
-        // can complete, be removed, and have its slot handed to something else -- at which point
-        // parking on the occupant means waiting for a completion that has nothing to do with us,
-        // and being woken (or not) by it. Declining to wait is always safe: every caller re-checks
-        // its own condition, and the ones that loop will simply come back round.
-        if request.reqkind() != &inflight.rk {
-            log::warn!(
-                "pager request slot {} was recycled under a waiter: wanted {:?}, found {:?}",
-                inflight.id,
-                inflight.rk,
-                request.reqkind()
-            );
-            return None;
-        }
-        request.setup_wait(thread)
+        // No slot lookup and no recycling check. The index-based version had to detect that a
+        // request could complete, be removed, and have its slot reissued in the window where every
+        // caller drops the manager lock to submit -- parking on whatever occupied the slot next.
+        // An `Inflight` now holds the request itself, so there is nothing to confuse it with.
+        inflight.request.setup_wait(thread)
     }
 
     pub fn request_ready(&mut self, rk: &ReqKind) {
@@ -458,11 +495,9 @@ impl InflightManager {
         Some(f(self.req_map.find_mut(rk).get()?))
     }
 
-    pub fn set_ready(&mut self) {
-        self.pager_ready = true;
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.pager_ready
-    }
+    /// Deliberately absent: readiness moved to [`PAGER_READY`] and is reached through
+    /// [`pager_ready`]/[`set_pager_ready`] without a lock. Left as a note because every submit
+    /// path used to consult it through the manager guard.
+    #[allow(dead_code)]
+    fn readiness_moved_to_a_global_atomic() {}
 }

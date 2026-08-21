@@ -85,8 +85,11 @@ impl Table {
         let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
+            crate::obj::pagetables::mapprobe::tick(&crate::obj::pagetables::mapprobe::POPULATED);
             let frame = fa.try_allocate().ok_or(ResourceError::OutOfMemory)?;
             assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
+            // The 512 entries below are never written here, so they must already be zero.
+            crate::memory::frame::ensure_pt_zeroed(frame, "populate");
             frame.set_pt(true);
             frame.inc_refcount();
             *entry = Entry::new(frame.start_address(), flags);
@@ -166,6 +169,9 @@ impl Table {
         splits::record();
 
         let new_table_frame = fa.try_allocate().ok_or(ResourceError::OutOfMemory)?;
+        // Every entry *is* written below, but only on the paths that complete; an early return
+        // between here and there would leave a table of whatever this frame arrived holding.
+        crate::memory::frame::ensure_pt_zeroed(new_table_frame, "split_page");
         new_table_frame.set_pt(true);
         new_table_frame.inc_refcount();
 
@@ -644,6 +650,52 @@ impl Table {
         }
 
         Ok(())
+    }
+
+    /// How many frames a [`Self::map`] of `cursor` starting at this table may have to allocate.
+    ///
+    /// `MappingCursor::max_number_new_tables` answers the same question from the *geometry* alone
+    /// -- it returns one per level regardless of what is already installed, so a 4 KiB mapping
+    /// always asks for `top_level` frames. This walks what is actually there instead, and on a
+    /// sequential fault run the tables exist already: measured at **one `populate` per 205
+    /// `map_page` calls** on `page_fault_zero_fill`.
+    ///
+    /// Exact only in the safe direction. Every case that might allocate returns "every level from
+    /// here down, plus one", which over-counts a split (whose new table is fully populated) and a
+    /// COW copy (one frame, not a chain). Under-counting is the failure that matters: the caller
+    /// precharges this and a short precharge means `try_allocate` reaches the global allocator
+    /// with no `WAIT_OK` while the object's page-table lock is held. `FA_ALLOC_AVOID_EMPTY` --
+    /// `avoid-empty=` on `PERFMARK-FA` -- is the live tripwire for exactly that and must stay 0.
+    ///
+    /// Correct to read without synchronisation because callers hold the object's page-table lock
+    /// across both this and the `map` it predicts for, so nothing can install or remove a table in
+    /// between.
+    pub(super) fn tables_needed(&self, cursor: &MappingCursor, level: usize) -> usize {
+        if level == 0 {
+            return 0;
+        }
+        let idx = Self::get_index(cursor.start(), level);
+        let entry = self[idx];
+        // Absent: `map` populates here and, below, at every remaining level.
+        if !entry.is_present() {
+            return level;
+        }
+        // Huge and splittable: `split_huge` allocates the table it installs.
+        if entry.is_huge() && Self::can_map_at_level(level) {
+            return level + 1;
+        }
+        // A COW intermediate: `map` calls `do_cow_copy`, which allocates a replacement table.
+        // Checked rather than assumed absent -- `setup_cow_range` marks these, so it is reachable
+        // whenever an object has been cloned.
+        if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
+            return level + 1;
+        }
+        match self.next_table(idx) {
+            Some(next) => next.tables_needed(cursor, Self::next_level(level)),
+            // `is_present() && !is_huge()` should always resolve, but a table we cannot follow is
+            // one we cannot make a claim about.
+            None => level,
+        }
     }
 
     pub(super) fn map(

@@ -17,6 +17,8 @@ use twizzler_rt_abi::{
 use crate::{Result, MAX_KEY_SIZE};
 
 mod ext;
+/// DIAG: external-namespace cache sizes. See [`ext::cache_stats`].
+pub use ext::cache_stats;
 mod nsobj;
 #[cfg(test)]
 mod tests;

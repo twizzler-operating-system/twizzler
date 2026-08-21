@@ -31,6 +31,7 @@ mod data;
 mod disk;
 mod dispatch_stats;
 mod handle;
+mod heapdiag;
 mod helpers;
 // in-progress
 #[allow(unused)]
@@ -151,6 +152,7 @@ impl PagerContext {
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
+    heapdiag::arm();
     let (rq, sq, data) = pager_init(q1, q2);
     // After pager_init, which installs the tracing subscriber the watchdog reports through.
     watchdog::start();
@@ -182,6 +184,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     });
 
     tracing::info!("pager ready");
+    heapdiag::start_sampler();
 
     //disk::benches::bench_disk(ctx);
     if false {

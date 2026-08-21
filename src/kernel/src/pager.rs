@@ -53,10 +53,37 @@ pub use request::Request;
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
 pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 16;
 
-static INFLIGHT_MGR: OnceWait<Mutex<InflightManager>> = OnceWait::new();
+/// A/B: shard the inflight manager by object id. `false` routes every selection to shard 0, which
+/// reproduces the single-mutex behaviour with the sharded code compiled in -- one tree state, both
+/// arms.
+pub const INFLIGHT_SHARDED: bool = true;
 
-fn inflight_mgr() -> &'static Mutex<InflightManager> {
-    INFLIGHT_MGR.call_once(|| Mutex::new(InflightManager::new()))
+/// Shard count. Object ids are content-derived hashes, so their low bits index shards uniformly
+/// with no hash step (the same argument `obj::omap` makes).
+const INFLIGHT_SHARDS: usize = 16;
+
+pub(super) struct ShardedInflight {
+    shards: [Mutex<InflightManager>; INFLIGHT_SHARDS],
+}
+
+static INFLIGHT_MGR: OnceWait<ShardedInflight> = OnceWait::new();
+
+fn inflight_mgr() -> &'static ShardedInflight {
+    INFLIGHT_MGR.call_once(|| ShardedInflight {
+        shards: core::array::from_fn(|_| Mutex::new(InflightManager::new())),
+    })
+}
+
+/// Which shard owns requests for `id`. `None` -- only [`ReqKind::Pages`], the pager-memory
+/// donation request, which names no object -- goes to shard 0.
+fn shard_idx(id: Option<ObjID>) -> usize {
+    if !INFLIGHT_SHARDED {
+        return 0;
+    }
+    match id {
+        Some(id) => (id.raw() as usize) % INFLIGHT_SHARDS,
+        None => 0,
+    }
 }
 
 /// Take the inflight-manager lock, timing the acquisition.
@@ -65,11 +92,25 @@ fn inflight_mgr() -> &'static Mutex<InflightManager> {
 /// is on both the submit and the completion path of every page-in and taken again on each turn of
 /// the wait loop. Whether that serializes is a question worth asking only now that requests
 /// actually overlap; the timing is an `Instant::now()` pair, which is two `rdtsc`s.
-fn lock_inflight_mgr() -> LockGuard<'static, InflightManager> {
+pub(super) fn lock_shard(idx: usize) -> LockGuard<'static, InflightManager> {
     let start = crate::instant::Instant::now();
-    let guard = inflight_mgr().lock();
+    let guard = inflight_mgr().shards[idx].lock();
     profile::PAGER_PROFILE.mgr_lock((crate::instant::Instant::now() - start).as_nanos() as u64);
     guard
+}
+
+/// The shard owning `rk`.
+///
+/// Every operation on a request -- admission, coalescing, narrowing, wait setup, completion -- is
+/// keyed by the same object, so one shard hold covers a whole submit or completion sequence just
+/// as the single lock did. The one thing that must *not* be per-shard is admission, which is why
+/// `LIVE` is a global atomic.
+pub(super) fn lock_inflight_for(rk: &ReqKind) -> LockGuard<'static, InflightManager> {
+    lock_shard(shard_idx(rk.objid()))
+}
+
+pub(super) fn lock_inflight_for_obj(id: ObjID) -> LockGuard<'static, InflightManager> {
+    lock_shard(shard_idx(Some(id)))
 }
 
 /// Page-in errors the pager reported, held until the thread that was waiting can be told.
@@ -105,11 +146,14 @@ pub fn check_timed_out_requests() {
     if !INFLIGHT_MGR.is_complete() {
         return;
     }
-    let mgr = lock_inflight_mgr();
-    if !mgr.is_ready() {
+    if !crate::pager::inflight::pager_ready() {
         return;
     }
-    mgr.check_timed_out_requests();
+    // One shard at a time, never two at once: this runs from the idle loop and holds nothing
+    // across shards, so it cannot convoy the submit paths.
+    for idx in 0..INFLIGHT_SHARDS {
+        lock_shard(idx).check_timed_out_requests();
+    }
 }
 
 /// A/B knob for the speculative prefetch below. Setting it false reproduces the pre-prefetch path
@@ -261,10 +305,10 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
             _ => {}
         }
 
-        let mut mgr = lock_inflight_mgr();
-        if !mgr.is_ready() {
+        if !crate::pager::inflight::pager_ready() {
             return None;
         }
+        let mut mgr = lock_inflight_for_obj(id);
         let Ok(inflight) = mgr.add_request(ReqKind::new_info(id)) else {
             log::warn!("out of pager request slots");
             drop(mgr);
@@ -273,13 +317,13 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         };
         drop(mgr);
         inflight.for_each_pager_req(None, |pager_req| {
-            queues::submit_pager_request(pager_req, None, inflight.rk.clone());
+            queues::submit_pager_request(pager_req, None, inflight.rk().clone());
         });
         asked_pager = true;
         let submitted = Instant::now();
         profile::lookupstats::submitted((submitted - looked_up).as_nanos() as u64);
 
-        let mut mgr = lock_inflight_mgr();
+        let mut mgr = lock_inflight_for(inflight.rk());
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
@@ -409,10 +453,12 @@ fn submit_page_request<'a>(
         page = page.offset(present);
         len -= present;
     }
-    let mut mgr = lock_inflight_mgr();
-    if !mgr.is_ready() {
+    if !crate::pager::inflight::pager_ready() {
         return Err(ResourceError::Unavailable.into());
     }
+    // One hold covers `page_data_request` and `add_request`: both are keyed by this object, so
+    // they land on the same shard and stay as atomic as they were under the single lock.
+    let mut mgr = lock_inflight_for_obj(obj.id());
     log::trace!(
         "{}: getting page {} from {}",
         current_thread_ref().unwrap().id(),
@@ -458,7 +504,7 @@ fn submit_page_request<'a>(
     let mut submitted = false;
     inflight.for_each_pager_req(required.map(|(p, l)| (p.num(), l)), |pager_req| {
         submitted = true;
-        queues::submit_pager_request(pager_req, Some(obj), inflight.rk.clone());
+        queues::submit_pager_request(pager_req, Some(obj), inflight.rk().clone());
     });
     let _ = submitted;
     // Handed back rather than waited on here. See [wait_for_page_requests].
@@ -502,7 +548,7 @@ fn wait_for_page_requests(
     // behaviour is to wait for the whole thing, and any of them serves to park on.
     let target = required
         .and_then(|(rp, rlen)| {
-            inflights.iter().find(|i| match &i.rk {
+            inflights.iter().find(|i| match i.rk() {
                 request::ReqKind::PageData(_, s, l, _) => {
                     *s <= rp.num() && s + l >= rp.num() + rlen
                 }
@@ -532,12 +578,12 @@ fn wait_for_page_requests(
                 // that would measure nothing -- and the pager sends one completion per contiguous
                 // run, so a whole transfer can arrive as a single batch, in which case waking on
                 // it saves nothing at all. This is the difference between the two.
-                early = lock_inflight_mgr()
-                    .with_request(&target.rk, |r| !r.done())
+                early = lock_inflight_for(target.rk())
+                    .with_request(target.rk(), |r| !r.done())
                     .unwrap_or(false);
                 break;
             }
-            let mut mgr = lock_inflight_mgr();
+            let mut mgr = lock_inflight_for(target.rk());
             let thread = current_thread_ref().unwrap();
             let Some(guard) = mgr.setup_wait(target, &thread) else {
                 // The request we meant to park on is gone: completed, or its slot recycled under
@@ -569,7 +615,7 @@ fn wait_for_page_requests(
         // above there are now several requests carrying it rather than one.
         None => {
             for inflight in inflights {
-                let mut mgr = lock_inflight_mgr();
+                let mut mgr = lock_inflight_for(inflight.rk());
                 let thread = current_thread_ref().unwrap();
                 // One park per range, exactly as the old single-range path did: `signal` fires on
                 // every batch, so this returns on the first of them rather than at DONE.
@@ -586,10 +632,10 @@ fn wait_for_page_requests(
 }
 
 fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
-    let mut mgr = lock_inflight_mgr();
-    if !mgr.is_ready() {
+    if !crate::pager::inflight::pager_ready() {
         return;
     }
+    let mut mgr = lock_inflight_for(&req);
     let inflight = match mgr.add_request(req) {
         Ok(x) => x,
         Err(rk) => {
@@ -601,10 +647,10 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     };
     drop(mgr);
     inflight.for_each_pager_req(None, |pager_req| {
-        queues::submit_pager_request(pager_req, obj, inflight.rk.clone());
+        queues::submit_pager_request(pager_req, obj, inflight.rk().clone());
     });
 
-    let mut mgr = lock_inflight_mgr();
+    let mut mgr = lock_inflight_for(inflight.rk());
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -691,10 +737,10 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
     // (sysbench pager_sync_dirty_page). This bounds each object to two outstanding: the one
     // running and the one being submitted.
     let mut mgr = loop {
-        let mut mgr = lock_inflight_mgr();
-        if !mgr.is_ready() {
+        if !crate::pager::inflight::pager_ready() {
             return;
         }
+        let mut mgr = lock_inflight_for_obj(region.object().id());
         let Some(prev) = mgr.find_sync_region(region.object().id()) else {
             break mgr;
         };
@@ -722,14 +768,14 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
 
     drop(mgr);
     inflight.for_each_pager_req(None, |pager_req| {
-        queues::submit_pager_request(pager_req, Some(&region.object()), inflight.rk.clone());
+        queues::submit_pager_request(pager_req, Some(&region.object()), inflight.rk().clone());
     });
 
     if !wait {
         return;
     }
 
-    let mut mgr = lock_inflight_mgr();
+    let mut mgr = lock_inflight_for(inflight.rk());
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
@@ -1038,11 +1084,9 @@ pub(super) fn start_memory_provider() {
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {
-    let mgr = lock_inflight_mgr();
-    if !mgr.is_ready() {
+    if !crate::pager::inflight::pager_ready() {
         return;
     }
-    drop(mgr);
     //print_tracker_stats();
     let ranges = get_memory_for_pager(min_frames);
     log::trace!(
@@ -1056,7 +1100,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     let inflights = ranges
         .iter()
         .map(|range| {
-            let mut mgr = lock_inflight_mgr();
+            let mut mgr = lock_shard(shard_idx(None));
             let req = ReqKind::new_pager_memory(*range);
             loop {
                 if let Ok(inflight) = mgr.add_request(req.clone()) {
@@ -1065,7 +1109,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
                 log::warn!("out of pager request slots");
                 drop(mgr);
                 let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(100)));
-                mgr = lock_inflight_mgr();
+                mgr = lock_shard(shard_idx(None));
             }
         })
         .collect::<Vec<_>>();
@@ -1073,13 +1117,13 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     for inflight in &inflights {
         inflight.for_each_pager_req(None, |pager_req| {
             log::trace!("providing: {:?}", pager_req);
-            queues::submit_pager_request(pager_req, None, inflight.rk.clone());
+            queues::submit_pager_request(pager_req, None, inflight.rk().clone());
         });
     }
 
     if wait {
         for inflight in &inflights {
-            let mut mgr = lock_inflight_mgr();
+            let mut mgr = lock_inflight_for(inflight.rk());
             let thread = current_thread_ref().unwrap();
             if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
                 drop(mgr);

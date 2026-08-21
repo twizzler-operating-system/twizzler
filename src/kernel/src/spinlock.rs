@@ -106,15 +106,12 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                     // holder rather than whoever acquired last. `None` means the holder had not
                     // recorded itself yet, not that the lock is free.
                     match unsafe { self.locked_from.load(Ordering::Relaxed).as_ref() } {
-                        Some(held_by) => emerglogln!(
-                            "spinlock long pause: {}, held by {}",
-                            caller,
-                            held_by
-                        ),
-                        None => emerglogln!(
-                            "spinlock long pause: {}, holder not yet recorded",
-                            caller
-                        ),
+                        Some(held_by) => {
+                            emerglogln!("spinlock long pause: {}, held by {}", caller, held_by)
+                        }
+                        None => {
+                            emerglogln!("spinlock long pause: {}, holder not yet recorded", caller)
+                        }
                     }
                 }
                 Relax::relax(iters);

@@ -194,6 +194,27 @@ type MonitorLocks<'a> = (
     &'a RwLock<HandleMgr<CompartmentHandle>>,
 );
 
+/// Entry point for an ordinary compartment thread spawn. Plain function, no closure, no allocation.
+///
+/// Deliberately *not* merged with `comp_main_entry`: this one guards on a zero instance and ignores
+/// a failed attach, where the compartment-main path attaches unconditionally and unwraps. Unifying
+/// them would silently change whether a failed `sys_sctx_attach` panics a monitor thread.
+unsafe extern "C" fn comp_spawn_entry(args: usize) -> ! {
+    let a = unsafe { core::ptr::read_unaligned(args as *const thread::EntryArgs) };
+    if a.instance.raw() != 0 {
+        let _ = twizzler_abi::syscall::sys_sctx_attach(a.instance);
+    }
+    let frame = UpcallFrame::new_entry_frame(
+        a.stack_ptr,
+        a.stack_size,
+        a.thread_ptr,
+        a.instance,
+        a.entry,
+        a.arg,
+    );
+    unsafe { twizzler_abi::syscall::sys_thread_resume_from_upcall(&frame, ResumeFlags::empty()) }
+}
+
 impl Monitor {
     /// Start the background threads for the monitor instance. Must be done only once the monitor
     /// has been initialized.
@@ -301,13 +322,13 @@ impl Monitor {
     /// monitor's state, and it is where essentially all of a spawn's time goes. Holding the whole
     /// lock collection across it, as this used to, meant spawns could not overlap each other and
     /// every unrelated monitor operation in the system queued behind them.
-    #[tracing::instrument(skip(self, main), level = tracing::Level::DEBUG)]
+    #[tracing::instrument(skip(self, args), level = tracing::Level::DEBUG)]
     pub fn start_thread(
         &self,
         instance: ObjID,
-        main: Box<dyn FnOnce()>,
+        start: unsafe extern "C" fn(usize) -> !,
+        args: thread::EntryArgs,
     ) -> Result<ManagedThread, TwzError> {
-        let (start, arg) = ThreadMgr::entry_for(main);
 
         // Two ways to get a TLS region. The prebuilt one is the point of the pool: it needs no
         // dynlink state, so this takes `thread_mgr` alone for an id instead of the whole lock
@@ -347,7 +368,7 @@ impl Monitor {
             super_tls,
             super_tid,
             start,
-            arg,
+            args,
             None,
             instance,
             &mut phases,
@@ -380,6 +401,8 @@ impl Monitor {
     }
 
     /// Spawn a thread into a given compartment, using initial thread arguments.
+    ///
+    /// See [`comp_spawn_entry`] for why the entry is a plain fn rather than a boxed closure.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn spawn_compartment_thread(
         &self,
@@ -390,25 +413,16 @@ impl Monitor {
     ) -> Result<ObjID, TwzError> {
         let thread = self.start_thread(
             instance,
-            Box::new(move || {
-                if instance.raw() != 0 {
-                    let _ = twizzler_abi::syscall::sys_sctx_attach(instance);
-                }
-                let frame = UpcallFrame::new_entry_frame(
-                    stack_ptr,
-                    args.stack_size,
-                    thread_ptr,
-                    instance,
-                    args.start,
-                    args.arg,
-                );
-                unsafe {
-                    twizzler_abi::syscall::sys_thread_resume_from_upcall(
-                        &frame,
-                        ResumeFlags::empty(),
-                    )
-                };
-            }),
+            comp_spawn_entry,
+            thread::EntryArgs {
+                instance,
+                stack_ptr,
+                stack_size: args.stack_size,
+                thread_ptr,
+                entry: args.start,
+                arg: args.arg,
+                suspend: false,
+            },
         )?;
         let mon = get_monitor();
 

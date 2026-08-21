@@ -6,6 +6,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{borrow::BorrowMut, time::Duration};
 
 use cpu_trng::maybe_add_cpu_entropy_source;
+pub(crate) use fortuna::PerCpuRng;
 use fortuna::{Accumulator, Contributor};
 use jitter::maybe_add_jitter_entropy_source;
 
@@ -69,6 +70,22 @@ impl EntropySources {
     }
 }
 
+/// A/B: serve `getrandom` from a per-cpu batched generator, taking the global accumulator only to
+/// (re)seed. `false` restores routing every request through the one global mutex.
+pub const PERCPU_RNG: bool = true;
+
+/// Bumped whenever new entropy reaches the accumulator, so per-cpu generators know to reseed.
+///
+/// Starts at 1 rather than 0: a fresh [`PerCpuRng`] carries `seed_gen == 0`, so the mismatch is
+/// what drives its first seeding without needing a separate "seeded" flag. Read with a relaxed
+/// load on every request -- reseeding late by one request is harmless, and making this ordered
+/// would put a fence on the path the change exists to make cheap.
+static SEED_GEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+fn bump_seed_gen() {
+    SEED_GEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
 static ACCUMULATOR: Once<Mutex<Accumulator>> = Once::new();
 static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 
@@ -78,6 +95,16 @@ static ENTROPY_SOURCES: Once<Mutex<EntropySources>> = Once::new();
 ///
 /// Returns whether or not it successfully filled the out buffer with entropy
 pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
+    // Per-cpu first. Falls through to the global path when this cpu has no usable generator yet,
+    // which is the unseeded case and early boot.
+    //
+    // `tls_ready` is not optional: `current_processor()` *panics* without it, and `getrandom` runs
+    // from `Object::new_kernel` during initrd parsing, well before the processor registry exists.
+    if PERCPU_RNG && crate::processor::tls_ready() {
+        if percpu_fill(out) {
+            return true;
+        }
+    }
     // return false;
     let mut acc: LockGuard<Accumulator> = ACCUMULATOR
         .call_once(|| Mutex::new(Accumulator::new()))
@@ -117,6 +144,46 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     }
 }
 
+/// Fill `out` from this cpu's generator, seeding it from the global accumulator if the seed
+/// generation has moved. Returns false if the accumulator cannot seed us yet.
+///
+/// Never holds the per-cpu spinlock across the accumulator's sleeping mutex: the fast path takes
+/// and releases the spinlock, and the seeding path releases it before locking the accumulator.
+fn percpu_fill(out: &mut [u8]) -> bool {
+    use core::sync::atomic::Ordering;
+
+    let want = SEED_GEN.load(Ordering::Relaxed);
+    let proc = crate::processor::mp::current_processor();
+    {
+        let mut rng = proc.rng.lock();
+        if rng.seed_gen() == want {
+            rng.fill(out);
+            return true;
+        }
+    }
+
+    // Seed generation moved (or we have never been seeded). One global acquisition, then back to
+    // the per-cpu path.
+    let mut seed = [0u8; 32];
+    let seeded = {
+        let mut acc = ACCUMULATOR
+            .call_once(|| Mutex::new(Accumulator::new()))
+            .lock();
+        acc.try_fill_random_data(&mut seed).is_ok()
+    };
+    if !seeded {
+        return false;
+    }
+    let mut rng = proc.rng.lock();
+    rng.reseed(&seed, want);
+    rng.fill(out);
+    drop(rng);
+    // The seed is now inside the generator's key; there is no reason for a copy of it to stay on
+    // this stack frame.
+    seed.fill(0);
+    true
+}
+
 /// Be sure to contribute at least one byte and at most 32 bytes.
 pub fn contribute_entropy(
     contributor: &mut Contributor,
@@ -125,7 +192,14 @@ pub fn contribute_entropy(
     let mut acc = ACCUMULATOR
         .call_once(|| Mutex::new(Accumulator::new()))
         .lock();
-    acc.add_random_event(contributor, event)
+    let res = acc.add_random_event(contributor, event);
+    drop(acc);
+    // New entropy: per-cpu generators should pick it up rather than run indefinitely on a seed
+    // drawn before it arrived.
+    if res.is_ok() {
+        bump_seed_gen();
+    }
+    res
 }
 /// Returns whether registration was successful
 pub fn register_entropy_source<T: EntropySource + 'static + Send + Sync>() -> bool {

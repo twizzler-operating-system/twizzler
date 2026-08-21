@@ -246,7 +246,14 @@ impl ReqKind {
     }
 }
 
-intrusive_adapter!(pub RequestMapAdapter = &'static Request : Request { link: intrusive_collections::rbtree::AtomicLink });
+// `Arc<Request>`, not `&'static Request`. The static borrow existed only because the manager owned
+// requests in a fixed array, which forced an `unsafe` transmute of an array element into a
+// 'static reference at insert, and made a request's identity its *slot index* -- an index the
+// manager recycles, so a waiter parked on one could be woken by whatever took the slot next
+// (`InflightManager::setup_wait`'s recycled-slot warning: 843 occurrences on slot 0 in one round).
+// With shared ownership, identity is the allocation: a waiter holding an `Arc` cannot have its
+// request replaced under it, and the `unsafe` goes away.
+intrusive_adapter!(pub RequestMapAdapter = Arc<Request> : Request { link: intrusive_collections::rbtree::AtomicLink });
 
 intrusive_adapter!(pub PagerLinkAdapter = ThreadRef : Thread { pager_link: intrusive_collections::linked_list::AtomicLink });
 

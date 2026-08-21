@@ -5,6 +5,8 @@ use crate::{BootInfo, arch, memory::context::virtmem::fault, security::KERNEL_SC
 pub mod allocator;
 pub mod context;
 pub mod frame;
+pub mod kalloc_census;
+pub mod kalloc_track;
 pub mod pagetables;
 pub mod tracker;
 

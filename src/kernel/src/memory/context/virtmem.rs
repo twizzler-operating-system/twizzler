@@ -1,12 +1,14 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+
+use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, intrusive_adapter};
 use core::{
     marker::PhantomData,
     mem::size_of,
     ops::Range,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use region::{MapRegion, RegionManager};
@@ -40,7 +42,11 @@ use crate::{
         LookupFlags, ObjectRef, PageNumber, PtGuard, lookup_object, pagetables::ObjectPageTable,
     },
     once::Once,
-    processor::{mp::current_processor, tls_ready},
+    processor::{
+        mp::current_processor,
+        sched::{SchedFlags, schedule},
+        spin_wait_until, tls_ready,
+    },
     security::KERNEL_SCTX,
     spinlock::Spinlock,
     thread::current_thread_ref,
@@ -55,7 +61,7 @@ pub use fault::page_fault;
 
 /// A type that implements [super::Context] for virtual memory systems.
 pub struct VirtContext {
-    secctx: Mutex<BTreeMap<ObjID, ArchContext>>,
+    secctx: Mutex<RBTree<SecctxAdapter>>,
     /// The kernel context's arch state, held outside `secctx` because the kernel has exactly one
     /// security context: there is no map to consult and no lock to take. `Some` here is what makes
     /// this the kernel context.
@@ -69,7 +75,7 @@ pub struct VirtContext {
     // We keep a cache of the actual switch targets so that we don't need to take the above mutex
     // during switch_to. Unfortunately, it's still kinda hairy, since this is a spinlock of a
     // memory-allocating collection. See register_sctx for details.
-    target_cache: Spinlock<BTreeMap<ObjID, ArchContextTarget>>,
+    target_cache: Spinlock<RBTree<TargetAdapter>>,
     regions: RegionManager,
     /// Identity for [`SlotMemo`] entries, from a counter that never reuses.
     ///
@@ -641,10 +647,104 @@ pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
     contexts.iter().for_each(cb);
 }
 
+/// A/B: serve `with_arch`/`try_with_arch`/`for_each_arch` from the spinlock slot tree, running the
+/// callback with no lock held at all. `false` restores taking the `secctx` sleeping mutex across
+/// the callback, which is what every measurement before this was taken against.
+///
+/// The `secctx` tree stays either way: it serialises register/unregister, where a sleeping lock is
+/// wanted (unregister walks every region and takes object page-table locks, which a spinlock could
+/// not survive).
+pub const SECCTX_LOCKFREE_ARCH: bool = true;
+
+/// One security context's arch state within a [`VirtContext`], linked into two trees at once:
+/// `secctx` under a sleeping mutex, and `target_cache` under a spinlock.
+///
+/// Sharing one allocation between them is the entire point. They used to be two `BTreeMap`s
+/// holding separate copies of the same fact, and because filling a map allocates while
+/// `target_cache` is a *spinlock*, register/unregister had to rebuild the whole target map off to
+/// one side and swap it in. Linking a slot the caller already built costs nothing under either
+/// lock, so the rebuild, the swap, and the window between them all go away.
+struct SctxSlot {
+    secctx_link: RBTreeAtomicLink,
+    target_link: RBTreeAtomicLink,
+    sctx: ObjID,
+    arch: ArchContext,
+    /// Callbacks running against `arch` right now, so teardown can wait them out.
+    ///
+    /// `with_arch` used to hold the `secctx` mutex across its callback, which made it mutually
+    /// exclusive with [`VirtContext::unregister_sctx`]. Serving the callback from a snapshot
+    /// removes that exclusion, and the `Arc` does not replace it: the `Arc` keeps the *allocation*
+    /// alive, but an in-flight callback could still install mappings into an arch context whose
+    /// teardown walk had already passed -- leaving them in a root that is then freed. See
+    /// `unregister_sctx`, whose own comment explains why a freed root a recycled PCID can still
+    /// name is worse than leaked frames.
+    ///
+    /// Only [`SlotGuard::drop`] ever decrements this. There is deliberately no manual path: the
+    /// count is the mechanism the drain waits on, so a leaked decrement would make the drain read
+    /// "nobody is using it" *while a callback runs*, which is precisely the bug it exists to
+    /// prevent. Structuring the decrement as a guard is what keeps that unrepresentable rather
+    /// than merely unlikely.
+    users: AtomicUsize,
+    /// Set by `unregister_sctx` once the drain has completed and the region walk is about to start
+    /// tearing `arch` down.
+    ///
+    /// This is the independent witness for the drain, and it is deliberately not derived from
+    /// `users`: checking `users == 0` after spinning on `users` tests nothing, because the counter
+    /// is the mechanism under test. A guard still alive when this is set means the drain let a
+    /// callback through, and [`SlotGuard::drop`] catches that -- at drop rather than at use, so it
+    /// fires for *any* guard outliving the start of teardown rather than only for one that happens
+    /// to touch `arch` at the wrong moment.
+    torn_down: AtomicBool,
+}
+
+/// A slot borrowed for the duration of one callback. See [`SctxSlot::users`].
+struct SlotGuard(Arc<SctxSlot>);
+
+impl SlotGuard {
+    fn arch(&self) -> &ArchContext {
+        &self.0.arch
+    }
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        // Checked *before* the decrement: after it, teardown may proceed and this slot's page
+        // tables may be freed, so this is the last moment the observation means anything.
+        //
+        // `assert!`, not `debug_assert!` -- release builds here set only `debug = true`, so a
+        // `debug_assert` would be dead code that reads as coverage. The cost is one acquire load
+        // per callback, against the sleeping-mutex acquire/release pair this change removes.
+        assert!(
+            !self.0.torn_down.load(Ordering::Acquire),
+            "sctx slot began teardown while a callback still held it: the users drain let one through"
+        );
+        // Release, paired with the drain's Acquire load: everything the callback did to the page
+        // tables must be visible to the teardown that is waiting on this reaching zero.
+        self.0.users.fetch_sub(1, Ordering::Release);
+    }
+}
+
+intrusive_adapter!(SecctxAdapter = Arc<SctxSlot>: SctxSlot { secctx_link: RBTreeAtomicLink });
+impl<'a> KeyAdapter<'a> for SecctxAdapter {
+    type Key = ObjID;
+    fn get_key(&self, slot: &'a SctxSlot) -> ObjID {
+        slot.sctx
+    }
+}
+
+intrusive_adapter!(TargetAdapter = Arc<SctxSlot>: SctxSlot { target_link: RBTreeAtomicLink });
+impl<'a> KeyAdapter<'a> for TargetAdapter {
+    type Key = ObjID;
+    fn get_key(&self, slot: &'a SctxSlot) -> ObjID {
+        slot.sctx
+    }
+}
+
 impl VirtContext {
     fn __new(kernel_arch: Option<ArchContext>) -> Self {
-        let mut secctx = Mutex::new(BTreeMap::new());
-        // We ensure that the BTree never changes while we hold the lock.
+        let mut secctx = Mutex::new(RBTree::new(SecctxAdapter::NEW));
+        // Nothing under this lock allocates: linking a slot the caller already built is the whole
+        // critical section.
         secctx.set_safe_with_spinlocks(true);
         let new = Self {
             regions: RegionManager::default(),
@@ -653,7 +753,7 @@ impl VirtContext {
             id: CONTEXT_IDS.next(),
             secctx,
             kernel_arch,
-            target_cache: Spinlock::new(BTreeMap::new()),
+            target_cache: Spinlock::new(RBTree::new(TargetAdapter::NEW)),
         };
         new
     }
@@ -662,11 +762,9 @@ impl VirtContext {
     pub fn new_kernel() -> Arc<Self> {
         let this = Arc::new(Self::__new(Some(ArchContext::new_kernel())));
         let target = this.arch().target;
-        // Built outside the spinlock and swapped in, for the reason `register_sctx` gives: filling
-        // the map allocates, and `target_cache` is a spinlock.
-        let mut targets = BTreeMap::new();
-        targets.insert(KERNEL_SCTX, target);
-        core::mem::swap(&mut *this.target_cache.lock(), &mut targets);
+        // No `target_cache` entry: the kernel context has exactly one arch context, held in
+        // `kernel_arch`, and `single_target` answers for it without touching the tree. That is the
+        // same shape `single_arch` already uses, and it makes the kernel's switch lock-free.
         // Cache the root now, while we're safely outside the thread-switch path.
         KERNEL_ARCH_TARGET.call_once(|| target);
         let all = get_all_contexts();
@@ -721,6 +819,34 @@ impl VirtContext {
         (sctx == KERNEL_SCTX).then_some(arch)
     }
 
+    /// This context's switch target for `sctx`, without a lock, if there is only one of them.
+    /// Mirrors [`VirtContext::single_arch`], including its fall-through for a non-kernel `sctx`.
+    fn single_target(&self, sctx: ObjID) -> Option<ArchContextTarget> {
+        let arch = self.kernel_arch.as_ref()?;
+        debug_assert_eq!(sctx, KERNEL_SCTX);
+        (sctx == KERNEL_SCTX).then_some(arch.target)
+    }
+
+    /// The slot for `sctx`, with a use counted against it, taken under the spinlock and returned
+    /// with that lock released. The callback then runs holding no lock at all.
+    ///
+    /// The increment happens *under* the lock, not after it. `unregister_sctx` unlinks under this
+    /// same lock and then waits for the count to drain, so an increment landing after the release
+    /// could attach to a slot whose drain had already observed zero -- which is the whole race the
+    /// count exists to close.
+    fn borrow_arch_slot(&self, sctx: ObjID) -> Option<SlotGuard> {
+        let slots = self.target_cache.lock();
+        let slot = slots.find(&sctx).clone_pointer()?;
+        slot.users.fetch_add(1, Ordering::Acquire);
+        drop(slots);
+        Some(SlotGuard(slot))
+    }
+
+    /// Bound on the snapshot [`Self::for_each_arch`] takes. A context has one arch context per
+    /// attached security context, which is a handful in practice; overflow falls back to the
+    /// mutex path rather than visiting a subset, since a partial walk here is a missed unmap.
+    const ARCH_SNAPSHOT: usize = 32;
+
     /// Run `cb` against every arch context this context owns: the kernel's single one, or a user
     /// context's one per attached security context.
     fn for_each_arch(&self, mut cb: impl FnMut(&ArchContext)) {
@@ -728,8 +854,36 @@ impl VirtContext {
             cb(arch);
             return;
         }
-        for arch in self.secctx.lock().values() {
-            cb(arch);
+        if SECCTX_LOCKFREE_ARCH {
+            // Snapshot under the spinlock, iterate outside it: the only caller runs
+            // `arch.unmap_object`, which does TLB shootdown and frame frees and cannot run with
+            // interrupts masked. Same shape as the `members` set a few hundred lines below.
+            let mut snap = heapless::Vec::<SlotGuard, { Self::ARCH_SNAPSHOT }>::new();
+            let mut overflow = false;
+            {
+                let slots = self.target_cache.lock();
+                let mut cursor = slots.front();
+                while let Some(slot) = cursor.clone_pointer() {
+                    slot.users.fetch_add(1, Ordering::Acquire);
+                    if snap.push(SlotGuard(slot)).is_err() {
+                        overflow = true;
+                        break;
+                    }
+                    cursor.move_next();
+                }
+            }
+            if !overflow {
+                for guard in &snap {
+                    cb(guard.arch());
+                }
+                return;
+            }
+            // More attached contexts than the snapshot holds. Drop what we took and fall through
+            // to the mutex path, which visits everything.
+            drop(snap);
+        }
+        for slot in self.secctx.lock().iter() {
+            cb(&slot.arch);
         }
     }
 
@@ -737,18 +891,30 @@ impl VirtContext {
         if let Some(arch) = self.single_arch(sctx) {
             return Some(cb(arch));
         }
+        if SECCTX_LOCKFREE_ARCH {
+            let guard = self.borrow_arch_slot(sctx)?;
+            return Some(cb(guard.arch()));
+        }
         let secctx = self.secctx.lock();
-        secctx.get(&sctx).map(|arch| cb(arch))
+        secctx.find(&sctx).get().map(|slot| cb(&slot.arch))
     }
 
     pub fn with_arch<R>(&self, sctx: ObjID, cb: impl FnOnce(&ArchContext) -> R) -> R {
         if let Some(arch) = self.single_arch(sctx) {
             return cb(arch);
         }
+        if SECCTX_LOCKFREE_ARCH {
+            let guard = self
+                .borrow_arch_slot(sctx)
+                .expect("cannot get arch mapper for unattached security context");
+            return cb(guard.arch());
+        }
         let secctx = self.secctx.lock();
-        cb(secctx
-            .get(&sctx)
-            .expect("cannot get arch mapper for unattached security context"))
+        cb(&secctx
+            .find(&sctx)
+            .get()
+            .expect("cannot get arch mapper for unattached security context")
+            .arch)
     }
 
     /// Page-table frames [`Self::map_object`] can need to map one slot.
@@ -860,22 +1026,38 @@ impl VirtContext {
             debug_assert_eq!(sctx, KERNEL_SCTX);
             return;
         }
-        let mut secctx = self.secctx.lock();
-        if secctx.contains_key(&sctx) {
+        // Built before either lock is taken. This is the only allocation the whole operation
+        // makes, and moving it here is what removes the rebuild-and-swap: linking the same slot
+        // into both trees allocates nothing, so the spinlock no longer bounds what we may do.
+        let slot = Arc::new(SctxSlot {
+            secctx_link: RBTreeAtomicLink::default(),
+            target_link: RBTreeAtomicLink::default(),
+            sctx,
+            arch,
+            users: AtomicUsize::new(0),
+            torn_down: AtomicBool::new(false),
+        });
+        // Slot tree first, `secctx` second -- the reverse of the original order, and it matters
+        // now that lookups read the slot tree: inserting there last would leave a window in which
+        // a registered sctx is invisible to `with_arch`, which panics on a miss. The duplicate
+        // check moves here with it, so one lock decides the race.
+        //
+        // The flag rather than an early return inside the block: losing the race drops `slot`, and
+        // with it an `ArchContext` whose drop frees a root page table. That must not happen under
+        // a spinlock.
+        let dup = {
+            let mut slots = self.target_cache.lock();
+            if slots.find(&sctx).is_null() {
+                slots.insert(slot.clone());
+                false
+            } else {
+                true
+            }
+        };
+        if dup {
             return;
         }
-        secctx.insert(sctx, arch);
-        // Rebuild the target cache. We have to do it this way because we cannot allocate
-        // memory while holding the target_cache lock (as it's a spinlock).
-        let mut new_target_cache = BTreeMap::new();
-        for value in secctx.iter() {
-            new_target_cache.insert(*value.0, value.1.target);
-        }
-        // Swap out the target caches, dropping the old one after the spinlock is released.
-        {
-            let mut target_cache = self.target_cache.lock();
-            core::mem::swap(&mut *target_cache, &mut new_target_cache);
-        }
+        self.secctx.lock().insert(slot);
     }
 
     pub fn unregister_sctx(&self, sctx: ObjID) {
@@ -883,32 +1065,62 @@ impl VirtContext {
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
-        let mut secctx = self.secctx.lock();
-        if !secctx.contains_key(&sctx) {
-            return;
-        }
-        let arch = secctx.remove(&sctx);
-
         // Retire the target *before* `arch` is dropped at the end of this function, not after: the
-        // drop frees the root page table and releases the PCID, and until the cache is rebuilt a
-        // concurrent `switch_to` on this sctx would still find the old target and load it. Doing it
-        // here shrinks that window from "the whole unmap walk below" to "a switch that already read
-        // the target", and keeps a recycled PCID from being installed against a freed root -- which
-        // would alias one address space's translations onto whoever gets the PCID next. Same
-        // build-then-swap dance as register_sctx, because target_cache is a spinlock and the
-        // allocation has to happen outside it.
-        let mut new_target_cache = BTreeMap::new();
-        for value in secctx.iter() {
-            new_target_cache.insert(*value.0, value.1.target);
-        }
-        {
-            let mut target_cache = self.target_cache.lock();
-            core::mem::swap(&mut *target_cache, &mut new_target_cache);
-        }
-        drop(secctx);
-        drop(new_target_cache);
+        // drop frees the root page table and releases the PCID, and until the target is gone a
+        // concurrent `switch_to` on this sctx would still find it and load it. That keeps a
+        // recycled PCID from being installed against a freed root -- which would alias one address
+        // space's translations onto whoever gets the PCID next. Unlinking is all this takes now,
+        // so the window is the unlink itself rather than a rebuild.
+        //
+        // Unlinked from the slot tree *first*, before `secctx`: that tree is what
+        // `borrow_arch_slot` reads, so removing it there is what stops new callbacks from finding
+        // this slot. Doing it
+        // in the old order would leave the drain below racing lookups it had already passed.
+        let removed = self.target_cache.lock().find_mut(&sctx).remove();
 
-        if let Some(arch) = arch {
+        let slot = {
+            let mut secctx = self.secctx.lock();
+            let Some(slot) = secctx.find_mut(&sctx).remove() else {
+                // Nothing registered here. Drop whatever the slot tree yielded outside the lock.
+                drop(secctx);
+                drop(removed);
+                return;
+            };
+            slot
+        };
+        drop(removed);
+
+        if SECCTX_LOCKFREE_ARCH {
+            // Unlinked above, so no new callback can find this slot; wait out the ones already
+            // running before the region walk below starts tearing their page tables down. Rare --
+            // this runs from `SecurityContext::drop` -- so a spin is the right shape.
+            //
+            // Cannot deadlock against itself: the only caller is that destructor, reached via
+            // `with_each_context`, which iterates outside the ALL_CONTEXTS mutex; and no `with_arch`
+            // callback touches a `SecurityContextRef`, so no thread can be inside one while
+            // dropping the last reference to the same context. The wait is bounded by callback
+            // duration.
+            // Yields rather than spinning bare, and that distinction is load-bearing. A
+            // `SlotGuard` is held across a callback that does real work -- `arch.object_map`, TLB
+            // batching -- so a timer can preempt its holder mid-callback. A pure spin here then
+            // never lets that holder run again, which deadlocked the single-vcpu test boot at
+            // `st` (schedtest, thread spawn/join churn): 36 of 55 tests, then silence. Measured,
+            // not theorised -- the same boot with `SECCTX_LOCKFREE_ARCH = false` ran 55/55.
+            //
+            // The mutex arm has no such hazard by construction: it *blocks* on `secctx`, and
+            // blocking yields the cpu. Replacing a blocking wait with a busy wait is what
+            // introduced this, which is the general hazard in the change, not an incidental bug.
+            spin_wait_until(
+                || (slot.users.load(Ordering::Acquire) == 0).then_some(()),
+                || schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT),
+            );
+            // After the drain, before the walk: from here on any guard still alive is a drain
+            // failure, and `SlotGuard::drop` says so. See `SctxSlot::torn_down`.
+            slot.torn_down.store(true, Ordering::Release);
+        }
+
+        {
+            let arch = &slot.arch;
             for region in self.regions.mappings() {
                 let cursor = region.mapping_cursor(0, MAX_SIZE);
                 // Whichever tree backs this region, as in remove_object: a stable clone still has
@@ -1261,7 +1473,14 @@ impl UserContext for VirtContext {
     type SwitchTarget = ArchContextTarget;
 
     fn switch_target(&self, sctx: ObjID) -> Option<ArchContextTarget> {
-        self.target_cache.lock().get(&sctx).copied()
+        if let Some(target) = self.single_target(sctx) {
+            return Some(target);
+        }
+        self.target_cache
+            .lock()
+            .find(&sctx)
+            .get()
+            .map(|slot| slot.arch.target)
     }
 
     unsafe fn switch_to_target(&self, target: &ArchContextTarget) {
@@ -1274,10 +1493,21 @@ impl UserContext for VirtContext {
 
     fn switch_to(&self, sctx: ObjID) {
         //let sctx = 0.into();
+        if let Some(target) = self.single_target(sctx) {
+            let proc = tls_ready().then(current_processor);
+            // Safety: the kernel context's root outlives every thread and is never freed.
+            unsafe {
+                ArchContext::switch_to_target(&target, proc);
+            }
+            return;
+        }
         let tc = self.target_cache.lock();
-        let target = tc
-            .get(&sctx)
-            .expect("tried to switch to a non-registered sctx");
+        let target = &tc
+            .find(&sctx)
+            .get()
+            .expect("tried to switch to a non-registered sctx")
+            .arch
+            .target;
         // TLS/the processor registry isn't up yet during the very early boot switch from
         // memory::init(); pass None in that case rather than looking up current_processor()
         // from inside the arch-specific switch code.

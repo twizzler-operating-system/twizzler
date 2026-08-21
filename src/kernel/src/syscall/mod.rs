@@ -154,7 +154,9 @@ fn type_read_clock_info(src: u64, info: u64, _flags: u64) -> Result<u64> {
     let span = ticks.value * ticks.rate; // multiplication operator returns TimeSpan
     let precision = FemtoSeconds(1000); // TODO
     let resolution = ticks.rate;
-    info_ptr.write(ClockInfo::new(span, precision, resolution, ticks.rate, flags));
+    info_ptr.write(ClockInfo::new(
+        span, precision, resolution, ticks.rate, flags,
+    ));
     Ok(0)
 }
 

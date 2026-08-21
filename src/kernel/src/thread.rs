@@ -56,6 +56,7 @@ mod flags;
 pub mod kstack;
 pub mod locktrack;
 pub mod priority;
+pub mod reaper;
 mod sctx;
 pub mod suspend;
 pub mod time;
@@ -104,6 +105,10 @@ pub struct Thread {
     pub condvar_link: RBTreeAtomicLink,
     pub requeue_link: RBTreeAtomicLink,
     pub suspend_link: RBTreeAtomicLink,
+    /// Membership in the two global thread registries (`processor::sched`). Separate links because
+    /// a thread is in both at once, keyed differently: by [`Thread::id`] and by control-object id.
+    pub all_threads_link: RBTreeAtomicLink,
+    pub all_threads_repr_link: RBTreeAtomicLink,
     pub sync_links: ThreadSleepLinker,
     pub secctx: SecCtxMgr,
     /// User thread pointer, saved per security context and swapped by [Thread::switch_sctx].
@@ -329,6 +334,8 @@ impl Thread {
             suspend_link: RBTreeAtomicLink::default(),
             requeue_link: RBTreeAtomicLink::default(),
             condvar_link: RBTreeAtomicLink::default(),
+            all_threads_link: RBTreeAtomicLink::default(),
+            all_threads_repr_link: RBTreeAtomicLink::default(),
             pager_link: AtomicLink::default(),
             sync_links: ThreadSleepLinker::new(),
             upcall_target: Spinlock::new(None),
@@ -1089,6 +1096,18 @@ impl Drop for Thread {
     }
 }
 
+/// Sizes of the per-thread kernel heap allocations, so a `kalloc_census` size class can be read
+/// back to a struct without guessing. Printed once at boot under `--diag`.
+pub fn log_thread_sizes() {
+    logln!(
+        "[thread] sizeof Thread={} LockTracker={} LockTrackerInner={} ArchThread={}",
+        core::mem::size_of::<Thread>(),
+        core::mem::size_of::<crate::thread::locktrack::LockTracker>(),
+        crate::thread::locktrack::inner_size(),
+        core::mem::size_of::<crate::arch::thread::ArchThread>(),
+    );
+}
+
 pub fn exit(code: u64) -> ! {
     // TODO: we can do a quick sanity check here that we aren't holding any locks before we exit.
     let th = current_thread_ref().unwrap();
@@ -1157,13 +1176,15 @@ pub fn get_thread_stats() -> twizzler_abi::syscall::ThreadStats {
         nr_running,
         nr_blocked,
         nr_pending_exit,
+        nr_exited_backlog: crate::processor::EXITED_BACKLOG.load(Ordering::Relaxed),
+        nr_reaped: crate::processor::REAPED.load(Ordering::Relaxed),
     }
 }
 
 pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
     let mut count = 0;
     with_all_threads(|all| {
-        all.values()
+        all.iter()
             .skip(offset)
             .take(buf.len())
             .enumerate()
@@ -1227,7 +1248,7 @@ pub fn check_system_hang() {
     let mut any_stuck = false;
     let mut stuck_id = None;
     with_all_threads(|at| {
-        for thread in at.values() {
+        for thread in at.iter() {
             if thread.is_idle_thread() {
                 continue;
             }
@@ -1281,7 +1302,7 @@ pub fn check_system_hang() {
         HANG_REPORT_SECS
     );
     with_all_threads(|at| {
-        for thread in at.values() {
+        for thread in at.iter() {
             if thread.is_idle_thread() {
                 continue;
             }
@@ -1321,7 +1342,7 @@ pub fn check_system_hang() {
 pub fn check_orphan_threads() {
     //#[cfg(debug_assertions)]
     with_all_threads(|at| {
-        for thread in at.values() {
+        for thread in at.iter() {
             let is_mutex_linked = thread.mutex_link.is_linked();
             let is_condvar_linked = thread.condvar_link.is_linked();
             let is_requeue_linked = thread.requeue_link.is_linked();

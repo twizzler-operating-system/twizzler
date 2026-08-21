@@ -308,6 +308,21 @@ impl Consistency {
         self.tlb.set_full();
     }
 
+    /// Nothing to invalidate, nothing to free, nothing already parked.
+    ///
+    /// The *enqueue* is already skipped for a not-present -> present transition --
+    /// `Table::update_entry` only calls `consist.enqueue` `if was_present`, and a zero-fill fault
+    /// is by definition not present. What is not skipped is everything built around the
+    /// invalidation that was never enqueued: `PendingShootdown::none()` (a 1,024-cpu `CpuSet`,
+    /// 128 bytes, zeroed), `ArchTlbMgr::reset` (a 16-entry instruction array rewritten), three or
+    /// four moves of those through `set_pending` / `into_deferred` / `park`, and a
+    /// `DeferredUnmappingOps` parked on the object for a later `run_all` with nothing in it.
+    /// Measured at **396 ns per page** on `page_fault_zero_fill` (`knobs-on`), of which 214 ns is
+    /// the park half alone -- against zero TLB work performed.
+    pub fn is_trivial(&self) -> bool {
+        !self.tlb.has_pending() && self.pages.is_empty() && self.pending.is_none()
+    }
+
     pub fn tlb(&self) -> &ArchTlbMgr {
         &self.tlb
     }

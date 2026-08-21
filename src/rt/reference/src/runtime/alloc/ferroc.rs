@@ -29,19 +29,24 @@ use super::talc::{LocalAllocator, LOCAL_ALLOCATOR};
 /// that they are called and this function declines -- `get_id_from_ptr` returning `None` is a
 /// silent early return by design -- and those have fixes in different files. Counting both ends
 /// separates them.
-pub(crate) static DECOMMIT_STATS: [core::sync::atomic::AtomicU64; 5] = [
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-];
+///
+/// Entries 5-7 are the *other* end of the same question: how much memory ferroc has taken from
+/// talc as base chunks, and how much it has given back. `hook_dealloc` reading zero says chunks are
+/// never returned; `base_alloc_bytes` says how much that is worth. Growth in a `note=heap` object
+/// with these flat is talc reusing an address range whose pages were already faulted in -- a
+/// different mechanism from ferroc asking for more.
+pub(crate) static DECOMMIT_STATS: [core::sync::atomic::AtomicU64; 8] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 8];
+
+pub(crate) const S_BASE_ALLOC_CNT: usize = 5;
+pub(crate) const S_BASE_ALLOC_BYTES: usize = 6;
+pub(crate) const S_BASE_DEALLOC_BYTES: usize = 7;
 
 fn bump(i: usize, by: u64) {
     DECOMMIT_STATS[i].fetch_add(by, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Diagnostic readout for [`DECOMMIT_STATS`]; `out` must have room for 5. Not part of the runtime
+/// Diagnostic readout for [`DECOMMIT_STATS`]; `out` must have room for 8. Not part of the runtime
 /// ABI.
 #[no_mangle]
 pub extern "C-unwind" fn __twz_rt_diag_decommit_stats(out: *mut u64) {
@@ -103,6 +108,8 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
         layout: std::alloc::Layout,
         _commit: bool,
     ) -> Result<ferroc::base::Chunk<Self>, Self::Error> {
+        bump(S_BASE_ALLOC_CNT, 1);
+        bump(S_BASE_ALLOC_BYTES, layout.size() as u64);
         let ptr = unsafe { self.local_alloc.alloc(layout) };
         // ferroc finds a block's owning slab by masking to SLAB_SIZE (slab.rs:134), and only
         // checks that we honored the requested alignment under `debug_assert!` (arena.rs:123),
@@ -129,6 +136,7 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
         bump(1, 1);
         let ptr = chunk.pointer().cast::<u8>().as_ptr();
         let layout = chunk.layout();
+        bump(S_BASE_DEALLOC_BYTES, layout.size() as u64);
         // The last point at which these frames can be returned. A chunk whose slab came from
         // `SlabSource::Base` is freed by dropping it back to talc and never passes through
         // `decommit` at all, and talc reuses the address range without ever freeing the pages

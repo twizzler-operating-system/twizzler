@@ -197,6 +197,112 @@ impl ThreadManager {
         inner.scan_for_exited_except(0);
         inner.do_thread_gc();
     }
+
+    /// DIAG: how many cross-compartment threads this compartment is still holding TLS for.
+    ///
+    /// `CrossThread::drop` runs `__mlibc_handle_thread_exit` and frees the TLS region, so the
+    /// destructor path exists and is correct. What is in question is whether anything ever *runs*
+    /// it here: `scan_for_exited_cross` is reached only from `ThreadManager::gc` (i.e. an explicit
+    /// `twz_rt_gc`) and from `do_thread_gc`, whose two call sites are both inside **join**. A
+    /// service that never spawns or joins a thread therefore never reaps, however correct the
+    /// reaping is -- and this count is what distinguishes "the destructor is broken" from "the
+    /// destructor is never called", which are fixes in different files.
+    pub fn diag_cross_thread_count(&self) -> usize {
+        self.inner.lock().cross_threads.len()
+    }
+}
+
+/// One reap round every this many cold entries.
+const REAP_EVERY: usize = 4;
+/// At most this many `repr_is_gone` checks per round.
+const REAP_SCAN: usize = 8;
+
+/// Reap dead cross-compartment TLS regions, amortized over cold entries.
+///
+/// # Why this exists
+///
+/// `CrossThread::drop` is correct -- it runs the thread-exit handlers and frees the region -- but
+/// nothing in a *passive* compartment ever runs it. `scan_for_exited_cross` is reachable only from
+/// `ThreadManager::gc` (an explicit `twz_rt_gc`) and from `do_thread_gc`, whose two call sites are
+/// both inside `join`. A service that accepts gate calls but never spawns or joins a thread
+/// therefore never reaps: measured in naming-srv at **one retained entry per distinct caller,
+/// 225 held after 224 handle opens, none reclaimed**, alongside 21 ferroc base chunks (~940 MB)
+/// that are never returned.
+///
+/// # Why this call site
+///
+/// Called from the tail of `cross_compartment_entry`'s cold path, which is the only point where
+/// four things hold at once: TLS is installed (the drop handlers and the global allocator both
+/// need it), `THREAD_STARTED` is set (otherwise any allocation the drop makes goes to the bump
+/// allocator that cannot free -- the reaper would leak), `THREAD_MGR` is not held, and no monitor
+/// or `HandleMgr` lock is held. That last one matters: `gc_handles` deliberately does *not* call
+/// `twz_rt_gc` because of the `get_compartment_handle` -> `HandleMgr::insert` -> `twz_rt_gc` ->
+/// `THREAD_MGR` cycle. This does not re-form it -- `THREAD_MGR` is a per-compartment static, so a
+/// spawn holding compartment A's and gate-calling into B contends only for B's.
+///
+/// The cold path is also where the growth is: exactly one `CrossThread` is inserted per cold entry,
+/// so scanning here is proportional to accumulation by construction. The warm path (`tp != 0`) is
+/// untouched -- a compartment whose callers repeat does not accumulate and should not pay.
+///
+/// # The one thing to watch
+///
+/// **`REAP_SCAN / REAP_EVERY` must exceed 1**, or the map still grows, just more slowly: each cold
+/// entry adds one region while a round reclaims at most `REAP_SCAN` per `REAP_EVERY` entries, and
+/// not every entry checked is dead. That is a claim about a rate, not something enforced here --
+/// which is exactly the sort of assertion that reads as an invariant and quietly goes false. Do not
+/// trust it; read `__twz_rt_diag_cross_threads`, which is why it exists.
+fn maybe_reap_cross_threads() {
+    static COLD_ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    if COLD_ENTRIES.fetch_add(1, Ordering::Relaxed) % REAP_EVERY != 0 {
+        return;
+    }
+
+    // Both buffers are reserved *before* the lock: pushing under it would allocate under it, and
+    // the allocator can reach a gate call on its slow path.
+    let mut candidates: Vec<ObjID> = Vec::with_capacity(REAP_SCAN);
+    let mut dead: Vec<CrossThread> = Vec::with_capacity(REAP_SCAN);
+    {
+        let mut inner = THREAD_MGR.inner.lock();
+        // Round-robin: resume at the cursor, then wrap to the front for whatever is left, so a
+        // long-lived entry near the start cannot starve the tail (or the reverse).
+        candidates.extend(
+            inner
+                .cross_threads
+                .range(inner.reap_cursor..)
+                .map(|(k, _)| *k)
+                .take(REAP_SCAN),
+        );
+        if candidates.len() < REAP_SCAN {
+            let more = REAP_SCAN - candidates.len();
+            let front: Vec<ObjID> = inner
+                .cross_threads
+                .range(..inner.reap_cursor)
+                .map(|(k, _)| *k)
+                .take(more)
+                .collect();
+            candidates.extend(front);
+        }
+        inner.reap_cursor = candidates
+            .last()
+            .map(|k| ObjID::new(k.raw().wrapping_add(1)))
+            .unwrap_or(ObjID::new(0));
+        for id in candidates.drain(..) {
+            if repr_is_gone(id) {
+                if let Some(ct) = inner.cross_threads.remove(&id) {
+                    dead.push(ct);
+                }
+            }
+        }
+    }
+    // Dropped with the lock released: `CrossThread::drop` runs `__mlibc_handle_thread_exit`, i.e.
+    // arbitrary registered destructors, which must not execute under `THREAD_MGR`.
+    drop(dead);
+}
+
+/// DIAG readout for [`ThreadManager::diag_cross_thread_count`]. Not part of the runtime ABI.
+#[no_mangle]
+pub extern "C-unwind" fn __twz_rt_diag_cross_threads() -> u64 {
+    THREAD_MGR.diag_cross_thread_count() as u64
 }
 
 struct CrossThread {
@@ -250,6 +356,8 @@ impl Drop for CrossThread {
 struct ThreadManagerInner {
     all_threads: BTreeMap<u32, InternalThread, &'static LocalAllocator>,
     cross_threads: BTreeMap<ObjID, CrossThread, &'static LocalAllocator>,
+    /// Where the next amortized reap resumes. See [`maybe_reap_cross_threads`].
+    reap_cursor: ObjID,
     // Threads that have exited, but we haven't cleaned up yet.
     to_cleanup: Vec<InternalThread>,
     // Basic unique-ID system.
@@ -268,6 +376,7 @@ impl ThreadManagerInner {
             to_cleanup: vec![],
             id_stack: vec![],
             cross_threads: BTreeMap::new_in(&LOCAL_ALLOCATOR),
+            reap_cursor: ObjID::new(0),
         }
     }
 
@@ -480,6 +589,9 @@ impl ReferenceRuntime {
                 alloc_base,
             },
         );
+        // Safe here and nowhere obvious else: TLS installed, THREAD_STARTED set, THREAD_MGR
+        // released, no monitor/HandleMgr lock held. See [`maybe_reap_cross_threads`].
+        maybe_reap_cross_threads();
         entrystats::record(
             switch_ns,
             OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,

@@ -167,6 +167,8 @@ pub fn pager_lookup_external(
     id: ObjID,
     namelen: usize,
 ) -> Result<usize, TwzError> {
+    // Roughly one call per compartment load, which is the axis the census needs to resolve.
+    crate::heapdiag::tick();
     tracing::trace!(
         "looking up name in external namespace {} (namelen {})",
         id,

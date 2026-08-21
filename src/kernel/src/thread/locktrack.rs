@@ -1065,6 +1065,10 @@ unsafe impl Sync for LockTracker {}
 static ALL_TRACKERS: Spinlock<heapless::Vec<Option<Arc<LockTracker>>, 1024>> =
     Spinlock::new(heapless::Vec::new());
 
+pub fn inner_size() -> usize {
+    core::mem::size_of::<LockTrackerInner>()
+}
+
 pub fn register_lock_tracker(tracker: Arc<LockTracker>) -> Option<usize> {
     let mut at = ALL_TRACKERS.lock();
     let pos = at.iter().position(|t| t.is_none());
@@ -1098,17 +1102,27 @@ pub fn deregister_lock_tracker(index: usize) {
 
 /// Every live thread, as `(id, state, is_inside_Mutex::lock, is_idle)`.
 ///
-/// Taken as a snapshot for two reasons. `ALL_THREADS` -> `ALL_TRACKERS` is a real lock order
-/// (dropping the last `ThreadRef` inside `remove_thread` runs `Thread::drop`, which deregisters a
-/// tracker), so the scan must not hold `ALL_TRACKERS` and reach for `ALL_THREADS`. And this runs on
-/// the idle thread, where allocating is a bad idea -- hence the fixed capacity, at the price of
-/// truncating on a system with more than `MAX_SNAPSHOT` threads.
+/// Taken as a snapshot for two reasons. The first is a lock order, `ALL_THREADS` -> `ALL_TRACKERS`:
+/// dropping the last `ThreadRef` inside `remove_thread` runs `Thread::drop`, which deregisters a
+/// tracker, so the scan must not hold `ALL_TRACKERS` and reach for `ALL_THREADS`.
+///
+/// **That order does not currently arise, and the snapshot is kept anyway.** `remove_thread` has a
+/// single caller -- `thread::exit`, where the exiting thread is `current_thread_ref` and so is a
+/// live local, with `self_reference` holding a second ref that is reclaimed only later in the reap
+/// path -- so the ref dropped there is never the last one and `Thread::drop` never runs. It also
+/// now drops both refs *outside* its guards. Keeping the snapshot means a future `remove_thread`
+/// caller that is not the exiting thread cannot reintroduce the order silently, against a scan
+/// that had been simplified on the grounds that the premise was unrealised.
+///
+/// The second reason is that this runs on the idle thread, where allocating is a bad idea -- hence
+/// the fixed capacity, at the price of truncating on a system with more than `MAX_SNAPSHOT`
+/// threads.
 fn thread_snapshot() -> heapless::Vec<(u64, ExecutionState, bool, bool), MAX_SNAPSHOT> {
     let mut v = heapless::Vec::new();
     crate::processor::sched::with_all_threads(|threads| {
-        for (id, thread) in threads.iter() {
+        for thread in threads.iter() {
             if v.push((
-                *id,
+                thread.id(),
                 thread.get_state(),
                 thread.get_mutex_wait(),
                 thread.is_idle_thread(),

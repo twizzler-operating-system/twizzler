@@ -551,10 +551,22 @@ fn object_copy_rejects_bad_ranges() {
 
     for (case, src) in [
         ("the meta page itself", zero_at(meta, ps)),
-        ("a range running into the meta page", zero_at(meta - ps, ps * 2)),
-        ("a range past the end of the object", zero_at(meta + ps * 16, ps)),
-        ("an offset in the non-canonical hole", zero_at(1u64 << 47, ps)),
-        ("a length that overflows its offset", zero_at(u64::MAX - ps, ps * 2)),
+        (
+            "a range running into the meta page",
+            zero_at(meta - ps, ps * 2),
+        ),
+        (
+            "a range past the end of the object",
+            zero_at(meta + ps * 16, ps),
+        ),
+        (
+            "an offset in the non-canonical hole",
+            zero_at(1u64 << 47, ps),
+        ),
+        (
+            "a length that overflows its offset",
+            zero_at(u64::MAX - ps, ps * 2),
+        ),
         (
             "an object copying from itself",
             object_source {

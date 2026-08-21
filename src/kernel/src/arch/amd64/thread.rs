@@ -648,22 +648,24 @@ impl Thread {
 
     /// The thread's instruction pointer, or 0 if it cannot be read right now.
     ///
-    /// `try_borrow`, not `borrow`, because the callers that matter read this off *another* thread:
-    /// `check_system_hang` walks every thread and prints one of these, and the owning thread can be
-    /// inside `set_upcall_restore_frame`'s `borrow_mut` at that moment. That is a panic --
-    /// "RefCell already mutably borrowed" -- from a diagnostic whose entire job is to describe a
-    /// system that is already in trouble. Zero is what this already returns for a thread with no
-    /// registers to read, so callers have to tolerate it.
+    /// `as_ptr`, deliberately not `borrow`/`try_borrow`. The callers that matter read this off
+    /// *another* thread -- `check_system_hang` walks every thread -- and `BorrowRef::new` bumps the
+    /// borrow counter with a *non-atomic* read-modify-write. Racing the owner's `borrow_mut` in
+    /// `set_upcall_restore_frame`, that stale increment lands after the writer's flag and leaves the
+    /// counter reading "shared" while a mutable guard is live. The owner's guard drop then trips
+    /// `debug_assert!(is_writing(..))` and halts the cpu; in release, where that assert is compiled
+    /// out, the drop instead latches the counter at 2 and a later `borrow_mut` hard-panics.
+    /// `try_borrow` only stops the *reader* panicking -- it does not make the race go away.
+    ///
+    /// `as_ptr` touches no bookkeeping, so a racing read costs a torn value, not the machine. Zero
+    /// is what this already returns for a thread with no registers, so callers tolerate it.
     pub fn read_ip(&self) -> u64 {
         use crate::syscall::SyscallContext;
-        let Ok(frame) = self.arch.upcall_restore_frame.try_borrow() else {
-            return 0;
-        };
-        if frame.is_none() {
+        // SAFETY: best-effort read of a possibly-running thread; see the note above on why this
+        // must not go through the borrow counter.
+        let Some(frame) = (unsafe { &*self.arch.upcall_restore_frame.as_ptr() }) else {
             return match self.arch.entry_registers.as_registers() {
-                Registers::None => {
-                    return 0;
-                }
+                Registers::None => 0,
                 Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
                     (*int).get_ip()
@@ -673,20 +675,16 @@ impl Thread {
                     (*sys).pc().raw()
                 }
             };
-        }
-        frame.unwrap().rip
+        };
+        frame.rip
     }
 
     /// The thread's base pointer, or 0 if it cannot be read right now; see [`Thread::read_ip`].
     pub fn read_bp(&self) -> u64 {
-        let Ok(frame) = self.arch.upcall_restore_frame.try_borrow() else {
-            return 0;
-        };
-        if frame.is_none() {
+        // SAFETY: as in `read_ip` -- must not touch the borrow counter.
+        let Some(frame) = (unsafe { &*self.arch.upcall_restore_frame.as_ptr() }) else {
             return match self.arch.entry_registers.as_registers() {
-                Registers::None => {
-                    return 0;
-                }
+                Registers::None => 0,
                 Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
                     (*int).get_stack_top()
@@ -696,8 +694,9 @@ impl Thread {
                     (*sys).get_base_pointer()
                 }
             };
-        }
-        frame.unwrap().rip
+        };
+        // Was `.rip`: every other arm of this function returns a base pointer.
+        frame.rbp
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {

@@ -85,8 +85,22 @@ impl GlobalCache {
         // Over the cap: drop every namespace nobody is currently holding. Evicting one that is
         // still open would split it in two, and an invalidation through one instance would leave
         // the other's entries stale -- so live namespaces stay, making this a high-water mark
-        // rather than a hard limit. `NameSession` keeps its working namespace open, so the excess
-        // is bounded by the number of client sessions.
+        // rather than a hard limit.
+        //
+        // The ceiling is therefore however many namespaces are held open at once, and
+        // `NameSession` holds its working namespace, so it is the number of live client sessions.
+        // **Nothing here enforces that**: if sessions are ever retained (a client that dies without
+        // closing its handle, or a `HandleMgr` that fails to reclaim one), this map has no bound at
+        // all. `MAX_NAMESPACES` limits nothing on its own.
+        //
+        // This comment previously asserted the excess "is bounded by the number of client
+        // sessions", which stated the intent as though it were an invariant and read as evidence
+        // that the bound held. It cost a leak hunt an hour: the chain "retained handle pins a
+        // session pins a namespace pins an unevictable cache" is exactly what the sentence
+        // suggested, and it is measurably not what happens (`ns_cached` is flat at 7 with
+        // `ns_pinned` 0 across 224 handle opens -- leakcheck.md, namecache1). A comment that
+        // asserts a *bound* can go false with nothing nearby changing; one that describes a
+        // *mechanism* goes stale visibly. Prefer the second.
         if namespaces.len() >= MAX_NAMESPACES {
             namespaces.retain(|_, cache| Arc::strong_count(cache) > 1);
         }
@@ -108,6 +122,30 @@ impl GlobalCache {
 static GLOBAL_CACHE: GlobalCache = GlobalCache {
     namespaces: RwLock::new(BTreeMap::new()),
 };
+
+/// DIAG: `(namespaces cached, cached names summed, order entries summed, pinned namespaces)`.
+///
+/// `MAX_NAMESPACES` is a high-water mark and not a limit -- eviction only drops caches with
+/// `strong_count == 1`, so a namespace any live `NameSession` still holds cannot be evicted, and
+/// the comment on `get_namespace_cache` bounds the excess by the number of client sessions. The
+/// fourth field is what makes that checkable rather than argued: a `namespaces` length far above
+/// `MAX_NAMESPACES` with most of them pinned is that bound being exceeded.
+pub fn cache_stats() -> (usize, usize, usize, usize) {
+    let ns = GLOBAL_CACHE.namespaces.read().unwrap();
+    let mut names = 0;
+    let mut order = 0;
+    let mut pinned = 0;
+    for cache in ns.values() {
+        if std::sync::Arc::strong_count(cache) > 1 {
+            pinned += 1;
+        }
+        if let Ok(c) = cache.try_lock() {
+            names += c.by_name.len();
+            order += c.order.len();
+        }
+    }
+    (ns.len(), names, order, pinned)
+}
 
 /// Opening a pager handle is two gate calls (open, close) plus an object map and unmap, to carry
 /// one name across in the third. Keep one open instead: the descriptor is per-compartment, not

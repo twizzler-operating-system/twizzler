@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 use core::{
     alloc::Layout,
     mem::{size_of, transmute},
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ferroc::heap;
@@ -205,6 +205,7 @@ impl AllocationRegionLevel {
             "admitting frame {:?} that is still linked into a list",
             frame
         );
+        assert_not_pooled(frame, "admit_one");
         // Safety: the frame can be reset since during admit_one we are the only ones with access to
         // the frame data.
         unsafe { frame.reset(addr, level, init_flags, 0) };
@@ -244,6 +245,7 @@ impl AllocationRegion {
             return;
         }
         assert!(frame.refcount() == 0);
+        assert_not_pooled(frame, "region free");
         frame.set_free();
         let level = frame.get_level();
         assert!(level < NR_LEVELS);
@@ -334,6 +336,7 @@ impl AllocationRegion {
                 // Safety: same as `merge_frame` -- the frame has just been taken off every list and
                 // is unreachable until the frame above it is split again.
                 let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+                assert_not_pooled(child, "coalesce child");
                 unsafe { child.reset(pa, 0, child_flags, 0) };
             }
         }
@@ -473,11 +476,13 @@ impl AllocationRegion {
         // first page, and `alloc` skips `zero()` on the strength of the flag -- handing out a
         // "fresh" large frame still holding its previous tenant's data.
         // skip the first one for now, as that's our passed in frame.
+        assert_not_pooled(frame, "merge head");
         let mut all_zeroed = frame.is_zeroed();
         let rc = frame.refcount();
         for child_idx in 1..child_count {
             let pa = start.offset(child_idx * child_size).unwrap();
             let child = self.get_frame(pa).unwrap();
+            assert_not_pooled(child, "merge child");
             assert!(child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
             assert!(child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
             // The caller claims every child; a child on a list (free, or deferred-unmap pending
@@ -536,6 +541,7 @@ impl AllocationRegion {
                 .offset(child_idx * new_frame_size)
                 .unwrap();
             let child = unsafe { self.get_frame_mut(pa) }.unwrap();
+            assert_not_pooled(child, "split_and_keep child");
             assert!(!child.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
             assert!(!child.get_flags().contains(PhysicalFrameFlags::ADMITTED));
             unsafe {
@@ -550,6 +556,7 @@ impl AllocationRegion {
             child.set_allocated();
         }
         let frame = unsafe { self.get_frame_mut(frame.start_address()) }.unwrap();
+        assert_not_pooled(frame, "split_and_keep head");
         assert!(frame.get_flags().contains(PhysicalFrameFlags::ADMITTED));
         assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
         unsafe {
@@ -853,6 +860,22 @@ impl Frame {
         self.info.fetch_and(!POISON_BIT, Ordering::SeqCst) & POISON_BIT != 0
     }
 
+    /// Double-free tripwire for frames parked in a per-cpu precharge pool (tracker.rs). Set
+    /// while the frame is pool-resident; `free_frame` panics on a set bit, so the SECOND
+    /// freer's backtrace names itself — the case an rc==0 assert cannot catch (the fa-bulk
+    /// blind spot). Returns the prior state.
+    pub fn mark_pooled(&self) -> bool {
+        self.info.fetch_or(POOLED_BIT, Ordering::SeqCst) & POOLED_BIT != 0
+    }
+
+    pub fn clear_pooled(&self) -> bool {
+        self.info.fetch_and(!POOLED_BIT, Ordering::SeqCst) & POOLED_BIT != 0
+    }
+
+    pub fn is_pooled(&self) -> bool {
+        self.info.load(Ordering::SeqCst) & POOLED_BIT != 0
+    }
+
     /// Mark this frame as not being zeroed. Does not modify the physical memory controlled by this
     /// Frame.
     pub fn set_not_zero(&self) {
@@ -1052,6 +1075,23 @@ bitflags::bitflags! {
 
         const LOCKED = (1 << 7);
     }
+}
+
+/// Tripwire for frames parked in a per-cpu precharge pool (tracker.rs): a parked frame is
+/// `ALLOCATED`, refcount 0 and on no list -- invisible to every ownership test the allocator
+/// has (`group_free`, `is_linked`, refcount). Each allocator path that takes a frame over names
+/// itself here, so a panic identifies the *thief*; a detector on the pool side can only report
+/// the victim, which is what the fadf-armed round left undecided. It matters more under the pool
+/// than under the cache it came from: 2048 frames per cpu parked, against 128.
+#[track_caller]
+fn assert_not_pooled(frame: &Frame, whence: &str) {
+    assert!(
+        !frame.is_pooled(),
+        "allocator ({}) claimed a pool-resident frame: {:?} (from {})",
+        whence,
+        frame,
+        core::panic::Location::caller()
+    );
 }
 
 impl PhysicalFrameAllocator {
@@ -1285,6 +1325,77 @@ pub(super) fn raw_alloc_frames(
 /// level 0 before its children can be handed out, and `coalesce_group`/`merge_frame` only build a
 /// large frame out of a group with no independently-live members -- so any hit is a real overlap,
 /// not a mid-transition read.
+/// Make certain a frame about to be installed as a page table is zero -- and say so if it was not.
+///
+/// **The fragile step first:** `Table::populate` installs a frame and never writes its 512
+/// entries, trusting them to be zero. That trust rests entirely on "every `FrameAllocator` in
+/// this kernel is constructed with `ZEROED`" -- which is true today by coincidence of the current
+/// call sites, and is stated and enforced nowhere. A future reader who checks the allocators,
+/// concludes the trust is justified, and deletes this will be reasoning correctly from a premise
+/// that nothing holds up.
+///
+/// The abort path already broke it once: `Frame::cow_frame` copies another page's contents in and
+/// then, on a CAS failure, hands that frame to `alloc.abort()`; `merge` moves the abort list into
+/// the shared per-cpu pool; `try_allocate` returns the abort list *before* it looks at precharge.
+/// The frame's contents in that case are a copy of some other object's page, so a page table
+/// built from them maps whatever those bytes decode to -- a disclosure bug, not merely a
+/// corruption one.
+///
+/// Which is why, *when it runs*, this **zeroes** rather than asserting: for the same price as the
+/// scan, zeroing cannot be defeated by a fourth install site nobody remembers to instrument, and
+/// the counter keeps what an assert would have been good for -- telling us a path is feeding
+/// dirty frames into a pool.
+///
+/// **Off unless asked for.** This is a tripwire, not the fix: the fix is `finish_pool_alloc`
+/// zeroing pooled frames that arrive dirty, and that is unconditional. Checking again at the
+/// install site costs a 4 KiB scan per page-table allocation for something that should never
+/// fire, which is real money on a mapping-heavy workload. Enabled by `--pt-zero-check`, and by
+/// `--diag` since that is what a run looking for this kind of fault passes anyway. Runtime rather
+/// than a `const` for the reason the kalloc census gives: a const forks the tree state, and an
+/// A/B whose arms are different source trees is not an A/B.
+static PT_ZERO_CHECK: AtomicBool = AtomicBool::new(false);
+static DIRTY_PT_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+pub fn enable_pt_zero_check() {
+    PT_ZERO_CHECK.store(true, Ordering::Relaxed);
+    logln!("[pt-zero-check] enabled");
+}
+
+pub fn ensure_pt_zeroed(frame: FrameRef, whence: &str) {
+    if !PT_ZERO_CHECK.load(Ordering::Relaxed) {
+        return;
+    }
+    crate::memory::tracker::allocprofile::add(
+        &crate::memory::tracker::allocprofile::PT_CHECKED,
+        1,
+    );
+    if frame.as_slice::<u64>().iter().all(|x| *x == 0) {
+        return;
+    }
+    crate::memory::tracker::allocprofile::add(
+        &crate::memory::tracker::allocprofile::PT_DIRTY,
+        1,
+    );
+    let n = DIRTY_PT_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        log::warn!(
+            "DIRTY-PT: {} frames installed as page tables ({}) arrived non-zero and were zeroed \
+             here -- something is returning dirty frames to a pool: {:?}",
+            n,
+            whence,
+            frame
+        );
+    }
+    frame.zero();
+    frame.set_not_zero();
+}
+
+/// Frames that reached a page-table install non-zero. Non-zero here means a path is feeding dirty
+/// frames into an allocator pool; see [`ensure_pt_zeroed`].
+pub fn dirty_pt_frames() -> u64 {
+    DIRTY_PT_FRAMES.load(Ordering::Relaxed)
+}
+
 const OVERLAP_CHECK: bool = true;
 
 /// Write-after-free detector. `check_overlap` sees a frame handed out at two levels, but not the
@@ -1306,6 +1417,8 @@ const OVERLAP_CHECK: bool = true;
 const FREE_POISON: bool = false;
 
 const POISON_BIT: u64 = 1 << 16;
+/// See [Frame::mark_pooled].
+const POOLED_BIT: u64 = 1 << 17;
 const POISON_PATTERN: u64 = 0xF4EE_F4EE_F4EE_F4EE;
 
 fn poison_on_free(frame: FrameRef) {
@@ -1343,7 +1456,7 @@ fn check_poison_on_alloc(frame: FrameRef) {
     }
 }
 
-fn check_overlap(frame: FrameRef, whence: &str) {
+pub(super) fn check_overlap(frame: FrameRef, whence: &str) {
     if !OVERLAP_CHECK {
         return;
     }
@@ -1625,8 +1738,12 @@ mod tests {
             // children one at a time, which restores a fully-free group for coalescing.
             if it % 16 == 0 {
                 let mut lout: Vec<FrameRef> = Vec::new();
-                if try_alloc_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1], 1, &mut lout)
-                    == 1
+                if try_alloc_frames(
+                    FrameAllocFlags::empty(),
+                    PHYS_LEVEL_LAYOUTS[1],
+                    1,
+                    &mut lout,
+                ) == 1
                 {
                     let (head, len) = split_frame(lout[0]);
                     assert_eq!(len, PHYS_LEVEL_LAYOUTS[1].size());

@@ -14,6 +14,7 @@ use twizzler_rt_abi::object::MapFlags;
 
 mod dlengine;
 mod gates;
+mod heapdiag;
 pub mod init;
 pub mod lockdiag;
 mod mon;

@@ -80,6 +80,13 @@ impl Mapper {
         self.root
     }
 
+    /// How many frames a [`Self::map`] of `cursor` may allocate, given what is already installed.
+    /// See [`Table::tables_needed`] -- conservative, and only valid under the page-table lock the
+    /// matching `map` will be performed under.
+    pub fn tables_needed(&self, cursor: &MappingCursor) -> usize {
+        self.root().tables_needed(cursor, self.start_level)
+    }
+
     /// Map a set of physical pages into the tables with the provided settings.
     pub fn map(
         &mut self,

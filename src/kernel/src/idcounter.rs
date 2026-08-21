@@ -1,28 +1,36 @@
-use alloc::vec::Vec;
 use core::{
     fmt::Display,
+    marker::PhantomData,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{mutex::Mutex, once::Once};
-
+/// Hands out unique u64 ids. **Ids are never reused.**
+///
+/// The reuse pool this used to keep was a `Once<Mutex<Vec<u64>>>`, so returning an id allocated and
+/// took a *sleeping* mutex. That forced every path that might drop the last reference to an
+/// id-holder to prove it was neither in a critical section nor holding a spinlock -- see the
+/// deferred-drop machinery in `thread::reaper`, `syscall::sync`, `obj::thread_sync` and
+/// `processor::sched`. Recycling also had to be defended against by consumers: `VirtContext` keeps
+/// a separate never-reusing `memo_tag`, and `Mutex`'s owner check compares objids rather than ids,
+/// both because a dead holder's id could be handed to a live one.
+///
+/// A u64 that only ascends costs nothing to give away, so nobody has to defend against any of it.
 pub struct IdCounter {
     counter: AtomicU64,
-    reuse: Once<Mutex<Vec<u64>>>,
 }
 
 impl Default for IdCounter {
     fn default() -> Self {
-        Self {
-            counter: Default::default(),
-            reuse: Once::new(),
-        }
+        // Not `AtomicU64::default()`: ids must be non-zero. `mutex.rs` uses 0 as its "no current
+        // thread" sentinel precisely because an id can never be 0.
+        Self::new()
     }
 }
 
 pub struct Id<'a> {
     id: u64,
-    counter: &'a IdCounter,
+    // Borrows the counter purely so an id cannot outlive it. Nothing is returned on drop.
+    _counter: PhantomData<&'a IdCounter>,
 }
 
 pub struct SimpleId {
@@ -50,54 +58,24 @@ impl IdCounter {
     pub const fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
-            reuse: Once::new(),
         }
     }
 
     pub fn next(&self) -> Id<'_> {
-        /* TODO: use try lock */
-        let reuser = self.reuse.poll();
-        if let Some(reuser) = reuser {
-            let mut reuser = reuser.lock();
-            if let Some(id) = reuser.pop() {
-                return Id { id, counter: self };
-            }
-        }
         let id = self.counter.fetch_add(1, Ordering::SeqCst);
-        Id { id, counter: self }
+        Id {
+            id,
+            _counter: PhantomData,
+        }
     }
 
     pub fn next_simple(&self) -> SimpleId {
-        /* TODO: use try lock */
-        let reuser = self.reuse.poll();
-        if let Some(reuser) = reuser {
-            let mut reuser = reuser.lock();
-            if let Some(id) = reuser.pop() {
-                return SimpleId { id };
-            }
-        }
         let id = self.counter.fetch_add(1, Ordering::SeqCst);
         SimpleId { id }
     }
 
-    fn release(&self, id: u64) {
-        assert!(id > 0);
-        self.reuse.call_once(|| Mutex::new(Vec::new()));
-        //TODO: we could optimize here by trying to subtract from ID_COUNTER using CAS if the
-        // thread ID is the current top value of the counter
-        let mut reuser = self.reuse.wait().lock();
-        reuser.push(id);
-    }
-
-    pub fn release_simple(&self, id: SimpleId) {
-        self.release(id.id);
-    }
-}
-
-impl<'a> Drop for Id<'a> {
-    fn drop(&mut self) {
-        self.counter.release(self.id);
-    }
+    /// No-op: ids are not reused. Kept so callers can keep expressing that they are done with one.
+    pub fn release_simple(&self, _id: SimpleId) {}
 }
 
 impl Display for Id<'_> {

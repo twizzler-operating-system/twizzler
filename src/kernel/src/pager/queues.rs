@@ -138,7 +138,7 @@ pub(super) fn pager_request_handler_main() {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
                 log::info!("pager ready");
-                inflight_mgr().lock().set_ready();
+                super::inflight::set_pager_ready();
                 request_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
                 start_reclaim_thread();
@@ -394,7 +394,7 @@ fn pager_compl_handle_page_data(
     super::profile::PAGER_PROFILE.completion(max, installed, dup, dup_large, merged);
     super::profile::PAGER_PROFILE.installed_ns((Instant::now() - handle_start).as_nanos() as u64);
 
-    let mut mgr = inflight_mgr().lock();
+    let mut mgr = super::lock_inflight_for(&request.reqkind);
     if dup_large > 0 {
         // Only the large-page case, which is at most a line or two a boot -- logging every
         // completion hid it (see the note in `get_pages_and_wait`). The counters carry everything
@@ -559,7 +559,7 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
         obj.set_verified_id(true, prot);
     }
     crate::obj::register_object(obj);
-    inflight_mgr().lock().request_ready(rk);
+    super::lock_inflight_for(rk).request_ready(rk);
     // After `request_ready`, so the stamp is the moment the waiter became runnable rather than the
     // moment the completion arrived: what the split is for is separating this whole segment from
     // the wait for a cpu that follows it.
@@ -576,7 +576,7 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
                 crate::obj::no_exist(obj_id);
-                inflight_mgr().lock().request_ready(rk);
+                super::lock_inflight_for(rk).request_ready(rk);
             }
         }
         _ => {
@@ -586,7 +586,7 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
             if let KernelCommand::PageDataReq(obj_id, ..) = request.cmd() {
                 super::record_page_in_error(obj_id, err);
             }
-            inflight_mgr().lock().request_ready(rk);
+            super::lock_inflight_for(rk).request_ready(rk);
         }
     }
 }
@@ -654,7 +654,7 @@ pub(super) fn pager_compl_handler_main() {
         assert!(!current_thread.is_critical());
 
         if completion.1.flags().contains(KernelCompletionFlags::DONE) {
-            let mut mgr = inflight_mgr().lock();
+            let mut mgr = super::lock_inflight_for(&request.reqkind);
             if let KernelCommand::ObjectEvict(evict) = request.req.cmd() {
                 if evict.flags.contains(ObjectEvictFlags::FENCE) {
                     mgr.remove_request(&request.reqkind);
@@ -710,9 +710,7 @@ pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>,
     sender.queue.submit(req, id);
     // After the submit, so the segment covers the enqueue itself, including the overflow wait
     // above. Every caller drops the inflight lock before submitting, so taking it here is safe.
-    inflight_mgr()
-        .lock()
-        .with_request(&stamp_key, |r| r.mark_submitted());
+    super::lock_inflight_for(&stamp_key).with_request(&stamp_key, |r| r.mark_submitted());
 }
 
 extern "C" fn pager_compl_handler_entry() {

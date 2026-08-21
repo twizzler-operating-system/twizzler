@@ -77,6 +77,50 @@ impl LocalAllocator {
     }
 }
 
+/// Every heap object *this compartment's* allocator owns, as `[slot, id_hi, id_lo]` triples,
+/// followed by `[n_main, n_early]`. Returns words written.
+///
+/// DIAG, and the point is ownership. `note=heap` is written identically by every compartment's
+/// allocator, so a census grower reading `note=heap` says "a heap" and not "whose". Walking the
+/// caller's own `oom_handler.objects` answers it exactly: an id in this list belongs to the calling
+/// compartment's allocator, and an id absent from it does not -- which a slot-map join cannot say,
+/// because a slot map is a snapshot and an object created after it can never match.
+#[no_mangle]
+pub extern "C-unwind" fn __twz_rt_diag_heap_objects(out: *mut u64, n: usize) -> usize {
+    if out.is_null() || n < 2 {
+        return 0;
+    }
+    let inner = LOCAL_ALLOCATOR.inner.lock();
+    let mut w = 0usize;
+    let mut counts = [0usize; 2];
+    for (which, objs) in [
+        &inner.talc.oom_handler.objects,
+        &inner.early_talc.oom_handler.objects,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (slot, id) in objs.iter() {
+            if w + 3 + 2 > n {
+                break;
+            }
+            let raw = id.raw();
+            unsafe {
+                *out.add(w) = *slot as u64;
+                *out.add(w + 1) = (raw >> 64) as u64;
+                *out.add(w + 2) = raw as u64;
+            }
+            w += 3;
+            counts[which] += 1;
+        }
+    }
+    unsafe {
+        *out.add(w) = counts[0] as u64;
+        *out.add(w + 1) = counts[1] as u64;
+    }
+    w + 2
+}
+
 struct LocalAllocatorInner {
     talc: Talc<RuntimeOom>,
     early_talc: Talc<RuntimeOom>,
@@ -140,7 +184,21 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 
     let _ = sys_object_ctrl(id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0)
         .inspect_err(|e| twizzler_abi::klog_println!("failed to delete heap object {}: {}", id, e));
-    let _ = sys_object_add_note(id, b"heap");
+    // `heap:<low 64 bits of the owning security context>`, not bare `heap`.
+    //
+    // Every compartment's allocator writes this note, so a leak census reporting `note=heap` names
+    // a kind and not an owner -- and "whose heap grew" is the whole question when several
+    // compartments' heaps are mapped in one address space. Hand-formatted into a stack buffer
+    // because this runs inside the OOM handler under the allocator's own lock: `format!` here would
+    // re-enter the allocator. Keeps the `heap` prefix so existing greps still match.
+    let mut note = [0u8; 21];
+    note[..5].copy_from_slice(b"heap:");
+    let sctx = get_sctx_id().raw() as u64;
+    for i in 0..16 {
+        let nib = ((sctx >> (60 - i * 4)) & 0xf) as u8;
+        note[5 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+    }
+    let _ = sys_object_add_note(id, &note);
 
     if let Some(slot) = slot {
         Some((slot.slot, id))
@@ -243,6 +301,24 @@ impl LocalAllocator {
         let mut inner = self.inner.lock();
         let ptr = unsafe { inner.do_alloc_early(layout) };
         ptr
+    }
+
+    /// Free a pointer that came from [`Self::alloc_early`], back into the early talc.
+    ///
+    /// The monitor's allocations all take the early path (its runtime never reaches the allocator
+    /// switch, so `early_allocs_frozen` stays false and `do_dealloc` drops its frees) — measured
+    /// as ~360 B retained in the monitor heap per incoming gate call (leak25-floor, l0-stats10:
+    /// 0.082 pages/call, r2 0.999). Every monitor pointer is an early_talc pointer, so freeing
+    /// into early_talc is symmetric. Compartments never reach this: their early frees are dropped
+    /// by the `is_ptr_early_alloc` gate before routing here, deliberately.
+    pub fn dealloc_early(&self, ptr: *mut u8, layout: Layout) {
+        let layout =
+            Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
+                .expect("layout alignment bump failed");
+        let mut inner = self.inner.lock();
+        if let Some(ptr) = NonNull::new(ptr) {
+            unsafe { inner.early_talc.free(ptr, layout) };
+        }
     }
 
     pub fn alloc_zeroed_early(&self, layout: Layout) -> *mut u8 {

@@ -30,9 +30,10 @@ const POLL: Duration = Duration::from_millis(250);
 ///
 /// A non-convergence is a result, not a failure: it means something is still moving after seconds
 /// of idle, and the caller reports it rather than quietly accepting the last sample.
-pub fn quiesce(budget_ms: u64) -> Quiesced {
+pub fn quiesce(budget_ms: u64, min_ms: u64) -> Quiesced {
     let start = Instant::now();
     let budget = Duration::from_millis(budget_ms);
+    let floor = Duration::from_millis(min_ms);
     let mut last: Option<Sample> = None;
 
     loop {
@@ -45,7 +46,11 @@ pub fn quiesce(budget_ms: u64) -> Quiesced {
         let stable = last.as_ref().is_some_and(|l| l.settled_eq(&s));
         last = Some(s);
 
-        if stable {
+        // Not before the floor. A cache with a TTL nobody has touched holds its entries at a
+        // dead-flat count, so `stable` is reached long before they expire -- 527-799 ms
+        // against handlecache's 2 s IDLE_TTL. Keep poking past it or the census reads a
+        // cache as retention.
+        if stable && start.elapsed() >= floor {
             return Quiesced {
                 converged: true,
                 elapsed_ms: start.elapsed().as_millis() as u64,

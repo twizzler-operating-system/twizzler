@@ -307,6 +307,8 @@ pub fn monitor_rt_comp_ctrl(cmd: MonitorCompControlCmd) -> Result<Option<i32>, T
 
 #[secgate::entry(lib = "monitor-api")]
 pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {
+    // Before taking the monitor: `tick` prints, and `stats()` holds the lock collection.
+    crate::heapdiag::tick();
     let monitor = crate::mon::get_monitor();
     Ok(monitor.stats())
 }

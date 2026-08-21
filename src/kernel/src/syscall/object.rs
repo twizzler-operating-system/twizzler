@@ -94,6 +94,73 @@ fn new_nonce() -> Result<u128> {
 ///
 /// Off in the tree for the reason F11 documents: two clock reads and a u128 conversion per stage,
 /// on a path `sysbench`'s `object_create_delete` measures. Turned on only for an attribution run.
+/// Stage split of `sys_object_ctrl(Delete)`, mirroring [`createprofile`].
+///
+/// `Scan` **contains** `Reap`: `scan_deleted_one` tests reapability and only then reaps, and the
+/// difference between those two is the question -- an object that is still mapped is not reapable,
+/// so the delete is cheap here and the real cost is deferred to the reaper thread. Reporting only
+/// a combined figure would make a deferred teardown and an inline one look the same.
+pub mod deleteprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    pub const DELETE_PROFILE: bool = false;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Stage {
+        /// `lookup_object`: the global id map.
+        Lookup = 0,
+        /// `mark_for_delete`: `record_delete` plus a `fetch_or`.
+        Mark,
+        /// `scan_deleted_one`: the reapability test, and `Reap` when it passes.
+        Scan,
+        /// `reap`: the actual teardown. Only reached when the object is reapable *now*.
+        Reap,
+        Total,
+    }
+
+    pub const NR: usize = Stage::Total as usize + 1;
+    pub const NAMES: [&str; NR] = ["lookup", "mark", "scan", "reap", "TOTAL"];
+
+    static COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+    static NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn start() -> Instant {
+        if DELETE_PROFILE {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record(stage: Stage, start: Instant) {
+        if !DELETE_PROFILE {
+            return;
+        }
+        let dur: twizzler_abi::syscall::TimeSpan = (Instant::now() - start).into();
+        COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
+        NS[stage as usize].fetch_add(dur.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// Per-stage (count, nanoseconds), cumulative, for [`crate::perfmark`] to difference.
+    pub fn snapshot() -> [(u64, u64); NR] {
+        let mut out = [(0u64, 0u64); NR];
+        if !DELETE_PROFILE {
+            return out;
+        }
+        for i in 0..NR {
+            out[i] = (
+                COUNT[i].load(Ordering::Relaxed),
+                NS[i].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+}
+
 pub mod createprofile {
     use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -180,7 +247,13 @@ pub mod createprofile {
                 continue;
             }
             let ns = NS[i].load(Ordering::Relaxed);
-            logln!("  {:>9}: {} calls, {} ns/call, {} us total", name, c, ns / c, ns / 1000);
+            logln!(
+                "  {:>9}: {} calls, {} ns/call, {} us total",
+                name,
+                c,
+                ns / c,
+                ns / 1000
+            );
         }
     }
 }
@@ -665,14 +738,20 @@ pub fn sys_sctx_attach(id: ObjID) -> Result<u32> {
 }
 
 pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Result<u64> {
+    let t_total = deleteprofile::start();
+    let t_lookup = deleteprofile::start();
     let obj = lookup_object(id, LookupFlags::empty()).ok_or(TwzError::NOT_FOUND);
     match cmd {
         ObjectControlCmd::Sync => {
             crate::pager::sync_object(&obj?);
         }
         ObjectControlCmd::Delete(_) => {
+            deleteprofile::record(deleteprofile::Stage::Lookup, t_lookup);
             let obj = obj?;
+            let t = deleteprofile::start();
             obj.mark_for_delete();
+            deleteprofile::record(deleteprofile::Stage::Mark, t);
+            let t = deleteprofile::start();
             if crate::obj::TARGETED_REAP {
                 // Just this object, not a scan of every object in the system: nothing else became
                 // reapable by marking this one, and anything that becomes reapable later is caught
@@ -681,6 +760,8 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
             } else {
                 crate::obj::scan_deleted();
             }
+            deleteprofile::record(deleteprofile::Stage::Scan, t);
+            deleteprofile::record(deleteprofile::Stage::Total, t_total);
         }
         ObjectControlCmd::Preload => {
             let obj = obj
@@ -902,7 +983,8 @@ pub fn sys_object_copy(dest: ObjID, srcs: &[object_source]) -> Result<()> {
             }
             copystats::copy();
             in_range(src.src_start, src.len).inspect_err(|_| copystats::err())?;
-            let so = lookup_object(src_id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
+            let so =
+                lookup_object(src_id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
             so.copy_range(
                 &obj,
                 src.src_start as usize,

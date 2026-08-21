@@ -1,5 +1,5 @@
 use twizzler_abi::syscall::{
-    InfoKind, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats, ThreadStats,
+    InfoKind, KallocCensus, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats, ThreadStats,
 };
 
 use crate::processor::mp::all_processors;
@@ -56,6 +56,17 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
             let stats: &mut twizzler_abi::syscall::ObjectStats =
                 unsafe { &mut *(ptr as *mut twizzler_abi::syscall::ObjectStats) };
             *stats = crate::obj::get_object_stats();
+            Ok(())
+        }
+        InfoKind::KallocCensus => {
+            let census: &mut KallocCensus = unsafe { &mut *(ptr as *mut KallocCensus) };
+            crate::memory::kalloc_census::fill(census);
+            Ok(())
+        }
+        InfoKind::KallocTrack => {
+            let ctl: &mut twizzler_abi::syscall::KallocTrackCtl =
+                unsafe { &mut *(ptr as *mut twizzler_abi::syscall::KallocTrackCtl) };
+            crate::memory::kalloc_track::control(ctl);
             Ok(())
         }
     }

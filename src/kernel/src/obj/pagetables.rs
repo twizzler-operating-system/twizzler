@@ -32,6 +32,30 @@ const MAX_INVLS: usize = 4;
 /// Capacity of the membership set. See [ObjectPageTable::members].
 const MAX_MEMBERS: usize = 32;
 
+/// Precharge the page-table frames a mapping will *actually* need, rather than the most it could
+/// ever need.
+///
+/// `MappingCursor::max_number_new_tables` answers from geometry alone -- one frame per level,
+/// whatever is already installed -- so a 4 KiB `map_page` always asks for `top_level()` frames.
+/// Measured on `page_fault_zero_fill`: **one `Table::populate` per 205 `map_page` calls**
+/// (`populated=8,308` against `calls=1,706,024`), so 99.5% of those requests are borrow-and-return.
+///
+/// With the per-cpu pool knobs on that stopped being nearly free: a per-operation allocator is
+/// built fresh, so the request reaches `precharge`, which reserves and then unparks. The span went
+/// 35 ns -> 620 ns across the flip. Skipping the call entirely when nothing is needed is what
+/// removes it, and [`Table::tables_needed`] is what decides.
+///
+/// The failure that matters is *under*-counting: a short precharge sends `try_allocate` to the
+/// global allocator without `WAIT_OK` while the object's page-table lock is held. That is exactly
+/// what `avoid_alloc` reports -- `avoid-empty=` on `PERFMARK-FA` -- and it must stay 0.
+const PRECHARGE_EXACT: bool = true;
+
+/// Skip the consistency epilogue when there is nothing to invalidate and nothing to free.
+///
+/// See [`Consistency::is_trivial`] for what "nothing" costs without this. The enqueue itself is
+/// already conditional; this is about the machinery around it.
+const CONSIST_FASTPATH: bool = true;
+
 /// Second-and-later operations parked under one page-table lock hold, merged into the batch the
 /// guard will discharge. See [ObjectPageTable::park].
 ///
@@ -52,6 +76,128 @@ pub mod merged_parks {
 
     pub fn count() -> usize {
         N.load(Ordering::Relaxed)
+    }
+}
+
+/// Where a single `map_page` call's time goes, bracketed so that the *gap* is measurable.
+///
+/// Separate from [`crate::memory::tracker::allocprofile`] deliberately. That module's `counters!`
+/// list is indexed positionally by `perfmark`, it belongs to the frame-allocator work, and its
+/// `TIME_ALLOCS` gate can be flipped for an allocator arm -- probes gated on someone else's const
+/// go live inside their measurement. This has its own switch and its own snapshot.
+///
+/// The design rule this follows: **bracket the gap, not the pieces already suspected.** `BODY`
+/// spans the whole function body, so `FILL_MAP_NS - BODY` is prologue/epilogue and the call
+/// itself, and `BODY - sum(spans)` is time between probes rather than inside any of them. The
+/// prior split of this function reported prep/walk/consist summing to 1,164 ns against a 1,712 ns
+/// whole and left 548 ns attributed to nothing; that residual is the thing being measured here,
+/// so it must not be inferred from a subtraction of numbers taken by a different instrument.
+pub mod mapprobe {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Off in the committed tree. Costs ~10 clock-read pairs per `map_page`.
+    pub const MAP_PROBE: bool = false;
+
+    macro_rules! counters {
+        ($($name:ident),* $(,)?) => {
+            $(pub static $name: AtomicU64 = AtomicU64::new(0);)*
+            pub const NAMES: &[&str] = &[$(stringify!($name)),*];
+            pub const NR: usize = NAMES.len();
+            pub fn snapshot() -> [u64; NR] {
+                [$($name.load(Ordering::Relaxed)),*]
+            }
+        };
+    }
+
+    counters!(
+        // `map_page`, one record each per call.
+        CALLS,
+        BODY_NS,
+        CONS_NEW_NS,
+        TAKE_FA_NS,
+        PRECHARGE_NS,
+        PROV_NS,
+        WALK_NS,
+        CONSIST_NS,
+        DROP_FA_NS,
+        DROP_PHYS_NS,
+        // `run_consistency`, split. Counted separately because `map_page` is not its only caller
+        // and the reading is only clean in a window where `RC_CALLS == CALLS`.
+        RC_CALLS,
+        RC_SEND_NS,
+        RC_RESET_NS,
+        RC_PARK_NS,
+        // Page tables actually created by `Table::populate`. This is the denominator that says
+        // whether `map_page`'s per-page precharge buys anything: it asks for
+        // `max_number_new_tables` (2 on amd64 object tables) on every call, and a sequential fault
+        // run needs a new leaf table once per 512 pages.
+        POPULATED,
+        // Back-to-back start/record, i.e. the floor under every span above.
+        PROBE_NS,
+        // The *perturbation*, which `PROBE_NS` structurally cannot see: an outer bracket around a
+        // complete inner probe. `PROBE_OUTER_NS - PROBE_NS` is what one `record` call costs the
+        // bracket that encloses it -- the term that lands in `gap` and in nobody's span. Measured
+        // rather than assumed, because assuming it is how the previous split of this function
+        // ended up attributing 548 ns to nothing.
+        PROBE_OUTER_NS,
+        // Appended, not inserted -- `perfmark` indexes this snapshot positionally and putting this
+        // beside `RC_*` where it reads better shifted `PROBE_NS` and `PROBE_OUTER_NS` by one,
+        // which is the same silent break the `allocprofile` list carries a warning about.
+        //
+        // `run_consistency` calls that had nothing to invalidate and nothing to free, i.e. took
+        // the fast path. Read against `RC_CALLS`: on this bench it should be ~all of them, and a
+        // build where it is not is one where the epilogue is doing real work.
+        RC_TRIVIAL,
+    );
+
+    pub fn add(c: &AtomicU64, n: u64) {
+        c.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Counters accumulate **raw ticks**, converted once at print time.
+    ///
+    /// This is not a micro-optimization, it is what makes the residual measurable. The existing
+    /// probes (`allocprofile::record`, `fault::record_stage`) do
+    /// `(Instant::now() - start).into()` and then `as_nanos()`: a u128 multiply plus a u128
+    /// division and modulo by 10^15, then a `Duration` round trip -- **all of it after the second
+    /// clock read**, so it is charged to whatever bracket encloses the probe and to none of the
+    /// spans inside it. Their `PROBE_NS` floor cannot see this: it reports the *interval* between
+    /// two back-to-back readings (7.6 ns), not the *perturbation* the probe adds, which happens
+    /// once the interval has already closed.
+    ///
+    /// That is almost certainly what the 255 ns of `map_page` that remains unbracketed after
+    /// `MAP_DROP_NS` is put back (see `zerofill.md` C2) actually is: four `record` calls inside
+    /// the body, each dropping its conversion into the enclosing `FILL_MAP_NS`. Accumulating
+    /// ticks here is what lets that be tested rather than argued -- with the conversion gone, the
+    /// gap should collapse.
+    pub fn start() -> u64 {
+        if MAP_PROBE {
+            crate::instant::Instant::now().raw_ticks()
+        } else {
+            0
+        }
+    }
+
+    pub fn record(c: &AtomicU64, start: u64) {
+        if !MAP_PROBE {
+            return;
+        }
+        let now = crate::instant::Instant::now().raw_ticks();
+        add(c, now.saturating_sub(start));
+    }
+
+    /// Ticks to nanoseconds, using the clock's own rate. Print path only.
+    pub fn ticks_to_ns(ticks: u64) -> u64 {
+        let now = crate::instant::Instant::now();
+        now.ns_since_ticks(now.raw_ticks().saturating_sub(ticks))
+    }
+
+    /// One count, with no clock read, for the paths that only need a denominator.
+    pub fn tick(c: &AtomicU64) {
+        if !MAP_PROBE {
+            return;
+        }
+        add(c, 1);
     }
 }
 
@@ -402,6 +548,7 @@ impl ObjectPageTable {
         let frame = alloc_frame(
             FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL | FrameAllocFlags::WAIT_OK,
         );
+        crate::memory::frame::ensure_pt_zeroed(frame, "object page table root");
         frame.set_pt(true);
         frame.inc_refcount();
         let mut mapper = Mapper::new(frame.start_address());
@@ -701,11 +848,26 @@ impl ObjectPageTable {
     }
 
     pub fn run_consistency(&mut self, mut consist: Consistency) {
+        mapprobe::tick(&mapprobe::RC_CALLS);
+        if CONSIST_FASTPATH && consist.is_trivial() {
+            // Dropping `consist` here still flushes any dirty cache line through
+            // `ArchCacheLineMgr`'s Drop, which is the one thing that must not be skipped. The
+            // `DeferredUnmappingOps` this would otherwise park is empty, and both `take_deferred`
+            // callers only ever `run_all()` it, so not parking it is indistinguishable.
+            mapprobe::tick(&mapprobe::RC_TRIVIAL);
+            return;
+        }
+        let t_m = mapprobe::start();
         let pending = self.send_consistency(&mut consist);
+        mapprobe::record(&mapprobe::RC_SEND_NS, t_m);
+        let t_m = mapprobe::start();
         consist.tlb_mut().reset();
+        mapprobe::record(&mapprobe::RC_RESET_NS, t_m);
+        let t_m = mapprobe::start();
         consist.set_pending(pending);
         let ops = consist.into_deferred();
         self.park(ops);
+        mapprobe::record(&mapprobe::RC_PARK_NS, t_m);
     }
 
     /// Send the accumulated invalidations to every context this object is mapped into -- one
@@ -770,32 +932,63 @@ impl ObjectPageTable {
         // put 800 ns in the three spans while the call as a whole measured 35 us, and the two
         // instruments disagreeing is itself the thing to rule out. These are the same probe the
         // caller times the whole call with.
+        // `mapprobe` brackets the *whole* body as well as each piece, so the residual is measured
+        // rather than inferred: see [`mapprobe`]. The `allocprofile` records below are the frame
+        // allocator work's own instrument and stay where they are.
+        let t_body = mapprobe::start();
+        mapprobe::tick(&mapprobe::CALLS);
+        let t_probe_outer = mapprobe::start();
+        let t_probe = mapprobe::start();
+        mapprobe::record(&mapprobe::PROBE_NS, t_probe);
+        mapprobe::record(&mapprobe::PROBE_OUTER_NS, t_probe_outer);
+
         let t = allocprofile::start();
+        let t_m = mapprobe::start();
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
+        mapprobe::record(&mapprobe::CONS_NEW_NS, t_m);
+        let t_m = mapprobe::start();
         let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(Self::top_level(), 0),
-            FrameAllocFlags::WAIT_OK,
-        );
+        mapprobe::record(&mapprobe::TAKE_FA_NS, t_m);
+        let t_m = mapprobe::start();
+        let need = if PRECHARGE_EXACT {
+            self.mapper.tables_needed(&cursor)
+        } else {
+            cursor.max_number_new_tables(Self::top_level(), 0)
+        };
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
+        mapprobe::record(&mapprobe::PRECHARGE_NS, t_m);
+        let t_m = mapprobe::start();
         let mut phys = ContiguousProvider::new(
             page.start_address(),
             page.size(),
             MappingSettings::default_user(),
         );
+        mapprobe::record(&mapprobe::PROV_NS, t_m);
         allocprofile::record(&allocprofile::MAP_PREP_NS, t);
         let t = allocprofile::start();
+        let t_m = mapprobe::start();
         let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
+        mapprobe::record(&mapprobe::WALK_NS, t_m);
         allocprofile::record(&allocprofile::MAP_WALK_NS, t);
         let t = allocprofile::start();
+        let t_m = mapprobe::start();
         self.run_consistency(consist);
+        mapprobe::record(&mapprobe::CONSIST_NS, t_m);
         allocprofile::record(&allocprofile::MAP_CONSIST_NS, t);
         // Explicit, and timed: everything above sums to well under a microsecond while the call
         // as a whole measures 35 us after mapping churn, and this drop is the only thing left.
         let t = allocprofile::start();
+        let t_m = mapprobe::start();
         drop(fa);
+        mapprobe::record(&mapprobe::DROP_FA_NS, t_m);
+        let t_m = mapprobe::start();
         drop(phys);
+        mapprobe::record(&mapprobe::DROP_PHYS_NS, t_m);
         allocprofile::record(&allocprofile::MAP_DROP_NS, t);
+        mapprobe::record(&mapprobe::BODY_NS, t_body);
         r
     }
 
