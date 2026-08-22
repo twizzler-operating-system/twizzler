@@ -50,6 +50,27 @@ enum ZeroOrFrame {
 /// 2 MiB alignment is load-bearing in `pager_compl_handle_page_data`.
 const TRY_LARGE_ANON_PAGES: bool = false;
 
+/// Install an anonymous fault-around run in **one** descent of the object page table.
+///
+/// The fill loop below calls `map_page` once per page, and `map_page`'s cost is per *call*, not
+/// per page: a walk from the root, a `Consistency` construction, a `tables_needed` predictor, a
+/// frame-allocator borrow and take/drop, and a consistency epilogue. [`ANON_FAULT_AROUND`] is 4,
+/// so a zero-fill fault pays all of that four times to install four adjacent pages into the same
+/// leaf table. [`ObjectPageTable::map_frames`] pays it once.
+///
+/// The per-page spans it should collapse to a quarter (`many-pfdiag`, probe on, per `map_page`):
+/// `cons_new` 45, `precharge` 193 (of which the predictor is 113), `consist` 80, `drop_fa` 84,
+/// plus `descend` inside `walk`. What stays per page is the leaf entry write and the frame.
+///
+/// Falsifier is `PERFMARK-MAPFRAMES pages_per_call`, not the clock: ~400 (x100) means the runs
+/// coalesced, ~100 means they did not and anything the clock shows has another cause.
+const FILL_BATCH: bool = true;
+
+/// Cap on one batch. `ANON_FAULT_AROUND` is 4; `ensure_in_core` is reached with larger counts from
+/// other callers and the buffer is on the stack, so the bound is stated here rather than inherited
+/// from whoever called.
+const FILL_BATCH_MAX: usize = 16;
+
 /// Whether a volatile object's first touch of an empty region actually gets a large frame.
 ///
 /// The allocation below is a non-waiting `try_allocate` at level 1, so it fails silently and falls
@@ -483,6 +504,77 @@ impl Object {
         // be measured the same way for "sum of parts against the whole" to mean anything, and a
         // stage costs an interrupt-disable and a per-cpu lock per call -- five per page here.
         let t_loop = allocprofile::start();
+        if FILL_BATCH {
+            let mut i = 0;
+            while i < page_count {
+                let t = allocprofile::start();
+                let empty = guard.is_empty_at_level(page.offset(i).as_byte_offset() as u64, 0);
+                allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
+                if !empty {
+                    i += 1;
+                    continue;
+                }
+                // The emptiness check stays per page even though the install is batched:
+                // `Table::map` consumes an offer for an entry it finds present, so a run allowed
+                // to span one would drop that frame on the floor. Gather the maximal absent run.
+                let mut frames: heapless::Vec<FrameRef, FILL_BATCH_MAX> = heapless::Vec::new();
+                let mut j = i;
+                while j < page_count && !frames.is_full() {
+                    if j > i {
+                        let t = allocprofile::start();
+                        let empty =
+                            guard.is_empty_at_level(page.offset(j).as_byte_offset() as u64, 0);
+                        allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
+                        if !empty {
+                            break;
+                        }
+                    }
+                    let t = allocprofile::start();
+                    let frame = alloc.try_allocate();
+                    allocprofile::record(&allocprofile::FILL_TAKE_NS, t);
+                    let Some(frame) = frame else {
+                        // Out of precharge mid-run. A short batch is correct -- the next loop
+                        // iteration re-checks and retries -- but an empty one cannot make
+                        // progress, so that is the caller's error.
+                        if frames.is_empty() {
+                            return Err(ResourceError::OutOfMemory.into());
+                        }
+                        break;
+                    };
+                    let _ = frames.push(frame);
+                    j += 1;
+                }
+                *all_were_present = false;
+                allocprofile::add(&allocprofile::FILL_ITERS, frames.len() as u64);
+                let mut installed = 0;
+                let t = allocprofile::start();
+                let r = guard.map_frames(
+                    page.offset(i).as_byte_offset() as u64,
+                    &frames,
+                    true,
+                    &mut installed,
+                );
+                if allocprofile::TIME_ALLOCS {
+                    let dur = allocprofile::elapsed_ns(t);
+                    allocprofile::add(&allocprofile::FILL_MAP_NS, dur);
+                    allocprofile::record_map_bucket(dur);
+                }
+                if let Err(e) = r {
+                    log::error!(
+                        "failed to map {} pages at offset {:x} in object {}",
+                        frames.len(),
+                        page.offset(i).as_byte_offset(),
+                        self.id()
+                    );
+                    alloc.abort(frames[installed..].iter().copied());
+                    return Err(e);
+                }
+                i = j;
+            }
+            allocprofile::record(&allocprofile::FILL_LOOP_NS, t_loop);
+            record_stage(FaultStage::Fill, t_fill);
+            return Ok(guard);
+        }
         for i in 0..page_count {
             let offset = page.offset(i).as_byte_offset() as u64;
             let t = allocprofile::start();
@@ -506,7 +598,9 @@ impl Object {
                 allocprofile::record(&allocprofile::FILL_TAKE_NS, t);
                 let t = allocprofile::start();
                 let ints = crate::interrupt::taken();
-                let r = guard.map_page(offset, frame);
+                // The anonymous fill is the whole probed population: a frame allocated zeroed
+                // here, installed here, and never seen by the pager. See `zeroprobe`.
+                let r = guard.map_page_probed(offset, frame, true);
                 if allocprofile::TIME_ALLOCS {
                     allocprofile::add(
                         &allocprofile::FILL_MAP_INTS,

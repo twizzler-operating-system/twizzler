@@ -651,11 +651,12 @@ impl Thread {
     /// `as_ptr`, deliberately not `borrow`/`try_borrow`. The callers that matter read this off
     /// *another* thread -- `check_system_hang` walks every thread -- and `BorrowRef::new` bumps the
     /// borrow counter with a *non-atomic* read-modify-write. Racing the owner's `borrow_mut` in
-    /// `set_upcall_restore_frame`, that stale increment lands after the writer's flag and leaves the
-    /// counter reading "shared" while a mutable guard is live. The owner's guard drop then trips
-    /// `debug_assert!(is_writing(..))` and halts the cpu; in release, where that assert is compiled
-    /// out, the drop instead latches the counter at 2 and a later `borrow_mut` hard-panics.
-    /// `try_borrow` only stops the *reader* panicking -- it does not make the race go away.
+    /// `set_upcall_restore_frame`, that stale increment lands after the writer's flag and leaves
+    /// the counter reading "shared" while a mutable guard is live. The owner's guard drop then
+    /// trips `debug_assert!(is_writing(..))` and halts the cpu; in release, where that assert
+    /// is compiled out, the drop instead latches the counter at 2 and a later `borrow_mut`
+    /// hard-panics. `try_borrow` only stops the *reader* panicking -- it does not make the race
+    /// go away.
     ///
     /// `as_ptr` touches no bookkeeping, so a racing read costs a torn value, not the machine. Zero
     /// is what this already returns for a thread with no registers, so callers tolerate it.

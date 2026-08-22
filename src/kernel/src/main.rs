@@ -287,6 +287,16 @@ static BG_ZERO_SPINLOCK: spinlock::Spinlock<()> = spinlock::Spinlock::new(());
 
 extern "C" fn background_worker() {
     loop {
+        // Frame cache first: its trim is what returns cached memory under pressure, and its
+        // zeroing feeds the path that would otherwise memset inline on a fault. Both are cheap
+        // no-ops when the cache is disabled or has nothing to do, so this costs an atomic load
+        // per pass in the arm where it is off.
+        if memory::framecache::service() {
+            processor::sched::schedule(
+                SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT,
+            );
+            continue;
+        }
         if !memory::frame::background_zero_iter() {
             let guard = BG_ZERO_SPINLOCK.lock();
             let _ = BG_ZERO_CV.wait(guard);

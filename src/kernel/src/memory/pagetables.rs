@@ -8,6 +8,7 @@ mod phys_provider;
 mod reader;
 mod settings;
 mod table;
+pub mod zeroprobe;
 
 pub use consistency::{
     Consistency, DeferredUnmappingOps, TlbOrigin, fill_stats, print_shootdown_counters,
@@ -17,7 +18,8 @@ pub use consistency::{
 pub use cursor::MappingCursor;
 pub use mapper::Mapper;
 pub use phys_provider::{
-    ContiguousProvider, PhysAddrProvider, PhysMapInfo, UninitPageProvider, ZeroPageProvider,
+    ContiguousProvider, FrameSliceProvider, PhysAddrProvider, PhysMapInfo, UninitPageProvider,
+    ZeroPageProvider,
 };
 pub use reader::{MapInfo, MapReader};
 pub use settings::{MappingFlags, MappingSettings};

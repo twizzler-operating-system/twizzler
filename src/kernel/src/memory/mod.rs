@@ -5,6 +5,7 @@ use crate::{BootInfo, arch, memory::context::virtmem::fault, security::KERNEL_SC
 pub mod allocator;
 pub mod context;
 pub mod frame;
+pub mod framecache;
 pub mod kalloc_census;
 pub mod kalloc_track;
 pub mod pagetables;
@@ -52,6 +53,9 @@ pub fn init(boot_info: &dyn BootInfo) {
     kc.switch_to(KERNEL_SCTX);
     kc.init_allocator();
     allocator::init(kc);
+    // After the allocator: this is the one place the frame cache is allowed to reach the kernel
+    // heap, and every path in it afterwards is one that must not.
+    framecache::init();
     // set flag to indicate that mm system is initalized
     MEM_INIT.store(true, Ordering::SeqCst);
 }

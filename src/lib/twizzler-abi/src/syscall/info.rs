@@ -125,6 +125,19 @@ pub struct TrackerStats {
     pub waiting: usize,
     /// Whether the reclaim heuristic is currently latched on.
     pub reclaiming: bool,
+    /// Frames sitting in a per-cpu frame cache rather than in live use.
+    ///
+    /// A subset of `kernel_used + page_data`: a cached frame stays `ALLOCATED` and stays charged
+    /// to whatever class its last owner had, because moving the charge at cache-entry would make
+    /// parking look like a systematic drain of `page_data` into `kernel_used`. That makes cache
+    /// occupancy and a genuine leak *indistinguishable* in either class counter on its own, and in
+    /// `idle`/`free_pages` too -- a cached frame has left the allocator's free list exactly as a
+    /// leaked one has.
+    ///
+    /// So this exists to be subtracted. `kernel_used + page_data - pooled` is the live charged
+    /// population and is the quantity a leak fit should be run against. Appended to the struct
+    /// rather than inserted for the usual `repr(C)` reason.
+    pub pooled: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Default)]

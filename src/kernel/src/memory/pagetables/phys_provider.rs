@@ -12,6 +12,18 @@ pub struct PhysMapInfo {
     pub addr: PhysAddr,
     pub len: usize,
     pub settings: MappingSettings,
+    /// The frame at `addr`, when the provider already holds it.
+    ///
+    /// `Table::map` takes a reference on the frame it installs and finds it with
+    /// `get_frame(paddr.addr)` -- a linear scan over every frame indexer followed by a load from
+    /// the frame array. Every provider that allocates a frame, or is handed one, already has the
+    /// answer and discards it reducing itself to an address.
+    ///
+    /// **Only set this when `addr` is the frame's own start address**, because that is the only
+    /// case where it equals what `get_frame(addr)` would have returned: the frame array is indexed
+    /// per 4 KiB, so an offer taken mid-way into a larger frame resolves to a different `Frame`.
+    /// `None` means "look it up", which is exactly the previous behaviour.
+    pub frame: Option<FrameRef>,
 }
 
 /// A trait for providing a set of physical pages to the mapping function.
@@ -86,6 +98,7 @@ impl PhysAddrProvider for ZeroPageProvider {
                 addr: frame.start_address(),
                 len: frame.size(),
                 settings: self.settings,
+                frame: Some(frame),
             }),
             None => {
                 let frame = alloc_frame(self.flags);
@@ -94,6 +107,7 @@ impl PhysAddrProvider for ZeroPageProvider {
                     addr: frame.start_address(),
                     len: frame.size(),
                     settings: self.settings,
+                    frame: Some(frame),
                 })
             }
         }
@@ -109,6 +123,54 @@ impl Drop for ZeroPageProvider {
         if let Some(f) = self.current.take() {
             free_frame(f);
         }
+    }
+}
+
+/// Offers a run of separately-allocated frames, one frame per offer.
+///
+/// Each offer is capped at that frame's own size, for the reason
+/// [`ContiguousProvider::new_of_page_size`] gives: `Table::can_map_at` tests the length the
+/// provider *offers*, so a run offered whole becomes one huge entry holding a single refcount over
+/// memory owned by many frames. Here the cap is structural rather than a parameter -- `peek`
+/// cannot offer more than one frame, because it does not know the next one is adjacent.
+///
+/// `Table::map` consumes an offer for an entry it finds **already present** without mapping it, so
+/// the caller must have established that every offset in the run is absent -- otherwise a frame is
+/// silently dropped. [`Self::consumed`] is what a partial failure aborts the tail from.
+pub struct FrameSliceProvider<'a> {
+    frames: &'a [FrameRef],
+    idx: usize,
+    settings: MappingSettings,
+}
+
+impl<'a> FrameSliceProvider<'a> {
+    pub fn new(frames: &'a [FrameRef], settings: MappingSettings) -> Self {
+        Self {
+            frames,
+            idx: 0,
+            settings,
+        }
+    }
+
+    /// How many offers `Table::map` took. The tail is untouched and still the caller's.
+    pub fn consumed(&self) -> usize {
+        self.idx
+    }
+}
+
+impl PhysAddrProvider for FrameSliceProvider<'_> {
+    fn peek(&mut self) -> Option<PhysMapInfo> {
+        let frame = self.frames.get(self.idx)?;
+        Some(PhysMapInfo {
+            addr: frame.start_address(),
+            len: frame.size(),
+            settings: self.settings,
+            frame: Some(*frame),
+        })
+    }
+
+    fn consume(&mut self, _len: usize) {
+        self.idx += 1;
     }
 }
 
@@ -162,6 +224,9 @@ impl PhysAddrProvider for ContiguousProvider {
             addr: self.next?,
             len: self.rem.min(self.max_peek),
             settings: self.settings,
+            // A raw physical range: there may be no `Frame` behind it at all (MMIO), so this
+            // provider cannot answer and `Table::map` falls back to the lookup.
+            frame: None,
         })
     }
 

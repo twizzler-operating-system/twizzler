@@ -5,6 +5,27 @@ what it measured, and the one finding it has produced so far. The four static au
 ([kleaks.md](kleaks.md), [mleaks.md](mleaks.md), [oleaks.md](oleaks.md), [pleaks.md](pleaks.md))
 all open with "nothing here was run"; this is the instrument that runs things.
 
+> **Continued in [leakcheck2.md](leakcheck2.md) -> [leakcheck3.md](leakcheck3.md) ->
+> [leakcheck4.md](leakcheck4.md).** `leakcheck4.md` is the current state as of 2026-08-22: 42 ops,
+> 21 retaining nothing on any readout, objects and threads clean under a repeat-pass test, and the
+> remaining items small and named. Read it before acting on a verdict in this file.
+>
+> **Two things about this instrument that affect how the tables below should be read**, both found
+> 2026-08-22 and both since documented:
+>
+> - **`LEAKCHECK-CLEAN` covers only the fitted counters.** It is printed for ops holding thousands
+>   of bytes per iteration in `kalloc` or the userspace heap — all three deliberate-leak controls
+>   are marked clean while leaking. A "clean" verdict in this file means "the fits found nothing",
+>   not "nothing was retained".
+> - **`pages_gained` is one-sided.** `census::diff` keeps only `growth() > 0` over `after.pages`, so
+>   objects that shrank are filtered out and objects that disappeared are absent. It ranks
+>   candidates; it does not measure retention. The net columns are `objects_before`/`objects_after`
+>   and `net=` on the `LEAKCHECK-FIT` line ("measured between two quiesced states").
+>
+> Also: a `slope=` fitted *during* an op counts anything with asynchronous teardown — thread
+> reaping, deferred frame frees, the per-cpu frame pool — as growth. Several verdicts here were
+> reached from slopes; `net=` is what says whether anything stayed.
+
 ## What was built
 
 **ABI**: `MemoryStats` gained a `tracker: TrackerStats` field

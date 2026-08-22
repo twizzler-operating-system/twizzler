@@ -333,6 +333,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 object::mapstats::print();
                 object::createprofile::print();
                 object::copystats::print();
+                crate::memory::pagetables::zeroprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(

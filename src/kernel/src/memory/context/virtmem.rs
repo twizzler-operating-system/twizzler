@@ -1,8 +1,6 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-
-use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, intrusive_adapter};
 use core::{
     marker::PhantomData,
     mem::size_of,
@@ -11,6 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, intrusive_adapter};
 use region::{MapRegion, RegionManager};
 use twizzler_abi::{
     device::CacheType,
@@ -608,6 +607,9 @@ impl PhysAddrProvider for ObjectPageProvider {
             addr: page.0.start_address().offset(self.inner_pos).unwrap(),
             len: PageNumber::PAGE_SIZE * page.0.nr_pages() - self.inner_pos,
             settings: page.1,
+            // Only at the frame's own base: past that the offer is mid-frame, and the frame array
+            // is indexed per 4 KiB, so `get_frame(addr)` would resolve to a different `Frame`.
+            frame: (self.inner_pos == 0).then_some(page.0),
         })
     }
 
@@ -1096,10 +1098,10 @@ impl VirtContext {
             // this runs from `SecurityContext::drop` -- so a spin is the right shape.
             //
             // Cannot deadlock against itself: the only caller is that destructor, reached via
-            // `with_each_context`, which iterates outside the ALL_CONTEXTS mutex; and no `with_arch`
-            // callback touches a `SecurityContextRef`, so no thread can be inside one while
-            // dropping the last reference to the same context. The wait is bounded by callback
-            // duration.
+            // `with_each_context`, which iterates outside the ALL_CONTEXTS mutex; and no
+            // `with_arch` callback touches a `SecurityContextRef`, so no thread can be
+            // inside one while dropping the last reference to the same context. The
+            // wait is bounded by callback duration.
             // Yields rather than spinning bare, and that distinction is load-bearing. A
             // `SlotGuard` is held across a callback that does real work -- `arch.object_map`, TLB
             // batching -- so a timer can preempt its holder mid-callback. A pure spin here then

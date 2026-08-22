@@ -77,6 +77,20 @@ impl MappingCursor {
         level
     }
 
+    /// The part of this cursor lying inside the entry at `level` that `start()` falls in.
+    ///
+    /// `Table::map` walks one entry at a time, advancing by `level_to_page_size(level)`; a walk
+    /// that has to reason about each entry separately needs the same step expressed as a
+    /// sub-range. Clipped to what remains, so the last entry of a range is not over-stated.
+    pub fn clipped_to_entry(&self, level: usize) -> Self {
+        let size = Table::level_to_page_size(level);
+        let off = self.start.raw() as usize % size;
+        Self {
+            start: self.start,
+            len: self.len.min(size - off),
+        }
+    }
+
     pub fn max_number_new_tables(&self, level: usize, cutoff: usize) -> usize {
         let mut count = 0;
         let mut current_level = level;

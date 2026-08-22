@@ -302,20 +302,24 @@ pub fn open_handle() -> Result<Descriptor> {
     static OPENS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     let n = OPENS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Distinct *caller threads* ever seen, which is the one inferred link in the chain.
-    //
-    // The measured facts are that ferroc claims base chunks here and never returns them, and that
-    // ferroc retires a thread's heap through a pthread destructor that a *gate-entering* thread
-    // never runs (it never exits this compartment). The step from those to "so chunks accumulate
-    // per entering thread" is inference, and it has a premise that can simply be false: it needs
-    // distinct threads to keep arriving. A count that grows with spawns supports it; a bounded one
-    // kills it outright, and the rest of the chain with it.
-    static SEEN_THREADS: Mutex<Option<std::collections::BTreeSet<u128>>> = Mutex::new(None);
-    let distinct_threads = {
-        let mut g = SEEN_THREADS.lock().unwrap();
-        let set = g.get_or_insert_with(std::collections::BTreeSet::new);
-        set.insert(info.thread_id().raw());
-        set.len()
+    // Caller-thread identity. Settled: `threads == opens + 1` at all 42 samples of
+    // many-d3-naming6, so gate calls really do each arrive on a distinct thread -- but ferroc's
+    // base chunks are flat across the same run, which kills the "entering threads accumulate
+    // ferroc chunks" chain at its last link regardless. The set that settled it grew one u128 per
+    // gate call and was never trimmed, making it 89.6% of the residual it was measuring. Constant
+    // space now: only a repeated id would falsify the premise, and catching a repeat costs a word.
+    static PREV_TID: Mutex<u128> = Mutex::new(0);
+    static TID_REPEATS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    let tid_repeats = {
+        let tid = info.thread_id().raw();
+        let mut g = PREV_TID.lock().unwrap();
+        let rep = if *g == tid {
+            TID_REPEATS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1
+        } else {
+            TID_REPEATS.load(core::sync::atomic::Ordering::Relaxed)
+        };
+        *g = tid;
+        rep
     };
     if n % 32 == 0 {
         let (ns, names, order, pinned) = naming_core::cache_stats();
@@ -324,9 +328,9 @@ pub fn open_handle() -> Result<Descriptor> {
         heap_objects_line();
         base_chunk_line();
         twizzler_abi::klog_println!(
-            "NAMING-HANDLES opens={} threads={} live_total={} compartments={} ns_cached={} ns_pinned={} names={} order={}",
+            "NAMING-HANDLES opens={} tid_repeats={} live_total={} compartments={} ns_cached={} ns_pinned={} names={} order={}",
             n,
-            distinct_threads,
+            tid_repeats,
             binding.total_count(),
             binding.handles().map(|h| h.0).collect::<std::collections::BTreeSet<_>>().len(),
             ns,
@@ -844,7 +848,7 @@ fn heap_census_line() {
         rows.push((c, ac - fc, ab - fb, ac));
     }
     rows.sort_by_key(|r| -(r.2.abs()));
-    for (c, net_count, net_bytes, allocs) in rows.into_iter().take(3) {
+    for (c, net_count, net_bytes, allocs) in rows.into_iter() {
         twizzler_abi::klog_println!(
             "NAMING-HEAPCENSUS-CLASS le={} allocs={} net_count={} net_bytes={}",
             1u64 << c,
@@ -883,7 +887,7 @@ fn heap_census_line() {
         tot_bytes,
         tot.len()
     );
-    for (c, net_count, net_bytes) in tot.into_iter().take(6) {
+    for (c, net_count, net_bytes) in tot.into_iter() {
         twizzler_abi::klog_println!(
             "NAMING-HEAPCENSUS-TOTALCLASS le={} net_count={} net_bytes={}",
             1u64 << c,

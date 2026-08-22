@@ -1171,6 +1171,20 @@ impl PhysicalFrameAllocator {
     }
 }
 
+/// Answer `get_frame` from precomputed bounds instead of rebuilding them per call.
+///
+/// [`FrameIndexer::contains`] recomputed its upper bound every time as `start.offset(len)`, which
+/// is `PhysAddr::offset` -> `PhysAddr::new` -> `get_phys_addr_width()` -> a `Once::call_once`
+/// (an atomic load), plus a `checked_add`, a `Result` and an `unwrap`. That runs once per
+/// *indexer*, [`get_frame`] scans every indexer, and the map path calls `get_frame` twice per
+/// mapped page: `W_COW_GF_NS` = 82 ns and `W_LEAF_GF_NS` = 44 ns per `map_page` (`many-pfdiag`).
+/// Bounds are fixed at construction, so none of it has to be recomputed.
+///
+/// Gated so the two bodies can be measured against each other in one source tree. `W_COW_GF_NS`
+/// is the clean read on this change alone -- the COW lookup has no other fix in flight, while
+/// `W_LEAF_GF_NS` also moves with [`PROVIDER_CARRIES_FRAME`].
+const FRAME_LOOKUP_FAST: bool = false;
+
 #[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
 
@@ -1178,6 +1192,16 @@ static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
 struct FrameIndexer {
     start: PhysAddr,
     len: usize,
+    /// `start.raw()` and `start.raw() + len`, precomputed.
+    ///
+    /// `contains` used to build the upper bound per call: `start.offset(len)` is
+    /// `PhysAddr::offset` -> `PhysAddr::new` -> `get_phys_addr_width()` -> a `Once::call_once`,
+    /// plus a `checked_add`, a `Result` and an `unwrap`. That is per *indexer*, and
+    /// [`get_frame`] scans every indexer, and the map path calls `get_frame` twice per page --
+    /// once to read the next table's COW bit and once to take a reference on the frame it is
+    /// installing. Bounds do not move after construction, so none of that has to be recomputed.
+    start_raw: u64,
+    end_raw: u64,
     frame_array_ptr: *const Frame,
     frame_array_len: usize,
 }
@@ -1197,6 +1221,8 @@ impl FrameIndexer {
         Self {
             start,
             len,
+            start_raw: start.raw(),
+            end_raw: start.raw() + len as u64,
             frame_array_ptr,
             frame_array_len,
         }
@@ -1213,12 +1239,23 @@ impl FrameIndexer {
     }
 
     fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
-        if !self.contains(pa) {
+        if !FRAME_LOOKUP_FAST {
+            if !self.contains(pa) {
+                return None;
+            }
+            let index = (pa - self.start) / FRAME_SIZE;
+            assert!(index < self.frame_array_len);
+            let frame = &self.frame_array()[index as usize];
+            // Safety: the frame array is static for the life of the kernel
+            return Some(unsafe { transmute(frame) });
+        }
+        let raw = pa.raw();
+        if raw < self.start_raw || raw >= self.end_raw {
             return None;
         }
-        let index = (pa - self.start) / FRAME_SIZE;
+        let index = ((raw - self.start_raw) as usize) / FRAME_SIZE;
         assert!(index < self.frame_array_len);
-        let frame = &self.frame_array()[index as usize];
+        let frame = &self.frame_array()[index];
         // Safety: the frame array is static for the life of the kernel
         Some(unsafe { transmute(frame) })
     }
@@ -1235,7 +1272,11 @@ impl FrameIndexer {
     }
 
     fn contains(&self, pa: PhysAddr) -> bool {
-        pa >= self.start && pa < (self.start.offset(self.len).unwrap())
+        if !FRAME_LOOKUP_FAST {
+            return pa >= self.start && pa < (self.start.offset(self.len).unwrap());
+        }
+        let raw = pa.raw();
+        raw >= self.start_raw && raw < self.end_raw
     }
 }
 
@@ -1280,7 +1321,7 @@ pub(super) fn raw_alloc_frames(
     flags: PhysicalFrameFlags,
     layout: Layout,
     count: usize,
-    out: &mut alloc::vec::Vec<FrameRef>,
+    out: &mut crate::memory::tracker::FrameStore,
 ) -> usize {
     let mut total = 0;
     while total < count {
@@ -1365,17 +1406,11 @@ pub fn ensure_pt_zeroed(frame: FrameRef, whence: &str) {
     if !PT_ZERO_CHECK.load(Ordering::Relaxed) {
         return;
     }
-    crate::memory::tracker::allocprofile::add(
-        &crate::memory::tracker::allocprofile::PT_CHECKED,
-        1,
-    );
+    crate::memory::tracker::allocprofile::add(&crate::memory::tracker::allocprofile::PT_CHECKED, 1);
     if frame.as_slice::<u64>().iter().all(|x| *x == 0) {
         return;
     }
-    crate::memory::tracker::allocprofile::add(
-        &crate::memory::tracker::allocprofile::PT_DIRTY,
-        1,
-    );
+    crate::memory::tracker::allocprofile::add(&crate::memory::tracker::allocprofile::PT_DIRTY, 1);
     let n = DIRTY_PT_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
     if n.is_power_of_two() {
         log::warn!(
@@ -1698,7 +1733,7 @@ mod tests {
     /// in between and fails the readback, which the per-hand-out `!ALLOCATED` assert cannot see.
     fn bulk_worker(tid: u64) {
         const ITERS: usize = 300;
-        let mut out: Vec<FrameRef> = Vec::new();
+        let mut out = crate::memory::tracker::FrameStore::new();
         for it in 0..ITERS {
             out.clear();
             let want = 1 + (quick_random() as usize % 48);
@@ -1737,7 +1772,7 @@ mod tests {
             // Churn the split/group-tracking path: take a large frame apart and free its
             // children one at a time, which restores a fully-free group for coalescing.
             if it % 16 == 0 {
-                let mut lout: Vec<FrameRef> = Vec::new();
+                let mut lout = crate::memory::tracker::FrameStore::new();
                 if try_alloc_frames(
                     FrameAllocFlags::empty(),
                     PHYS_LEVEL_LAYOUTS[1],
@@ -1759,7 +1794,7 @@ mod tests {
                     }
                 }
             }
-            for frame in out.drain(..) {
+            for frame in out.drain_all() {
                 free_frame(frame);
             }
         }

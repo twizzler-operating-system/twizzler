@@ -109,6 +109,9 @@ bitflags::bitflags! {
         const AVAIL_1 = 1 << 9;
         const OBJECT_TABLE = 1 << 10;
         const WIRED = 1 << 11;
+        /// Software bit. Bits 52-58 are available in every entry type on x86-64; 59-62 are
+        /// protection keys, so this is the low end of the safe range.
+        const PROBED = 1 << 52;
         const NO_EXECUTE = 1 << 63;
     }
 }
@@ -127,6 +130,9 @@ impl EntryFlags {
         }
         if self.contains(EntryFlags::USER) {
             flags.insert(MappingFlags::USER);
+        }
+        if self.contains(EntryFlags::PROBED) {
+            flags.insert(MappingFlags::PROBE);
         }
         flags
     }
@@ -210,6 +216,11 @@ impl From<&MappingSettings> for EntryFlags {
         } else {
             EntryFlags::empty()
         };
-        p | c | f | u | w
+        let pr = if settings.flags().contains(MappingFlags::PROBE) {
+            EntryFlags::PROBED
+        } else {
+            EntryFlags::empty()
+        };
+        p | c | f | u | w | pr
     }
 }

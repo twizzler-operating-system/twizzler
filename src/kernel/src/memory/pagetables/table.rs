@@ -8,12 +8,20 @@ use crate::{
     },
     memory::{
         frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
-        pagetables::{Mapper, MappingFlags},
+        pagetables::{Mapper, MappingFlags, zeroprobe},
         tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame},
     },
 };
 
 const LOG_LEVEL: log::Level = log::Level::Debug;
+
+/// Take the frame `Table::map` installs from the provider when it already has it, instead of
+/// looking it up by physical address.
+///
+/// See [`super::PhysMapInfo::frame`]. Off, this is `get_frame(paddr.addr)` exactly as before, so
+/// the pair (`FRAME_LOOKUP_FAST`, this) attributes cleanly: `W_COW_GF_NS` moves only with the
+/// first, `W_LEAF_GF_NS` with both.
+const PROVIDER_CARRIES_FRAME: bool = false;
 
 /// Large pages taken apart again.
 ///
@@ -334,6 +342,17 @@ impl Table {
         // CLFLUSHOPT is weakly ordered and would need an explicit SFENCE, so a later
         // conversion of `ArchCacheLineMgr` to `clflushopt` must restore a fence here. It is
         // `clflush` specifically that makes this safe, not "x86 orders stores".
+        //
+        // **That last sentence is now contradicted deliberately, not by accident.** On amd64
+        // `PT_CLFLUSH` is off, so the `clflush` leg is gone entirely; what carries the ordering
+        // there is exactly the thing the sentence rules out. x86-TSO does not reorder stores with
+        // stores, so the downgrade loop's writes are visible before the entry write below to every
+        // coherent observer, and on x86 the page-table walker is one. The sentence is right about
+        // `clflush` being ordered and CLFLUSHOPT not being; it is wrong that store ordering alone
+        // is insufficient *on this architecture*. The fragility it names is real for aarch64,
+        // whose walker may not be coherent and whose `ArchCacheLineMgr` still issues
+        // `dc cvac; dsb ishst; isb` -- which is why the gate is amd64-local and this call site is
+        // unchanged. If the flush ever comes back on amd64 as `clflushopt`, restore a fence here.
         let new_flags = flags
             | EntryFlags::WRITE
             | if mark_dirty {
@@ -660,42 +679,113 @@ impl Table {
     /// sequential fault run the tables exist already: measured at **one `populate` per 205
     /// `map_page` calls** on `page_fault_zero_fill`.
     ///
-    /// Exact only in the safe direction. Every case that might allocate returns "every level from
-    /// here down, plus one", which over-counts a split (whose new table is fully populated) and a
-    /// COW copy (one frame, not a chain). Under-counting is the failure that matters: the caller
-    /// precharges this and a short precharge means `try_allocate` reaches the global allocator
-    /// with no `WAIT_OK` while the object's page-table lock is held. `FA_ALLOC_AVOID_EMPTY` --
+    /// **This mirrors [`Self::map`]'s own loop**, entry by entry, rather than following the single
+    /// path under `cursor.start()`. An earlier version walked one path, which is exact for the
+    /// one-page cursor `map_page` hands it and a silent under-count for anything longer: a range
+    /// spanning 512 level-1 entries can need 512 tables and the path walk would have answered
+    /// with what the *first* one needed. Under-counting is the failure that matters -- the caller
+    /// precharges this, and a short precharge sends `try_allocate` to the global allocator with no
+    /// `WAIT_OK` while the object's page-table lock is held. `FA_ALLOC_AVOID_EMPTY` --
     /// `avoid-empty=` on `PERFMARK-FA` -- is the live tripwire for exactly that and must stay 0.
+    ///
+    /// Exact only in the safe direction elsewhere too: a present huge entry is charged for a split
+    /// `map` will not actually perform (it skips huge entries), and an unfollowable entry is
+    /// charged as if absent.
+    ///
+    /// `examined` accumulates entries inspected, which is the cost of asking. It is the thing to
+    /// read before extending this to a whole-object cursor: the walk descends only where a table
+    /// is present, so an absent subtree costs one entry, but a fully-populated 1 GiB object costs
+    /// 1 + 512.
     ///
     /// Correct to read without synchronisation because callers hold the object's page-table lock
     /// across both this and the `map` it predicts for, so nothing can install or remove a table in
     /// between.
-    pub(super) fn tables_needed(&self, cursor: &MappingCursor, level: usize) -> usize {
+    pub(super) fn tables_needed(
+        &self,
+        cursor: &MappingCursor,
+        level: usize,
+        examined: &mut usize,
+    ) -> usize {
         if level == 0 {
             return 0;
         }
-        let idx = Self::get_index(cursor.start(), level);
-        let entry = self[idx];
-        // Absent: `map` populates here and, below, at every remaining level.
+        let start_index = Self::get_index(cursor.start(), level);
+        let mut cur = *cursor;
+        let mut count = 0;
+        for idx in start_index..Self::PAGE_TABLE_ENTRIES {
+            if cur.remaining() == 0 {
+                break;
+            }
+            *examined += 1;
+            let entry = self[idx];
+            let sub = cur.clipped_to_entry(level);
+            if !entry.is_present() {
+                // Absent: `map` populates here and, below, at every remaining level, for the whole
+                // of this entry's share of the range.
+                count += sub.max_number_new_tables(level, 0);
+            } else if entry.is_huge() && Self::can_map_at_level(level) {
+                // Huge and splittable: `split_huge` allocates the table it installs.
+                count += 1 + sub.max_number_new_tables(level, 0);
+            } else if let Some(next) = self.next_table(idx) {
+                // A COW intermediate: `map` calls `do_cow_copy`, which allocates a replacement
+                // table. Checked rather than assumed absent -- `setup_cow_range` marks these, so
+                // it is reachable whenever an object has been cloned.
+                let cow = self.next_table_frame(idx).is_some_and(|f| f.is_cow());
+                count +=
+                    usize::from(cow) + next.tables_needed(&sub, Self::next_level(level), examined);
+            } else {
+                // `is_present() && !is_huge()` should always resolve, but a table we cannot follow
+                // is one we cannot make a claim about.
+                count += sub.max_number_new_tables(level, 0);
+            }
+            let Some(next) = cur.align_advance(Self::level_to_page_size(level)) else {
+                break;
+            };
+            cur = next;
+        }
+        count
+    }
+
+    /// How many frames a [`Self::cow_copy`] of the path under `cursor.start()` may allocate.
+    ///
+    /// A different question from [`Self::tables_needed`], and it has to be asked separately:
+    /// `cow_copy` allocates from `do_cow_copy` (only for an entry whose frame is marked COW) and
+    /// from `split_huge`, never from `populate`, so a predictor written for `map` does not
+    /// describe it. It descends one path, so the walk is at most `top_level + 1` entries.
+    ///
+    /// This is also strictly more than the geometric answer it replaces in the worst case, and
+    /// deliberately so. `maybe_cow_at` charged `max_number_new_tables(top_level, 0)` -- 2 on
+    /// object tables -- while a path that is COW at every level allocates at level 2 (replacement
+    /// intermediate), level 1 (its child) and level 0 (the data frame): **three**. That
+    /// under-count has never tripped `avoid-empty` only because the bench that watches it
+    /// (`page_fault_zero_fill`) reports `cow` count 0, i.e. the tripwire has no positive control
+    /// on this path.
+    pub(super) fn cow_tables_needed(
+        &self,
+        cursor: &MappingCursor,
+        level: usize,
+        examined: &mut usize,
+    ) -> usize {
+        let index = Self::get_index(cursor.start(), level);
+        *examined += 1;
+        let entry = self[index];
         if !entry.is_present() {
-            return level;
+            return 0;
         }
-        // Huge and splittable: `split_huge` allocates the table it installs.
-        if entry.is_huge() && Self::can_map_at_level(level) {
-            return level + 1;
+        if entry.is_huge() && level != Self::last_level() {
+            // `split_huge` allocates the table it installs, and `cow_copy` then descends into it.
+            // What that descent finds is a table that did not exist when we looked, so charge the
+            // whole remaining chain rather than claiming to know.
+            return 1 + level;
         }
-        // A COW intermediate: `map` calls `do_cow_copy`, which allocates a replacement table.
-        // Checked rather than assumed absent -- `setup_cow_range` marks these, so it is reachable
-        // whenever an object has been cloned.
-        if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
-            return level + 1;
+        let mut count =
+            usize::from(get_frame(entry.addr(level)).is_some_and(|frame| frame.is_cow()));
+        if level > 0
+            && let Some(next) = self.next_table(index)
+        {
+            count += next.cow_tables_needed(cursor, Self::next_level(level), examined);
         }
-        match self.next_table(idx) {
-            Some(next) => next.tables_needed(cursor, Self::next_level(level)),
-            // `is_present() && !is_huge()` should always resolve, but a table we cannot follow is
-            // one we cannot make a claim about.
-            None => level,
-        }
+        count
     }
 
     pub(super) fn map(
@@ -737,7 +827,14 @@ impl Table {
                 paddr.len,
                 level,
             ) {
-                if let Some(frame) = get_frame(paddr.addr)
+                let t_leaf = crate::obj::pagetables::mapprobe::start();
+                let t_gf = crate::obj::pagetables::mapprobe::start();
+                let known = if PROVIDER_CARRIES_FRAME {
+                    paddr.frame
+                } else {
+                    None
+                };
+                if let Some(frame) = known.or_else(|| get_frame(paddr.addr))
                     && !paddr.settings.flags().contains(MappingFlags::WIRED)
                 {
                     log::trace!(
@@ -750,13 +847,31 @@ impl Table {
                     assert!(!frame.is_pt());
                     frame.inc_refcount();
                 }
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::W_LEAF_GF_NS,
+                    t_gf,
+                );
+                // `DIRTY` here means "may need writeback", not "was written" -- the kernel writes
+                // object data through the direct map, which this entry never sees. A probed
+                // mapping opts out so unmap can read the bit for what the hardware put there;
+                // only anonymous fills do that, and their dirty list is discarded. Per entry, not
+                // per call: a provider covering several pages probes each one it installs.
+                let probed =
+                    zeroprobe::ENABLED && paddr.settings.flags().contains(MappingFlags::PROBE);
+                if probed {
+                    zeroprobe::record_install();
+                }
                 self.update_entry(
                     consist,
                     idx,
                     Entry::new(
                         paddr.addr,
                         EntryFlags::from(&paddr.settings)
-                            | EntryFlags::DIRTY
+                            | if probed {
+                                EntryFlags::empty()
+                            } else {
+                                EntryFlags::DIRTY
+                            }
                             | if level != Self::last_level() {
                                 EntryFlags::huge()
                             } else {
@@ -768,13 +883,39 @@ impl Table {
                     level,
                 );
                 phys.consume(Self::level_to_page_size(level));
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::W_LEAF_NS,
+                    t_leaf,
+                );
+                crate::obj::pagetables::mapprobe::tick(
+                    &crate::obj::pagetables::mapprobe::W_LEAF_CALLS,
+                );
             } else {
                 assert_ne!(level, Self::last_level());
+                let t_desc = crate::obj::pagetables::mapprobe::start();
+                let t_pop = crate::obj::pagetables::mapprobe::start();
                 self.populate(idx, EntryFlags::intermediate(), fa)?;
-                if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::W_POPULATE_NS,
+                    t_pop,
+                );
+                // Split out rather than left inline: the lookup is the measured quantity and the
+                // branch is almost never taken, so timing the `if` would time the wrong thing.
+                let t_cow = crate::obj::pagetables::mapprobe::start();
+                let next_is_cow = self.next_table_frame(idx).is_some_and(|f| f.is_cow());
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::W_COW_GF_NS,
+                    t_cow,
+                );
+                if next_is_cow {
                     self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
+                // Recorded before descending: a parent's span must not contain its child's.
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::W_DESCEND_NS,
+                    t_desc,
+                );
                 next_table.map(consist, cursor, Self::next_level(level), phys, fa)?;
             }
 
@@ -837,6 +978,9 @@ impl Table {
                         frame.get_flags(),
                         flags,
                     );
+                    if zeroprobe::ENABLED && flags.contains(EntryFlags::PROBED) {
+                        zeroprobe::record(flags.contains(EntryFlags::DIRTY), frame);
+                    }
                     consist.free_frame(frame);
                 }
                 *cursor = cursor.advance_until_empty(to_entry_end(cursor));
@@ -901,6 +1045,9 @@ impl Table {
                         frame.get_flags(),
                         flags,
                     );
+                    if zeroprobe::ENABLED && flags.contains(EntryFlags::PROBED) {
+                        zeroprobe::record(flags.contains(EntryFlags::DIRTY), frame);
+                    }
                     consist.free_frame(frame);
                 }
             } else if entry.is_present() && level != Self::last_level() {

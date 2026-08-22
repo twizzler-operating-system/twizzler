@@ -232,6 +232,8 @@ bitflags::bitflags! {
         const USER_NO_EXECUTE = 1 << 54;
 
         // [58:55] => Ignored/Reserved for software use
+        /// Software bit, see [`crate::memory::pagetables::zeroprobe`].
+        const PROBED = 1 << 55;
         const SHARED_PAGE_TABLE = 1 << 58;
         // [62:59] => PBHA
         //   - IGNORED if FEAT_HPDS2 is not implemented
@@ -255,6 +257,9 @@ impl EntryFlags {
         }
         if self.contains(EntryFlags::AP1_USER_OR_KERNEL) {
             flags.insert(MappingFlags::USER);
+        }
+        if self.contains(EntryFlags::PROBED) {
+            flags.insert(MappingFlags::PROBE);
         }
         flags
     }
@@ -362,6 +367,11 @@ impl From<&MappingSettings> for EntryFlags {
         } else {
             EntryFlags::empty()
         };
-        p | c | f | u
+        let pr = if settings.flags().contains(MappingFlags::PROBE) {
+            EntryFlags::PROBED
+        } else {
+            EntryFlags::empty()
+        };
+        p | c | f | u | pr
     }
 }

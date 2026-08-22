@@ -41,6 +41,18 @@ counters! {
     "trk.allocated": Cumulative,
     "trk.freed": Cumulative,
     "trk.reclaimed": Cumulative,
+    // Frames held in per-cpu frame caches. Not a leak signal on its own -- it is the *correction*
+    // for one. A cached frame is still charged to `kernel_used`/`page_data` and is still off the
+    // allocator's free list, so it depresses `trk.idle` and `mem.free_pages` and inflates its
+    // class counter exactly as a leaked frame does. `trk.freed` reading slope 0.0000 in 31 of 42
+    // ops -- and identically for `p1-leak-object`, the deliberate control -- is that confusion
+    // measured (framecache.md 1.6).
+    "trk.pooled": Level,
+    // `kernel_used + page_data - pooled`: the live charged population, cache occupancy removed.
+    // This is the counter to read for a frame leak; the two class counters are kept above because
+    // *which* class moved is still the routing information, and because a divergence between this
+    // and them is itself a finding (the cache mis-charging on hand-out).
+    "trk.charged_net": Level,
     // Physical allocator's own view, which excludes frames parked in precharge pools.
     "mem.free_pages": Level,
     "mem.kalloc_bytes": Level,
@@ -131,6 +143,12 @@ impl Sample {
                 t.allocated as u64,
                 t.freed as u64,
                 t.reclaimed as u64,
+                t.pooled as u64,
+                // `saturating_sub`: the three reads are not mutually consistent (`fill_stats` says
+                // so), so a cache that grew between the class reads and the gauge read can make
+                // this momentarily negative. Clamping is right for a `Level` series -- a wrapped
+                // u64 would be a fake step change of 2^64 and would flag every op.
+                (t.kernel_used as u64 + t.page_data as u64).saturating_sub(t.pooled as u64),
                 mem.free_bytes() as u64 / 4096,
                 mem.kalloc_bytes() as u64,
                 mem.page_fault_count as u64,

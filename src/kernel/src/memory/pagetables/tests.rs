@@ -24,6 +24,7 @@ mod test {
     impl PhysAddrProvider for StaticProvider {
         fn peek(&mut self) -> Option<PhysMapInfo> {
             Some(PhysMapInfo {
+                frame: None,
                 addr: crate::arch::address::PhysAddr::new(0).unwrap(),
                 len: usize::MAX,
                 settings: self.settings,

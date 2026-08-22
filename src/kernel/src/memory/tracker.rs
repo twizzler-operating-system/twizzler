@@ -13,6 +13,7 @@ use super::{
     frame::{
         FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, check_overlap, get_frame, split_frame,
     },
+    framecache,
 };
 use crate::{
     arch::memory::frame::FRAME_SIZE,
@@ -115,17 +116,16 @@ pub mod allocprofile {
     ///
     /// 1. **`trim`/`clear` would free into the pool they are draining.** They call `free_frame`,
     ///    which parks. Today that is harmless because `Drop` runs on a *taken* allocator, so the
-    ///    slot is `None` and the park declines. With the slot always populated, `trim` pops a
-    ///    frame and immediately pushes it back: bounded by `TRIM_PER_DROP`, so not a live loop,
-    ///    but a no-op that still counts `FA_TRIMMED` -- and it is the *only* thing that returns
-    ///    pooled memory under pressure. The `MemoryState::Loaded` band is where it bites:
-    ///    `trim` is active there (target `MAX/4`) and parking is still permitted (it only stops
-    ///    at `Tight`). Fixed by [`free_frame_nopark`].
-    /// 2. **An unbounded pop loop with interrupts off.** A `precharge` for
-    ///    `max_number_new_tables` over a whole object asks for ~1030 frames; stealing them one at
-    ///    a time inside one `with_disabled` is a long interrupts-off region. Bounded by
-    ///    [`MAX_UNPARK_BATCH`]; the caller's remaining need falls through to the global allocator
-    ///    exactly as it does today.
+    ///    slot is `None` and the park declines. With the slot always populated, `trim` pops a frame
+    ///    and immediately pushes it back: bounded by `TRIM_PER_DROP`, so not a live loop, but a
+    ///    no-op that still counts `FA_TRIMMED` -- and it is the *only* thing that returns pooled
+    ///    memory under pressure. The `MemoryState::Loaded` band is where it bites: `trim` is active
+    ///    there (target `MAX/4`) and parking is still permitted (it only stops at `Tight`). Fixed
+    ///    by [`free_frame_nopark`].
+    /// 2. **An unbounded pop loop with interrupts off.** A `precharge` for `max_number_new_tables`
+    ///    over a whole object asks for ~1030 frames; stealing them one at a time inside one
+    ///    `with_disabled` is a long interrupts-off region. Bounded by [`MAX_UNPARK_BATCH`]; the
+    ///    caller's remaining need falls through to the global allocator exactly as it does today.
     pub const FA_NO_TAKE: bool = true;
 
     /// Give the per-cpu pool a low watermark, so it stops sitting at the level where parking is
@@ -325,6 +325,17 @@ pub mod allocprofile {
         // whether the lock has actually been amortized away.
         ALLOC_BULK_CALLS,
         ALLOC_SINGLE_CALLS,
+        // Appended, not inserted -- `perfmark` indexes this snapshot positionally.
+        //
+        // Times a cpu's pool buffer was installed. Should be at most one per cpu for a whole
+        // boot; anything more means something is still handing the pool a smaller vec and the
+        // provisioning is fighting it.
+        FA_POOL_PROVISIONED,
+        // Times a [`FrameStore`] outgrew its inline capacity and moved to the heap. Appended, so
+        // the positional indices `perfmark` uses are unchanged. This is the counter that says
+        // whether `FA_INLINE_CAP` is the right size: a per-operation allocator should never spill,
+        // and the pool spills exactly once per cpu at provisioning.
+        FA_SPILL,
     );
 
     /// Nanoseconds since `start`, for a caller that wants the number as well as the counter.
@@ -503,6 +514,9 @@ impl MemoryTracker {
         MEM_STATE_HI.store(hi, Ordering::Relaxed);
         if next != cur {
             MEMORY_STATE.store(next as u8, Ordering::Relaxed);
+            // A store and nothing else: this runs inside `free_frame_inner`, and trimming here
+            // would free frames straight back into it.
+            framecache::request_trim(next);
             log::debug!(
                 "memory state: {:?} -> {:?} ({} idle of {})",
                 cur,
@@ -531,6 +545,9 @@ impl MemoryTracker {
         // nothing became available to a waiter, which is consistent with parking stopping once
         // `MemoryState` reaches `Tight`, the only state in which waiters exist.
         if count == 1 && allow_park {
+            if cache_freed_frame(frame) {
+                return;
+            }
             if park_frame_in_pool(frame) {
                 allocprofile::add(&allocprofile::FA_PARKED, 1);
                 return;
@@ -559,7 +576,19 @@ impl MemoryTracker {
         // the 11.7%-weighted inline zeroing). `ALLOCS`/`ALLOC_NS` deliberately do not count it:
         // they mean "went to the global allocator", and every ratio in faplan.md reads them
         // that way.
-        if allocprofile::FA_ALLOC_FROM_POOL && layout == PHYS_LEVEL_LAYOUTS[0] {
+        if layout == PHYS_LEVEL_LAYOUTS[0] {
+            if let Some((frame, needs_zeroing)) = framecache::alloc_one(want_of(flags)) {
+                return Some(finish_cached_alloc(frame, flags, needs_zeroing));
+            }
+        }
+        // `!ENABLED` so exactly one cache is live in either arm. With both on, the old pool sits
+        // behind the new one collecting nothing and costing an interrupts-off TLS read per miss --
+        // and an A/B whose arms differ by "which cache" is readable in a way that one whose arms
+        // differ by "one cache or two" is not.
+        if !framecache::ENABLED
+            && allocprofile::FA_ALLOC_FROM_POOL
+            && layout == PHYS_LEVEL_LAYOUTS[0]
+        {
             if let Some(frame) = unpark_frame_from_pool() {
                 return Some(finish_parked_alloc(frame, flags));
             }
@@ -585,7 +614,7 @@ impl MemoryTracker {
         flags: FrameAllocFlags,
         layout: Layout,
         want: usize,
-        out: &mut Vec<FrameRef>,
+        out: &mut FrameStore,
     ) -> usize {
         if want == 0 {
             return 0;
@@ -595,13 +624,56 @@ impl MemoryTracker {
         // function's callers is `GlobalPageAlloc::extend` running under `GLOBAL_PAGE_ALLOC`,
         // which is the self-deadlock faplan.md hit deterministically.
         let mut from_pool = 0;
-        if allocprofile::FA_ALLOC_FROM_POOL && layout == PHYS_LEVEL_LAYOUTS[0] {
+        if framecache::ENABLED && layout == PHYS_LEVEL_LAYOUTS[0] {
+            // Collected inside the interrupts-off region and finished outside it: finishing can
+            // memset 4 KiB. The closure refuses once `out` is at capacity rather than letting it
+            // grow -- `GlobalPageAlloc::extend` is one of this function's callers and reaches here
+            // holding `GLOBAL_PAGE_ALLOC`, where an allocation self-deadlocks.
+            let start = out.len();
+            // One bit per frame. Sound only because `alloc_many` caps itself at
+            // `framecache::MAX_BATCH`, which is the width of this word -- see the const, and note
+            // that the alternative here silently drops the flags past the 64th, which hands a
+            // dirty frame to page-table code as zeroed.
+            const _: () = assert!(framecache::MAX_BATCH <= u64::BITS as usize);
+            let mut zeroing: u64 = 0;
+            let got = framecache::alloc_many(want_of(flags), want, |frame, needs_zeroing| {
+                // Refuse rather than grow: `GlobalPageAlloc::extend` reaches here holding
+                // `GLOBAL_PAGE_ALLOC`, where an allocation self-deadlocks. `alloc_many` puts a
+                // refused frame back in the cache.
+                if out.len() == out.capacity() {
+                    return false;
+                }
+                if needs_zeroing {
+                    zeroing |= 1 << (out.len() - start);
+                }
+                out.push(frame);
+                true
+            });
+            // Outside the interrupts-off region: finishing can memset 4 KiB.
+            for i in 0..got {
+                out[start + i] =
+                    finish_cached_alloc(out[start + i], flags, zeroing & (1 << i) != 0);
+            }
+            from_pool += got;
+            if from_pool >= want {
+                return from_pool;
+            }
+        }
+        if !framecache::ENABLED
+            && allocprofile::FA_ALLOC_FROM_POOL
+            && layout == PHYS_LEVEL_LAYOUTS[0]
+        {
+            let t_pool = crate::obj::pagetables::mapprobe::start();
             let start = out.len();
             from_pool = unpark_frames_from_pool(want, out);
             // Outside the interrupts-off region: `finish_parked_alloc` can memset 4 KiB.
             for i in start..out.len() {
                 out[i] = finish_parked_alloc(out[i], flags);
             }
+            crate::obj::pagetables::mapprobe::record(
+                &crate::obj::pagetables::mapprobe::PC_POOL_NS,
+                t_pool,
+            );
             if from_pool >= want {
                 return from_pool;
             }
@@ -620,17 +692,34 @@ impl MemoryTracker {
             && layout == PHYS_LEVEL_LAYOUTS[0]
             && memory_state() == MemoryState::Plenty
         {
-            want.max(POOL_REFILL_BATCH.min(pool_headroom()))
+            // Bounded by whichever cache will actually absorb the surplus. With the frame cache on
+            // the old pool is never provisioned, so `pool_headroom` reads 0 and this over-fetch
+            // would go silently inert -- leaving the cache fed only by frees, which is exactly the
+            // write-only failure the old pool spent three sessions in.
+            let headroom = if framecache::ENABLED {
+                framecache::headroom()
+            } else {
+                pool_headroom()
+            };
+            want.max(POOL_REFILL_BATCH.min(headroom))
         } else {
             want
         };
+        let t_global = crate::obj::pagetables::mapprobe::start();
+        crate::obj::pagetables::mapprobe::tick(&crate::obj::pagetables::mapprobe::PC_GLOBAL_CALLS);
         let pff = if flags.contains(FrameAllocFlags::ZEROED) {
             PhysicalFrameFlags::ZEROED
         } else {
             PhysicalFrameFlags::empty()
         };
         let per = layout.size() / FRAME_SIZE;
+        let t_rec = crate::obj::pagetables::mapprobe::start();
         self.consider_reclaim();
+        crate::obj::pagetables::mapprobe::record(
+            &crate::obj::pagetables::mapprobe::G_RECLAIM_NS,
+            t_rec,
+        );
+        let t_cas = crate::obj::pagetables::mapprobe::start();
 
         // Reserve the whole batch against `idle` in one CAS. Reserving what is there rather than
         // failing outright keeps this a best-effort call: the caller asked for `want` and takes
@@ -639,6 +728,10 @@ impl MemoryTracker {
             let idle = self.idle();
             let can = (idle / per).min(want);
             if can == 0 {
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::PC_GLOBAL_NS,
+                    t_global,
+                );
                 return from_pool;
             }
             if self
@@ -650,12 +743,21 @@ impl MemoryTracker {
             }
         };
 
+        crate::obj::pagetables::mapprobe::record(
+            &crate::obj::pagetables::mapprobe::G_CAS_NS,
+            t_cas,
+        );
         out.reserve(reserved);
         let before = out.len();
+        let t_raw = crate::obj::pagetables::mapprobe::start();
         let t_bulk = allocprofile::start();
         allocprofile::add(&allocprofile::ALLOC_BULK_CALLS, 1);
         let got = crate::memory::frame::raw_alloc_frames(pff, layout, reserved, out);
         allocprofile::record(&allocprofile::ALLOC_BULK_NS, t_bulk);
+        crate::obj::pagetables::mapprobe::record(
+            &crate::obj::pagetables::mapprobe::G_RAW_NS,
+            t_raw,
+        );
         allocprofile::add(&allocprofile::ALLOC_BULK_FRAMES, got as u64);
         allocprofile::add(&allocprofile::ALLOCS, got as u64);
 
@@ -665,9 +767,13 @@ impl MemoryTracker {
                 .fetch_add((reserved - got) * per, Ordering::SeqCst);
         }
         if got == 0 {
+            crate::obj::pagetables::mapprobe::record(
+                &crate::obj::pagetables::mapprobe::PC_GLOBAL_NS,
+                t_global,
+            );
             return from_pool;
         }
-        for frame in &out[before..] {
+        for frame in &out.as_slice()[before..] {
             assert!(
                 frame.refcount() == 0,
                 "allocated frame with non-zero refcount: {:?} {}",
@@ -683,6 +789,10 @@ impl MemoryTracker {
             self.page_data.fetch_add(pages, Ordering::SeqCst);
         }
         self.allocated.fetch_add(pages, Ordering::SeqCst);
+        crate::obj::pagetables::mapprobe::record(
+            &crate::obj::pagetables::mapprobe::PC_GLOBAL_NS,
+            t_global,
+        );
         got + from_pool
     }
 
@@ -948,7 +1058,7 @@ pub fn tracker_snapshot() -> (usize, usize, usize, bool, usize) {
 /// Frames parked in per-cpu pools right now. Charged to `page_data`/`kernel_used` like any other
 /// allocated frame, so subtracting this is what separates pool occupancy from live use.
 pub fn pooled_frames() -> usize {
-    POOLED_FRAMES.load(Ordering::Relaxed)
+    POOLED_FRAMES.load(Ordering::Relaxed) + framecache::cached_frames()
 }
 
 /// Fill in the tracker half of `MemoryStats`. The counters are read without a lock and so are not
@@ -969,6 +1079,7 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
         reclaimed: t.reclaimed(),
         waiting: t.waiting.load(Ordering::SeqCst),
         reclaiming: t.should_reclaim(),
+        pooled: pooled_frames(),
     };
 }
 
@@ -1037,7 +1148,7 @@ pub fn try_alloc_frames(
     flags: FrameAllocFlags,
     layout: Layout,
     want: usize,
-    out: &mut Vec<FrameRef>,
+    out: &mut FrameStore,
 ) -> usize {
     TRACKER
         .poll()
@@ -1088,9 +1199,13 @@ pub fn free_frame(frame: FrameRef) {
         .free_frame(frame)
 }
 
-/// [`free_frame`] for a caller that is emptying the per-cpu pool and must not re-fill it.
-/// Same asserts, same accounting; only the park attempt is skipped.
-fn free_frame_nopark(frame: FrameRef) {
+/// [`free_frame`] for a caller that is emptying a per-cpu cache and must not re-fill it.
+/// Same asserts, same accounting; only the caching attempt is skipped.
+///
+/// `pub(crate)` for [`crate::memory::framecache`], whose trim and its two unreachable-in-practice
+/// fallbacks are exactly this caller. The `is_pooled` assert applies: clear the bit before calling,
+/// or the double-free tripwire fires on the cache's own drain.
+pub(crate) fn free_frame_nopark(frame: FrameRef) {
     assert!(
         !frame.is_pooled(),
         "freeing frame that is parked in a per-cpu pool (double free): {:?}",
@@ -1380,26 +1495,260 @@ const POOL_LOW_WATER: usize = MAX_TLS_PRECHARGE / 8;
 /// fraction of allocations that touch the PFA lock: ~1 in `POOL_REFILL_BATCH`.
 const POOL_REFILL_BATCH: usize = 64;
 
+/// Slots in a per-cpu pool's buffer, allocated once per cpu by [`ensure_pool_provisioned`].
+/// `MAX_TLS_PRECHARGE` is what `try_park` will fill it to; `MAX_FA_FRAMES` is the headroom
+/// `merge` leaves for an abort list that has nowhere else to go.
+const POOL_VEC_CAPACITY: usize = MAX_TLS_PRECHARGE + MAX_FA_FRAMES;
+
+/// Inline capacity for a precharge list, spilling to the heap only when something asks for more.
+///
+/// `FA_NO_TAKE` hands out a *fresh* `FrameAllocator` per operation, so `precharge`'s eager reserve
+/// was a kernel-heap allocation and free on **every** call -- measured at 133 ns of the create
+/// path's 2,163 ns precharge, on a path that runs under the object page-table lock. The lock is
+/// the second reason to remove it: `precharge`'s own comments document a self-deadlock from
+/// allocating there while `allocate_chunk` holds `GLOBAL_PAGE_ALLOC`, so an allocation-free common
+/// case removes a hazard, not just a cost.
+///
+/// **8, and there is no larger value that works** -- measured, not chosen. The buffer is
+/// zero-initialized on every construction, and `map_page` constructs one per call, so the cost
+/// scales with the capacity: `objdump` of `map_page` shows a second `memset` of exactly
+/// `cap * 8 + 17` bytes beside a constant 138-byte one (that one is `Consistency`'s `TlbInvData`,
+/// not this). Measured `take_fa`: **cap 8 -> 9 ns (no array memset at all), cap 16 -> 44 ns
+/// (memset 145), cap 40 -> 51 ns (memset 337)**.
+///
+/// That is the whole tension: `precharge` reserves `count + MAX_FA_FRAMES` = **34**, so the create
+/// path needs >= 34 to stop spilling, and anything >= 16 costs ~35-42 ns on *every* `map_page`
+/// while the benefit lands only on calls that reach `precharge` -- 0.5% of them on the fault path.
+/// At 8 the fault path avoids 97% of its kernel-heap allocations for free; the create path is
+/// unchanged and cannot be helped from here.
+///
+/// **The way out is per-cpu, not per-operation.** A buffer owned by a `FrameCache` is constructed
+/// once per cpu, so its zero-init is paid once instead of per `map_page`, and it can be as large
+/// as the reserve wants. That is the argument for building one, and this const is the measurement
+/// behind it.
+///
+/// Superseded reasoning, kept because it was wrong in an instructive way: **16 rather than 64**,
+/// The allocator is constructed and returned *by value* on every `map_page`, which is the exact
+/// cost `FA_NO_TAKE` exists to avoid -- `take_fa` fell 114 -> 9 ns by not moving a ~300-byte
+/// allocator, and a 64-slot inline array would put 512 bytes straight back. A per-op allocator
+/// holds `count` in the common case (2 on the create path, 4 on the fault path); the paths that
+/// hold more -- a 64-frame refill surplus, `setup_cow_range`'s ~1030 -- spill, and each already
+/// costs far more than one allocation. `FA_SPILL` is what says whether 16 was the right guess; if
+/// it is not small, raise this rather than defend it.
+const FA_INLINE_CAP: usize = 8;
+
+/// A frame list that lives inline until it outgrows [`FA_INLINE_CAP`].
+///
+/// Invariant: exactly one side holds frames. Unspilled, everything is in `inline` and `heap` has
+/// no capacity; spilled, everything is in `heap` and `inline` is empty. `capacity()` reports the
+/// true bound either way, which is what the callers that *must not allocate* --
+/// `park_frame_in_pool` and `raw_alloc_frames` -- already check before pushing.
+pub struct FrameStore {
+    inline: heapless::Vec<FrameRef, FA_INLINE_CAP>,
+    heap: alloc::vec::Vec<FrameRef>,
+    spilled: bool,
+}
+
+impl FrameStore {
+    /// **Not `const`**, deliberately. As a `const fn` this whole aggregate is const-evaluable, and
+    /// LLVM materialised it as a zeroed constant: `objdump` of `map_page` showed a 138-byte
+    /// `memset` inside the `take_fa` span, worth 36 ns on *every* call. `abort`, a bare
+    /// `heapless::Vec` field constructed the same way, is 256 bytes and is **not** memset -- so the
+    /// zeroing is not heapless's doing (its `INIT` is commented "important for optimization of
+    /// `new`") but this constructor's const-evaluability. Check the disassembly, not the source,
+    /// before making it `const` again.
+    pub fn new() -> Self {
+        Self {
+            inline: heapless::Vec::new(),
+            heap: alloc::vec::Vec::new(),
+            spilled: false,
+        }
+    }
+
+    /// A heap-backed store with room for `cap`, for the per-cpu pool, which needs
+    /// `MAX_TLS_PRECHARGE` and is provisioned once per cpu from a context that may allocate.
+    pub fn with_heap_capacity(cap: usize) -> Self {
+        let mut heap = alloc::vec::Vec::new();
+        heap.reserve_exact(cap);
+        Self {
+            inline: heapless::Vec::new(),
+            heap,
+            spilled: true,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        if self.spilled {
+            self.heap.len()
+        } else {
+            self.inline.len()
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> usize {
+        if self.spilled {
+            self.heap.capacity()
+        } else {
+            FA_INLINE_CAP
+        }
+    }
+
+    /// Move to the heap with room for `cap`. **Allocates**, so every caller that reaches this must
+    /// be one that may.
+    fn spill(&mut self, cap: usize) {
+        if self.spilled {
+            self.heap.reserve(cap.saturating_sub(self.heap.len()));
+            return;
+        }
+        allocprofile::add(&allocprofile::FA_SPILL, 1);
+        let mut heap = alloc::vec::Vec::new();
+        heap.reserve_exact(cap.max(self.inline.len()));
+        heap.extend(self.inline.drain(..));
+        self.heap = heap;
+        self.spilled = true;
+    }
+
+    pub fn push(&mut self, frame: FrameRef) {
+        if self.spilled {
+            self.heap.push(frame);
+            return;
+        }
+        if self.inline.push(frame).is_err() {
+            // Only reachable from a caller that did not check `capacity()` first, i.e. one that
+            // is allowed to allocate.
+            self.spill(FA_INLINE_CAP * 2);
+            self.heap.push(frame);
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<FrameRef> {
+        if self.spilled {
+            self.heap.pop()
+        } else {
+            self.inline.pop()
+        }
+    }
+
+    pub fn reserve(&mut self, additional: usize) {
+        if self.len() + additional <= self.capacity() {
+            return;
+        }
+        self.spill(self.len() + additional);
+    }
+
+    pub fn clear(&mut self) {
+        if self.spilled {
+            self.heap.clear()
+        } else {
+            self.inline.clear()
+        }
+    }
+
+    pub fn extend(&mut self, iter: impl Iterator<Item = FrameRef>) {
+        for frame in iter {
+            self.push(frame);
+        }
+    }
+
+    /// Drain every frame, leaving the store empty. Takes all of them rather than a range: the
+    /// only callers want the whole list, and a partial drain across two backings has no cheap
+    /// representation.
+    pub fn drain_all(&mut self) -> impl Iterator<Item = FrameRef> + '_ {
+        let spilled = self.spilled;
+        let heap = &mut self.heap;
+        let inline = &mut self.inline;
+        let a = if spilled { Some(heap.drain(..)) } else { None };
+        let b = if spilled {
+            None
+        } else {
+            Some(inline.drain(..))
+        };
+        a.into_iter().flatten().chain(b.into_iter().flatten())
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<'_, FrameRef> {
+        self.as_slice().iter()
+    }
+
+    pub fn as_slice(&self) -> &[FrameRef] {
+        if self.spilled {
+            &self.heap
+        } else {
+            &self.inline
+        }
+    }
+}
+
+impl core::ops::Index<usize> for FrameStore {
+    type Output = FrameRef;
+    fn index(&self, i: usize) -> &FrameRef {
+        if self.spilled {
+            &self.heap[i]
+        } else {
+            &self.inline[i]
+        }
+    }
+}
+
+impl core::ops::IndexMut<usize> for FrameStore {
+    fn index_mut(&mut self, i: usize) -> &mut FrameRef {
+        if self.spilled {
+            &mut self.heap[i]
+        } else {
+            &mut self.inline[i]
+        }
+    }
+}
+
+/// Return leftover precharge to the cache **clean** instead of dirty.
+///
+/// Measured cause of the `object_map_unmap_syscall` regression in the framecache ship arms
+/// (+6.6-7.1%, disjoint from both baseline arms). That bench precharges two page-table frames per
+/// op and consumes neither -- the context's tables already exist -- so the frames cycle
+/// allocator -> cache -> allocator forever. Returning them dirty makes the cache memset a frame it
+/// is about to hand straight back: `zeroed_inline=1,859,632` of `1,860,000` hand-outs, 99.98%,
+/// ~2 per op. The old per-cpu pool never paid this (`pool-zeroed=0` over 2.12M frames) because
+/// `finish_parked_alloc` zeroes only when `was_parked`, and its comment states the rule this
+/// restores: "A precharged one was allocated zeroed and nobody has written it."
+const PRECHARGE_RETURNS_CLEAN: bool = true;
+
 pub struct FrameAllocator {
     flags: FrameAllocFlags,
     layout: Layout,
     abort: heapless::Vec<FrameRef, MAX_FA_FRAMES>,
-    precharge: alloc::vec::Vec<FrameRef>,
+    precharge: FrameStore,
     avoid_alloc: bool,
+    /// Whether everything still in `precharge` is known to be all-zero.
+    ///
+    /// True when this allocator asks for `ZEROED` frames, because a frame that is still in the
+    /// precharge list was never popped by `try_allocate` and so was never handed to anyone who
+    /// could write it. Cleared by [`Self::merge`], which can move *abort* frames into the
+    /// precharge list -- those went out to a failed map and may have been written.
+    precharge_known_zero: bool,
 }
 
 impl FrameAllocator {
-    pub const fn new(flags: FrameAllocFlags, layout: Layout) -> Self {
+    pub fn new(flags: FrameAllocFlags, layout: Layout) -> Self {
         FrameAllocator {
             flags,
             layout,
             abort: heapless::Vec::new(),
-            precharge: alloc::vec::Vec::new(),
+            precharge: FrameStore::new(),
             avoid_alloc: false,
+            precharge_known_zero: flags.contains(FrameAllocFlags::ZEROED),
         }
     }
 
     pub fn merge(&mut self, other: &mut Self) {
+        // Conservative and unconditional: this function can move `other.abort` into
+        // `self.precharge`, and an abort frame went out to a map that failed, so it may have been
+        // written. Narrowing this to the branch that actually does it would be an invariant
+        // nobody re-checks when the branches change.
+        self.precharge_known_zero = false;
         // Take the other's list wholesale when we have none of our own, rather than copying it
         // into ours. This is the path every `take_or_new_frame_allocator` returns through: the
         // thread-local pool is moved out at the start of an operation and handed back by
@@ -1425,8 +1774,20 @@ impl FrameAllocator {
         // returned at the moment it would have pushed the pool past `MAX_TLS_PRECHARGE`, so the
         // pool sits at its cap by construction instead of converging 64 frames per drop, and
         // `trim` is left with the pressure-driven targets its doc comment describes.
-        if self.precharge.is_empty() {
-            // A swap moves the vec wholesale and cannot allocate, so it needs no bound.
+        // A swap moves the vec wholesale and cannot allocate, so it needs no bound -- but it also
+        // hands the *destination's* buffer to `other`, and under [`allocprofile::FA_NO_TAKE`] the
+        // destination is the per-cpu pool while `other` is a short-lived per-operation allocator.
+        // Swapping there replaces a provisioned 2,080-slot pool with a two-slot one, permanently:
+        // nothing on the park path may allocate, so the pool can never grow back. That is the
+        // coupling behind three separate `FA_PARK_NO_CAP` blowups today (`resfix` 1.5M, `exactpc`
+        // 1.24M, `consfast` 996k) -- each time, something stopped calling `precharge` with a
+        // pool-sized reserve and the pool quietly lost its capacity.
+        //
+        // Guarded on capacity rather than on the const: take the swap only when it does not
+        // *downgrade* the destination. Under the take/save design the destination is a fresh
+        // allocator (capacity 0) and the source is the pool, so the swap still happens exactly
+        // as before.
+        if self.precharge.is_empty() && self.precharge.capacity() < other.precharge.capacity() {
             core::mem::swap(&mut self.precharge, &mut other.precharge);
         } else {
             allocprofile::add(&allocprofile::FA_SAVE_APPEND, 1);
@@ -1479,6 +1840,7 @@ impl FrameAllocator {
             );
         }
         allocprofile::add(&allocprofile::PRECHARGE_CALLS, 1);
+        crate::obj::pagetables::mapprobe::tick(&crate::obj::pagetables::mapprobe::PC_CALLS);
         // **Eager, i.e. before the early return.** The free path may never grow this vec, so it
         // declines into whatever capacity the last *slow* precharge happened to leave. With the
         // reserve behind the early return, 77% of calls returned without ever topping the
@@ -1500,14 +1862,54 @@ impl FrameAllocator {
         // so the pool inherits whatever we sized. `FA_PARK_NO_CAP` (`no-cap=` on `PERFMARK-PARK`)
         // is the counter that says whether that is enough; it was 0 with the pool-sized reserve
         // and must be watched here.
-        if allocprofile::FA_FREE_TO_POOL {
-            let want = if allocprofile::FA_NO_TAKE && !allocprofile::FA_OP_RESERVE_POOL_SIZED {
-                count + MAX_FA_FRAMES + POOL_REFILL_BATCH
-            } else {
-                MAX_TLS_PRECHARGE + MAX_FA_FRAMES
-            };
+        if framecache::ENABLED {
+            // **Exactly `count`, and no `ensure_pool_provisioned`.** Both differences are the
+            // point of the cache owning the storage instead of this allocator.
+            //
+            // The `+ MAX_FA_FRAMES` below is headroom for `merge` to fold the abort list into the
+            // per-cpu pool from `Drop`; with the cache there is no `merge` -- `Drop` hands surplus
+            // straight back -- so the headroom buys nothing and costs everything. `FA_INLINE_CAP`
+            // is 8 and every hot-path caller asks for 1-4 (`tables_needed` with `PRECHARGE_EXACT`
+            // on the create path, the fault path's handful), so at `count` the reserve is a
+            // capacity check against inline storage and reaches the kernel heap not at all --
+            // against 34 slots, which spills on *every* call, measured at 133 ns of a 2,163 ns
+            // precharge on a path that runs under the object page-table lock.
+            //
+            // `setup_cow_range`'s ~1,030 still spills, once, and is left to: it is rare, and each
+            // such call already costs orders more than one allocation. Expressing it in whole
+            // magazines is Part 3's D4 and is not built.
+            let t_res = crate::obj::pagetables::mapprobe::start();
             self.precharge
-                .reserve(want.saturating_sub(self.precharge.len()));
+                .reserve(count.saturating_sub(self.precharge.len()));
+            crate::obj::pagetables::mapprobe::record(
+                &crate::obj::pagetables::mapprobe::PC_RESERVE_NS,
+                t_res,
+            );
+        } else if allocprofile::FA_FREE_TO_POOL {
+            if allocprofile::FA_NO_TAKE {
+                // The pool is provisioned once per cpu, by the function below, and this allocator
+                // is not it: reserve for what this operation will hold. Sizing it pool-wide here
+                // was a 16,640-byte kernel-heap allocation and free on **every** call, because
+                // `FA_NO_TAKE` hands out a fresh allocator with an empty `Vec` each time.
+                let t_prov = crate::obj::pagetables::mapprobe::start();
+                ensure_pool_provisioned();
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::PC_PROV_NS,
+                    t_prov,
+                );
+                let t_res = crate::obj::pagetables::mapprobe::start();
+                self.precharge
+                    .reserve((count + MAX_FA_FRAMES).saturating_sub(self.precharge.len()));
+                crate::obj::pagetables::mapprobe::record(
+                    &crate::obj::pagetables::mapprobe::PC_RESERVE_NS,
+                    t_res,
+                );
+            } else {
+                // Take/save design: this allocator *is* the pool, so the reserve is the pool's.
+                self.precharge.reserve(
+                    (MAX_TLS_PRECHARGE + MAX_FA_FRAMES).saturating_sub(self.precharge.len()),
+                );
+            }
         }
         if self.precharge.len() >= count {
             allocprofile::add(&allocprofile::PRECHARGE_EARLY, 1);
@@ -1537,7 +1939,12 @@ impl FrameAllocator {
         let mut remaining = count - self.precharge.len();
         if allocprofile::BULK_PRECHARGE {
             // One acquisition for the batch.
+            let t_fetch = crate::obj::pagetables::mapprobe::start();
             let got = try_alloc_frames(all_flags, self.layout, remaining, &mut self.precharge);
+            crate::obj::pagetables::mapprobe::record(
+                &crate::obj::pagetables::mapprobe::PC_FETCH_NS,
+                t_fetch,
+            );
             allocprofile::add(&allocprofile::PRECHARGE_FETCHED, got as u64);
             // `saturating_sub`, not `-`: with [`allocprofile::FA_POOL_BULK_REFILL`] the batch may
             // deliberately return **more** than was asked for. `[profile.release]` leaves
@@ -1564,6 +1971,12 @@ impl FrameAllocator {
     #[track_caller]
     pub fn precharge_nowait(&mut self, count: usize) -> usize {
         allocprofile::add(&allocprofile::PRECHARGE_CALLS, 1);
+        // Hooked here as well as in `precharge`: with an exact page-table precharge, `map_page`
+        // often makes no request at all, and the fill loop's `precharge_nowait` becomes the only
+        // allocating call a fault path makes. Provisioning must not depend on which one runs.
+        if !framecache::ENABLED && allocprofile::FA_FREE_TO_POOL && allocprofile::FA_NO_TAKE {
+            ensure_pool_provisioned();
+        }
         if self.precharge.len() >= count {
             allocprofile::add(&allocprofile::PRECHARGE_EARLY, 1);
         }
@@ -1625,6 +2038,113 @@ impl FrameAllocator {
     }
 }
 
+/// Which side of [`framecache`] a request should prefer.
+///
+/// `ZEROED` absent means the caller overwrites the page before reading it -- `UninitPageProvider`
+/// for kernel-heap growth, and `Frame::cow_frame`, which `copy_contents_from`s the whole 4 KiB
+/// immediately. Serving those from the dirty side skips a memset *and* leaves a zeroed frame for
+/// a caller that actually needs one, which is two wins from one branch.
+fn want_of(flags: FrameAllocFlags) -> framecache::Want {
+    if flags.contains(FrameAllocFlags::ZEROED) {
+        framecache::Want::Zeroed
+    } else {
+        framecache::Want::Any
+    }
+}
+
+/// Bring a frame from [`framecache`] up to what `flags` promise.
+///
+/// Split from [`finish_parked_alloc`] rather than sharing it, for one reason worth stating: that
+/// function decides whether to zero by asking whether the frame was `POOLED`, because the old pool
+/// has no way to know whether a given frame is dirty. The cache does know -- that is what its
+/// clean/dirty split *is* -- so it passes the answer in, and the frames it says are clean cost no
+/// memset at all. Folding the two would put that decision back on a bit that cannot carry it.
+///
+/// **Must run with interrupts enabled**: the zeroing below is a 4 KiB memset.
+fn finish_cached_alloc(frame: FrameRef, flags: FrameAllocFlags, needs_zeroing: bool) -> FrameRef {
+    if allocprofile::FA_UNPARK_OVERLAP_CHECK {
+        check_overlap(frame, "framecache");
+    }
+    // The gauge decrement happened in the cache; this only clears the tripwire bit. Splitting them
+    // is deliberate -- the cache knows its own depth, and having two owners increment one counter
+    // is how the old pool's accounting became unreadable.
+    frame.clear_pooled();
+    if needs_zeroing {
+        debug_assert!(flags.contains(FrameAllocFlags::ZEROED));
+        frame.zero();
+        // Same postcondition `finish_raw_alloc` asserts after its own zeroing. Without it a cache
+        // hand-out has none at all, and "dirty frame served as zeroed" is precisely what panicked
+        // the per-cpu cache arm before this one.
+        assert!(
+            frame.is_zeroed(),
+            "framecache hand-out not zeroed after zero(): {:?}",
+            frame
+        );
+        frame.set_not_zero();
+        allocprofile::add(&allocprofile::FA_POOL_ZEROED, 1);
+    }
+    let want_kernel = flags.contains(FrameAllocFlags::KERNEL);
+    if frame.is_kernel() != want_kernel {
+        // The charge moves at hand-out rather than at cache entry, so caching cannot
+        // systematically drain `page_data` into `kernel_used` -- those two are what the leak
+        // harness watches, and `trk.pooled` is what lets it subtract the rest.
+        let tracker = TRACKER.poll().expect("page tracker not initialized");
+        if want_kernel {
+            tracker.page_data.fetch_sub(1, Ordering::SeqCst);
+            tracker.kernel_used.fetch_add(1, Ordering::SeqCst);
+        } else {
+            tracker.kernel_used.fetch_sub(1, Ordering::SeqCst);
+            tracker.page_data.fetch_add(1, Ordering::SeqCst);
+        }
+        frame.set_kernel(want_kernel);
+    }
+    frame
+}
+
+/// Offer a freed level-0 frame to [`framecache`], applying the same admission rules the old pool
+/// applies. Returns whether the cache took it.
+///
+/// The `POOLED` bit and the two tripwires are set *here* rather than inside the cache, so that the
+/// double-free detector and the overlap check live on the one path every free goes through
+/// regardless of which cache is enabled. `framecache` is a container; the invariants are the
+/// tracker's.
+fn cache_freed_frame(frame: FrameRef) -> bool {
+    cache_freed_frame_hinted(frame, false)
+}
+
+/// [`cache_freed_frame`], carrying the caller's guarantee that the frame is already all-zero.
+fn cache_freed_frame_hinted(frame: FrameRef, known_zero: bool) -> bool {
+    if !framecache::ENABLED || !tls_ready() {
+        return false;
+    }
+    // Pressure is where caching stops: a cached frame is invisible to the physical allocator, and
+    // reclaim relies on frees actually returning memory.
+    if memory_state() >= MemoryState::Tight {
+        allocprofile::add(&allocprofile::FA_PARK_PRESSURE, 1);
+        return false;
+    }
+    assert!(
+        !frame.is_wired(),
+        "caching a wired frame (raw_free_frame would have caught this): {:?}",
+        frame
+    );
+    check_overlap(frame, "framecache-free");
+    frame.set_cow(false);
+    assert!(
+        !frame.mark_pooled(),
+        "frame already in a per-cpu cache at free (double free): {:?}",
+        frame
+    );
+    if framecache::free_one_hinted(frame, known_zero) {
+        return true;
+    }
+    // Refused -- the cache is at its bound, or off. Undo the bit so the caller's path to the
+    // physical allocator sees an ordinary frame; `free_frame_nopark`'s own assert would fire on it
+    // otherwise, which would turn the pressure valve into a panic.
+    frame.clear_pooled();
+    false
+}
+
 /// The body of [`FrameAllocator::finish_pool_alloc`], as a free function so the global entry
 /// points can serve a pooled frame under the same rules. **Must run with interrupts enabled**:
 /// the zeroing below is a 4 KiB memset.
@@ -1651,7 +2171,11 @@ fn finish_parked_alloc(frame: FrameRef, flags: FrameAllocFlags) -> FrameRef {
             // `finish_raw_alloc` asserts this after its own zeroing; without it a pool hand-out
             // has no postcondition at all, and "dirty frame served as zeroed" is exactly what
             // panicked the abandoned per-cpu-cache arm.
-            assert!(frame.is_zeroed(), "pool hand-out not zeroed after zero(): {:?}", frame);
+            assert!(
+                frame.is_zeroed(),
+                "pool hand-out not zeroed after zero(): {:?}",
+                frame
+            );
             frame.set_not_zero();
             allocprofile::add(&allocprofile::FA_POOL_ZEROED, 1);
         }
@@ -1850,7 +2374,7 @@ unsafe fn tls_fa() -> &'static mut Option<FrameAllocator> {
 /// this pushes only into spare capacity and declines to create the pool if there isn't one.
 #[allow(static_mut_refs)]
 fn park_frame_in_pool(frame: FrameRef) -> bool {
-    if !allocprofile::FA_FREE_TO_POOL {
+    if framecache::ENABLED || !allocprofile::FA_FREE_TO_POOL {
         return false;
     }
     if !tls_ready() {
@@ -1982,7 +2506,7 @@ fn unpark_frame_from_pool() -> Option<FrameRef> {
 }
 
 /// Batch form of [`unpark_frame_from_pool`]. Appends raw frames to `out` and returns how many.
-fn unpark_frames_from_pool(want: usize, out: &mut Vec<FrameRef>) -> usize {
+fn unpark_frames_from_pool(want: usize, out: &mut FrameStore) -> usize {
     if want == 0 || !tls_ready() {
         return 0;
     }
@@ -2095,6 +2619,89 @@ fn drain_pool_to_low_water() {
 /// -- and the failure path in `FrameAllocator::drop` *freed* the whole pool instead of saving it
 /// (`save locked=3197` a boot). That was never protecting this cpu's pool from this cpu; it was
 /// serialising cpus to mask a stale-address bug that is fixed properly by [`tls_fa`].
+/// Give this cpu's pool its buffer, once, from a context that is allowed to allocate.
+///
+/// Everything that *uses* the pool is forbidden to allocate: `try_park` runs on the free path and
+/// a free that allocates can recurse into the allocator it is freeing for, and `merge` runs from
+/// `FrameAllocator::drop`, which can be one `GlobalPageAlloc::extend` built while `allocate_chunk`
+/// holds `GLOBAL_PAGE_ALLOC`. So the pool's capacity has to arrive from somewhere else.
+///
+/// Until now it arrived by accident: `precharge` reserved `MAX_TLS_PRECHARGE + MAX_FA_FRAMES` on
+/// *whatever allocator was passing through*, and `merge`'s wholesale swap handed that buffer to
+/// the pool. That made the pool's depth a side effect of a hot-path reserve, which is why it
+/// collapsed three separate times today the moment a caller stopped precharging pool-sized.
+///
+/// The allocation happens outside the interrupts-off region and the install inside it, so the
+/// ownership rule (`tls_fa` is touched only by its owning cpu, only with interrupts disabled)
+/// holds throughout. Idempotent, and a no-op after the first call on each cpu.
+fn ensure_pool_provisioned() {
+    if !tls_ready() {
+        return;
+    }
+    // Safety: interrupts are disabled for the whole borrow.
+    let short = crate::interrupt::with_disabled(|| unsafe {
+        match *tls_fa() {
+            Some(ref fa) => fa.precharge.capacity() < POOL_VEC_CAPACITY,
+            None => true,
+        }
+    });
+    if !short {
+        return;
+    }
+    // Outside the critical section: this is the allocation the pool paths may not make.
+    let mut buf = FrameStore::with_heap_capacity(POOL_VEC_CAPACITY);
+    let mut installed = false;
+    // Safety: interrupts are disabled for the whole borrow, and nothing below allocates --
+    // `buf` already has the capacity every push here needs.
+    crate::interrupt::with_disabled(|| unsafe {
+        let slot = tls_fa();
+        if slot.is_none() {
+            let mut pool = FrameAllocator::new(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
+            pool.avoid_alloc = true;
+            *slot = Some(pool);
+        }
+        let pool = slot.as_mut().unwrap();
+        if pool.precharge.capacity() >= POOL_VEC_CAPACITY {
+            // Another path provisioned it between the two regions above.
+            return;
+        }
+        // `POOL_VEC_CAPACITY >= MAX_TLS_PRECHARGE`, and `try_park` refuses past that, so every
+        // frame currently pooled fits in `buf` by construction.
+        // `len < capacity` checked explicitly rather than relying on `push` not to grow: `push`
+        // on a full vec allocates, and this runs with interrupts disabled inside the allocator.
+        // `POOL_VEC_CAPACITY >= MAX_TLS_PRECHARGE`, and `try_park` refuses past that, so the
+        // branch below is unreachable in practice -- it is here so that "cannot allocate" is a
+        // property of the code rather than of an argument about the pool's depth.
+        while let Some(frame) = pool.precharge.pop() {
+            if buf.len() == buf.capacity() {
+                // Cannot drop a frame on the floor; put it back and leave the pool as it was.
+                pool.precharge.push(frame);
+                return;
+            }
+            buf.push(frame);
+        }
+        core::mem::swap(&mut pool.precharge, &mut buf);
+        allocprofile::add(&allocprofile::FA_POOL_PROVISIONED, 1);
+        installed = true;
+    });
+    // Logged, not only counted. This fires once per cpu during boot, and `perfmark` prints every
+    // allocprofile counter as a *delta between two marks* -- so `FA_POOL_PROVISIONED` reads 0 in
+    // every bench window whether or not it ever happened, which is a detector that cannot observe
+    // its own event. The counter is kept for a boot-wide dump; the line is what makes the log
+    // answer the question.
+    if installed {
+        logln!(
+            "allocprofile: pool provisioned, {} slots",
+            POOL_VEC_CAPACITY
+        );
+    }
+    // `buf` is now the old, empty buffer. Freed here, outside the region.
+    drop(buf);
+}
+
 pub fn save_frame_allocator(fa: &mut FrameAllocator) -> bool {
     crate::interrupt::with_disabled(|| {
         // Safety: interrupts are disabled for the whole borrow.
@@ -2191,7 +2798,34 @@ impl Drop for FrameAllocator {
         // Note that the abort list is recycled by the save/take path below rather than freed:
         // abort frames can carry a non-zero refcount (a failed map after an rc bump), which
         // `free_frame` refuses outright. Parking feeds only from `free_frame` (rc==0 asserted).
-        if tls_ready() && self.layout == PHYS_LEVEL_LAYOUTS[0] {
+        if framecache::ENABLED && tls_ready() && self.layout == PHYS_LEVEL_LAYOUTS[0] {
+            // Surplus goes back to the cache, not into a per-cpu pool this allocator owns. That is
+            // the whole of R2: an operation borrows and returns, and between operations the frames
+            // live somewhere every other draw and every other free on this cpu can reach.
+            //
+            // Only the precharge list. The abort list keeps its existing path through `clear()`
+            // below, untouched: abort frames are already marked `POOLED` by `abort()`, so offering
+            // one here would trip the cache's own double-mark assert, and some carry a non-zero
+            // refcount, which is a pre-existing gap documented at `clear` and not this change's to
+            // close.
+            // Clean, not dirty. These were never popped by `try_allocate`, so nobody wrote them;
+            // returning them as dirty makes the cache memset a frame it is about to hand straight
+            // back, which is 99.98% of hand-outs on `object_map_unmap_syscall`.
+            let known_zero = PRECHARGE_RETURNS_CLEAN && self.precharge_known_zero;
+            let mut given = 0u64;
+            while let Some(frame) = self.precharge.pop() {
+                if cache_freed_frame_hinted(frame, known_zero) {
+                    given += 1;
+                } else {
+                    free_frame_nopark(frame);
+                }
+            }
+            allocprofile::add(&allocprofile::FA_DROP_SAVED, given.min(1));
+            allocprofile::add(&allocprofile::FA_TRIMMED, given);
+            let t = allocprofile::start();
+            self.clear();
+            allocprofile::record(&allocprofile::FA_DROP_CLEAR_NS, t);
+        } else if tls_ready() && self.layout == PHYS_LEVEL_LAYOUTS[0] {
             self.trim();
             let t = allocprofile::start();
             let saved = save_frame_allocator(self);

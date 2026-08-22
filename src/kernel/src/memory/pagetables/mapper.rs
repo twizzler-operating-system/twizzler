@@ -8,7 +8,7 @@ use crate::{
         memory::pagetables::{Entry, EntryFlags, Table},
     },
     memory::tracker::FrameAllocator,
-    obj::pagetables::ObjectPageTable,
+    obj::pagetables::{ObjectPageTable, mapprobe},
     thread::current_thread_ref,
 };
 
@@ -84,7 +84,46 @@ impl Mapper {
     /// See [`Table::tables_needed`] -- conservative, and only valid under the page-table lock the
     /// matching `map` will be performed under.
     pub fn tables_needed(&self, cursor: &MappingCursor) -> usize {
-        self.root().tables_needed(cursor, self.start_level)
+        let t = mapprobe::start();
+        let mut examined = 0;
+        let need = self
+            .root()
+            .tables_needed(cursor, self.start_level, &mut examined);
+        mapprobe::record(&mapprobe::TN_NS, t);
+        mapprobe::tick(&mapprobe::TN_CALLS);
+        mapprobe::add_if_on(&mapprobe::TN_ENTRIES, examined as u64);
+        mapprobe::add_if_on(&mapprobe::TN_NEED, need as u64);
+        // What geometry would have charged, so the saving is a measured difference rather than a
+        // difference between two runs. Computed only with the probe on -- it is not free.
+        if mapprobe::MAP_PROBE {
+            mapprobe::add(
+                &mapprobe::TN_MAX,
+                cursor.max_number_new_tables(self.start_level, 0) as u64,
+            );
+        }
+        need
+    }
+
+    /// How many frames a [`Self::cow_at`] of `cursor` may allocate. See
+    /// [`Table::cow_tables_needed`] -- a different allocation shape from `map`'s, so it is a
+    /// different predictor, and the same page-table-lock rule applies.
+    pub fn cow_tables_needed(&self, cursor: &MappingCursor) -> usize {
+        let t = mapprobe::start();
+        let mut examined = 0;
+        let need = self
+            .root()
+            .cow_tables_needed(cursor, self.start_level, &mut examined);
+        mapprobe::record(&mapprobe::TN_NS, t);
+        mapprobe::tick(&mapprobe::TN_CALLS);
+        mapprobe::add_if_on(&mapprobe::TN_ENTRIES, examined as u64);
+        mapprobe::add_if_on(&mapprobe::TN_NEED, need as u64);
+        if mapprobe::MAP_PROBE {
+            mapprobe::add(
+                &mapprobe::TN_MAX,
+                cursor.max_number_new_tables(self.start_level, 0) as u64,
+            );
+        }
+        need
     }
 
     /// Map a set of physical pages into the tables with the provided settings.
@@ -99,7 +138,12 @@ impl Mapper {
         let root = self.root_mut();
         let r = root.map(consist, cursor, level, phys, fa);
         self.generation += 1;
+        let t_flush = crate::obj::pagetables::mapprobe::start();
         consist.flush_cache();
+        crate::obj::pagetables::mapprobe::record(
+            &crate::obj::pagetables::mapprobe::W_FLUSH_NS,
+            t_flush,
+        );
         r
     }
 

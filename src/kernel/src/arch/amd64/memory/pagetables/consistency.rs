@@ -357,6 +357,34 @@ impl InvInstruction {
     }
 }
 
+/// Issue `clflush` for page-table entries as they are written.
+///
+/// **Off**, because on this architecture nothing reads those lines out of memory. Three facts,
+/// each checkable rather than argued:
+///
+/// 1. **The x86 page-table walker is coherent with the data caches.** It snoops, so an entry
+///    written and left dirty in L1 is seen by the next walk. This is the whole of what
+///    `update_entry`'s flush was doing on the hot path -- and it pays twice, once for the flush and
+///    again for the miss the *next* walk takes on the line it just evicted.
+/// 2. **No page-table frame is in persistent memory.** `MemoryRegionKind` has exactly three
+///    variants -- `UsableRam`, `Reserved`, `BootloaderReserved` -- and `Table::populate` allocates
+///    through the ordinary frame allocator, so the durability motivation for flushing a page table
+///    has no instance in this tree. **This is the precondition to re-check**: if a persistent
+///    region kind is ever added and page tables can land in it, this must come back on for those
+///    tables.
+/// 3. **The one ordering argument that names `clflush`** -- `Table::do_cow_copy`'s comment about
+///    the downgrade loop being ordered before the entry update below -- **does not need it on
+///    x86.** x86-TSO does not reorder stores with stores, so the loop's writes are already visible
+///    before the later entry write, to other cpus and to their page walkers alike. The `clflush`
+///    leg of that argument was redundant on this architecture. It is *not* redundant on aarch64,
+///    where the walker may not be coherent and the equivalent manager issues `dc cvac; dsb ishst;
+///    isb` -- so this const is deliberately amd64-local rather than a change to the generic
+///    `add_cache_line` call sites, which aarch64 still needs.
+///
+/// Kept as a switch rather than deleted so the cost is measurable in both directions and so fact 2
+/// has somewhere to be re-read when it stops being true.
+const PT_CLFLUSH: bool = false;
+
 #[derive(Default)]
 /// An object that manages cache line invalidations during page table updates.
 pub struct ArchCacheLineMgr {
@@ -370,6 +398,9 @@ impl ArchCacheLineMgr {
     /// older requests to flush immediately, and the new request will be flushed when this
     /// object is dropped.
     pub fn add_cache_line(&mut self, line: VirtAddr) {
+        if !PT_CLFLUSH {
+            return;
+        }
         let addr: u64 = line.into();
         let addr = addr & !(CACHE_LINE_SIZE - 1);
         if let Some(dirty) = self.dirty {

@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use twizzler_abi::syscall::Syscall;
 
 use crate::{
-    memory::{context::virtmem::fault, tracker::allocprofile},
+    memory::{context::virtmem::fault, framecache, tracker::allocprofile},
     obj::pagetables::mapprobe,
     spinlock::Spinlock,
     syscall::object::{createprofile, deleteprofile},
@@ -28,6 +28,7 @@ const NR_STAGES: usize = fault::NR_STAGES;
 const NR_CREATE: usize = createprofile::NR;
 const NR_DELETE: usize = deleteprofile::NR;
 const NR_MAPPROBE: usize = mapprobe::NR;
+const NR_FC: usize = framecache::stat::NR;
 
 struct Prev {
     stages: [(usize, u64); NR_STAGES],
@@ -37,6 +38,10 @@ struct Prev {
     create: [(u64, u64); NR_CREATE],
     delete: [(u64, u64); NR_DELETE],
     mapprobe: [u64; NR_MAPPROBE],
+    /// Its own array rather than appended to `alloc`: `allocprofile` is indexed positionally by
+    /// hand below, and every insertion into it so far has silently mislabelled every later field.
+    /// A separate snapshot cannot do that to anything.
+    fc: [u64; NR_FC],
 }
 
 static PREV: Spinlock<Option<Prev>> = Spinlock::new(None);
@@ -56,6 +61,7 @@ pub fn mark(rebaseline: bool) {
     let create = createprofile::snapshot();
     let delete = deleteprofile::snapshot();
     let mprobe = mapprobe::snapshot();
+    let fc = framecache::stat::snapshot();
 
     let prev = PREV.lock().replace(Prev {
         stages,
@@ -65,6 +71,7 @@ pub fn mark(rebaseline: bool) {
         create,
         delete,
         mapprobe: mprobe,
+        fc,
     });
     let Some(prev) = prev else {
         return;
@@ -207,13 +214,132 @@ pub fn mark(rebaseline: bool) {
             rper(m(12)),
             rper(m(13)),
         );
+        logln!("PERFMARK-RUNCONSIST2: trivial={} of {} calls", m(17), rc,);
+        // What the exact-precharge predictors cost and what they bought, in one window. `entries`
+        // is the breadth of the walk; `need` against `max` is the precharge removed. A `need`
+        // that ever exceeds `max` is not a bug -- `cow_tables_needed` is deliberately allowed to
+        // -- but it is worth noticing, so both are printed rather than only the difference.
+        let tn = m(18);
         logln!(
-            "PERFMARK-RUNCONSIST2: trivial={} of {} calls",
-            m(17),
-            rc,
+            "PERFMARK-TABLESNEEDED: calls={} cost={}ns entries={} entries_per_call_x100={} | need={} max={} saved={}",
+            tn,
+            if tn > 0 {
+                mapprobe::ticks_to_ns(m(19) / tn)
+            } else {
+                0
+            },
+            m(20),
+            if tn > 0 { m(20) * 100 / tn } else { 0 },
+            m(21),
+            m(22),
+            m(22) as i64 - m(21) as i64,
+        );
+        // Inside `walk`. `leaf_calls` is the denominator check: `Table::map` has callers other
+        // than `map_page`, so these means only describe `map_page` in a window where it tracks
+        // `calls`. `rest` is the loop's own overhead -- what `walk` holds that none of the three
+        // brackets cover.
+        let lc = m(26);
+        let lper = |v: u64| {
+            if lc > 0 {
+                mapprobe::ticks_to_ns(v / lc)
+            } else {
+                0
+            }
+        };
+        let walk_ns = per(m(6));
+        let split = lper(m(23)) + lper(m(24)) + lper(m(25));
+        logln!(
+            "PERFMARK-WALK: leaf_calls={} (map_page calls={}) | descend={}ns leaf={}ns flush={}ns | walk={}ns rest={}ns",
+            lc,
+            calls,
+            lper(m(23)),
+            lper(m(24)),
+            lper(m(25)),
+            walk_ns,
+            walk_ns as i64 - split as i64,
+        );
+        // `FrameAllocator::precharge`, split. Per *precharge* call, not per `map_page` -- the two
+        // are equal on the create path and differ by 200x on the fault path, where `need == 0`
+        // skips the call entirely. `global` is entered on a minority of calls, so it is printed
+        // both amortized over all calls and per entry (`global_each`), because only the second
+        // says what a global refill costs and only the first says what it contributes.
+        let pc = m(27);
+        let pcper = |v: u64| {
+            if pc > 0 {
+                mapprobe::ticks_to_ns(v / pc)
+            } else {
+                0
+            }
+        };
+        let gc = m(33);
+        logln!(
+            "PERFMARK-PRECHARGE: calls={} | prov={}ns reserve={}ns fetch={}ns (pool={}ns global={}ns) | global_calls={} ({}% of calls) global_each={}ns",
+            pc,
+            pcper(m(28)),
+            pcper(m(29)),
+            pcper(m(30)),
+            pcper(m(31)),
+            pcper(m(32)),
+            gc,
+            if pc > 0 { gc * 100 / pc } else { 0 },
+            if gc > 0 {
+                mapprobe::ticks_to_ns(m(32) / gc)
+            } else {
+                0
+            },
+        );
+        // Inside the refill, per *entry* -- these only ever run when `global` is entered, so
+        // dividing them by `PC_CALLS` would understate each by ~16x on the create path.
+        logln!(
+            "PERFMARK-REFILL: entries={} | reclaim={}ns cas={}ns raw={}ns | global_each={}ns",
+            gc,
+            if gc > 0 {
+                mapprobe::ticks_to_ns(m(37) / gc)
+            } else {
+                0
+            },
+            if gc > 0 {
+                mapprobe::ticks_to_ns(m(38) / gc)
+            } else {
+                0
+            },
+            if gc > 0 {
+                mapprobe::ticks_to_ns(m(39) / gc)
+            } else {
+                0
+            },
+            if gc > 0 {
+                mapprobe::ticks_to_ns(m(32) / gc)
+            } else {
+                0
+            },
+        );
+        // The two `get_frame` calls per `map_page`, against the spans that contain them.
+        logln!(
+            "PERFMARK-GETFRAME: populate={}ns cow_lookup={}ns leaf_lookup={}ns | descend={}ns leaf={}ns",
+            lper(m(34)),
+            lper(m(35)),
+            lper(m(36)),
+            lper(m(23)),
+            lper(m(24)),
         );
     }
 
+    // Outside the `MAP_PROBE` gate on purpose: `MF_CALLS`/`MF_PAGES` are maintained with `add`
+    // rather than `tick` so they survive a probe-off build, and a counter whose only emit site is
+    // behind a gate is exactly as useful as no counter. `pages_per_call` is the mechanism check
+    // for fault-around batching -- ~`ANON_FAULT_AROUND` means the runs coalesced, ~1 means they
+    // did not and any wall-clock movement has another cause.
+    {
+        let mf_calls = mapprobe::MF_CALLS.load(core::sync::atomic::Ordering::Relaxed);
+        let mf_pages = mapprobe::MF_PAGES.load(core::sync::atomic::Ordering::Relaxed);
+        logln!(
+            "PERFMARK-MAPFRAMES: calls={} pages={} pages_per_call_x100={}",
+            mf_calls,
+            mf_pages,
+            if mf_calls > 0 { mf_pages * 100 / mf_calls } else { 0 },
+        );
+    }
     logln!(
         "PERFMARK-MAP: prep={}us walk={}us consist={}us | probe floor={}us over {} probes",
         a(20) / 1000,
@@ -256,14 +382,16 @@ pub fn mark(rebaseline: bool) {
     // pool instead of the PFA; `unpark-miss=` is calls that looked and found nothing, which is
     // what separates a disabled drain from a drained-dry pool.
     logln!(
-        "PERFMARK-UNPARK: unparked={} miss={} (no-pool={} empty={}) | PFA acquisitions: bulk={} single={}",
+        "PERFMARK-UNPARK: unparked={} miss={} (no-pool={} empty={}) | PFA acquisitions: bulk={} single={} | pool provisioned={}",
         a(57),
         a(58),
         a(59),
         a(60),
         a(61),
         a(62),
+        a(63),
     );
+    logln!("PERFMARK-SPILL: frame-store spills={}", a(64));
 
     // Frame-allocation cost, split by path: the batch amortizes one lock acquisition over many
     // frames, the singular path does not, and the 10us attribution is precisely about that
@@ -300,6 +428,51 @@ zero={}/{}us wait={}/{}us  (singular frames = allocs - bulk)",
         a(52),
         a(53),
     );
+
+    // Frame cache.
+    //
+    // Printed **by name, from `stat::NAMES`**, not by hand-written index. The `allocprofile` lines
+    // above are indexed positionally and their comments record what that has cost: three counters
+    // inserted rather than appended once silently mislabelled every later field in two of them.
+    // Writing this loop cost less than checking those indices would have -- and the first draft of
+    // it did get them wrong, including one that indexed off the end of the array.
+    if framecache::ENABLED {
+        let names = framecache::stat::NAMES;
+        let mut line = alloc::string::String::new();
+        let mut acq = 0u64;
+        let mut frames = 0u64;
+        for i in 0..NR_FC {
+            let d = fc[i].saturating_sub(prev.fc[i]);
+            match names[i] {
+                // Both directions: the depot is touched once per magazine on alloc *and* on
+                // free, so an acquisition rate computed from allocs alone reads twice as good as
+                // it is.
+                "LOCAL_HIT" | "DEPOT_HIT" | "FREE_LOCAL" => frames += d,
+                "DEPOT_ACQ" => acq = d,
+                _ => {}
+            }
+            if d != 0 {
+                line.push_str(&alloc::format!(" {}={}", names[i].to_ascii_lowercase(), d));
+            }
+        }
+        // `frames/acq` is **the** amortization number and the reason `DEPOT_ACQ` exists: it should
+        // read ~`MAG_SIZE`. If it reads ~1 the magazines are thrashing at the boundary, and
+        // nothing else on this line means what it appears to.
+        let (clean, dirty, empty) = framecache::depths();
+        logln!(
+            "PERFMARK-FC:{} | frames/acq={} | depot mags: clean={} dirty={} empty={} | cached={}",
+            if line.is_empty() {
+                " (no activity)"
+            } else {
+                &line
+            },
+            if acq == 0 { 0 } else { frames / acq },
+            clean,
+            dirty,
+            empty,
+            framecache::cached_frames(),
+        );
+    }
 
     // Syscalls, biggest time delta first. The point is attribution between phases, so a phase's
     // whole kernel bill has to be visible even when it is spread over several call numbers.

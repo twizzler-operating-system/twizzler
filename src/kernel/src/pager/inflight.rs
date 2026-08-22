@@ -29,7 +29,10 @@ pub struct Inflight {
 
 impl Inflight {
     pub(super) fn new(request: Arc<Request>, needs_send: bool) -> Self {
-        Self { request, needs_send }
+        Self {
+            request,
+            needs_send,
+        }
     }
 
     /// The coalescing key this inflight waits on.
@@ -432,8 +435,10 @@ impl InflightManager {
         }
         // `LIVE` was already incremented by the admission CAS above, so report one less: the
         // profile field means "how many were outstanding before this one".
-        super::profile::PAGER_PROFILE
-            .submitted(LIVE.load(Ordering::Relaxed).saturating_sub(1), rk.all_pages().count());
+        super::profile::PAGER_PROFILE.submitted(
+            LIVE.load(Ordering::Relaxed).saturating_sub(1),
+            rk.all_pages().count(),
+        );
         let request = Arc::new(Request::new(id, rk));
         self.req_map.insert(request.clone());
         Ok(Inflight::new(request, true))

@@ -13,8 +13,9 @@ use crate::{
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, min_level_for_len},
         pagetables::{
-            Consistency, ContiguousProvider, DeferredUnmappingOps, MapInfo, MapReader, Mapper,
-            MappingCursor, MappingSettings, Table, TlbOrigin,
+            Consistency, ContiguousProvider, DeferredUnmappingOps, FrameSliceProvider, MapInfo,
+            MapReader, Mapper, MappingCursor, MappingFlags, MappingSettings, Table, TlbOrigin,
+            zeroprobe,
         },
         tracker::{
             FrameAllocFlags, FrameAllocator, alloc_frame, allocprofile, free_frame,
@@ -49,6 +50,21 @@ const MAX_MEMBERS: usize = 32;
 /// global allocator without `WAIT_OK` while the object's page-table lock is held. That is exactly
 /// what `avoid_alloc` reports -- `avoid-empty=` on `PERFMARK-FA` -- and it must stay 0.
 const PRECHARGE_EXACT: bool = true;
+
+/// [`PRECHARGE_EXACT`] for the object-table entry points that are not `map_page`.
+///
+/// Held separate from `PRECHARGE_EXACT` so the two can be measured apart: that one is shipped and
+/// validated (-12.7% on `page_fault_zero_fill`), and this one covers different call sites with a
+/// different cost profile -- the predictor walks a *range* here, and on a whole-object cursor the
+/// walk is 1 + 512 entries rather than the 2 that `map_page` pays.
+///
+/// Covers `map_pages` (the pager's ~130-page install), `map_phys`, and `maybe_cow_at` (every COW
+/// write fault). It does **not** cover `setup_cow_range`, `setup_zero_range`,
+/// `cow_clone_page_tables` or `split_to_level`: each allocates on a different rule than `map`
+/// does -- `setup_cow_range` populates the *destination* keyed on the *source*'s presence and
+/// allocates nothing at all for an aligned whole entry -- so each needs its own predictor and its
+/// own argument, not this one applied by name.
+const PRECHARGE_EXACT_RANGE: bool = true;
 
 /// Skip the consistency epilogue when there is nothing to invalidate and nothing to free.
 ///
@@ -148,6 +164,84 @@ pub mod mapprobe {
         // the fast path. Read against `RC_CALLS`: on this bench it should be ~all of them, and a
         // build where it is not is one where the epilogue is doing real work.
         RC_TRIVIAL,
+        // The predictors themselves -- what asking costs, which is the question `PRECHARGE_EXACT`
+        // never had to answer while its only caller handed it a one-page cursor. Aggregated over
+        // every caller of `Mapper::tables_needed`/`cow_tables_needed`, so `TN_CALLS` against
+        // `CALLS` is what says whose walk this is.
+        //
+        // `TN_ENTRIES / TN_CALLS` is the breadth of the walk and `TN_NS / TN_CALLS` its cost;
+        // `TN_MAX - TN_NEED` is the precharge it removed, measured in the same window rather than
+        // inferred from a second run.
+        TN_CALLS,
+        TN_NS,
+        TN_ENTRIES,
+        TN_NEED,
+        TN_MAX,
+        // Inside `WALK_NS`, which is the largest real span left in `map_page`. Split at the two
+        // branches of `Table::map`'s loop plus the flush `Mapper::map` ends on:
+        //
+        // - `W_DESCEND_NS` is the non-leaf arm -- `populate`, the COW check on the next table (a
+        //   frame lookup), and `next_table_mut`. Recorded **before** the recursive call, so a
+        //   parent's span never contains its child's.
+        // - `W_LEAF_NS` is the terminal arm -- `get_frame` on the target (a second frame lookup),
+        //   `inc_refcount`, and `update_entry`.
+        // - `W_FLUSH_NS` is `consist.flush_cache()`.
+        //
+        // `WALK_NS - (descend + leaf + flush)` is then the loop's own overhead: `get_index`,
+        // `phys.peek`, `can_map_at`, `align_advance`, and the entry reads.
+        //
+        // `Table::map` has callers other than `map_page`, so `W_LEAF_CALLS` is carried as the
+        // denominator: the per-call numbers only mean what they say in a window where it tracks
+        // `CALLS`, the same condition `RC_CALLS` exists to check.
+        W_DESCEND_NS,
+        W_LEAF_NS,
+        W_FLUSH_NS,
+        W_LEAF_CALLS,
+        // Inside `FrameAllocator::precharge`, which is 2,427 ns per `map_page` on the *create*
+        // path against 215 on the fault path -- and asks for **two** frames there. Two frames is
+        // not 2.4 us of work, so the question is which of its four parts is, and none of them has
+        // ever been bracketed.
+        //
+        // `PC_PROV` is `ensure_pool_provisioned` (an `interrupt::with_disabled` plus a TLS read on
+        // every call), `PC_RESERVE` the eager `Vec::reserve` (a kernel-heap allocation every call,
+        // because `FA_NO_TAKE` hands out a fresh allocator with an empty vec), `PC_POOL` the
+        // per-cpu pool draw, and `PC_GLOBAL` the global path behind it -- `consider_reclaim`, the
+        // `idle` CAS loop, and `raw_alloc_frames` under the PFA lock. `PC_GLOBAL` is entered on
+        // ~6% of calls, so its per-call mean is an *amortized* figure and must be read against
+        // `PC_GLOBAL_CALLS`, not against `PC_CALLS`.
+        PC_CALLS,
+        PC_PROV_NS,
+        PC_RESERVE_NS,
+        PC_FETCH_NS,
+        PC_POOL_NS,
+        PC_GLOBAL_NS,
+        PC_GLOBAL_CALLS,
+        // The two `get_frame` calls `map_page` makes per page, and the `populate` beside them.
+        // `get_frame` is a linear scan over every frame indexer (`frame.rs:1547`), and both of
+        // these look a frame up by physical address in order to touch it:
+        //
+        // - `W_COW_GF` is `next_table_frame(idx).is_cow()` -- a whole lookup to read **one bit**,
+        //   on every descent, for a condition that is almost never true here.
+        // - `W_LEAF_GF` is `get_frame(paddr.addr)` + `inc_refcount`, where the caller already
+        //   *had* the `FrameRef`: `map_page` takes `page: FrameRef` and throws it away building a
+        //   `ContiguousProvider` of raw addresses. `ZeroPageProvider` does the same, holding the
+        //   frame in `self.current` and returning only its address.
+        W_POPULATE_NS,
+        W_COW_GF_NS,
+        W_LEAF_GF_NS,
+        // Inside the global refill, which is 25 us an entry and 73% of the create path's
+        // `precharge`. Split so "a refill is expensive" can be attributed rather than asserted.
+        G_RECLAIM_NS,
+        G_CAS_NS,
+        G_RAW_NS,
+        // [`ObjectPageTable::map_frames`]: calls, and pages installed by them. `MF_PAGES /
+        // MF_CALLS` is the batch **achieved**, which is the whole falsifier for fault-around
+        // batching -- ~`ANON_FAULT_AROUND` means the runs coalesced, ~1 means they did not and
+        // any wall-clock movement has some other cause. Both use `add`, not `tick`: `tick` is
+        // gated on `MAP_PROBE` and this has to be readable in the probe-off arm, which is the
+        // only arm that produces a wall clock.
+        MF_CALLS,
+        MF_PAGES,
     );
 
     pub fn add(c: &AtomicU64, n: u64) {
@@ -198,6 +292,15 @@ pub mod mapprobe {
             return;
         }
         add(c, 1);
+    }
+
+    /// Accumulate `n` only when the probe is on, for counters whose *input* is free to compute but
+    /// whose atomic is not.
+    pub fn add_if_on(c: &AtomicU64, n: u64) {
+        if !MAP_PROBE {
+            return;
+        }
+        add(c, n);
     }
 }
 
@@ -928,6 +1031,18 @@ impl ObjectPageTable {
     }
 
     pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
+        self.map_page_probed(offset, page, false)
+    }
+
+    /// [`Self::map_page`], optionally tagging the entry for
+    /// [`zeroprobe`](crate::memory::pagetables::zeroprobe). Only the anonymous fill path passes
+    /// `true`; see that module for why it is safe there and nowhere else.
+    pub fn map_page_probed(
+        &mut self,
+        offset: u64,
+        page: FrameRef,
+        probe: bool,
+    ) -> Result<(), TwzError> {
         // Raw counters, not fault stages: an earlier split of this function with `record_stage`
         // put 800 ns in the three spans while the call as a whole measured 35 us, and the two
         // instruments disagreeing is itself the thing to rule out. These are the same probe the
@@ -961,11 +1076,12 @@ impl ObjectPageTable {
         }
         mapprobe::record(&mapprobe::PRECHARGE_NS, t_m);
         let t_m = mapprobe::start();
-        let mut phys = ContiguousProvider::new(
-            page.start_address(),
-            page.size(),
-            MappingSettings::default_user(),
-        );
+        let settings = if probe && zeroprobe::ENABLED {
+            MappingSettings::default_user().with_flags(MappingFlags::USER | MappingFlags::PROBE)
+        } else {
+            MappingSettings::default_user()
+        };
+        let mut phys = ContiguousProvider::new(page.start_address(), page.size(), settings);
         mapprobe::record(&mapprobe::PROV_NS, t_m);
         allocprofile::record(&allocprofile::MAP_PREP_NS, t);
         let t = allocprofile::start();
@@ -992,6 +1108,63 @@ impl ObjectPageTable {
         r
     }
 
+    /// Install a run of separately-allocated frames in one descent of the page tables.
+    ///
+    /// [`Self::map_page`] pays a root-to-leaf walk, a `Consistency` construction, a
+    /// `tables_needed` predictor, a frame-allocator borrow and a consistency epilogue **per
+    /// call** -- and the anonymous fill loop calls it once per page, so a fault-around run of
+    /// `ANON_FAULT_AROUND` pages into one leaf table pays every one of them four times. This pays
+    /// them once. Unlike [`Self::map_pages`] the frames need not be physically contiguous, which
+    /// is what the anonymous fill path actually has.
+    ///
+    /// **Precondition: every offset in the run is absent.** See [`FrameSliceProvider`] -- an entry
+    /// found present consumes an offer without mapping it and the frame is lost. The caller holds
+    /// the page-table lock across its emptiness check and this call, so nothing can install
+    /// underneath in between.
+    ///
+    /// `installed` is set to how many frames the walk took, so a partial failure aborts exactly
+    /// the tail rather than the whole run.
+    pub fn map_frames(
+        &mut self,
+        offset: u64,
+        frames: &[FrameRef],
+        probe: bool,
+        installed: &mut usize,
+    ) -> Result<(), TwzError> {
+        *installed = 0;
+        if frames.is_empty() {
+            return Ok(());
+        }
+        debug_assert!(frames.iter().all(|f| f.size() == PageNumber::PAGE_SIZE));
+        let len = frames.len() * PageNumber::PAGE_SIZE;
+        let mut consist = Consistency::new_object_tables();
+        let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
+        let mut fa = take_or_new_frame_allocator();
+        let need = if PRECHARGE_EXACT_RANGE {
+            self.mapper.tables_needed(&cursor)
+        } else {
+            cursor.max_number_new_tables(Self::top_level(), 0)
+        };
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
+        // Same settings `map_page_probed` builds, and for the same reason: `zeroprobe` reads the
+        // flag off `paddr.settings` per installed entry, so carrying it here gives one probed
+        // leaf per page exactly as the per-page path did.
+        let settings = if probe && zeroprobe::ENABLED {
+            MappingSettings::default_user().with_flags(MappingFlags::USER | MappingFlags::PROBE)
+        } else {
+            MappingSettings::default_user()
+        };
+        mapprobe::add(&mapprobe::MF_CALLS, 1);
+        mapprobe::add(&mapprobe::MF_PAGES, frames.len() as u64);
+        let mut phys = FrameSliceProvider::new(frames, settings);
+        let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
+        *installed = phys.consumed();
+        self.run_consistency(consist);
+        r
+    }
+
     /// Install a contiguous run of 4 KiB frames in one descent of the page tables.
     ///
     /// [`Self::map_page`] costs a walk from the root, a frame-allocator precharge and an
@@ -1012,10 +1185,14 @@ impl ObjectPageTable {
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(Self::top_level(), 0),
-            FrameAllocFlags::WAIT_OK,
-        );
+        let need = if PRECHARGE_EXACT_RANGE {
+            self.mapper.tables_needed(&cursor)
+        } else {
+            cursor.max_number_new_tables(Self::top_level(), 0)
+        };
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
         // Page-sized offers, not the whole run: these are separate frames, and a huge entry over
         // them would hold one refcount over memory owned by 512 of them. See
         // [`ContiguousProvider::new_of_page_size`].
@@ -1163,10 +1340,14 @@ impl ObjectPageTable {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(Self::top_level(), 0),
-            FrameAllocFlags::WAIT_OK,
-        );
+        let need = if PRECHARGE_EXACT_RANGE {
+            self.mapper.cow_tables_needed(&cursor)
+        } else {
+            cursor.max_number_new_tables(Self::top_level(), 0)
+        };
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
 
         let mut consist = Consistency::new_object_tables();
         let did_cow = self
@@ -1300,10 +1481,14 @@ impl Object {
         let len = (end.raw() - start.raw()) as usize;
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
-        fa.precharge(
-            cursor.max_number_new_tables(pt.mapper.start_level(), 0),
-            FrameAllocFlags::WAIT_OK,
-        );
+        let need = if PRECHARGE_EXACT_RANGE {
+            pt.mapper.tables_needed(&cursor)
+        } else {
+            cursor.max_number_new_tables(pt.mapper.start_level(), 0)
+        };
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
         let mut phys =
             ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
         let mut consist = Consistency::new_object_tables();

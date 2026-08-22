@@ -9,6 +9,9 @@ bitflags::bitflags! {
         /// The mapping is accessible by userspace.
         const USER = 2;
         const WIRED = 4;
+        /// Suppress the map-time `DIRTY` bit and tag the entry for
+        /// [`zeroprobe`](super::zeroprobe). Anonymous fills only -- see that module.
+        const PROBE = 8;
     }
 }
 
@@ -62,6 +65,14 @@ impl MappingSettings {
             perms,
             cache: self.cache,
             flags: self.flags,
+        }
+    }
+
+    pub fn with_flags(&self, flags: MappingFlags) -> Self {
+        Self {
+            perms: self.perms,
+            cache: self.cache,
+            flags,
         }
     }
 
