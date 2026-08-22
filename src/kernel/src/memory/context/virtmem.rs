@@ -324,6 +324,154 @@ pub mod mapprofile {
     }
 }
 
+/// Stage split of [`VirtContext::remove_object`], the whole of `sys_object_unmap`.
+///
+/// Separate from [`mapprofile`] rather than folded into it: the two paths have nothing in common
+/// past the slot number, and an unmap costs its own precharge, its own page-table lock and its own
+/// shootdown wait. `object_create_delete` pays both once per iteration and nothing had ever split
+/// the second one.
+pub mod unmapprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    pub const UNMAP_PROFILE: bool = false;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Stage {
+        /// `FrameAllocator::new` (a precharge) plus `begin_remove`.
+        Pre = 0,
+        /// `remove_mapping` + `note_unmap`.
+        Notify,
+        /// Acquiring the object's page-table lock -- a sleeping mutex.
+        Lock,
+        /// The `for_each_arch` unmap loop: mapper walks and `remove_invalidate`.
+        Arches,
+        /// Dropping the page-table guard, i.e. the shootdown wait and the deferred frame frees.
+        Shoot,
+        /// `guard.finish`, the sync check, and the reap request.
+        Finish,
+        /// Within [Stage::Arches]: `pt.members()`, the membership filter.
+        Members,
+        /// Within [Stage::Arches]: `ArchContext::unmap_object`.
+        UnmapObj,
+        /// Within [Stage::Arches]: `pt.remove_invalidate` and the map-count bookkeeping.
+        RemInv,
+        /// Within [Stage::UnmapObj]: taking the arch mapper's spinlock.
+        UoLock,
+        /// Within [Stage::UnmapObj]: the page-table walk itself.
+        UoWalk,
+        /// Within [Stage::UnmapObj]: `Consistency::finish_send` -- IPI distribution, no wait.
+        UoSend,
+        /// Within [Stage::UnmapObj]: `run_all` -- the shootdown wait plus the frame frees.
+        UoRun,
+        /// Within [Stage::Finish]: `RemoveGuard::finish`, i.e. the slot state swap.
+        FinSwap,
+        /// Within [Stage::Finish]: `request_reap`, i.e. the reaper queue push and wake.
+        FinReap,
+        /// Within [Stage::FinReap]: taking the reaper's queue lock and pushing.
+        ReapPush,
+        /// Within [Stage::FinReap]: `CondVar::signal`, i.e. waking the reaper thread.
+        ReapSignal,
+        /// Within `ArchTlbMgr::finish_send`: the PCID revocation walk. Recorded from every caller,
+        /// not just the unmap path -- the split is of the shootdown, which the map path shares.
+        SendRevoke,
+        /// Within `finish_send`: target selection plus the shootdown statistics.
+        SendTarget,
+        /// Within `finish_send`: the IPI itself.
+        SendIpi,
+        /// Within `finish_send`: this processor's own invalidation.
+        SendLocal,
+        Total,
+    }
+
+    pub const NR: usize = Stage::Total as usize + 1;
+    pub const NAMES: [&str; NR] = [
+        "pre",
+        "notify",
+        "lock",
+        "arches",
+        "shoot",
+        "finish",
+        "members",
+        "unmap_obj",
+        "rem_invl",
+        "uo_lock",
+        "uo_walk",
+        "uo_send",
+        "uo_run",
+        "fin_swap",
+        "fin_reap",
+        "reap_push",
+        "reap_signal",
+        "snd_revoke",
+        "snd_target",
+        "snd_ipi",
+        "snd_local",
+        "TOTAL",
+    ];
+
+    static STAGE_COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+    static STAGE_NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn start() -> Instant {
+        if UNMAP_PROFILE {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record(stage: Stage, start: Instant) {
+        if !UNMAP_PROFILE {
+            return;
+        }
+        let ns = (Instant::now() - start).as_nanos() as u64;
+        STAGE_COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
+        STAGE_NS[stage as usize].fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// Per-stage (count, nanoseconds), cumulative, for [`crate::perfmark`] to difference.
+    pub fn snapshot() -> [(u64, u64); NR] {
+        let mut out = [(0u64, 0u64); NR];
+        if !UNMAP_PROFILE {
+            return out;
+        }
+        for i in 0..NR {
+            out[i] = (
+                STAGE_COUNT[i].load(Ordering::Relaxed),
+                STAGE_NS[i].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+
+    pub fn print() {
+        if !UNMAP_PROFILE {
+            return;
+        }
+        let total = STAGE_COUNT[Stage::Total as usize].load(Ordering::Relaxed);
+        if total == 0 {
+            return;
+        }
+        logln!("== remove_object profile: {} calls ==", total);
+        for (i, name) in NAMES.iter().enumerate() {
+            let c = STAGE_COUNT[i].load(Ordering::Relaxed);
+            if c == 0 {
+                continue;
+            }
+            logln!(
+                "  {:>9}: {} calls, {} ns/call",
+                name,
+                c,
+                STAGE_NS[i].load(Ordering::Relaxed) / c
+            );
+        }
+    }
+}
+
 static CONTEXT_IDS: IdCounter = IdCounter::new();
 
 struct KernelSlotCounter {
@@ -1612,6 +1760,9 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
+        use unmapprofile::Stage as UStage;
+        let t_total = unmapprofile::start();
+        let t = unmapprofile::start();
         let mut fa = FrameAllocator::new(
             FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
@@ -1619,8 +1770,11 @@ impl UserContext for VirtContext {
         let Some((slot, guard)) = self.regions.begin_remove(info) else {
             return;
         };
+        unmapprofile::record(UStage::Pre, t);
+        let t = unmapprofile::start();
         slot.object().remove_mapping(info.raw());
         fault::note_unmap(info.raw(), slot.object());
+        unmapprofile::record(UStage::Notify, t);
 
         // The slot stays claimed for the whole teardown: insert_object claims a free slot and maps
         // immediately (see there), so releasing it here would let another object be mapped into
@@ -1629,11 +1783,14 @@ impl UserContext for VirtContext {
         {
             // Whichever page tables the fault path would use for this region -- taking the same
             // one is what makes the `removed` store below and that path's check of it ordered.
+            let t = unmapprofile::start();
             let mut pt = if let Some(stable) = slot.stable.as_ref() {
                 PtGuard::new(stable)
             } else {
                 slot.object().lock_page_tables()
             };
+            unmapprofile::record(UStage::Lock, t);
+            let t_arches = unmapprofile::start();
             // An in-flight fault now either mapped before us, and the unmap below undoes it, or
             // sees this and does not map at all. See MapRegion::handle_fault.
             slot.removed
@@ -1654,9 +1811,11 @@ impl UserContext for VirtContext {
             // means the set is not known complete, and then this must degrade to exactly the old
             // behaviour -- visiting everything -- which is what makes a wrong membership set a
             // wasted acquisition rather than a missed unmap.
+            let t_mem = unmapprofile::start();
             let members: Option<heapless::Vec<ArchContextTarget, 32>> = (counted)
                 .then(|| pt.members().map(|m| m.iter().copied().collect()))
                 .flatten();
+            unmapprofile::record(UStage::Members, t_mem);
             self.for_each_arch(|arch| {
                 if let Some(members) = members.as_ref()
                     && !members.contains(&arch.target)
@@ -1664,8 +1823,11 @@ impl UserContext for VirtContext {
                     unmap_census::record_skip();
                     return;
                 }
+                let t_uo = unmapprofile::start();
                 let cursor = slot.mapping_cursor(0, MAX_SIZE);
                 let released = arch.unmap_object(cursor, obj_table, &mut fa);
+                unmapprofile::record(UStage::UnmapObj, t_uo);
+                let t_ri = unmapprofile::start();
                 n_arches += 1;
                 if released {
                     n_mapped += 1;
@@ -1695,10 +1857,20 @@ impl UserContext for VirtContext {
                         }
                     }
                 }
+                unmapprofile::record(UStage::RemInv, t_ri);
             });
             unmap_census::record(n_arches, n_mapped, counted);
+            unmapprofile::record(UStage::Arches, t_arches);
+            // Explicit so the shootdown wait in the guard's Drop is timed rather than folded into
+            // whatever follows the block.
+            let t = unmapprofile::start();
+            drop(pt);
+            unmapprofile::record(UStage::Shoot, t);
         }
+        let t = unmapprofile::start();
+        let t_sw = unmapprofile::start();
         guard.finish();
+        unmapprofile::record(UStage::FinSwap, t_sw);
 
         // After the unmap, not before: syncing can block on the pager, and dirty state lives in the
         // object's own page tables, which unmapping a context's reference to them does not touch.
@@ -1718,8 +1890,12 @@ impl UserContext for VirtContext {
         // delete to the userspace pager, and doing that inline on this path -- with syncs of the
         // same objects in flight -- wedged the contended-sync bench.
         if crate::obj::TARGETED_REAP && slot.object().is_pending_delete() {
+            let t_rp = unmapprofile::start();
             crate::obj::request_reap(slot.object().id(), slot.object());
+            unmapprofile::record(UStage::FinReap, t_rp);
         }
+        unmapprofile::record(UStage::Finish, t);
+        unmapprofile::record(UStage::Total, t_total);
     }
 }
 

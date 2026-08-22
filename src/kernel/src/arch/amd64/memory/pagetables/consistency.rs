@@ -544,6 +544,7 @@ impl ArchTlbMgr {
     /// the wait moves: the revoke, the fence, the target selection and the send all stay here, so
     /// the ordering argument below holds exactly as it did when this was one function.
     pub fn finish_send(&mut self) -> PendingShootdown {
+        use crate::memory::context::virtmem::unmapprofile as up;
         if !tls_ready() {
             self.reset();
             return PendingShootdown::none();
@@ -576,6 +577,7 @@ impl ArchTlbMgr {
         // of active_cr3 -- so we see it and IPI it. Both sides' AcqRel is load-bearing: the same
         // edge, read the other way, is what publishes our page-table writes to a processor that
         // flushes instead of being IPI'd.
+        let t_st = up::start();
         let pcid = self.data.pcid();
         if pcid != 0 {
             let ours = unsafe { x86::controlregs::cr3() } == self.data.target();
@@ -596,6 +598,8 @@ impl ArchTlbMgr {
         // pair, the one reordering x86 permits, so without this fence we could observe a
         // processor's pre-switch cr3 while it observes our pre-unmap PTEs -- and we would skip
         // it. Pairs with the SeqCst store in `ArchContext::switch_to_target`.
+        up::record(up::Stage::SendRevoke, t_st);
+        let t_st = up::start();
         core::sync::atomic::fence(Ordering::SeqCst);
         // Distribute the invalidation commands, recording exactly who we sent to. `should_target`
         // reads each processor's active cr3, which can change underneath us, so the wait below has
@@ -615,6 +619,8 @@ impl ArchTlbMgr {
             }
         });
         tlb_shootdown_inc_count(count, self.origin, self.data.full() && self.data.global());
+        up::record(up::Stage::SendTarget, t_st);
+        let t_st = up::start();
         if count > 0 {
             trace_tlb_shootdown();
             // Send the IPI, and then do local invalidations.
@@ -644,8 +650,11 @@ impl ArchTlbMgr {
                 super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
             }
         }
+        up::record(up::Stage::SendIpi, t_st);
+        let t_st = up::start();
         trace_tlb_invalidation();
         self.data.do_invalidation();
+        up::record(up::Stage::SendLocal, t_st);
 
         // Released before the wait, not after it. It is load-bearing for everything above -- the
         // revoke, the target selection and the local invalidation all have to happen on one

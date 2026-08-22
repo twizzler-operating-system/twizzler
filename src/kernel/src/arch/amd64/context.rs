@@ -391,14 +391,23 @@ impl ArchContext {
         obj_table: Option<PhysAddr>,
         fa: &mut FrameAllocator,
     ) -> bool {
+        use crate::memory::context::virtmem::unmapprofile as up;
+        let t = up::start();
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        up::record(up::Stage::UoLock, t);
+        let t = up::start();
         let mut released = None;
         let _ = guard
             .unmap(cursor, &mut consist, fa, &mut released)
             .unwrap();
+        up::record(up::Stage::UoWalk, t);
+        let t = up::start();
         consist.finish_send();
         drop(guard);
+        up::record(up::Stage::UoSend, t);
+        let t = up::start();
         consist.into_deferred().run_all();
+        up::record(up::Stage::UoRun, t);
         obj_table.is_some() && released == obj_table
     }
 

@@ -156,6 +156,13 @@ impl Lapic {
         }
     }
 
+    /// Whether this APIC is in x2APIC mode, i.e. register access is `rdmsr`/`wrmsr` rather than
+    /// MMIO. Callers care because the two modes have different rules, not because of the encoding
+    /// -- see [`super::ipi::raw_send_ipi`].
+    pub fn is_x2(&self) -> bool {
+        matches!(self.version, ApicVersion::X2Apic)
+    }
+
     /// Clear the error status register.
     pub fn clear_err(&self) {
         unsafe {

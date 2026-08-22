@@ -190,11 +190,38 @@ pub mod createprofile {
         Meta,
         /// `register_object`: the global id map.
         Register,
+        /// Within [Stage::New]: the `Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>`.
+        NewDevBox,
+        /// Within [Stage::New]: the rest of the struct literal.
+        NewStruct,
+        /// Within [Stage::New]: `Arc::new`, i.e. the heap allocation plus the move.
+        NewArc,
+        /// Within [Stage::Meta]: `alloc_frame(ZEROED | WAIT_OK)`.
+        MetaFrame,
+        /// Within [Stage::Meta]: `add_frame`, which builds the object page tables down to the
+        /// meta page.
+        MetaAdd,
+        /// Within [Stage::Meta]: `note_written_meta`.
+        MetaNote,
         Total,
     }
 
     pub const NR: usize = Stage::Total as usize + 1;
-    pub const NAMES: [&str; NR] = ["nonce", "id", "new", "srcs", "meta", "register", "TOTAL"];
+    pub const NAMES: [&str; NR] = [
+        "nonce",
+        "id",
+        "new",
+        "srcs",
+        "meta",
+        "register",
+        "new_devbox",
+        "new_struct",
+        "new_arc",
+        "meta_frame",
+        "meta_add",
+        "meta_note",
+        "TOTAL",
+    ];
 
     static COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
     static NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
@@ -240,7 +267,11 @@ pub mod createprofile {
         if total == 0 {
             return;
         }
-        logln!("== sys_object_create profile: {} calls ==", total);
+        logln!(
+            "== sys_object_create profile: {} calls, size_of::<Object>() = {} ==",
+            total,
+            core::mem::size_of::<crate::obj::Object>(),
+        );
         for (i, name) in NAMES.iter().enumerate() {
             let c = COUNT[i].load(Ordering::Relaxed);
             if c == 0 {
@@ -276,7 +307,10 @@ pub fn sys_object_create(
     let id = calculate_new_id(create.kuid, MetaFlags::default(), nonce, create.def_prot);
     createprofile::record(Stage::Id, t);
     let t = createprofile::start();
-    let obj = Arc::new(Object::new(id, create.lt, ties));
+    let inner = Object::new(id, create.lt, ties);
+    let t_arc = createprofile::start();
+    let obj = Arc::new(inner);
+    createprofile::record(Stage::NewArc, t_arc);
     // Nothing is on the store until the first sync, whatever sources were copied in here -- those
     // land in pages, not on disk. Recording zero rather than leaving it unknown is what lets the
     // fault path fill a brand-new object without a single pager round trip.

@@ -927,14 +927,48 @@ impl MemoryTracker {
         }
     }
 
+    /// How many waiters one lock hold claims. Bounded for the same reason `requeue_all`'s batch
+    /// is: the pops happen under a spinlock and the requeue must not.
+    const WAKE_BATCH: usize = 8;
+
     fn wake(&self) {
         let g = current_thread_ref().map(|ct| ct.enter_critical());
-        // Take under the lock, requeue outside it -- see `Request::signal`, which is the same
-        // shape for the same reason. Detaching the list is the claim: the blocking path above
-        // unlinks itself under this same lock when it decides not to block, so a thread is either
-        // in the list we just took or gone from it, never both.
-        let waiters = self.waiters.lock().take();
-        add_all_to_requeue(waiters);
+        // Popped under the lock, requeued outside it -- see `Request::signal`, which is the same
+        // shape for the same reason.
+        //
+        // **Popped, not `take()`n.** `LinkedList::take` moves the list's head and tail and leaves
+        // every node's link alone, so a thread on the detached list still reads
+        // `memwait_link.is_linked() == true`. The `else` arm in [`Self::wait`] tests exactly that
+        // before unlinking itself, under this same lock -- and its comment argues that holding the
+        // lock makes the two safe against each other. It does not, once the list has been
+        // detached: `wait` finds itself linked, builds a cursor into `self.waiters` (now empty)
+        // from its own node, and splices the node out by rewriting neighbours that belong to the
+        // detached list. That corrupts the list this function is about to walk and releases a
+        // reference the detached list still owns, which is a walk off a freed `Thread`.
+        //
+        // `pop_front` clears the node's link, so `wait`'s `is_linked()` test means what its
+        // comment says it means and the no-op case is a real no-op.
+        loop {
+            let mut batch = heapless::Vec::<ThreadRef, { Self::WAKE_BATCH }>::new();
+            {
+                let mut waiters = self.waiters.lock();
+                while !batch.is_full() {
+                    let Some(thread) = waiters.pop_front() else {
+                        break;
+                    };
+                    // Safety: not full, checked above.
+                    unsafe { batch.push_unchecked(thread) };
+                }
+            }
+            if batch.is_empty() {
+                break;
+            }
+            let full = batch.is_full();
+            add_all_to_requeue(batch);
+            if !full {
+                break;
+            }
+        }
         requeue_all();
         drop(g);
     }

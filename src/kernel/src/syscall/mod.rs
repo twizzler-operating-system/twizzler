@@ -328,6 +328,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::pager::print_pager_profile();
                 crate::processor::sched::wakestats::print();
                 crate::memory::context::virtmem::mapprofile::print();
+                crate::memory::context::virtmem::unmapprofile::print();
                 crate::memory::context::virtmem::heapprofile::print();
                 crate::obj::id::checkidstats::print();
                 object::mapstats::print();

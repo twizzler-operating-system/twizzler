@@ -458,7 +458,10 @@ impl Object {
             let maybe_more;
             // Declared after `batch` so it drops first: see the requeue loop below.
             let _critical = {
-                let mut sleep_info = self.sleep_info.lock();
+                let Some(si) = self.sleep_info_if_present() else {
+                    break;
+                };
+                let mut sleep_info = si.lock();
                 maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch);
                 current_thread_ref().map(|ct| ct.enter_critical())
             };
@@ -485,12 +488,11 @@ impl Object {
     }
 
     pub fn add_device_interrupt(&self, vector: u32, num: usize, offset: usize) {
-        self.device_interrupt_info[num]
-            .0
-            .store(vector as u64, Ordering::Release);
-        self.device_interrupt_info[num]
-            .1
-            .store(offset as u64, Ordering::Release);
+        let info = self.device_interrupt_table();
+        info[num].0.store(vector as u64, Ordering::Release);
+        info[num].1.store(offset as u64, Ordering::Release);
+        // After the stores, and it is the publication edge: every reader below is gated on this
+        // flag, so setting it first would let one reach a table that does not exist yet.
         self.flags.fetch_or(OBJ_HAS_INTERRUPTS, Ordering::Release);
     }
 
@@ -511,9 +513,10 @@ impl Object {
                 return Ok(false);
             }
             if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {
+                let info = self.device_interrupt_table();
                 for i in 0..NUM_DEVICE_INTERRUPTS {
-                    let di_offset = self.device_interrupt_info[i].1.load(Ordering::Acquire);
-                    let di_vector = self.device_interrupt_info[i].0.load(Ordering::Acquire);
+                    let di_offset = info[i].1.load(Ordering::Acquire);
+                    let di_vector = info[i].0.load(Ordering::Acquire);
                     if di_offset as usize == offset {
                         return Ok(wait_for_device_interrupt(
                             thread,
@@ -532,7 +535,7 @@ impl Object {
         // hence ahead of the read, so we observe its store and decline to sleep. Claiming after
         // the read inverts the pair and loses the wake.
         self.sleepers.fetch_add(1, Ordering::SeqCst);
-        let mut sleep_info = self.sleep_info.lock();
+        let mut sleep_info = self.sleep_info().lock();
         let cur = match vaddr
             .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
             .unwrap_or_else(|| self.read_atomic_64(offset))
@@ -590,7 +593,7 @@ impl Object {
         // hence ahead of the read, so we observe its store and decline to sleep. Claiming after
         // the read inverts the pair and loses the wake.
         self.sleepers.fetch_add(1, Ordering::SeqCst);
-        let mut sleep_info = self.sleep_info.lock();
+        let mut sleep_info = self.sleep_info().lock();
 
         let cur = match vaddr
             .map(|vaddr| Ok(vaddr.load(Ordering::SeqCst)))
@@ -619,18 +622,21 @@ impl Object {
 
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();
-        let mut sleep_info = self.sleep_info.lock();
-        // Only on a real removal: a word this thread was already woken off (claimed by
-        // `wakeup_word`, or drained by an overflow) is gone, and was decremented there.
-        if sleep_info.remove(offset, thread.objid()) {
-            self.sleepers.fetch_sub(1, Ordering::SeqCst);
+        if let Some(si) = self.sleep_info_if_present() {
+            let mut sleep_info = si.lock();
+            // Only on a real removal: a word this thread was already woken off (claimed by
+            // `wakeup_word`, or drained by an overflow) is gone, and was decremented there.
+            if sleep_info.remove(offset, thread.objid()) {
+                self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            }
         }
 
         // TODO: I think this only works if the thread waits on one interrupt.
         if self.flags.load(Ordering::Acquire) & OBJ_HAS_INTERRUPTS != 0 {
+            let info = self.device_interrupt_table();
             for i in 0..NUM_DEVICE_INTERRUPTS {
-                let di_offset = self.device_interrupt_info[i].1.load(Ordering::Acquire);
-                let di_vector = self.device_interrupt_info[i].0.load(Ordering::Acquire);
+                let di_offset = info[i].1.load(Ordering::Acquire);
+                let di_vector = info[i].0.load(Ordering::Acquire);
                 if di_offset as usize == offset {
                     remove_from_device_wait(thread, di_vector as u32);
                     break;

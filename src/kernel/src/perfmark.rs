@@ -14,7 +14,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use twizzler_abi::syscall::Syscall;
 
 use crate::{
-    memory::{context::virtmem::fault, framecache, tracker::allocprofile},
+    memory::{
+        context::virtmem::{fault, mapprofile, unmapprofile},
+        framecache,
+        tracker::allocprofile,
+    },
     obj::pagetables::mapprobe,
     spinlock::Spinlock,
     syscall::object::{createprofile, deleteprofile},
@@ -29,6 +33,8 @@ const NR_CREATE: usize = createprofile::NR;
 const NR_DELETE: usize = deleteprofile::NR;
 const NR_MAPPROBE: usize = mapprobe::NR;
 const NR_FC: usize = framecache::stat::NR;
+const NR_MAPP: usize = mapprofile::NR;
+const NR_UNMAP: usize = unmapprofile::NR;
 
 struct Prev {
     stages: [(usize, u64); NR_STAGES],
@@ -42,6 +48,8 @@ struct Prev {
     /// hand below, and every insertion into it so far has silently mislabelled every later field.
     /// A separate snapshot cannot do that to anything.
     fc: [u64; NR_FC],
+    mapp: [(u64, u64); NR_MAPP],
+    unmapp: [(u64, u64); NR_UNMAP],
 }
 
 static PREV: Spinlock<Option<Prev>> = Spinlock::new(None);
@@ -62,6 +70,8 @@ pub fn mark(rebaseline: bool) {
     let delete = deleteprofile::snapshot();
     let mprobe = mapprobe::snapshot();
     let fc = framecache::stat::snapshot();
+    let mapp = mapprofile::snapshot();
+    let unmapp = unmapprofile::snapshot();
 
     let prev = PREV.lock().replace(Prev {
         stages,
@@ -72,6 +82,8 @@ pub fn mark(rebaseline: bool) {
         delete,
         mapprobe: mprobe,
         fc,
+        mapp,
+        unmapp,
     });
     let Some(prev) = prev else {
         return;
@@ -337,7 +349,11 @@ pub fn mark(rebaseline: bool) {
             "PERFMARK-MAPFRAMES: calls={} pages={} pages_per_call_x100={}",
             mf_calls,
             mf_pages,
-            if mf_calls > 0 { mf_pages * 100 / mf_calls } else { 0 },
+            if mf_calls > 0 {
+                mf_pages * 100 / mf_calls
+            } else {
+                0
+            },
         );
     }
     logln!(
@@ -539,5 +555,37 @@ zero={}/{}us wait={}/{}us  (singular frames = allocs - bulk)",
             );
         }
         logln!("PERFMARK-DELETE: deletes={} |{}", deletes, delete_line);
+    }
+
+    // Stage splits of `insert_object` and `remove_object`, per call. Both are keyed off their own
+    // TOTAL count so an interval with no maps prints nothing rather than a line of zeros.
+    let maps = mapp[NR_MAPP - 1].0 - prev.mapp[NR_MAPP - 1].0;
+    if maps > 0 {
+        let mut line = alloc::string::String::new();
+        for i in 0..NR_MAPP {
+            let c = mapp[i].0 - prev.mapp[i].0;
+            if c == 0 {
+                continue;
+            }
+            let ns = mapp[i].1.saturating_sub(prev.mapp[i].1);
+            use core::fmt::Write;
+            let _ = write!(line, " {}={}ns/{}", mapprofile::NAMES[i], ns / c, c);
+        }
+        logln!("PERFMARK-INSERT: maps={} |{}", maps, line);
+    }
+
+    let unmaps = unmapp[NR_UNMAP - 1].0 - prev.unmapp[NR_UNMAP - 1].0;
+    if unmaps > 0 {
+        let mut line = alloc::string::String::new();
+        for i in 0..NR_UNMAP {
+            let c = unmapp[i].0 - prev.unmapp[i].0;
+            if c == 0 {
+                continue;
+            }
+            let ns = unmapp[i].1.saturating_sub(prev.unmapp[i].1);
+            use core::fmt::Write;
+            let _ = write!(line, " {}={}ns/{}", unmapprofile::NAMES[i], ns / c, c);
+        }
+        logln!("PERFMARK-UNMAP: unmaps={} |{}", unmaps, line);
     }
 }

@@ -173,18 +173,28 @@ pub fn requeue_all() {
     }
 }
 
-/// Returns whether an entry was actually inserted, so the caller can keep [`Requeue::count`] in
-/// step while it still holds the lock. A duplicate must not be counted, or the count never returns
-/// to zero and the early-out is dead.
+/// Insert `thread`, handing the reference **back** when nothing was inserted.
+///
+/// Returning it rather than dropping it here is the whole point of the signature. The caller holds
+/// a spinlock, which makes the current thread critical, and this can hold the last reference to
+/// `thread` -- `Thread::drop` reaches `IdCounter::release` and `SecCtxMgr::drop`, both of which
+/// take *sleeping* mutexes, and `Mutex::lock` panics outright in a critical context. That is the
+/// rule `remove_from_requeue` and `CondVar::signal` already follow.
+///
+/// `None` also means "inserted", which is what keeps [`Requeue::count`] in step: a duplicate must
+/// not be counted, or the count never returns to zero and the early-out in [`requeue_all`] is dead.
 #[must_use]
-fn do_add_to_requeue(list: &mut RBTree<RequeueLinkAdapter>, thread: ThreadRef) -> bool {
+fn do_add_to_requeue(
+    list: &mut RBTree<RequeueLinkAdapter>,
+    thread: ThreadRef,
+) -> Option<ThreadRef> {
     // If already on the list, skip. This can happen with spurious wakeups.
     // The find() + insert() is protected by the caller's lock, so no TOCTOU race.
     if !list.find(&thread.objid()).is_null() {
-        return false;
+        return Some(thread);
     }
     list.insert(thread);
-    true
+    None
 }
 
 #[track_caller]
@@ -222,10 +232,16 @@ pub fn add_to_requeue(thread: ThreadRef) {
         core::panic::Location::caller()
     );
     let requeue = get_requeue_list();
-    let mut list = requeue.list.lock();
-    if do_add_to_requeue(&mut *list, thread) {
-        requeue.count.fetch_add(1, Ordering::SeqCst);
-    }
+    // Dropped outside the lock; see [`do_add_to_requeue`].
+    let leftover = {
+        let mut list = requeue.list.lock();
+        let leftover = do_add_to_requeue(&mut *list, thread);
+        if leftover.is_none() {
+            requeue.count.fetch_add(1, Ordering::SeqCst);
+        }
+        leftover
+    };
+    drop(leftover);
 }
 
 pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
@@ -233,18 +249,34 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     // We are going to try to enqueue all threads. Best case, we can just immediately
     // schedule the thread, but if not, enqueue it onto the requeue list for later.
     //
-    // In the best-best case scenario, we don't even need to take the requeue lock.
-    let mut list = None;
+    // In the best-best case scenario, we don't even need to take the requeue lock -- which is
+    // still true, because the fast branch below never takes it.
+    //
+    // The lock is taken and released **per thread**, rather than once and held across the loop.
+    // Holding it made every later iteration critical, and both things a later iteration can do
+    // release a `ThreadRef`: `schedule_thread` returns early for an exiting thread without
+    // storing the one it was given (see `add_to_requeue`), and `do_add_to_requeue` hands back the
+    // reference for one already queued. Either can be the last, and `Thread::drop` takes sleeping
+    // mutexes (`IdCounter::release`, `SecCtxMgr::drop`) that `Mutex::lock` refuses in a critical
+    // context. That is a panic, not a slow path, and it is the one in `ocdperf.md` -- reached
+    // from `MemoryTracker::wake` under `DeferredUnmappingOps::run_all`.
+    //
+    // The extra acquisitions land only on threads that could not be scheduled outright, which
+    // this function already treats as the uncommon case.
     for thread in iter.into_iter() {
         if !thread.is_critical() && thread.reset_sync_sleep_done() {
             assert!(!thread.get_mutex_wait());
             crate::processor::sched::schedule_thread(thread);
         } else {
-            // Need to take the lock if we haven't yet.
-            let list = list.get_or_insert_with(|| requeue.list.lock());
-            if do_add_to_requeue(&mut *list, thread) {
-                requeue.count.fetch_add(1, Ordering::SeqCst);
-            }
+            let leftover = {
+                let mut list = requeue.list.lock();
+                let leftover = do_add_to_requeue(&mut *list, thread);
+                if leftover.is_none() {
+                    requeue.count.fetch_add(1, Ordering::SeqCst);
+                }
+                leftover
+            };
+            drop(leftover);
         }
     }
 }

@@ -63,7 +63,8 @@ pub struct Object {
     /// object -- nothing but that drop takes it, and by then no reference remains to reach it
     /// through. Reach it via [Object::page_tables].
     tables: Option<Mutex<pagetables::ObjectPageTable>>,
-    sleep_info: Mutex<SleepInfo>,
+    /// Lazily allocated: see [`sleep_info`](Object::sleep_info).
+    sleep_slot: Once<Box<Mutex<SleepInfo>>>,
     /// Threads parked anywhere in `sleep_info`, readable *without* taking that mutex.
     ///
     /// Exists for [Object::wakeup_word]: a wake that finds nobody waiting is the common case --
@@ -84,7 +85,9 @@ pub struct Object {
     /// an object that has none, which costs the fast path and nothing else; the opposite error
     /// would be a lost wakeup.
     sleepers: AtomicUsize,
-    device_interrupt_info: Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>,
+    /// Lazily allocated: see [`add_device_interrupt`](Object::add_device_interrupt). Every read
+    /// site is already behind `OBJ_HAS_INTERRUPTS`, which only that function sets.
+    device_interrupt_info: Once<Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>>,
     pin_info: Mutex<PinInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
@@ -358,24 +361,75 @@ impl Object {
             ties.len(),
             core::panic::Location::caller()
         );
-        Self {
+        use crate::syscall::object::createprofile as cp;
+        let t = cp::start();
+        let device_interrupt_info = Once::new();
+        let sleep_slot = Once::new();
+        if OBJ_EAGER_COLD_FIELDS {
+            device_interrupt_info.call_once(|| {
+                Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
+            });
+            sleep_slot.call_once(|| Box::new(Mutex::new(SleepInfo::new(id))));
+        }
+        cp::record(cp::Stage::NewDevBox, t);
+        let t = cp::start();
+        let this = Self {
             id,
             flags: AtomicU32::new(0),
             tables: Some(Mutex::new(pagetables::ObjectPageTable::new())),
-            sleep_info: Mutex::new(SleepInfo::new(id)),
+            sleep_slot,
             sleepers: AtomicUsize::new(0),
             pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
             known_len: AtomicU64::new(u64::MAX),
             lifetime_type,
-            device_interrupt_info: Box::new(
-                [const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS],
-            ),
+            device_interrupt_info,
             vnotes: VNotes::new(),
             omap_link: RBTreeAtomicLink::new(),
             mappings: Mutex::new(BTreeMap::new()),
-        }
+        };
+        cp::record(cp::Stage::NewStruct, t);
+        this
+    }
+
+    /// This object's sleep-word table, built on first use.
+    ///
+    /// Every object used to carry one inline, and it is 1,920 bytes -- 45% of the 4,288-byte
+    /// `Object` -- almost all of it a 32-slot `FnvIndexMap` that stays empty for every object that
+    /// nobody ever sleeps on. `Arc::new(Object)` measured 1,017 ns of the 6.1 us
+    /// `sys_object_create` costs, and it is a heap allocation plus a memcpy of exactly this
+    /// struct.
+    ///
+    /// The allocation lands on the first *sleep*, which is a path that is about to block anyway.
+    /// The wake path never reaches here on an object with no sleepers: `wakeup_word` returns at its
+    /// `sleepers == 0` check, which is the same guard that already existed to keep an uncontended
+    /// futex release out of this mutex.
+    pub(crate) fn sleep_info(&self) -> &Mutex<SleepInfo> {
+        self.sleep_slot
+            .call_once(|| Box::new(Mutex::new(SleepInfo::new(self.id))))
+    }
+
+    /// This object's device-interrupt table, built on first use.
+    ///
+    /// Only device KSOs ever have one; it is 512 bytes and a separate allocation, measured at
+    /// 358 ns of every `sys_object_create`. Both read sites are gated on `OBJ_HAS_INTERRUPTS`,
+    /// which nothing but `add_device_interrupt` sets, and it sets it after building this -- so a
+    /// reader that passes the gate finds the table already there and never allocates.
+    pub(crate) fn device_interrupt_table(
+        &self,
+    ) -> &[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS] {
+        self.device_interrupt_info.call_once(|| {
+            Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
+        })
+    }
+
+    /// The sleep-word table if it exists, without building one.
+    ///
+    /// For paths that only remove or wake: an object that has never been slept on has nothing for
+    /// them to find, and allocating to discover that would be backwards.
+    pub(crate) fn sleep_info_if_present(&self) -> Option<&Mutex<SleepInfo>> {
+        self.sleep_slot.poll().map(|b| &**b)
     }
 
     pub fn new_kernel_with_id(id: ObjID) -> Arc<Self> {
@@ -410,12 +464,19 @@ impl Object {
     /// `sys_object_create` qualifies on the same terms and takes it too, which is where the cost
     /// actually lands: 8.0 us of a 14.8 us `ObjectCreate` (`sysbench.md`).
     pub(crate) fn init_meta(self: &Arc<Self>, meta: MetaInfo) {
+        use crate::syscall::object::createprofile as cp;
+        let t = cp::start();
         let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
+        cp::record(cp::Stage::MetaFrame, t);
         // Safety: a freshly allocated frame, named by nothing else, and `MetaInfo` sits at offset
         // zero of the meta page -- the offset `write_meta` writes it to.
         unsafe { frame.virtaddr().as_mut_ptr::<MetaInfo>().write(meta) };
+        let t = cp::start();
         self.add_frame(PageNumber::meta_page(), frame);
+        cp::record(cp::Stage::MetaAdd, t);
+        let t = cp::start();
         self.note_written_meta(&meta);
+        cp::record(cp::Stage::MetaNote, t);
     }
 
     pub fn new_kernel() -> Arc<Self> {
@@ -830,6 +891,13 @@ struct ReapQueue {
     /// Set when [`MAX_REAP_QUEUE`] was hit, so the thread falls back to one full scan rather than
     /// dropping the objects it was not told about.
     overflowed: bool,
+    /// Whether the reaper thread is blocked in [`Reaper::work`] rather than working.
+    ///
+    /// Behind this lock rather than in an atomic beside it, for the same reason the queue is: it
+    /// is written on either side of `CondVar::wait`, which registers the waiter before releasing
+    /// the guard, so the flag and the registration are published together. A requester holding
+    /// this lock therefore cannot see `false` for a thread that has already parked.
+    parked: bool,
 }
 
 /// Bounded so a burst of unmaps cannot grow this without limit; past it one scan covers everything.
@@ -843,7 +911,9 @@ pub fn start_reaper_thread() {
         let mut guard = r.queue.lock();
         loop {
             if guard.objs.is_empty() && guard.graves.is_empty() && !guard.overflowed {
+                guard.parked = true;
                 guard = r.work.wait(guard);
+                guard.parked = false;
                 continue;
             }
             let objs = core::mem::take(&mut guard.objs);
@@ -882,22 +952,48 @@ pub fn start_reaper_thread() {
 /// Cheap and non-blocking: a push and a signal. The per-object locks the check needs are taken on
 /// the reaper thread instead of on the unmap path.
 pub fn request_reap(id: ObjID, obj: &ObjectRef) {
+    use crate::memory::context::virtmem::unmapprofile as up;
     if let Some(reaper) = REAPER.poll() {
-        {
+        let t = up::start();
+        let parked = {
             let mut q = reaper.queue.lock();
             if q.objs.len() >= MAX_REAP_QUEUE {
                 q.overflowed = true;
             } else {
                 q.objs.push((id, obj.clone()));
             }
+            q.parked
+        };
+        up::record(up::Stage::ReapPush, t);
+        // Only when the thread is actually parked. `parked` is written under this same lock and
+        // `CondVar::wait` registers the waiter before it releases the guard, so a requester that
+        // reads `true` is reading a waiter that is already queued -- and one that reads `false` is
+        // looking at a thread that has not yet re-tested the queue it just pushed to. Neither can
+        // lose the wakeup, which is the property the field comment on `Reaper::queue` spells out.
+        if !REAP_SIGNAL_ONLY_WHEN_PARKED || parked {
+            let t = up::start();
+            reaper.work.signal();
+            up::record(up::Stage::ReapSignal, t);
         }
-        reaper.work.signal();
     }
 }
 
 /// A/B knob for the handover below. `false` restores tearing the tables down on whichever thread
 /// dropped the last reference, which is the behaviour every measurement before it was taken
 /// against -- including the one that says a three-pass sysbench boot exhausts memory.
+/// A/B knob for the lazily-built cold fields on [`Object`] (`sleep_slot`,
+/// `device_interrupt_info`). `true` builds both at create, which is what every measurement before
+/// this change was taken against; the struct is the small one either way, so this isolates the
+/// allocation from the shrink rather than restoring the old layout.
+pub const OBJ_EAGER_COLD_FIELDS: bool = false;
+
+/// A/B knob for skipping the reaper wake when the reaper is not parked.
+///
+/// Every unmap of a deleted object signals the reaper, and `CondVar::signal` costs a critical
+/// section, a spinlock and a `requeue_all` even when it wakes nobody. Measured at 2,147 ns per
+/// unmap inside `remove_object`'s `finish` stage -- 9% of `object_create_delete`.
+pub const REAP_SIGNAL_ONLY_WHEN_PARKED: bool = false;
+
 pub const DEFER_TEARDOWN: bool = true;
 
 /// Hand an object's page tables to the reaper to tear down. Never blocks: a move and a signal.
@@ -913,8 +1009,14 @@ fn defer_teardown(tables: Mutex<pagetables::ObjectPageTable>) {
         drop(tables);
         return;
     };
-    reaper.queue.lock().graves.push(tables);
-    reaper.work.signal();
+    let parked = {
+        let mut q = reaper.queue.lock();
+        q.graves.push(tables);
+        q.parked
+    };
+    if !REAP_SIGNAL_ONLY_WHEN_PARKED || parked {
+        reaper.work.signal();
+    }
 }
 
 /// Try to reap one object that has just been marked for deletion.
