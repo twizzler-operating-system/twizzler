@@ -5,6 +5,8 @@ use intrusive_collections::LinkedList;
 use super::rq::SchedLinkAdapter;
 use crate::thread::{ThreadRef, priority::MAX_PRIORITY};
 
+/// Own cache line; see `PriorityQueue` in `rq.rs` for why.
+#[repr(align(64))]
 pub(super) struct TimeshareQueue<const N: usize> {
     count: usize,
     priorities: [u32; N],

@@ -68,19 +68,69 @@ mod benches {
     /// The console writes and the kernel's own `PERFMARK` lines go to the same serial stream in
     /// order, so the name does not have to be handed to the kernel. Only the interval boundaries
     /// matter: nothing is reset, so a mark that lands in the wrong place costs a line of output.
-    struct Mark(&'static str);
+    ///
+    /// It also counts the kernel events the bench actually caused, which is not decoration.
+    /// `sysbench.md`'s own method note -- "Count the events; do not infer them from the total" --
+    /// was written after two Linux numbers turned out to be measuring 16x fewer faults than the
+    /// per-touch divisor claimed. The fault benches here have the same exposure from the other
+    /// side: `page_fault_soft`'s doc comment *asserted* that each iteration takes one fault, and
+    /// nothing has ever checked it. `page_fault_count` and `tlb_shootdown_count` come from
+    /// `MemoryStats`, are maintained whether or not `FAULT_PROFILE` is on, and cost two syscalls
+    /// per bench rather than per iteration -- so this is readable in a timing arm without
+    /// perturbing it.
+    ///
+    /// Two things to know when reading the numbers. They are **system-wide**, so another
+    /// compartment faulting during the interval is included; on an otherwise-idle bench boot that
+    /// is small, but it means a nonzero count near zero is not proof the bench itself faulted.
+    /// And `iters` is only nonzero for benches that call [`Mark::tick`] in their loop -- libtest
+    /// does not expose its iteration count, so a per-iteration rate cannot be had any other way.
+    ///
+    /// **`shootdowns` and `flushes` are not the same question**, and reading only the first led me
+    /// to a wrong conclusion once already. `tlb_shootdown_inc_count` bumps `flushes` on every
+    /// invalidation it is asked to perform, and `shootdowns` only when the remote target count is
+    /// nonzero. So on a single-threaded bench `shootdowns` reads ~0 no matter how much local
+    /// invalidation work happened, and it is `flushes` that says whether an invalidation did
+    /// anything at all.
+    struct Mark {
+        name: &'static str,
+        faults: usize,
+        shootdowns: usize,
+        flushes: usize,
+        iters: AtomicU64,
+    }
 
     impl Mark {
         fn new(name: &'static str) -> Self {
             console(&format!("SYSBENCH-MARK begin {}\n", name));
             twizzler_abi::syscall::sys_debug_perfmark(true);
-            Self(name)
+            let m = twizzler_abi::syscall::sys_memory_stats();
+            Self {
+                name,
+                faults: m.page_fault_count,
+                shootdowns: m.tlb_shootdown_count,
+                flushes: m.tlb_flush_count,
+                iters: AtomicU64::new(0),
+            }
+        }
+
+        /// Count one iteration of the bench body, so the event deltas have a measured denominator.
+        fn tick(&self) {
+            self.iters.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     impl Drop for Mark {
         fn drop(&mut self) {
-            console(&format!("SYSBENCH-MARK end {}\n", self.0));
+            let m = twizzler_abi::syscall::sys_memory_stats();
+            console(&format!(
+                "SYSBENCH-EVENTS {} iters={} faults={} shootdowns={} flushes={}\n",
+                self.name,
+                self.iters.load(Ordering::Relaxed),
+                m.page_fault_count.saturating_sub(self.faults),
+                m.tlb_shootdown_count.saturating_sub(self.shootdowns),
+                m.tlb_flush_count.saturating_sub(self.flushes),
+            ));
+            console(&format!("SYSBENCH-MARK end {}\n", self.name));
             twizzler_abi::syscall::sys_debug_perfmark(false);
         }
     }
@@ -224,15 +274,29 @@ mod benches {
         }
     }
 
-    /// State for soft-fault benches: invalidate the mapping, then take the single fault that
-    /// re-attaches it. Region invalidation detaches the whole mapping and the object's page
-    /// table keeps its leaf entries, so per-page soft faults can't be provoked individually;
-    /// each op is one MapCtrl syscall plus one fault, with no frame allocation.
-    struct SoftFault {
+    /// State for the `map_ctrl_invalidate` benches.
+    ///
+    /// **Renamed from `SoftFault`/`page_fault_soft` on 2026-08-23, because that name documented a
+    /// claim the bench does not satisfy.** The old doc said "each op is one MapCtrl syscall plus
+    /// one fault". Measured with `SYSBENCH-EVENTS`: **8 page faults across 3,855,601 iterations**.
+    /// `MapControlCmd::Invalidate` reaches `ObjectPageTable::invalidate`, which builds TLB
+    /// invalidations and removes no page-table entry, so the write afterwards re-walks a still
+    /// valid translation and does not fault. `tlb_flush_count` moves by exactly 1.000 per
+    /// iteration, so the invalidation itself is real and local.
+    ///
+    /// What the op measures is therefore: one `sys_map_ctrl`, one local TLB invalidation over the
+    /// object's mapped range, and one non-faulting write. See `pageperf.md` §2.
+    ///
+    /// The name was changed rather than the bench fixed because **Twizzler has no per-page soft
+    /// fault to provoke**: a whole object is mapped by one object-table entry, so the minor fault
+    /// Linux takes per page happens at most once per (object, security context). Numbers under the
+    /// old name in `reapbatch.md`, `reapqueue.md`, `ocdperf.md` and `perf-inprogress.md` are
+    /// measurements of *this* operation and are not comparable to anyone's page-fault figure.
+    struct MapCtrlInvalidate {
         obj: BenchObj,
     }
 
-    impl SoftFault {
+    impl MapCtrlInvalidate {
         fn new() -> Self {
             let this = Self {
                 obj: BenchObj::new_volatile(),
@@ -245,6 +309,29 @@ mod benches {
             let start = self.obj.obj().handle().start();
             sys_map_ctrl(start, MAX_SIZE, MapControlCmd::Invalidate, 0).unwrap();
             unsafe { self.obj.data().write_volatile(1) };
+        }
+
+        /// Same op with a *read* instead of a write.
+        ///
+        /// Added to price `maybe_cow_at`, which `handle_fault` runs only for
+        /// `MemoryAccessKind::Write`. It answered the question by coming out **equal** (970 vs 922
+        /// ns, overlapping): the COW check cannot be costing anything here because no fault
+        /// happens at all. Kept as the standing control for that -- a write and a read diverging
+        /// in future would mean the access started faulting again.
+        fn fault_read(&mut self) {
+            let start = self.obj.obj().handle().start();
+            sys_map_ctrl(start, MAX_SIZE, MapControlCmd::Invalidate, 0).unwrap();
+            std::hint::black_box(unsafe { self.obj.data().read_volatile() });
+        }
+
+        /// The syscall alone, without the write.
+        ///
+        /// This is what showed that the write contributes almost nothing: 846 ns here against 922
+        /// for the pair. `invls` is *not* empty between iterations -- `flushes` reads 1.000 per
+        /// iteration in both -- so this is a real invalidation, not an early return.
+        fn invalidate_only(&mut self) {
+            let start = self.obj.obj().handle().start();
+            sys_map_ctrl(start, MAX_SIZE, MapControlCmd::Invalidate, 0).unwrap();
         }
     }
 
@@ -567,24 +654,57 @@ mod benches {
     }
 
     #[bench]
-    fn page_fault_soft(b: &mut Bencher) {
+    fn map_ctrl_invalidate(b: &mut Bencher) {
         if !bench_mode() {
             return;
         }
-        let _mark = Mark::new("page_fault_soft");
-        let mut state = SoftFault::new();
-        b.iter(|| state.fault());
+        let mark = Mark::new("map_ctrl_invalidate");
+        let mut state = MapCtrlInvalidate::new();
+        b.iter(|| {
+            mark.tick();
+            state.fault()
+        });
     }
 
-    /// Soft faults from every CPU at once, each on its own object: contends on the context's
-    /// mapping structures and generates cross-CPU TLB shootdowns.
+    /// The same op from every CPU at once, each on its own object. Unlike the uncontended
+    /// version this *does* generate cross-CPU shootdowns -- `tlb_shootdown_count` moves here and
+    /// not there -- because the other cpus have the contexts loaded.
     #[bench]
-    fn page_fault_soft_contended(b: &mut Bencher) {
+    fn map_ctrl_invalidate_contended(b: &mut Bencher) {
         if !bench_mode() {
             return;
         }
-        let _mark = Mark::new("page_fault_soft_contended");
-        contended(b, SoftFault::new, SoftFault::fault);
+        let _mark = Mark::new("map_ctrl_invalidate_contended");
+        contended(b, MapCtrlInvalidate::new, MapCtrlInvalidate::fault);
+    }
+
+    /// Control: the same op with a read. Equal to the write version, which is the evidence that
+    /// no fault (and so no COW check) is in this path.
+    #[bench]
+    fn map_ctrl_invalidate_read(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let mark = Mark::new("map_ctrl_invalidate_read");
+        let mut state = MapCtrlInvalidate::new();
+        b.iter(|| {
+            mark.tick();
+            state.fault_read()
+        });
+    }
+
+    /// The `MapControlCmd::Invalidate` syscall on its own: 846 of the pair's 922 ns.
+    #[bench]
+    fn map_ctrl_invalidate_only(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let mark = Mark::new("map_ctrl_invalidate_only");
+        let mut state = MapCtrlInvalidate::new();
+        b.iter(|| {
+            mark.tick();
+            state.invalidate_only()
+        });
     }
 
     /// Page-fault handling for never-touched pages: zero-fill frame allocation + mapping.
@@ -593,9 +713,12 @@ mod benches {
         if !bench_mode() {
             return;
         }
-        let _mark = Mark::new("page_fault_zero_fill");
+        let mark = Mark::new("page_fault_zero_fill");
         let mut state = ZeroFill::new();
-        b.iter(|| state.touch());
+        b.iter(|| {
+            mark.tick();
+            state.touch()
+        });
     }
 
     #[bench]
@@ -666,7 +789,7 @@ mod benches {
         let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
         let mut buf = [0u8; 4096];
         // Read once outside the loop so the object's pages are resident: this is meant to price
-        // the read path, not a page-in, which `page_fault_soft` already covers.
+        // the read path, not a page-in, which `page_fault_zero_fill` covers.
         let mut warm = IoCtx::new(Some(0), twizzler_rt_abi::io::IoFlags::empty(), None);
         let _ = twizzler_rt_abi::io::twz_rt_fd_pread(fd, &mut buf, &mut warm);
         // Reported as throughput as well as latency: at 4 KiB a read is dominated by the
@@ -779,7 +902,20 @@ mod benches {
 
     /// Concurrent syncs of distinct persistent objects: contention on the kernel-pager queues
     /// and the pager itself. See [`pager_sync_dirty_page`] on the WARNs this provokes.
+    ///
+    /// **Ignored on purpose, 2026-08-22.** This is where the pager `SyncRegion` wedge family lands:
+    /// every boot that hangs, hangs entering this bench, and it costs a full 5m22s timeout and the
+    /// whole round -- including every bench after it -- rather than just its own number. Measured
+    /// over one afternoon of sweeps it took 5 rounds of ~40, and 2 of the 8 in `many-gf-on` alone,
+    /// which is well above the "one per ~20 contended rounds" `sysbench.md` budgets for it.
+    ///
+    /// `#[ignore]` rather than deletion or a `return`, deliberately: the harness prints it as
+    /// `ignored`, so a reader of the log sees a bench that was skipped instead of a bench that
+    /// silently vanished -- which is indistinguishable from a scraper miss. Re-enable by deleting
+    /// the attribute once the wedge has its own session; it is a real defect and not a bench bug,
+    /// and nothing here should be read as having fixed it.
     #[bench]
+    #[ignore]
     fn pager_sync_dirty_page_contended(b: &mut Bencher) {
         if !bench_mode() {
             return;

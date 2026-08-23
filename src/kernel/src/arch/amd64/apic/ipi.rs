@@ -24,7 +24,7 @@ const LAPIC_ICRLO_DEST_SHORT_OFFSET: u32 = 18;
 ///
 /// `false` restores the unconditional spin, which is the behaviour every measurement before this
 /// was taken against.
-pub const X2APIC_SKIP_ICR_WAIT: bool = false;
+pub const X2APIC_SKIP_ICR_WAIT: bool = true;
 
 pub fn raw_send_ipi(dest: Destination, vector: u32) {
     let (dest_short, dest_val) = match dest {

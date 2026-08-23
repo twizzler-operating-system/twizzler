@@ -27,7 +27,7 @@ use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
     panic::Location,
-    sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -211,8 +211,6 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
     }
 }
 
-#[repr(align(64))]
-struct AlignedAtomicU64(AtomicU64);
 struct SleepQueue {
     queue: LinkedList<MutexLinkAdapter>,
     pri: Option<Priority>,

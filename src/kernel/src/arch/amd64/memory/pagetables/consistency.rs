@@ -26,6 +26,24 @@ use crate::{
     thread::current_thread_ref,
 };
 
+/// A/B knob for acknowledging a shootdown without taking the target's lock.
+///
+/// `is_finished` used to take the target cpu's [`TlbShootdownInfo::lock`], so a sender spinning in
+/// [`PendingShootdown::do_wait`] issued a cli and a `lock xchg` on the very cache line that target
+/// must acquire in `complete` to acknowledge -- ~100 times per pause, since `spin_wait_until` polls
+/// the condition that often between pauses. A failed swap also read as "not finished", so colliding
+/// with the acknowledger lengthened the wait that was waiting on it.
+///
+/// The knock-on is likely the larger half and is not on the shootdown path at all: `complete` gets
+/// the same lock-free early-out, and it runs from `spin_wait_iteration` -- i.e. inside *every*
+/// contended spinlock acquisition in the kernel -- where the common case is an empty queue that
+/// otherwise costs a cli and a locked RMW to discover.
+///
+/// `false` restores the lock-taking readers. [`TlbShootdownInfo::has_work`] is maintained in both
+/// arms so that only the read path differs; its stores are to a line the writer already holds
+/// exclusively under the lock.
+pub const TLB_LOCKFREE_ACK: bool = true;
+
 const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
 #[derive(Clone, Debug, Copy)]
 pub struct TlbInvData {
@@ -828,6 +846,20 @@ pub struct TlbShootdownInfo {
     // global invalidation.
     data: UnsafeCell<[Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES]>,
     full_invl: AtomicBool,
+    /// Whether this cpu still owes anyone a drain, readable without the lock. See
+    /// [`TLB_LOCKFREE_ACK`] for why that matters.
+    ///
+    /// Set by `insert` with Release *after* the slot write, so a reader that sees `true` sees the
+    /// slot. Cleared by `complete` with Release only once every invalidation has been applied and
+    /// while the lock is still held, so a reader that sees `false` happens-after those
+    /// invalidations -- which is exactly the guarantee that makes freeing the unmapped frames safe.
+    ///
+    /// Read together with `full_invl`, never alone. For slots the lock serializes set against
+    /// clear, so this flag alone would do; the `full_invl` bail is the exception, because it runs
+    /// having *failed* to take the lock, and a `complete` finishing concurrently can land its clear
+    /// between that path's two stores. No store order fixes that -- only reading both does, which
+    /// is what the old lock-taking reader did by accident.
+    has_work: AtomicBool,
 }
 
 impl TlbShootdownInfo {
@@ -836,6 +868,7 @@ impl TlbShootdownInfo {
             data: UnsafeCell::new([None, None, None, None]),
             lock: AtomicBool::new(false),
             full_invl: AtomicBool::new(false),
+            has_work: AtomicBool::new(false),
         }
     }
 
@@ -846,6 +879,7 @@ impl TlbShootdownInfo {
                 iters += 1;
                 if iters >= 100 {
                     log::warn!("failed to insert tlb shootdown info -- setting full_invl");
+                    self.has_work.store(true, Ordering::Release);
                     self.full_invl.store(true, Ordering::SeqCst);
                     return;
                 }
@@ -856,6 +890,7 @@ impl TlbShootdownInfo {
             for entry in data.iter_mut() {
                 if entry.is_none() {
                     *entry = Some(new_data);
+                    self.has_work.store(true, Ordering::Release);
                     self.lock.store(false, Ordering::Release);
                     return;
                 }
@@ -865,6 +900,7 @@ impl TlbShootdownInfo {
                 // Unwrap-Ok: we know that all slots are Some from the first loop.
                 if entry.as_ref().unwrap().target() == new_data.target() {
                     entry.as_mut().unwrap().merge(new_data);
+                    self.has_work.store(true, Ordering::Release);
                     self.lock.store(false, Ordering::Release);
                     return;
                 }
@@ -873,11 +909,18 @@ impl TlbShootdownInfo {
             // able to exit the handling loop early.
             // Unwrap-Ok: we know that all slots are Some from the first loop.
             data[0].as_mut().unwrap().merge(new_data);
+            self.has_work.store(true, Ordering::Release);
             self.lock.store(false, Ordering::Release);
         })
     }
 
+    /// Whether this cpu has applied everything sent to it. Called from a *remote* cpu's wait spin,
+    /// so under [`TLB_LOCKFREE_ACK`] it is two plain loads and takes neither the lock nor a cli.
     pub fn is_finished(&self) -> bool {
+        if TLB_LOCKFREE_ACK {
+            return !self.has_work.load(Ordering::Acquire)
+                && !self.full_invl.load(Ordering::Acquire);
+        }
         interrupt::with_disabled(|| {
             let full_invl = self.full_invl.load(Ordering::Acquire);
             if full_invl {
@@ -895,6 +938,17 @@ impl TlbShootdownInfo {
     }
 
     pub fn complete(&self) {
+        // Nothing published, nothing to drain. This runs on every pass of `spin_wait_iteration`,
+        // i.e. from inside every contended spinlock acquisition in the kernel, where the
+        // overwhelmingly common case is an empty queue -- previously paying a cli and a locked RMW
+        // to find that out. An `insert` still mid-flight is not a miss: it has not sent its IPI
+        // yet, so nobody is waiting on us for it, and it publishes before releasing the lock.
+        if TLB_LOCKFREE_ACK
+            && !self.has_work.load(Ordering::Acquire)
+            && !self.full_invl.load(Ordering::Acquire)
+        {
+            return;
+        }
         interrupt::with_disabled(|| {
             let mut iters = 0;
             while self.lock.swap(true, Ordering::Acquire) {
@@ -918,6 +972,7 @@ impl TlbShootdownInfo {
 
                 // Any other invalidations don't matter.
                 self.reset();
+                self.has_work.store(false, Ordering::Release);
                 self.lock.store(false, Ordering::Release);
                 return;
             }
@@ -929,12 +984,16 @@ impl TlbShootdownInfo {
                     if data.full() && data.global() {
                         // Any other invalidations don't matter.
                         self.reset();
+                        self.has_work.store(false, Ordering::Release);
                         self.lock.store(false, Ordering::Release);
                         return;
                     }
                 }
             }
-            // explicit reset not needed because we've called take() on all entries
+            // explicit reset not needed because we've called take() on all entries.
+            // Cleared last, and only here: every release of `has_work` promises a waiting sender
+            // that the invalidations above have already been applied on this cpu.
+            self.has_work.store(false, Ordering::Release);
             self.lock.store(false, Ordering::Release);
         })
     }

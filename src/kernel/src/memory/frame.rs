@@ -709,6 +709,9 @@ impl AllocationRegion {
 }
 
 #[doc(hidden)]
+/// Own cache line: one global lock taken by every cpu, so the payload must not share the
+/// ticket line once `spinlock::Tickets` is packed.
+#[repr(align(64))]
 struct PhysicalFrameAllocator {
     regions: Vec<AllocationRegion>,
     admitted_regions: Vec<(PhysAddr, usize)>,
@@ -1183,7 +1186,7 @@ impl PhysicalFrameAllocator {
 /// Gated so the two bodies can be measured against each other in one source tree. `W_COW_GF_NS`
 /// is the clean read on this change alone -- the COW lookup has no other fix in flight, while
 /// `W_LEAF_GF_NS` also moves with [`PROVIDER_CARRIES_FRAME`].
-const FRAME_LOOKUP_FAST: bool = false;
+const FRAME_LOOKUP_FAST: bool = true;
 
 #[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();

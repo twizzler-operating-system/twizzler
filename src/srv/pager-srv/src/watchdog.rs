@@ -115,10 +115,19 @@ pub fn start() {
         .spawn(sampler_main);
 }
 
+/// Heartbeat interval for the unconditional `NVMEQ` dump. See `NvmeController::queue_diag` for why
+/// it is not folded into the stall report.
+const QUEUE_DIAG_EVERY: Duration = Duration::from_secs(20);
+
 fn sampler_main() {
+    let mut last_diag = Instant::now();
     loop {
         std::thread::sleep(SAMPLE_EVERY);
         let now = Instant::now();
+        if now.duration_since(last_diag) >= QUEUE_DIAG_EVERY {
+            last_diag = now;
+            crate::nvme::queue_diag();
+        }
 
         // try_lock, not lock: if some future change ever holds the registry longer, the sampler
         // skips a round rather than joining the pile-up it is supposed to describe.

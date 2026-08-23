@@ -790,7 +790,7 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
                 // Just this object, not a scan of every object in the system: nothing else became
                 // reapable by marking this one, and anything that becomes reapable later is caught
                 // by the reaper thread, which the unmap paths poke.
-                crate::obj::scan_deleted_one(id, &obj);
+                crate::obj::scan_deleted_one(&obj);
             } else {
                 crate::obj::scan_deleted();
             }

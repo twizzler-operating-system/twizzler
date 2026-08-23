@@ -44,7 +44,29 @@ use crate::{
 
 /// Pages filled per anonymous fault. See [`MapRegion::fault_around`]; 1 restores one page per
 /// fault.
-const ANON_FAULT_AROUND: usize = 4;
+///
+/// **4 -> 16 on 2026-08-23** (`pageperf.md` §4). `page_fault_zero_fill` 811 -> 609 ns/touch,
+/// **-24.9%, disjoint ranges**, against a drift of +0.1% measured by repeating the baseline arm
+/// after the treatment. Mechanism gated on counts rather than the clock: faults per touch
+/// 0.251 -> 0.063 (1/4 -> 1/16) and `PERFMARK-MAPFRAMES pages_per_call` 3.99 -> 15.96, so the runs
+/// really do coalesce into one `map_frames` descent.
+///
+/// A third arm at 8 read 672 ns (-17.1%) against 677 predicted by fitting `ns/touch = F/N + P` to
+/// the other two, which is what makes the model below trustworthy rather than a curve through two
+/// points: **F ~= 1,077 ns fixed per fault, P ~= 542 ns per page**. At 16 the fixed term is 67
+/// ns/touch and P dominates, so raising this further buys little (32 predicts 576, 64 predicts
+/// 559) and `FILL_BATCH_MAX` is 16, so anything above that needs a second change. Attack P.
+///
+/// **The memory-pressure signature is not caused by this const**, though it looks like it. The
+/// 16 arm ended with `idle=26,548` free frames and 1,014 allocation waits against the 4 arm's
+/// `idle=471,728` and zero -- but the *repeated* 4 arm read `idle=27,301` and 255 waits, i.e. the
+/// same signature on the unchanged const. It is boot-to-boot reclaim variance. Without the
+/// repeated baseline this would have been attributed here and the change rejected.
+///
+/// What these benches cannot see: they touch every page in the window, so over-allocation on a
+/// *sparse* first-touch workload is unmeasured. `fault_around` bounds the run by the 2 MiB block
+/// and stops at a present neighbour, which limits it, but a sparse object still gets 16-page runs.
+pub(crate) const ANON_FAULT_AROUND: usize = 16;
 
 #[derive(Clone)]
 pub struct MapRegion {
@@ -432,7 +454,15 @@ impl MapRegion {
             // TODO: is this always user?
             let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
             let t = stage_start();
-            let mapped = map_ctx.ensure_object_mapped(sctxid, cursor, &mut obj_page_tree, settings);
+            let mapped = map_ctx.ensure_object_mapped(
+                sctxid,
+                // `obj_page_tree` is this region's stable clone when it has one, and a clone
+                // takes no count against the object; see `VirtContext::map_object`.
+                self.stable.is_none().then(|| &**self.object()),
+                cursor,
+                &mut obj_page_tree,
+                settings,
+            );
             record_stage(FaultStage::MapObject, t);
             if mapped {
                 record_class(FaultClass::Mapped);

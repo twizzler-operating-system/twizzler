@@ -176,10 +176,19 @@ pub fn requeue_all() {
 /// Insert `thread`, handing the reference **back** when nothing was inserted.
 ///
 /// Returning it rather than dropping it here is the whole point of the signature. The caller holds
-/// a spinlock, which makes the current thread critical, and this can hold the last reference to
-/// `thread` -- `Thread::drop` reaches `IdCounter::release` and `SecCtxMgr::drop`, both of which
-/// take *sleeping* mutexes, and `Mutex::lock` panics outright in a critical context. That is the
-/// rule `remove_from_requeue` and `CondVar::signal` already follow.
+/// a spinlock, and this can hold the last reference to `thread` -- `Thread::drop` reaches
+/// `IdCounter::release` and `SecCtxMgr::drop`, both of which take *sleeping* mutexes, and
+/// `Mutex::lock` panics outright in a critical context. That is the rule `remove_from_requeue` and
+/// `CondVar::signal` already follow.
+///
+/// **The spinlock is not what makes the thread critical**, though an earlier version of this
+/// comment said so and the claim propagated to two other sessions before it was caught.
+/// `Spinlock::lock` only disables interrupts -- it never touches `critical_counter`, and carries a
+/// TODO at `spinlock.rs:75` asking whether it should. The counter comes from the explicit
+/// `enter_critical()` at `tracker.rs`'s `MemoryTracker::wake` and at `condvar.rs`'s `wait`/
+/// `signal`. Both callers of this function are reached under one of those, so the hazard is real
+/// on both paths; only the stated cause was wrong. Interrupts-off across a sleeping-mutex
+/// acquisition is a separate hazard that nothing currently checks.
 ///
 /// `None` also means "inserted", which is what keeps [`Requeue::count`] in step: a duplicate must
 /// not be counted, or the count never returns to zero and the early-out in [`requeue_all`] is dead.
@@ -249,34 +258,43 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     // We are going to try to enqueue all threads. Best case, we can just immediately
     // schedule the thread, but if not, enqueue it onto the requeue list for later.
     //
-    // In the best-best case scenario, we don't even need to take the requeue lock -- which is
-    // still true, because the fast branch below never takes it.
+    // In the best-best case scenario, we don't even need to take the requeue lock.
     //
-    // The lock is taken and released **per thread**, rather than once and held across the loop.
-    // Holding it made every later iteration critical, and both things a later iteration can do
-    // release a `ThreadRef`: `schedule_thread` returns early for an exiting thread without
-    // storing the one it was given (see `add_to_requeue`), and `do_add_to_requeue` hands back the
-    // reference for one already queued. Either can be the last, and `Thread::drop` takes sleeping
-    // mutexes (`IdCounter::release`, `SecCtxMgr::drop`) that `Mutex::lock` refuses in a critical
-    // context. That is a panic, not a slow path, and it is the one in `ocdperf.md` -- reached
+    // The lock is held across the loop, as it always was, but it is **released at the two points
+    // that can release a `ThreadRef`** rather than at the end. Nothing may drop one while it is
+    // held: `Thread::drop` takes sleeping mutexes
+    // (`IdCounter::release`, `SecCtxMgr::drop`) that `Mutex::lock` refuses in a critical context.
+    // That is a panic rather than a slow path -- the one root-caused in `ocdperf.md` §5, reached
     // from `MemoryTracker::wake` under `DeferredUnmappingOps::run_all`.
     //
-    // The extra acquisitions land only on threads that could not be scheduled outright, which
-    // this function already treats as the uncommon case.
+    // The two points are exactly:
+    //  - `schedule_thread`, which returns early for an exiting thread without storing the
+    //    reference it was given (see `add_to_requeue`), so it can hold the last one;
+    //  - `do_add_to_requeue` handing back the reference for a thread already queued.
+    //
+    // Releasing there rather than every iteration keeps the acquisition count at what it was: one
+    // for an all-requeue batch, none for an all-schedule batch. Only a batch that alternates pays
+    // more, and only per transition.
+    let mut list = None;
     for thread in iter.into_iter() {
         if !thread.is_critical() && thread.reset_sync_sleep_done() {
+            // Before the schedule, not after: see above.
+            drop(list.take());
             assert!(!thread.get_mutex_wait());
             crate::processor::sched::schedule_thread(thread);
         } else {
-            let leftover = {
-                let mut list = requeue.list.lock();
-                let leftover = do_add_to_requeue(&mut *list, thread);
-                if leftover.is_none() {
-                    requeue.count.fetch_add(1, Ordering::SeqCst);
-                }
-                leftover
-            };
-            drop(leftover);
+            let guard = list.get_or_insert_with(|| requeue.list.lock());
+            let leftover = do_add_to_requeue(&mut *guard, thread);
+            if leftover.is_none() {
+                requeue.count.fetch_add(1, Ordering::SeqCst);
+            }
+            // `guard`'s borrow of `list` ended at the statement above, so the lock can be dropped
+            // before the reference is. Only taken on the duplicate path, which is a spurious
+            // wakeup and rare.
+            if let Some(thread) = leftover {
+                drop(list.take());
+                drop(thread);
+            }
         }
     }
 }
@@ -292,10 +310,22 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
         let mut list = requeue.list.lock();
         let removed = list.find_mut(&thread.objid()).remove();
         if removed.is_some() {
-            requeue.count.fetch_sub(1, Ordering::SeqCst);
-        }
-        if removed.is_some() {
-            requeue.count.fetch_sub(1, Ordering::SeqCst);
+            // Exactly one decrement per removal. Two of these shipped in 1348d6f1 and stranded
+            // threads: the count reached zero with an entry still linked, and `requeue_all`, the
+            // idle-loop drain and the hardtick backstop all early-out on `count == 0`, so none of
+            // the three things written to recover a deferred wakeup could see it. Diagnosed from
+            // a wedge where one thread of 419 held `requeue true, sched false` for four minutes
+            // while the interrupt that should have woken it sat delivered and unconsumed
+            // (`intword 67` on the one queue involved).
+            let prev = requeue.count.fetch_sub(1, Ordering::SeqCst);
+            requeuebug::note_removal(prev);
+            // The invariant `requeue_all`'s early-out actually rests on, checked where the lock
+            // is already held: the count must never say "nothing queued" while entries are
+            // linked. Unreachable now; if it ever fires there is a *second* undercount source,
+            // which no counterfactual about the removed bug could have detected.
+            if prev == 1 && !list.is_empty() {
+                requeuebug::note_desync();
+            }
         }
         removed
     };
@@ -962,6 +992,62 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
 /// `do_sys_thread_sync` special-cases `ops.len() == 1` with `optimized_single_sleep`/`_wake`, and
 /// that path was built deliberately. If calls are overwhelmingly single-op, batching is moot no
 /// matter how attractive it looks in the abstract.
+/// How often the double-decrement removed in this commit would have done harm, measured *after*
+/// removing it.
+///
+/// The fix deletes the bug and, with it, the evidence of how often it fired -- so this records the
+/// counterfactual. `prev` is the count *before* the surviving decrement, i.e. what the second one
+/// would have seen:
+///
+/// * `prev >= 2` -- **`DESYNC`**: the second decrement would have subtracted without wrapping,
+///   walking the stored count one below truth. Cumulative: each such removal drifts it down by
+///   one until it eventually reaches zero with entries still linked.
+/// * `prev <= 1` -- **`UNDERFLOW`**: it would have wrapped to `usize::MAX`, permanently disabling
+///   the `count == 0` early-out for that boot. Wasteful but *safe*, and it inoculates the boot
+///   against the harmful case thereafter.
+///
+/// **`DESYNC` is not a count of averted wedges** and must not be read as one. Stranding requires
+/// the count to reach *zero with the list non-empty*; `prev == 3` merely lands it at 1, harmless
+/// now and a permanent one-off that may strand later. So `DESYNC` is an upper bound on strands
+/// and a lower bound on desync events, and is named after neither.
+///
+/// Kept for at least one post-fix sweep, at the reviewer's request. It measures a defect that no
+/// longer exists; a nonzero `harmful` here is **not** a live bug, it is the size of the window
+/// that was open before this commit.
+pub mod requeuebug {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static DESYNC: AtomicU64 = AtomicU64::new(0);
+    static UNDERFLOW: AtomicU64 = AtomicU64::new(0);
+    /// Live invariant violations: count said zero with the list non-empty. Must stay 0.
+    static LIVE_DESYNC: AtomicU64 = AtomicU64::new(0);
+
+    pub fn note_removal(prev: usize) {
+        if prev >= 2 {
+            DESYNC.fetch_add(1, Ordering::Relaxed);
+        } else {
+            UNDERFLOW.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn note_desync() {
+        LIVE_DESYNC.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// **Only ever reports from a boot that finished.** This runs off the `0x12345678` diagnostic
+    /// dump, which userspace issues at the *end* of a bench run, so a wedged boot never reaches
+    /// it. Grepping a wedged transcript for this line and finding nothing means the boot did not
+    /// get here -- not that the counters were zero.
+    pub fn print() {
+        logln!(
+            "== requeue: desync={} underflow={} (counterfactual, bug removed) live_desync={} (must be 0) ==",
+            DESYNC.load(Ordering::Relaxed),
+            UNDERFLOW.load(Ordering::Relaxed),
+            LIVE_DESYNC.load(Ordering::Relaxed),
+        );
+    }
+}
+
 pub mod syncbatch {
     use core::sync::atomic::{AtomicU64, Ordering};
 

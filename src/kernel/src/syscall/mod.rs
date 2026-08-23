@@ -319,6 +319,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::context::virtmem::unmap_census::print();
                 crate::memory::context::virtmem::slotmemo::print();
                 sync::syncbatch::print();
+                sync::requeuebug::print();
                 crate::obj::pagetables::invl_overflow::print();
                 crate::obj::pagetables::membership::print();
                 crate::memory::pagetables::nonleaf_cow_print();
@@ -333,6 +334,8 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::obj::id::checkidstats::print();
                 object::mapstats::print();
                 object::createprofile::print();
+                crate::obj::coldfieldstats::print();
+                crate::obj::reapstats::print();
                 object::copystats::print();
                 crate::memory::pagetables::zeroprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);

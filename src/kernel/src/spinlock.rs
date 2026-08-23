@@ -41,10 +41,36 @@ impl RelaxStrategy for SpinLoop {
 /// accepted: bench_contended_spinlock prices it, bench_pingpong_spinlock prices the win, and
 /// kernel spinlocks measure ~4-5% contended (spinpack A/B). u32 tickets suffice because the
 /// spin is an equality test, so wrap is harmless short of 2^32 concurrent waiters.
-#[repr(align(64))]
+#[repr(align(8))]
 struct Tickets {
     next: AtomicU32,
     current: AtomicU32,
+}
+
+/// Forces a lock's payload onto its own cache line, restoring the isolation that a 64-byte
+/// `Tickets` used to give every lock for free. Use as `Spinlock<CacheAligned<T>>` where a
+/// lock's contended cost is measured, not assumed. Where the payload type is local, putting
+/// `#[repr(align(64))]` on it directly is equivalent and needs no call-site change.
+#[repr(align(64))]
+pub struct CacheAligned<T>(pub T);
+
+impl<T> CacheAligned<T> {
+    pub const fn new(data: T) -> Self {
+        Self(data)
+    }
+}
+
+impl<T> core::ops::Deref for CacheAligned<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for CacheAligned<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
 }
 
 pub struct GenericSpinlock<T, Relax: RelaxStrategy> {

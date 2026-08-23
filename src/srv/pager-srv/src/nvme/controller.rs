@@ -52,6 +52,25 @@ struct NvmeControllerInner {
     /// apart say whether the only thread that reaps completions is still running at all.
     int_loops: AtomicU64,
     int_parks: AtomicU64,
+    /// Per-data-queue diagnostics, parallel to `data_requesters`.
+    ///
+    /// The wedge signature (`cq_ready true` with the request still outstanding) says only that
+    /// nobody drained. These say *why* nobody drained, which the dump could not previously
+    /// distinguish: whether the queue's interrupt is delivered at all, whether one was pending and
+    /// unconsumed at the moment of the dump, and whether the owning thread ever parked on it.
+    queue_diag: Vec<QueueDiag>,
+}
+
+/// See [`NvmeControllerInner::queue_diag`].
+#[derive(Default)]
+pub struct QueueDiag {
+    /// `check_for_interrupt` returned `Some` -- an interrupt for this queue reached userspace.
+    ints: AtomicU64,
+    /// `reap_current_queue` calls, so a zero `ints` against a large `reaps` is informative rather
+    /// than ambiguous.
+    reaps: AtomicU64,
+    /// `park_poll` armed a sleep that included this queue's interrupt word.
+    parks: AtomicU64,
 }
 
 pub struct NvmeController {
@@ -245,6 +264,7 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
             dma_pool,
             int_loops: AtomicU64::new(0),
             int_parks: AtomicU64::new(0),
+            queue_diag: (0..nr_queues).map(|_| QueueDiag::default()).collect(),
         }),
         capacity: OnceLock::new(),
         block_size: OnceLock::new(),
@@ -310,11 +330,31 @@ pub fn reap_current_queue() {
         return;
     };
     let idx = park_queue(inner);
-    inner
+    let d = &inner.queue_diag[idx];
+    d.reaps.fetch_add(1, Ordering::Relaxed);
+    if inner
         .device
         .repr()
-        .check_for_interrupt(DATA_QUEUE_ID as usize + idx);
+        .check_for_interrupt(DATA_QUEUE_ID as usize + idx)
+        .is_some()
+    {
+        d.ints.fetch_add(1, Ordering::Relaxed);
+    }
     inner.data_requesters[idx].check_completions();
+}
+
+/// Record that the caller is about to sleep on this thread's queue interrupt.
+///
+/// Called from `threads::park_poll`, which is the only place a data queue is waited on. A queue
+/// with parks but no interrupts is one whose completions are all being caught by the spin drain,
+/// which is exactly the state in which a single slow completion wedges.
+pub fn note_park() {
+    let Some(inner) = PARK_CTRL.get() else {
+        return;
+    };
+    inner.queue_diag[park_queue(inner)]
+        .parks
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 /// Sleep op for this thread's queue interrupt, to be armed alongside the park word.
@@ -348,6 +388,39 @@ fn interrupt_thread_main(inner: &NvmeControllerInner, inum: usize, queue: Option
 
 #[allow(dead_code)]
 impl NvmeController {
+    /// Per-queue interrupt state, printed on a heartbeat as well as on a stall.
+    ///
+    /// Printed unconditionally on a timer, not only from [`Self::dump_stall`], because a stall dump
+    /// that never runs and an instrument that is not in the build produce the same silence. A
+    /// passing round carries these lines too, which is what makes their absence in a wedged one
+    /// mean something.
+    ///
+    /// `intword` is **read**, never `check_for_interrupt`ed: that swaps the word to zero, so a dump
+    /// using it would consume the very wakeup under investigation. Nonzero means the kernel
+    /// delivered an interrupt userspace has not consumed -- a parked thread that was not woken --
+    /// as against an interrupt that never arrived at all.
+    pub fn queue_diag(&self) {
+        let repr = self.inner.device.repr();
+        tracing::warn!(
+            "NVMEQ admin: intword {} int_loops {} int_parks {}",
+            repr.interrupts[0].sync.load(Ordering::Relaxed),
+            self.inner.int_loops.load(Ordering::Relaxed),
+            self.inner.int_parks.load(Ordering::Relaxed),
+        );
+        for (i, d) in self.inner.queue_diag.iter().enumerate() {
+            tracing::warn!(
+                "NVMEQ data{}: intword {} ints {} reaps {} parks {}",
+                i,
+                repr.interrupts[DATA_QUEUE_ID as usize + i]
+                    .sync
+                    .load(Ordering::Relaxed),
+                d.ints.load(Ordering::Relaxed),
+                d.reaps.load(Ordering::Relaxed),
+                d.parks.load(Ordering::Relaxed),
+            );
+        }
+    }
+
     /// Called by the pager watchdog when a work item has been stuck long enough to report.
     pub fn dump_stall(&self) {
         tracing::warn!(
@@ -355,6 +428,7 @@ impl NvmeController {
             self.inner.int_loops.load(Ordering::Relaxed),
             self.inner.int_parks.load(Ordering::Relaxed),
         );
+        self.queue_diag();
         self.inner.admin_requester.dump("admin");
         for (i, req) in self.inner.data_requesters.iter().enumerate() {
             req.dump(&format!("data{}", i));

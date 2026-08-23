@@ -880,6 +880,11 @@ impl MemoryTracker {
             panic!("warning -- cannot wait on memory before threading initialized");
         };
         crate::thread::locktrack::warn_if_blocking_with_mutexes("memory alloc");
+        // Before registering, and before the critical section: the reaper may be holding whole
+        // page-table chains it has not been woken for (see `obj::poke_reaper`), and a signal is
+        // not something to issue with `enter_critical` held -- a last `ThreadRef` drop in there
+        // panics.
+        crate::obj::poke_reaper();
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
         self.waiters.lock().push_back(current_thread.clone());
@@ -895,17 +900,24 @@ impl MemoryTracker {
             // the leak the branch below exists to prevent.
             if self.idle() == old_idle && !current_thread.exit_deliverable() {
                 finish_blocking(guard);
-            } else {
-                // Memory became available before we decided to actually block, so we
-                // never call finish_blocking() and thus never get removed from
-                // `waiters` via the normal wake() path. Unlink ourselves here instead,
-                // otherwise we leak a strong reference into `waiters` and a later,
-                // unrelated wake() will try to reschedule us (or, if we've since
-                // exited, a stale thread).
-                //
-                // Check is_linked() while holding the same lock wake() takes to drain
-                // the list, so we can't race it: if wake() got here first, we're
-                // already unlinked and this is a no-op.
+            }
+            // Unlink on **both** paths, not just the didn't-block one.
+            //
+            // The didn't-block path is the obvious case: memory became available before we
+            // committed, so `wake()` never drained us and a stale strong reference would be left
+            // in `waiters` for some later, unrelated wake to reschedule.
+            //
+            // The blocking path needs it too. `finish_blocking` returns when *anything* makes this
+            // thread runnable, and being woken through the requeue list rather than by `wake()`
+            // draining `waiters` -- a force-exit, say -- leaves the link set. Nothing unlinked it,
+            // so the next time this thread waits for memory it pushes an already-linked node and
+            // `intrusive_collections` panics from `node_from_value`. That is the "already linked"
+            // panic seen in `try_alloc_frame`, which is this list and not the frame pool's.
+            //
+            // Safe as a no-op in the common case *because* `wake()` pops rather than detaching:
+            // `pop_front` clears the link, so `is_linked()` here answers about this list and not
+            // about a list that was moved out from under it. See the note there.
+            {
                 let mut waiters = self.waiters.lock();
                 if current_thread.memwait_link.is_linked() {
                     unsafe {
@@ -948,25 +960,33 @@ impl MemoryTracker {
         //
         // `pop_front` clears the node's link, so `wait`'s `is_linked()` test means what its
         // comment says it means and the no-op case is a real no-op.
-        loop {
-            let mut batch = heapless::Vec::<ThreadRef, { Self::WAKE_BATCH }>::new();
-            {
-                let mut waiters = self.waiters.lock();
-                while !batch.is_full() {
-                    let Some(thread) = waiters.pop_front() else {
-                        break;
-                    };
-                    // Safety: not full, checked above.
-                    unsafe { batch.push_unchecked(thread) };
+        //
+        // Tested for emptiness before anything else is built. This runs on **every frame free**
+        // (`free_frame_inner`) and a memory waiter is rare -- `sysbench.md` records 3.45M lock
+        // acquisitions in one contended run with nobody ever waiting -- so the no-waiter path has
+        // to cost one lock and a bool. Building the batch unconditionally cost ~70 ns per free,
+        // which is 4 frees per `object_create_delete_nomap` iteration and measured as +4.5% on it.
+        if !self.waiters.lock().is_empty() {
+            loop {
+                let mut batch = heapless::Vec::<ThreadRef, { Self::WAKE_BATCH }>::new();
+                {
+                    let mut waiters = self.waiters.lock();
+                    while !batch.is_full() {
+                        let Some(thread) = waiters.pop_front() else {
+                            break;
+                        };
+                        // Safety: not full, checked above.
+                        unsafe { batch.push_unchecked(thread) };
+                    }
                 }
-            }
-            if batch.is_empty() {
-                break;
-            }
-            let full = batch.is_full();
-            add_all_to_requeue(batch);
-            if !full {
-                break;
+                if batch.is_empty() {
+                    break;
+                }
+                let full = batch.is_full();
+                add_all_to_requeue(batch);
+                if !full {
+                    break;
+                }
             }
         }
         requeue_all();

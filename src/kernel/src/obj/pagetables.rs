@@ -1113,9 +1113,9 @@ impl ObjectPageTable {
     /// [`Self::map_page`] pays a root-to-leaf walk, a `Consistency` construction, a
     /// `tables_needed` predictor, a frame-allocator borrow and a consistency epilogue **per
     /// call** -- and the anonymous fill loop calls it once per page, so a fault-around run of
-    /// `ANON_FAULT_AROUND` pages into one leaf table pays every one of them four times. This pays
-    /// them once. Unlike [`Self::map_pages`] the frames need not be physically contiguous, which
-    /// is what the anonymous fill path actually has.
+    /// `ANON_FAULT_AROUND` pages into one leaf table pays every one of them once per page. This
+    /// pays them once. Unlike [`Self::map_pages`] the frames need not be physically contiguous,
+    /// which is what the anonymous fill path actually has.
     ///
     /// **Precondition: every offset in the run is absent.** See [`FrameSliceProvider`] -- an entry
     /// found present consumes an offer without mapping it and the frame is lost. The caller holds

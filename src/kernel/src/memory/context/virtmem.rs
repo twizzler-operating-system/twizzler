@@ -1128,14 +1128,30 @@ impl VirtContext {
                     info.cache_type,
                     MappingFlags::USER,
                 );
-                arch.object_map(cursor, &mut *pt, settings, fa);
+                let took_ref = arch.object_map(cursor, &mut *pt, settings, fa);
+                // Only a region holding the object's *own* tables charges the object. A stable
+                // region works on a clone, and the unmap paths mirror this exactly -- their
+                // `counted` is `stable.is_none()` -- so charging here would raise a count that
+                // nothing ever lowers and leave the object permanently unreapable. Before the
+                // count moved onto `Object` this fell out for free: the increment landed on
+                // whichever `ObjectPageTable` was in hand, and for a clone that field was never
+                // read by anything.
+                if took_ref && info.stable.is_none() {
+                    // Under `pt`, the page-table lock the count's field doc requires.
+                    info.object().inc_map_count();
+                }
             });
         };
     }
 
+    /// `obj` is the owner of `object_tables`, needed only to charge the map count; the caller
+    /// holds its page-table lock as `object_tables`. `None` when `object_tables` is a stable
+    /// region's clone rather than the object's own tables -- see the note in [`Self::map_object`]
+    /// for why such a mapping takes no count.
     pub fn ensure_object_mapped(
         &self,
         sctxid: ObjID,
+        obj: Option<&crate::obj::Object>,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
@@ -1154,7 +1170,15 @@ impl VirtContext {
         );
         self.with_arch(sctxid, |arch| {
             object_tables.add_invalidate(arch.target, cursor);
-            arch.ensure_object_mapped(cursor, object_tables, settings, &mut fa)
+            match arch.ensure_object_mapped(cursor, object_tables, settings, &mut fa) {
+                Some(took_ref) => {
+                    if took_ref && let Some(obj) = obj {
+                        obj.inc_map_count();
+                    }
+                    true
+                }
+                None => false,
+            }
         })
     }
 
@@ -1293,8 +1317,7 @@ impl VirtContext {
                     );
                 }
                 let last = if counted && released {
-                    pt.dec_map_count();
-                    if pt.map_count() == 0 {
+                    if region.object().dec_map_count() == 0 {
                         region.object().note_last_unmap();
                         true
                     } else {
@@ -1305,7 +1328,7 @@ impl VirtContext {
                 };
                 drop(pt);
                 if crate::obj::TARGETED_REAP && last && region.object().is_pending_delete() {
-                    crate::obj::request_reap(region.object().id(), region.object());
+                    crate::obj::request_reap(region.object());
                 }
             }
         }
@@ -1850,11 +1873,8 @@ impl UserContext for VirtContext {
                             pt.invls_len(),
                         );
                     }
-                    if released {
-                        pt.dec_map_count();
-                        if pt.map_count() == 0 {
-                            slot.object().note_last_unmap();
-                        }
+                    if released && slot.object().dec_map_count() == 0 {
+                        slot.object().note_last_unmap();
                     }
                 }
                 unmapprofile::record(UStage::RemInv, t_ri);
@@ -1891,7 +1911,7 @@ impl UserContext for VirtContext {
         // same objects in flight -- wedged the contended-sync bench.
         if crate::obj::TARGETED_REAP && slot.object().is_pending_delete() {
             let t_rp = unmapprofile::start();
-            crate::obj::request_reap(slot.object().id(), slot.object());
+            crate::obj::request_reap(slot.object());
             unmapprofile::record(UStage::FinReap, t_rp);
         }
         unmapprofile::record(UStage::Finish, t);
@@ -2153,10 +2173,7 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
                 &mut fa,
             )
         });
-        let last = released && {
-            pt.dec_map_count();
-            pt.map_count() == 0
-        };
+        let last = released && self.object().dec_map_count() == 0;
         drop(pt);
         if last {
             self.object().note_last_unmap();

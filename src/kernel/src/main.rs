@@ -182,6 +182,27 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     ::log::set_logger(&LOGGER).unwrap();
     ::log::set_max_level(LevelFilter::Info);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
+    logln!(
+        "[kernel] lock sizes: spinlock<()> {} spinlock<u64> {} mutex<()> {} mutex<u64> {} object {} thread {}",
+        core::mem::size_of::<crate::spinlock::Spinlock<()>>(),
+        core::mem::size_of::<crate::spinlock::Spinlock<u64>>(),
+        core::mem::size_of::<crate::mutex::Mutex<()>>(),
+        core::mem::size_of::<crate::mutex::Mutex<u64>>(),
+        core::mem::size_of::<crate::obj::Object>(),
+        core::mem::size_of::<crate::thread::Thread>(),
+    );
+    // Every A/B arm on the fault path is a const, and `many.py`'s source fingerprint can only say
+    // the tree did not change -- not that this image was built from it. A line the arm prints for
+    // itself is the check that survives a stale target dir or a peer's concurrent build.
+    logln!(
+        "[kernel] fault tunables: fault_around {} fill_batch {}/{} large_anon {} fault_profile {} slot_memo {}",
+        crate::memory::context::virtmem::region::ANON_FAULT_AROUND,
+        crate::obj::data::FILL_BATCH,
+        crate::obj::data::FILL_BATCH_MAX,
+        crate::obj::data::TRY_LARGE_ANON_PAGES,
+        crate::memory::context::virtmem::fault::FAULT_PROFILE,
+        crate::memory::context::virtmem::fault::FAULT_SLOT_MEMO,
+    );
     ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {

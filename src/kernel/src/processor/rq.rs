@@ -99,6 +99,10 @@ impl<T> Drop for SchedLockGuard<'_, T> {
     }
 }
 
+/// Own cache line: this is a per-cpu lock payload in a static `Processor` array, so with
+/// packed `spinlock::Tickets` an adjacent cpu's spin would otherwise land on this cpu's queue
+/// data. Aligning the payload rather than the lock is what keeps it off the ticket line.
+#[repr(align(64))]
 struct PriorityQueue<const N: usize> {
     count: usize,
     queues: [LinkedList<SchedLinkAdapter>; N],

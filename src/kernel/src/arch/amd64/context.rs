@@ -304,13 +304,19 @@ impl ArchContext {
         consist.into_deferred().run_all();
     }
 
+    /// Returns whether a new reference to `object_tables` was taken, i.e. whether the caller owes
+    /// the object an [`inc_map_count`](crate::obj::Object::inc_map_count). Counted by the caller
+    /// rather than here because the count lives on the `Object`, which this layer does not have --
+    /// only count a map that took a reference, so it stays symmetric with the single
+    /// `dec_map_count` done on unmap.
+    #[must_use]
     pub fn object_map(
         &self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
         fa: &mut FrameAllocator,
-    ) {
+    ) -> bool {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         let took_ref = guard
             .object_map(cursor, object_tables, settings, &mut consist, fa)
@@ -318,11 +324,7 @@ impl ArchContext {
         consist.finish_send();
         drop(guard);
         consist.into_deferred().run_all();
-        // Only count a map if we actually took a new reference, so that the single dec_map_count
-        // done on unmap stays symmetric.
-        if took_ref {
-            object_tables.inc_map_count();
-        }
+        took_ref
     }
 
     /// Whether this context already holds the object-table entry [`Self::ensure_object_mapped`]
@@ -335,13 +337,17 @@ impl ArchContext {
         self.inner.lock().is_object_mapped(cursor, settings)
     }
 
+    /// `None` if the mapping was already present and nothing was done; `Some(took_ref)` otherwise,
+    /// where `took_ref` is the same debt to the object's map count as [`Self::object_map`]'s
+    /// return. Two separate bools: a call can install a mapping without taking a new reference.
+    #[must_use]
     pub fn ensure_object_mapped(
         &self,
         cursor: MappingCursor,
         object_tables: &mut ObjectPageTable,
         settings: MappingSettings,
         fa: &mut FrameAllocator,
-    ) -> bool {
+    ) -> Option<bool> {
         let (mut consist, mut guard) = self.lock_with_consist(cursor);
         if !guard.is_object_mapped(cursor, settings) {
             let took_ref = guard
@@ -350,12 +356,9 @@ impl ArchContext {
             consist.finish_send();
             drop(guard);
             consist.into_deferred().run_all();
-            if took_ref {
-                object_tables.inc_map_count();
-            }
-            true
+            Some(took_ref)
         } else {
-            false
+            None
         }
     }
 

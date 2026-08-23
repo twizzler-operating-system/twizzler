@@ -21,7 +21,7 @@ const LOG_LEVEL: log::Level = log::Level::Debug;
 /// See [`super::PhysMapInfo::frame`]. Off, this is `get_frame(paddr.addr)` exactly as before, so
 /// the pair (`FRAME_LOOKUP_FAST`, this) attributes cleanly: `W_COW_GF_NS` moves only with the
 /// first, `W_LEAF_GF_NS` with both.
-const PROVIDER_CARRIES_FRAME: bool = false;
+const PROVIDER_CARRIES_FRAME: bool = true;
 
 /// Large pages taken apart again.
 ///

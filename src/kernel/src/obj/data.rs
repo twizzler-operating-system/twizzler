@@ -48,28 +48,31 @@ enum ZeroOrFrame {
 ///
 /// Only the anonymous path. The pager path builds its own large pages out of read-ahead, and its
 /// 2 MiB alignment is load-bearing in `pager_compl_handle_page_data`.
-const TRY_LARGE_ANON_PAGES: bool = false;
+pub(crate) const TRY_LARGE_ANON_PAGES: bool = false;
 
 /// Install an anonymous fault-around run in **one** descent of the object page table.
 ///
 /// The fill loop below calls `map_page` once per page, and `map_page`'s cost is per *call*, not
 /// per page: a walk from the root, a `Consistency` construction, a `tables_needed` predictor, a
-/// frame-allocator borrow and take/drop, and a consistency epilogue. [`ANON_FAULT_AROUND`] is 4,
-/// so a zero-fill fault pays all of that four times to install four adjacent pages into the same
-/// leaf table. [`ObjectPageTable::map_frames`] pays it once.
+/// frame-allocator borrow and take/drop, and a consistency epilogue. A zero-fill fault would pay
+/// all of that once per page to install [`ANON_FAULT_AROUND`] adjacent pages into the same leaf
+/// table. [`ObjectPageTable::map_frames`] pays it once for the whole run.
 ///
 /// The per-page spans it should collapse to a quarter (`many-pfdiag`, probe on, per `map_page`):
 /// `cons_new` 45, `precharge` 193 (of which the predictor is 113), `consist` 80, `drop_fa` 84,
 /// plus `descend` inside `walk`. What stays per page is the leaf entry write and the frame.
 ///
-/// Falsifier is `PERFMARK-MAPFRAMES pages_per_call`, not the clock: ~400 (x100) means the runs
-/// coalesced, ~100 means they did not and anything the clock shows has another cause.
-const FILL_BATCH: bool = true;
+/// Falsifier is `PERFMARK-MAPFRAMES pages_per_call`, not the clock: ~`ANON_FAULT_AROUND` * 100
+/// means the runs coalesced, ~100 means they did not and anything the clock shows has another
+/// cause. Grep the const for the current value -- quoting a number here is how the last three
+/// const/prose mismatches in this tree happened.
+pub(crate) const FILL_BATCH: bool = true;
 
-/// Cap on one batch. `ANON_FAULT_AROUND` is 4; `ensure_in_core` is reached with larger counts from
+/// Cap on one batch. `ensure_in_core` is reached with counts larger than `ANON_FAULT_AROUND` from
 /// other callers and the buffer is on the stack, so the bound is stated here rather than inherited
-/// from whoever called.
-const FILL_BATCH_MAX: usize = 16;
+/// from whoever called. **It also caps fault-around**: a run longer than this splits into two
+/// `map_frames` calls, so raising `ANON_FAULT_AROUND` past it needs this raised too.
+pub(crate) const FILL_BATCH_MAX: usize = 16;
 
 /// Whether a volatile object's first touch of an empty region actually gets a large frame.
 ///

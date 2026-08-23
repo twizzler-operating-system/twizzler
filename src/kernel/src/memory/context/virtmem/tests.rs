@@ -129,23 +129,29 @@ mod test {
         );
 
         let mut pt_a = a.lock_page_tables();
-        arch.object_map(cursor, &mut pt_a, settings, &mut fa);
-        assert_eq!(pt_a.map_count(), 1);
+        if arch.object_map(cursor, &mut pt_a, settings, &mut fa) {
+            a.inc_map_count();
+        }
+        assert_eq!(a.map_count(), 1);
         let a_table = pt_a.context_table_addr();
         drop(pt_a);
 
         let mut pt_b = b.lock_page_tables();
-        arch.object_map(cursor, &mut pt_b, settings, &mut fa);
+        if arch.object_map(cursor, &mut pt_b, settings, &mut fa) {
+            b.inc_map_count();
+        }
         let b_table = pt_b.context_table_addr();
-        assert_eq!(pt_b.map_count(), 1);
+        assert_eq!(b.map_count(), 1);
         drop(pt_b);
         assert_ne!(a_table, b_table);
 
         // This unmap removes b's entry, so a keeps its count and b loses one.
         assert!(!arch.unmap_object(cursor, a_table, &mut fa));
-        assert_eq!(a.lock_page_tables().map_count(), 1);
+        assert_eq!(a.map_count(), 1);
 
-        arch.object_map(cursor, &mut b.lock_page_tables(), settings, &mut fa);
+        if arch.object_map(cursor, &mut b.lock_page_tables(), settings, &mut fa) {
+            b.inc_map_count();
+        }
         assert!(arch.unmap_object(cursor, b_table, &mut fa));
     }
 

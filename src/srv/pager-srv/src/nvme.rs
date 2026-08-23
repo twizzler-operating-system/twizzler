@@ -19,6 +19,13 @@ pub fn dump_stall() {
     }
 }
 
+/// Heartbeat form of the per-queue interrupt state. See `NvmeController::queue_diag`.
+pub fn queue_diag() {
+    if let Some(ctrl) = CTRL.get() {
+        ctrl.queue_diag();
+    }
+}
+
 pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
     let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),

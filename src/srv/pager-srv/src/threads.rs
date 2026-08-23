@@ -692,6 +692,7 @@ fn park_poll<O>(f: impl Future<Output = O>) -> O {
         let _ = ops.push(ThreadSync::new_sleep(park.sleep_op()));
         if let Some(int) = crate::nvme::current_queue_sleep() {
             let _ = ops.push(ThreadSync::new_sleep(int));
+            crate::nvme::controller::note_park();
         }
         let _ = sys_thread_sync(&mut ops, None);
         crate::nvme::reap_current_queue();
