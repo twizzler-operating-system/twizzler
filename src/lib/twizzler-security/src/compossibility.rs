@@ -17,7 +17,7 @@ pub struct Compossibility {
 pub(crate) const COMPOSSIBILITY_SERIALIZED_LEN: usize = 20;
 
 impl Compossibility {
-    pub fn new(gcmask: Protections, target: ObjID, c_mask: Protections, del_offset: usize) -> Self {
+    pub fn new(gcmask: Protections, target: ObjID, c_mask: Protections) -> Self {
         Self {
             gcmask,
             target,
@@ -30,6 +30,7 @@ impl Compossibility {
         let mut hash_arr: [u8; COMPOSSIBILITY_SERIALIZED_LEN] = [0; COMPOSSIBILITY_SERIALIZED_LEN];
         hash_arr[0..2].copy_from_slice(&self.gcmask.bits().to_le_bytes());
         hash_arr[2..18].copy_from_slice(&self.target.raw().to_le_bytes());
+        hash_arr[18..20].copy_from_slice(&self.c_mask.bits().to_le_bytes());
         hash_arr[18..20].copy_from_slice(&self.c_mask.bits().to_le_bytes());
         hash_arr
     }

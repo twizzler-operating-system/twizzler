@@ -15,7 +15,8 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::object::MapFlags;
 use twizzler_security::{
-    Cap, Del, SecCtx, SecCtxFlags, SecureBuilderExt as _, SigningKey, SigningScheme,
+    CapBuilder, DelBuilder, SecCtx, SecCtxBuilder, SecCtxFlags, SecureBuilderExt as _, SigningKey,
+    SigningScheme,
 };
 
 mod args;
@@ -148,16 +149,10 @@ fn main() {
                         .expect("failed to map modifying SecCtx");
 
                     // create a new capability
-                    let cap = Cap::new(
-                        args.target_obj,
-                        args.modifying_ctx,
-                        Protections::all(),
-                        s_key.base(),
-                        Default::default(),
-                        Default::default(),
-                        Default::default(),
-                    )
-                    .unwrap();
+                    let cap = CapBuilder::new(args.target_obj, args.modifying_ctx)
+                        .protections(Protections::all())
+                        .build(s_key.base())
+                        .unwrap();
 
                     modifying_sec_ctx
                         .insert_cap(cap.clone())
@@ -194,19 +189,11 @@ fn main() {
                         .expect("provider's map entry for the target object was empty");
 
                     // create a new delegation
-                    let del = Del::new(
-                        Some(modifying_sec_ctx.id()),
-                        args.provider_ctx,
-                        args.target_obj,
-                        inner,
-                        Default::default(),
-                        Protections::all(),
-                        Default::default(),
-                        Default::default(),
-                        s_key.base(),
-                        &[],
-                    )
-                    .unwrap();
+                    let del = DelBuilder::new(args.provider_ctx, args.target_obj, inner)
+                        .receiver(modifying_sec_ctx.id())
+                        .prot_mask(Protections::all())
+                        .build(s_key.base())
+                        .unwrap();
 
                     println!("Inserting\n{del:?}");
 
@@ -224,18 +211,16 @@ fn main() {
                     SecCtxFlags::empty()
                 };
 
-                let sec_ctx = SecCtx::new(
-                    ObjectCreate::new(
-                        Default::default(),
-                        Default::default(),
-                        args.verifying_key_id,
-                        Default::default(),
-                        Protections::all(),
-                    ),
-                    Protections::all(),
-                    flags,
-                )
-                .unwrap();
+                let mut ctx_builder = SecCtxBuilder::new()
+                    .default_protections(Protections::all())
+                    .global_mask(Protections::all())
+                    .flags(flags);
+
+                if let Some(verifying_key_id) = args.verifying_key_id {
+                    ctx_builder = ctx_builder.verifying_key(verifying_key_id);
+                }
+
+                let sec_ctx = ctx_builder.build().unwrap();
 
                 let id = sec_ctx.id();
 

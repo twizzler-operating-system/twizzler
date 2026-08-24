@@ -10,7 +10,7 @@ pub const SEC_CTX_MAP_LEN: usize = 16;
 /// Arbitrary number of map items per target object
 pub const MAP_ITEMS_PER_OBJ: usize = 16;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 /// Used to store `Mask` data that will be applied to permissions granted by a `SecCtx` for
 /// specific target object.
 pub struct Mask {

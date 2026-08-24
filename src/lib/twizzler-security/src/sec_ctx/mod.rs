@@ -9,6 +9,12 @@ mod user;
 #[cfg(feature = "user")]
 pub use user::*;
 
+#[cfg(feature = "user")]
+mod builder;
+
+#[cfg(feature = "user")]
+pub use builder::*;
+
 /// Information about protections for a given object within a context.
 #[derive(Clone, Copy, Debug)]
 pub struct PermsInfo {
