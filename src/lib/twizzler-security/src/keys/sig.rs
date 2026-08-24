@@ -22,6 +22,7 @@ pub struct Signature {
 }
 
 impl Signature {
+    /// Returns this signature as a slice of bytes.
     pub fn as_bytes(&self) -> &[u8] {
         self.buf.as_slice()
     }

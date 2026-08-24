@@ -531,7 +531,7 @@ mod tests {
 
     use twizzler_abi::object::Protections;
     use twizzler_kernel_macros::kernel_test;
-    use twizzler_security::{Cap, MAX_KEY_SIZE, SigningKey, SigningScheme};
+    use twizzler_security::{CapBuilder, MAX_KEY_SIZE, SigningKey, SigningScheme};
 
     use crate::{random::getrandom, utils::benchmark};
     #[kernel_test]
@@ -543,16 +543,10 @@ mod tests {
         let (s_key, v_key) = SigningKey::new_kernel_keypair(&SigningScheme::Ecdsa, rand_bytes)
             .expect("shouldnt have errored");
 
-        let cap = Cap::new(
-            0x123.into(),
-            0x100.into(),
-            Protections::all(),
-            &s_key,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        )
-        .expect("capability creation shouldnt have errored");
+        let cap = CapBuilder::new(0x123.into(), 0x100.into())
+            .protections(Protections::all())
+            .build(&s_key)
+            .expect("capability creation shouldnt have errored");
 
         benchmark(|| {
             let _x = black_box(cap.verify_sig(&v_key).expect("should succeed"));

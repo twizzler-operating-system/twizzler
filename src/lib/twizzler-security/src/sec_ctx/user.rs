@@ -15,7 +15,6 @@ use twizzler_rt_abi::{
 
 use super::{CtxMapItem, CtxMapItemType, SecCtxBase, SecCtxFlags};
 use crate::{
-    compossibility::Compossibility,
     sec_ctx::{MAP_ITEMS_PER_OBJ, OBJECT_ROOT_OFFSET},
     Cap, Del,
 };
@@ -193,6 +192,19 @@ impl SecCtx {
 
         #[cfg(feature = "log")]
         log::debug!("Added delegation at ptr: {:#?}", ptr);
+        Ok(())
+    }
+
+    /// Insert a `Mask` into this `SecCtx`.
+    pub fn insert_mask(&mut self, mask: super::Mask) -> Result<(), TwzError> {
+        let mut tx = self.uobj.clone().into_tx()?;
+        let mut base = tx.base_mut();
+
+        base.masks
+            .insert(mask.target, mask)
+            .map_err(|_| TwzError::Resource(ResourceError::OutOfResources))?;
+
+        tx.commit()?;
         Ok(())
     }
 

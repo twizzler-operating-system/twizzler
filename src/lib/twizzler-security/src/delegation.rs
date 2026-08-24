@@ -13,7 +13,6 @@ use crate::{
 /// change. will change the size of a "Delegation" so it will break ABI.
 pub const MAX_COMPOSSIBILITIES: usize = 4;
 
-#[expect(dead_code)]
 /// A Delegation, which can be used to delegate capabilities into other security contexts.
 ///
 /// a Delegation does not own the right it grants: `inner` is a reference to a
@@ -23,18 +22,20 @@ pub const MAX_COMPOSSIBILITIES: usize = 4;
 /// We resolve a Delegation by following
 /// the `inner` field and recursively verifying whatever is actually
 /// stored there. That recursion is bounded by `MAX_DELEGATION_NEST`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Del {
     /// The receiver of this delegation, "The ID of the security context"
     /// If `None`, this delegaiton is valid for any `Security Context` it finds itself in.
     pub receiver: Option<ObjID>,
+
     /// The provider of this delegation
     pub provider: ObjID,
+
     /// The object this delegation (transitively) grants access to. Must match the
     /// `target` of whatever `inner` resolves to.
     pub target: ObjID,
 
-    // The mask applied to protections granted by the inner delegation/capability
+    /// The mask applied to protections granted by the inner delegation/capability
     pub prot_mask: Protections,
 
     flags: SecFlags,
@@ -66,6 +67,9 @@ const DEL_SERIALIZED_LEN: usize =
     DEL_HEADER_LEN + 1 + MAX_COMPOSSIBILITIES * COMPOSSIBILITY_SERIALIZED_LEN;
 
 impl Del {
+    /// Create a new delegation.
+    /// NOTE: this is a low level function, using the [`DelBuilder`](crate::DelBuilder) might prove
+    /// easier.
     pub fn new(
         receiver: Option<ObjID>,
         provider: ObjID,
@@ -233,6 +237,92 @@ fn check_nest_depth(provider: ObjID, inner: CtxMapItem) -> Result<(), SecurityEr
     Err(SecurityError::MaxNestExceeded)
 }
 
+/// A  builder for constructing a [`Del`].
+#[derive(Debug, Clone)]
+pub struct DelBuilder {
+    receiver: Option<ObjID>,
+    provider: ObjID,
+    target: ObjID,
+    inner: CtxMapItem,
+    prot_mask: Protections,
+    revocation: Revoc,
+    gates: Gate,
+    hashing_algo: HashingAlgo,
+    compossibilities: alloc::vec::Vec<Compossibility>,
+}
+
+impl DelBuilder {
+    /// Create a new `DelBuilder` delegating `target`, whose `inner` capability/delegation
+    /// lives inside `provider`'s security context object.
+    pub fn new(provider: ObjID, target: ObjID, inner: CtxMapItem) -> Self {
+        Self {
+            receiver: None,
+            provider,
+            target,
+            inner,
+            prot_mask: Protections::empty(),
+            revocation: Revoc::default(),
+            gates: Gate::default(),
+            hashing_algo: HashingAlgo::Sha256,
+            compossibilities: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// The receiving security context of this delegation. If left unset, the delegation is
+    /// valid for any security context it finds itself in.
+    pub fn receiver(mut self, receiver: ObjID) -> Self {
+        self.receiver = Some(receiver);
+        self
+    }
+
+    /// The mask applied to protections granted by the inner delegation/capability.
+    pub fn prot_mask(mut self, prot_mask: Protections) -> Self {
+        self.prot_mask = prot_mask;
+        self
+    }
+
+    /// When this capability is invalid.
+    pub fn revocation(mut self, revocation: Revoc) -> Self {
+        self.revocation = revocation;
+        self
+    }
+
+    /// Which reigion of the `target` object this capability is vaild for.
+    pub fn gate(mut self, gate: Gate) -> Self {
+        self.gates = gate;
+        self
+    }
+
+    /// The hashing algorithm used to form the delegation's signature.
+    pub fn hashing_algo(mut self, hashing_algo: HashingAlgo) -> Self {
+        self.hashing_algo = hashing_algo;
+        self
+    }
+
+    /// Stage a `Compossibility` to be attached to this delegation.
+    pub fn compossibility(mut self, compossibility: Compossibility) -> Self {
+        self.compossibilities.push(compossibility);
+        self
+    }
+
+    /// Build and sign the `Del` with `provider_priv_key`, being the private / signing key of
+    /// the provider security context.
+    pub fn build(self, provider_priv_key: &SigningKey) -> Result<Del, SecurityError> {
+        Del::new(
+            self.receiver,
+            self.provider,
+            self.target,
+            self.inner,
+            self.revocation,
+            self.prot_mask,
+            self.gates,
+            self.hashing_algo,
+            provider_priv_key,
+            &self.compossibilities,
+        )
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "user")]
 #[allow(unused_imports)]
@@ -251,16 +341,10 @@ mod tests {
         target: ObjID,
         s_key: &SigningKey,
     ) -> CtxMapItem {
-        let cap = Cap::new(
-            target,
-            0x321.into(),
-            Protections::all(),
-            s_key,
-            Revoc::default(),
-            Gate::default(),
-            HashingAlgo::Sha256,
-        )
-        .expect("Capability should have been created.");
+        let cap = CapBuilder::new(target, 0x321.into())
+            .protections(Protections::all())
+            .build(s_key)
+            .expect("Capability should have been created.");
 
         ctx.insert_cap(cap)
             .expect("capability should have been inserted");
@@ -277,19 +361,11 @@ mod tests {
     fn default_delegation(ctx: &mut SecCtx, target: ObjID, s_key: &SigningKey) -> Del {
         let inner = insert_default_capability(ctx, target, s_key);
 
-        Del::new(
-            Some(0x111.into()),
-            ctx.id(),
-            target,
-            inner,
-            Revoc::default(),
-            Protections::all(),
-            Gate::default(),
-            HashingAlgo::Sha256,
-            s_key,
-            &[],
-        )
-        .expect("Delegation should have been created.")
+        DelBuilder::new(ctx.id(), target, inner)
+            .receiver(0x111.into())
+            .prot_mask(Protections::all())
+            .build(s_key)
+            .expect("Delegation should have been created.")
     }
 
     #[test]

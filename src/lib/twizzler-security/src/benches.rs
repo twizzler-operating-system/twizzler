@@ -17,16 +17,10 @@ fn capability_creation(b: &mut Bencher) {
         .expect("keypair creation should not have errored!");
 
     b.iter(|| {
-        let _cap = Cap::new(
-            0x123.into(),
-            0x321.into(),
-            Protections::all(),
-            s.base(),
-            Revoc::default(),
-            Gate::default(),
-            HashingAlgo::Sha256,
-        )
-        .expect("Capability should have been created.");
+        let _cap = CapBuilder::new(0x123.into(), 0x321.into())
+            .protections(Protections::all())
+            .build(s.base())
+            .expect("Capability should have been created.");
     })
 }
 
@@ -54,16 +48,10 @@ fn capability_verification(b: &mut Bencher) {
     let (s, v) = SigningKey::new_keypair(&SigningScheme::Ecdsa, ObjectCreate::default())
         .expect("keypair creation should not have errored!");
 
-    let cap = Cap::new(
-        0x123.into(),
-        0x321.into(),
-        Protections::all(),
-        s.base(),
-        Revoc::default(),
-        Gate::default(),
-        HashingAlgo::Sha256,
-    )
-    .expect("Capability should have been created.");
+    let cap = CapBuilder::new(0x123.into(), 0x321.into())
+        .protections(Protections::all())
+        .build(s.base())
+        .expect("Capability should have been created.");
 
     b.iter(|| {
         cap.verify_sig(v.base())

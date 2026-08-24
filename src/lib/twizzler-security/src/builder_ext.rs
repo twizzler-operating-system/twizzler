@@ -6,7 +6,7 @@ use twizzler::{
 use twizzler_abi::object::Protections;
 
 use super::SecCtx;
-use crate::{Cap, SigningKey};
+use crate::{CapBuilder, SigningKey};
 
 /// An extension trait for the ObjectBuilder from the
 /// `twizzler` crate that allows for the creation of objects
@@ -32,15 +32,9 @@ where
     fn build_secure(&self, base: Base, s_key: &SigningKey) -> Result<Object<Base>, TwzError> {
         self.build_inplace(|tx| {
             let mut curr_sec_ctx = SecCtx::active_ctx();
-            let cap = Cap::new(
-                tx.id(),
-                curr_sec_ctx.id(),
-                Protections::READ | Protections::WRITE,
-                s_key,
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            )?;
+            let cap = CapBuilder::new(tx.id(), curr_sec_ctx.id())
+                .protections(Protections::READ | Protections::WRITE)
+                .build(s_key)?;
 
             curr_sec_ctx.insert_cap(cap)?;
 

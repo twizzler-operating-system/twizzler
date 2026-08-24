@@ -97,14 +97,7 @@ impl Cap {
     /// verifies signature inside capability
 
     pub fn verify_sig(&self, verifying_key: &VerifyingKey) -> Result<(), SecurityError> {
-        let hash_arr = Self::serialize(
-            self.accessor,
-            self.target,
-            self.prots,
-            self.flags,
-            self.revocation,
-            self.gate,
-        );
+        let hash_arr = self.into_array();
 
         let hash_algo: HashingAlgo = self.flags.try_into()?;
 
@@ -173,6 +166,69 @@ impl Cap {
         hash_arr[60..68].copy_from_slice(&gate.length.to_le_bytes());
         hash_arr[68..76].copy_from_slice(&gate.align.to_le_bytes());
         hash_arr
+    }
+}
+
+/// A builder for constructing a [`Cap`].
+#[derive(Debug, Clone)]
+pub struct CapBuilder {
+    target: ObjID,
+    accessor: ObjID,
+    prots: Protections,
+    revocation: Revoc,
+    gates: Gate,
+    hashing_algo: HashingAlgo,
+}
+
+impl CapBuilder {
+    /// Create a new `CapBuilder` for a capability granting access to `target`, meant to live in
+    /// the `accessor` security context.
+    pub fn new(target: ObjID, accessor: ObjID) -> Self {
+        Self {
+            target,
+            accessor,
+            prots: Protections::empty(),
+            revocation: Revoc::default(),
+            gates: Gate::default(),
+            hashing_algo: HashingAlgo::Sha256,
+        }
+    }
+
+    /// The specific access rights this capability grants.
+    pub fn protections(mut self, prots: Protections) -> Self {
+        self.prots = prots;
+        self
+    }
+
+    /// When this capability is invalid.
+    pub fn revocation(mut self, revocation: Revoc) -> Self {
+        self.revocation = revocation;
+        self
+    }
+
+    /// Which reigion of the `target` object this capability is vaild for.
+    pub fn gate(mut self, gate: Gate) -> Self {
+        self.gates = gate;
+        self
+    }
+
+    /// The hashing algorithm used to form the capability's signature.
+    pub fn hashing_algo(mut self, hashing_algo: HashingAlgo) -> Self {
+        self.hashing_algo = hashing_algo;
+        self
+    }
+
+    /// Build and sign the `Cap` with `signing_key`.
+    pub fn build(self, signing_key: &SigningKey) -> Result<Cap, SecurityError> {
+        Cap::new(
+            self.target,
+            self.accessor,
+            self.prots,
+            signing_key,
+            self.revocation,
+            self.gates,
+            self.hashing_algo,
+        )
     }
 }
 
