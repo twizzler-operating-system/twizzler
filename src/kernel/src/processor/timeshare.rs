@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use intrusive_collections::LinkedList;
 
 use super::rq::SchedLinkAdapter;
-use crate::thread::{ThreadRef, priority::MAX_PRIORITY};
+use crate::thread::{Thread, ThreadRef, priority::MAX_PRIORITY};
 
 /// Own cache line; see `PriorityQueue` in `rq.rs` for why.
 #[repr(align(64))]
@@ -127,6 +127,30 @@ impl<const N: usize> TimeshareQueue<N> {
         }
         // We found nothing. Reset the take pointer.
         self.take_idx = self.insert_idx;
+        None
+    }
+
+    /// Unlink `th` from whichever calendar bucket holds it, for a priority-driven re-file.
+    /// Mirrors [`Self::take`]'s bookkeeping (count, per-class tally); the take/insert markers
+    /// stay where they are -- removal changes occupancy, not the rotation.
+    pub fn remove_thread(&mut self, th: &Thread) -> Option<ThreadRef> {
+        for q in 0..N {
+            let mut cursor = self.queues[q].front_mut();
+            while let Some(t) = cursor.get() {
+                if core::ptr::eq(t as *const Thread, th as *const Thread) {
+                    let t = cursor.remove();
+                    if let Some(t) = &t {
+                        let p = &mut self.priorities[t.get_stable_effective_priority().value
+                            as usize
+                            / (MAX_PRIORITY as usize / N)];
+                        *p = (*p).saturating_sub(1);
+                    }
+                    self.count -= 1;
+                    return t;
+                }
+                cursor.move_next();
+            }
+        }
         None
     }
 

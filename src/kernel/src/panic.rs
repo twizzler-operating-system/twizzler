@@ -66,7 +66,21 @@ pub fn init(kernel_image: &'static [u8]) {
 }
 
 const MAX_FRAMES: usize = 100;
+
+/// Serializes symbolized backtraces. `addr2line::Context` caches per-unit DWARF state in plain
+/// `core::cell::OnceCell`s, so it is `!Sync` for real -- the `unsafe impl Sync` on [`DebugCtx`]
+/// only silences the compiler. Two cpus resolving concurrently race those cells and corrupt the
+/// heap, which surfaces later as the wild-jump/#UD/#GP "corruption family" panics. Held around the
+/// whole resolve loop; spinlocks disable interrupts, so the holder finishes promptly and blocking
+/// here is bounded.
+static SYMBOLIZE_LOCK: crate::spinlock::Spinlock<()> = crate::spinlock::Spinlock::new(());
+
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
+    let _symbolize_guard = if symbolize && !is_panicing() {
+        Some(SYMBOLIZE_LOCK.lock())
+    } else {
+        None
+    };
     let mut frame_nr = 0;
     let trace_callback = |frame: &backtracer_core::Frame| {
         let ip = frame.ip();

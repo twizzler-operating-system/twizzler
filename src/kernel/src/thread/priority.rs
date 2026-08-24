@@ -130,9 +130,9 @@ impl Thread {
     /// Set the thread's base priority. Any donated priority is unaffected, and still wins while it
     /// is higher.
     ///
-    /// A thread that is already sitting on a run queue keeps its place there: the queues bucket a
-    /// thread by the priority snapshot taken when it was inserted (see
-    /// [Thread::stable_effective_priority]), so the new priority applies from its next enqueue.
+    /// A queued thread whose priority *rises* is re-filed under the new priority
+    /// (`reprioritize_queued_thread`); one whose priority falls keeps its place until its next
+    /// enqueue -- stale-high is the safe direction, stale-low is a starvation.
     pub fn set_priority(&self, pri: Priority) {
         let old = Priority::from_raw(self.priority.swap(pri.raw(), Ordering::SeqCst));
         if pri == old {
@@ -144,7 +144,11 @@ impl Thread {
                 schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
             }
         } else if pri > old {
-            self.maybe_reschedule_thread();
+            // Same re-file as `donate_priority`: a raise that crosses classes must move the
+            // thread between queue structures, or it keeps the old class's (non-)scan order.
+            if !crate::processor::sched::reprioritize_queued_thread(self) {
+                self.maybe_reschedule_thread();
+            }
         }
     }
 
@@ -174,7 +178,13 @@ impl Thread {
                     return true;
                 }
             }
-            self.maybe_reschedule_thread();
+            // A queued target must be re-filed, not just poked: the queues bucket by insert-time
+            // priority, and a donation that crosses classes -- the priority-inversion case this
+            // mechanism exists for -- otherwise leaves the owner stranded in the lower class's
+            // structure, starved behind any spinning donor (round357, smp1hang.md).
+            if !crate::processor::sched::reprioritize_queued_thread(self) {
+                self.maybe_reschedule_thread();
+            }
         }
         true
     }

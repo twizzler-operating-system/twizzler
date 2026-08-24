@@ -312,6 +312,16 @@ fn serial2() -> &'static SimpleLock<SerialPort> {
 }
 
 pub fn late_init() {
+    // Both ports' `Once`s are forced here, while their IOAPIC entries are still masked
+    // (`ioapic::init` masks all 24). `serial2()` was otherwise first initialized by the
+    // `interrupt_handler()` call below -- with interrupts on, since `serial2()` is evaluated
+    // before `.lock()` masks them -- and the serial ISR calls `serial2()` itself. An interrupt
+    // landing inside that initializer re-entered `call_once`, saw RUNNING and spun, on the very
+    // cpu that owed the initialization. Same defect as `REQUEUE` (boothang.md); ordering the
+    // init before the unmask closes it, because a masked entry cannot deliver the only interrupt
+    // that re-enters.
+    let _ = serial1();
+    let _ = serial2();
     crate::arch::set_interrupt(
         36,
         false,

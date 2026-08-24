@@ -48,6 +48,16 @@ Serial transcripts land in target/results/many-<tag>/, named `round<N>-<config>.
 `-FAILED` appended before the extension for runs that did not pass; `<same>.out` holds that run's
 xtask output, since concurrent runs cannot all stream to the console.
 
+**A killed sweep cannot be resumed, and starting two at once needs a gap.** Ownership of a tag's
+lane images is a held flock on `lanes/<tag>/.owner`, so the moment a driver dies its images become
+reclaimable and the next sweep to start deletes them (`prune_dead_lanes`) -- pausing a sweep and
+restarting it later means rebuilding. The same mechanism has a startup race: a sweep creates
+`.owner` a moment before it locks it, so a second sweep launched in that window can lock a *live*
+sweep's file, conclude the owner is gone, and remove its masters. The victim does not error -- it
+enumerates every job, reports the full count, and then silently runs only the configs whose images
+survived. Leave a few seconds between concurrent launches, and check that every config you asked
+for is actually producing round logs.
+
 By default a sweep runs the whole matrix. `--config` narrows it to named configurations instead,
 which is what a reproducer wants -- a known-failing config hammered N times rather than a matrix
 swept once. See `parse_config_spec` for the accepted spelling.

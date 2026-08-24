@@ -641,6 +641,68 @@ where
     }
 }
 
+/// One compact snapshot of scheduler state, for the test-mode schedmon thread (`main.rs`).
+///
+/// The idle-loop hang diagnostics are structurally blind at smp1 whenever a USER thread spins --
+/// the bsp never idles -- which is exactly the state the release-smp1 wedge leaves the system in.
+/// This runs from a REALTIME thread instead, so a spinner cannot starve it. Two passes 30s apart
+/// separate the wedge shapes: a spinner shows `run true` with a fresh `ip` and advancing cpu
+/// counters; a stranded runnable thread shows `Running, run false` with a linked or unlinked
+/// sched_link and frozen ticks; a lost wake shows `Sleeping` plus whichever wait link it holds.
+pub fn schedmon_dump(pass: u64) {
+    for p in crate::processor::mp::all_processors().iter().flatten() {
+        emerglogln!(
+            "[schedmon] {} cpu {}: ht {} sw {} pre {} wake {} load {} ts_load {} rq_pri {:?} requeue {}",
+            pass,
+            p.id,
+            p.stats.hardticks.load(Ordering::Relaxed),
+            p.stats.switches.load(Ordering::Relaxed),
+            p.stats.preempts.load(Ordering::Relaxed),
+            p.stats.wakeups.load(Ordering::Relaxed),
+            p.rq.current_load(),
+            p.rq.current_timeshare_load(),
+            p.rq.current_priority(),
+            crate::syscall::sync::requeue_len(),
+        );
+    }
+    let reprio = reprioritized_counts();
+    emerglogln!(
+        "[schedmon] {} reprio rt {} ts {} idle {}",
+        pass,
+        reprio[0],
+        reprio[1],
+        reprio[2]
+    );
+    with_all_threads(|at| {
+        for t in at.iter() {
+            if t.is_idle_thread() || t.get_state() == ExecutionState::Exited {
+                continue;
+            }
+            emerglogln!(
+                "[schedmon] {}   th {} ({}) {:?} pri {:?} run {} crit {} lnk sc{} rq{} sy{} mx{} cv{} mw{} pg{} tw{} u {} s {} ip {:x}",
+                pass,
+                t.id(),
+                t.objid(),
+                t.get_state(),
+                t.effective_priority(),
+                t.is_active_running(),
+                t.is_critical(),
+                t.sched_link.is_linked() as u8,
+                t.requeue_link.is_linked() as u8,
+                t.sync_links.is_linked() as u8,
+                t.mutex_link.is_linked() as u8,
+                t.condvar_link.is_linked() as u8,
+                t.memwait_link.is_linked() as u8,
+                t.pager_link.is_linked() as u8,
+                t.has_timed_wait() as u8,
+                t.stats.user.load(Ordering::Relaxed),
+                t.stats.sys.load(Ordering::Relaxed),
+                t.read_ip(),
+            );
+        }
+    });
+}
+
 /// Take a thread out of both registries.
 ///
 /// The refs are dropped *after* their guards, not inside them. `Thread::drop` reaches
@@ -677,6 +739,66 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     let processor = get_processor(cpuid);
     schedule_thread_on_cpu(thread.clone(), processor, false);
     thread
+}
+
+/// Re-file a queued runnable thread after its effective priority rose (donation, or a raise from
+/// another thread). The run queues bucket by insert-time priority and `take` scans classes
+/// strictly in order, so a poke alone (`maybe_reschedule_thread`) cannot help a thread whose
+/// donation crossed classes -- it stays in the lower class's structure, unreachable while any
+/// higher class has work. Removing it and re-inserting through the ordinary path files it where
+/// its new priority says, with all wake/preempt signalling included.
+///
+/// Successful re-files by source structure, printed in the schedmon header and announced once
+/// per source per boot: a fix that compiles and passes its bookkeeping tests but never fires on
+/// the live donation path would otherwise be validated only by an absence of wedges -- and a
+/// presence that never includes `Idle` as the source would leave the actual starvation case
+/// (a Background owner lifted out of the queue `take` cannot reach past a spinner) covered by
+/// absence alone.
+static REPRIO_COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static REPRIO_ANNOUNCED: [AtomicBool; 3] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+pub fn reprioritized_counts() -> [u64; 3] {
+    [
+        REPRIO_COUNTS[0].load(Ordering::Relaxed),
+        REPRIO_COUNTS[1].load(Ordering::Relaxed),
+        REPRIO_COUNTS[2].load(Ordering::Relaxed),
+    ]
+}
+
+/// Returns false when the thread was not found queued (it is running, sleeping, or was
+/// concurrently taken) -- the caller falls back to the poke.
+pub fn reprioritize_queued_thread(thread: &Thread) -> bool {
+    // An exiting thread must not be handed to `schedule_thread`, whose early-return would drop
+    // what may be the last reference under whatever spinlock our caller holds.
+    if thread.is_exiting() {
+        return false;
+    }
+    let Some(cpu) = thread.sched.current_cpu_rq() else {
+        return false;
+    };
+    let Some((th, from)) = get_processor(cpu).rq.remove_thread(thread) else {
+        return false;
+    };
+    let idx = from as usize;
+    REPRIO_COUNTS[idx].fetch_add(1, Ordering::Relaxed);
+    // Once per boot *per source*, so a sweep's transcripts show not only that the path fires but
+    // which structure it lifted from -- `from Idle` is the wedge's own rescue. A print from this
+    // context (caller may hold a mutex's queue spinlock) nests the console lock under it, which
+    // is one-way and already done by warn-paths elsewhere; thrice per boot bounds the exposure.
+    if !REPRIO_ANNOUNCED[idx].swap(true, Ordering::Relaxed) {
+        logln!(
+            "[sched] re-filed queued thread {} from {:?} at {:?}",
+            th.id(),
+            from,
+            th.effective_priority()
+        );
+    }
+    schedule_thread(th);
+    true
 }
 
 #[track_caller]

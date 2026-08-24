@@ -36,6 +36,15 @@ const RQ_HAS_RT: u32 = 1;
 const RQ_HAS_TS: u32 = 2;
 const RQ_HAS_IL: u32 = 4;
 
+/// Which structure a [`RunQueue::remove_thread`] found its thread in. `Idle` is the one the
+/// starvation diagnostics care about: it names the queue `take` cannot reach past a spinner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemovedFrom {
+    Realtime,
+    Timeshare,
+    Idle,
+}
+
 /// Zero-sized alignment boundary; see its use in [RunQueue].
 #[repr(align(64))]
 struct Align64;
@@ -183,6 +192,23 @@ impl<const N: usize> PriorityQueue<N> {
             }
         }
 
+        None
+    }
+
+    /// Unlink `th` from whichever bucket holds it, for a priority-driven re-file. Pointer
+    /// identity, since two threads can share a priority.
+    fn remove_thread(&mut self, th: &Thread) -> Option<ThreadRef> {
+        for q in 0..N {
+            let mut cursor = self.queues[q].front_mut();
+            while let Some(t) = cursor.get() {
+                if core::ptr::eq(t as *const Thread, th as *const Thread) {
+                    let t = cursor.remove();
+                    self.count -= 1;
+                    return t;
+                }
+                cursor.move_next();
+            }
+        }
         None
     }
 }
@@ -375,6 +401,62 @@ impl<const N: usize> RunQueue<N> {
         Some(th)
     }
 
+    /// Unlink `th` from this queue so it can be re-inserted under a raised priority.
+    ///
+    /// The queues bucket a thread by the priority it had at insert, and `take` never reaches a
+    /// lower class while a higher one has work -- so a donation that crosses classes leaves its
+    /// target stranded (a Background thread in the idle-class queue starves forever behind any
+    /// spinning User thread; the round357 wedge in smp1hang.md). Mirrors the take_* bookkeeping
+    /// exactly, except `current_priority` is left alone: stale-high is the safe direction, and
+    /// the caller re-inserts immediately, which raises it as needed.
+    ///
+    /// Returns the reference still held by the queue and which structure held it -- the source
+    /// matters to the caller's diagnostics, since a re-file out of the idle-class queue is the
+    /// starvation case this exists for. The caller must pass the reference to `schedule_thread`
+    /// (never drop it under a spinlock -- `Thread::drop` takes sleeping mutexes).
+    pub fn remove_thread(&self, th: &Thread) -> Option<(ThreadRef, RemovedFrom)> {
+        let (removed, from) = {
+            let mut realtime = self.realtime.lock();
+            let removed = realtime.remove_thread(th);
+            if removed.is_some() && realtime.is_empty() {
+                self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
+            }
+            (removed, RemovedFrom::Realtime)
+        };
+        let (removed, from) = match removed {
+            Some(r) => (Some(r), from),
+            None => {
+                let mut timeshare = self.timeshare.lock();
+                let removed = timeshare.remove_thread(th);
+                if removed.is_some() {
+                    self.timeshare_load.fetch_sub(1, Ordering::Release);
+                    if timeshare.is_empty() {
+                        self.flags.fetch_and(!RQ_HAS_TS, Ordering::Release);
+                    }
+                }
+                (removed, RemovedFrom::Timeshare)
+            }
+        };
+        let (removed, from) = match removed {
+            Some(r) => (Some(r), from),
+            None => {
+                let mut idle = self.idle.lock();
+                let removed = idle.remove_thread(th);
+                if removed.is_some() && idle.is_empty() {
+                    self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
+                }
+                (removed, RemovedFrom::Idle)
+            }
+        };
+        let removed = removed?;
+        if removed.sched.pinned_to().is_none() {
+            let old = self.movable.fetch_sub(1, Ordering::SeqCst);
+            assert!(old > 0);
+        }
+        self.load.fetch_sub(1, Ordering::Release);
+        Some((removed, from))
+    }
+
     pub fn take(&self, stealing: bool) -> Option<ThreadRef> {
         if self.is_empty() || (stealing && self.movable.load(Ordering::Acquire) == 0) {
             return None;
@@ -521,6 +603,52 @@ mod test {
             }
         );
         assert_eq!(got[2].class, PriorityClass::User);
+    }
+
+    #[kernel_test]
+    fn test_remove_thread_from_idle_class() {
+        use super::RunQueue;
+        // A Background thread files into the idle-class queue; removing it must undo every
+        // counter insert touched, or the queue reports load with nothing to take.
+        let rq = RunQueue::<NR_QUEUES>::new();
+        let bg = thread_at(PriorityClass::Background, MAX_PRIORITY / 2);
+        rq.insert(bg.clone(), false);
+        assert_eq!(rq.current_load(), 1);
+        let (removed, from) = rq.remove_thread(&bg).expect("queued thread must be found");
+        assert_eq!(removed.id(), bg.id());
+        assert_eq!(from, super::RemovedFrom::Idle);
+        assert_eq!(rq.current_load(), 0);
+        assert_eq!(rq.movable(), 0);
+        assert!(rq.is_empty());
+        assert!(rq.take(false).is_none());
+        // Re-inserting the removed reference must work (the re-file path).
+        rq.insert(removed, false);
+        assert_eq!(rq.current_load(), 1);
+        assert_eq!(rq.take(false).unwrap().id(), bg.id());
+    }
+
+    #[kernel_test]
+    fn test_remove_thread_from_timeshare() {
+        use super::RunQueue;
+        use crate::clock::get_current_ticks;
+        let rq = RunQueue::<NR_QUEUES>::new();
+        let user = thread_at(PriorityClass::User, MAX_PRIORITY / 2);
+        // An unexpired deadline keeps the insert on the timeshare arm rather than the
+        // deadline-boost one.
+        user.sched.set_deadline(get_current_ticks() + 1_000_000);
+        rq.insert(user.clone(), false);
+        assert_eq!(rq.current_timeshare_load(), 1);
+        let (removed, from) = rq.remove_thread(&user).expect("queued thread must be found");
+        assert_eq!(removed.id(), user.id());
+        assert_eq!(from, super::RemovedFrom::Timeshare);
+        assert_eq!(rq.current_timeshare_load(), 0);
+        assert_eq!(rq.current_load(), 0);
+        assert!(rq.is_empty());
+        drop(removed);
+        // A miss must be a clean None, with nothing decremented.
+        let other = thread_at(PriorityClass::User, MAX_PRIORITY / 2);
+        assert!(rq.remove_thread(&other).is_none());
+        assert_eq!(rq.current_load(), 0);
     }
 
     #[kernel_test]

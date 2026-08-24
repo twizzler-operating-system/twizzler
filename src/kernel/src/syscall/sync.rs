@@ -25,7 +25,6 @@ use crate::{
         },
     },
     obj::{LookupFlags, ObjectRef},
-    once::Once,
     processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
     thread::{CriticalGuard, Thread, ThreadRef, current_memory_context, current_thread_ref},
@@ -77,13 +76,25 @@ impl<'a> KeyAdapter<'a> for RequeueLinkAdapter {
 }
 
 /* TODO: make this thread-local */
-static REQUEUE: Once<Requeue> = Once::new();
+/// Const-initialized, not `Once`: this list is reached from interrupt context
+/// (`oneshot_clock_hardtick` and the device-interrupt drain both call [requeue_all]), and `Once`'s
+/// waiters spin without yielding. An interrupt landing on the cpu that won `call_once`'s CAS,
+/// before its COMPLETE store, re-entered `call_once`, saw RUNNING and spun -- on the very cpu that
+/// owed the initialization, so it could never finish and every other cpu wedged behind it. One-shot
+/// per boot and a few instructions wide, and the spin has no diagnostic, which is why it presented
+/// as a silent boot hang.
+static REQUEUE: Requeue = Requeue {
+    list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
+    count: AtomicUsize::new(0),
+};
+
+/// Requeue-list length, for the schedmon diagnostic.
+pub fn requeue_len() -> usize {
+    get_requeue_list().len()
+}
 
 fn get_requeue_list() -> &'static Requeue {
-    REQUEUE.call_once(|| Requeue {
-        list: Spinlock::new(RBTree::new(RequeueLinkAdapter::NEW)),
-        count: AtomicUsize::new(0),
-    })
+    &REQUEUE
 }
 
 /// Threads claimed per pass of [requeue_all].

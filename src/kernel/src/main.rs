@@ -354,11 +354,42 @@ extern "C" fn boot_sequence() {
     crate::thread::exit(0);
 }
 
+/// A/B knob for the schedmon perturbation question: besides its 30s wake, schedmon's timeout
+/// entry keeps a wheel window occupied, so `hard_advance` signals the INTERRUPT-priority timeout
+/// thread roughly once per second for the whole boot -- a scheduling perturbation inside the very
+/// subsystem the release-smp1 wedge lives in. Arm B builds with this false.
+const SCHEDMON_ENABLED: bool = true;
+
+/// Spawn the scheduler monitor: `schedmon_dump` every 30s from a REALTIME thread, so it keeps
+/// reporting when a spinning USER thread starves the idle loop (which is where every other hang
+/// diagnostic lives). Sleeps on the timeout queue, so a transcript whose `[schedmon]` heartbeat
+/// *stops* additionally says the tick machinery died.
+fn start_schedmon() {
+    let _ = crate::thread::entry::run_closure_in_new_thread(
+        crate::thread::priority::Priority::REALTIME,
+        || {
+            logln!("[schedmon] armed");
+            let mut pass = 0u64;
+            loop {
+                let _ = crate::syscall::sync::sys_thread_sync(
+                    &mut [],
+                    Some(&mut core::time::Duration::from_secs(30)),
+                );
+                pass += 1;
+                crate::processor::sched::schedmon_dump(pass);
+            }
+        },
+    );
+}
+
 pub fn idle_main() -> ! {
     interrupt::set(true);
     if current_processor().is_bsp() {
         machine::machine_post_init();
         start_entropy_contribution_thread();
+        if SCHEDMON_ENABLED && (is_test_mode() || is_diag_mode()) {
+            start_schedmon();
+        }
 
         let _ = crate::thread::entry::start_new_kernel(
             crate::thread::priority::Priority::REALTIME,
