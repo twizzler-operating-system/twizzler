@@ -5,6 +5,7 @@
 use clap::Parser;
 use colog::default_builder;
 use log::LevelFilter;
+use pyo3::prelude::*;
 use twizzler::{
     marker::BaseType,
     object::{Object, ObjectBuilder, RawObject, TypedObject},
@@ -20,7 +21,9 @@ use twizzler_security::{
 };
 
 mod args;
+mod pybindings;
 use args::*;
+use pybindings::twizzler_py;
 
 fn main() {
     let mut builder = default_builder();
@@ -236,12 +239,43 @@ fn main() {
                 println!("{:#?}", sec_ctx);
             }
         },
+        Commands::Repl(args) => {
+            pyo3::append_to_inittab!(twizzler_py);
+
+            let result = Python::attach(|py| -> PyResult<()> {
+                match &args.script {
+                    Some(path) => {
+                        let runpy = py.import("runpy")?;
+                        runpy.call_method1("run_path", (path.as_str(),))?;
+                    }
+                    None => {
+                        let code = py.import("code")?;
+                        code.call_method0("interact")?;
+                    }
+                }
+                Ok(())
+            });
+
+            if let Err(e) = result {
+                Python::attach(|py| e.print(py));
+                std::process::exit(1);
+            }
+        }
     }
 }
 
 #[derive(Debug, Clone)]
-struct MessageStoreObj {
+pub(crate) struct MessageStoreObj {
     _message: heapless::String<256>,
+}
+
+impl MessageStoreObj {
+    pub(crate) fn new(message: &str) -> Result<Self, String> {
+        Ok(Self {
+            _message: heapless::String::<256>::try_from(message)
+                .map_err(|_| "message was longer than 256 characters".to_string())?,
+        })
+    }
 }
 
 impl BaseType for MessageStoreObj {

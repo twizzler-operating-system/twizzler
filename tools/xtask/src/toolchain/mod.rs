@@ -359,6 +359,42 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
     std::env::set_var("LDFLAGS", &cflags);
     std::env::set_var("CXXFLAGS", &cflags);
 
+    set_pyo3_config(&sysroot_path)?;
+
+    Ok(())
+}
+
+/// Point pyo3's build script at the CPython port already built for this
+/// triple (see `toolchain/ports/python3.rs`), since pyo3 can't introspect a
+/// target `python3.14` it can't run on the build host. No-ops if that port
+/// hasn't been built yet for this sysroot, so crates that don't depend on
+/// pyo3 aren't affected.
+fn set_pyo3_config(sysroot_path: &Path) -> anyhow::Result<()> {
+    let python_pkg = sysroot_path.join("pkg/python");
+    if !python_pkg.is_dir() {
+        std::env::remove_var("PYO3_CONFIG_FILE");
+        return Ok(());
+    }
+
+    let config = format!(
+        "implementation=CPython\n\
+         version=3.14\n\
+         shared=true\n\
+         abi3=false\n\
+         lib_name=python3.14\n\
+         lib_dir={lib_dir}\n\
+         executable={executable}\n\
+         pointer_width=64\n\
+         build_flags=\n\
+         suppress_build_script_link_lines=false\n",
+        lib_dir = python_pkg.join("lib").display(),
+        executable = python_pkg.join("bin/python3.14").display(),
+    );
+
+    let config_path = sysroot_path.join("pkg/python/pyo3-build-config.txt");
+    std::fs::write(&config_path, config)?;
+    std::env::set_var("PYO3_CONFIG_FILE", &config_path);
+
     Ok(())
 }
 
@@ -370,4 +406,5 @@ pub fn clear_cc() {
     std::env::remove_var("CXXFLAGS");
     std::env::remove_var("CFLAGS");
     std::env::remove_var("LDFLAGS");
+    std::env::remove_var("PYO3_CONFIG_FILE");
 }

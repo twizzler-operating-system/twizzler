@@ -13,3 +13,4 @@ getrandom = { workspace = true }
 colog = { workspace = true }
 log = { workspace = true }
 heapless = { workspace = true }
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
