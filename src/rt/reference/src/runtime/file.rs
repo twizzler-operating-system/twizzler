@@ -474,14 +474,32 @@ pub fn get_naming_handle() -> Option<NamingGuard> {
             fresh = true;
             // Nothing idle: open another. The pool never shrinks, so its size settles at the
             // high-water mark of concurrent lookups.
+            // Handle acquisition measured 2.9 ms. Traced to `sys_object_stat`: `HandleMgr`'s
+            // `gc_handles` runs one per tracked compartment on every handle insert and remove, and
+            // that syscall costs ~30 us against 117 ns for a trivial one. A lookup that creates no
+            // handle is 1 us; one that creates a handle is 347 us and dropping it is 312 us. See
+            // `spawnbench.md` §17.
+            let _diag = crate::runtime::core::PRE_MAIN_PHASE_STATS;
+            let _t0 = std::time::Instant::now();
             if NAMING_UP.get().is_none() {
                 if CompartmentHandle::lookup("naming").is_err() {
                     return None;
                 }
                 let _ = NAMING_UP.set(());
             }
+            let _t_lookup = _t0.elapsed();
+            let handle = dynamic_naming_factory()?;
+            secgate::statlog::record_on(
+                _diag,
+                "NAMEHDL",
+                _t0.elapsed().as_micros() as u64,
+                &[
+                    _t_lookup.as_micros() as u64,
+                    (_t0.elapsed() - _t_lookup).as_micros() as u64,
+                ],
+            );
             PooledHandle {
-                handle: dynamic_naming_factory()?,
+                handle,
                 ns_gen: 0,
             }
         }
@@ -507,8 +525,22 @@ pub fn get_naming_handle() -> Option<NamingGuard> {
 
 /// Set the working namespace for every naming handle in this compartment, now and in future.
 pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
+    let _t0 = std::time::Instant::now();
     let mut guard = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+    let _t_handle = _t0.elapsed();
     guard.change_namespace(path)?;
+    // Called once per compartment from `pre_main_hook`, i.e. inside `Command::spawn`. Splits
+    // acquiring a naming handle (which for a fresh compartment means a compartment lookup, a
+    // dynamic-gate resolution and a server-side buffer) from the namespace call itself.
+    secgate::statlog::record_on(
+        crate::runtime::core::PRE_MAIN_PHASE_STATS,
+        "SETNS",
+        _t0.elapsed().as_micros() as u64,
+        &[
+            _t_handle.as_micros() as u64,
+            (_t0.elapsed() - _t_handle).as_micros() as u64,
+        ],
+    );
     *CURRENT_NS.lock().unwrap() = Some(path.to_path_buf());
     // Everything else in the pool, and this handle when it goes back, re-syncs on next acquire.
     NS_GEN.fetch_add(1, Ordering::AcqRel);

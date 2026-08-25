@@ -45,6 +45,15 @@ pub use runcomp::*;
 ///
 /// Left in place, switched off, alongside the counters that measured it: the premise (relocation
 /// waits on source-object COW faults) is only half-refuted, and the next attempt needs this.
+/// Switch for the per-spawn phase counter (`SPAWNPHA`): parse / load / start.
+///
+/// `start_compartment` **blocks until the new compartment signals `COMP_READY`**, so
+/// `monitor_rt_load_compartment` -- and therefore `Command::spawn` -- does not return until the
+/// child's runtime has come up. That makes "the load" and "the child booting" two different costs
+/// inside one number, and `LOAD_PHASE_STATS` can only see the first of them. Off by default; the
+/// values are microseconds.
+pub(crate) const SPAWN_PHASE_STATS: bool = false;
+
 const PREFAULT_ROOT: bool = false;
 
 /// Prefault the PT_LOAD ranges of a compartment's root object, outside the dynlink lock.
@@ -886,6 +895,16 @@ impl super::Monitor {
             (_start_2 - _start_1).as_millis(),
             (_start_3 - _start_2).as_millis(),
             _start_3.elapsed().as_millis()
+        );
+        secgate::statlog::record_on(
+            SPAWN_PHASE_STATS,
+            "SPAWNPHA",
+            _start_1.elapsed().as_micros() as u64,
+            &[
+                (_start_2 - _start_1).as_micros() as u64,
+                (_start_3 - _start_2).as_micros() as u64,
+                _start_3.elapsed().as_micros() as u64,
+            ],
         );
 
         Ok(desc)

@@ -722,7 +722,15 @@ const CENSUS_WORDS: usize = CENSUS_BRANCH + CENSUS_CLASSES * 4;
 static CENSUS_PREV: Mutex<Option<[u64; CENSUS_WORDS]>> = Mutex::new(None);
 
 /// Arm the runtime's census for this compartment. Called once, from `namer_start`.
+/// Master switch, **off by default**. Same hazard as the pager's and monitor's `heapdiag`: arming
+/// the census makes every alloc and free in this compartment pay two extra atomic adds for the rest
+/// of the boot, and the periodic dump is thousands of console lines. Turn on for a leak run.
+const HEAP_CENSUS_ON: bool = false;
+
 fn heap_census_arm() {
+    if !HEAP_CENSUS_ON {
+        return;
+    }
     let was = unsafe { __twz_rt_diag_heap_census_arm() };
     twizzler_abi::klog_println!("NAMING-HEAPCENSUS armed was_already_armed={}", was);
     track_arm();

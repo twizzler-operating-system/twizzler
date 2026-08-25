@@ -16,6 +16,16 @@ use std::sync::Mutex;
 
 use twizzler_abi::klog_println;
 
+/// Master switch, **off by default**.
+///
+/// Arming the runtime census makes every alloc and free in this compartment pay two extra atomic
+/// adds, and `start_sampler` adds a 1 Hz thread that prints a table for the whole boot. Both were
+/// unconditional at `do_pager_start`, so every boot -- including every `--bench` boot -- carried
+/// them. That is the exact shape of `sysbench.md`'s F11, where `perfmark` switched on syscall
+/// timing before every bench and inflated absolutes by up to 2.34x. Turn this on for a leak run;
+/// leave it off for a measurement.
+pub const ENABLED: bool = false;
+
 const NR_BRANCH: usize = 16;
 const NR_CLASSES: usize = 32;
 const NR_WORDS: usize = NR_BRANCH + NR_CLASSES * 4;
@@ -95,6 +105,9 @@ fn heap_objects_line() {
 
 /// Arm the runtime's census for this compartment. Called once, from `do_pager_start`.
 pub fn arm() {
+    if !ENABLED {
+        return;
+    }
     let was = unsafe { __twz_rt_diag_heap_census_arm() };
     // Reports the prior state so "armed by us" and "already armed" stay distinguishable.
     klog_println!("PAGER-HEAPCENSUS-ARM was_already_armed={}", was);
@@ -109,6 +122,9 @@ pub fn arm() {
 /// leakcheck's op boundaries; bucket them by line number against the `LEAKCHECK-OP` lines in the
 /// same log, which is how the monitor census is already read.
 pub fn start_sampler() {
+    if !ENABLED {
+        return;
+    }
     std::thread::spawn(|| loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         snapshot();
@@ -118,6 +134,9 @@ pub fn start_sampler() {
 
 /// Snapshot on every [`PERIOD`]th call. Cheap enough to sit on a gate.
 pub fn tick() {
+    if !ENABLED {
+        return;
+    }
     {
         let mut seq = SEQ.lock().unwrap();
         *seq += 1;

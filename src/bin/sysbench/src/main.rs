@@ -936,4 +936,147 @@ mod benches {
         let id = obj.obj().id();
         b.iter(|| std::hint::black_box(pager::disk_len(id).unwrap()));
     }
+
+
+    /// Time `n` spawns individually and print the distribution, not just a mean.
+    ///
+    /// `compartment_spawn_exit` first read 14.9 ms +/- 9.4 ms -- a +/-63% band, which no A/B and
+    /// no cross-OS comparison can survive. libtest reports one number per bench and cannot say
+    /// whether that band is symmetric noise, a bimodal split, or a monotonic drift as spawns
+    /// accumulate state in `naming-srv` and the reaper. Those three want different responses, and
+    /// a mean is identical for all of them. So: record every sample, and print the shape.
+    ///
+    /// `first10`/`last10` is the drift test specifically -- if spawn N is dearer than spawn 1, the
+    /// bench is measuring accumulated state and its headline figure depends on iteration count.
+    fn spawn_distribution(label: &str, n: usize, mut one: impl FnMut() -> (u64, u64)) {
+        let mut total = Vec::with_capacity(n);
+        let mut create = Vec::with_capacity(n);
+        let mut reap = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (c, r) = one();
+            create.push(c);
+            reap.push(r);
+            total.push(c + r);
+        }
+        let mean = |v: &[u64]| if v.is_empty() { 0 } else { v.iter().sum::<u64>() / v.len() as u64 };
+        let first10 = mean(&total[..10.min(total.len())]);
+        let last10 = mean(&total[total.len().saturating_sub(10)..]);
+        let tmean = mean(&total);
+        for v in [&mut total, &mut create, &mut reap] {
+            v.sort_unstable();
+        }
+        let q = |v: &Vec<u64>, f: f64| v[((v.len() - 1) as f64 * f) as usize];
+        console(&format!(
+            "SYSBENCH-SPAWN {} n={} min={} p50={} p90={} max={} mean={} first10={} last10={}\n",
+            label, n, total[0], q(&total, 0.5), q(&total, 0.9),
+            total[total.len() - 1], tmean, first10, last10,
+        ));
+        // The split that says which half to look at. `create` is everything up to `Command::spawn`
+        // returning -- the naming lookup, the gate into the monitor, the whole `RunCompLoader`
+        // path, and the child's main thread being started. `reap` is the child actually running
+        // (runtime entry, ctors, `main`, teardown) plus the parent's wait waking up. They are
+        // measured from the same clock in the same iteration, so they sum to the total exactly.
+        console(&format!(
+            "SYSBENCH-SPAWNSPLIT {} create_p50={} create_mean={} reap_p50={} reap_mean={} create_min={} reap_min={}\n",
+            label, q(&create, 0.5), mean(&create), q(&reap, 0.5), mean(&reap),
+            create[0], reap[0],
+        ));
+    }
+
+    /// Path to the do-nothing compartment `compartment_spawn_exit` starts. `src/bin/nullexit` is
+    /// `fn main() {}` with no dependencies past the default runtime, so the number is the spawn
+    /// machinery rather than the program.
+    const NULL_PROG: &str = "/pkg/twizzler/bin/nullexit";
+    /// A large, dependency-heavy binary, run through the identical path. The pair is the
+    /// measurement: the delta is what dynamic linking a real program adds to a spawn, which a
+    /// single number cannot separate from compartment creation itself.
+    const BIG_PROG: &str = "/pkg/twizzler/bin/leakcheck";
+
+
+    /// One spawn and one wait, the unit every spawn bench times.
+    fn spawn_once(prog: &str, args: &[&str]) -> (u64, u64) {
+        let t0 = std::time::Instant::now();
+        let mut child = std::process::Command::new(prog)
+            .args(args)
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn {prog}: {e}"));
+        let t1 = std::time::Instant::now();
+        let status = child.wait().unwrap_or_else(|e| panic!("wait {prog}: {e}"));
+        let t2 = std::time::Instant::now();
+        // A child that failed to start would otherwise time as a *fast* spawn and read as a good
+        // result, which is the failure mode `sysbench.md` keeps warning about.
+        assert!(status.success(), "{prog} exited {status:?}");
+        (
+            (t1 - t0).as_nanos() as u64,
+            (t2 - t1).as_nanos() as u64,
+        )
+    }
+
+    /// Start a compartment that immediately exits, and wait for it -- Twizzler's analogue of
+    /// `fork`+`exec`+`waitpid`.
+    ///
+    /// The whole path: `Command::spawn` -> `twz_rt_exec_spawn` -> a naming lookup for the program
+    /// -> `monitor_api::CompartmentLoader` -> the monitor loading and relocating every DSO the
+    /// program needs -> the child's runtime entry -> `main` returning -> teardown, plus the
+    /// parent's wait. It is the most expensive single operation in this suite by two orders of
+    /// magnitude, and until now the suite had no number for it at all.
+    ///
+    /// **Not a like-for-like with Linux even so, and the difference runs in Twizzler's favour on
+    /// paper.** Linux's `fork`+`exec` of a *static* binary does no dynamic linking; every spawn
+    /// here does, because there is no static-executable path through `Command`. Compare against
+    /// the dynamic Linux arm, and read the static one as the floor process creation could reach.
+    #[bench]
+    fn compartment_spawn_exit(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let mark = Mark::new("compartment_spawn_exit");
+        let _ = spawn_once(NULL_PROG, &[]);
+        spawn_distribution("nullexit", 40, || spawn_once(NULL_PROG, &[]));
+        b.iter(|| {
+            mark.tick();
+            spawn_once(NULL_PROG, &[])
+        });
+    }
+
+    /// The same program, exiting via `process::exit` instead of returning from `main`.
+    ///
+    /// Isolates Rust's teardown from the spawn machinery, and makes the `_big` arm below
+    /// interpretable: `leakcheck --child-exit` takes this route, so without this number the
+    /// difference between the two would mix "bigger program" with "different exit path".
+    #[bench]
+    fn compartment_spawn_exit_noteardown(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let mark = Mark::new("compartment_spawn_exit_noteardown");
+        let _ = spawn_once(NULL_PROG, &["--exit-now"]);
+        spawn_distribution("nullexit_noteardown", 40, || {
+            spawn_once(NULL_PROG, &["--exit-now"])
+        });
+        b.iter(|| {
+            mark.tick();
+            spawn_once(NULL_PROG, &["--exit-now"])
+        });
+    }
+
+    /// The same spawn of a large, dependency-heavy program (`leakcheck`, which exits at the top
+    /// of `main`).
+    ///
+    /// Against `compartment_spawn_exit_noteardown` -- same exit path -- the difference is what
+    /// the program's own size and DSO set add to a spawn.
+    #[bench]
+    fn compartment_spawn_exit_big(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let mark = Mark::new("compartment_spawn_exit_big");
+        let _ = spawn_once(BIG_PROG, &["--child-exit"]);
+        spawn_distribution("leakcheck", 40, || spawn_once(BIG_PROG, &["--child-exit"]));
+        b.iter(|| {
+            mark.tick();
+            spawn_once(BIG_PROG, &["--child-exit"])
+        });
+    }
+
 }

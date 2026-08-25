@@ -73,6 +73,16 @@ impl PagedDevice for Disk {
             let count = std::cmp::min(nr_pages - i, list[cursor].nr_pages() - inner_cursor);
             let start = list[cursor].range.start + (inner_cursor * PAGE_SIZE) as u64;
 
+            // PRPTRACE (see nvme/dma.rs): catch garbage between the pool and the PRP builder.
+            if start & 0xFFF as u64 != 0 {
+                tracing::error!(
+                    "PRPTRACE misaligned PagedPhysMem start {:x} (range {:x}..{:x}, inner {})",
+                    start,
+                    list[cursor].range.start,
+                    list[cursor].range.end,
+                    inner_cursor
+                );
+            }
             for j in 0..count {
                 let phys_addr = start + (j * PAGE_SIZE) as u64;
                 let phys_info = PhysInfo::new(PhysAddr(phys_addr));

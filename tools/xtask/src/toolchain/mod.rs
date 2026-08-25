@@ -315,8 +315,12 @@ pub(crate) fn init_for_build(_abi_changes_ok: bool) -> anyhow::Result<()> {
     let tag = generate_tag()?;
     let toolchain_path = Path::new("toolchain").join(&tag);
     std::fs::create_dir_all(&toolchain_path)?;
-    let _ = std::fs::remove_file("toolchain/install");
-    std::os::unix::fs::symlink(&tag, "toolchain/install")?;
+    // Atomic swap: concurrent xtask invocations resolve paths through this symlink, so an
+    // unlink+symlink pair leaves an ENOENT window that fails their in-flight builds.
+    let tmp_link = Path::new("toolchain").join(format!(".install-tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp_link);
+    std::os::unix::fs::symlink(&tag, &tmp_link)?;
+    std::fs::rename(&tmp_link, "toolchain/install")?;
 
     let python_path = get_python_path()?.canonicalize()?;
     let builtin_headers = get_builtin_headers()?.canonicalize()?;

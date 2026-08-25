@@ -287,10 +287,21 @@ impl PagerData {
     }
 
     pub fn alloc_page(&self) -> Option<u64> {
-        self.inner.lock().unwrap().get_next_available_page()
+        let page = self.inner.lock().unwrap().get_next_available_page();
+        // PRPTRACE (see nvme/dma.rs): catch garbage leaving the pool.
+        if let Some(p) = page {
+            if p & 0xFFF != 0 {
+                tracing::error!("PRPTRACE pool returned misaligned page {:x}", p);
+            }
+        }
+        page
     }
 
     pub fn free_page(&self, page: u64) {
+        // PRPTRACE (see nvme/dma.rs): catch garbage entering the pool.
+        if page & 0xFFF != 0 {
+            tracing::error!("PRPTRACE misaligned page freed to pool: {:x}", page);
+        }
         self.inner.lock().unwrap().free_page(page);
     }
 
@@ -362,6 +373,10 @@ impl PagerData {
             }
         }
         if let Some(page) = inner.get_next_available_page() {
+            // PRPTRACE (see nvme/dma.rs): catch garbage leaving the pool on the fill path.
+            if page & 0xFFF != 0 {
+                tracing::error!("PRPTRACE pool returned misaligned page {:x} (single)", page);
+            }
             return Ok((page, 1));
         }
         let pos = inner.waiters.push(None);
@@ -647,14 +662,27 @@ impl PagerData {
 
     /// Initialize the starting memory range for the pager.
     pub fn add_memory_range(&self, range: PhysRange) {
+        // PRPTRACE (see nvme/dma.rs): catch garbage at the pool boundary.
+        if range.start & 0xFFF != 0 || range.end & 0xFFF != 0 || range.start >= range.end {
+            tracing::error!("PRPTRACE bad donated range {:x}..{:x}", range.start, range.end);
+        }
         let mut inner = self.inner.lock().unwrap();
         tracing::debug!("add memory range: {} pages", range.pages().count());
         if !inner.memory.try_add_memory_range(range) {
             if range.page_count() >= 128 {
                 inner.memory.push(Region::new(range));
             } else {
-                for page in range.pages() {
-                    inner.memory.free_page(page);
+                // The pool speaks byte addresses; `PhysRange::pages()` yields page *numbers*.
+                // Freeing those numbers directly put values like 0x1a878 into the pool, which
+                // went out as DMA targets: misaligned ones the device rejected (PRP Offset
+                // Invalid), page-aligned ones it silently wrote disk data over low physical
+                // memory. Only reachable for small donations that fail to merge -- i.e. the
+                // fragmented-donation regime -- which is why it hid behind the donation wedge
+                // (pagerwedge.md).
+                let mut addr = range.start;
+                while addr < range.end {
+                    inner.memory.free_page(addr);
+                    addr += PAGE;
                 }
             }
         }

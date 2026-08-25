@@ -21,7 +21,7 @@ use twizzler_rt_abi::{
 use crate::runtime::file::{
     get_fd_slots, get_naming_handle,
     kinds::{
-        compartment::CompartmentFile, dir::DirFile, kconsole::KernelConsoleFile,
+        compartment::CompartmentFile, dir::DirFile, kconsole::KernelConsoleFile, null::NullFile,
         pty::PtyHandleKind, raw_file::RawFile, socket::SocketKind, symlink::SymLinkFile,
     },
     pty_signal_handler, CreateOptions, FdImpl, OperationOptions,
@@ -30,6 +30,7 @@ use crate::runtime::file::{
 pub mod compartment;
 pub mod dir;
 pub mod kconsole;
+pub mod null;
 pub mod pty;
 pub mod raw_file;
 pub mod socket;
@@ -86,6 +87,16 @@ pub mod openstats {
 }
 
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
+    // Not a naming entry: intercepted here so it works before naming is up, and so the fd's
+    // binding stays an ordinary Path binding (children re-open it by name across spawn).
+    if path == "/dev/null" {
+        return match create_opt {
+            CreateOptions::CreateKindNew | CreateOptions::CreateKindBind(_) => {
+                Err(NamingError::AlreadyExists.into())
+            }
+            _ => Ok(Arc::new(NullFile) as FdImpl),
+        };
+    }
     let t_start = std::time::Instant::now();
     let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
     let lock_ns = t_start.elapsed().as_nanos() as u64;

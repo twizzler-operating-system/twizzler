@@ -2184,6 +2184,12 @@ fn cache_freed_frame_hinted(frame: FrameRef, known_zero: bool) -> bool {
     );
     check_overlap(frame, "framecache-free");
     frame.set_cow(false);
+    // Mirrors `raw_free_frame`, which clears both bits on the way to the physical allocator. The
+    // frame cache is a second, parallel free path that bypasses it, so a page-table frame freed
+    // into a magazine kept `IS_PT` set, was handed straight back out to a consumer, and tripped
+    // `assert!(!frame.is_pt())` where the pager installs page data (`pager/queues.rs`). Both bits
+    // describe the *previous* owner's use and are meaningless once the frame is free.
+    frame.set_pt(false);
     assert!(
         !frame.mark_pooled(),
         "frame already in a per-cpu cache at free (double free): {:?}",

@@ -18,6 +18,16 @@ pub struct Mapper {
     root: PhysAddr,
     start_level: usize,
     generation: u64,
+    /// Leaf pages currently installed, in 4 KiB units, or `None` if unknown.
+    ///
+    /// Exact rather than cached: [`super::Table::update_entry`] is the only place an entry is
+    /// written, and it reports every leaf appearing or disappearing through `Consistency`, which
+    /// each mutator below drains. `count_pages` used to walk a cursor over an object's whole 1 GiB
+    /// `max_len()` -- 37 us to find 16 pages, 99.7% of `sys_object_stat` (`spawnbench.md` §20).
+    ///
+    /// `None` only after [`Mapper::set_top_level_table`], which writes an entry directly and so is
+    /// the one mutation this cannot see; the next reader falls back to the walk.
+    pages: Option<usize>,
 }
 
 impl Mapper {
@@ -27,6 +37,7 @@ impl Mapper {
             root,
             start_level: Table::top_level(),
             generation: 0,
+            pages: Some(0),
         }
     }
 
@@ -51,6 +62,20 @@ impl Mapper {
         self.generation
     }
 
+    /// Leaf pages installed, in 4 KiB units. `None` means the counter cannot answer and the caller
+    /// must walk.
+    pub fn page_count(&self) -> Option<usize> {
+        self.pages
+    }
+
+    /// Fold one operation's leaf-page delta into the counter.
+    fn take_pages(&mut self, consist: &mut Consistency) {
+        let delta = consist.take_page_delta();
+        if let Some(p) = self.pages.as_mut() {
+            *p = p.wrapping_add_signed(delta);
+        }
+    }
+
     /// Set a top level table to a direct value. Useful for creating large regions of global memory
     /// (like the kernel's vaddr memory range). Does not perform any consistency operations.
     pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
@@ -66,6 +91,8 @@ impl Mapper {
             root.set_count(count)
         }
         self.generation += 1;
+        // Writes an entry without going through `update_entry`, so the counter cannot see it.
+        self.pages = None;
     }
 
     /// Get a top level table entry's value. Useful for cloning large regions during creation (e.g.
@@ -138,6 +165,7 @@ impl Mapper {
         let root = self.root_mut();
         let r = root.map(consist, cursor, level, phys, fa);
         self.generation += 1;
+        self.take_pages(consist);
         let t_flush = crate::obj::pagetables::mapprobe::start();
         consist.flush_cache();
         crate::obj::pagetables::mapprobe::record(
@@ -169,6 +197,7 @@ impl Mapper {
         let r = root.unmap(consist, cursor, level, fa, released);
         log::trace!("unmap: done");
         self.generation += 1;
+        self.take_pages(consist);
         consist.flush_cache();
         r
     }
@@ -192,6 +221,7 @@ impl Mapper {
         let root = self.root_mut();
         let r = root.change(consist, cursor, level, settings, fa);
         self.generation += 1;
+        self.take_pages(consist);
         log::trace!("change: done");
         consist.flush_cache();
         r
@@ -248,6 +278,7 @@ impl Mapper {
         let r = object_tables
             .with_mapper(|mapper| root.object_map(consist, cursor, level, mapper, fa, settings));
         self.generation += 1;
+        self.take_pages(consist);
         consist.flush_cache();
         r
     }
@@ -269,6 +300,7 @@ impl Mapper {
         let d = root.with_dirty_bits(cursor, level, consist, &mut f)?;
         if d {
             self.generation += 1;
+            self.take_pages(consist);
         }
         consist.flush_cache();
         log::trace!("with_dirty_bits: done");
@@ -338,6 +370,7 @@ impl Mapper {
         let root = self.root_mut();
         let r = root.split_to_level(consist, addr, start_level, level, fa);
         self.generation += 1;
+        self.take_pages(consist);
         consist.flush_cache();
         r
     }
@@ -359,6 +392,7 @@ impl Mapper {
         );
         let start_level = self.start_level;
         self.generation += 1;
+        self.take_pages(consist);
         let root = self.root_mut();
         while src_cursor.remaining() > 0 && dst_cursor.remaining() > 0 {
             log::trace!(
@@ -394,6 +428,7 @@ impl Mapper {
         );
         let start_level = self.start_level;
         self.generation += 1;
+        self.take_pages(consist);
         let root = self.root_mut();
         while cursor.remaining() > 0 {
             log::trace!(
@@ -425,6 +460,7 @@ impl Mapper {
     ) -> Result<bool, TwzError> {
         let level = self.start_level;
         self.generation += 1;
+        self.take_pages(consist);
         let root = self.root_mut();
         let r = root.cow_copy(consist, &cursor, level, mark_dirty, fa);
         consist.flush_cache();

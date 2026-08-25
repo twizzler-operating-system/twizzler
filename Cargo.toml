@@ -65,6 +65,7 @@ members = [
     #"src/bin/serialecho", "tools/serialtest",
 
     "src/bin/ptest",
+    "src/bin/spawn-test",
     "src/bin/kqueue_test",
     "src/bin/net_test",
     "src/bin/net_test_peer",
@@ -78,6 +79,7 @@ members = [
 
     "src/bin/schedtest",
     "src/bin/sysbench",
+    "src/bin/nullexit",
     "src/bin/leakcheck",
     #"src/bin/gfxtest",
     "src/bin/stdnet_test",
@@ -115,6 +117,7 @@ resolver = "2"
 # `cargo start-qemu --autostart lltest` still reproduces it.
 test-programs = [
     #{ crate = "lltest" },
+    { crate = "spawn-test" },
 ]
 initrd = [
     "crate:bootstrap",
@@ -138,7 +141,9 @@ initrd = [
     #"crate:trace",
     #"crate:gfxtest",
     "crate:shell",
+    "crate:spawn-test",
     "crate:leakcheck",
+    "crate:nullexit",
     "crate:pagepar",
     "crate:hmrepro",
     #"crate:sshd",

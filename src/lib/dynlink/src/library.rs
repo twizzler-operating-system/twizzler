@@ -350,12 +350,14 @@ impl Library {
         }))
     }
 
-    fn do_lookup_symbol(
-        &self,
-        name: &str,
-        allow_weak: bool,
-    ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
-        let common = self.get_elf_common()?;
+    /// Probe this library's hash tables for a definition of `name`.
+    ///
+    /// `None` means "not defined here". Callers probe many candidate libraries per lookup, so this
+    /// path constructs no error; the caller that exhausts every candidate builds the one
+    /// diagnostic (`Context::do_lookup_symbol`). Building a `NameNotFound` here -- a 256-byte
+    /// inline string inside `DynlinkError` -- charged every failed probe on the relocation path.
+    fn do_lookup_symbol(&self, name: &str, allow_weak: bool) -> Option<RelocatedSymbol<'_>> {
+        let common = self.get_elf_common().ok()?;
 
         /*
         if self.is_relocated() {
@@ -377,17 +379,8 @@ impl Library {
             if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
-                    common
-                        .dynsyms
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                            name: "dynsyms".into(),
-                        })?,
-                    common.dynsyms_strs.as_ref().ok_or_else(|| {
-                        DynlinkErrorKind::MissingSection {
-                            name: "dynsyms_strs".into(),
-                        }
-                    })?,
+                    common.dynsyms.as_ref()?,
+                    common.dynsyms_strs.as_ref()?,
                 )
                 .ok()
                 .flatten()
@@ -398,13 +391,13 @@ impl Library {
                         || allow_weak
                         || (self.is_relocated() && self.is_secgate(name))
                     {
-                        return Ok(RelocatedSymbol::new(sym, self));
+                        return Some(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
                 } else {
                     //tracing::warn!("undefined symbol: {}", name);
-                    return Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into());
+                    return None;
                 }
             }
         }
@@ -414,17 +407,8 @@ impl Library {
             if let Some((_, sym)) = h
                 .find(
                     name.as_ref(),
-                    common
-                        .dynsyms
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::MissingSection {
-                            name: "dynsyms".into(),
-                        })?,
-                    common.dynsyms_strs.as_ref().ok_or_else(|| {
-                        DynlinkErrorKind::MissingSection {
-                            name: "dynsyms_strs".into(),
-                        }
-                    })?,
+                    common.dynsyms.as_ref()?,
+                    common.dynsyms_strs.as_ref()?,
                 )
                 .ok()
                 .flatten()
@@ -435,7 +419,7 @@ impl Library {
                         || allow_weak
                         || (self.is_relocated() && self.is_secgate(name))
                     {
-                        return Ok(RelocatedSymbol::new(sym, self));
+                        return Some(RelocatedSymbol::new(sym, self));
                     } else {
                         tracing::warn!("lookup symbol {} skipping weak binding in {}", name, self);
                     }
@@ -474,7 +458,7 @@ impl Library {
         }
         */
         //tracing::warn!("undefined symbol: {}", name);
-        Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
+        None
     }
 
     pub(crate) fn lookup_symbol(
@@ -482,22 +466,22 @@ impl Library {
         name: &str,
         allow_weak: bool,
         allow_prefix: bool,
-    ) -> Result<RelocatedSymbol<'_>, DynlinkError> {
+    ) -> Option<RelocatedSymbol<'_>> {
         let ret = self.do_lookup_symbol(&name, allow_weak);
         // A `__TWIZZLER_SECURE_GATE_*` symbol only exists in a library that has gates, so skip the
         // string build and the second hash probe entirely for the libraries that have none (which
         // is most of them: libstd, libc, libtwz_rt). Previously this constructed a 256-byte
         // SmallString and probed the hash table for every candidate library on every lookup.
         if allow_prefix
-            && ret.is_err()
+            && ret.is_none()
             && self.secgate_info.num > 0
             && !name.starts_with("__TWIZZLER_SECURE_GATE_")
         {
             let mut prefixedname = SmallString::<[u8; 256]>::from_str("__TWIZZLER_SECURE_GATE_");
             prefixedname.push_str(name);
 
-            if let Ok(o) = self.do_lookup_symbol(&prefixedname, allow_weak) {
-                return Ok(o);
+            if let Some(o) = self.do_lookup_symbol(&prefixedname, allow_weak) {
+                return Some(o);
             }
         }
         ret

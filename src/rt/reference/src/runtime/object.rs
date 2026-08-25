@@ -79,6 +79,15 @@ fn max_fot_idx(handle: &object_handle) -> u64 {
 pub(crate) mod mapstats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// Master switch for the console report, **off by default**.
+    ///
+    /// `report_forced` deliberately bypasses [`secgate::statcadence::STATS_ON`], so this printed on
+    /// every compartment exit in every boot. On an emulated 16550 under a kernel-wide serial lock a
+    /// console line is ~0.7 ms (measured: six per-load `tracing::info!` lines were 33% of a
+    /// compartment spawn), and a spawn-heavy workload exits a compartment per spawn. The
+    /// accumulators stay unconditional -- they are relaxed adds and cost nothing.
+    pub const REPORT_ON: bool = false;
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static HITS: AtomicU64 = AtomicU64::new(0);
     static LOCK: AtomicU64 = AtomicU64::new(0);
@@ -127,7 +136,7 @@ pub(crate) mod mapstats {
     /// whose console traffic lands inside whatever it is measuring.
     pub fn report() {
         let n = COUNT.load(Ordering::Relaxed);
-        if n == 0 {
+        if !REPORT_ON || n == 0 {
             return;
         }
         let hits = HITS.load(Ordering::Relaxed).max(1);

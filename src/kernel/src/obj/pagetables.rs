@@ -49,6 +49,26 @@ const MAX_MEMBERS: usize = 32;
 /// The failure that matters is *under*-counting: a short precharge sends `try_allocate` to the
 /// global allocator without `WAIT_OK` while the object's page-table lock is held. That is exactly
 /// what `avoid_alloc` reports -- `avoid-empty=` on `PERFMARK-FA` -- and it must stay 0.
+/// Answer [`ObjectPageTable::count_pages`] from `Mapper`'s exact page counter instead of walking.
+///
+/// The counter is exact (`COUNT_PAGES_VERIFY` ran it against the walk over two full suites:
+/// drift 0) and takes `Object::info` from 37,437 ns to 176 ns, i.e. `sys_object_stat` from
+/// ~37.6 us to ~0.37 us.
+///
+/// It shipped off at first: with it on, the full suite failed ~3/5 with the pager exhausting its
+/// request slots (`spawnbench.md` §23). That was never a defect in this switch — the speedup
+/// removed ~2 s/round of monitor CPU and let the workload reach a latent, independent deadlock in
+/// the pager-memory donation path, since diagnosed and fixed (`pagerwedge.md`: a fragmented
+/// 16k-frame donation took one request slot per range for the whole batch before submitting any,
+/// and >256 ranges held every slot with nothing sent). With that fix in, this switch is safe;
+/// flipping it back off is only a kill switch for the stat speedup, not a wedge mitigation.
+const COUNT_PAGES_COUNTER: bool = true;
+
+/// Run both the counter and the walk on every call and report any disagreement. Must stay 0.
+///
+/// Off: the cache exists precisely to skip the walk. On for validation runs.
+const COUNT_PAGES_VERIFY: bool = false;
+
 const PRECHARGE_EXACT: bool = true;
 
 /// [`PRECHARGE_EXACT`] for the object-table entry points that are not `map_page`.
@@ -1246,16 +1266,40 @@ impl ObjectPageTable {
         self.mapper.print_tables();
     }
 
+    /// Pages currently installed in this object, in 4 KiB units.
+    ///
+    /// Answered from `Mapper`'s counter, which `update_entry` maintains as leaf entries come and
+    /// go. It used to walk a cursor over `max_len()` -- the object's whole 1 GiB range -- which
+    /// measured **37 us to find 16 pages** and was 99.7% of `sys_object_stat`; `HandleMgr` calls
+    /// that syscall once per tracked compartment on every handle insert and remove.
     pub fn count_pages(&self) -> usize {
+        let counted = self.mapper.page_count();
+        if let Some(n) = counted
+            && COUNT_PAGES_COUNTER
+            && !COUNT_PAGES_VERIFY
+        {
+            return n;
+        }
         let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
         let reader = self.mapper.readmap(cursor).coalesce();
-        reader.fold(0, |acc, mi| {
+        let walked = reader.fold(0, |acc, mi| {
             if mi.is_empty() {
                 acc
             } else {
                 acc + mi.len() / PageNumber::PAGE_SIZE
             }
-        })
+        });
+        // The counterfactual. A counter that misses an update is silently wrong forever and
+        // nothing else checks `ObjectInfo::pages`, so the walk stays available and, with this on,
+        // every call runs both and reports any disagreement. Must stay 0.
+        if (COUNT_PAGES_VERIFY || COUNT_PAGES_COUNTER) && counted.is_some_and(|n| n != walked) {
+            logln!(
+                "[obj] count_pages drift: counter {} walked {}",
+                counted.unwrap(),
+                walked
+            );
+        }
+        walked
     }
 
     /// Bucket every populated 2 MiB region of this object into `out`.

@@ -221,6 +221,13 @@ pub struct Consistency {
     /// Set by [Self::finish_send], handed to the [DeferredUnmappingOps] so that the frames cannot
     /// be freed before the shootdown is acknowledged.
     pending: Option<PendingShootdown>,
+    /// Leaf-entry pages added (+) or removed (-) by this operation, in 4 KiB units.
+    ///
+    /// Accumulated by [`super::Table::update_entry`] -- the single place every entry write goes
+    /// through -- and drained by [`super::Mapper`] at the same points it bumps its generation, so
+    /// `Mapper::page_count` is exact without walking. `Consistency` is the only thing already
+    /// threaded through the whole recursion, which is why it carries this.
+    page_delta: isize,
 }
 
 impl Consistency {
@@ -230,7 +237,18 @@ impl Consistency {
             tlb: ArchTlbMgr::new(target),
             pages: LinkedList::new(FrameAdapter::NEW),
             pending: None,
+            page_delta: 0,
         }
+    }
+
+    /// Record a leaf entry appearing (+) or disappearing (-), in 4 KiB units.
+    pub fn add_page_delta(&mut self, delta: isize) {
+        self.page_delta += delta;
+    }
+
+    /// Take the accumulated delta, resetting it. Called once per [`super::Mapper`] operation.
+    pub fn take_page_delta(&mut self) -> isize {
+        core::mem::replace(&mut self.page_delta, 0)
     }
 
     pub fn new_object_tables() -> Self {

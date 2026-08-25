@@ -1,8 +1,5 @@
 use alloc::{collections::BTreeMap, vec::Vec};
-use core::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use inflight::{Inflight, InflightManager};
 use itertools::Itertools;
@@ -33,7 +30,7 @@ use crate::{
     once::{Once, OnceWait},
     processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
-    syscall::sync::{finish_blocking, sys_thread_sync},
+    syscall::sync::finish_blocking,
     thread::{
         current_thread_ref,
         entry::start_new_kernel,
@@ -308,11 +305,12 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         if !crate::pager::inflight::pager_ready() {
             return None;
         }
+        let slot_gen = crate::pager::inflight::slot_gen();
         let mut mgr = lock_inflight_for_obj(id);
         let Ok(inflight) = mgr.add_request(ReqKind::new_info(id)) else {
             log::warn!("out of pager request slots");
             drop(mgr);
-            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            crate::pager::inflight::wait_for_slot(slot_gen);
             continue;
         };
         drop(mgr);
@@ -475,6 +473,7 @@ fn submit_page_request<'a>(
         flags,
         required.map(|(p, l)| (p.num(), l)),
     );
+    let slot_gen = crate::pager::inflight::slot_gen();
     let Ok(inflight) = mgr.add_request(rk) else {
         // Speculation that cannot get a slot is not worth waiting for one: the slots it would spin
         // on belong to demand faults, and nothing is waiting on this request. Drop it.
@@ -484,7 +483,12 @@ fn submit_page_request<'a>(
         }
         log::warn!("out of pager request slots");
         drop(mgr);
-        schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+        // The page-table guard cannot be held across this sleep: the completion that frees a
+        // slot may need this object's page tables to install pages first. The entry scan on the
+        // retry re-checks presence, so anything installed meanwhile is dropped from the ask.
+        drop(tree);
+        crate::pager::inflight::wait_for_slot(slot_gen);
+        let tree = obj.lock_page_tables();
         return submit_page_request(
             obj,
             page,
@@ -636,12 +640,13 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
         return;
     }
     let mut mgr = lock_inflight_for(&req);
+    let slot_gen = crate::pager::inflight::slot_gen();
     let inflight = match mgr.add_request(req) {
         Ok(x) => x,
         Err(rk) => {
             log::warn!("out of pager request slots");
             drop(mgr);
-            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            crate::pager::inflight::wait_for_slot(slot_gen);
             return cmd_object(rk, obj);
         }
     };
@@ -756,12 +761,13 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
             schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
         }
     };
+    let slot_gen = crate::pager::inflight::slot_gen();
     let inflight = match mgr.add_request(req) {
         Ok(x) => x,
         Err(rk) => {
             log::warn!("out of pager request slots");
             drop(mgr);
-            schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            crate::pager::inflight::wait_for_slot(slot_gen);
             return do_sync_region(region, rk, wait);
         }
     };
@@ -1097,28 +1103,51 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     );
     //print_tracker_stats();
 
-    let inflights = ranges
-        .iter()
-        .map(|range| {
+    // Submit each donation as soon as it has a slot, and when the budget fills wait for this
+    // call's own oldest ack rather than sleeping. Collecting the whole batch before submitting
+    // any of it is what wedged: a donation shattered by fragmentation into more ranges than
+    // there were slots (256 ranges carrying 302 pages of a 16384-frame ask) held every slot
+    // with nothing submitted, so no ack could ever free one (spawnbench.md §23).
+    let mut inflights = Vec::with_capacity(ranges.len());
+    let mut budget_waits = 0usize;
+    for range in ranges.iter() {
+        let req = ReqKind::new_pager_memory(*range);
+        let inflight = loop {
             let mut mgr = lock_shard(shard_idx(None));
-            let req = ReqKind::new_pager_memory(*range);
-            loop {
-                if let Ok(inflight) = mgr.add_request(req.clone()) {
-                    break inflight;
+            let slot_gen = crate::pager::inflight::slot_gen();
+            match mgr.add_request(req.clone()) {
+                Ok(inflight) => break inflight,
+                Err(_) => {
+                    drop(mgr);
+                    budget_waits += 1;
+                    if !wait_oldest_donation(&mut inflights) {
+                        // Nothing of ours outstanding, so the budget is held elsewhere. There is
+                        // only one provider thread today; fallback, not a path. A Pages free
+                        // bumps the same generation, so this wakes on the next ack.
+                        crate::pager::inflight::wait_for_slot(slot_gen);
+                    }
                 }
-                log::warn!("out of pager request slots");
-                drop(mgr);
-                let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(100)));
-                mgr = lock_shard(shard_idx(None));
             }
-        })
-        .collect::<Vec<_>>();
-
-    for inflight in &inflights {
+        };
         inflight.for_each_pager_req(None, |pager_req| {
             log::trace!("providing: {:?}", pager_req);
             queues::submit_pager_request(pager_req, None, inflight.rk().clone());
         });
+        inflights.push(inflight);
+    }
+    if budget_waits > 0 {
+        // Positive control for the wedge fix: this is exactly the shape that used to deadlock.
+        // placed/asked makes "the full donation went out" a number rather than an absence -- a
+        // shortfall here with no "no frames available" warning would mean the fix shrinks
+        // donations, which passing rounds alone cannot reveal.
+        let placed: u64 = ranges.iter().map(|r| r.len() as u64).sum();
+        log::info!(
+            "pager memory donation cycled its budget: {} waits over {} ranges, placed {} of {} asked frames",
+            budget_waits,
+            ranges.len(),
+            placed / 0x1000,
+            min_frames
+        );
     }
 
     if wait {
@@ -1132,4 +1161,21 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
             };
         }
     }
+}
+
+/// Block until the oldest still-outstanding donation from this provide call is acked, freeing
+/// budget for the next one. Returns false when there is nothing of ours to wait on.
+fn wait_oldest_donation(inflights: &mut Vec<Inflight>) -> bool {
+    if inflights.is_empty() {
+        return false;
+    }
+    let inflight = inflights.remove(0);
+    let mut mgr = lock_inflight_for(inflight.rk());
+    let thread = current_thread_ref().unwrap();
+    if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
+        drop(mgr);
+        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
+        finish_blocking(guard);
+    }
+    true
 }

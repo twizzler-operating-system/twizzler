@@ -648,10 +648,48 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
     })
 }
 
+/// Switch for `STATPROF`: where `sys_object_stat`'s time goes, split lookup / info.
+///
+/// The syscall measures **30.5 us** against 117 ns for a trivial one, and `HandleMgr::gc_handles`
+/// calls it once per tracked compartment on every handle insert and remove. `Object::info` calls
+/// `count_pages`, which walks a cursor over `max_len()` -- the object's whole 1 GiB range -- so the
+/// suspicion is that a "stat" is O(object range). Counted rather than inferred.
+use core::sync::atomic::{AtomicU64, Ordering};
+
+pub const STAT_PROFILE: bool = false;
+static STAT_CALLS: AtomicU64 = AtomicU64::new(0);
+static STAT_LOOKUP_NS: AtomicU64 = AtomicU64::new(0);
+static STAT_INFO_NS: AtomicU64 = AtomicU64::new(0);
+/// Pages the walk actually found. Discriminates O(pages) -- fix by keeping a counter -- from
+/// O(range) -- fix by making the reader skip empty subtrees.
+static STAT_PAGES: AtomicU64 = AtomicU64::new(0);
+
 pub fn sys_object_info(handle: ObjID) -> Result<ObjectInfo> {
+    if !STAT_PROFILE {
+        let obj = crate::obj::lookup_object(handle, LookupFlags::empty())
+            .ok_or(ObjectError::NoSuchObject)?;
+        return Ok(obj.info());
+    }
+    let t0 = crate::instant::Instant::now();
     let obj =
         crate::obj::lookup_object(handle, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
-    Ok(obj.info())
+    let t1 = crate::instant::Instant::now();
+    let info = obj.info();
+    let t2 = crate::instant::Instant::now();
+    STAT_PAGES.fetch_add(info.pages as u64, Ordering::Relaxed);
+    let n = STAT_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let l = STAT_LOOKUP_NS.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
+    let i = STAT_INFO_NS.fetch_add((t2 - t1).as_nanos() as u64, Ordering::Relaxed);
+    if n % 8192 == 0 {
+        logln!(
+            "STATPROF calls={} lookup={}ns/call info={}ns/call pages={}/call (info is count_pages over max_len)",
+            n,
+            l / n,
+            i / n,
+            STAT_PAGES.load(Ordering::Relaxed) / n
+        );
+    }
+    Ok(info)
 }
 
 pub trait ObjectHandle {

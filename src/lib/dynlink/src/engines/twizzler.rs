@@ -144,7 +144,11 @@ pub fn load_segments(
 
     let (text, data) = map(text_id, data_id)?;
 
-    write_note!(text_id, "text:{}", src.full_name());
-    write_note!(data_id, "data:{}:{:x}", src.full_name(), data.load_addr());
+    // Debug notes naming the objects (consumed by e.g. `otop`): two syscalls per library load, so
+    // only written when the loading context runs with debug tracing.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        write_note!(text_id, "text:{}", src.full_name());
+        write_note!(data_id, "data:{}:{:x}", src.full_name(), data.load_addr());
+    }
     Ok(vec![text, data])
 }

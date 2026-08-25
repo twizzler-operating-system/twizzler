@@ -496,7 +496,7 @@ impl PendingCompLoad {
         std::mem::forget(loads);
 
         // Microseconds, not millis: individual phases are frequently sub-millisecond.
-        tracing::info!(
+        tracing::debug!(
             "COMPLOAD {}: prepped {}us, loaded {}us, relocated {}us",
             comp_name,
             (_start_2 - _start_1).as_micros(),
@@ -675,6 +675,7 @@ impl Monitor {
         }
 
         let _loop_start = Instant::now();
+        let mut _smt = core::time::Duration::ZERO;
         loop {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);
@@ -682,6 +683,15 @@ impl Monitor {
                 tracing::trace!(
                     "started main detected ready in {}ms",
                     _loop_start.elapsed().as_millis()
+                );
+                // Splits the `start` phase: how much is the monitor and kernel starting a thread,
+                // and how much is then waiting for the child's own runtime to come up. They want
+                // different fixes, and SPAWNPHA cannot tell them apart.
+                secgate::statlog::record_on(
+                    crate::mon::compartment::SPAWN_PHASE_STATS,
+                    "STARTSPL",
+                    _loop_start.elapsed().as_micros() as u64,
+                    &[_smt.as_micros() as u64],
                 );
                 return Ok(());
             }
@@ -709,6 +719,7 @@ impl Monitor {
                     env,
                     suspend_on_start,
                 );
+                _smt += _start.elapsed();
                 tracing::trace!("start_main_thread in {}ms", _start.elapsed().as_millis());
 
                 r

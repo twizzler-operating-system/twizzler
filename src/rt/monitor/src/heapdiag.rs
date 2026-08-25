@@ -48,12 +48,23 @@ extern "C-unwind" {
     fn __twz_rt_diag_heap_census_arm() -> u64;
 }
 
+/// Master switch, **off by default**.
+///
+/// `tick()` arms the runtime census on its first call, after which every alloc and free in the
+/// monitor pays two extra atomic adds for the rest of the boot -- and `monitor_rt_stats` is
+/// reachable from ordinary workloads, not just the leak harness. Same hazard as `sysbench.md`'s
+/// F11 (`perfmark` enabling syscall timing before every bench). Turn this on for a leak run.
+pub const ENABLED: bool = false;
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Arm on the first call, snapshot every [`PERIOD`]th.
 ///
 /// Must be called with no monitor lock held: it prints, and a print is a syscall.
 pub fn tick() {
+    if !ENABLED {
+        return;
+    }
     let n = SEQ.fetch_add(1, Relaxed);
     if n == 0 {
         // Reports the prior state so that "armed by us" and "already armed by something else" are

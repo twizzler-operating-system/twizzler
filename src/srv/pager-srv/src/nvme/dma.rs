@@ -87,6 +87,22 @@ impl<'a, T: DeviceSync> NvmeDmaRegion<T> {
 pub fn get_prp_list_or_buffer(pin: &[PhysInfo], dma: &Arc<CachedDmaPool>, mode: PrpMode) -> PrpMgr {
     let entries_per_page = DMA_PAGE_SIZE / 8;
     let pin_len = pin.len();
+    // PRPTRACE: the NVMe device rejected commands with PRP Offset Invalid (0x13) in
+    // many-wedgefix2 r3 -- something non-page-aligned reached a PRP slot, unprecedented in 64k
+    // logs. Every alignment violation logs its provenance here; remove once the producer is
+    // found (pagerwedge.md).
+    for (i, p) in pin.iter().enumerate() {
+        let v: u64 = (*p).into();
+        if v & 0xFFF != 0 {
+            tracing::error!(
+                "PRPTRACE misaligned phys entry {:x} at index {} of {} (mode {:?})",
+                v,
+                i,
+                pin_len,
+                mode
+            );
+        }
+    }
     let mut pin_iter = pin.into_iter();
 
     let prp = match pin_len {

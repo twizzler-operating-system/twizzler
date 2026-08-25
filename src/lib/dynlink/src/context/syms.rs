@@ -40,9 +40,16 @@ impl Context {
     ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
         let allow_weak = lookup_flags.contains(LookupFlags::ALLOW_WEAK);
         let start_lib = self.get_library(start_id)?;
+        // Hashed once; every membership filter consulted below shares it. A filter miss proves the
+        // library defines neither spelling of the name (`build_sym_bloom` indexes gate-prefixed
+        // definitions under their bare name too), so both the hash-table probe and the prefixed
+        // retry are skipped. A library without a filter is probed as before.
+        let hash = super::sym_hash(name);
+        let may_define =
+            |lib: &Library| lib.sym_bloom.as_ref().is_none_or(|b| b.maybe_contains(hash));
         // First try looking up within ourselves.
-        if !lookup_flags.contains(LookupFlags::SKIP_SELF) {
-            if let Ok(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
+        if !lookup_flags.contains(LookupFlags::SKIP_SELF) && may_define(start_lib) {
+            if let Some(sym) = start_lib.lookup_symbol(name, allow_weak, false) {
                 return Ok(sym);
             }
         }
@@ -56,14 +63,15 @@ impl Context {
                         LoadedOrUnloaded::Unloaded(_) => {}
                         LoadedOrUnloaded::Loaded(dep) => {
                             tracing::trace!("trying in {}", dep.name);
-                            if lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
-                                || dep.is_local_or_secgate_from(start_lib, name)
+                            if may_define(dep)
+                                && (lookup_flags.contains(LookupFlags::SKIP_SECGATE_CHECK)
+                                    || dep.is_local_or_secgate_from(start_lib, name))
                             {
                                 let allow_weak =
                                     allow_weak && dep.in_same_compartment_as(start_lib);
                                 let try_prefix =
                                     dep.in_same_compartment_as(start_lib) || dep.allows_gates();
-                                if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
+                                if let Some(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
                                     return Ok(sym);
                                 }
                             }
@@ -77,9 +85,8 @@ impl Context {
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
             tracing::trace!("falling back to global search for {}", name);
 
-            let res = self.lookup_symbol_global(start_lib, name, lookup_flags);
-            if res.is_ok() {
-                return res;
+            if let Some(sym) = self.lookup_symbol_global(start_lib, name, lookup_flags) {
+                return Ok(sym);
             }
 
             if !allow_weak {
@@ -102,7 +109,7 @@ impl Context {
         start_lib: &Library,
         name: &str,
         lookup_flags: LookupFlags,
-    ) -> Result<RelocatedSymbol<'a>, DynlinkError> {
+    ) -> Option<RelocatedSymbol<'a>> {
         // Ascending node order, which is the resolution order the name -> instances index existed
         // to preserve ("lowest node index wins"); `node_indices` yields it directly.
         let hash = super::sym_hash(name);
@@ -129,11 +136,11 @@ impl Context {
                     && dep.in_same_compartment_as(start_lib);
                 let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
                     && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
-                if let Ok(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
-                    return Ok(sym);
+                if let Some(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
+                    return Some(sym);
                 }
             }
         }
-        Err(DynlinkErrorKind::NameNotFound { name: name.into() }.into())
+        None
     }
 }

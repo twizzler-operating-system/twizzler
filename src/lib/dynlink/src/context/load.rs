@@ -32,7 +32,7 @@ const LIB_LOAD_STATS: bool = false;
 use crate::{
     compartment::{Compartment, CompartmentId},
     context::NewCompartmentFlags,
-    engines::{LoadCtx, LoadDirective, LoadFlags},
+    engines::{Backing, LoadCtx, LoadDirective, LoadFlags},
     library::{AllowedGates, Library, LibraryId, SecgateInfo, UnloadedLibrary},
     tls::TlsModule,
     DynlinkError, DynlinkErrorKind, HeaderError, Vec, SMALL_VEC_SIZE,
@@ -167,6 +167,7 @@ impl Context {
         idx: NodeIndex,
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
+        backing: Backing,
     ) -> Result<Library, DynlinkError> {
         tracing::debug!(
             "loading library {} (idx = {:?}) into comp {}",
@@ -174,7 +175,6 @@ impl Context {
             idx,
             comp_id
         );
-        let backing = self.engine.load_object(&unlib)?;
         let elf = backing.get_elf()?;
 
         // Step 0: sanity check the ELF header.
@@ -363,8 +363,8 @@ impl Context {
         &mut self,
         unlib: &UnloadedLibrary,
         parent_comp_name: String,
+        backing: &Backing,
     ) -> Option<CompartmentId> {
-        let backing = self.engine.load_object(unlib).ok()?;
         let elf = backing.get_elf().ok()?;
         if self.has_secgate_info(&elf) {
             let name = format!("{}::{}", parent_comp_name, unlib.name);
@@ -385,6 +385,8 @@ impl Context {
     }
 
     // Load a library and all its deps, using the supplied name resolution callback for deps.
+    // `backing` is the already-resolved object for `root_unlib`, so nothing on this path maps the
+    // same object twice.
     pub(crate) fn load_library(
         &mut self,
         comp_id: CompartmentId,
@@ -392,6 +394,7 @@ impl Context {
         idx: NodeIndex,
         allowed_gates: AllowedGates,
         load_ctx: &mut LoadCtx,
+        backing: Backing,
     ) -> Result<Vec<LoadIds, SMALL_VEC_SIZE>, DynlinkError> {
         let root_comp_name = self.get_compartment(comp_id)?.name.clone();
         tracing::debug!(
@@ -404,7 +407,14 @@ impl Context {
         // First load the main library.
         let _t_load = std::time::Instant::now();
         let lib = self
-            .load(comp_id, root_unlib.clone(), idx, allowed_gates, load_ctx)
+            .load(
+                comp_id,
+                root_unlib.clone(),
+                idx,
+                allowed_gates,
+                load_ctx,
+                backing,
+            )
             .map_err(|e| {
                 DynlinkError::new_collect(
                     DynlinkErrorKind::LibraryLoadFail {
@@ -458,34 +468,34 @@ impl Context {
                 //    compartment or the new one, if created.
 
                 let comp = self.get_compartment(comp_id)?;
-                let (existing_idx, load_comp) =
-                    if let Some(existing) = comp.library_names.get(&dep_unlib.name) {
-                        debug!(
-                            "{}: dep using existing library for {} (intra-compartment in {}): {:?}",
-                            root_unlib, dep_unlib.name, comp.name, existing
-                        );
-                        (Some(*existing), comp_id)
-                    } else if let Some((existing, other_comp_id, other_comp)) =
-                        self.find_cross_compartment_library(&dep_unlib)
-                    {
-                        debug!(
-                            "{}: dep using existing library for {} (cross-compartment to {}): {:?}",
-                            root_unlib, dep_unlib.name, other_comp.name, existing
-                        );
-                        (Some(existing), other_comp_id)
-                    } else {
-                        (
-                            None,
-                            self.select_compartment(&dep_unlib, root_comp_name.clone())
-                                .unwrap_or(comp_id),
-                        )
-                    };
-
-                // If we decided to use an existing library, then use that. Otherwise, load into the
-                // chosen compartment.
-                let idx = if let Some(existing_idx) = existing_idx {
-                    existing_idx
+                let idx = if let Some(existing) = comp.library_names.get(&dep_unlib.name) {
+                    debug!(
+                        "{}: dep using existing library for {} (intra-compartment in {}): {:?}",
+                        root_unlib, dep_unlib.name, comp.name, existing
+                    );
+                    *existing
+                } else if let Some((existing, _other_comp_id, other_comp)) =
+                    self.find_cross_compartment_library(&dep_unlib)
+                {
+                    debug!(
+                        "{}: dep using existing library for {} (cross-compartment to {}): {:?}",
+                        root_unlib, dep_unlib.name, other_comp.name, existing
+                    );
+                    existing
                 } else {
+                    // Fresh load. Resolve the backing once: the compartment-selection peek below
+                    // and the load itself share it (this used to map the object twice per dep).
+                    let backing = self.engine.load_object(&dep_unlib).map_err(|e| {
+                        DynlinkError::new_collect(
+                            DynlinkErrorKind::LibraryLoadFail {
+                                library: dep_unlib.clone(),
+                            },
+                            vec![e],
+                        )
+                    })?;
+                    let load_comp = self
+                        .select_compartment(&dep_unlib, root_comp_name.clone(), &backing)
+                        .unwrap_or(comp_id);
                     let idx = self.add_library(dep_unlib.clone());
 
                     let comp = self.get_compartment_mut(load_comp)?;
@@ -496,7 +506,14 @@ impl Context {
                         AllowedGates::Public
                     };
                     let recs = self
-                        .load_library(load_comp, dep_unlib.clone(), idx, allowed_gates, load_ctx)
+                        .load_library(
+                            load_comp,
+                            dep_unlib.clone(),
+                            idx,
+                            allowed_gates,
+                            load_ctx,
+                            backing,
+                        )
                         .map_err(|e| {
                             tracing::error!("failed to load dependency for {}: {}", lib, e);
                             DynlinkError::new_collect(
@@ -548,7 +565,15 @@ impl Context {
         }
         comp.library_names.insert(unlib.name.clone(), idx);
 
+        let backing = self.engine.load_object(&unlib).map_err(|e| {
+            DynlinkError::new_collect(
+                DynlinkErrorKind::LibraryLoadFail {
+                    library: unlib.clone(),
+                },
+                vec![e],
+            )
+        })?;
         // Step 2: load the library. This call recurses on dependencies.
-        self.load_library(comp_id, unlib.clone(), idx, allowed_gates, load_ctx)
+        self.load_library(comp_id, unlib.clone(), idx, allowed_gates, load_ctx, backing)
     }
 }

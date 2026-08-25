@@ -106,6 +106,17 @@ impl Table {
         Ok(())
     }
 
+    /// Whether this entry is a mapping rather than a link to a lower table.
+    ///
+    /// Mirrors `readmap`'s condition for reporting a `MapInfo` exactly -- including that `is_huge`
+    /// only means "huge" at a level that can map, since on x86 the same bit is PAT at the last
+    /// level. If the two ever diverge, `count_pages` and the counter would disagree, which is what
+    /// `COUNT_PAGES_VERIFY` exists to catch.
+    fn entry_is_leaf(entry: &Entry, level: usize) -> bool {
+        entry.is_present()
+            && ((entry.is_huge() && Self::can_map_at_level(level)) || level == Self::last_level())
+    }
+
     fn update_entry(
         &mut self,
         consist: &mut Consistency,
@@ -122,6 +133,7 @@ impl Table {
         }
 
         let was_present = entry.is_present();
+        let was_leaf = Self::entry_is_leaf(entry, level);
         let was_global = entry
             .flags()
             .settings()
@@ -140,6 +152,15 @@ impl Table {
         // hottest page-table function. See TLB.md.
         if was_present {
             consist.enqueue(vaddr, was_global, was_terminal, level)
+        }
+
+        // Page accounting, in the one place every entry write passes through. A leaf is exactly
+        // what `readmap` reports as a mapping, so this and `count_pages` count the same thing by
+        // construction. Non-leaf changes (installing an intermediate table) move no pages.
+        let new_leaf = Self::entry_is_leaf(&new_entry, level);
+        if was_leaf != new_leaf {
+            let units = (Self::level_to_page_size(level) / Self::level_to_page_size(Self::last_level())) as isize;
+            consist.add_page_delta(if new_leaf { units } else { -units });
         }
 
         if was_present && !new_entry.is_present() {
@@ -1242,6 +1263,18 @@ impl Table {
             let next_table = self.next_table(index).unwrap();
             next_table.readmap(cursor, Self::next_level(level))
         } else {
+            // NOTE (spawnbench.md §21): reporting one entry's worth here is correct but slow --
+            // `do_read_map` restarts at the root for every step, so `count_pages` over an object's
+            // 1 GiB `max_len()` spends 37 us to find 16 pages. Scanning forward within the table
+            // for the next present entry and returning the whole absent run measured **16.5x**
+            // faster (38,540 -> 2,338 ns) with an identical page count.
+            //
+            // Not shipped, and the reason is now understood: the arm carrying it went 3/5 FAILED
+            // with "out of pager request slots" -- since diagnosed as an independent deadlock in
+            // the pager-memory donation path that any stat speedup unearths (`pagerwedge.md`),
+            // and fixed there. The scan itself was never implicated, but it is also superseded:
+            // `COUNT_PAGES_COUNTER` answers `count_pages` without walking at all (213x), so this
+            // path only matters for `readmap`-style callers that still iterate sparse ranges.
             Err(Table::level_to_page_size(level))
         }
     }

@@ -8,7 +8,7 @@ use std::{
 use guess_host_triple::guess_host_triple;
 use toml_edit::{Array, DocumentMut};
 
-use crate::triple::Triple;
+use crate::{toolchain::bootstrap::setup_logfile, triple::Triple};
 
 pub fn install(triple: &Triple) -> anyhow::Result<()> {
     println!("Building rust for {}", triple);
@@ -16,24 +16,61 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     build_rust(triple)
 }
 
-fn build_rust(_triple: &Triple) -> anyhow::Result<()> {
+fn build_rust(triple: &Triple) -> anyhow::Result<()> {
     std::env::set_var("BOOTSTRAP_SKIP_TARGET_SANITY", "1");
+    // twizzler-rt-abi's build.rs needs these to find the mlibc headers and a matching
+    // libclang when bindgen runs for the twizzler target under x.py.
+    std::env::set_var(
+        "TWIZZLER_ABI_SYSROOTS",
+        Path::new("toolchain/install/sysroots").canonicalize()?,
+    );
+    std::env::set_var(
+        "TWIZZLER_ABI_LLVM_CONFIG",
+        Path::new("toolchain/install/bin/llvm-config").canonicalize()?,
+    );
+    // Bootstrap appends these to the CFLAGS/CXXFLAGS it hands to build scripts (cc-rs), which
+    // otherwise invoke clang for the twizzler target with no sysroot (e.g. rustc_llvm's
+    // llvm-wrapper fails on missing libc/libc++ headers).
+    let sysroot = Path::new("toolchain/install/sysroots")
+        .join(triple.to_string())
+        .canonicalize()?;
+    let triple_underscored = triple.to_string().replace('-', "_");
+    std::env::set_var(
+        format!("CFLAGS_{}", triple_underscored),
+        format!("--sysroot={}", sysroot.display()),
+    );
+    std::env::set_var(
+        format!("CXXFLAGS_{}", triple_underscored),
+        format!("--sysroot={}", sysroot.display()),
+    );
 
+    let log = setup_logfile("ports/rust", "xtask-install", Some(triple))?;
     let status = Command::new("./x.py")
         .arg("install")
+        .stdout(log.try_clone()?)
+        .stderr(log)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !status.success() {
-        anyhow::bail!("failed to compile rust toolchain");
+        anyhow::bail!(
+            "failed to compile rust toolchain (see toolchain/install/build/ports/rust/{}/xtask-install.log)",
+            triple
+        );
     }
 
+    let src_log = setup_logfile("ports/rust", "xtask-install-src", Some(triple))?;
     let src_status = Command::new("./x.py")
         .arg("install")
         .arg("src")
+        .stdout(src_log.try_clone()?)
+        .stderr(src_log)
         .current_dir("toolchain/src/rust")
         .status()?;
     if !src_status.success() {
-        anyhow::bail!("failed to install rust source");
+        anyhow::bail!(
+            "failed to install rust source (see toolchain/install/build/ports/rust/{}/xtask-install-src.log)",
+            triple
+        );
     }
 
     Ok(())
@@ -42,7 +79,6 @@ fn build_rust(_triple: &Triple) -> anyhow::Result<()> {
 fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     /* We need to add two(ish) things to the config.toml for rustc: the paths of tools for each twizzler target (built by LLVM as part
     of rustc), and the host triple (added to the list of triples to support). */
-    //TODO: make this an actual path instead of rle path
     let mut data = File::open("toolchain/src/config.toml")?;
     let mut buf = String::new();
     data.read_to_string(&mut buf)?;
@@ -51,9 +87,12 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     let mut toml = commented.parse::<DocumentMut>()?;
     let llvm_bin = Path::new("toolchain/install/bin").canonicalize()?;
     let tstr = &triple.to_string();
+    // x.py runs with cwd toolchain/src/rust, so the prefix must be absolute.
     let install_prefix = Path::new("toolchain/install/sysroots")
         .join(tstr)
         .join("pkg/rust");
+    std::fs::create_dir_all(&install_prefix)?;
+    let install_prefix = install_prefix.canonicalize()?;
     let build_dir = Path::new("toolchain/install/build/ports/rust").join(tstr);
     let sysroot_dir = Path::new("toolchain/install/sysroots")
         .join(tstr)
@@ -82,8 +121,10 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
         .to_str()
         .unwrap()
         .to_string();
+    // The twizzler target spec expects to drive ld.lld directly (bare crt object names resolved
+    // via -L); a cc driver rejects those bare names before the linker runs.
     let ld = llvm_bin
-        .join("clang++")
+        .join("ld.lld")
         .canonicalize()?
         .to_str()
         .unwrap()
@@ -101,17 +142,19 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     toml["target"][tstr]["linker"] = toml_edit::value(ld);
     toml["target"][tstr]["ar"] = toml_edit::value(ar);
 
+    // Rustc-level -L (not link-arg): rustc resolves the spec's bare crt object names through its
+    // own search paths and forwards the dir to the linker for -lc/-lc++.
     let mut rustflags_array = Array::new();
+    rustflags_array.push("-L");
+    rustflags_array.push(format!("{}/lib", sysroot_dir.display()));
     rustflags_array.push("-C");
-    rustflags_array.push(format!("link-arg=--sysroot={}", sysroot_dir.display()));
+    rustflags_array.push("link-arg=-z");
     rustflags_array.push("-C");
-    rustflags_array.push(format!("link-arg=--target={}", tstr));
+    rustflags_array.push("link-arg=norelro");
 
     toml["target"][tstr]["rustflags"] = toml_edit::value(rustflags_array);
     toml["target"][tstr]["llvm-libunwind"] = toml_edit::value("in-tree");
 
-    toml["build"]["target"].as_array_mut().unwrap().push(tstr);
-    toml["build"]["host"].as_array_mut().unwrap().push(tstr);
     toml["build"]["build-dir"] = toml_edit::value(build_dir.display().to_string());
 
     let mut out = File::create("toolchain/src/rust/bootstrap.toml")?;

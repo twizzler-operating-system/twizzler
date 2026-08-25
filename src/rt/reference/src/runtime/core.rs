@@ -95,6 +95,35 @@ pub(crate) fn run_mlibc_thread_dtors(tp: *mut u8, code: i32) {
     }
 }
 
+/// Skip `set_naming_namespace` when the target is already the root namespace.
+///
+/// A compartment does not signal `COMP_READY` until `pre_main_hook` returns, so everything here is
+/// inside `Command::spawn`. This one call measured **2,954 us of a 6,126 us spawn** (48%), of which
+/// 2,896 us was acquiring a naming handle -- a compartment lookup plus a dynamic-gate resolution
+/// plus a server-side buffer, paid by every compartment at startup whether or not it ever names
+/// anything.
+///
+/// Setting the namespace to "/" changes nothing: `NameRoot::Current` is set to "/" just above,
+/// a freshly-created server handle already sits at the root (`get_naming_handle` documents this and
+/// special-cases it), and `CURRENT_NS` is read only by `get_naming_handle`, where leaving it `None`
+/// and leaving it `Some("/")` take the same branch. `TWZ_RT_INITIAL_DIR` is the parent's cwd, so
+/// this fires whenever the parent is at the root -- the common case.
+///
+/// **This defers rather than deletes for a program that does use naming**: such a program acquires
+/// the handle at its first lookup instead. A do-nothing child never pays it at all, so the spawn
+/// benchmarks see the full saving and a real workload will see less.
+///
+/// On by default. Set it `false` to restore the unconditional call -- which is also the A/B, since
+/// the two arms differ by exactly this line. Measured `-45.6%` on `compartment_spawn_exit`
+/// (6,301,106 -> 3,427,608 ns, disjoint ranges, four alternating arms); see `spawnbench.md` §14.
+const SKIP_ROOT_NAMESPACE_SET: bool = true;
+
+/// Switch for the child-side startup phase counter (`PREMAIN`): subscriber / fds / naming.
+///
+/// A compartment does not signal `COMP_READY` until `pre_main_hook` returns, so everything it does
+/// is inside the monitor's `start` phase and inside `Command::spawn`. Off by default.
+pub const PRE_MAIN_PHASE_STATS: bool = false;
+
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
@@ -246,6 +275,7 @@ impl ReferenceRuntime {
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
         use twizzler_rt_abi::fd::NameRoot;
+        let _t0 = std::time::Instant::now();
         // TODO: control this with env vars
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
@@ -253,12 +283,14 @@ impl ReferenceRuntime {
                 .finish(),
         )
         .unwrap();
+        let _t_sub = _t0.elapsed();
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
             None
         } else {
             unsafe { self.set_runtime_ready() };
             OUR_RUNTIME.init_fds();
+            let _t_fds = _t0.elapsed();
 
             let mut nr = self.nameroots.lock();
             //twizzler_abi::klog_println!("got: {:?}", std::env::var("TWZ_RT_INITIAL_DIR"));
@@ -271,9 +303,26 @@ impl ReferenceRuntime {
             nr.insert(NameRoot::Exe, PathBuf::from("/"));
             nr.insert(NameRoot::Temp, PathBuf::from("/tmp"));
             nr.insert(NameRoot::Current, PathBuf::from("/"));
-            if crate::runtime::file::set_naming_namespace(Path::new(&current_dir)).is_ok() {
+            if !(SKIP_ROOT_NAMESPACE_SET && current_dir == "/")
+                && crate::runtime::file::set_naming_namespace(Path::new(&current_dir)).is_ok()
+            {
                 nr.insert(NameRoot::Current, Path::new(&current_dir).to_path_buf());
             }
+            let _t_naming = _t0.elapsed();
+            // Everything here runs *before* the compartment signals READY, so it is inside the
+            // monitor's `start` phase -- the largest remaining item in a spawn. Deferred through
+            // statlog (drained at `post_main_hook`) so the measurement is not itself a console
+            // write inside the thing being measured. Microseconds.
+            secgate::statlog::record_on(
+                PRE_MAIN_PHASE_STATS,
+                "PREMAIN",
+                _t_naming.as_micros() as u64,
+                &[
+                    _t_sub.as_micros() as u64,
+                    (_t_fds - _t_sub).as_micros() as u64,
+                    (_t_naming - _t_fds).as_micros() as u64,
+                ],
+            );
 
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,

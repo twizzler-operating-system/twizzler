@@ -128,6 +128,15 @@ impl Inflight {
 /// its shard while the others idle.
 pub(super) const NR_REQUESTS: usize = 256;
 
+/// Admission budget for [ReqKind::Pages] donations, separate from [NR_REQUESTS].
+///
+/// Donations must never compete with page-data requests for admission: a table full of
+/// `PageData` stuck on a pager that is out of memory can only drain once a donation gets
+/// through, so sharing one budget makes the memory that would unstick the table wait on the
+/// table (spawnbench.md §23). The pager acks `DramPages` on a reserved fast lane, so this
+/// budget cycles even when every pager task is blocked waiting for memory.
+pub(super) const NR_PAGES_REQUESTS: usize = 64;
+
 /// Source of request ids. Monotonic and never reused, so an id in a log names one request for the
 /// life of the boot -- unlike a slot index, where the same number meant different requests over
 /// time and made the recycled-slot reports ambiguous.
@@ -139,6 +148,33 @@ static NEXT_REQUEST_ID: AtomicUsize = AtomicUsize::new(0);
 /// pager's queue depth, and splitting it N ways would let one busy object exhaust its share while
 /// the rest sat idle. Sharding is about *contention*, not about partitioning the budget.
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// Donations outstanding, counted against [NR_PAGES_REQUESTS].
+static LIVE_PAGES: AtomicUsize = AtomicUsize::new(0);
+
+/// Bumped once per freed slot, either budget. Pairs with [SLOT_CV] so admission waiters sleep
+/// instead of poll-retrying: sample the generation, fail the admission CAS, then wait for the
+/// generation to move -- a free landing between the sample and the wait returns immediately, so
+/// no wakeup is lost. The freeing side takes this lock while holding a shard lock; waiters take
+/// it holding nothing, so the order is one-way.
+static SLOT_GEN: crate::spinlock::Spinlock<u64> = crate::spinlock::Spinlock::new(0);
+static SLOT_CV: crate::condvar::CondVar = crate::condvar::CondVar::new();
+
+pub(super) fn slot_gen() -> u64 {
+    *SLOT_GEN.lock()
+}
+
+/// Sleep until a slot has been freed since `seen` was sampled.
+///
+/// Must never be called from the pager completion-handler thread: it is the thread that frees
+/// slots (`remove_request`), and parking it here would be the sysbench-syncwedge deadlock. The
+/// completion path never calls `add_request`, so no current caller can reach this from there.
+pub(super) fn wait_for_slot(seen: u64) {
+    let mut genr = SLOT_GEN.lock();
+    while *genr == seen {
+        genr = SLOT_CV.wait(genr);
+    }
+}
 
 /// Whether the pager is up. Global, and an atomic rather than a field, so the not-ready early-out
 /// on every submit path costs no lock at all.
@@ -401,9 +437,14 @@ impl InflightManager {
 
         // CAS rather than load-then-add: two shards admitting concurrently would both pass a
         // plain comparison and overshoot the budget.
-        if LIVE
+        let (live, cap) = if matches!(rk, ReqKind::Pages(_)) {
+            (&LIVE_PAGES, NR_PAGES_REQUESTS)
+        } else {
+            (&LIVE, NR_REQUESTS)
+        };
+        if live
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < NR_REQUESTS).then_some(n + 1)
+                (n < cap).then_some(n + 1)
             })
             .is_err()
         {
@@ -433,10 +474,11 @@ impl InflightManager {
                 );
             }
         }
-        // `LIVE` was already incremented by the admission CAS above, so report one less: the
-        // profile field means "how many were outstanding before this one".
+        // The admission CAS above already incremented `live` (whichever budget this request
+        // counts against), so report one less: the profile field means "how many were
+        // outstanding before this one".
         super::profile::PAGER_PROFILE.submitted(
-            LIVE.load(Ordering::Relaxed).saturating_sub(1),
+            live.load(Ordering::Relaxed).saturating_sub(1),
             rk.all_pages().count(),
         );
         let request = Arc::new(Request::new(id, rk));
@@ -464,7 +506,14 @@ impl InflightManager {
             {
                 super::profile::PAGER_PROFILE.completed_split(submitted, first, age);
             }
-            LIVE.fetch_sub(1, Ordering::AcqRel);
+            if matches!(rk, ReqKind::Pages(_)) {
+                LIVE_PAGES.fetch_sub(1, Ordering::AcqRel);
+            } else {
+                LIVE.fetch_sub(1, Ordering::AcqRel);
+            }
+            // After the decrement, so a woken waiter's admission CAS sees the freed slot.
+            *SLOT_GEN.lock() += 1;
+            SLOT_CV.signal();
         } else {
             // Every completion the pager marks DONE lands here, so a miss means a request that has
             // been answered is still in the map: its waiters will never be signalled and its slot

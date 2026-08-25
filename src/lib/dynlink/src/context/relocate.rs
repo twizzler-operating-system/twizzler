@@ -44,13 +44,15 @@ pub(crate) struct RelocCache<'a> {
 
 impl<'a> RelocCache<'a> {
     pub fn find(&mut self, name: &str, from: CompartmentId) -> Option<&RelocatedSymbol<'a>> {
-        if self.syms.get(&from).is_some_and(|m| m.contains_key(name)) {
+        // One probe of the per-compartment map, counters from its result -- this used to hash the
+        // same name three times (contains_key, entry, get) per relocation.
+        let found = self.syms.entry(from).or_default().get(name);
+        if found.is_some() {
             self.hits += 1;
         } else {
             self.misses += 1;
         }
-        let entry = self.syms.entry(from).or_default();
-        entry.get(name)
+        found
     }
 
     pub fn insert(&mut self, name: &str, from: CompartmentId, sym: RelocatedSymbol<'a>) {
@@ -394,7 +396,7 @@ impl Context {
         let _rels_total = _rels_start.elapsed();
         let _resolve = reloc_cache.resolve_time - _resolve_0;
         let _apply = _rels_total.saturating_sub(_resolve);
-        tracing::info!(
+        tracing::debug!(
             "reloc {}: prep {}us, relr {}us, resolve {}us, apply {}us, {} lookups, {} cached",
             lib.name,
             (_start_2 - _start_1).as_micros(),
@@ -495,7 +497,7 @@ impl Context {
                     vec![e],
                 )
             });
-        tracing::info!(
+        tracing::debug!(
             "reloc_all {}: {}us total, {}us resolve, {} lookups, {} cached",
             rootname,
             _start.elapsed().as_micros(),
