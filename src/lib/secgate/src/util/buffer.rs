@@ -25,7 +25,11 @@ impl SimpleBuffer {
         unsafe { self.handle.start().add(NULLPAGE_SIZE) }
     }
 
-    fn mut_ptr_to_base(&mut self) -> *mut u8 {
+    // Writes take `&self`: this is shared memory between compartments, so `&mut` never provided
+    // real exclusion -- the other side can write at any time regardless (see the safety note in
+    // `read`). Concurrent local writers coordinate ranges themselves (e.g. naming's buffer
+    // slots).
+    fn mut_ptr_to_base(&self) -> *mut u8 {
         unsafe { self.handle.start().add(NULLPAGE_SIZE) }
     }
 
@@ -91,7 +95,7 @@ impl SimpleBuffer {
 
     /// Write bytes from `buffer` into the SimpleBuffer, up to the size of the supplied buffer. The
     /// actual number of bytes copied is returned.
-    pub fn write(&mut self, buffer: &[u8]) -> usize {
+    pub fn write(&self, buffer: &[u8]) -> usize {
         let base_raw = self.mut_ptr_to_base();
         let len = core::cmp::min(buffer.len(), self.max_len());
         // Safety: See read function.
@@ -102,7 +106,7 @@ impl SimpleBuffer {
 
     /// Write bytes from `buffer` into the SimpleBuffer at provided offset, up to the size of the
     /// supplied buffer, minus the offset. The actual number of bytes copied is returned.
-    pub fn write_offset(&mut self, buffer: &[u8], offset: usize) -> usize {
+    pub fn write_offset(&self, buffer: &[u8], offset: usize) -> usize {
         let base_raw = self.mut_ptr_to_base();
         if offset >= self.max_len() {
             return 0;

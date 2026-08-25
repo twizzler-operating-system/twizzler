@@ -163,7 +163,10 @@ impl PagedDevice for Disk {
                     if !phys_list.is_empty() {
                         return Ok(());
                     }
-                    tracing::info!("task out of memory, waiting");
+                    tracing::info!(
+                        "task out of memory, waiting (pool avail {} KB)",
+                        ctx.data.avail_mem() / 1024
+                    );
                     run_isolated(mw);
                     continue;
                 }

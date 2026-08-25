@@ -876,6 +876,18 @@ impl MemoryTracker {
             self.idle()
         );
         print_tracker_stats();
+        {
+            // Requested, never run here: the census takes object page-table mutexes, and this
+            // thread may already hold one -- an allocation under a pt lock that exhausts memory
+            // lands exactly here, and taking the census inline re-entered that lock (0/8 in
+            // `many-reclaim0`, panic at the census's `lock_page_tables`). The reclaim thread
+            // holds no object locks; it prints on the next wake. Every 4th wait, since a stack
+            // of starving threads re-requesting buys nothing.
+            static CENSUS_TICK: AtomicUsize = AtomicUsize::new(0);
+            if CENSUS_TICK.fetch_add(1, Ordering::Relaxed) % 4 == 0 {
+                CENSUS_REQUESTED.store(true, Ordering::Release);
+            }
+        }
         let Some(current_thread) = current_thread_ref() else {
             panic!("warning -- cannot wait on memory before threading initialized");
         };
@@ -885,6 +897,13 @@ impl MemoryTracker {
         // not something to issue with `enter_critical` held -- a last `ThreadRef` drop in there
         // panics.
         crate::obj::poke_reaper();
+        // The *thread* reaper too, not just the object reaper. Its wake sources are the idle
+        // loop and stattick safe-points, and a saturated machine has neither -- so it sleeps on
+        // its condvar while exited threads pile up, each pinning a 2 MiB stack and its object
+        // references. The reclaim1 census measured the end state: 92% of a full machine was
+        // pages of pending-delete objects held live by unreaped threads. A thread about to
+        // block for memory is exactly who should pay the wake.
+        crate::thread::reaper::notify();
         self.waiting.fetch_add(1, Ordering::SeqCst);
         let guard = current_thread.enter_critical();
         self.waiters.lock().push_back(current_thread.clone());
@@ -1010,7 +1029,13 @@ impl MemoryTracker {
             // steps 1-5 land, pressure becomes a reason to wake on its own again and this test has
             // to go -- it is a statement about what the thread can currently do, not about when
             // reclaim is wanted.
-            if RECLAIM_NEEDS_WORK && reclaim.queued.load(Ordering::Relaxed) == 0 {
+            if RECLAIM_NEEDS_WORK
+                && reclaim.queued.load(Ordering::Relaxed) == 0
+                // A pending pressure census is work only this thread can do (it takes object
+                // pt locks the requester may hold), so it pierces the no-work gate. Rare by
+                // construction: set only from the allocator's wait path.
+                && !CENSUS_REQUESTED.load(Ordering::Acquire)
+            {
                 return;
             }
             allocprofile::add(&allocprofile::RECLAIM_SIGNALS, 1);
@@ -1369,6 +1394,11 @@ bitflags! {
     }
 }
 
+/// Set by a starving thread in [MemoryTracker::wait]; consumed by `reclaim_main`, which runs
+/// [crate::obj::pressure_census] lock-safely. Never run the census from the wait path.
+static CENSUS_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 struct ReclaimThread {
     th: ThreadRef,
     state: Spinlock<Vec<FrameRef>>,
@@ -1468,6 +1498,17 @@ fn reclaim_main() {
             rounds += 1;
         }
         tracker.track_reclaimed(count);
+        // Requested by starving threads in `MemoryTracker::wait`, run here because this thread
+        // holds no object page-table locks (the requester may -- taking the census inline in
+        // `wait` re-entered a held pt mutex, 0/8 in `many-reclaim0`). After the free pass, so
+        // queued frames drain before the census can block on a pt mutex whose holder is itself
+        // waiting for memory; outside the state spinlock, since the census takes sleeping
+        // mutexes.
+        if CENSUS_REQUESTED.swap(false, Ordering::AcqRel) {
+            drop(state);
+            crate::obj::pressure_census();
+            state = rt.state.lock();
+        }
         log::trace!(
             "memory tracker should reclaim: {}, count={}",
             tracker.should_reclaim(),

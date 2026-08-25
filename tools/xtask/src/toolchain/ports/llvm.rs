@@ -12,7 +12,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyhow::Result<()> {
+pub(crate) fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyhow::Result<()> {
     cfg.define("CMAKE_INSTALL_MESSAGE", "LAZY");
     if let Some(install_path) = install_path {
         std::fs::create_dir_all(&install_path)?;
@@ -31,7 +31,7 @@ fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyhow::
     Ok(())
 }
 
-fn setup_cmake_twizzler(
+pub(crate) fn setup_cmake_twizzler(
     cfg: &mut cmake::Config,
     target: &Triple,
     mut passed_c_flags: Vec<String>,
@@ -48,6 +48,14 @@ fn setup_cmake_twizzler(
     let _llvm_config = bin_dir.join("llvm-config");
     cfg.target(&target.to_string());
     cfg.define("CMAKE_SYSTEM_NAME", "Twizzler");
+    // Makes Platform/Twizzler.cmake findable, so shared libs get sonames/versioned names.
+    cfg.define(
+        "CMAKE_MODULE_PATH",
+        Path::new("tools/xtask/cmake")
+            .canonicalize()?
+            .display()
+            .to_string(),
+    );
     cfg.define("TWIZZLER", "True");
     cfg.define("CMAKE_CROSSCOMPILING", "True");
     cfg.define("CMAKE_C_COMPILER", &cc);

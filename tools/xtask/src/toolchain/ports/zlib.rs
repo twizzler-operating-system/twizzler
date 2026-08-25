@@ -67,7 +67,9 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("CXX", bin_dir.join("clang++").display().to_string());
     cmd.env("LD", bin_dir.join("clang").display().to_string());
     let mut lds = bin_dir.join("clang").display().to_string();
-    lds.push_str(" -shared");
+    // Overriding LDSHARED skips configure's soname detection; without DT_SONAME, consumers
+    // record whatever path the linker was given (breaking runtime loading on the target).
+    lds.push_str(" -shared -Wl,-soname,libz.so.1");
     cmd.env("LDSHARED", lds);
     cmd.env("AR", bin_dir.join("llvm-ar").display().to_string());
     cmd.env("RANLIB", bin_dir.join("llvm-ranlib").display().to_string());

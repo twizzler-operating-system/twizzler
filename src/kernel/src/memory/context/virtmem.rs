@@ -1,6 +1,10 @@
 //! This mod implements [UserContext] and [KernelMemoryContext] for virtual memory systems.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     marker::PhantomData,
     mem::size_of,
@@ -782,9 +786,15 @@ impl PhysAddrProvider for ObjectPageProvider {
     }
 }
 
-static ALL_CONTEXTS: Once<Mutex<BTreeMap<u64, Arc<VirtContext>>>> = Once::new();
+/// Weak, and that is the fix for the largest leak this kernel has had: these were strong
+/// `Arc`s with no removal path anywhere, so every user address space ever created was pinned
+/// forever -- and with it its whole `RegionManager` of mappings and every object they
+/// referenced. A spawn-storm suite measured ~16k dead compartments' contexts holding 92% of
+/// RAM in pending-delete pages (pagerwedge.md §3.8). The entry removes itself in
+/// [`VirtContext::drop`].
+static ALL_CONTEXTS: Once<Mutex<BTreeMap<u64, Weak<VirtContext>>>> = Once::new();
 
-fn get_all_contexts() -> &'static Mutex<BTreeMap<u64, Arc<VirtContext>>> {
+fn get_all_contexts() -> &'static Mutex<BTreeMap<u64, Weak<VirtContext>>> {
     ALL_CONTEXTS.call_once(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -792,7 +802,10 @@ pub fn with_each_context(cb: impl FnMut(&Arc<VirtContext>)) {
     let all = get_all_contexts();
     let contexts = {
         let contexts = all.lock();
-        contexts.values().cloned().collect::<Vec<_>>()
+        contexts
+            .values()
+            .filter_map(|w| w.upgrade())
+            .collect::<Vec<_>>()
     };
     contexts.iter().for_each(cb);
 }
@@ -918,7 +931,7 @@ impl VirtContext {
         // Cache the root now, while we're safely outside the thread-switch path.
         KERNEL_ARCH_TARGET.call_once(|| target);
         let all = get_all_contexts();
-        all.lock().insert(this.id.value(), this.clone());
+        all.lock().insert(this.id.value(), Arc::downgrade(&this));
         this
     }
 
@@ -946,7 +959,7 @@ impl VirtContext {
         // TODO: remove this once we have full support for user security contexts
         this.register_sctx(KERNEL_SCTX, ArchContext::new());
         let all = get_all_contexts();
-        all.lock().insert(this.id.value(), this.clone());
+        all.lock().insert(this.id.value(), Arc::downgrade(&this));
         this
     }
 
@@ -1331,6 +1344,28 @@ impl VirtContext {
                     crate::obj::request_reap(region.object());
                 }
             }
+        }
+
+        // Sweep out the regions that were *targeted* at this security context, not just its
+        // arch state. A region whose `target_sctx` is being unregistered is unreachable garbage
+        // by construction -- no thread can ever attach to that context again -- but until this
+        // sweep existed the region stayed in the shared `RegionManager`, and its `ObjectRef`
+        // pinned the object (and every page) of each dead compartment forever: the reclaim3/4
+        // census measured ~15k dead compartments' mappings holding 92% of RAM in pending-delete
+        // pages (pagerwedge.md §3.8). `remove_object` is the same path `sys_object_unmap`
+        // takes, so invalidation, fault-path ordering, and map-count accounting all hold.
+        let mut swept = 0usize;
+        for region in self.regions.mappings() {
+            if region.target_sctx != sctx || sctx == KERNEL_SCTX {
+                continue;
+            }
+            if let Ok(slot) = Slot::try_from(region.range.start) {
+                self.remove_object(slot);
+                swept += 1;
+            }
+        }
+        if swept > 0 {
+            log::info!("sctx {} unregister swept {} regions", sctx, swept);
         }
     }
 
@@ -1936,6 +1971,10 @@ impl From<&VirtContextSlot> for ObjectContextInfo {
 
 impl Drop for VirtContext {
     fn drop(&mut self) {
+        // The registry holds a `Weak`, so this remove is bookkeeping, not lifetime: it keeps
+        // dead entries from accumulating in the map. Sleeping-lock-safe by the same argument as
+        // the rest of this destructor chain (region drops take object page-table mutexes).
+        get_all_contexts().lock().remove(&self.id.value());
         // TODO: remove appropriate invalidations from objects.
     }
 }

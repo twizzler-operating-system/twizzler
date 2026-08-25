@@ -168,6 +168,7 @@ impl RunComp {
 
 impl Drop for RunComp {
     fn drop(&mut self) {
+        super::RUNCOMP_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // TODO: check if we need to do anything.
         let _ = twizzler_abi::syscall::sys_object_ctrl(
             self.instance,

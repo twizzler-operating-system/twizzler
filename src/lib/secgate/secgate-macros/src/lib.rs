@@ -100,6 +100,35 @@ fn build_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStr
     Ok(quote::quote!(#call_point))
 }
 
+/// Weak import of the gate trampoline: `Some` if the server library was present in the dynlink
+/// context when the referencing library was relocated, `None` (the relocation resolves to zero)
+/// otherwise. Referencing the exported `__TWIZZLER_SECURE_GATE_*` name directly -- rather than the
+/// bare gate name -- keeps the reference unambiguous; bare gate names (`get`, `remove`, `link`,
+/// ...) collide with libc-shaped symbols in same-compartment libraries. Requires
+/// `#![feature(linkage)]` in the crate invoking the macro.
+fn build_weak_extern(names: &Info) -> Result<proc_macro2::TokenStream, Error> {
+    let trampoline_name = &names.trampoline_name;
+    Ok(quote::quote! {
+        unsafe extern "C" {
+            #[linkage = "extern_weak"]
+            pub(super) static #trampoline_name: Option<
+                unsafe extern "C" fn(*const secgate::GateCallInfo, *const Args, *mut Ret),
+            >;
+        }
+        /// The gate trampoline, if the server library was present when this library was
+        /// relocated.
+        pub fn weak_tramp(
+        ) -> Option<unsafe extern "C" fn(*const secgate::GateCallInfo, *const Args, *mut Ret)>
+        {
+            unsafe { #trampoline_name }
+        }
+        /// Address form of [`weak_tramp`], for seeding a `DynamicSecGate`.
+        pub fn weak_addr() -> Option<usize> {
+            weak_tramp().map(|f| f as usize)
+        }
+    })
+}
+
 fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
     let mut entry_sig = get_entry_sig(tree);
     // This will be in an extern block.
@@ -278,9 +307,18 @@ pub fn gatecall(
 }
 
 fn handle_gate_call(
-    _attr: proc_macro2::TokenStream,
+    attr: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> Result<proc_macro2::TokenStream, Error> {
+    let weak = if attr.is_empty() {
+        false
+    } else {
+        let ident = syn::parse2::<Ident>(attr)?;
+        if ident != "weak" {
+            return Err(Error::new(ident.span(), "expected `weak` or no arguments"));
+        }
+        true
+    };
     let mut tree = syn::parse2::<syn::ItemFn>(item)?;
 
     let types: Vec<_> = tree
@@ -306,9 +344,13 @@ fn handle_gate_call(
     let ret_type = tree.sig.output.clone();
     let fn_name = tree.sig.ident.clone();
     let names = build_names(fn_name, types, ret_type, arg_names);
-    let extern_trampoline = build_extern_trampoline(&tree, &names)?;
+    let gate_import = if weak {
+        build_weak_extern(&names)?
+    } else {
+        build_extern_trampoline(&tree, &names)?
+    };
     let types_def = build_types(&tree, &names)?;
-    let public_call_point = build_gatecall_public(&tree, &names)?;
+    let public_call_point = build_gatecall_public(&tree, &names, weak)?;
 
     let Info {
         mod_name,
@@ -320,14 +362,18 @@ fn handle_gate_call(
     Ok(quote::quote! {
         pub mod #mod_name {
             use super::*;
-            #extern_trampoline
             #types_def
+            #gate_import
         }
         #public_call_point
     })
 }
 
-fn build_gatecall_public(tree: &ItemFn, names: &Info) -> Result<proc_macro2::TokenStream, Error> {
+fn build_gatecall_public(
+    tree: &ItemFn,
+    names: &Info,
+    weak: bool,
+) -> Result<proc_macro2::TokenStream, Error> {
     let mut call_point = tree.clone();
     call_point.attrs.push(parse_quote!(#[inline(always)]));
     call_point.vis = Visibility::Public(Pub::default());
@@ -351,8 +397,30 @@ fn build_gatecall_public(tree: &ItemFn, names: &Info) -> Result<proc_macro2::Tok
         }
     };
 
+    // How the trampoline is reached: a strong gatecall calls the extern symbol directly (the
+    // library fails to load if it cannot be resolved); a weak one calls through the weak import,
+    // reporting Unavailable when the server library was absent at relocation time.
+    let (bind_trampoline, invoke) = if weak {
+        (
+            quote! {
+                let Some(tramp) = #mod_name::weak_tramp() else {
+                    return Err(secgate::ResourceError::Unavailable.into());
+                };
+            },
+            quote! { tramp(info as *const _, args as *const _, ret as *mut _); },
+        )
+    } else {
+        (
+            quote! {},
+            quote! {
+                #mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
+            },
+        )
+    };
+
     call_point.block = Box::new(parse2(quote::quote! {
         {
+            #bind_trampoline
             #args_tuple
             let frame = secgate::frame();
             // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
@@ -361,7 +429,7 @@ fn build_gatecall_public(tree: &ItemFn, names: &Info) -> Result<proc_macro2::Tok
                     #mod_name::Ret::with_alloca(|ret| {
                         // Call the trampoline in the mod.
                         unsafe {
-                            #mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
+                            #invoke
                         }
                         ret.into_inner()
                     })

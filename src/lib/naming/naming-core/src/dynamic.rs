@@ -6,33 +6,52 @@ use twizzler_rt_abi::object::ObjID;
 
 use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, InlinePath, NsNode, Result};
 
-/// Gate addresses are resolved on first use, not all at once.
+/// Gate addresses are resolved on first use, not all at once -- and weakly-bound gates never
+/// touch the monitor at all.
 ///
-/// Every field here is a `dynamic_gate` resolution, and building them eagerly cost one gate call
-/// each the moment any naming was done. Measured over a test boot, gate resolution was 49% of all
-/// per-thread-buffer traffic in the monitor at ~14 resolutions per compartment loaded -- and most
-/// compartments only ever call `get`/`get_inline`/`open_handle`. `OnceLock` per gate turns that
-/// into "pay for what you use".
+/// Every field resolves in two steps. First it consults the weak import in [`crate::gates`]: a
+/// compartment loaded while naming-srv was present had those bound directly at relocation, so the
+/// address is already in hand. Only when the weak binding is absent (this compartment loaded
+/// before naming-srv -- the bootstrap chain) does it fall back to a monitor `dynamic_gate`
+/// resolution. Measured before the weak path existed, gate resolution was 49% of all
+/// per-thread-buffer traffic in the monitor at ~14 resolutions per compartment loaded; `OnceLock`
+/// per gate already turned that into "pay for what you use", and the weak binding turns the common
+/// case into "pay nothing".
 ///
-/// A missing gate now panics at first use rather than at init. That is a deliberate trade: a gate
+/// A missing gate panics at first use rather than at init. That is a deliberate trade: a gate
 /// nobody calls no longer takes the compartment down.
 macro_rules! lazy_gates {
-    ($($field:ident : $ty:ty = $name:literal),* $(,)?) => {
+    ($($field:ident / $gmod:ident : $ty:ty = $name:literal),* $(,)?) => {
         pub struct DynamicNamerAPI {
-            handle: &'static CompartmentHandle,
+            handle: OnceLock<&'static CompartmentHandle>,
             $( $field: OnceLock<$ty>, )*
         }
 
         impl DynamicNamerAPI {
-            fn new(handle: &'static CompartmentHandle) -> Self {
-                Self { handle, $( $field: OnceLock::new(), )* }
+            fn new() -> Self {
+                Self { handle: OnceLock::new(), $( $field: OnceLock::new(), )* }
+            }
+            /// Only reached on the fallback path, i.e. when this compartment loaded before
+            /// naming-srv.
+            fn handle(&self) -> &'static CompartmentHandle {
+                self.handle.get_or_init(|| {
+                    Box::leak(Box::new(
+                        CompartmentHandle::lookup("naming")
+                            .expect("failed to open namer compartment"),
+                    ))
+                })
             }
             $(
                 fn $field(&self) -> &$ty {
-                    self.$field.get_or_init(|| unsafe {
-                        self.handle
-                            .dynamic_gate($name)
-                            .expect(concat!("failed to find ", $name, " gate call"))
+                    self.$field.get_or_init(|| {
+                        if let Some(addr) = crate::gates::$gmod::weak_addr() {
+                            return unsafe { DynamicSecGate::new(addr) };
+                        }
+                        unsafe {
+                            self.handle()
+                                .dynamic_gate($name)
+                                .expect(concat!("failed to find ", $name, " gate call"))
+                        }
                     })
                 }
             )*
@@ -41,34 +60,143 @@ macro_rules! lazy_gates {
 }
 
 lazy_gates! {
-    put: DynamicSecGate<'static, (Descriptor, usize, ObjID), ()> = "put",
-    mkns: DynamicSecGate<'static, (Descriptor, usize, bool), ()> = "mkns",
-    link: DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "link",
-    get: DynamicSecGate<'static, (Descriptor, usize, GetFlags), NsNode> = "get",
-    get_inline: DynamicSecGate<'static, (Descriptor, InlinePath, GetFlags), NsNode> = "get_inline",
-    open_handle: DynamicSecGate<'static, (), Descriptor> = "open_handle",
-    get_buffer: DynamicSecGate<'static, (Descriptor,), ObjID> = "get_buffer",
-    close_handle: DynamicSecGate<'static, (Descriptor,), ()> = "close_handle",
-    enumerate_names: DynamicSecGate<'static, (Descriptor, usize, usize, usize), usize>
+    put_inline / __twz_secgate_impl_put_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath, ObjID), ()> = "put_inline",
+    mkns_inline / __twz_secgate_impl_mkns_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath, bool), ()> = "mkns_inline",
+    link_inline / __twz_secgate_impl_link_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath, InlinePath), ()> = "link_inline",
+    get_inline / __twz_secgate_impl_get_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath, GetFlags), NsNode> = "get_inline",
+    remove_inline / __twz_secgate_impl_remove_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath), ()> = "remove_inline",
+    rename_inline / __twz_secgate_impl_rename_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath, InlinePath), ()> = "rename_inline",
+    change_namespace_inline / __twz_secgate_impl_change_namespace_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath), ()> = "change_namespace_inline",
+    put / __twz_secgate_impl_put_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, ObjID), ()> = "put",
+    mkns / __twz_secgate_impl_mkns_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, bool), ()> = "mkns",
+    link / __twz_secgate_impl_link_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, usize), ()> = "link",
+    get / __twz_secgate_impl_get_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, GetFlags), NsNode> = "get",
+    remove / __twz_secgate_impl_remove_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "remove",
+    rename / __twz_secgate_impl_rename_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, usize), ()> = "rename",
+    change_namespace / __twz_secgate_impl_change_namespace_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "change_namespace",
+    enumerate_names / __twz_secgate_impl_enumerate_names_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize, usize, usize), usize>
         = "enumerate_names",
-    enumerate_names_nsid: DynamicSecGate<'static, (Descriptor, ObjID, usize, usize), usize>
+    enumerate_names_nsid / __twz_secgate_impl_enumerate_names_nsid_mod:
+        DynamicSecGate<'static, (Descriptor, ObjID, usize, usize, usize), usize>
         = "enumerate_names_nsid",
-    remove: DynamicSecGate<'static, (Descriptor, usize), ()> = "remove",
-    rename: DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "rename",
-    change_namespace: DynamicSecGate<'static, (Descriptor, usize), ()> = "change_namespace",
+    open_handle / __twz_secgate_impl_open_handle_mod:
+        DynamicSecGate<'static, (), Descriptor> = "open_handle",
+    get_buffer / __twz_secgate_impl_get_buffer_mod:
+        DynamicSecGate<'static, (Descriptor,), ObjID> = "get_buffer",
+    close_handle / __twz_secgate_impl_close_handle_mod:
+        DynamicSecGate<'static, (Descriptor,), ()> = "close_handle",
 }
 
 impl NamerAPI for DynamicNamerAPI {
-    fn put(&self, desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
-        (self.put())(desc, name_len, id)
+    fn put_inline(&self, desc: Descriptor, path: InlinePath, id: ObjID) -> Result<()> {
+        (self.put_inline())(desc, path, id)
     }
 
-    fn get(&self, desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
-        (self.get())(desc, name_len, flags)
+    fn mkns_inline(&self, desc: Descriptor, path: InlinePath, persist: bool) -> Result<()> {
+        (self.mkns_inline())(desc, path, persist)
+    }
+
+    fn link_inline(&self, desc: Descriptor, path: InlinePath, link: InlinePath) -> Result<()> {
+        (self.link_inline())(desc, path, link)
     }
 
     fn get_inline(&self, desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
         (self.get_inline())(desc, path, flags)
+    }
+
+    fn remove_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        (self.remove_inline())(desc, path)
+    }
+
+    fn rename_inline(&self, desc: Descriptor, old: InlinePath, new: InlinePath) -> Result<()> {
+        (self.rename_inline())(desc, old, new)
+    }
+
+    fn change_namespace_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        (self.change_namespace_inline())(desc, path)
+    }
+
+    fn put(&self, desc: Descriptor, offset: usize, name_len: usize, id: ObjID) -> Result<()> {
+        (self.put())(desc, offset, name_len, id)
+    }
+
+    fn mkns(&self, desc: Descriptor, offset: usize, name_len: usize, persist: bool) -> Result<()> {
+        (self.mkns())(desc, offset, name_len, persist)
+    }
+
+    fn link(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        name_len: usize,
+        link_len: usize,
+    ) -> Result<()> {
+        (self.link())(desc, offset, name_len, link_len)
+    }
+
+    fn get(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        name_len: usize,
+        flags: GetFlags,
+    ) -> Result<NsNode> {
+        (self.get())(desc, offset, name_len, flags)
+    }
+
+    fn remove(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        (self.remove())(desc, offset, name_len)
+    }
+
+    fn rename(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        old_len: usize,
+        new_len: usize,
+    ) -> Result<()> {
+        (self.rename())(desc, offset, old_len, new_len)
+    }
+
+    fn change_namespace(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        (self.change_namespace())(desc, offset, name_len)
+    }
+
+    fn enumerate_names(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        name_len: usize,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        (self.enumerate_names())(desc, offset, name_len, skip, count)
+    }
+
+    fn enumerate_names_nsid(
+        &self,
+        desc: Descriptor,
+        id: ObjID,
+        offset: usize,
+        skip: usize,
+        count: usize,
+    ) -> Result<usize> {
+        (self.enumerate_names_nsid())(desc, id, offset, skip, count)
     }
 
     fn open_handle(&self) -> Result<Descriptor> {
@@ -83,57 +211,14 @@ impl NamerAPI for DynamicNamerAPI {
         let _ = (self.close_handle())(desc);
         Ok(())
     }
-
-    fn enumerate_names(
-        &self,
-        desc: Descriptor,
-        name_len: usize,
-        skip: usize,
-        count: usize,
-    ) -> Result<usize> {
-        (self.enumerate_names())(desc, name_len, skip, count)
-    }
-
-    fn enumerate_names_nsid(
-        &self,
-        desc: Descriptor,
-        id: ObjID,
-        skip: usize,
-        count: usize,
-    ) -> Result<usize> {
-        (self.enumerate_names_nsid())(desc, id, skip, count)
-    }
-
-    fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {
-        (self.remove())(desc, name_len)
-    }
-
-    fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
-        (self.rename())(desc, old_len, new_len)
-    }
-
-    fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
-        (self.change_namespace())(desc, name_len)
-    }
-
-    fn mkns(&self, desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
-        (self.mkns())(desc, name_len, persist)
-    }
-
-    fn link(&self, desc: Descriptor, name_len: usize, link_name: usize) -> Result<()> {
-        (self.link())(desc, name_len, link_name)
-    }
 }
 
 static DYNAMIC_NAMER_API: OnceLock<DynamicNamerAPI> = OnceLock::new();
 
+/// Never panics anymore: the compartment lookup moved into the per-gate fallback, so a
+/// weakly-bound compartment builds this without any monitor traffic at all.
 pub fn dynamic_namer_api() -> &'static DynamicNamerAPI {
-    DYNAMIC_NAMER_API.get_or_init(|| {
-        let handle = Box::leak(Box::new(
-            CompartmentHandle::lookup("naming").expect("failed to open namer compartment"),
-        ));
-        DynamicNamerAPI::new(handle)
-    })
+    DYNAMIC_NAMER_API.get_or_init(DynamicNamerAPI::new)
 }
 
 pub type DynamicNamingHandle = NamingHandle<'static, DynamicNamerAPI>;

@@ -65,6 +65,7 @@ impl Drop for SecurityContext {
         if self.id() == KERNEL_SCTX {
             return;
         }
+        SCTX_DROPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         with_each_context(|ctx| {
             ctx.unregister_sctx(self.id());
         });
@@ -503,6 +504,44 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
         .entry(id)
         .or_insert_with(|| Arc::new(SecurityContext::new(Some(kobj))));
     Ok(entry.clone())
+}
+
+/// Drop the global registry's reference to a security context when its object is deleted.
+///
+/// This is the deterministic teardown trigger the registry lacked: the only other removal is
+/// `SecCtxMgr::drop`'s exact `strong_count == 2` reap, which skips forever if any transient
+/// reference exists at that instant. Deleting the sctx object is an unambiguous statement that
+/// the context is done; dropping the registry entry lets `SecurityContext::drop` run, which
+/// unregisters the context from every `VirtContext` — including the region sweep that releases
+/// the mappings userspace failed to unmap (logged there as `unregister swept N regions`; N is
+/// the userspace accounting leak meter, see pagerwedge.md §3.8).
+/// Pipeline counters for the sctx teardown chain (delete -> last-ref drop -> unregister),
+/// printed by the pressure census. The stage whose count lags names where dead contexts wait:
+/// reclaim6 showed deletes flowing per-compartment while unregisters ran ~112/round.
+pub static SCTX_DELETES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+pub static SCTX_DROPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+pub fn sctx_registry_len() -> usize {
+    global_secctx_mgr().contexts.lock().len()
+}
+
+pub fn on_sctx_object_delete(id: ObjID) {
+    if id == KERNEL_SCTX {
+        return;
+    }
+    let removed = global_secctx_mgr().contexts.lock().remove(&id);
+    if let Some(ctx) = removed {
+        SCTX_DELETES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let holders = alloc::sync::Arc::strong_count(&ctx) - 1;
+        // Rate-limited: one line per 64 deletes tells the story without flooding.
+        if SCTX_DELETES.load(core::sync::atomic::Ordering::Relaxed) % 64 == 0 && holders > 0 {
+            log::info!(
+                "sctx {} deleted with {} other strong ref(s) still held",
+                id,
+                holders
+            );
+        }
+    }
 }
 
 impl Drop for SecCtxMgr {

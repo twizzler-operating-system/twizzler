@@ -71,8 +71,16 @@ impl Context {
                                     allow_weak && dep.in_same_compartment_as(start_lib);
                                 let try_prefix =
                                     dep.in_same_compartment_as(start_lib) || dep.allows_gates();
-                                if let Some(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
-                                    return Ok(sym);
+                                // A pre-prefixed gate name (a weak-bound gate import) binds only
+                                // where the prefixed retry would have run: the trampoline is the
+                                // same symbol bare-name matching resolves to, so it must obey the
+                                // same gate-export policy.
+                                if try_prefix || !crate::library::is_gate_symbol(name) {
+                                    if let Some(sym) =
+                                        dep.lookup_symbol(name, allow_weak, try_prefix)
+                                    {
+                                        return Ok(sym);
+                                    }
                                 }
                             }
                         }
@@ -136,8 +144,12 @@ impl Context {
                     && dep.in_same_compartment_as(start_lib);
                 let try_prefix = (idx != start_lib.id().0 || dep.allows_self_gates())
                     && (dep.allows_gates() || dep.in_same_compartment_as(start_lib));
-                if let Some(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
-                    return Some(sym);
+                // Same rule as the deps loop: a pre-prefixed gate name binds only where the
+                // prefixed retry would have run.
+                if try_prefix || !crate::library::is_gate_symbol(name) {
+                    if let Some(sym) = dep.lookup_symbol(name, allow_weak, try_prefix) {
+                        return Some(sym);
+                    }
                 }
             }
         }

@@ -933,9 +933,17 @@ pub fn ensure_in_core<'a>(
 fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
     let mut ranges = Vec::new();
     let mut count = 0;
-    if crate::memory::tracker::get_outstanding_pager_pages() + min_frames
-        >= MAX_PAGER_OUTSTANDING_FRAMES
-    {
+    let outstanding = crate::memory::tracker::get_outstanding_pager_pages();
+    if outstanding + min_frames >= MAX_PAGER_OUTSTANDING_FRAMES {
+        // Loud, not silent: this refusal is a hang sentence for a pager that is out of memory
+        // and cannot evict (pagerwedge.md §3.7) -- an unexplained quiet round with an OOM'd
+        // pager is exactly this line not existing.
+        log::warn!(
+            "pager memory donation refused at cap: {} outstanding + {} asked >= {}",
+            outstanding,
+            min_frames,
+            MAX_PAGER_OUTSTANDING_FRAMES
+        );
         return Vec::new();
     }
     while count < min_frames {

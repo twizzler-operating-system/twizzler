@@ -3,10 +3,10 @@ use std::{
     io::{ErrorKind, SeekFrom},
     mem::ManuallyDrop,
     net::Shutdown,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
 };
@@ -373,165 +373,65 @@ lazy_static! {
     };
 }
 
-/// Idle naming handles, and a latch recording that naming came up at all.
+/// The one naming handle for this runtime, and a latch recording that naming came up at all.
 ///
-/// One handle per compartment behind a mutex meant every path lookup in the process serialized
-/// against every other one -- at four threads that was two thirds of the cost of `File::open`. A
-/// pool sizes itself to whatever parallelism actually shows up, and a handle costs only a
-/// descriptor now that its buffer is created on demand.
-///
-/// Sharded, because with the handle no longer scarce the *lock* became the contended resource: one
-/// mutex took a borrow and a return from every thread in the process, and libstd's mutex parks on
-/// a futex when it collides. Measured at four threads resolving names, a borrow cost 3.6 us and a
-/// return 2.0 us -- 11 us per `resolve_name`, against a 6.7 us gate call. Shards are swept with
-/// `try_lock` so a collision is skipped rather than waited on, which is what removes the futex;
-/// the blocking sweep below it only runs when nothing is idle anywhere, i.e. when a handle is
-/// about to be created anyway.
-const POOL_SHARDS: usize = 8;
-static HANDLE_POOL: [Mutex<Vec<PooledHandle>>; POOL_SHARDS] =
-    [const { Mutex::new(Vec::new()) }; POOL_SHARDS];
-/// Where the next borrow starts its sweep. Spreading the start is what keeps threads off each
-/// other's shards; handles are interchangeable, so which one comes back does not matter.
-static POOL_HINT: AtomicUsize = AtomicUsize::new(0);
+/// This used to be a sharded pool of handles: the buffer protocol wrote paths at offset 0, so a
+/// handle had to be exclusively owned for the duration of a call, and concurrency meant many
+/// handles. `NamingHandle` is now `&self`-callable -- short paths cross inline in the gate
+/// arguments and longer ones use disjoint slots of the one buffer -- so every thread shares this
+/// single handle, and the working namespace really is per-process state on the server instead of
+/// a generation-synced property faked across a pool.
+static RUNTIME_NAMER: OnceLock<DynamicNamingHandle> = OnceLock::new();
 static NAMING_UP: OnceLock<()> = OnceLock::new();
-
-/// The working namespace is per-handle state on the server, but callers expect it to be a property
-/// of the process. Handles record the generation they were last synced at, and re-apply on acquire
-/// if it has moved -- so a namespace set once is inherited by every handle the pool ever hands out.
-static CURRENT_NS: Mutex<Option<PathBuf>> = Mutex::new(None);
-static NS_GEN: AtomicU64 = AtomicU64::new(0);
-
-struct PooledHandle {
-    handle: DynamicNamingHandle,
-    ns_gen: u64,
-}
 
 #[track_caller]
 fn get_fd_slots() -> &'static Mutex<FdSlots> {
     &FD_SLOTS
 }
 
-/// A naming handle borrowed from the pool, returned to the shard it came from when dropped.
-pub struct NamingGuard(Option<PooledHandle>, usize);
-
-impl Deref for NamingGuard {
-    type Target = DynamicNamingHandle;
-
-    fn deref(&self) -> &Self::Target {
-        // Unwrap-Ok: only taken in Drop.
-        &self.0.as_ref().unwrap().handle
+pub fn get_naming_handle() -> Option<&'static DynamicNamingHandle> {
+    if let Some(handle) = RUNTIME_NAMER.get() {
+        return Some(handle);
     }
+    // Handle creation is once per process now, but never latch a failure: this compartment may
+    // predate the namer (init does) and must succeed on retry once it is up.
+    let _diag = crate::runtime::core::PRE_MAIN_PHASE_STATS;
+    let _t0 = std::time::Instant::now();
+    if NAMING_UP.get().is_none() {
+        // Weakly-bound gates prove naming-srv was loaded before this compartment, so the
+        // monitor lookup -- one gate call -- is only spent when this compartment predates
+        // the namer.
+        if !naming_core::gates::bound() && CompartmentHandle::lookup("naming").is_err() {
+            return None;
+        }
+        let _ = NAMING_UP.set(());
+    }
+    let _t_lookup = _t0.elapsed();
+    let handle = dynamic_naming_factory()?;
+    secgate::statlog::record_on(
+        _diag,
+        "NAMEHDL",
+        _t0.elapsed().as_micros() as u64,
+        &[
+            _t_lookup.as_micros() as u64,
+            (_t0.elapsed() - _t_lookup).as_micros() as u64,
+        ],
+    );
+    // A racing initializer loses here; its handle drops and closes its descriptor.
+    let _ = RUNTIME_NAMER.set(handle);
+    RUNTIME_NAMER.get()
 }
 
-impl DerefMut for NamingGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // Unwrap-Ok: only taken in Drop.
-        &mut self.0.as_mut().unwrap().handle
-    }
-}
-
-impl Drop for NamingGuard {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            HANDLE_POOL[self.1].lock().unwrap().push(handle);
-        }
-    }
-}
-
-/// Take an idle handle out of the pool, or say which shard a new one should belong to.
-///
-/// Two sweeps. The first uses `try_lock`, so a shard another thread is touching costs a failed CAS
-/// and not a park -- that is where the win is, since the critical section is a `Vec::pop` and a
-/// collision is over in nanoseconds. The second blocks, and exists so that "no idle handle" is a
-/// fact rather than a guess: without it a lock collision would look like an empty pool and open a
-/// handle that was not needed. It only runs when the first sweep found nothing, which is when a
-/// handle is about to be created anyway.
-fn take_pooled(start: usize) -> (usize, Option<PooledHandle>) {
-    for i in 0..POOL_SHARDS {
-        let s = (start + i) % POOL_SHARDS;
-        if let Ok(mut shard) = HANDLE_POOL[s].try_lock() {
-            if let Some(pooled) = shard.pop() {
-                return (s, Some(pooled));
-            }
-        }
-    }
-    for i in 0..POOL_SHARDS {
-        let s = (start + i) % POOL_SHARDS;
-        if let Some(pooled) = HANDLE_POOL[s].lock().unwrap().pop() {
-            return (s, Some(pooled));
-        }
-    }
-    (start % POOL_SHARDS, None)
-}
-
-pub fn get_naming_handle() -> Option<NamingGuard> {
-    let mut fresh = false;
-    let start = POOL_HINT.fetch_add(1, Ordering::Relaxed);
-    let (shard, taken) = take_pooled(start);
-    let pooled = match taken {
-        Some(pooled) => pooled,
-        None => {
-            fresh = true;
-            // Nothing idle: open another. The pool never shrinks, so its size settles at the
-            // high-water mark of concurrent lookups.
-            // Handle acquisition measured 2.9 ms. Traced to `sys_object_stat`: `HandleMgr`'s
-            // `gc_handles` runs one per tracked compartment on every handle insert and remove, and
-            // that syscall costs ~30 us against 117 ns for a trivial one. A lookup that creates no
-            // handle is 1 us; one that creates a handle is 347 us and dropping it is 312 us. See
-            // `spawnbench.md` §17.
-            let _diag = crate::runtime::core::PRE_MAIN_PHASE_STATS;
-            let _t0 = std::time::Instant::now();
-            if NAMING_UP.get().is_none() {
-                if CompartmentHandle::lookup("naming").is_err() {
-                    return None;
-                }
-                let _ = NAMING_UP.set(());
-            }
-            let _t_lookup = _t0.elapsed();
-            let handle = dynamic_naming_factory()?;
-            secgate::statlog::record_on(
-                _diag,
-                "NAMEHDL",
-                _t0.elapsed().as_micros() as u64,
-                &[
-                    _t_lookup.as_micros() as u64,
-                    (_t0.elapsed() - _t_lookup).as_micros() as u64,
-                ],
-            );
-            PooledHandle {
-                handle,
-                ns_gen: 0,
-            }
-        }
-    };
-    let mut guard = NamingGuard(Some(pooled), shard);
-
-    let gen = NS_GEN.load(Ordering::Acquire);
-    if guard.0.as_ref().unwrap().ns_gen != gen {
-        let ns = CURRENT_NS.lock().unwrap().clone();
-        // A handle the server just created already sits at the root namespace, so applying a root
-        // setting to it is a gate call that changes nothing -- and that is the common case, since
-        // the namespace is only ever set away from "/" if TWZ_RT_INITIAL_DIR says so. A handle out
-        // of the pool has no such guarantee and always re-applies.
-        if let Some(ns) = ns.filter(|ns| !(fresh && ns == Path::new("/"))) {
-            let _ = guard
-                .change_namespace(&ns)
-                .inspect_err(|e| tracing::warn!("failed to set namespace on new handle: {}", e));
-        }
-        guard.0.as_mut().unwrap().ns_gen = gen;
-    }
-    Some(guard)
-}
-
-/// Set the working namespace for every naming handle in this compartment, now and in future.
+/// Set the working namespace for this compartment: per-descriptor state on the server, and the
+/// compartment holds exactly one descriptor.
 pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
     let _t0 = std::time::Instant::now();
-    let mut guard = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+    let handle = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
     let _t_handle = _t0.elapsed();
-    guard.change_namespace(path)?;
+    handle.change_namespace(path)?;
     // Called once per compartment from `pre_main_hook`, i.e. inside `Command::spawn`. Splits
-    // acquiring a naming handle (which for a fresh compartment means a compartment lookup, a
-    // dynamic-gate resolution and a server-side buffer) from the namespace call itself.
+    // acquiring the naming handle (for a fresh compartment: possibly a compartment lookup, plus
+    // open_handle) from the namespace call itself.
     secgate::statlog::record_on(
         crate::runtime::core::PRE_MAIN_PHASE_STATS,
         "SETNS",
@@ -541,9 +441,6 @@ pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
             (_t0.elapsed() - _t_handle).as_micros() as u64,
         ],
     );
-    *CURRENT_NS.lock().unwrap() = Some(path.to_path_buf());
-    // Everything else in the pool, and this handle when it goes back, re-syncs on next acquire.
-    NS_GEN.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 
@@ -709,7 +606,7 @@ impl ReferenceRuntime {
         // dropped, and borrowed again to do the work -- two round trips through the pool's lock on
         // the hottest naming call in the system, for a question the first borrow's result already
         // answers.
-        let Some(mut session) = get_naming_handle() else {
+        let Some(session) = get_naming_handle() else {
             fn get_kernel_init_info() -> &'static KernelInitInfo {
                 unsafe {
                     (((twizzler_abi::slot::RESERVED_KERNEL_INIT * MAX_SIZE) + NULLPAGE_SIZE)
@@ -737,21 +634,21 @@ impl ReferenceRuntime {
     }
 
     pub fn mkns(&self, name: &str) -> Result<()> {
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.put_namespace(name, true)?;
         Ok(())
     }
 
     pub fn symlink(&self, name: &str, target: &str) -> Result<()> {
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.symlink(name, target)?;
         Ok(())
     }
 
     pub fn readlink(&self, name: &str, target: &mut [u8], read_len: &mut u64) -> Result<()> {
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         let node = session.get(name, GetFlags::empty())?;
 
         let link = node.readlink()?;
@@ -885,12 +782,12 @@ impl ReferenceRuntime {
     }
 
     pub fn rename(&self, old: &str, new: &str) -> Result<()> {
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.rename(old, new)?)
     }
 
     pub fn remove(&self, path: &str) -> Result<()> {
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         Ok(session.remove(path)?)
     }
 
@@ -1223,7 +1120,7 @@ impl ReferenceRuntime {
         );
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
         let t_acq = std::time::Instant::now();
-        let mut session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         let acq_ns = t_acq.elapsed().as_nanos() as u64;
         let t_gate = std::time::Instant::now();
         let names = session.enumerate_names_nsid(stat.id.into(), off, buf.len())?;

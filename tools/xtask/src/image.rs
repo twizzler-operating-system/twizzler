@@ -528,6 +528,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             "libm.so",
             "librt.so",
             "libc++abi.so",
+            "libunwind.so",
         ] {
             let mut path = lib_path.clone();
             path.push(lib);

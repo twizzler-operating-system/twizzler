@@ -1,15 +1,30 @@
+#![feature(linkage)]
 use std::path::{Path, PathBuf};
 
 pub mod api;
 pub mod dynamic;
+pub mod gates;
 pub mod handle;
 mod store;
+
+// The generated `__twz_secgate_impl_*_mod` modules must be visible at the crate root: the
+// server's `#[secgate::entry(lib = "naming-core")]` type-check names them by
+// `naming_core::<mod>::Args`.
+pub use gates::*;
 
 pub const MAX_KEY_SIZE: usize = 256;
 pub const PATH_MAX: usize = 4096;
 
 /// Longest path that crosses a gate by value. Paths above this fall back to the shared buffer.
 pub const INLINE_PATH_MAX: usize = 256;
+
+/// One slot of a handle's shared buffer. Buffer-using calls carry a slot offset in their gate
+/// arguments, so different slots can be in flight on one handle concurrently. A slot holds two
+/// `PATH_MAX` paths (rename/link pack both into one slot) and bounds an enumerate reply.
+pub const BUFFER_SLOT_SIZE: usize = 32768;
+/// Slots per handle: the concurrency limit for buffer-using calls (inline calls are unlimited).
+/// A caller that wants more waits for a slot, which is bounded by a gate call's duration.
+pub const BUFFER_NSLOTS: usize = 8;
 
 pub type Result<T> = std::result::Result<T, TwzError>;
 

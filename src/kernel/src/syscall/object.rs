@@ -822,6 +822,10 @@ pub fn object_ctrl(id: ObjID, cmd: ObjectControlCmd, arg: u64, arg2: u64) -> Res
             let obj = obj?;
             let t = deleteprofile::start();
             obj.mark_for_delete();
+            // If this object is a registered security context, deleting it is the teardown
+            // trigger: drop the registry entry so the context's unregister (and its region
+            // sweep) actually runs, rather than waiting on the racy last-manager reap.
+            crate::security::on_sctx_object_delete(id);
             deleteprofile::record(deleteprofile::Stage::Mark, t);
             let t = deleteprofile::start();
             if crate::obj::TARGETED_REAP {

@@ -151,6 +151,16 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     rustflags_array.push("link-arg=-z");
     rustflags_array.push("-C");
     rustflags_array.push("link-arg=norelro");
+    // twz_rt_* symbols are bound at load time by dynlink, not DT_NEEDED.
+    rustflags_array.push("-C");
+    rustflags_array.push("link-arg=--allow-shlib-undefined");
+    // libc++abi.so needs _Unwind_* at load time but rustc's version script keeps the in-tree
+    // unwinder's symbols local, so force a DT_NEEDED on the shared libunwind. Trailing args
+    // land after rustc's own --as-needed, so --no-as-needed here makes the record stick.
+    rustflags_array.push("-C");
+    rustflags_array.push("link-arg=--no-as-needed");
+    rustflags_array.push("-C");
+    rustflags_array.push("link-arg=-lunwind");
 
     toml["target"][tstr]["rustflags"] = toml_edit::value(rustflags_array);
     toml["target"][tstr]["llvm-libunwind"] = toml_edit::value("in-tree");

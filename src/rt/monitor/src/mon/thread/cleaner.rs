@@ -224,7 +224,102 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
     // TODO (dbittman): when we have support for async thread events, we can use that API.
     let mut cleanups = Vec::new();
     let mut waits = Waits::new(&data.notify);
+    // Self-boost while compartment teardown is backlogged, same pattern as the kernel thread
+    // reaper (and the unmapper). This thread runs teardown at User priority against whatever
+    // storm produced the dead compartments, and it loses: reclaim3 measured ~15k queued dead
+    // compartments' contexts pinning 92% of RAM, with the cleaner runnable the whole time and
+    // no stuck-thread warnings — production simply outran consumption. Realtime while the
+    // backlog is deep, back to normal when it clears.
+    const BOOST_AT: usize = 32;
+    let self_id = twizzler_abi::syscall::sys_thread_self_id();
+    let mut boosted = false;
+    let mut diag_tick = 0u32;
     loop {
+        // COMP-CENSUS: name the population stuck upstream of the cleanup queue. reclaim5 showed
+        // teardown firing for only ~112 of ~16k dead compartments — the rest sit at
+        // use_count > 0, i.e. someone never dropped a handle. This says who and at what count.
+        diag_tick += 1;
+        if diag_tick % 64 == 0 {
+            let monitor = get_monitor();
+            let key = happylock::ThreadKey::get().unwrap();
+            let cmgr = crate::lockdiag::watched(monitor.comp_mgr.read(key));
+            let mut total = 0usize;
+            let mut exited = 0usize;
+            let mut held = 0usize;
+            let mut samples: Vec<(twizzler_rt_abi::object::ObjID, String, u64)> = Vec::new();
+            for rc in cmgr.compartments() {
+                total += 1;
+                if rc.has_flag(crate::mon::compartment::COMP_EXITED) {
+                    exited += 1;
+                    if rc.use_count > 0 {
+                        held += 1;
+                        if samples.len() < 4 {
+                            samples.push((rc.instance, rc.name.clone(), rc.use_count));
+                        }
+                    }
+                }
+            }
+            drop(cmgr);
+            // SPACE-CENSUS: the maps table split. The kernel census shows dead objects pinned
+            // by never-issued unmaps; whether those objects are still *in* `maps` with a
+            // nonzero count (a counted-handle leak) or absent (loader-side exclusive/pair
+            // handles never dropped) picks the final suspect.
+            {
+                let monitor = get_monitor();
+                if let Ok(space) = monitor.space.try_lock() {
+                    let (total, active, top) = space.census();
+                    tracing::info!(
+                        "SPACE-CENSUS: {} maps, {} active; top counts: {:?}",
+                        total,
+                        active,
+                        top
+                    );
+                }
+                // The pair-handle pipeline: creates vs releases, plus where teardown stands.
+                // made-sent = exclusive handles still alive; cleanups vs drops localizes a
+                // stall between unload and RunComp destruction.
+                tracing::info!(
+                    "PAIR-CENSUS: pair-handles made {} slot-unmaps sent {} unmapper-depth {} cleanups {} runcomp-drops {}",
+                    crate::mon::space::PAIR_HANDLES_MADE.load(Ordering::Relaxed),
+                    crate::mon::space::SLOT_UNMAPS_SENT.load(Ordering::Relaxed),
+                    monitor.unmapper.get().map(|u| u.depth()).unwrap_or(0),
+                    crate::mon::compartment::CLEANUPS_DONE.load(Ordering::Relaxed),
+                    crate::mon::compartment::RUNCOMP_DROPS.load(Ordering::Relaxed)
+                );
+            }
+            if held > 0 {
+                tracing::info!(
+                    "COMP-CENSUS: {} compartments, {} exited, {} exited-but-held",
+                    total,
+                    exited,
+                    held
+                );
+                for (id, name, uc) in samples {
+                    tracing::info!("  held: {} '{}' use_count {}", id, name, uc);
+                }
+            }
+        }
+        let backlog = super::super::compartment::CLEANUP_BACKLOG.load(Ordering::Relaxed);
+        if !boosted && backlog >= BOOST_AT {
+            boosted = twizzler_abi::syscall::sys_thread_set_priority(
+                self_id,
+                twizzler_abi::syscall::ThreadPriority::new(
+                    twizzler_abi::syscall::PriorityClass::Realtime,
+                    64,
+                ),
+            )
+            .is_ok();
+            if boosted {
+                tracing::info!("cleaner boosted to Realtime (cleanup backlog {})", backlog);
+            }
+        } else if boosted && backlog == 0 {
+            let _ = twizzler_abi::syscall::sys_thread_set_priority(
+                self_id,
+                twizzler_abi::syscall::ThreadPriority::USER,
+            );
+            boosted = false;
+            tracing::info!("cleanup backlog drained, cleaner de-boosted");
+        }
         // Apply any waiting operations.
         let mut did_work = waits.process_queue(&mut recv, &data);
 

@@ -25,6 +25,7 @@ mod handle;
 mod unmapper;
 
 pub use handle::MapHandle;
+pub(crate) use unmapper::SLOT_UNMAPS_SENT;
 pub use unmapper::Unmapper;
 
 // Temporary instrumentation for the File::open latency hunt (pagerperf.md). `sys_object_map` runs
@@ -417,6 +418,8 @@ impl Space {
         // load's entry, orphaning its handles from the table and leaving one reference count for
         // two live mappings — after which the first handle to drop unmaps the *other* load's slot
         // while it is still relocating. These handles own their slots outright instead.
+        // Two exclusive handles per pair; see SLOT_UNMAPS_SENT for the paired release count.
+        PAIR_HANDLES_MADE.fetch_add(2, core::sync::atomic::Ordering::Relaxed);
         Ok((
             Arc::new(MapHandleInner::new_exclusive(
                 info,
@@ -431,6 +434,21 @@ impl Space {
 
     /// Remove an object from the space. The actual unmapping syscall only happens once the returned
     /// value from this function is dropped.
+    /// (total entries, entries with a nonzero count, top-4 (id, count)) — for SPACE-CENSUS.
+    pub fn census(&self) -> (usize, usize, Vec<(ObjID, usize)>) {
+        let total = self.maps.len();
+        let active = self.maps.values().filter(|m| m.handle_count > 0).count();
+        let mut top: Vec<(ObjID, usize)> = self
+            .maps
+            .iter()
+            .filter(|(_, m)| m.handle_count > 0)
+            .map(|(k, m)| (k.id, m.handle_count))
+            .collect();
+        top.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        top.truncate(4);
+        (total, active, top)
+    }
+
     pub fn handle_drop(&mut self, info: MapInfo) -> Option<UnmapOnDrop> {
         // Missing maps in unmap should be ignored.
         let Some(item) = self.maps.get_mut(&info) else {
@@ -516,6 +534,10 @@ impl Space {
 
 /// Allows us to call handle_drop and do all the hard work in the caller, since
 /// the caller probably had to hold a lock to call these functions.
+/// Exclusive pair-handles created; see [unmapper::SLOT_UNMAPS_SENT] for releases.
+pub(crate) static PAIR_HANDLES_MADE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 pub(crate) struct UnmapOnDrop {
     slot: usize,
 }

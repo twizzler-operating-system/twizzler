@@ -1491,6 +1491,115 @@ pub fn is_no_exist(id: ObjID) -> bool {
 ///
 /// Diagnostic, and not free: called from the idle loop's test/diag block, throttled, and quiet
 /// unless a number moves.
+/// Composition of object-held pages, printed from the allocator's wait path under memory
+/// pressure. Answers the reclaim-design question pagerwedge.md §3.7 leaves open: how much of
+/// the "page" share is backed (evictable to disk) vs volatile (not evictable without swap),
+/// and whether it is concentrated or diffuse. Allocation-free ([omap::ShardedOmap::
+/// for_each_chunked]) because it runs while allocation is failing; `count_pages` is O(1) with
+/// the mapper's exact counter.
+pub fn pressure_census() {
+    if !OMAP_SHARDED {
+        return;
+    }
+    let mut backed = 0usize;
+    let mut backed_objs = 0usize;
+    let mut vol = 0usize;
+    let mut vol_objs = 0usize;
+    let mut del = 0usize;
+    // (pages, id, backed, deleted, arc strong count, live mappings) -- refs and mappings name
+    // the holder class: refs with no mappings point at kernel-side owners (unreaped threads,
+    // reaper graves); live mappings point at userspace still holding the object mapped
+    // (monitor unmapper backlog, runtime handle caches).
+    let mut top: heapless::Vec<(usize, ObjID, bool, bool, usize, usize), 8> = heapless::Vec::new();
+    // Name the owner of the first few pending-delete objects' still-live mappings, not just
+    // count them: `removed=true` with the weak still upgradeable means the region left its
+    // RegionManager but an Arc clone survives (a deferred-unmap queue somewhere);
+    // `removed=false` means nothing ever unmapped it.
+    let mut detail_budget = 6usize;
+    obj_manager().sharded.for_each_chunked(|obj| {
+        let pages = obj.lock_page_tables().count_pages();
+        if obj.is_pending_delete() {
+            del += pages;
+        }
+        if obj.use_pager() {
+            backed += pages;
+            backed_objs += 1;
+        } else {
+            vol += pages;
+            vol_objs += 1;
+        }
+        // Upgradeable only: `len()` counts dead weaks, and a corpse posing as a live mapping
+        // is exactly the ambiguity this census exists to remove.
+        let mut live_maps = 0usize;
+        if obj.is_pending_delete() || !top.is_full() || pages > top.last().map(|t| t.0).unwrap_or(0)
+        {
+            let maps = obj.mappings.lock();
+            for (slot, weak) in maps.iter() {
+                let Some(region) = weak.upgrade() else {
+                    continue;
+                };
+                live_maps += 1;
+                if obj.is_pending_delete() && detail_budget > 0 {
+                    detail_budget -= 1;
+                    logln!(
+                        "  del-map: obj {} pages {} slot {} sctx {} prot {:?} removed {} va {:x}",
+                        obj.id(),
+                        pages,
+                        slot,
+                        region.target_sctx,
+                        region.prot,
+                        region.removed.load(Ordering::Relaxed),
+                        region.range.start.raw()
+                    );
+                }
+            }
+        }
+        if !top.is_full() || pages > top.last().map(|t| t.0).unwrap_or(0) {
+            if top.is_full() {
+                top.pop();
+            }
+            let refs = alloc::sync::Arc::strong_count(obj);
+            let _ = top.push((
+                pages,
+                obj.id(),
+                obj.use_pager(),
+                obj.is_pending_delete(),
+                refs,
+                live_maps,
+            ));
+            top.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        }
+    });
+    logln!(
+        "PRESSURE-CENSUS: backed {} pages / {} objs; volatile {} pages / {} objs; pending-delete {} pages; exited-backlog {}; sctx del {} drop {}",
+        backed,
+        backed_objs,
+        vol,
+        vol_objs,
+        del,
+        crate::processor::EXITED_BACKLOG.load(core::sync::atomic::Ordering::Relaxed),
+        crate::security::SCTX_DELETES.load(core::sync::atomic::Ordering::Relaxed),
+        crate::security::SCTX_DROPS.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    logln!(
+        "PRESSURE-CENSUS2: sctx registry {}; threads new {} dropped {}",
+        crate::security::sctx_registry_len(),
+        crate::thread::THREAD_NEWS.load(core::sync::atomic::Ordering::Relaxed),
+        crate::thread::THREAD_DROPS.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    for (pages, id, b, d, refs, maps) in &top {
+        logln!(
+            "  top: {} pages obj {} {}{} refs {} maps {}",
+            pages,
+            id,
+            if *b { "backed" } else { "volatile" },
+            if *d { " DELETED" } else { "" },
+            refs,
+            maps
+        );
+    }
+}
+
 pub fn promotion_census() {
     static TICK: AtomicU64 = AtomicU64::new(0);
     static LAST: Mutex<Option<pagetables::PromotionCensus>> = Mutex::new(None);

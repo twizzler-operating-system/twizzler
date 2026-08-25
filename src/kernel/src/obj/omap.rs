@@ -94,6 +94,40 @@ impl ShardedOmap {
         );
     }
 
+    /// Every object through a callback, shard-major, allocation-free: [SCAN_CHUNK] refs per
+    /// shard-lock hold, callback outside the lock. For diagnostics that must run under memory
+    /// pressure ([super::pressure_census]), where a `Vec` snapshot could recurse into the
+    /// allocator's own wait path.
+    pub fn for_each_chunked(&self, mut f: impl FnMut(&ObjectRef)) {
+        let mut chunk = heapless::Vec::<ObjectRef, SCAN_CHUNK>::new();
+        for shard in &self.shards {
+            let mut resume: Option<ObjID> = None;
+            loop {
+                {
+                    let tree = shard.lock();
+                    let mut cursor = match resume.take() {
+                        Some(id) => tree.lower_bound(Bound::Included(&id)),
+                        None => tree.front(),
+                    };
+                    while let Some(o) = cursor.get() {
+                        if chunk.is_full() {
+                            resume = Some(o.id);
+                            break;
+                        }
+                        let _ = chunk.push(cursor.clone_pointer().unwrap());
+                        cursor.move_next();
+                    }
+                }
+                for o in chunk.drain(..) {
+                    f(&o);
+                }
+                if resume.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Every id, shard-major ascending. Same claim/append shape as [Self::collect_pending];
     /// the enumerate caller applies its own offset/limit after the ties manager's deleted map
     /// is chained on.

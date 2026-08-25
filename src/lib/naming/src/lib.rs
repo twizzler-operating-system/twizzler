@@ -1,103 +1,121 @@
-use naming_core::{api::NamerAPI, handle::NamingHandle, InlinePath, Result};
-pub use naming_core::{dynamic::*, GetFlags, NsNode, NsNodeKind};
+use naming_core::{api::NamerAPI, gates, handle::NamingHandle, InlinePath, Result};
+pub use naming_core::{dynamic::*, gates::namer_start, GetFlags, NsNode, NsNodeKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
 
+/// Calls the naming gates through their weak bindings (see `naming_core::gates`): direct
+/// trampoline calls in a compartment loaded after naming-srv, `Unavailable` in one loaded before.
+/// A caller that might run before the namer wants `dynamic_naming_factory` instead, which falls
+/// back to monitor-resolved gates.
 pub struct StaticNamingAPI {}
 
-#[secgate::gatecall]
-fn put(desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {}
-#[secgate::gatecall]
-fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {}
-#[secgate::gatecall]
-fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {}
-#[secgate::gatecall]
-fn open_handle() -> Result<Descriptor> {}
-#[secgate::gatecall]
-fn get_buffer(desc: Descriptor) -> Result<ObjID> {}
-#[secgate::gatecall]
-fn close_handle(desc: Descriptor) -> Result<()> {}
-#[secgate::gatecall]
-fn enumerate_names(desc: Descriptor, name_len: usize, skip: usize, count: usize) -> Result<usize> {}
-#[secgate::gatecall]
-fn enumerate_names_nsid(desc: Descriptor, id: ObjID, skip: usize, count: usize) -> Result<usize> {}
-#[secgate::gatecall]
-fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {}
-#[secgate::gatecall]
-fn remove(desc: Descriptor, name_len: usize) -> Result<()> {}
-#[secgate::gatecall]
-fn change_namespace(desc: Descriptor, name_len: usize) -> Result<()> {}
-#[secgate::gatecall]
-fn mkns(desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {}
-#[secgate::gatecall]
-fn link(desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {}
-
-#[secgate::gatecall]
-pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {}
-
 impl NamerAPI for StaticNamingAPI {
-    fn put(&self, desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
-        put(desc, name_len, id)
+    fn put_inline(&self, desc: Descriptor, path: InlinePath, id: ObjID) -> Result<()> {
+        gates::put_inline(desc, path, id)
     }
 
-    fn get(&self, desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
-        get(desc, name_len, flags)
+    fn mkns_inline(&self, desc: Descriptor, path: InlinePath, persist: bool) -> Result<()> {
+        gates::mkns_inline(desc, path, persist)
+    }
+
+    fn link_inline(&self, desc: Descriptor, path: InlinePath, link: InlinePath) -> Result<()> {
+        gates::link_inline(desc, path, link)
     }
 
     fn get_inline(&self, desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
-        get_inline(desc, path, flags)
+        gates::get_inline(desc, path, flags)
     }
 
-    fn open_handle(&self) -> Result<Descriptor> {
-        open_handle()
+    fn remove_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        gates::remove_inline(desc, path)
     }
 
-    fn get_buffer(&self, desc: Descriptor) -> Result<ObjID> {
-        get_buffer(desc)
+    fn rename_inline(&self, desc: Descriptor, old: InlinePath, new: InlinePath) -> Result<()> {
+        gates::rename_inline(desc, old, new)
     }
 
-    fn close_handle(&self, desc: Descriptor) -> Result<()> {
-        close_handle(desc)
+    fn change_namespace_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        gates::change_namespace_inline(desc, path)
+    }
+
+    fn put(&self, desc: Descriptor, offset: usize, name_len: usize, id: ObjID) -> Result<()> {
+        gates::put(desc, offset, name_len, id)
+    }
+
+    fn mkns(&self, desc: Descriptor, offset: usize, name_len: usize, persist: bool) -> Result<()> {
+        gates::mkns(desc, offset, name_len, persist)
+    }
+
+    fn link(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        name_len: usize,
+        link_len: usize,
+    ) -> Result<()> {
+        gates::link(desc, offset, name_len, link_len)
+    }
+
+    fn get(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        name_len: usize,
+        flags: GetFlags,
+    ) -> Result<NsNode> {
+        gates::get(desc, offset, name_len, flags)
+    }
+
+    fn remove(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        gates::remove(desc, offset, name_len)
+    }
+
+    fn rename(
+        &self,
+        desc: Descriptor,
+        offset: usize,
+        old_len: usize,
+        new_len: usize,
+    ) -> Result<()> {
+        gates::rename(desc, offset, old_len, new_len)
+    }
+
+    fn change_namespace(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        gates::change_namespace(desc, offset, name_len)
     }
 
     fn enumerate_names(
         &self,
         desc: Descriptor,
+        offset: usize,
         name_len: usize,
         skip: usize,
         count: usize,
     ) -> Result<usize> {
-        enumerate_names(desc, name_len, skip, count)
+        gates::enumerate_names(desc, offset, name_len, skip, count)
     }
 
     fn enumerate_names_nsid(
         &self,
         desc: Descriptor,
         id: ObjID,
+        offset: usize,
         skip: usize,
         count: usize,
     ) -> Result<usize> {
-        enumerate_names_nsid(desc, id, skip, count)
+        gates::enumerate_names_nsid(desc, id, offset, skip, count)
     }
 
-    fn remove(&self, desc: Descriptor, name_len: usize) -> Result<()> {
-        remove(desc, name_len)
+    fn open_handle(&self) -> Result<Descriptor> {
+        gates::open_handle()
     }
 
-    fn rename(&self, desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
-        rename(desc, old_len, new_len)
+    fn get_buffer(&self, desc: Descriptor) -> Result<ObjID> {
+        gates::get_buffer(desc)
     }
 
-    fn change_namespace(&self, desc: Descriptor, name_len: usize) -> Result<()> {
-        change_namespace(desc, name_len)
-    }
-
-    fn mkns(&self, desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
-        mkns(desc, name_len, persist)
-    }
-
-    fn link(&self, desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {
-        link(desc, name_len, link_len)
+    fn close_handle(&self, desc: Descriptor) -> Result<()> {
+        gates::close_handle(desc)
     }
 }
 

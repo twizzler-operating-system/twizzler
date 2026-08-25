@@ -2,12 +2,20 @@
 #![feature(io_error_more)]
 #![feature(thread_local)]
 #[warn(unused_variables)]
-use std::sync::{Arc, Mutex};
-use std::{io::ErrorKind, path::PathBuf};
+use std::{
+    io::ErrorKind,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock, RwLock,
+    },
+};
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;
-use naming_core::{GetFlags, InlinePath, NameSession, NameStore, NsNode, Result, PATH_MAX};
+use naming_core::{
+    GetFlags, InlinePath, NameSession, NameStore, NsNode, Result, BUFFER_SLOT_SIZE, PATH_MAX,
+};
 use secgate::{
     util::{Descriptor, HandleMgr, SimpleBuffer},
     TwzError,
@@ -54,8 +62,8 @@ pub fn get_sb_object(instance: ObjID) -> Result<ObjectHandle> {
         return Ok(handle);
     }
 
-    // Wiped by `ClientInner::wipe` on release, so a pooled object carries nothing from its
-    // previous holder.
+    // Wiped by `NamespaceClient::into_handle` on release, so a pooled object carries nothing from
+    // its previous holder.
     Ok(sbo.objs.pop().unwrap())
 }
 
@@ -64,38 +72,101 @@ pub fn release_sb_object(obj: ObjectHandle) {
     sbo.objs.push(obj);
 }
 
-/// A client's session and its shared buffer, reachable only under [`NamespaceClient::inner`].
+/// One open naming handle -- one per client runtime, shared by all its threads.
 ///
-/// The buffer is created on demand: a client that only does short-path lookups never needs one, and
-/// making every handle carry one is what made a pool of handles expensive.
-struct ClientInner<'a> {
-    session: NameSession<'a>,
-    buffer: Option<SimpleBuffer>,
-    /// How far into the buffer this client has ever had data, so a recycled buffer can be wiped
-    /// over exactly that much of it rather than all `max_len()` (a gigabyte) of it.
-    used: usize,
+/// Nothing here serializes two calls on the same descriptor: each call clones a [`NameSession`]
+/// out of `session` (a store reference plus an `Arc`) and runs against the store's own interior
+/// locks. Paths arrive either inline in the gate arguments or in caller-chosen disjoint slots of
+/// the shared buffer, so concurrent calls never alias buffer ranges unless the client races
+/// itself -- in which case it corrupts only its own results.
+struct NamespaceClient<'a> {
+    instance: ObjID,
+    /// The working namespace, i.e. what `change_namespace` durably changes. Snapshot-cloned per
+    /// call; written only by `change_namespace`.
+    session: RwLock<NameSession<'a>>,
+    /// Created on demand: a client that only does inline calls never needs one, and making every
+    /// handle carry one is what made handles expensive.
+    buffer: OnceLock<SimpleBuffer>,
+    buffer_init: Mutex<()>,
+    /// High-water mark of buffer bytes this client ever used, so a recycled buffer is wiped over
+    /// exactly that much rather than all `max_len()` (a gigabyte) of it.
+    used: AtomicUsize,
 }
 
-impl ClientInner<'_> {
+// Safety: same assertion `NameStore` already makes for itself; shared access to the session
+// template is mediated by the RwLock.
+unsafe impl Send for NamespaceClient<'_> {}
+unsafe impl Sync for NamespaceClient<'_> {}
+
+impl<'a> NamespaceClient<'a> {
+    fn new(session: NameSession<'a>, instance: ObjID) -> Self {
+        Self {
+            instance,
+            session: RwLock::new(session),
+            buffer: OnceLock::new(),
+            buffer_init: Mutex::new(()),
+            used: AtomicUsize::new(0),
+        }
+    }
+
+    /// A session for one call: the current working namespace, snapshot at call entry.
+    fn session(&self) -> NameSession<'a> {
+        self.session.read().unwrap().clone()
+    }
+
+    fn note_used(&self, end: usize) {
+        self.used.fetch_max(end, Ordering::Relaxed);
+    }
+
+    /// Create the shared buffer if this is the first call that needs one, and report its object.
+    fn buffer_id(&self) -> Result<ObjID> {
+        if let Some(buffer) = self.buffer.get() {
+            return Ok(buffer.handle().id());
+        }
+        let _init = self.buffer_init.lock().unwrap();
+        if self.buffer.get().is_none() {
+            let _ = self
+                .buffer
+                .set(SimpleBuffer::new(get_sb_object(self.instance)?));
+        }
+        // Unwrap-Ok: set above under the init lock.
+        Ok(self.buffer.get().unwrap().handle().id())
+    }
+
     fn buffer(&self) -> Result<&SimpleBuffer> {
-        self.buffer.as_ref().ok_or(ArgumentError::BadHandle.into())
+        self.buffer.get().ok_or(ArgumentError::BadHandle.into())
     }
 
-    fn note_used(&mut self, end: usize) {
-        self.used = self.used.max(end);
+    /// Read a caller-supplied path out of the shared buffer, bounds-checked. Slot discipline is
+    /// the client's own problem; the server only guarantees it never reads outside the buffer.
+    fn read_path(&self, offset: usize, name_len: usize) -> Result<PathBuf> {
+        if name_len >= PATH_MAX {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        let buffer = self.buffer()?;
+        let end = offset
+            .checked_add(name_len)
+            .ok_or(ArgumentError::InvalidArgument)?;
+        if end > buffer.max_len() {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        self.note_used(end);
+        let mut buf = vec![0; name_len];
+        buffer.read_offset(&mut buf, offset);
+        Ok(PathBuf::from(
+            String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
+        ))
     }
 
-    /// Zero what this client put in the buffer, before the object goes back in the pool for a
-    /// different security context to be handed.
+    /// Zero what this client put in the buffer and recover the object, before it goes back in the
+    /// pool for a different security context to be handed.
     ///
-    /// Objects are zero-filled at creation, so only a recycled buffer needs this. Discarding the
-    /// object's pages would be cheaper, but `MapControlCmd::Discard` only zeroes a mapping that
-    /// has a stable page table behind it, which a volatile buffer object does not.
-    fn wipe(&mut self) {
-        let used = self.used;
-        let Some(buffer) = self.buffer.as_mut() else {
-            return;
-        };
+    /// Objects are zero-filled at creation, so only a recycled buffer needs the wipe. Discarding
+    /// the object's pages would be cheaper, but `MapControlCmd::Discard` only zeroes a mapping
+    /// that has a stable page table behind it, which a volatile buffer object does not.
+    fn into_handle(self) -> Option<ObjectHandle> {
+        let used = self.used.load(Ordering::Relaxed);
+        let buffer = self.buffer.into_inner()?;
         const CHUNK: usize = 4096;
         let zeros = [0u8; CHUNK];
         let mut off = 0;
@@ -106,110 +177,31 @@ impl ClientInner<'_> {
             }
             off += n;
         }
-        self.used = 0;
-    }
-
-    /// Write through the handle's own buffer rather than building a fresh [`SimpleBuffer`] over a
-    /// clone of its handle: `SimpleBuffer::new` formats a string and adds an object note, so a
-    /// throwaway one costs a syscall per call and leaves a note behind that nothing removes.
-    fn buffer_mut(&mut self) -> Result<&mut SimpleBuffer> {
-        self.buffer.as_mut().ok_or(ArgumentError::BadHandle.into())
-    }
-}
-
-/// One open naming handle.
-///
-/// The lock is per-client, not per-server: two descriptors can be in `namei` at once, which is the
-/// point (`NameStore` is declared `Send + Sync` and every namespace it walks has its own interior
-/// lock). What it still serializes is two calls arriving on the *same* descriptor, which share one
-/// `SimpleBuffer` -- a caller that raced its own handle would otherwise have one call read the
-/// other's path and return the wrong object.
-struct NamespaceClient<'a> {
-    instance: ObjID,
-    inner: Mutex<ClientInner<'a>>,
-}
-
-// Safety: same assertion `NameStore` already makes for itself. Everything non-Send here is reached
-// only through `inner`'s mutex.
-unsafe impl Send for NamespaceClient<'_> {}
-unsafe impl Sync for NamespaceClient<'_> {}
-
-impl<'a> NamespaceClient<'a> {
-    fn new(session: NameSession<'a>, instance: ObjID) -> Option<Self> {
-        Some(Self {
-            instance,
-            inner: Mutex::new(ClientInner {
-                session,
-                buffer: None,
-                used: 0,
-            }),
-        })
-    }
-
-    /// Create the shared buffer if this is the first call that needs one, and report its object.
-    fn buffer_id(&self) -> Result<ObjID> {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.buffer.is_none() {
-            inner.buffer = Some(SimpleBuffer::new(get_sb_object(self.instance)?));
-        }
-        // Unwrap-Ok: just filled in above.
-        Ok(inner.buffer.as_ref().unwrap().handle().id())
-    }
-
-    fn into_handle(self) -> Option<ObjectHandle> {
-        let mut inner = self.inner.into_inner().unwrap();
-        inner.wipe();
-        Some(inner.buffer?.into_handle())
+        Some(buffer.into_handle())
     }
 }
 
 /// Look up a client and take a reference to it, releasing the handle-table lock before the caller
-/// does any work. Holding that lock across the operation is what made every naming call in the
-/// system serialize against every other one.
+/// does any work. The table is read-locked per call and write-locked only by open/close, so calls
+/// neither serialize on the table nor on each other.
 fn lookup_client(comp: ObjID, desc: Descriptor) -> Option<Arc<NamespaceClient<'static>>> {
     let service = NAMINGSERVICE.get()?;
-    let binding = service.handles.lock().unwrap();
+    let binding = service.handles.read().unwrap();
     binding.lookup(comp, desc).cloned()
-}
-
-impl<'a> ClientInner<'a> {
-    fn read_buffer(&mut self, name_len: usize) -> Result<PathBuf> {
-        if name_len >= PATH_MAX {
-            return Err(ArgumentError::InvalidArgument.into());
-        }
-        self.note_used(name_len);
-        let mut buf = vec![0; name_len];
-        self.buffer()?.read(&mut buf);
-        Ok(PathBuf::from(
-            String::from_utf8(buf).map_err(|_| ErrorKind::InvalidFilename)?,
-        ))
-    }
-
-    fn read_buffer_at(&mut self, name_len: usize, off: usize) -> Result<PathBuf> {
-        if name_len >= PATH_MAX {
-            return Err(ArgumentError::InvalidArgument.into());
-        }
-        self.note_used(off.saturating_add(name_len));
-        let mut buf = vec![0; name_len];
-        self.buffer()?.read_offset(&mut buf, off);
-        Ok(PathBuf::from(
-            String::from_utf8(buf).map_err(|_| ArgumentError::InvalidArgument)?,
-        ))
-    }
 }
 
 unsafe impl Send for Namer<'_> {}
 unsafe impl Sync for Namer<'_> {}
 
 struct Namer<'a> {
-    handles: Mutex<HandleMgr<Arc<NamespaceClient<'a>>>>,
+    handles: RwLock<HandleMgr<Arc<NamespaceClient<'a>>>>,
     names: NameStore,
 }
 
 impl Namer<'_> {
     fn new() -> Self {
         Self {
-            handles: Mutex::new(HandleMgr::new(None)),
+            handles: RwLock::new(HandleMgr::new(None)),
             names: NameStore::new(),
         }
     }
@@ -217,7 +209,7 @@ impl Namer<'_> {
     fn new_with(id: ObjID) -> Result<Self> {
         let names = NameStore::new_with(id)?;
         Ok(Self {
-            handles: Mutex::new(HandleMgr::new(None)),
+            handles: RwLock::new(HandleMgr::new(None)),
             names,
         })
     }
@@ -237,7 +229,7 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 }
 
 // How would this work if I changed the root while handles were open?
-#[secgate::entry(lib = "naming")]
+#[secgate::entry(lib = "naming-core")]
 pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
     heap_census_arm();
     // Anyone can call this gate; a second call must not unwind out of an extern "C" entry.
@@ -276,15 +268,14 @@ pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
         .id())
 }
 
-#[secgate::entry(lib = "naming")]
+#[secgate::entry(lib = "naming-core")]
 pub fn open_handle() -> Result<Descriptor> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().ok_or(ResourceError::Unavailable)?;
-    let mut binding = service.handles.lock().unwrap();
+    let mut binding = service.handles.write().unwrap();
 
     let session = service.names.root_session();
-    let client = NamespaceClient::new(session, info.source_context().unwrap())
-        .ok_or(ResourceError::Unavailable)?;
+    let client = NamespaceClient::new(session, info.source_context().unwrap_or(0.into()));
 
     let r = binding
         .insert(info.source_context().unwrap_or(0.into()), Arc::new(client))
@@ -342,7 +333,7 @@ pub fn open_handle() -> Result<Descriptor> {
     r
 }
 
-#[secgate::entry(lib = "naming")]
+#[secgate::entry(lib = "naming-core")]
 pub fn get_buffer(desc: Descriptor) -> Result<ObjID> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
@@ -350,12 +341,12 @@ pub fn get_buffer(desc: Descriptor) -> Result<ObjID> {
     client.buffer_id()
 }
 
-#[secgate::entry(lib = "naming")]
+#[secgate::entry(lib = "naming-core")]
 pub fn close_handle(desc: Descriptor) -> Result<()> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let service = NAMINGSERVICE.get().unwrap();
 
-    let mut binding = service.handles.lock().unwrap();
+    let mut binding = service.handles.write().unwrap();
 
     if let Some(client) = binding.remove(info.source_context().unwrap_or(0.into()), desc) {
         drop(binding);
@@ -374,63 +365,38 @@ pub fn close_handle(desc: Descriptor) -> Result<()> {
     Ok(())
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn put(desc: Descriptor, name_len: usize, id: ObjID) -> Result<()> {
+/// Client lookup shared by every operation entry.
+fn client_for(desc: Descriptor) -> Result<Arc<NamespaceClient<'static>>> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
-        .ok_or(ArgumentError::BadHandle)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-
-    inner.session.put(path, id)
+    lookup_client(info.source_context().unwrap_or(0.into()), desc)
+        .ok_or(ArgumentError::BadHandle.into())
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn mkns(desc: Descriptor, name_len: usize, persist: bool) -> Result<()> {
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
-        .ok_or(ArgumentError::BadHandle)?;
-    let mut inner = client.inner.lock().unwrap();
+// ---- inline forms: the path never touches shared state -----------------------------------------
 
-    let path = inner.read_buffer(name_len)?;
-
-    inner.session.mkns(path, persist)
+#[secgate::entry(lib = "naming-core")]
+pub fn put_inline(desc: Descriptor, path: InlinePath, id: ObjID) -> Result<()> {
+    client_for(desc)?.session().put(path.as_str()?, id)
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn link(desc: Descriptor, name_len: usize, link_len: usize) -> Result<()> {
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-    let link = inner.read_buffer_at(link_len, name_len)?;
-
-    inner.session.link(path, link)
+#[secgate::entry(lib = "naming-core")]
+pub fn mkns_inline(desc: Descriptor, path: InlinePath, persist: bool) -> Result<()> {
+    client_for(desc)?.session().mkns(path.as_str()?, persist)
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn get(desc: Descriptor, name_len: usize, flags: GetFlags) -> Result<NsNode> {
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-
-    inner.session.get(path, flags)
+#[secgate::entry(lib = "naming-core")]
+pub fn link_inline(desc: Descriptor, path: InlinePath, link: InlinePath) -> Result<()> {
+    client_for(desc)?
+        .session()
+        .link(path.as_str()?, link.as_str()?)
 }
 
-#[secgate::entry(lib = "naming")]
+#[secgate::entry(lib = "naming-core")]
 pub fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
     let t_entry = getphase::start();
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
+    let client = client_for(desc)?;
     let t_lookup = getphase::lap(&t_entry);
-    let inner = client.inner.lock().unwrap();
+    let session = client.session();
     let t_innerlock = getphase::lap(&t_entry);
 
     // `as_str`, not `to_path`: the path is already sitting in the gate's arguments and
@@ -438,9 +404,154 @@ pub fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result
     // allocate-and-free per lookup purely to change type. Kept because it is less work, not because
     // it is faster -- A/B'd at four rounds a side and the effect is below this instrument's
     // resolution (22 in this file).
-    let res = inner.session.get(path.as_str()?, flags);
+    let res = session.get(path.as_str()?, flags);
     getphase::record(t_lookup, t_innerlock, getphase::lap(&t_entry));
     res
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn remove_inline(desc: Descriptor, path: InlinePath) -> Result<()> {
+    client_for(desc)?.session().remove(path.as_str()?)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn rename_inline(desc: Descriptor, old: InlinePath, new: InlinePath) -> Result<()> {
+    client_for(desc)?
+        .session()
+        .rename(old.as_str()?, new.as_str()?)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn change_namespace_inline(desc: Descriptor, path: InlinePath) -> Result<()> {
+    let client = client_for(desc)?;
+    let mut session = client.session();
+    session.change_namespace(path.as_str()?)?;
+    *client.session.write().unwrap() = session;
+    Ok(())
+}
+
+// ---- buffer (spill) forms: paths live at caller-chosen slot offsets ----------------------------
+
+#[secgate::entry(lib = "naming-core")]
+pub fn put(desc: Descriptor, offset: usize, name_len: usize, id: ObjID) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    client.session().put(path, id)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn mkns(desc: Descriptor, offset: usize, name_len: usize, persist: bool) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    client.session().mkns(path, persist)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn link(desc: Descriptor, offset: usize, name_len: usize, link_len: usize) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    let link = client.read_path(offset + name_len, link_len)?;
+    client.session().link(path, link)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn get(desc: Descriptor, offset: usize, name_len: usize, flags: GetFlags) -> Result<NsNode> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    client.session().get(path, flags)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn remove(desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    client.session().remove(path)?;
+    Ok(())
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn rename(desc: Descriptor, offset: usize, old_len: usize, new_len: usize) -> Result<()> {
+    let client = client_for(desc)?;
+    let old_path = client.read_path(offset, old_len)?;
+    let new_path = client.read_path(offset + old_len, new_len)?;
+    client.session().rename(old_path, new_path)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn change_namespace(desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    let mut session = client.session();
+    session.change_namespace(path)?;
+    *client.session.write().unwrap() = session;
+    Ok(())
+}
+
+// ---- enumeration: the reply is written back into the caller's slot -----------------------------
+
+/// Write `nodes` into the client's buffer at `offset` and report how many fit. The count was
+/// already clamped to what a slot holds, so a short write only happens for a hostile offset near
+/// the end of the buffer -- report what was actually written, never more.
+fn write_enumeration(
+    client: &NamespaceClient<'_>,
+    offset: usize,
+    nodes: &[NsNode],
+) -> Result<usize> {
+    let slice =
+        unsafe { std::slice::from_raw_parts(nodes.as_ptr() as *const u8, size_of_val(nodes)) };
+    let n = client.buffer()?.write_offset(slice, offset);
+    client.note_used(offset + n);
+    Ok(n / size_of::<NsNode>())
+}
+
+fn slot_entry_cap(count: usize) -> usize {
+    count.min(BUFFER_SLOT_SIZE / size_of::<NsNode>())
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn enumerate_names(
+    desc: Descriptor,
+    offset: usize,
+    name_len: usize,
+    skip: usize,
+    count: usize,
+) -> Result<usize> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    let nodes = client
+        .session()
+        .enumerate_namespace(path, skip, slot_entry_cap(count))?;
+    write_enumeration(&client, offset, &nodes)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn enumerate_names_nsid(
+    desc: Descriptor,
+    id: ObjID,
+    offset: usize,
+    skip: usize,
+    count: usize,
+) -> Result<usize> {
+    let t_lock = std::time::Instant::now();
+    let client = client_for(desc)?;
+    let lock_ns = t_lock.elapsed().as_nanos() as u64;
+
+    let t_items = std::time::Instant::now();
+    let nodes = client
+        .session()
+        .enumerate_namespace_nsid(id, skip, slot_entry_cap(count))?;
+    let items_ns = t_items.elapsed().as_nanos() as u64;
+
+    let t_write = std::time::Instant::now();
+    let written = write_enumeration(&client, offset, &nodes)?;
+    srvenumstats::record(
+        lock_ns,
+        items_ns,
+        t_write.elapsed().as_nanos() as u64,
+        written as u64,
+    );
+
+    Ok(written)
 }
 
 /// Where a warm `get_inline` spends its time *inside the server*, so the gate call's own share can
@@ -452,6 +563,9 @@ pub fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result
 /// call, which at four threads is itself a contention term: read the *shares*, and expect the
 /// totals to be inflated relative to an uninstrumented run. sysperf.md round 6 is the cautionary
 /// tale for believing otherwise.
+///
+/// Post-rework note: "inner-lock" now measures the session snapshot (a read-lock + clone) rather
+/// than a mutex acquisition; the phase labels are kept so old and new runs line up.
 mod getphase {
     use std::{
         sync::atomic::{AtomicU64, Ordering},
@@ -497,102 +611,6 @@ mod getphase {
     }
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn rename(desc: Descriptor, old_len: usize, new_len: usize) -> Result<()> {
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let old_path = inner.read_buffer(old_len)?;
-    let new_path = inner.read_buffer_at(new_len, old_len)?;
-
-    inner.session.rename(old_path, new_path)
-}
-
-#[secgate::entry(lib = "naming")]
-pub fn remove(desc: Descriptor, name_len: usize) -> Result<()> {
-    let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-
-    inner.session.remove(path)?;
-
-    Ok(())
-}
-
-#[secgate::entry(lib = "naming")]
-pub fn enumerate_names(
-    desc: Descriptor,
-    name_len: usize,
-    skip: usize,
-    count: usize,
-) -> Result<usize> {
-    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-
-    // TODO: make not bad
-    let vec1 = inner.session.enumerate_namespace(path, skip, count)?;
-    let len = vec1.len();
-
-    let slice = unsafe {
-        std::slice::from_raw_parts(
-            vec1.as_ptr() as *const u8,
-            len * std::mem::size_of::<NsNode>(),
-        )
-    };
-    let n = inner.buffer_mut()?.write(slice);
-    inner.note_used(n);
-
-    Ok(len)
-}
-
-#[secgate::entry(lib = "naming")]
-pub fn enumerate_names_nsid(
-    desc: Descriptor,
-    id: ObjID,
-    skip: usize,
-    count: usize,
-) -> Result<usize> {
-    let t_lock = std::time::Instant::now();
-    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-    let lock_ns = t_lock.elapsed().as_nanos() as u64;
-
-    // TODO: make not bad
-    let t_items = std::time::Instant::now();
-    let vec1 = inner.session.enumerate_namespace_nsid(id, skip, count)?;
-    let items_ns = t_items.elapsed().as_nanos() as u64;
-    let len = vec1.len();
-
-    let t_write = std::time::Instant::now();
-    let slice = unsafe {
-        std::slice::from_raw_parts(
-            vec1.as_ptr() as *const u8,
-            len * std::mem::size_of::<NsNode>(),
-        )
-    };
-    let n = inner.buffer_mut()?.write(slice);
-    inner.note_used(n);
-    srvenumstats::record(
-        lock_ns,
-        items_ns,
-        t_write.elapsed().as_nanos() as u64,
-        len as u64,
-    );
-
-    Ok(len)
-}
-
 // Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md).
 mod srvenumstats {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -622,27 +640,15 @@ mod srvenumstats {
     }
 }
 
-#[secgate::entry(lib = "naming")]
-pub fn change_namespace(desc: Descriptor, name_len: usize) -> Result<()> {
-    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
-    let client =
-        lookup_client(info.source_context().unwrap_or(0.into()), desc).ok_or(ErrorKind::Other)?;
-    let mut inner = client.inner.lock().unwrap();
-
-    let path = inner.read_buffer(name_len)?;
-
-    inner.session.change_namespace(path)
-}
-
-
 // ---- naming-srv's own heap census --------------------------------------------------------------
 //
 // `leakcheck` proved this service's heap grows ~134 KB per compartment load while the *spawner's*
-// heap is flat, its handle table is flat, and its namespace cache is bit-identical across 224 opens.
-// Three mechanisms proposed, three measured and dead. The remaining question is what is actually
-// being retained, and the instrument that answers it already exists -- the per-size-class census in
-// `twz-rt` -- it has simply only ever been armed inside leakcheck. The counters are per-compartment
-// statics, so arming it here counts *this* compartment's allocations and nobody else's.
+// heap is flat, its handle table is flat, and its namespace cache is bit-identical across 224
+// opens. Three mechanisms proposed, three measured and dead. The remaining question is what is
+// actually being retained, and the instrument that answers it already exists -- the per-size-class
+// census in `twz-rt` -- it has simply only ever been armed inside leakcheck. The counters are
+// per-compartment statics, so arming it here counts *this* compartment's allocations and nobody
+// else's.
 //
 // Reported as a delta against the previous report, not a running total: a cumulative figure read
 // every 32 opens attributes all of history to the latest window, which is the same mistake as
@@ -699,18 +705,18 @@ fn heap_objects_line() {
         twizzler_abi::klog_println!("NAMING-HEAPOBJ unavailable");
         return;
     }
-    twizzler_abi::klog_println!(
-        "NAMING-HEAPOBJ main={} early={}",
-        buf[n - 2],
-        buf[n - 1]
-    );
+    twizzler_abi::klog_println!("NAMING-HEAPOBJ main={} early={}", buf[n - 2], buf[n - 1]);
     for i in (0..n - 2).step_by(3) {
         twizzler_abi::klog_println!(
             "NAMING-HEAPOBJ-ID slot={} id={:x}{:016x} kind={}",
             buf[i],
             buf[i + 1],
             buf[i + 2],
-            if (i / 3) < buf[n - 2] as usize { "main" } else { "early" }
+            if (i / 3) < buf[n - 2] as usize {
+                "main"
+            } else {
+                "early"
+            }
         );
     }
 }

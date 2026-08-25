@@ -104,10 +104,10 @@ pub(crate) fn run_mlibc_thread_dtors(tp: *mut u8, code: i32) {
 /// anything.
 ///
 /// Setting the namespace to "/" changes nothing: `NameRoot::Current` is set to "/" just above,
-/// a freshly-created server handle already sits at the root (`get_naming_handle` documents this and
-/// special-cases it), and `CURRENT_NS` is read only by `get_naming_handle`, where leaving it `None`
-/// and leaving it `Some("/")` take the same branch. `TWZ_RT_INITIAL_DIR` is the parent's cwd, so
-/// this fires whenever the parent is at the root -- the common case.
+/// and a freshly-created server handle already sits at the root -- with a single handle per
+/// runtime there is no pool to re-sync, so skipping the call skips a whole gate round-trip.
+/// `TWZ_RT_INITIAL_DIR` is the parent's cwd, so this fires whenever the parent is at the root --
+/// the common case.
 ///
 /// **This defers rather than deletes for a program that does use naming**: such a program acquires
 /// the handle at its first lookup instead. A do-nothing child never pays it at all, so the spawn

@@ -388,7 +388,7 @@ impl ReferenceRuntime {
     ) -> Result<ObjID> {
         let id = sys_object_create(*spec, src, ties)?;
         if let Some(name) = name {
-            if let Some(mut nh) = get_naming_handle() {
+            if let Some(nh) = get_naming_handle() {
                 nh.put(name, id)?;
             } else {
                 tracing::warn!("tried to bind object name {} before naming is setup", name);

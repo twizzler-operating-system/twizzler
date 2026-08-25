@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::CStr, time::Instant};
+use std::{collections::HashMap, ffi::CStr, sync::atomic::Ordering, time::Instant};
 
 use dynlink::{
     compartment::{Compartment, CompartmentId},
@@ -252,6 +252,10 @@ impl CompartmentMgr {
     }
 
     /// Get an iterator over all compartments (mutable).
+    pub fn compartments(&self) -> impl Iterator<Item = &RunComp> {
+        self.instances.values()
+    }
+
     pub fn compartments_mut(&mut self) -> impl Iterator<Item = &mut RunComp> {
         self.instances.values_mut()
     }
@@ -341,7 +345,8 @@ impl CompartmentMgr {
         tracing::trace!("runcomp usecount: {}", rc.use_count);
         if rc.use_count == 0 {
             if let Some(rc) = self.remove(instance) {
-                self.cleanup_queue.push(rc)
+                self.cleanup_queue.push(rc);
+                CLEANUP_BACKLOG.store(self.cleanup_queue.len(), Ordering::Relaxed);
             }
         }
     }
@@ -358,6 +363,7 @@ impl CompartmentMgr {
         if z && ex {
             if let Some(rc) = self.remove(instance) {
                 self.cleanup_queue.push(rc);
+                CLEANUP_BACKLOG.store(self.cleanup_queue.len(), Ordering::Relaxed);
                 return true;
             }
         }
@@ -414,13 +420,32 @@ impl CompartmentMgr {
         }
 
         self.cleanup_queue = pending;
+        CLEANUP_BACKLOG.store(self.cleanup_queue.len(), Ordering::Relaxed);
         let (comps, libs) = ready
             .into_iter()
-            .map(|c| dynlink.unload_compartment(c.compartment_id))
+            .map(|c| {
+                CLEANUPS_DONE.fetch_add(1, Ordering::Relaxed);
+                dynlink.unload_compartment(c.compartment_id)
+            })
             .unzip();
         (comps, libs)
     }
 }
+
+/// Mirror of `cleanup_queue.len()`, readable without the monitor lock collection. Drives the
+/// cleaner thread's self-boost ([super::thread::cleaner]): the reclaim3 census showed ~15k dead
+/// compartments' contexts still holding their mappings (92% of RAM pending-delete) with zero
+/// stuck-thread warnings — teardown was purely outrun by production at User priority.
+pub(crate) static CLEANUP_BACKLOG: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Compartments fully processed through `process_cleanup_queue` (unload reached).
+pub(crate) static CLEANUPS_DONE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// `RunComp::drop` executions — the instance-delete trigger.
+pub(crate) static RUNCOMP_DROPS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 impl super::Monitor {
     /// Get CompartmentInfo for this caller. Note that this will write to the compartment-thread's

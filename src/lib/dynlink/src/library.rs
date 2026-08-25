@@ -133,6 +133,17 @@ impl UnloadedLibrary {
 #[repr(transparent)]
 pub struct LibraryId(pub(crate) NodeIndex);
 
+/// The exported name of a gate's trampoline. A weak-bound gate import (`gatecall(weak)`)
+/// references this spelling directly; the bare gate name is what `.twz_secgate_info` records.
+pub(crate) const GATE_PREFIX: &str = "__TWIZZLER_SECURE_GATE_";
+
+/// Whether `name` is the pre-prefixed spelling of a gate trampoline. Such a name must bind only
+/// where the bare-name prefixed retry would have run (same compartment, or a gate-exporting
+/// library) — see the lookup loops in [crate::context].
+pub(crate) fn is_gate_symbol(name: &str) -> bool {
+    name.starts_with(GATE_PREFIX)
+}
+
 impl From<LoadedImageId> for LibraryId {
     fn from(value: LoadedImageId) -> Self {
         LibraryId(NodeIndex::new(value as usize))
@@ -472,12 +483,8 @@ impl Library {
         // string build and the second hash probe entirely for the libraries that have none (which
         // is most of them: libstd, libc, libtwz_rt). Previously this constructed a 256-byte
         // SmallString and probed the hash table for every candidate library on every lookup.
-        if allow_prefix
-            && ret.is_none()
-            && self.secgate_info.num > 0
-            && !name.starts_with("__TWIZZLER_SECURE_GATE_")
-        {
-            let mut prefixedname = SmallString::<[u8; 256]>::from_str("__TWIZZLER_SECURE_GATE_");
+        if allow_prefix && ret.is_none() && self.secgate_info.num > 0 && !is_gate_symbol(name) {
+            let mut prefixedname = SmallString::<[u8; 256]>::from_str(GATE_PREFIX);
             prefixedname.push_str(name);
 
             if let Some(o) = self.do_lookup_symbol(&prefixedname, allow_weak) {
@@ -504,6 +511,11 @@ impl Library {
         if self.secgate_info.num == 0 {
             return false;
         }
+        // Prefix-stripped (reconstruction of twizzler-8b's stage-1 hunk, plans/namerplan.md):
+        // the gate-info set records bare names, but a weak-bound gate import references the
+        // literal trampoline symbol `__TWIZZLER_SECURE_GATE_<name>`. Both spellings name the
+        // same gate, so the permission check must accept both.
+        let name = name.strip_prefix(GATE_PREFIX).unwrap_or(name);
         let build = || {
             let _start = std::time::Instant::now();
             let set: std::collections::HashSet<Box<str>> = self

@@ -507,6 +507,9 @@ impl NameStore {
     }
 }
 
+/// Clone is cheap (a store reference and an `Arc`), which is what lets the naming server build a
+/// session per gate call from a per-handle template instead of serializing calls on one session.
+#[derive(Clone)]
 pub struct NameSession<'a> {
     store: &'a NameStore,
     working_ns: Option<Arc<dyn Namespace>>,

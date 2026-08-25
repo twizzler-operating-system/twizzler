@@ -169,11 +169,17 @@ impl Context {
                 unsafe { *target = val.wrapping_add_signed(addend) }
             }
             REL_TPOFF => {
-                let sym = open_sym()?;
-                if let Some(tls) = sym.lib.tls_id {
+                // sym 0: an offset into this library's own TLS block (local IE TLS), same
+                // convention REL_DTPMOD handles above.
+                let (raw, tls_id) = if rel.sym() == 0 {
+                    (0, lib.tls_id)
+                } else {
+                    let sym = open_sym()?;
+                    (sym.raw_value(), sym.lib.tls_id)
+                };
+                if let Some(tls) = tls_id {
                     unsafe {
-                        *target = sym
-                            .raw_value()
+                        *target = raw
                             .wrapping_sub(tls.offset() as u64)
                             .wrapping_add_signed(addend)
                     }

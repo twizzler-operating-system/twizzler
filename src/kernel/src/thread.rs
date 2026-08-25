@@ -304,6 +304,7 @@ impl Thread {
         spawn_args: Option<ThreadSpawnArgs>,
         priority: Priority,
     ) -> Self {
+        THREAD_NEWS.fetch_add(1, Ordering::Relaxed);
         /* TODO: guard page support */
         let kernel_stack = KernelStack::new();
         let id = ID_COUNTER.next();
@@ -1081,8 +1082,16 @@ impl<'a> Drop for CriticalGuard<'a> {
     }
 }
 
+/// Alloc/drop totals for `Thread` structs, printed by the pressure census. A `Thread` alive
+/// past reaping is invisible to every queue/registry counter, but it pins its `SecCtxMgr`'s
+/// attached security contexts (and their mappings) -- a growing news-drops gap under churn is
+/// the leak the census is hunting (pagerwedge.md §3.8).
+pub static THREAD_NEWS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+pub static THREAD_DROPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 impl Drop for Thread {
     fn drop(&mut self) {
+        THREAD_DROPS.fetch_add(1, Ordering::Relaxed);
         // Only delete the repr if userspace never got its id. `sys_spawn` returns the id with no
         // reference held on it, so deleting here races the spawner's map: the thread can run, exit
         // and be reaped before the spawner ever sees the object, and its map then fails with
