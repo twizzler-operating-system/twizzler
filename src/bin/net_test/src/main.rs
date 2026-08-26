@@ -466,6 +466,81 @@ fn dropping_a_stream_delivers_eof() {
 
 // --- UDP ----------------------------------------------------------------------------------
 
+/// How long [`diagnose_udp_timeout`] keeps sampling after the readiness wait has already given up.
+///
+/// Only has to separate "late" from "never": the peer finishes sending 3s in and the wait already
+/// ran for `PEER_TIMEOUT`, so anything still in flight after that is not merely slow.
+const UDP_DIAG_GRACE: Duration = Duration::from_secs(2);
+
+/// Report *why* the readiness wait timed out, then panic.
+///
+/// The assert this replaces could not distinguish the two things it might mean, and five
+/// occurrences of this flake were adjudicated without that distinction (see
+/// nightsweep-notes/finding-udp-kvm-residual.md). A nonblocking read is deliberately used rather
+/// than another readiness predicate: it is ground truth about whether a datagram is sitting in the
+/// socket, and adding a fourth expression that decides "is this readable" is exactly the drift
+/// that `stream_socket_ready`/`udp_socket_ready` exist to prevent.
+///
+///   read succeeds now          -- the datagram was there; readiness was never published (family B)
+///   succeeds within the grace  -- delivery was merely late
+///   never succeeds             -- nothing reached this socket at all (family A)
+///
+/// Costs nothing on a passing run: this is only reached once the wait has already failed.
+fn diagnose_udp_timeout(sock: &UdpSocket, peer: Child) -> ! {
+    let fd = sock.as_raw_fd();
+    let mut buf = [0u8; 64];
+    let mut last_err = None;
+
+    let mut try_read = || {
+        let mut ctx = IoCtx::new(None, IoFlags::NONBLOCKING, None);
+        twz_rt_fd_pread(fd, &mut buf, &mut ctx)
+    };
+
+    // `Ok(0)` is not an empty datagram -- `read_from` returns it when the socket is no longer
+    // open -- so the byte count is reported rather than collapsed into a bool.
+    let immediate = match try_read() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            last_err = Some(e);
+            None
+        }
+    };
+
+    let mut late = None;
+    if immediate.is_none() {
+        let start = Instant::now();
+        while start.elapsed() < UDP_DIAG_GRACE {
+            std::thread::sleep(Duration::from_millis(50));
+            match try_read() {
+                Ok(n) => {
+                    late = Some((n, start.elapsed()));
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+    }
+
+    // Bounds the sends, not their delivery -- but a non-zero peer means the datagrams were never
+    // sent, which is a different bug from any of the three above.
+    let peer_ok = peer_status(peer, "udp-send");
+
+    panic!(
+        "UDP socket never reported an incoming datagram within {:?}. \
+         peer sent {} datagrams and exited {}; \
+         nonblocking read at timeout: {:?}; \
+         arrived late: {:?} (grace {:?}); \
+         last read error: {:?}",
+        PEER_TIMEOUT,
+        UDP_SEND_COUNT,
+        if peer_ok { "0" } else { "NON-ZERO" },
+        immediate,
+        late,
+        UDP_DIAG_GRACE,
+        last_err,
+    );
+}
+
 /// Part 1 bug 1: UDP wait words were only ever set, never cleared, so once a socket had received
 /// anything it claimed to be readable forever and async readers spun. After draining the one
 /// datagram, a readiness wait must actually block.
@@ -486,10 +561,9 @@ fn udp_stops_reporting_readable_once_drained() {
         &UDP_SEND_COUNT.to_string(),
     );
 
-    assert!(
-        wait_ready(kq, PEER_TIMEOUT),
-        "UDP socket never reported an incoming datagram"
-    );
+    if !wait_ready(kq, PEER_TIMEOUT) {
+        diagnose_udp_timeout(&sock, peer);
+    }
     // Let the peer finish sending before draining. Its exit only bounds the sends, not their
     // delivery, so the drain below waits out `UDP_SETTLE` rather than the first gap.
     expect_peer_ok(peer, "udp-send");

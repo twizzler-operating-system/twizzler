@@ -8,7 +8,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
-    spinlock::{LockGuard, RelaxStrategy, Spinlock},
+    spinlock::{LockGuard, Spinlock},
     syscall::sync::{add_to_requeue, claim_own_wakeup, requeue_all, sys_thread_sync},
     thread::{Thread, ThreadRef, current_thread_ref},
 };
@@ -39,12 +39,12 @@ impl CondVar {
     }
 
     #[track_caller]
-    pub fn wait_waiters<'a, T, R: RelaxStrategy>(
+    pub fn wait_waiters<'a, T>(
         &self,
-        mut guard: LockGuard<'a, T, R>,
+        mut guard: LockGuard<'a, T>,
         mut timeout: Option<Duration>,
         waiter: Option<ThreadSyncSleep>,
-    ) -> (LockGuard<'a, T, R>, bool) {
+    ) -> (LockGuard<'a, T>, bool) {
         if waiter.is_none() && timeout.is_none() {
             return (self.wait(guard), false);
         }
@@ -86,10 +86,10 @@ impl CondVar {
     }
 
     #[track_caller]
-    pub fn wait<'a, T, R: RelaxStrategy>(
+    pub fn wait<'a, T>(
         &self,
-        mut guard: LockGuard<'a, T, R>,
-    ) -> LockGuard<'a, T, R> {
+        mut guard: LockGuard<'a, T>,
+    ) -> LockGuard<'a, T> {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();
@@ -170,13 +170,13 @@ mod tests {
 
     use super::CondVar;
     use crate::{
-        spinlock::ReschedulingSpinlock,
+        spinlock::Spinlock,
         thread::{entry::run_closure_in_new_thread, priority::Priority},
     };
 
     #[kernel_test]
     fn test_condvar() {
-        let lock = Arc::new(ReschedulingSpinlock::new(0));
+        let lock = Arc::new(Spinlock::new(0));
         let cv = Arc::new(CondVar::new());
         let cv2 = cv.clone();
         let lock2 = lock.clone();

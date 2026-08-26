@@ -183,6 +183,127 @@ impl IfaceSet {
     }
 }
 
+/// Diagnostic counters for the "a successful send never wakes the poll thread" hypothesis.
+///
+/// `blocking`'s fast path returns before `core.poll()` and before `wake()`, and smoltcp's
+/// `poll_delay` is `None` for a compartment whose only socket has an empty tx buffer
+/// (`udp::Socket::poll_at` -> `PollAt::Ingress` -> `None`). So a datagram queued by a successful
+/// `send_slice` waits for an unrelated wakeup. If that is what happens, POLLS stays flat while
+/// FAST_OK climbs.
+///
+/// Relaxed adds only: no wake, no lock, no branch on socket state. A wake here is the candidate
+/// *fix*, and adding one would destroy the measurement meant to justify it.
+static ENGINE_POLLS: AtomicU64 = AtomicU64::new(0);
+static ENGINE_FAST_OK: AtomicU64 = AtomicU64::new(0);
+/// Entries to `blocking`, counted before the fast/slow branch, and wakeups returned from
+/// `waiter.wait`. Both exist so that a zero in POLLS is a value someone measured rather than an
+/// absence of output: the first trigger fires for any compartment that touches a socket at all,
+/// the second separates "blocked and never woken" from "woken repeatedly, still not ready".
+static ENGINE_CALLS: AtomicU64 = AtomicU64::new(0);
+static ENGINE_WAKES: AtomicU64 = AtomicU64::new(0);
+/// Wakes issued because a fast-path send queued egress. Separate from every other counter so that
+/// "the fix engaged" is a measurement and not an inference from `polls` having moved -- `polls`
+/// can rise for reasons that have nothing to do with this change.
+static ENGINE_TXWAKE: AtomicU64 = AtomicU64::new(0);
+/// Entries to `TcpStreamInner::drop`, and the socket state seen there before `close()`.
+///
+/// The lost-FIN population's decisive question. net-srv's per-destination frame counters show a
+/// failing round delivering exactly one frame to the peer and a passing round two, while the
+/// parent's engine polls 149-224 times either way -- so a *queued* FIN would have gone out on some
+/// pass, and the FIN is therefore never queued. That points at `close()` never running, i.e. this
+/// `drop` never firing. `TCPDROPS` reading 0 for the parent in a failing round confirms it and
+/// kills both rival explanations at once; any other value refutes it.
+///
+/// `TCPDROP_STATE` separates "drop never ran" from "drop ran on a socket in a state where close()
+/// emits no FIN" -- different bugs with identical symptoms.
+static TCPDROPS: AtomicU64 = AtomicU64::new(0);
+static TCPDROP_STATE: AtomicU64 = AtomicU64::new(999);
+
+/// Called from `TcpStreamInner::drop`, before `close()`.
+pub(super) fn note_tcp_drop(state: State) {
+    TCPDROP_STATE.store(
+        match state {
+            State::Closed => 0,
+            State::Listen => 1,
+            State::SynSent => 2,
+            State::SynReceived => 3,
+            State::Established => 4,
+            State::FinWait1 => 5,
+            State::FinWait2 => 6,
+            State::CloseWait => 7,
+            State::Closing => 8,
+            State::LastAck => 9,
+            State::TimeWait => 10,
+        },
+        Ordering::Relaxed,
+    );
+    let n = TCPDROPS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        pollprobe("tcpdrop");
+    }
+}
+/// Last octet of this compartment's own address, so the console line names who it belongs to --
+/// every compartment shares one console, and `.106` is the address the net-srv counter already
+/// keys on.
+static ENGINE_OCTET: AtomicU64 = AtomicU64::new(999);
+
+/// One line shape for every emit site.
+///
+/// The first version of this probe gated its report on `ENGINE_FAST_OK`, i.e. on a sibling of the
+/// quantity under test. A compartment that never reached the fast path printed nothing, so
+/// "never polled" and "polled normally, never fast-pathed" -- opposite answers -- produced the
+/// same silence, and the probe went quiet in exactly the population it was built to describe.
+/// Each counter now triggers on its own value and every line carries all four, so any one site
+/// firing turns the other three zeros into measurements.
+fn pollprobe(site: &str) {
+    // One console write for the whole line, rather than `klog_println!`.
+    //
+    // `klog_println!` drives `core::fmt` straight at `sys_kernel_console_write`, which issues a
+    // separate syscall per literal fragment and per argument -- thirteen for the line below. The
+    // serial lock is only held for the duration of one call, so with a dozen compartments logging
+    // at once the console spliced them character by character: `POLLPROBE octet=2215 fastok=` is
+    // two lines interleaved, and ~70% of probe lines in the first smoke sweep arrived
+    // unparseable. The parser demands all six fields, so those were discarded rather than
+    // misread -- but the loss is heaviest exactly when many compartments start at once, which is
+    // when a compartment most needs to prove it exists. That turns splicing into another source
+    // of the false silence this probe exists to eliminate.
+    //
+    // Buffer overflow truncates, and a truncated line fails the parser's full-field match, so the
+    // failure direction stays "discarded", never "plausible wrong number".
+    use core::fmt::Write;
+    struct Line {
+        b: [u8; 256],
+        n: usize,
+    }
+    impl Write for Line {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let end = (self.n + s.len()).min(self.b.len());
+            self.b[self.n..end].copy_from_slice(&s.as_bytes()[..end - self.n]);
+            self.n = end;
+            Ok(())
+        }
+    }
+    let mut line = Line { b: [0; 256], n: 0 };
+    let _ = writeln!(
+        line,
+        "POLLPROBE octet={} site={} calls={} fastok={} polls={} wakes={} txwake={} tcpdrops={} dropstate={}",
+        ENGINE_OCTET.load(Ordering::Relaxed),
+        site,
+        ENGINE_CALLS.load(Ordering::Relaxed),
+        ENGINE_FAST_OK.load(Ordering::Relaxed),
+        ENGINE_POLLS.load(Ordering::Relaxed),
+        ENGINE_WAKES.load(Ordering::Relaxed),
+        ENGINE_TXWAKE.load(Ordering::Relaxed),
+        TCPDROPS.load(Ordering::Relaxed),
+        TCPDROP_STATE.load(Ordering::Relaxed),
+    );
+    twizzler_abi::syscall::sys_kernel_console_write(
+        twizzler_abi::syscall::KernelConsoleSource::Console,
+        &line.b[..line.n],
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
+}
+
 lazy_static::lazy_static! {
     pub(crate) static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
     pub(crate) static ref WAITERS: Arc<Waiters> = Arc::new(Waiters::default());
@@ -523,10 +644,61 @@ impl Engine {
     pub fn blocking<R>(
         &self,
         non_block: bool,
+        f: impl FnMut(&mut Core) -> std::io::Result<R>,
+    ) -> std::io::Result<R> {
+        self.blocking_inner(non_block, false, f)
+    }
+
+    /// `blocking`, for operations that queue egress.
+    ///
+    /// The fast path returns before `core.poll()` and before `self.wake()`, so a `send_slice`
+    /// that succeeds immediately queues a datagram and tells nobody. The poll thread is asleep on
+    /// `notify` with no timeout -- `Interface::poll_delay` yields `None`, and it computed that
+    /// deadline before the send existed -- so the datagram waits for an unrelated wakeup. Whether
+    /// it leaves at all then depends on incidental traffic landing inside the peer's timeout,
+    /// which is what made the flake intermittent rather than total.
+    ///
+    /// Measured before this change: the UDP peer's engine ran `calls == fastok == 16`,
+    /// `wakes == 0` in every round, pass and fail alike -- it never once took the slow path, so
+    /// it never polled and never woke anything. Only `polls` differed (1 when it failed, 3-4 when
+    /// it passed), i.e. delivery was decided entirely by how often the background poll thread
+    /// happened to run for reasons of its own.
+    ///
+    /// Kept separate from `blocking` rather than made unconditional: `blocking` is generic over
+    /// its closure and cannot tell a send from a read, and an unconditional wake would put a
+    /// syscall on every socket operation. Here the closure returns Ok only when `send_slice`
+    /// succeeded, so the wake is conditioned on egress actually having been queued.
+    pub fn blocking_egress<R>(
+        &self,
+        non_block: bool,
+        f: impl FnMut(&mut Core) -> std::io::Result<R>,
+    ) -> std::io::Result<R> {
+        self.blocking_inner(non_block, true, f)
+    }
+
+    fn blocking_inner<R>(
+        &self,
+        non_block: bool,
+        egress: bool,
         mut f: impl FnMut(&mut Core) -> std::io::Result<R>,
     ) -> std::io::Result<R> {
+        // Before the lock, not after: a compartment wedged on `core` or asleep in `wait` still
+        // proves itself armed and alive, which is what makes its later zeros readable.
+        if (ENGINE_CALLS.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
+            pollprobe("call");
+        }
         let mut core = self.core.lock().unwrap();
         if let Ok(r) = f(&mut *core) {
+            if (ENGINE_FAST_OK.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
+                pollprobe("fast");
+            }
+            if egress {
+                // Guard first: wake() is a syscall, and holding the core mutex across it would
+                // serialise every other socket operation behind the poll thread waking up.
+                drop(core);
+                ENGINE_TXWAKE.fetch_add(1, Ordering::Relaxed);
+                self.wake();
+            }
             return Ok(r);
         }
         // Immediately poll, since we wait to have as up-to-date state as possible.
@@ -547,6 +719,9 @@ impl Engine {
                     }
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
+                    if (ENGINE_WAKES.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
+                        pollprobe("wake");
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -720,6 +895,9 @@ impl Core {
     }
 
     fn poll(&mut self, waiter: &Condvar) -> bool {
+        if (ENGINE_POLLS.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
+            pollprobe("poll");
+        }
         let mut res = false;
         for ifaceset in &mut self.ifaceset {
             res |= ifaceset.poll(&mut self.socketset);
@@ -796,6 +974,24 @@ fn get_twznet_device_and_interface() -> (Interface, NetClient) {
         }
         None => device.info.addr,
     };
+
+    // Take the diagnostic octet from the *effective* address, not `device.info.addr`.
+    // net-srv hands out 10.0.2.15..30 in whatever order compartments open a client; the tests pin
+    // themselves with TWZ_NET_ADDR (.100 parent, .101-.111 peers). Reading net-srv's assignment
+    // gave octets 16-30 and no `.106` at all -- an identifier that looks authoritative while
+    // quantifying over the wrong set, which is exactly what this file warns about for the
+    // "new net client: addr = ..." log line.
+    if let std::net::IpAddr::V4(v4) = addr {
+        ENGINE_OCTET.store(v4.octets()[3] as u64, Ordering::Relaxed);
+    }
+    // Outside the `if`, deliberately. This is the positive control -- every compartment that
+    // builds an engine announces itself with all counters at their initial values, so silence
+    // carries one meaning (no engine was built) rather than standing in for any counter that
+    // failed to cross a threshold. Written first *inside* the V4 arm under a comment calling it
+    // unconditional, which would have made a non-V4 compartment read as unarmed: the control
+    // reacquiring the exact blind spot it exists to remove, behind a comment asserting otherwise.
+    // A non-V4 address now reports octet=999, which is a value, not an absence.
+    pollprobe("init");
 
     tracing::info!(
         "setting up interface with addr {} and prefix {}",

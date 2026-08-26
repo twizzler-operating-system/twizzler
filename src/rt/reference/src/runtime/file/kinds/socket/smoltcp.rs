@@ -415,7 +415,7 @@ impl SmolTcpStream {
      */
     pub fn write(&self, buf: &[u8], flags: IoFlags) -> Result<usize, Error> {
         let engine = &ENGINE;
-        engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
+        engine.blocking_egress(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
                 let n = socket.send_slice(buf).unwrap();
@@ -576,12 +576,12 @@ impl Drop for TcpStreamInner {
         // no FIN, lingered in the socket set for the life of the process, and never gave its
         // ephemeral port back. close() is a no-op in the states an explicit shutdown() leaves
         // behind, so doing it unconditionally here is safe.
-        ENGINE
-            .core
-            .lock()
-            .unwrap()
-            .get_mutable_socket(self.socket_handle)
-            .close();
+        {
+            let mut core = ENGINE.core.lock().unwrap();
+            let sock = core.get_mutable_socket(self.socket_handle);
+            super::engine::note_tcp_drop(sock.state());
+            sock.close();
+        }
         ENGINE.track(
             self.socket_handle,
             self.port,
@@ -703,7 +703,7 @@ impl UdpSocket {
      * writes given data to the connected socket.
      */
     pub fn write_to(&self, buf: &[u8], meta: UdpMetadata, flags: IoFlags) -> Result<(), Error> {
-        ENGINE.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
+        ENGINE.blocking_egress(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_send() {
                 let r = socket.send_slice(buf, meta).unwrap();

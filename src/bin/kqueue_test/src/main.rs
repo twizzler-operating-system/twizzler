@@ -1,12 +1,16 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use twizzler_rt_abi::{
     bindings::{
         kevent, option_duration, twz_rt_fd_kevent, EVFILT_READ, EVFILT_USER, EV_ADD, EV_CLEAR,
         EV_DELETE, EV_ERROR, EV_ONESHOT, EV_RECEIPT, NOTE_TRIGGER, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        WAIT_READ,
     },
-    fd::{twz_rt_fd_get_info, twz_rt_fd_open_kqueue, twz_rt_fd_open_pipe, RawFd},
-    io::{twz_rt_fd_pread, twz_rt_fd_pwrite, IoCtx},
+    fd::{twz_rt_fd_close, twz_rt_fd_get_info, twz_rt_fd_open_kqueue, twz_rt_fd_open_pipe, RawFd},
+    io::{twz_rt_fd_pread, twz_rt_fd_pwrite, twz_rt_fd_waitpoint, IoCtx},
 };
 
 // Not worth a libc dependency for one constant; this is the value mlibc uses.
@@ -323,6 +327,81 @@ fn test_clear_on_pipe_degrades_to_level() {
     twz_rt_fd_pread(read_fd, &mut buf, &mut IoCtx::default()).expect("read from pipe");
 }
 
+/// A pipe with no writers left must report readable, so an EOF is reachable through kevent.
+///
+/// This is the kqueue half of the readiness/read disagreement: `read()` has always returned
+/// `Ok(0)` here immediately, while the readiness path armed a sleep on the buffer's data word and
+/// `close_writer` moved the *writer count*, so a kevent-driven reader waited on a word nothing was
+/// going to touch. Fails before the `PipeBase` event-word change and passes after -- which is the
+/// point of it: `read_output`-style poll callers were the only consumer the earlier fix covered.
+#[cfg_attr(test, test)]
+fn test_pipe_eof_reports_readable() {
+    println!("test_pipe_eof_reports_readable");
+    let (read_fd, write_fd) = make_pipe();
+    let kq = twz_rt_fd_open_kqueue(0).expect("open kqueue");
+
+    let changes = [add_read_event(read_fd, 0)];
+    let mut events = [kevent::default(); 4];
+
+    // An idle pipe with a live writer is not readable.
+    let n = kevent_call(kq, &changes, &mut events, Some(Duration::from_millis(50)));
+    assert_eq!(n, 0, "expected no events while the write end is open and idle");
+
+    // The close has to land while kevent is *blocked*, which is the whole point. Closing first
+    // and then calling kevent only exercises the level check (`wp.ready`), which the widened
+    // readiness predicate already satisfies -- that spelling passed before the fix and so tested
+    // nothing. Blocking first forces the sleep path: kevent has to be woken by the close, and
+    // pre-fix it is parked on the buffer's data word, which a close does not touch.
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        twz_rt_fd_close(write_fd);
+    });
+
+    let n = kevent_call(kq, &[], &mut events, Some(Duration::from_secs(5)));
+    closer.join().expect("closer thread");
+    assert_eq!(n, 1, "closing the write end must make the read end readable (EOF)");
+    assert_eq!(events[0].ident, read_fd as usize);
+    assert_eq!(events[0].filter, EVFILT_READ);
+
+    let mut buf = [0u8; 8];
+    let len = twz_rt_fd_pread(read_fd, &mut buf, &mut IoCtx::default()).expect("read at EOF");
+    assert_eq!(len, 0, "a read at EOF must return 0");
+}
+
+/// EOF must be expressible through the *single-word* waitpoint the C ABI exposes.
+///
+/// `twz_rt_fd_waitpoint` returns one word and one value across `extern "C"` with nowhere to put a
+/// second, and `twizzler_futures::TwizzlerWaitable` blanket-impls over it -- so every async reader
+/// inherits whatever this path can express. Adding a second sleep word to `WaitpointResult` could
+/// never reach here, which is why the fix had to move to a word that itself changes on a writer
+/// close. This test is the one that would have caught that: it is unfixable by construction under
+/// the earlier design, and it does not involve poll, select or kqueue at all.
+#[cfg_attr(test, test)]
+fn test_pipe_eof_visible_through_fd_waitpoint() {
+    println!("test_pipe_eof_visible_through_fd_waitpoint");
+    let (read_fd, write_fd) = make_pipe();
+
+    let (word, value, ready) =
+        twz_rt_fd_waitpoint(read_fd, WAIT_READ).expect("waitpoint on a live pipe");
+    assert!(!ready, "an idle pipe with a live writer must not report read-ready");
+
+    twz_rt_fd_close(write_fd);
+
+    // A sleeper armed on `value` wakes only if the word it sampled actually moves.
+    let now = unsafe { (*word).load(Ordering::SeqCst) };
+    assert_ne!(
+        now, value,
+        "closing the write end left the sampled waitpoint word untouched: a sleeper armed on it \
+         would never wake"
+    );
+
+    let (_w, _v, ready) =
+        twz_rt_fd_waitpoint(read_fd, WAIT_READ).expect("waitpoint after the writer closed");
+    assert!(ready, "a pipe at EOF must report read-ready");
+
+    twz_rt_fd_close(read_fd);
+}
+
 // Under `--test` libtest supplies its own entry point, so this one is unused there.
 #[cfg(not(test))]
 fn main() {
@@ -334,5 +413,22 @@ fn main() {
     test_user_filter_trigger();
     test_user_filter_wakes_blocked_kevent();
     test_clear_on_pipe_degrades_to_level();
+
+    // The two EOF controls run under catch_unwind and report as a single line, so a pre-fix run
+    // shows *both* results instead of aborting on the first panic. Each has to be seen failing
+    // before the fix, or neither is a control -- and the second one is the whole point, since it
+    // is the consumer no per-call-site fix could have reached.
+    let kevent_eof = std::panic::catch_unwind(test_pipe_eof_reports_readable).is_ok();
+    let waitpoint_moved =
+        std::panic::catch_unwind(test_pipe_eof_visible_through_fd_waitpoint).is_ok();
+    println!(
+        "EOFCONTROL kevent_eof={} waitpoint_word_moved={}",
+        kevent_eof, waitpoint_moved
+    );
+    if !(kevent_eof && waitpoint_moved) {
+        println!("kqueue_test: EOF controls FAILED");
+        std::process::exit(1);
+    }
+
     println!("kqueue_test: all tests passed");
 }

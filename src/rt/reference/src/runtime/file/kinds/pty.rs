@@ -167,7 +167,6 @@ impl Fd for PtyHandleKind {
         };
         Ok(WaitpointResult {
             sleep: wp,
-            also: None,
             ready,
             keepalive: None,
         })
@@ -235,29 +234,22 @@ impl Fd for Pipe {
     }
 
     fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
-        if kind == WAIT_WRITE {
-            // Sample once, and test readiness against that same sample -- see
-            // Pipe::readers_waitpoint. A pipe with no readers left is ready: the write fails
-            // with BrokenPipe rather than blocking.
-            let readers = self.readers();
-            Ok(WaitpointResult {
-                sleep: self.write_waitpoint(),
-                also: Some(self.readers_waitpoint(readers)),
-                ready: self.has_avail_space() || readers == 0,
-                keepalive: None,
-            })
+        // Sample this side's counter before testing readiness -- see Pipe::events_waitpoint.
+        let write_side = kind == WAIT_WRITE;
+        let events = self.events(write_side);
+        let ready = if write_side {
+            // No readers left is ready to write: the write fails with BrokenPipe, it does not
+            // block.
+            self.has_avail_space() || self.readers() == 0
         } else {
-            // Likewise: no writers left means EOF, which read reports as Ok(0). Without the
-            // writers word in the sleep set this never wakes, because close_writer moves that
-            // word and the buffer's head -- the only thing read_waitpoint arms on -- stays put.
-            let writers = self.writers();
-            Ok(WaitpointResult {
-                sleep: self.read_waitpoint(),
-                also: Some(self.writers_waitpoint(writers)),
-                ready: self.has_pending_data() || writers == 0,
-                keepalive: None,
-            })
-        }
+            // No writers left is EOF, which read reports as Ok(0).
+            self.has_pending_data() || self.writers() == 0
+        };
+        Ok(WaitpointResult {
+            sleep: self.events_waitpoint(write_side, events),
+            ready,
+            keepalive: None,
+        })
     }
 
     fn shutdown(&self, sh: std::net::Shutdown) -> Result<()> {

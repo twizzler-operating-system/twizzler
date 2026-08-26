@@ -1,38 +1,13 @@
 use core::{
     cell::UnsafeCell,
-    marker::PhantomData,
     panic::Location,
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 use crate::{
-    processor::{
-        sched::{SchedFlags, schedule},
-        spin_wait_until,
-    },
+    processor::spin_wait_until,
     thread::locktrack,
 };
-
-pub trait RelaxStrategy {
-    fn relax(iters: usize);
-}
-
-pub struct Reschedule {}
-impl RelaxStrategy for Reschedule {
-    #[inline]
-    fn relax(iters: usize) {
-        if iters > 100 {
-            schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT);
-        }
-    }
-}
-pub struct SpinLoop {}
-impl RelaxStrategy for SpinLoop {
-    // Empty, and called once per iteration of the spin loop -- at opt-level 0 that is a call
-    // instruction per iteration for a function that does nothing.
-    #[inline(always)]
-    fn relax(_iters: usize) {}
-}
 
 /// Both ticket counters on one line: an uncontended cross-core acquire then pays a single line
 /// transfer where the old one-aligned-line-per-counter layout cost two. The split existed as
@@ -73,17 +48,15 @@ impl<T> core::ops::DerefMut for CacheAligned<T> {
     }
 }
 
-pub struct GenericSpinlock<T, Relax: RelaxStrategy> {
+pub struct GenericSpinlock<T> {
     tickets: Tickets,
     cell: UnsafeCell<T>,
     locked_from: AtomicPtr<Location<'static>>,
-    _pd: PhantomData<Relax>,
 }
 
-pub type ReschedulingSpinlock<T> = GenericSpinlock<T, Reschedule>;
-pub type Spinlock<T> = GenericSpinlock<T, SpinLoop>;
+pub type Spinlock<T> = GenericSpinlock<T>;
 
-impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
+impl<T> GenericSpinlock<T> {
     pub const fn new(data: T) -> Self {
         Self {
             tickets: Tickets {
@@ -92,12 +65,11 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             },
             cell: UnsafeCell::new(data),
             locked_from: AtomicPtr::new(core::ptr::null_mut()),
-            _pd: PhantomData,
         }
     }
 
     #[track_caller]
-    pub fn lock(&self) -> LockGuard<'_, T, Relax> {
+    pub fn lock(&self) -> LockGuard<'_, T> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();
         let caller = core::panic::Location::caller();
@@ -112,6 +84,16 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
         if let Some(tracker) = tracker {
             locktrack::with_tracker(tracker, |lt| lt.intend_to_lock_spinlock(caller));
         }
+        // Suppress preemption for the holder. `schedule()` returns immediately for a critical
+        // thread (sched.rs), so a holder cannot be descheduled -- neither by preemption (already
+        // covered by the interrupt disable above) nor by voluntarily blocking, which is the path
+        // `obj/mod.rs` documents as unchecked. Charged to the thread taking the lock, not to
+        // whoever is current when the guard drops: a guard held across a context switch would
+        // otherwise unbalance both threads. Same discipline `rq.rs`'s SchedSpinlock used locally.
+        let critical = crate::thread::current_thread_ref().map(|c| {
+            c.enter_critical_unguarded();
+            &**c
+        });
         let ticket = self.tickets.next.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
         spin_wait_until(
@@ -140,7 +122,6 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
                         }
                     }
                 }
-                Relax::relax(iters);
             },
         );
         // Relaxed: this is read only by the stuck-lock report above, which is already reading a
@@ -176,6 +157,7 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
             tracker,
             tracker_index,
             locked_thread: intent_thread,
+            critical,
         }
     }
 
@@ -200,8 +182,8 @@ impl<T, Relax: RelaxStrategy> GenericSpinlock<T, Relax> {
 }
 
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
-pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
-    lock: &'a GenericSpinlock<T, Relax>,
+pub struct LockGuard<'a, T> {
+    lock: &'a GenericSpinlock<T>,
     interrupt_state: bool,
     dont_unlock_on_drop: bool,
     pub locker: &'static core::panic::Location<'static>,
@@ -210,27 +192,31 @@ pub struct LockGuard<'a, T, Relax: RelaxStrategy> {
     tracker_index: Option<usize>,
     /// DIAG: thread current at acquisition, for reporting only.
     locked_thread: u64,
+    /// Thread charged the critical-count increment at lock time, released on whichever exit
+    /// path runs first. `None` before threading is up.
+    critical: Option<&'static crate::thread::Thread>,
 }
 
-pub type SpinLockGuard<'a, T> = LockGuard<'a, T, SpinLoop>;
+pub type SpinLockGuard<'a, T> = LockGuard<'a, T>;
 
-impl<T, Relax: RelaxStrategy> core::ops::Deref for LockGuard<'_, T, Relax> {
+impl<T> core::ops::Deref for LockGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.lock.cell.get() }
     }
 }
 
-impl<T, Relax: RelaxStrategy> core::ops::DerefMut for LockGuard<'_, T, Relax> {
+impl<T> core::ops::DerefMut for LockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.lock.cell.get() }
     }
 }
 
-impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
+impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
         if !self.dont_unlock_on_drop {
             self.check_thread_crossing();
+            self.release_critical();
             if let (Some(tracker), Some(index)) = (self.tracker, self.tracker_index) {
                 locktrack::with_tracker(tracker, |lt| lt.record_spinlock_unlock(index));
             }
@@ -240,7 +226,7 @@ impl<T, Relax: RelaxStrategy> Drop for LockGuard<'_, T, Relax> {
     }
 }
 
-impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
+impl<T> LockGuard<'_, T> {
     /// DIAG: a guard released while a different thread is current than at acquisition.
     fn check_thread_crossing(&self) {
         if !locktrack::enabled() {
@@ -258,12 +244,16 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
         }
     }
 
-    pub fn get_lock(&self) -> &GenericSpinlock<T, Relax> {
+    pub fn get_lock(&self) -> &GenericSpinlock<T> {
         self.lock
     }
 
     pub unsafe fn force_unlock(&mut self) {
         self.dont_unlock_on_drop = true;
+        // Before the lock is handed on: this guard's `Drop` is a no-op once the flag is set, and
+        // `CondVar::wait` calls this immediately before blocking. Leaving the count charged would
+        // make `schedule()` a no-op for a thread about to sleep.
+        self.release_critical();
 
         if let (Some(tracker), Some(index)) = (self.tracker, self.tracker_index) {
             locktrack::with_tracker(tracker, |lt| lt.record_spinlock_unlock(index));
@@ -277,15 +267,22 @@ impl<T, Relax: RelaxStrategy> LockGuard<'_, T, Relax> {
         new_guard
     }
 
+    /// Release the critical charge exactly once, whichever exit path gets here first.
+    fn release_critical(&mut self) {
+        if let Some(critical) = self.critical.take() {
+            critical.exit_critical(self.locker);
+        }
+    }
+
     pub fn int_state(&self) -> bool {
         self.interrupt_state
     }
 }
 
-unsafe impl<T, Relax: RelaxStrategy> Send for GenericSpinlock<T, Relax> where T: Send {}
-unsafe impl<T, Relax: RelaxStrategy> Sync for GenericSpinlock<T, Relax> where T: Send {}
-unsafe impl<T, Relax: RelaxStrategy> Send for LockGuard<'_, T, Relax> where T: Send {}
-unsafe impl<T, Relax: RelaxStrategy> Sync for LockGuard<'_, T, Relax> where T: Send + Sync {}
+unsafe impl<T> Send for GenericSpinlock<T> where T: Send {}
+unsafe impl<T> Sync for GenericSpinlock<T> where T: Send {}
+unsafe impl<T> Send for LockGuard<'_, T> where T: Send {}
+unsafe impl<T> Sync for LockGuard<'_, T> where T: Send + Sync {}
 
 mod test {
     use alloc::{sync::Arc, vec::Vec};

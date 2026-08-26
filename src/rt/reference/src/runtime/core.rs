@@ -410,7 +410,11 @@ impl ReferenceRuntime {
         // derived from the record's own timestamp minus its value: a syscall between the two
         // (`sys_thread_self_id`, below) would silently land in the gap. Pure clock read -- no gate
         // call -- so it is safe this early, before `set_comp_config`.
-        let _t0_ns = if SPAWN_LAT_STATS { secgate::now_ns() } else { 0 };
+        let _t0_ns = if SPAWN_LAT_STATS {
+            secgate::now_ns()
+        } else {
+            0
+        };
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(

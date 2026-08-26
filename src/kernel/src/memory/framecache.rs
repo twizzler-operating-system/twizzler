@@ -47,7 +47,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use super::frame::FrameRef;
 use crate::{
     processor::tls_ready,
-    spinlock::{LockGuard, SpinLoop, Spinlock},
+    spinlock::{LockGuard, Spinlock},
 };
 
 /// Master gate. `false` leaves every hook below inert and the old `TLS_FRAME_ALLOCATOR` pool in
@@ -372,7 +372,7 @@ fn ready() -> bool {
 ///
 /// Counted here and nowhere else so that [`stat::DEPOT_ACQ`] cannot drift from the thing it
 /// claims to measure by someone adding a call site.
-fn depot() -> LockGuard<'static, Depot, SpinLoop> {
+fn depot() -> LockGuard<'static, Depot> {
     stat::DEPOT_ACQ.fetch_add(1, Ordering::Relaxed);
     DEPOT.lock()
 }

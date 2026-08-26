@@ -898,7 +898,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = true; // !cfg!(debug_assertions) or test mode;
+const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions) or test mode;
 
 /// The A/B switch for the whole tracker, `DISABLE_LOCK_TRACKING` read the way call sites want it.
 ///

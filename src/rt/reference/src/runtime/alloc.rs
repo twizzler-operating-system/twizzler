@@ -9,7 +9,7 @@ use std::{
 
 use monitor_api::{RuntimeThreadControl, THREAD_STARTED};
 use twizzler_abi::{
-    object::{MAX_SIZE, ObjID},
+    object::{ObjID, MAX_SIZE},
     syscall::sys_thread_gettls,
 };
 

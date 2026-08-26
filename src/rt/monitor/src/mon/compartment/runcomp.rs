@@ -124,6 +124,34 @@ pub struct RunComp {
     is_debugging: bool,
     pub(crate) use_count: u64,
     pub controller: Option<ObjID>,
+    /// Declared last so it drops last. Every field above holds `MapHandle`s for this
+    /// compartment, and deleting the instance object is what triggers the kernel's sctx
+    /// teardown -- issuing it from `Drop::drop` ran that teardown while all of them were still
+    /// live, since a Drop body runs before its fields.
+    instance_delete: InstanceDelete,
+}
+
+/// Deletes a compartment's instance object, ordered behind that compartment's unmaps.
+struct InstanceDelete(ObjID);
+
+impl Drop for InstanceDelete {
+    fn drop(&mut self) {
+        // Through the unmapper, not inline: the `MapHandle` drops that just ran only *enqueued*
+        // their unmaps, so an inline delete would still precede them. One FIFO gives the order.
+        match get_monitor().unmapper.get() {
+            Some(unmapper) => unmapper.background_delete_instance(self.0),
+            // No unmapper yet (early boot teardown); inline is all that is available.
+            None => {
+                let _ = twizzler_abi::syscall::sys_object_ctrl(
+                    self.0,
+                    ObjectControlCmd::Delete(DeleteFlags::empty()),
+                    0,
+                    0,
+                )
+                .inspect_err(|e| tracing::warn!("failed to delete instance: {}", e));
+            }
+        }
+    }
 }
 
 impl RunComp {
@@ -169,14 +197,7 @@ impl RunComp {
 impl Drop for RunComp {
     fn drop(&mut self) {
         super::RUNCOMP_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // TODO: check if we need to do anything.
-        let _ = twizzler_abi::syscall::sys_object_ctrl(
-            self.instance,
-            ObjectControlCmd::Delete(DeleteFlags::empty()),
-            0,
-            0,
-        )
-        .inspect_err(|e| tracing::warn!("failed to delete instance on RunComp drop: {}", e));
+        // The instance delete deliberately does *not* happen here; see `instance_delete`.
     }
 }
 
@@ -286,6 +307,7 @@ impl RunComp {
             init_info: Some((main_stack, entry, main_entry, ctors.to_vec())),
             use_count: 0,
             controller,
+            instance_delete: InstanceDelete(instance),
         }
     }
 

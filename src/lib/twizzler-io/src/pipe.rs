@@ -20,6 +20,23 @@ pub const BUF_SZ: usize = 4096;
 pub struct PipeBase {
     readers: AtomicU64,
     writers: AtomicU64,
+    /// Monotonic "the read side may have become ready" counter: bumped when data is written and
+    /// when the writer count moves. `write_events` is its mirror, for space and the reader count.
+    ///
+    /// One word per direction, and every readiness consumer sleeps on the one matching its
+    /// `wait_kind`. Sleeping on the buffer's data word instead -- which is what poll, select and
+    /// kqueue all used to inherit -- cannot see a writer closing, because that moves the writer
+    /// count and leaves the data word alone. Nor is it fixable per consumer:
+    /// `twz_rt_fd_waitpoint` returns a single word across the C ABI with nowhere to put a second,
+    /// and that ABI is what every async reader goes through. A word each consumer sleeps on means
+    /// no consumer has to enumerate which events matter, so the set cannot drift again.
+    ///
+    /// Split by direction rather than shared, because a reader draining the buffer has to wake
+    /// *writers* -- and on a shared word it would also wake every other reader, with nothing for
+    /// them to read. `PollState::wait` does not re-arm, so it would return 0 from a poll that was
+    /// given an infinite timeout. Same hazard `Waiters::mark_waiter` documents on the socket side.
+    read_events: AtomicU64,
+    write_events: AtomicU64,
     buffer: VolatileBuffer<BUF_SZ>,
 }
 
@@ -28,6 +45,8 @@ impl PipeBase {
         Self {
             readers: AtomicU64::new(1),
             writers: AtomicU64::new(1),
+            read_events: AtomicU64::new(0),
+            write_events: AtomicU64::new(0),
             buffer: VolatileBuffer::new(),
         }
     }
@@ -74,34 +93,43 @@ impl Pipe {
         self.pipe.base().writers.load(Ordering::SeqCst)
     }
 
-    pub fn read_waitpoint(&self) -> ThreadSyncSleep {
-        self.pipe.base().buffer.sync_for_pending_data()
+    fn event_word(&self, write_side: bool) -> &AtomicU64 {
+        let base = self.pipe.base();
+        if write_side {
+            &base.write_events
+        } else {
+            &base.read_events
+        }
     }
 
-    pub fn write_waitpoint(&self) -> ThreadSyncSleep {
-        self.pipe.base().buffer.sync_for_avail_space()
+    pub fn events(&self, write_side: bool) -> u64 {
+        self.event_word(write_side).load(Ordering::SeqCst)
     }
 
-    /// Waitpoints on the endpoint counts. The caller passes the count it sampled and must derive
-    /// its readiness test from that same sample: arm on a value read *after* the test and a close
-    /// landing in between is a lost wakeup, because the armed value then matches and the kernel
-    /// sleeps.
-    pub fn readers_waitpoint(&self, readers: u64) -> ThreadSyncSleep {
+    /// Sleep until this side's event counter moves off the value the caller sampled. Sample it
+    /// *before* testing readiness: a change landing in between moves the word, and the kernel
+    /// declines a sleep whose armed value is already stale rather than losing the wakeup.
+    pub fn events_waitpoint(&self, write_side: bool, events: u64) -> ThreadSyncSleep {
         ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.pipe.base().readers),
-            readers,
+            ThreadSyncReference::Virtual(self.event_word(write_side)),
+            events,
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         )
     }
 
-    pub fn writers_waitpoint(&self, writers: u64) -> ThreadSyncSleep {
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.pipe.base().writers),
-            writers,
-            ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
+    /// Bump the counter for the side this change could have made ready, and wake it.
+    fn bump_events(&self, write_side: bool) {
+        let word = self.event_word(write_side);
+        word.fetch_add(1, Ordering::SeqCst);
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                ThreadSyncReference::Virtual(word),
+                usize::MAX,
+            ))],
+            None,
         )
+        .inspect_err(|e| tracing::warn!("failed to wake on events: {e}"));
     }
 
     pub fn is_reader(&self) -> bool {
@@ -128,6 +156,7 @@ impl Pipe {
             None,
         )
         .inspect_err(|e| tracing::warn!("failed to wake on readers: {e}"));
+        self.bump_events(true);
     }
 
     pub fn enable_writer(&self) {
@@ -146,6 +175,7 @@ impl Pipe {
             None,
         )
         .inspect_err(|e| tracing::warn!("failed to wake on writers: {e}"));
+        self.bump_events(false);
     }
 
     pub fn close_reader(&self) {
@@ -166,6 +196,7 @@ impl Pipe {
             None,
         )
         .inspect_err(|e| tracing::warn!("failed to wake on readers: {e}"));
+        self.bump_events(true);
     }
 
     pub fn close_writer(&self) {
@@ -185,6 +216,7 @@ impl Pipe {
             None,
         )
         .inspect_err(|e| tracing::warn!("failed to wake on writers: {e}"));
+        self.bump_events(false);
     }
 
     fn do_sleep(&self, sync: ThreadSyncSleep) -> std::io::Result<()> {
@@ -230,6 +262,9 @@ impl Pipe {
             self.do_sleep(sync)?;
             return self.read(buf, nb);
         }
+        if count > 0 {
+            self.bump_events(true);
+        }
         Ok(count)
     }
 }
@@ -248,6 +283,9 @@ impl Pipe {
             }
             self.do_sleep(sync)?;
             return self.write(buf, nb);
+        }
+        if count > 0 {
+            self.bump_events(false);
         }
         Ok(count)
     }

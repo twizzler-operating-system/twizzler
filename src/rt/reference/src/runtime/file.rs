@@ -56,10 +56,6 @@ pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
 /// otherwise be freed out from under a stale reference on handle reuse.
 pub struct WaitpointResult {
     pub sleep: ThreadSyncSleep,
-    /// A second word whose movement also makes this fd ready, armed in the same `sys_thread_sync`.
-    /// A bare wake cannot substitute: poll arms only after computing `ready`, so a wake landing in
-    /// that window is lost, whereas a stale armed value makes the kernel decline to sleep at all.
-    pub also: Option<ThreadSyncSleep>,
     pub ready: bool,
     pub keepalive: Option<Arc<AtomicU64>>,
 }
@@ -534,8 +530,8 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 /// §59-64. What is established is a **count**: opens per spawn **4.47 -> 1.18**, i.e. 3.29 opens
 /// eliminated, with relocations/spawn flat across the arms as a control. What is *not* established
 /// is any wall-clock win: the clean A/B/A read -0.41% against one baseline and **+1.85% against the
-/// other**, inside a 2.22% drift floor -- the sign reverses with the choice of baseline, so there is
-/// no time effect to claim. Validated by boot (58/58 with this on), not merely compiled.
+/// other**, inside a 2.22% drift floor -- the sign reverses with the choice of baseline, so there
+/// is no time effect to claim. Validated by boot (58/58 with this on), not merely compiled.
 ///
 /// **Semantic change:** an open error that used to print during startup now surfaces at **first
 /// use** of the descriptor, and failure is cached rather than retried per call. A program that
@@ -702,7 +698,10 @@ impl ReferenceRuntime {
                     Some(bytes),
                     false,
                 );
-                get_fd_slots().write().unwrap().insert(bi.fd as usize, fdesc);
+                get_fd_slots()
+                    .write()
+                    .unwrap()
+                    .insert(bi.fd as usize, fdesc);
                 continue;
             }
             let dedupable = matches!(kind, OpenKind::PtyClient | OpenKind::PtyServer);

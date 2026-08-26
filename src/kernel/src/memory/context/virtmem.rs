@@ -554,8 +554,9 @@ pub mod unmapprofile {
 
     /// Who asked for this removal. `Own`/`Handle` are the two `sys_object_unmap` forms (a thread
     /// unmapping its own context vs. operating on another context by handle — the monitor's
-    /// deferred unmapper is the main `Handle` caller); `Sweep` is `sweep_sctx_regions`, i.e.
-    /// sctx-unregister/context-teardown.
+    /// deferred unmapper is the main `Handle` caller). `Sweep` named the sctx-unregister region
+    /// sweep, which is gone -- the monitor's refcounted `MapHandle` teardown releases those
+    /// mappings now. Kept so the histogram's slot numbering stays comparable with older runs.
     #[derive(Clone, Copy)]
     #[repr(usize)]
     pub enum Initiator {
@@ -1466,14 +1467,12 @@ impl VirtContext {
             let mut secctx = self.secctx.lock();
             let Some(slot) = secctx.find_mut(&sctx).remove() else {
                 // No arch state registered here -- the common case at `SecurityContext::drop`
-                // time, since the arch slot is usually torn down earlier. The *region* sweep
-                // below must still run: gating it behind the arch slot left one region (and its
-                // pinned object) per userspace-mapped object per dead compartment -- measured in
-                // many-reclaim10 as 2826 drops but only 261 sweeps, and (2894 - 261) * ~6
-                // regions = the 16k standing pending-delete objects holding 79% of RAM.
+                // time, since the arch slot is usually torn down earlier. Nothing to tear down,
+                // and the regions are not this function's to touch: they are released by the
+                // monitor dropping its `MapHandle`s, which is refcounted and knows about the
+                // other compartments sharing them.
                 drop(secctx);
                 drop(removed);
-                self.sweep_sctx_regions(sctx);
                 return;
             };
             slot
@@ -1547,38 +1546,6 @@ impl VirtContext {
                     crate::obj::request_reap(region.object());
                 }
             }
-        }
-
-        self.sweep_sctx_regions(sctx);
-    }
-
-    /// Sweep out the regions that were *targeted* at a now-unregistering security context, not
-    /// just its arch state. A region whose `target_sctx` is being unregistered is unreachable
-    /// garbage by construction -- no thread can ever attach to that context again -- but until
-    /// this sweep existed the region stayed in the shared `RegionManager`, and its `ObjectRef`
-    /// pinned the object (and every page) of each dead compartment forever: the reclaim3/4
-    /// census measured ~15k dead compartments' mappings holding 92% of RAM in pending-delete
-    /// pages (pagerwedge.md §3.8). `remove_object` is the same path `sys_object_unmap`
-    /// takes, so invalidation, fault-path ordering, and map-count accounting all hold.
-    ///
-    /// Runs on every unregister, whether or not this context still held arch state for the sctx
-    /// -- at `SecurityContext::drop` time it usually does not, and these regions exist anyway.
-    fn sweep_sctx_regions(&self, sctx: ObjID) {
-        if sctx == KERNEL_SCTX {
-            return;
-        }
-        let mut swept = 0usize;
-        for region in self.regions.mappings() {
-            if region.target_sctx != sctx {
-                continue;
-            }
-            if let Ok(slot) = Slot::try_from(region.range.start) {
-                self.remove_object_from(slot, unmapprofile::Initiator::Sweep);
-                swept += 1;
-            }
-        }
-        if swept > 0 {
-            log::info!("sctx {} unregister swept {} regions", sctx, swept);
         }
     }
 
@@ -2042,7 +2009,7 @@ impl UserContext for VirtContext {
 impl VirtContext {
     /// [`UserContext::remove_object`] with the initiator named, for [`unmapprofile::UNMAP_HIST`].
     /// The trait method forwards with [`unmapprofile::Initiator::Own`]; callers that know better
-    /// (the handle form of `sys_object_unmap`, `sweep_sctx_regions`) call this directly.
+    /// (the handle form of `sys_object_unmap`) call this directly.
     pub fn remove_object_from(&self, info: Slot, initiator: unmapprofile::Initiator) {
         use unmapprofile::Stage as UStage;
         let t_hist = unmapprofile::hist_stamp();

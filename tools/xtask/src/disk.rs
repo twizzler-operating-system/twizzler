@@ -153,7 +153,10 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
             Ok::<_, std::io::Error>(())
         })?;
 
-    // These are provided by the initrd.
+    // Both are provided by the initrd at *runtime*, so the copies staged into the sysroot at
+    // toolchain-install time are never loaded and can be arbitrarily old. Dropping them here keeps
+    // a stale build from being what an on-target link resolves against; `copy_twizzler_build`
+    // puts the freshly built libtwz_rt.so back, which is the only copy that should ever be linked.
     ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
     ext4.remove("/sysroot/lib/libc.so").unwrap();
     ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
@@ -240,6 +243,24 @@ pub fn copy_twizzler_build(
         let mut src_file = File::open(&cd.path)?;
 
         std::io::copy(&mut src_file, &mut dest_file).unwrap();
+
+        // Also install the runtime under its conventional name, so an on-target
+        // `rustc`/`ld.lld` resolves -ltwz_rt from -L/sysroot/lib like any other library. Every
+        // other `twz_rt_*` provider a Twizzler binary needs is already there; without this the
+        // link fails with ~20 undefined symbols and no hint that the library exists at all.
+        // Copied from the build output rather than left as the sysroot's staged copy: that one
+        // is written at toolchain-install time and goes stale as soon as the runtime is rebuilt.
+        if cd.path.file_name().is_some_and(|n| n == "libtwz_rt.so") {
+            let rt_dest = "/sysroot/lib/libtwz_rt.so";
+            if ext4.exists(rt_dest) {
+                ext4.remove(rt_dest).unwrap();
+            }
+            let mut rt_file = ext4
+                .open(rt_dest, OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE)
+                .unwrap();
+            let mut rt_src = File::open(&cd.path)?;
+            std::io::copy(&mut rt_src, &mut rt_file).unwrap();
+        }
     }
 
     // The `#[test]` binaries go on the disk rather than into the initrd. The initrd is read whole

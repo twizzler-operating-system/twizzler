@@ -6,7 +6,7 @@ use crate::{
     is_bench_mode,
     mutex::{LockGuard, Mutex},
     processor::mp::current_processor,
-    spinlock::{self, GenericSpinlock, RelaxStrategy},
+    spinlock::{self, GenericSpinlock},
 };
 
 pub fn align<T: From<usize> + Into<usize>>(val: T, align: usize) -> T {
@@ -49,12 +49,12 @@ pub fn lock_two<'a, 'b, A, B>(
 /// will be locked in the same order even if you permute the arguments to this function.
 /// It does so by inspecting the addresses of the spinlocks themselves to project a total
 /// order onto the locks.
-pub fn spinlock_two<'a, 'b, A, B, R: RelaxStrategy>(
-    a: &'a GenericSpinlock<A, R>,
-    b: &'b GenericSpinlock<B, R>,
-) -> (spinlock::LockGuard<'a, A, R>, spinlock::LockGuard<'b, B, R>) {
-    let a_val = a as *const GenericSpinlock<A, R> as usize;
-    let b_val = b as *const GenericSpinlock<B, R> as usize;
+pub fn spinlock_two<'a, 'b, A, B>(
+    a: &'a GenericSpinlock<A>,
+    b: &'b GenericSpinlock<B>,
+) -> (spinlock::LockGuard<'a, A>, spinlock::LockGuard<'b, B>) {
+    let a_val = a as *const GenericSpinlock<A> as usize;
+    let b_val = b as *const GenericSpinlock<B> as usize;
     assert_ne!(a_val, b_val);
     if a_val > b_val {
         let lg_b = b.lock();

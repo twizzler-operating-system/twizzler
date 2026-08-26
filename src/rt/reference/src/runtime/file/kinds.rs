@@ -219,6 +219,19 @@ pub fn open(
             } else {
                 twizzler_io::pipe::Pipe::open_object(id.into())?
             };
+            // Both constructors claim reader *and* writer. Drop the role that was not asked for,
+            // or the counts never reach zero and EOF never happens. A flagless open keeps both,
+            // which is what std's pipe() relies on before it shuts each end down by hand.
+            let want_read = opts.contains(OperationOptions::OPEN_FLAG_READ);
+            let want_write = opts.contains(OperationOptions::OPEN_FLAG_WRITE);
+            if want_read || want_write {
+                if !want_read {
+                    pipe.close_reader();
+                }
+                if !want_write {
+                    pipe.close_writer();
+                }
+            }
             Some(Arc::new(pipe))
         }
         OpenKind::Compartment => {

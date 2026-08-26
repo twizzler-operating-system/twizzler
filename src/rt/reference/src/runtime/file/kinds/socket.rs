@@ -290,7 +290,6 @@ impl Fd for SocketKind {
                 op: ThreadSyncOp::Equal,
                 flags: ThreadSyncFlags::empty(),
             },
-            also: None,
             ready: self.is_ready(kind),
             keepalive: Some(arc),
         })
@@ -312,7 +311,6 @@ impl Fd for SocketKind {
                 op: ThreadSyncOp::Equal,
                 flags: ThreadSyncFlags::empty(),
             },
-            also: None,
             ready: false,
             keepalive: Some(arc),
         })

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     clock::get_current_ticks,
-    spinlock::{GenericSpinlock, LockGuard, SpinLoop},
+    spinlock::{GenericSpinlock, LockGuard},
     thread::{
         current_thread_ref,
         priority::{Priority, PriorityClass, MAX_PRIORITY},
@@ -18,18 +18,18 @@ use crate::{
 
 pub const NR_QUEUES: usize = 8;
 #[repr(transparent)]
-struct SchedSpinlock<T>(GenericSpinlock<T, SpinLoop>);
+struct SchedSpinlock<T>(GenericSpinlock<T>);
 
 impl<T> SchedSpinlock<T> {
     fn lock(&self) -> SchedLockGuard<'_, T> {
-        // The matching decrement in drop() goes to this same thread, not whoever is current by
-        // then: a guard held across a context switch would otherwise unbalance both threads.
-        let critical = current_thread_ref().map(|c| {
-            c.enter_critical_unguarded();
-            &**c
-        });
+        // The critical charge that used to live here now happens in `GenericSpinlock::lock` for
+        // every spinlock, so doing it again would double-count. The wrapper is kept only for the
+        // held-across-a-context-switch diagnostic below.
         let queue = self.0.lock();
-        SchedLockGuard { queue, critical }
+        SchedLockGuard {
+            queue,
+            critical: current_thread_ref().map(|c| &**c),
+        }
     }
 }
 
@@ -72,7 +72,7 @@ pub struct RunQueue<const N: usize> {
 
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct SchedLockGuard<'a, T> {
-    pub(super) queue: LockGuard<'a, T, SpinLoop>,
+    pub(super) queue: LockGuard<'a, T>,
     /// Thread charged the critical-count increment at lock time.
     critical: Option<&'static crate::thread::Thread>,
 }
@@ -104,7 +104,6 @@ impl<T> Drop for SchedLockGuard<'_, T> {
                     diag::this_cpu(),
                 );
             }
-            critical.exit_critical(self.queue.locker);
         }
     }
 }

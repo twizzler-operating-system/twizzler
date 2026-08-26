@@ -240,7 +240,11 @@ fn create_and_map() -> Option<(usize, ObjID)> {
     let sctx = get_sctx_id().raw() as u64;
     for i in 0..16 {
         let nib = ((sctx >> (60 - i * 4)) & 0xf) as u8;
-        note[5 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+        note[5 + i] = if nib < 10 {
+            b'0' + nib
+        } else {
+            b'a' + nib - 10
+        };
     }
     let _ = sys_object_add_note(id, &note);
 

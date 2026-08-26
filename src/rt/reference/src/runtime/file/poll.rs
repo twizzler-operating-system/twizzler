@@ -70,26 +70,15 @@ impl<'a> PollState<'a> {
             fd.revents = 0;
             for wk in events_to_wait_kind_iter(fd.events) {
                 if let Some(wp) = file_desc.file.waitpoint(wk).ok() {
-                    if wp.ready
-                        || wp.sleep.ready()
-                        || wp.also.as_ref().is_some_and(|also| also.ready())
-                    {
+                    if wp.ready || wp.sleep.ready() {
                         if fd.revents == 0 {
                             ready += 1;
                         }
                         fd.revents |= wait_kind_to_poll_revents(wk);
                     } else {
-                        // Both words go in one sleep set. `info` stays parallel to `wps`, and the
-                        // post-wait loop's `revents == 0` guard already counts an fd once.
-                        let keepalive = wp.keepalive;
                         wps.push(ThreadSync::new_sleep(wp.sleep));
                         info.push((idx, wk));
-                        keepalives.push(keepalive.clone());
-                        if let Some(also) = wp.also {
-                            wps.push(ThreadSync::new_sleep(also));
-                            info.push((idx, wk));
-                            keepalives.push(keepalive);
-                        }
+                        keepalives.push(wp.keepalive);
                     }
                 }
             }
