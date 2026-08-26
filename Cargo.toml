@@ -138,7 +138,7 @@ initrd = [
     #"crate:uuhelper",
     #"crate:debug",
     #"crate:cache",
-    #"crate:trace",
+    "crate:trace",
     #"crate:gfxtest",
     "crate:shell",
     "crate:spawn-test",

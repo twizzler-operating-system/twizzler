@@ -175,6 +175,20 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
     align: usize,
     flags: alloc_flags,
 ) -> *mut ::core::ffi::c_void {
+    // Fingerprint absurd requests at the ABI door, with the ORIGINAL alignment -- it names the
+    // entry: 128 = mlibc sys_anon_allocate, 0x1000 = mlibc sys_vm_map (C mmap), anything else is
+    // some other caller. Downstream, ferroc's arena rounding rewrites the layout to
+    // slab-aligned, so this is the last point the caller is identifiable without a backtrace
+    // (rustc-wedge hunt: a 347GB address-shaped size reached talc's grow loop through here or
+    // through Rust GlobalAlloc directly).
+    if sz >= 1 << 30 {
+        twizzler_abi::klog_println!(
+            "BIGALLOC: twz_rt_malloc size {:x} align {:x} flags {:x}",
+            sz,
+            align,
+            flags
+        );
+    }
     let Ok(layout) = core::alloc::Layout::from_size_align(sz, align) else {
         return core::ptr::null_mut();
     };
@@ -1312,6 +1326,12 @@ pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *m
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __monitor_ready() {
     OUR_RUNTIME.set_runtime_ready();
+    // Arm identity from the artifact, not the source (the ANON_FAULT_AROUND pattern): every
+    // monitor transcript names which allocator routing it actually booted with.
+    twizzler_abi::klog_println!(
+        "[monitor] alloc tunables: MONITOR_FERROC={}",
+        crate::runtime::alloc::MONITOR_FERROC
+    );
 }
 
 #[no_mangle]

@@ -6,9 +6,8 @@ use core::{
 };
 
 use super::{
-    Processor,
     sched::{CPUTopoNode, CPUTopoType},
-    tls_ready,
+    tls_ready, Processor,
 };
 use crate::{
     arch::{self, VirtAddr},

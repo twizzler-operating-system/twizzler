@@ -124,6 +124,21 @@ const SKIP_ROOT_NAMESPACE_SET: bool = true;
 /// is inside the monitor's `start` phase and inside `Command::spawn`. Off by default.
 pub const PRE_MAIN_PHASE_STATS: bool = false;
 
+/// Switch for the spawn-latency join (`CHILDTOP` here, `SPAWNGO` in the monitor's
+/// `start_main_thread`). **Flip both together** -- they are two crates and one measurement.
+///
+/// Prices the window the spawn breakdown could only reach by subtraction: from `sys_spawn`
+/// returning in the parent to the child's first instruction in `init_for_compartment`. That
+/// residual read ~190 us and was filed as "sched latency", but a residual inherits every other
+/// phase's error and the kernel's own wake->run histogram says wakes cost tens of microseconds,
+/// not hundreds -- so the label is a hypothesis, not a measurement.
+///
+/// Deliberately separate from [`PRE_MAIN_PHASE_STATS`]: that switch also arms `CTORONE`, ~15
+/// records per spawn, and a ring drain landing inside the window would inflate the very number
+/// this exists to read (see the `statlog` first-drain artifact that cost ~600 us of a spawn).
+/// This is one record per side per spawn.
+pub const SPAWN_LAT_STATS: bool = false;
+
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
@@ -390,6 +405,12 @@ impl ReferenceRuntime {
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
         let _start_1 = Instant::now();
+        // Absolute, in the same monotonic domain the monitor's records are stamped in, so the two
+        // sides join without assuming anything about `Instant`'s epoch. Taken here rather than
+        // derived from the record's own timestamp minus its value: a syscall between the two
+        // (`sys_thread_self_id`, below) would silently land in the gap. Pure clock read -- no gate
+        // call -- so it is safe this early, before `set_comp_config`.
+        let _t0_ns = if SPAWN_LAT_STATS { secgate::now_ns() } else { 0 };
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -439,6 +460,19 @@ impl ReferenceRuntime {
         // between thread start and `pre_main_hook`, and this is most of that window; the record's
         // own timestamp (vs `PREMAIN`'s) prices the libstd init that follows. Same switch as
         // `PREMAIN`, deferred through statlog.
+        if SPAWN_LAT_STATS {
+            // vals: [absolute start us, low 64 bits of this thread's id]. The id is the join key
+            // to the monitor's `SPAWNGO`; pairing by "nearest preceding record" instead would be
+            // an assumption that spawns never overlap, which is true for the nullexit bench and
+            // false in general -- and it would fail silently rather than loudly.
+            let me = twizzler_abi::syscall::sys_thread_self_id();
+            secgate::statlog::record_on(
+                SPAWN_LAT_STATS,
+                "CHILDTOP",
+                _start_1.elapsed().as_micros() as u64,
+                &[_t0_ns / 1000, me.raw() as u64],
+            );
+        }
         secgate::statlog::record_on(
             PRE_MAIN_PHASE_STATS,
             "CHILDINI",

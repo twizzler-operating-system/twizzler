@@ -184,6 +184,12 @@ fn panic(info: &PanicInfo) -> ! {
         //crate::arch::debug_shutdown(42);
     }
 
+    // Last: under qemu this pauses the whole machine (pvpanic + `-action panic=pause`), so
+    // anything printed after it -- by this cpu or any other -- is lost. Serial output above is
+    // synchronous, so it has all reached the host by now.
+    #[cfg(target_arch = "x86_64")]
+    crate::arch::kvm::notify_panic();
+
     loop {}
 }
 

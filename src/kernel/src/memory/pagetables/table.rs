@@ -1096,6 +1096,9 @@ impl Table {
                     did_unmap = true;
                     *released = Some(entry.table_addr());
                     get_frame(entry.table_addr()).unwrap().dec_refcount();
+                    // Positive-control window: suppresses ONLY this detach's invalidation, and
+                    // only when `posctl::UNMAP_NO_INVL` is armed (ships OFF, compiles out).
+                    consist.set_suppress(true);
                     self.update_entry(
                         consist,
                         idx,
@@ -1104,6 +1107,16 @@ impl Table {
                         false,
                         level,
                     );
+                    // Detaching an object-table link orphans every TLB entry cached through the
+                    // subtree, and `update_entry`'s single non-terminal invlpg is only
+                    // architecturally required to cover one page plus the paging-structure
+                    // caches — leaf entries elsewhere in the slot survive per spec. Measured:
+                    // suppressing that invlpg read stale on 5120/5120 probes
+                    // (`tlb_stale_slot_reuse`, flushctl arm), i.e. current safety rested on the
+                    // implementation over-invalidating. Escalate to a full non-global flush for
+                    // this target; remote cpus stay covered by the PCID revoke in `finish_send`.
+                    consist.set_full();
+                    consist.set_suppress(false);
                 }
             }
 

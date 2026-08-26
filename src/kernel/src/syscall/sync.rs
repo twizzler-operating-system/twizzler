@@ -313,6 +313,17 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
 /// Drop any pending requeue entry for `thread` without acting on it. Cleanup only -- use
 /// [claim_own_wakeup] if the caller is about to decide whether to block.
 pub fn remove_from_requeue(thread: &ThreadRef) {
+    // No entry, no lock. Every caller runs this after resetting the sync-sleep flags, and every
+    // inserter must win one of those flags first, so no *new* entry can appear concurrently -- the
+    // only insert this unlocked read can race is one already in flight, and that interleaving is
+    // identical to the locked remove running just before the insert lands: the entry survives this
+    // cleanup either way and is collected by the next sleep's. What the check removes is a global
+    // spinlock acquisition on the completion path of every sleep, where the common case (woken via
+    // `add_to_requeue`'s fast path or `claim_own_wakeup`, both of which already removed the entry)
+    // finds nothing.
+    if !thread.requeue_link.is_linked() {
+        return;
+    }
     let requeue = get_requeue_list();
     // Drop the removed reference outside the spinlock. It can be the last one, and `Thread::drop`
     // returns its id through `IdCounter::release`, which takes a sleeping mutex -- a mutex under a
@@ -803,6 +814,62 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     Ok(true)
 }
 
+/// [optimized_single_sleep] for a call that also carries a timeout -- the shape of every timed
+/// futex wait, which otherwise pays the general path's multi-op machinery for one op.
+///
+/// Mirrors the general path exactly, in both its registration/cleanup order (register under the
+/// critical guard, `end_sync_sleep` before the key release -- see [simple_timed_sleep] for why
+/// that order is load-bearing) and its observable results, which differ from the untimed fast
+/// path's: returns `(per-op result, whole-call result)` as the general path would have written
+/// them, including `Err(TimedOut)` when the timeout fired with nothing ready.
+fn optimized_single_sleep_timed(
+    op: ThreadSyncSleep,
+    timeout: &mut Duration,
+) -> (Result<usize>, Result<usize>) {
+    let se = match prep_sleep(&op, true) {
+        Ok(se) => se,
+        // The general path records the error on the op and reports zero ready; the untimed fast
+        // path differs here, deliberately left alone.
+        Err(e) => return (Err(e), Ok(0)),
+    };
+    if !se.did_sleep {
+        return (Ok(1), Ok(1));
+    }
+    let thread = current_thread_ref().unwrap();
+    assert!(!thread.mutex_link.is_linked());
+    let guard = thread.enter_critical();
+    let timeout_key = crate::clock::register_timeout_callback(
+        // TODO: fix all our time types
+        timeout.as_nanos() as u64,
+        thread_sync_cb_timeout,
+        thread.clone(),
+        thread.sync_sleep_gen(),
+    );
+    requeue_all();
+    thread.set_sync_sleep_done();
+    // See do_sys_thread_sync: a wake that raced in before sync_sleep_done was set must be claimed
+    // by us -- requeue_all() skips critical threads.
+    if claim_own_wakeup(&thread) {
+        drop(guard);
+    } else {
+        finish_blocking(guard);
+    }
+    let _guard = thread.enter_critical();
+    // Retire any outstanding timeout callback before touching the flags it would consume.
+    thread.end_sync_sleep();
+    thread.reset_sync_sleep();
+    thread.reset_sync_sleep_done();
+    drop(_guard);
+    undo_sleep(&se);
+    remove_from_requeue(&thread);
+    // If we don't find the key during release, the timeout fired.
+    if !timeout_key.release() {
+        (Ok(0), Err(GenericError::TimedOut.into()))
+    } else {
+        (Ok(0), Ok(0))
+    }
+}
+
 pub fn optimized_single_wake(op: ThreadSyncWake) -> Result<usize> {
     let start = trace_now();
     let count = wakeup(&op)?;
@@ -831,19 +898,29 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
         }
     }
 
-    if ops.len() == 1 && timeout.is_none() {
+    if ops.len() == 1 {
         match &mut ops[0] {
-            ThreadSync::Sleep(thread_sync_sleep, res) => {
-                log::trace!(
-                    "{}: optimized sleep {:?}",
-                    current_thread_ref().unwrap().id(),
-                    thread_sync_sleep
-                );
-                let did_sleep = optimized_single_sleep(*thread_sync_sleep);
-                *res = did_sleep.map(|_| 0);
-                return did_sleep.map(|x| if x { 1 } else { 0 });
-            }
-            ThreadSync::Wake(thread_sync_wake, res) => {
+            ThreadSync::Sleep(thread_sync_sleep, res) => match timeout {
+                None => {
+                    log::trace!(
+                        "{}: optimized sleep {:?}",
+                        current_thread_ref().unwrap().id(),
+                        thread_sync_sleep
+                    );
+                    let did_sleep = optimized_single_sleep(*thread_sync_sleep);
+                    *res = did_sleep.map(|_| 0);
+                    return did_sleep.map(|x| if x { 1 } else { 0 });
+                }
+                Some(timeout) => {
+                    let (op_res, call_res) =
+                        optimized_single_sleep_timed(*thread_sync_sleep, timeout);
+                    *res = op_res;
+                    return call_res;
+                }
+            },
+            // A single wake never sleeps, so pairing one with a timeout is an odd shape; the
+            // general path keeps it.
+            ThreadSync::Wake(thread_sync_wake, res) if timeout.is_none() => {
                 log::trace!(
                     "{}: optimized wake {:?}",
                     current_thread_ref().unwrap().id(),
@@ -852,6 +929,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
                 *res = optimized_single_wake(*thread_sync_wake);
                 return Ok(1);
             }
+            _ => {}
         }
     }
 
@@ -1011,8 +1089,8 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
 /// would have seen:
 ///
 /// * `prev >= 2` -- **`DESYNC`**: the second decrement would have subtracted without wrapping,
-///   walking the stored count one below truth. Cumulative: each such removal drifts it down by
-///   one until it eventually reaches zero with entries still linked.
+///   walking the stored count one below truth. Cumulative: each such removal drifts it down by one
+///   until it eventually reaches zero with entries still linked.
 /// * `prev <= 1` -- **`UNDERFLOW`**: it would have wrapped to `usize::MAX`, permanently disabling
 ///   the `count == 0` early-out for that boot. Wasteful but *safe*, and it inoculates the boot
 ///   against the harmful case thereafter.
@@ -1111,7 +1189,11 @@ pub mod syncbatch {
     }
 
     fn calls_pct(part: u64, whole: u64) -> u64 {
-        if whole == 0 { 0 } else { part * 100 / whole }
+        if whole == 0 {
+            0
+        } else {
+            part * 100 / whole
+        }
     }
 }
 

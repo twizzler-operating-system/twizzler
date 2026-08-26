@@ -7,12 +7,12 @@ use twizzler_abi::{
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
-use twizzler_rt_abi::{Result, error::TwzError};
+use twizzler_rt_abi::{error::TwzError, Result};
 
 use crate::{
     processor::{
         mp::all_processors,
-        sched::{SchedFlags, lookup_thread_repr, schedule},
+        sched::{lookup_thread_repr, schedule, SchedFlags},
     },
     security::SwitchResult,
     syscall::{

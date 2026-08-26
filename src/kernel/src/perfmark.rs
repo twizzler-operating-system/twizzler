@@ -37,6 +37,7 @@ const NR_MAPP: usize = mapprofile::NR;
 const NR_UNMAP: usize = unmapprofile::NR;
 const NR_MAPOBJ: usize = crate::memory::context::virtmem::mapobjprofile::NR;
 const NR_INVL: usize = crate::memory::pagetables::invl_census::NR;
+const NR_KOBJ: usize = crate::memory::context::kobjcensus::NR;
 
 struct Prev {
     stages: [(usize, u64); NR_STAGES],
@@ -55,6 +56,7 @@ struct Prev {
     unmaph: [u64; unmapprofile::NR_HSNAP],
     mapobj: [(u64, u64); NR_MAPOBJ],
     invl: [u64; NR_INVL],
+    kobj: [u64; NR_KOBJ],
 }
 
 static PREV: Spinlock<Option<Prev>> = Spinlock::new(None);
@@ -82,6 +84,7 @@ pub fn mark(rebaseline: bool) {
     let unmaph_max = unmapprofile::take_hist_max();
     let mapobj = crate::memory::context::virtmem::mapobjprofile::snapshot();
     let invl = crate::memory::pagetables::invl_census::snapshot();
+    let kobj = crate::memory::context::kobjcensus::snapshot();
 
     let prev = PREV.lock().replace(Prev {
         stages,
@@ -97,6 +100,7 @@ pub fn mark(rebaseline: bool) {
         unmaph,
         mapobj,
         invl,
+        kobj,
     });
     let Some(prev) = prev else {
         return;
@@ -655,14 +659,29 @@ zero={}/{}us wait={}/{}us  (singular frames = allocs - bulk)",
         let d = |i: usize| invl[i] - prev.invl[i];
         if d(0) > 0 {
             logln!(
-                "PERFMARK-INVL: execs={} skipped={} full_global={} full_local={} precise={} (insts={})",
+                "PERFMARK-INVL: execs={} skipped={} full_global={} full_local={} precise={} (insts={}) cum_suppressed={}",
                 d(0),
                 d(1),
                 d(2),
                 d(3),
                 d(4),
                 d(5),
+                crate::memory::pagetables::invl_census::posctl_suppressed(),
             );
+        }
+    }
+
+    // Kernel-object mapping traffic by emitter site, this window.
+    {
+        use crate::memory::context::kobjcensus;
+        let d = |i: usize| kobj[i] - prev.kobj[i];
+        if (0..NR_KOBJ).any(|i| d(i) > 0) {
+            let mut line = alloc::string::String::new();
+            for i in 0..NR_KOBJ {
+                use core::fmt::Write;
+                let _ = write!(line, " {}={}", kobjcensus::NAMES[i], d(i));
+            }
+            logln!("PERFMARK-KOBJ:{}", line);
         }
     }
 }

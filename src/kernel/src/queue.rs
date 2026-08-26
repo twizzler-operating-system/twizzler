@@ -117,6 +117,7 @@ pub struct QueueObject<S, C> {
 
 impl<S: Copy, C: Copy> QueueObject<S, C> {
     pub fn from_object(obj: ObjectRef) -> Self {
+        crate::memory::context::kobjcensus::record(crate::memory::context::kobjcensus::Site::Queue);
         let handle =
             kernel_context().insert_kernel_object::<QueueBase<S, C>>(ObjectContextInfo::new(
                 obj.clone(),

@@ -160,6 +160,14 @@ pub struct KvmOptions {
         help = "Force KVM acceleration off. Default: use KVM if the host supports it."
     )]
     disable_kvm: bool,
+    #[clap(
+        long,
+        help = "With KVM: pass MONITOR/MWAIT through to the guest (-overcommit cpu-pm=on), so \
+                idle cpus sleep in guest context and waking one is a store instead of an IPI, \
+                with no vm exits on either side. The host loses power management of idle vcpus \
+                (they look busy), so this is for dedicated/benchmarking hosts."
+    )]
+    cpu_pm: bool,
 }
 
 impl KvmOptions {
@@ -233,7 +241,7 @@ impl QemuCommand {
         self.cmd.arg("-m").arg(&run.memory);
 
         // configure architechture specific parameters
-        self.arch_config(options.kvm.mode());
+        self.arch_config(options.kvm.mode(), options.kvm.cpu_pm);
 
         // Guest writes land in a throwaway overlay and the image itself opens read-only, which is
         // what lets concurrent runs share one file instead of each copying it.
@@ -390,7 +398,7 @@ impl QemuCommand {
         port
     }
 
-    fn arch_config(&mut self, kvm: KvmMode) {
+    fn arch_config(&mut self, kvm: KvmMode, cpu_pm: bool) {
         let mut ovmf = get_toolchain_path().unwrap();
         match self.arch {
             Arch::X86_64 => {
@@ -406,11 +414,22 @@ impl QemuCommand {
                     .arg("-device")
                     .arg("isa-debug-exit,iobase=0xf4,iosize=0x04");
 
+                // The kernel's panic handler pokes this device (after its serial output is done),
+                // which emits a GUEST_PANICKED event and pauses the machine -- pinned explicitly
+                // so a panicked guest stops burning host cpu in its halt loop instead of
+                // whatever a future qemu's default is. The serial watchers still see the panic
+                // text first; a paused guest then reads as silent, which they already handle.
+                self.cmd.arg("-device").arg("pvpanic");
+                self.cmd.arg("-action").arg("panic=pause");
+
                 if kvm.resolve(self.arch) {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
                         .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp");
+                    if cpu_pm {
+                        self.cmd.arg("-overcommit").arg("cpu-pm=on");
+                    }
                 } else {
                     self.cmd.arg("-cpu").arg("max");
                 }

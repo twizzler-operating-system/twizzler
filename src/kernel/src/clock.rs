@@ -465,7 +465,9 @@ fn organize_clock_sources(kind: ClockKind) {
         }
         ClockKind::RealTime => {
             let mut clock_vec = Vec::new();
-            clock_vec.push(ClockID(0));
+            // Slot 1 is the reserved best-realtime slot: a registered wall clock (kvmclock) when
+            // there is one, otherwise the first-registered monotonic source as a fallback.
+            clock_vec.push(ClockID(1));
             USER_CLOCKS.lock().push(clock_vec);
         }
         ClockKind::Unknown => {

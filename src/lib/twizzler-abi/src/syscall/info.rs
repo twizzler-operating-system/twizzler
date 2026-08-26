@@ -56,6 +56,11 @@ pub struct SysInfo {
     pub cpu_count: usize,
     /// The size of a virtual address page on this system.
     pub page_size: usize,
+    /// Cumulative nanoseconds the hypervisor ran something else while this system's cpus were
+    /// runnable, summed across cpus (KVM steal time). 0 on bare metal or when the hypervisor
+    /// does not report it. Nonzero-and-growing during a measurement means the numbers were taken
+    /// on a contended host. Present from `version` 2.
+    pub steal_ns: u64,
 }
 
 impl SysInfo {

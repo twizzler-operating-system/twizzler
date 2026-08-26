@@ -205,8 +205,9 @@ pub fn enumerate_cpus() -> u32 {
 /// Determine what hardware clock sources are available
 /// on the processor and register them in the time subsystem.
 pub fn enumerate_clocks() {
-    // for now we only use the TSC
-    // in the future we will explore using other time sources
+    // Before Tsc::new: its calibration consults the kvmclock scaling parameters when the CPUID
+    // frequency leaves are absent.
+    super::kvm::init_pvclock();
 
     let cpuid = x86::cpuid::CpuId::new();
 
@@ -219,6 +220,10 @@ pub fn enumerate_clocks() {
         crate::time::register_clock(super::tsc::Tsc::new());
     } else {
         panic!("unsupported CPU: no TSC, which the kernel requires as a clock source");
+    }
+
+    if let Some(wall) = super::kvm::realtime_clock() {
+        crate::time::register_best_realtime(wall);
     }
 }
 
@@ -317,6 +322,12 @@ pub struct ArchProcessor {
     /// PCID, so it may switch into it with CR3_PCID_NOFLUSH. Conservative in the safe
     /// direction -- a spuriously clear bit costs one flush, a spuriously set one is a bug.
     pcid_valid: [AtomicU64; PCID_BITMAP_WORDS],
+    /// Kernel virtual / physical address of this cpu's KVM steal-time struct, or 0 when steal
+    /// time is off (bare metal, or KVM without the feature). Written once during bring-up (see
+    /// [super::kvm::steal_time_cpu_init]); the phys is what this cpu hands the MSR, the va is
+    /// what remote readers use.
+    pub(super) steal_va: AtomicU64,
+    pub(super) steal_phys: AtomicU64,
 }
 
 impl ArchProcessor {
@@ -364,6 +375,8 @@ impl Default for ArchProcessor {
             tlb_shootdown_info: TlbShootdownInfo::new(),
             active_cr3: AtomicU64::new(0),
             pcid_valid: [const { AtomicU64::new(0) }; PCID_BITMAP_WORDS],
+            steal_va: AtomicU64::new(0),
+            steal_phys: AtomicU64::new(0),
         }
     }
 }

@@ -5,28 +5,28 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{MAX_SIZE, ObjID, Protections},
+    object::{ObjID, Protections, MAX_SIZE},
     pager::PagerFlags,
     syscall::{
-        EnumerateKind, HandleType, MAX_PRELOAD_RANGES, MapControlCmd, MapFlags, MapInfo,
-        ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, PreloadRangeSpec,
+        EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
+        ObjectCreate, ObjectCreateFlags, ObjectInfo, PreloadRangeSpec, MAX_PRELOAD_RANGES,
     },
 };
 use twizzler_rt_abi::{
-    Result,
     bindings::{object_source, object_tie},
     error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
     object::Nonce,
+    Result,
 };
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{Context, ContextRef, virtmem::Slot},
+    memory::context::{virtmem::Slot, Context, ContextRef},
     mutex::Mutex,
-    obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
+    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
     once::OnceWait,
     random::getrandom,
-    security::{KERNEL_SCTX, get_sctx},
+    security::{get_sctx, KERNEL_SCTX},
     syscall::create_user_slice,
     thread::{current_memory_context, current_thread_ref},
 };
@@ -657,10 +657,11 @@ pub fn sys_object_readmap(handle: ObjID, slot: usize) -> Result<MapInfo> {
 
 /// Switch for `STATPROF`: where `sys_object_stat`'s time goes, split lookup / info.
 ///
-/// The syscall measures **30.5 us** against 117 ns for a trivial one, and `HandleMgr::gc_handles`
-/// calls it once per tracked compartment on every handle insert and remove. `Object::info` calls
-/// `count_pages`, which walks a cursor over `max_len()` -- the object's whole 1 GiB range -- so the
-/// suspicion is that a "stat" is O(object range). Counted rather than inferred.
+/// The syscall measures **30.5 us** against 117 ns for a trivial one, and
+/// `HandleMgr::gc_handles` calls it once per tracked compartment on every handle insert and
+/// remove. `Object::info` calls `count_pages`, which walks a cursor over `max_len()` -- the
+/// object's whole 1 GiB range -- so the suspicion is that a "stat" is O(object range). Counted
+/// rather than inferred.
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const STAT_PROFILE: bool = false;

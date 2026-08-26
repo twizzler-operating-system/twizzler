@@ -17,6 +17,7 @@ mod gdt;
 pub mod image;
 pub mod interrupt;
 pub mod ioapic;
+pub mod kvm;
 pub mod memory;
 mod pit;
 pub mod processor;
@@ -43,6 +44,9 @@ pub fn init_secondary() {
     gdt::init_secondary();
     interrupt::init_idt();
     apic::init(false);
+    // Both call paths satisfy its preconditions: memory and cpu enumeration are done, and
+    // CPU_ID/CURRENT_PROCESSOR tls is set (main.rs for the bsp, secondary_entry for aps).
+    kvm::steal_time_cpu_init();
 }
 
 pub fn init_interrupts() {

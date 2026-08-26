@@ -61,6 +61,25 @@ where
     }
 }
 
+/// Register `clock` as the best real-time source (slot 1), displacing whatever fallback the first
+/// [register_clock] parked there, plus a numbered slot for enumeration. Boot-time only, before
+/// anything reads slot 1: [read_clock]'s cache pins a slot's clock at first read, so a later
+/// replacement would leave cached readers on the old one.
+pub fn register_best_realtime<T>(clock: T)
+where
+    T: 'static + ClockHardware + Send + Sync,
+{
+    let clk = Arc::new(clock);
+    let mut clock_list = TICK_SOURCES.lock();
+    clock_list[1] = Some(clk.clone());
+    for pos in clock_list.iter_mut().skip(CLOCK_OFFSET) {
+        if pos.is_none() {
+            *pos = Some(clk.clone());
+            break;
+        }
+    }
+}
+
 /// The registered tick sources, cached so that reading one is not a lock acquisition.
 ///
 /// Sources are registered during boot and never replaced or removed, so a reading taken through

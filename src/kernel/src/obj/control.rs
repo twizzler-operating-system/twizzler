@@ -49,6 +49,9 @@ impl<Base> ControlObjectCacher<Base> {
         let object = create_blank_object();
         let qok = if core::mem::size_of::<Base>() > PageNumber::PAGE_SIZE {
             object.write_base(&base).unwrap();
+            crate::memory::context::kobjcensus::record(
+                crate::memory::context::kobjcensus::Site::Control,
+            );
             let kobj = kernel_context().insert_kernel_object(ObjectContextInfo::new(
                 object.clone(),
                 Protections::READ | Protections::WRITE,

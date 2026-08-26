@@ -29,6 +29,12 @@ pub enum Subcommand {
 pub struct RunCli {
     #[arg(long, short, help = "Sample threads.")]
     pub sample: bool,
+    #[arg(
+        long,
+        short,
+        help = "Stop tracing and report after this many seconds even if the target has not exited."
+    )]
+    pub timeout: Option<u64>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     pub cmdline: Vec<String>,
 }
@@ -102,6 +108,14 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
     let comp = comp.load().into_diagnostic()?;
 
     tracing::info!("compartment {} loaded, starting tracing monitor", compname);
+    // Load map, so raw sample ips can be symbolized offline (ip - start -> addr2line).
+    for lib in comp.libs() {
+        let info = lib.info();
+        println!(
+            "LIBMAP {:x} {:x} {}",
+            info.start as usize, info.len, info.name
+        );
+    }
 
     let info = comp.info().unwrap();
 

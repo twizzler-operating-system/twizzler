@@ -42,7 +42,13 @@ impl Tsc {
         // attempt to calculate frequency using cpuid
         match feature_info_frequency() {
             Ok(freq) => return freq,
-            Err(e) => logln!("[kernel::arch::tsc] switching to pit calibration: {:?}", e),
+            Err(e) => logln!("[kernel::arch::tsc] cpuid gave no frequency: {:?}", e),
+        }
+
+        // the host's own answer, if kvmclock is up -- exact, and 200ms cheaper than the PIT
+        if let Some(freq) = super::kvm::tsc_frequency() {
+            logln!("[kernel::arch::tsc] using kvmclock frequency");
+            return freq;
         }
 
         // calculate frequency using pit timer

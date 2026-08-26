@@ -55,6 +55,16 @@ pub struct ProcessorStats {
     /// reading of zero across a whole boot means the window never opened rather than that it does
     /// not exist.
     pub aspace_claim_dropped: AtomicU64,
+    /// Page faults taken on this cpu. Relaxed and lock-free: bumping it under
+    /// [`Processor::fault_stats`]'s spinlock cost every fault an interrupt mask and a ticket
+    /// acquisition for one monotonic counter. Summed across cpus by the stats read path.
+    pub page_faults: AtomicU64,
+    /// Shootdown IPIs to this cpu that were elided because its vcpu was preempted and the
+    /// invalidation was handed to the hypervisor instead (KVM PV TLB flush). Counted against the
+    /// cpu that was spared, like the aspace counters. Zero on bare metal, on a quiet host, and
+    /// with the `PV_TLB_FLUSH` knob off -- so a contended validation boot reading zero means the
+    /// elision path never ran, not that it is cheap.
+    pub tlb_pv_elided: AtomicU64,
 }
 
 pub struct Processor {
@@ -73,9 +83,12 @@ pub struct Processor {
     exited_max: AtomicUsize,
     is_idle: AtomicBool,
     must_rebalance: AtomicBool,
-    /// This cpu's syscall counts and timings. Per-cpu so the kernel-exit path takes no globally
+    /// This cpu's syscall timings and profile. Per-cpu so the kernel-exit path takes no globally
     /// shared lock; summed across cpus on the read path. See [`crate::syscall::SyscallTracking`].
     pub syscall_stats: Spinlock<crate::syscall::SyscallTracking>,
+    /// The unconditional syscall counts, outside the lock above; see
+    /// [`crate::syscall::SyscallCounts`].
+    pub syscall_counts: crate::syscall::SyscallCounts,
     /// This cpu's page-fault stage breakdown, on the same per-cpu terms. See
     /// [`crate::memory::context::virtmem::fault::FaultTracking`].
     pub fault_stats: Spinlock<crate::memory::context::virtmem::fault::FaultTracking>,
@@ -94,6 +107,7 @@ impl Processor {
         Self {
             arch: ArchProcessor::default(),
             syscall_stats: Spinlock::new(crate::syscall::SyscallTracking::new()),
+            syscall_counts: crate::syscall::SyscallCounts::new(),
             fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
             interrupt_stats: Spinlock::new(crate::interrupt::InterruptTracking::new()),
             rng: Spinlock::new(crate::random::PerCpuRng::new()),

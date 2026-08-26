@@ -54,7 +54,7 @@ impl<'a> PollState<'a> {
         fds: &'a mut [twizzler_rt_abi::bindings::pollfd],
         timeout: Option<std::time::Duration>,
     ) -> Result<Self, TwzError> {
-        let slots = get_fd_slots().lock().unwrap();
+        let slots = get_fd_slots().read().unwrap();
         let mut wps = Vec::with_capacity(fds.len());
         let mut info = Vec::with_capacity(fds.len());
         let mut ready = 0;

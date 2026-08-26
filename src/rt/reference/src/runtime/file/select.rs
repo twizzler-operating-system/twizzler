@@ -65,7 +65,7 @@ impl SelectState {
         let mut fds = SelectFds {
             set: HashMap::new(),
         };
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         for fd in 0..nfds {
             let fd = fd as RawFd;
             if read.contains(fd) {

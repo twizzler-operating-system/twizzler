@@ -412,9 +412,37 @@ pub fn start(
         }
         tracer.set_state(State::Running);
 
+        // With a timeout, stop collecting and report even if the target never exits -- the whole
+        // point is profiling a wedged compartment. The comp handle's later drop tears it down.
+        let deadline = cli
+            .prog
+            .timeout
+            .map(|secs| start + std::time::Duration::from_secs(secs));
         let mut flags = comp.info().unwrap().flags;
         while !flags.contains(CompartmentFlags::EXITED) {
-            flags = comp.wait(flags);
+            if let Some(deadline) = deadline {
+                if Instant::now() >= deadline {
+                    tracing::info!("timeout reached with target still running; reporting anyway");
+                    break;
+                }
+                // `comp.wait` has no timeout of its own; poll on a coarse tick instead.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Per-thread sampling does not inherit across spawns, so threads created after
+                // startup (codegen workers, exactly the interesting ones in a wedge) would never
+                // be sampled. Re-apply each tick; re-arming an already-sampling thread is
+                // harmless.
+                if cli.prog.sample {
+                    for thread in comp.threads() {
+                        let _ = sys_thread_set_trace_events(
+                            thread.repr_id,
+                            PERTHREAD_TRACE_GEN_SAMPLE,
+                        );
+                    }
+                }
+                flags = comp.info().unwrap().flags;
+            } else {
+                flags = comp.wait(flags);
+            }
         }
         let end = Instant::now();
         tracing::debug!(

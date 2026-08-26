@@ -282,6 +282,9 @@ impl ArchContext {
 
     fn lock_with_consist(&self, cursor: MappingCursor) -> (Consistency, SpinLockGuard<'_, Mapper>) {
         let consist = if cursor.start().is_kernel() {
+            crate::memory::context::kobjcensus::record(
+                crate::memory::context::kobjcensus::Site::FgConsist,
+            );
             Consistency::new_full_global()
         } else {
             Consistency::new(self.target)

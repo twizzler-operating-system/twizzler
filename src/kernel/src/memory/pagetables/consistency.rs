@@ -78,6 +78,11 @@ pub mod invl_census {
         }
         out
     }
+
+    /// Cumulative suppression count from the positive control, for the perfmark line.
+    pub fn posctl_suppressed() -> u64 {
+        super::posctl::snapshot()
+    }
 }
 
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
@@ -109,13 +114,14 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
 /// `noflush` the feature is paying for itself and no more.
 pub fn print_switch_counters() {
     let (mut noflush, mut flush, mut revoked) = (0u64, 0u64, 0u64);
-    let (mut reasserted, mut dropped) = (0u64, 0u64);
+    let (mut reasserted, mut dropped, mut pv_elided) = (0u64, 0u64, 0u64);
     crate::processor::mp::with_each_active_processor(|p| {
         noflush += p.stats.aspace_switch_noflush.load(Ordering::Relaxed);
         flush += p.stats.aspace_switch_flush.load(Ordering::Relaxed);
         revoked += p.stats.aspace_flush_revoked.load(Ordering::Relaxed);
         reasserted += p.stats.aspace_claim_reasserted.load(Ordering::Relaxed);
         dropped += p.stats.aspace_claim_dropped.load(Ordering::Relaxed);
+        pv_elided += p.stats.tlb_pv_elided.load(Ordering::Relaxed);
     });
     let total = noflush + flush;
     emerglogln!(
@@ -132,9 +138,10 @@ pub fn print_switch_counters() {
     // has not moved means the reclaimed claims are not the ones that were being spent, and the
     // mechanism is wrong however green the run is.
     emerglogln!(
-        "== aspace claims: {} reasserted, {} dropped",
+        "== aspace claims: {} reasserted, {} dropped, {} pv-elided",
         reasserted,
-        dropped
+        dropped,
+        pv_elided
     );
 }
 
@@ -279,6 +286,31 @@ pub struct Consistency {
     /// `Mapper::page_count` is exact without walking. `Consistency` is the only thing already
     /// threaded through the whole recursion, which is why it carries this.
     page_delta: isize,
+    /// See [`posctl`]. Dead (always false) unless the positive-control const is armed.
+    suppress: bool,
+}
+
+/// Positive control for the unmap-flush question (sysbench.md map/unmap section): deliberately
+/// suppress the object-table detach's TLB invalidation so `tlb_stale_slot_reuse` can prove it is
+/// *able* to observe staleness in this environment. **A kernel built with this armed is
+/// deliberately incorrect** — diag-only boots, reproducer verdict only, everything after it in
+/// that boot is untrusted. Ships OFF.
+pub mod posctl {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub const UNMAP_NO_INVL: bool = false;
+
+    static SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_suppressed() {
+        SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// For perfmark; proves the arm was live (a zero here in an armed round means the suppression
+    /// never executed and the verdict is void).
+    pub fn snapshot() -> u64 {
+        SUPPRESSED.load(Ordering::Relaxed)
+    }
 }
 
 impl Consistency {
@@ -289,6 +321,7 @@ impl Consistency {
             pages: LinkedList::new(FrameAdapter::NEW),
             pending: None,
             page_delta: 0,
+            suppress: false,
         }
     }
 
@@ -317,7 +350,18 @@ impl Consistency {
 
     /// Enqueue a TLB invalidation.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
+        if posctl::UNMAP_NO_INVL && self.suppress {
+            posctl::record_suppressed();
+            return;
+        }
         self.tlb.enqueue(addr, is_global, is_terminal, level)
+    }
+
+    /// See [`posctl`]. No-op unless the positive-control const is armed.
+    pub fn set_suppress(&mut self, on: bool) {
+        if posctl::UNMAP_NO_INVL {
+            self.suppress = on;
+        }
     }
 
     /// Flush a cache-line.
@@ -373,7 +417,15 @@ impl Consistency {
     }
 
     /// See [ArchTlbMgr::set_full].
+    ///
+    /// Suppress-aware for the same reason as [`Self::enqueue`]: the `posctl` weakened arm must
+    /// weaken the object-table detach's *whole* invalidation, including this escalation, or the
+    /// positive control stops being able to catch a regression of the fix it validated.
     pub fn set_full(&mut self) {
+        if posctl::UNMAP_NO_INVL && self.suppress {
+            posctl::record_suppressed();
+            return;
+        }
         self.tlb.set_full();
     }
 

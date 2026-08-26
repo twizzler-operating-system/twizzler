@@ -90,6 +90,12 @@ pub struct Context {
     // `sym_blooms`.
     pub(crate) reloc_memo: Mutex<HashMap<ObjID, Arc<relocate::LibReplayMemo>>>,
 
+    /// Times `do_lookup_symbol` fell through to the global search (a walk over every library
+    /// node). Relaxed; read as per-`relocate_all` deltas by the `RELOCMEM` sizing record. The
+    /// removed `SYMFALL` counter measured this at ~24 per library load -- the prior this exists
+    /// to re-check on the current tree.
+    pub(crate) global_fallbacks: std::sync::atomic::AtomicU64,
+
     // Relocation runs under a shared reference, so it is no longer serialized by the caller's
     // write lock. Two concurrent relocations of a shared dependency would race on its
     // `reloc_state`, and the loser would observe `PartialRelocation` and report the library as
@@ -201,6 +207,7 @@ impl Context {
             compartments: StableVec::new(),
             sym_blooms: HashMap::new(),
             reloc_memo: Mutex::new(HashMap::new()),
+            global_fallbacks: std::sync::atomic::AtomicU64::new(0),
             reloc_lock: Mutex::new(()),
         }
     }

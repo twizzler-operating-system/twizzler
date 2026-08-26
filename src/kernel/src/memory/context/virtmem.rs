@@ -2456,6 +2456,7 @@ impl<T> KernelObjectVirtHandle<T> {
 
 impl<T> Drop for KernelObjectVirtHandle<T> {
     fn drop(&mut self) {
+        crate::memory::context::kobjcensus::record(crate::memory::context::kobjcensus::Site::Drop);
         let kctx = kernel_context();
         // We don't need to tell the object that it's no longer mapped in the kernel context,
         // since object invalidation always informs the kernel context.

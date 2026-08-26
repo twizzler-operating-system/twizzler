@@ -36,6 +36,28 @@ const EARLY_ZERO_BUMP_MIN: usize = 16 * 1024;
 /// compartment; 16MB leaves generous headroom, and exhaustion just falls back to talc + memset.
 const VIRGIN_RESERVE: usize = 16 * 1024 * 1024;
 
+/// Offset from a heap span's slot end to the top of the talc+virgin area (metadata + FOT pages).
+/// Shared by `handle_oom`'s span layout and `dealloc_early`'s virgin-window test, which must
+/// agree.
+const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
+
+/// The virgin-region free that used to corrupt the early talc, now dropped instead. Proof
+/// counter for the fix's validation boot: nonzero DROPVIRGIN means the corrupting path fired.
+mod virgindrop {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(size: usize) {
+        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        let b = BYTES.fetch_add(size as u64, Ordering::Relaxed) + size as u64;
+        if n.is_power_of_two() {
+            twizzler_abi::klog_println!("DROPVIRGIN: {} frees ({} KiB) dropped", n, b / 1024);
+        }
+    }
+}
+
 use talc::{OomHandler, Span, Talc};
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -232,6 +254,22 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
+        // A request no fresh span can satisfy loops forever without this: the free-list walk
+        // fails, a new ~1GB span (a whole mapped object) is claimed, the walk fails again --
+        // observed as SPACE-CENSUS growing 155 -> 8642+ maps and an endless
+        // `get_sufficient_chunk` under rustc codegen. Cap the spans one talc may own and fail
+        // the allocation instead, naming the layout: an abort carrying the size beats a silent
+        // wedge, and 64 spans (~64GB of heap) is far beyond any sane compartment.
+        const SPAN_CAP: usize = 64;
+        if talc.oom_handler.objects.len() >= SPAN_CAP {
+            twizzler_abi::klog_println!(
+                "OOMGROW-CAP: refusing heap span #{} for allocation of {} bytes (align {})",
+                talc.oom_handler.objects.len() + 1,
+                _layout.size(),
+                _layout.align()
+            );
+            return Err(());
+        }
         // Arena growth cost (`OOMGROW`): object create + monitor map gate + delete-ctrl + note.
         // Once per ~1GB span, so for a fresh compartment this fires inside the first allocation
         // (mlibc's init_libc). Same switch as PREMAIN/CHILDINI.
@@ -243,9 +281,8 @@ impl OomHandler for RuntimeOom {
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
         const HEAP_OFFSET: usize = NULLPAGE_SIZE * 512;
-        // offset from the endpoint of the object to where the endpoint of the heap is. Reserve a
-        // page for the metadata + a few pages for any future FOT entries.
-        const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
+        // offset from the endpoint of the object to where the endpoint of the heap is: see the
+        // module-level `TOP_OFFSET` (metadata page + a few pages for future FOT entries).
         let base = slot * MAX_SIZE + HEAP_OFFSET;
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
         // Hold the span's tail back from talc as the virgin region (see `RuntimeOom::virgin_next`).
@@ -350,6 +387,21 @@ impl LocalAllocator {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
+        // Virgin-region pointers must never reach talc: `alloc_zeroed_early` bump-carves them
+        // from a span tail talc never claimed, and freeing one writes a free-list node into that
+        // memory -- a cyclic free list and an infinite `get_sufficient_chunk` walk (the rustc
+        // codegen wedge, rustc-wedge-virgin-free). The window sits at fixed per-slot geometry
+        // (`handle_oom`: [top - VIRGIN_RESERVE, top)), so plain offset arithmetic also covers the
+        // abandoned virgin regions of earlier spans, which nothing tracks. Only reached behind
+        // `is_ptr_early_alloc`, so the slot is already known to be an early-span slot -- that
+        // containment is what makes an offset-only test safe.
+        const VIRGIN_WINDOW_TOP: usize = MAX_SIZE - TOP_OFFSET;
+        const VIRGIN_WINDOW_BASE: usize = VIRGIN_WINDOW_TOP - VIRGIN_RESERVE;
+        let off = ptr as usize % MAX_SIZE;
+        if (VIRGIN_WINDOW_BASE..VIRGIN_WINDOW_TOP).contains(&off) {
+            virgindrop::record(layout.size());
+            return;
+        }
         let mut inner = self.inner.lock();
         if let Some(ptr) = NonNull::new(ptr) {
             unsafe { inner.early_talc.free(ptr, layout) };
@@ -368,8 +420,10 @@ impl LocalAllocator {
         // Serve large zeroed requests from the virgin region: guaranteed-zero, so no memset and no
         // first-touch sweep -- measured 109us per 512KB mlibc slab chunk otherwise. Monitor
         // excluded: `dealloc_early` frees into the early talc, which must never see a pointer talc
-        // did not carve. Compartment early frees are dropped wholesale (`is_ptr_early_alloc` is
-        // slot-based, and this region shares the span's slot), so no free path can reach talc.
+        // did not carve. Compartment frees of these pointers DO happen (mlibc frees empty slab
+        // chunks on thread churn) and also route through `dealloc_early` -- the virgin-window drop
+        // there is what keeps them out of talc (rustc-wedge-virgin-free; the original claim here
+        // that "no free path can reach talc" was a stale invariant and corrupted the free list).
         if layout.size() >= EARLY_ZERO_BUMP_MIN
             && !OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR)
         {

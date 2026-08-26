@@ -653,6 +653,20 @@ impl ArchTlbMgr {
             }
             others += 1;
             if self.data.should_target(p) {
+                // A preempted vcpu gets handed to the hypervisor instead: KVM fully flushes its
+                // guest TLB before it next executes, which subsumes this invalidation (globals
+                // included), so it is neither queued, IPI'd, nor waited for. This is a third
+                // outcome for a targeted cpu beyond `drop_claim_here`'s apply-or-drop pair, and
+                // it is sound for the same reason those are: no stale entry survives into a
+                // NOFLUSH switch, because *every* entry is gone before the cpu runs again --
+                // its claim bit (already revoked above) may be reasserted later against a clean
+                // TLB. See [crate::arch::kvm::try_pv_flush_elide] for the cmpxchg race rules.
+                // The broadcast fallback below may still interrupt an elided cpu as a bystander;
+                // it drains an empty queue at wakeup, which is harmless.
+                if crate::arch::kvm::try_pv_flush_elide(p) {
+                    p.stats.tlb_pv_elided.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 p.arch.tlb_shootdown_info.insert(self.data.clone());
                 targets.insert(p.id);
                 count += 1;
@@ -794,18 +808,35 @@ impl PendingShootdown {
         // acknowledgement we're waiting for.
         const RESEND_INTERVAL: usize = 4096;
         const WARN_INTERVAL: usize = 1 << 22;
+        /// How often (in poll passes) to re-sample the target's KVM preempted flag: it is a read
+        /// of a host-written line, and the answer only changes at host-scheduling granularity.
+        const PREEMPT_CHECK_INTERVAL: usize = 64;
+        /// Extra pauses per `spin_wait_until` pause-slot while the target is preempted. Spinning
+        /// at full speed against a preempted vcpu consumes exactly the host cpu it needs in order
+        /// to run and acknowledge us.
+        const PREEMPT_RELAX_PAUSES: usize = 256;
         with_each_active_processor(|p| {
             if !self.targets.contains(p.id) {
                 return;
             }
             let mut iters: usize = 0;
+            // Advisory only (see [crate::arch::kvm::vcpu_is_preempted]): a stale `true` costs
+            // some extra pauses and a delayed resend, a stale `false` is today's behavior.
+            let preempted = core::cell::Cell::new(false);
             spin_wait_until(
                 || {
                     if p.arch.tlb_shootdown_info.is_finished() {
                         return Some(());
                     }
                     iters += 1;
-                    if iters % RESEND_INTERVAL == 0 {
+                    if iters % PREEMPT_CHECK_INTERVAL == 1 {
+                        preempted.set(crate::arch::kvm::vcpu_is_preempted(p));
+                    }
+                    // A preempted target cannot take the IPI until the host runs it again, and
+                    // the original send is still pending for it when that happens -- re-kicking
+                    // buys nothing and each resend is an ICR write (under KVM, a vm exit). The
+                    // resend exists for a *running* cpu that had interrupts masked at send time.
+                    if iters % RESEND_INTERVAL == 0 && !preempted.get() {
                         super::super::super::apic::send_ipi(
                             Destination::Single(p.id),
                             TLB_SHOOTDOWN_VECTOR,
@@ -813,15 +844,26 @@ impl PendingShootdown {
                     }
                     if iters % WARN_INTERVAL == 0 {
                         logln!(
-                            "warning -- TLB shootdown stalled on CPUs {} -> {} ({} iterations)",
+                            "warning -- TLB shootdown stalled on CPUs {} -> {} ({} iterations{})",
                             self.from,
                             p.id,
-                            iters
+                            iters,
+                            if preempted.get() {
+                                ", target vcpu preempted on host"
+                            } else {
+                                ""
+                            }
                         );
                     }
                     None
                 },
-                || {},
+                || {
+                    if preempted.get() {
+                        for _ in 0..PREEMPT_RELAX_PAUSES {
+                            core::hint::spin_loop();
+                        }
+                    }
+                },
             );
         });
         tlb_wait_record(self.origin, crate::instant::Instant::now() - start);

@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use intrusive_collections::{LinkedList, intrusive_adapter};
+use intrusive_collections::{intrusive_adapter, LinkedList};
 
 use super::{
     sched::{DEFAULT_TIMESLICE_TICKS, MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS},
@@ -10,8 +10,9 @@ use crate::{
     clock::get_current_ticks,
     spinlock::{GenericSpinlock, LockGuard, SpinLoop},
     thread::{
-        Thread, ThreadRef, current_thread_ref,
-        priority::{MAX_PRIORITY, Priority, PriorityClass},
+        current_thread_ref,
+        priority::{Priority, PriorityClass, MAX_PRIORITY},
+        Thread, ThreadRef,
     },
 };
 
@@ -539,10 +540,10 @@ mod test {
 
     use twizzler_kernel_macros::kernel_test;
 
-    use super::{NR_QUEUES, PriorityQueue};
+    use super::{PriorityQueue, NR_QUEUES};
     use crate::thread::{
+        priority::{Priority, PriorityClass, MAX_PRIORITY},
         Thread, ThreadRef,
-        priority::{MAX_PRIORITY, Priority, PriorityClass},
     };
 
     const BUCKET_WIDTH: u16 = MAX_PRIORITY / NR_QUEUES as u16;
@@ -638,7 +639,9 @@ mod test {
         user.sched.set_deadline(get_current_ticks() + 1_000_000);
         rq.insert(user.clone(), false);
         assert_eq!(rq.current_timeshare_load(), 1);
-        let (removed, from) = rq.remove_thread(&user).expect("queued thread must be found");
+        let (removed, from) = rq
+            .remove_thread(&user)
+            .expect("queued thread must be found");
         assert_eq!(removed.id(), user.id());
         assert_eq!(from, super::RemovedFrom::Timeshare);
         assert_eq!(rq.current_timeshare_load(), 0);

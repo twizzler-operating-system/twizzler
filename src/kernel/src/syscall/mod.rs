@@ -1,6 +1,6 @@
 use core::{
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use object::{map_ctrl, object_ctrl};
@@ -677,10 +677,31 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
 /// about the data needs to be global: it is summed on the read path, which runs when someone asks
 /// for `SysInfo`.
 pub struct SyscallTracking {
-    count: usize,
-    per_syscall_count: [usize; Syscall::NumSyscalls as usize],
     per_syscall_stats: [TimeStatCollector; Syscall::NumSyscalls as usize],
     prof: SyscallProfile,
+}
+
+/// The unconditional half of the per-cpu syscall accounting: monotonic counts, updated with
+/// relaxed atomics so the exit path takes no lock and masks no interrupts for them. Everything
+/// that needs mutual exclusion (the timing collectors, the gated profile) stays in
+/// [`SyscallTracking`] behind its spinlock, which the exit path now touches only when timing is
+/// actually on.
+///
+/// A preemption between resolving the current processor and the increment can land a count on the
+/// cpu the thread just left; the read path sums across cpus, so that costs nothing. The locked
+/// version tolerated the same by masking interrupts instead, which every syscall paid for.
+pub struct SyscallCounts {
+    pub total: AtomicUsize,
+    pub per: [AtomicUsize; Syscall::NumSyscalls as usize],
+}
+
+impl SyscallCounts {
+    pub fn new() -> Self {
+        Self {
+            total: AtomicUsize::new(0),
+            per: core::array::from_fn(|_| AtomicUsize::new(0)),
+        }
+    }
 }
 
 /// Instrumentation half of [`SyscallTracking`], live only under [`SYSCALL_PROFILE`].
@@ -706,8 +727,6 @@ const NR_SITE_SLOTS: usize = 6;
 impl SyscallTracking {
     pub fn new() -> Self {
         Self {
-            count: 0,
-            per_syscall_count: [0; Syscall::NumSyscalls as usize],
             per_syscall_stats: core::array::from_fn(|_| TimeStatCollector::new()),
             prof: SyscallProfile {
                 thread_ctrl: [0; NR_THREAD_CTRL],
@@ -759,6 +778,14 @@ impl SyscallProfile {
 
 fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>) {
     let syscall: Syscall = entry.num;
+    // The unconditional counts are lock-free; see [`SyscallCounts`]. This used to take the per-cpu
+    // spinlock -- an interrupt mask and a ticket acquisition -- on every syscall exit to bump them.
+    let counts = &current_processor().syscall_counts;
+    counts.total.fetch_add(1, Ordering::Relaxed);
+    counts.per[syscall as usize].fetch_add(1, Ordering::Relaxed);
+    if duration.is_none() && !SYSCALL_PROFILE {
+        return;
+    }
     // Outside the lock: reading it takes one of its own, and it is only wanted for instrumentation.
     let sctx = if SYSCALL_PROFILE {
         current_thread_ref()
@@ -767,20 +794,13 @@ fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>
     } else {
         ObjID::new(0)
     };
-    // Interrupts are off for the update: it makes the lock uncontended by construction (only this
-    // cpu touches this record, and it cannot be preempted off it mid-update), which is the whole
-    // point of moving the data per-cpu.
-    //
-    // `Spinlock::lock` masks them for the guard's lifetime, so the `with_disabled` that used to
-    // wrap this was a second, redundant mask -- and this runs on *every* syscall exit, since the
-    // count is unconditional. That is two extra `cli`/restore pairs per syscall, guarding a region
-    // the lock already guards.
+    // `Spinlock::lock` masks interrupts for the guard's lifetime, which is what makes this per-cpu
+    // record uncontended by construction: only this cpu touches it, and it cannot be preempted off
+    // it mid-update.
     let mut stats = current_processor().syscall_stats.lock();
     if let Some(duration) = duration {
         stats.per_syscall_stats[syscall as usize].add_sample(duration);
     }
-    stats.per_syscall_count[syscall as usize] += 1;
-    stats.count += 1;
     if SYSCALL_PROFILE {
         stats.prof.note(entry, sctx);
     }
@@ -925,7 +945,7 @@ pub fn print_syscall_profile() {
 /// one makes none.
 pub fn nr_syscalls() -> usize {
     let mut count = 0;
-    with_each_active_processor(|p| count += p.syscall_stats.lock().count);
+    with_each_active_processor(|p| count += p.syscall_counts.total.load(Ordering::Relaxed));
     count
 }
 
@@ -948,7 +968,7 @@ pub fn syscall_snapshot() -> [(usize, u64); Syscall::NumSyscalls as usize] {
     with_each_active_processor(|p| {
         let stats = p.syscall_stats.lock();
         for (i, slot) in out.iter_mut().enumerate() {
-            slot.0 += stats.per_syscall_count[i];
+            slot.0 += p.syscall_counts.per[i].load(Ordering::Relaxed);
             slot.1 += (stats.per_syscall_stats[i].sum_femtos() / 1_000_000) as u64;
         }
     });
@@ -964,9 +984,10 @@ fn get_syscall_stats() -> SyscallStats {
 
     with_each_active_processor(|p| {
         let stats = p.syscall_stats.lock();
-        syscall_stats.nr_syscalls += stats.count;
+        syscall_stats.nr_syscalls += p.syscall_counts.total.load(Ordering::Relaxed);
         for i in 0..Syscall::NumSyscalls as usize {
-            syscall_stats.nr_syscalls_per_type[i] += stats.per_syscall_count[i];
+            syscall_stats.nr_syscalls_per_type[i] +=
+                p.syscall_counts.per[i].load(Ordering::Relaxed);
             merged[i].merge(&stats.per_syscall_stats[i]);
         }
     });

@@ -236,7 +236,7 @@ pub fn open(
                     SocketAddress(addr.addr),
                 ))?))
             } else {
-                let binding = get_fd_slots().lock().unwrap();
+                let binding = get_fd_slots().read().unwrap();
                 let Some(fd) = binding.get(existing_fd.unwrap() as usize) else {
                     return Err(TwzError::INVALID_ARGUMENT);
                 };
@@ -284,7 +284,7 @@ pub fn open(
                         );
                     })?;
             let fd = fd.id as usize;
-            let binding = get_fd_slots().lock().unwrap();
+            let binding = get_fd_slots().read().unwrap();
             let Some(fd) = binding.get(fd) else {
                 twizzler_abi::klog_println!("SocketAccept: no fd slot at index {}", fd);
                 return Err(ErrorKind::InvalidInput.into());

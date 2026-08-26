@@ -207,74 +207,56 @@ struct SearchCPUResult {
     cpuid: u32,
 }
 
-#[track_caller]
-fn find_cpu_from_topo(
+/// Both answers [select_cpu] needs, from one pass: the least-loaded cpu that passes the priority
+/// filter (`filtered`), and the least-loaded cpu overall (`global`). These used to be two full
+/// walks -- each reading every cpu's priority and load lines, remote and rewritten on every switch
+/// -- with the second run whenever the first found nothing or found the caller's avoided cpu.
+///
+/// Returns true (and stops walking) on finding an idle cpu that passes the filter. This is not a
+/// policy change: an idle cpu's jittered load is exactly 0 (`(0 * 256).saturating_sub(j)`, and a
+/// busy cpu's is at least 129), the comparison is strict `<`, so the first zero visited wins the
+/// complete walk too.
+fn find_cpus_from_topo(
     node: &CPUTopoNode,
-    highest: bool,
     pri: Option<&Priority>,
-    allowed_set: Option<&CpuSet>,
-) -> Option<SearchCPUResult> {
-    let mut best = if highest { 0 } else { u64::MAX };
-    let mut best_cpu = None;
+    filtered: &mut Option<SearchCPUResult>,
+    global: &mut Option<SearchCPUResult>,
+) -> bool {
     if !node.children.is_empty() {
         for n in 0..node.children.len() {
-            /* TODO: maybe we could optimize here by pruning based on allowed_set */
-            let res = find_cpu_from_topo(node.child(n).unwrap(), highest, pri, allowed_set);
-            if let Some(res) = res {
-                if highest {
-                    if res.load > best || best_cpu.is_none() {
-                        best_cpu = Some(res.cpuid);
-                        best = res.load;
-                    }
-                } else if res.load < best || best_cpu.is_none() {
-                    best_cpu = Some(res.cpuid);
-                    best = res.load;
-                }
+            if find_cpus_from_topo(node.child(n).unwrap(), pri, filtered, global) {
+                return true;
             }
         }
-        best_cpu.map(|c| SearchCPUResult {
-            load: best,
-            cpuid: c,
-        })
-    } else {
-        for c in node.first..=node.last {
-            if node.cpuset.contains(c) {
-                let processor = get_processor(c as u32);
-                let skip = pri.map_or(false, |pri| &processor.current_priority() > pri)
-                    || allowed_set.map_or(false, |set| !set.contains(c));
-                if skip {
-                    continue;
-                }
-                let load = processor.current_load();
-                log::trace!(
-                    "{} {} {:?}: cpu {} considering {}: load {},{},{}",
-                    core::panic::Location::caller(),
-                    highest,
-                    pri,
-                    current_processor().id,
-                    processor.id,
-                    processor.current_load(),
-                    processor.rq.current_load(),
-                    processor.rq.current_timeshare_load(),
-                );
-                /* jitter. This is similar to how freebsd does things */
-                let jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
-                if highest {
-                    if jload > best || best_cpu.is_none() {
-                        best_cpu = Some(c as u32);
-                        best = jload;
-                    }
-                } else if jload < best || best_cpu.is_none() {
-                    best_cpu = Some(c as u32);
-                    best = jload;
-                }
-            }
-        }
-        best_cpu.map(|c| SearchCPUResult {
-            load: best,
-            cpuid: c,
-        })
+        return false;
     }
+    for c in node.first..=node.last {
+        if !node.cpuset.contains(c) {
+            continue;
+        }
+        let processor = get_processor(c);
+        let load = processor.current_load();
+        /* jitter. This is similar to how freebsd does things */
+        let jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
+        if global.as_ref().is_none_or(|g| jload < g.load) {
+            *global = Some(SearchCPUResult {
+                load: jload,
+                cpuid: c,
+            });
+        }
+        if pri.is_none_or(|pri| &processor.current_priority() <= pri) {
+            if filtered.as_ref().is_none_or(|f| jload < f.load) {
+                *filtered = Some(SearchCPUResult {
+                    load: jload,
+                    cpuid: c,
+                });
+            }
+            if load == 0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn choose_cpu_steal_via_topo(node: &CPUTopoNode, allowed_set: &mut CpuSet) -> Option<u32> {
@@ -346,7 +328,12 @@ fn reset_thread_time(thread: &ThreadRef, processor: &Processor) {
     thread.sched.reset_timeslice();
 }
 
-fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: bool) {
+fn schedule_thread_on_cpu(
+    thread: ThreadRef,
+    processor: &Processor,
+    is_current: bool,
+    is_new: bool,
+) {
     if thread.is_exiting() {
         return;
     }
@@ -368,7 +355,9 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     // produces another. That self-sustaining loop is what the first `>=` attempt actually
     // measured -- 6820 marks against 1129, info pickup 343-467 -> 657-713 us -- rather than the
     // equal-priority thrash it was blamed on.
-    let is_reinsertion = current_thread_ref().is_some_and(|cur| cur.id() == thread.id());
+    // Resolved once for both uses below: each call is an Arc clone/drop pair.
+    let cur = current_thread_ref();
+    let is_reinsertion = cur.as_ref().is_some_and(|cur| cur.id() == thread.id());
     // Strict `>`, and the priority boundary is *not* the lever. `>=` was tried on top of the
     // reinsertion fix -- matching what `needs_reschedule` does at a tick -- and it moved ~240 wakes
     // from `lost-pri` into `marked` without moving their latency: `lost-pri` shed 47 stalls over
@@ -381,19 +370,38 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_current: 
     } else if is_remote {
         wakestats::WAKE_REMOTE
     } else {
-        match current_thread_ref() {
+        match cur.as_ref() {
             Some(cur) if cur.is_idle_thread() => wakestats::WAKE_LOCAL_IDLE,
             Some(cur) if woken_priority > cur.effective_priority() => wakestats::WAKE_LOCAL_MARKED,
             Some(_) => wakestats::WAKE_LOCAL_LOST,
             None => 0,
         }
     };
+    // A *separate* label for the latency histogram only. `kind` drives the preempt decision in
+    // the `match` below, whose `_ => {}` arm would silently swallow any new variant -- a local
+    // new-thread wake would stop calling `schedule_mark_preempt`, which is a scheduling
+    // regression wearing an instrument's clothes. So the behaviour classification is left exactly
+    // as it was and only the histogram bucket is refined.
+    //
+    // Splits spawn out of `remote`/`local-*`: the spawn path's wake is the one this measures
+    // (`schedule_new_thread` -> the child's first instruction), and it was previously averaged in
+    // with every futex and queue wake in the system, where ~130k samples a boot bury the ~3k that
+    // a spawn campaign cares about.
+    let lat_kind = if kind != 0 && is_new {
+        if is_remote {
+            wakestats::WAKE_NEW_REMOTE
+        } else {
+            wakestats::WAKE_NEW_LOCAL
+        }
+    } else {
+        kind
+    };
     if kind != 0 {
         thread.sched.wake_ticks.store(
             crate::instant::Instant::now().raw_ticks().max(1),
             Ordering::Relaxed,
         );
-        thread.sched.wake_kind.store(kind, Ordering::Relaxed);
+        thread.sched.wake_kind.store(lat_kind, Ordering::Relaxed);
     }
 
     thread.sched.moving_to_queue(processor.id);
@@ -548,7 +556,7 @@ fn balance(topo: &CPUTopoNode) {
                         donor.id,
                         recipient.id
                     );
-                    schedule_thread_on_cpu(thread, recipient, false);
+                    schedule_thread_on_cpu(thread, recipient, false, false);
                     steps += 10;
                 }
             } else if donor.current_load() == 1 {
@@ -562,6 +570,7 @@ fn balance(topo: &CPUTopoNode) {
 fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
     /* TODO: restrict via cpu sets as step 0, and in global searches */
     /* TODO: take SMT into acount */
+    let pri = thread.effective_priority();
     let last_cpuid = thread
         .sched
         .preferred_cpu()
@@ -573,29 +582,25 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
         if processor.rq.current_load() == 0 {
             return last_cpuid as u32;
         }
-        if thread.effective_priority() > processor.current_priority() {
+        if pri > processor.current_priority() {
             return last_cpuid as u32;
         }
     }
 
-    /* 2: search for the least loaded that will run this thread immediately */
-    let res = find_cpu_from_topo(
-        get_cpu_topology(),
-        false,
-        Some(&thread.effective_priority()),
-        None,
-    );
-    if let Some(res) = res {
+    /* 2: the least loaded that will run this thread immediately, falling back to the least
+     * loaded overall -- one walk for both, see find_cpus_from_topo. */
+    let mut filtered = None;
+    let mut global = None;
+    find_cpus_from_topo(get_cpu_topology(), Some(&pri), &mut filtered, &mut global);
+    if let Some(res) = filtered {
         if try_avoid.is_none_or(|ta| ta != res.cpuid) {
             return res.cpuid;
         }
     }
 
-    /* 3: search for the least loaded */
-    let res = find_cpu_from_topo(get_cpu_topology(), false, None, None)
-        .expect("global CPU search should always produce results");
-
-    res.cpuid
+    global
+        .expect("global CPU search should always produce results")
+        .cpuid
 }
 
 intrusive_adapter!(pub AllThreadsAdapter = ThreadRef: Thread { all_threads_link: intrusive_collections::rbtree::AtomicLink });
@@ -651,8 +656,14 @@ where
 /// sched_link and frozen ticks; a lost wake shows `Sleeping` plus whichever wait link it holds.
 pub fn schedmon_dump(pass: u64) {
     for p in crate::processor::mp::all_processors().iter().flatten() {
+        // Host steal time, so a reading taken on a contended host says so in the same line as
+        // the numbers it perturbs. 0 outside KVM (and always on non-x86).
+        #[cfg(target_arch = "x86_64")]
+        let steal_ms = crate::arch::kvm::steal_time_ns(p) / 1_000_000;
+        #[cfg(not(target_arch = "x86_64"))]
+        let steal_ms = 0u64;
         emerglogln!(
-            "[schedmon] {} cpu {}: ht {} sw {} pre {} wake {} load {} ts_load {} rq_pri {:?} requeue {}",
+            "[schedmon] {} cpu {}: ht {} sw {} pre {} wake {} load {} ts_load {} rq_pri {:?} requeue {} steal_ms {}",
             pass,
             p.id,
             p.stats.hardticks.load(Ordering::Relaxed),
@@ -663,6 +674,7 @@ pub fn schedmon_dump(pass: u64) {
             p.rq.current_timeshare_load(),
             p.rq.current_priority(),
             crate::syscall::sync::requeue_len(),
+            steal_ms,
         );
     }
     let reprio = reprioritized_counts();
@@ -727,6 +739,7 @@ pub fn lookup_thread_repr(id: ObjID) -> Option<ThreadRef> {
 }
 
 pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
+    wakestats::new_thread();
     thread.set_state(ExecutionState::Running);
     let thread = Arc::new(thread);
     {
@@ -737,7 +750,7 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
         Box::into_raw(Box::new(thread.clone()));
     let cpuid = select_cpu(&thread, None);
     let processor = get_processor(cpuid);
-    schedule_thread_on_cpu(thread.clone(), processor, false);
+    schedule_thread_on_cpu(thread.clone(), processor, false, true);
     thread
 }
 
@@ -828,7 +841,7 @@ pub fn schedule_thread(thread: ThreadRef) {
         processor.rq.current_load(),
         thread.id()
     );
-    schedule_thread_on_cpu(thread, processor, false);
+    schedule_thread_on_cpu(thread, processor, false, false);
 }
 
 pub fn create_idle_thread() {
@@ -1007,12 +1020,12 @@ fn do_schedule(flags: SchedFlags) {
                 processor.id
             };
             let processor = get_processor(cpuid);
-            schedule_thread_on_cpu(cur.clone(), processor, false);
+            schedule_thread_on_cpu(cur.clone(), processor, false, false);
         } else {
             // This is a current thread to reinsert, but only count it as such if it is not
             // yielding so that other threads will run first.
             if flags.contains(SchedFlags::YIELD) {
-                schedule_thread_on_cpu(cur.clone(), processor, false);
+                schedule_thread_on_cpu(cur.clone(), processor, false, false);
             } else {
                 // shortcut -- we are intending to just run this thread again.
                 reset_thread_time(cur, processor);
@@ -1224,7 +1237,23 @@ pub mod wakestats {
     pub const WAKE_LOCAL_LOST: u32 = 2;
     pub const WAKE_LOCAL_IDLE: u32 = 3;
     pub const WAKE_REMOTE: u32 = 4;
-    const NR_KINDS: usize = 5;
+    /// A thread's *first* wake -- `schedule_new_thread`, i.e. the tail of `sys_spawn`. Latency
+    /// label only: these samples move out of `remote`/`local-*` rather than adding to the totals,
+    /// and the preempt decision does not see them (see `lat_kind` in `schedule_thread_on_cpu`).
+    pub const WAKE_NEW_LOCAL: u32 = 5;
+    pub const WAKE_NEW_REMOTE: u32 = 6;
+    const NR_KINDS: usize = 7;
+
+    /// Calls to `schedule_new_thread`, so the two `new-*` histogram counts can be checked against
+    /// the number of threads actually created. They will not match exactly -- a thread that exits
+    /// before it is ever switched to never consumes its stamp -- but a large gap means the stamp
+    /// is being lost, not that spawn is fast, and without this the histogram cannot tell those
+    /// apart. A count with no denominator is not a measurement.
+    static NEW_THREADS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn new_thread() {
+        NEW_THREADS.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Upper bounds in microseconds; the last bucket is everything above. The interesting boundary
     /// is one tick (~1 ms): a wake that waited longer than that was not merely un-preempted, it
@@ -1299,6 +1328,12 @@ pub mod wakestats {
         print_lat("local-lost-pri", WAKE_LOCAL_LOST as usize);
         print_lat("local-onto-idle", WAKE_LOCAL_IDLE as usize);
         print_lat("remote", WAKE_REMOTE as usize);
+        logln!(
+            "  new threads created: {} (see new-local + new-remote below)",
+            NEW_THREADS.load(Ordering::Relaxed),
+        );
+        print_lat("new-local", WAKE_NEW_LOCAL as usize);
+        print_lat("new-remote", WAKE_NEW_REMOTE as usize);
     }
 }
 

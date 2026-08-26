@@ -47,13 +47,19 @@ use crate::{
 ///
 /// Off until the VERIFY-armed validation sweep passes; flip with [`RELOC_MEMO_VERIFY`] for that
 /// run, then ship true.
-pub(crate) const RELOC_MEMO: bool = true;
+pub(crate) const RELOC_MEMO: bool = false;
 
 /// Verify mode: every replayed resolution also runs the live lookup and the two are compared
 /// (defining library and raw value). Disagreements are counted per `relocate_all` and reported
 /// through the `reloc_all` debug line as `memo_bad`. Must read 0; run a full `--tests` sweep with
 /// this on before trusting a change to the memo or to the lookup rules it shadows.
-pub(crate) const RELOC_MEMO_VERIFY: bool = true;
+pub(crate) const RELOC_MEMO_VERIFY: bool = false;
+
+/// Sizing switch: emit the `RELOCMEM` record per `relocate_all` without arming the memo or
+/// verify. Sizes the resolve share of a load on the current tree -- misses, cache hits,
+/// `resolve_time`, and global fallbacks -- to bound what any lookup optimization can buy
+/// (spawnbench.md §45's null made this measurement the gate for further work here).
+pub(crate) const RELOC_STATS: bool = false;
 
 /// One library source object's memoized resolutions; see [`RELOC_MEMO`].
 pub(crate) struct LibReplayMemo {
@@ -651,18 +657,22 @@ impl Context {
             reloc_cache.memo_hits,
             reloc_cache.memo_bad,
         );
-        // Engagement + soundness evidence for verify runs (`RELOCMEM`): replayed / disagreed /
-        // live misses / cache hits. The debug line above is invisible in a release boot, and a
-        // green sweep with zero replays would otherwise read as "memo verified" when the truth is
-        // "memo never ran". Anon variant: dynlink links into bootstrap (see `record_on_anon`).
+        // Engagement + soundness evidence for verify runs, and the sizing record for
+        // `RELOC_STATS` (`RELOCMEM`): n = replayed; vals = [disagreed, live misses, cache hits,
+        // resolve_us, global fallbacks]. The debug line above is invisible in a release boot, and
+        // a green sweep with zero replays would otherwise read as "memo verified" when the truth
+        // is "memo never ran". Anon variant: dynlink links into bootstrap (see `record_on_anon`).
         secgate::statlog::record_on_anon(
-            RELOC_MEMO_VERIFY,
+            RELOC_MEMO_VERIFY || RELOC_STATS,
             "RELOCMEM",
             reloc_cache.memo_hits as u64,
             &[
                 reloc_cache.memo_bad as u64,
                 reloc_cache.misses as u64,
                 reloc_cache.hits as u64,
+                reloc_cache.resolve_time.as_micros() as u64,
+                self.global_fallbacks
+                    .swap(0, core::sync::atomic::Ordering::Relaxed),
             ],
         );
         // A verify-mode disagreement is a memoization soundness bug: never silent, whatever the

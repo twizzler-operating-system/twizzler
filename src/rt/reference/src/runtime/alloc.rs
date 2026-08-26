@@ -8,7 +8,10 @@ use std::{
 };
 
 use monitor_api::{RuntimeThreadControl, THREAD_STARTED};
-use twizzler_abi::{object::ObjID, syscall::sys_thread_gettls};
+use twizzler_abi::{
+    object::{MAX_SIZE, ObjID},
+    syscall::sys_thread_gettls,
+};
 
 use super::{ReferenceRuntime, RuntimeState};
 
@@ -81,6 +84,34 @@ fn print_comp_name(layout: std::alloc::Layout, is_free: bool) {
 /// path is not responsible.
 const DIAG_TALC_ABOVE: usize = usize::MAX;
 
+/// Route the monitor's post-ready allocations through ferroc like any other compartment's,
+/// instead of pinning every monitor allocation to the early talc allocator -- one simple_mutex
+/// for the whole process, held by every gate call's allocations.
+///
+/// The exclusion was constructional, not fundamental: the monitor's gate-borrowed threads get
+/// TLS and THREAD_STARTED from the same `cross_compartment_entry` machinery every service
+/// compartment's gate handlers already run ferroc on; its background threads come through the
+/// ordinary spawn trampoline; `__monitor_ready` runs before any of them exist; and ferroc's
+/// base-chunk growth reaches `create_and_map`'s monitor arm (direct `sys_object_map`, no gate
+/// recursion) exactly as early-talc growth does today. What the exclusion *was* load-bearing
+/// for is bootstrap-allocator pointers, which belong to neither talc nor ferroc -- the slot
+/// guard in `dealloc` covers those on this path.
+///
+/// Arm selector, one tree state builds both; `false` is bit-for-bit the pre-monitor-ferroc
+/// behavior. Validated on (tags monferroc/monferroc2, 2026-08-26): 2x release-kvm-smp4 and 2x
+/// debug-kvm-smp4, 58/58 tests each, compartment_spawn bench + full suite, debug assertions
+/// live; release spawn flat against the immediately-prior baseline (2.65-2.70 vs 2.67 ms/iter).
+/// Transcripts name their arm via the `[monitor] alloc tunables` boot line. Not yet measured:
+/// monitor heap retention under dead gate-thread churn (a leak-harness pass), and the paired-A/B
+/// win, deferred to a quiescent tree.
+pub const MONITOR_FERROC: bool = true;
+
+/// Whether this instance routes to the early allocator unconditionally; see [`MONITOR_FERROC`].
+#[inline]
+fn monitor_stays_early(rt: &ReferenceRuntime) -> bool {
+    !MONITOR_FERROC && rt.state().contains(RuntimeState::IS_MONITOR)
+}
+
 fn try_switch_allocator_is_done() -> bool {
     static SWITCHED: AtomicU32 = AtomicU32::new(0);
     if SWITCHED.load(Ordering::Acquire) == 2 {
@@ -97,17 +128,25 @@ fn try_switch_allocator_is_done() -> bool {
 
 unsafe impl GlobalAlloc for ReferenceRuntime {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // See BIGALLOC in syms.rs: same fingerprint for Rust-side callers that never pass
+        // through twz_rt_malloc. >=1GB only -- unreachable on any healthy path.
+        if layout.size() >= 1 << 30 {
+            twizzler_abi::klog_println!(
+                "BIGALLOC: rust alloc size {:x} align {:x}",
+                layout.size(),
+                layout.align()
+            );
+        }
         let tls =
             unsafe { dynlink::tls::get_current_thread_control_block::<RuntimeThreadControl>() };
-        if !self.state().contains(RuntimeState::READY)
-            || self.state().contains(RuntimeState::IS_MONITOR)
-            || tls.is_null()
+        if !self.state().contains(RuntimeState::READY) || monitor_stays_early(self) || tls.is_null()
         {
             let r = LOCAL_ALLOCATOR.alloc_early(layout);
             census::on_alloc(layout.size(), census::B_EARLY_COLD);
-            // The tracker's other hooks sit on the ferroc tail, which the monitor never reaches --
-            // `IS_MONITOR` routes every one of its allocations here. Without this the tracker
-            // reports `live=0 inserted=0` for the monitor, which reads as "nothing retained".
+            // The tracker's other hooks sit on the ferroc tail, which the monitor never reaches
+            // while [`MONITOR_FERROC`] is off -- this arm takes every one of its allocations.
+            // Without this the tracker reports `live=0 inserted=0` for the monitor, which reads
+            // as "nothing retained".
             census::track::on_alloc(r, layout.size());
             return r;
         }
@@ -152,11 +191,16 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
     }
 
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if layout.size() >= 1 << 30 {
+            twizzler_abi::klog_println!(
+                "BIGALLOC: rust alloc_zeroed size {:x} align {:x}",
+                layout.size(),
+                layout.align()
+            );
+        }
         let tls =
             unsafe { dynlink::tls::get_current_thread_control_block::<RuntimeThreadControl>() };
-        if !self.state().contains(RuntimeState::READY)
-            || self.state().contains(RuntimeState::IS_MONITOR)
-            || tls.is_null()
+        if !self.state().contains(RuntimeState::READY) || monitor_stays_early(self) || tls.is_null()
         {
             census::on_alloc(layout.size(), census::B_EARLY_COLD);
             return LOCAL_ALLOCATOR.alloc_zeroed_early(layout);
@@ -206,7 +250,7 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             return;
         }
 
-        if self.state().contains(RuntimeState::IS_MONITOR) {
+        if monitor_stays_early(self) {
             // Monitor allocations all come from the early allocator, and the old
             // `LOCAL_ALLOCATOR.dealloc` here was dead code (do_dealloc drops everything while
             // early_allocs_frozen is false, which the monitor never sets) — every monitor free
@@ -225,6 +269,19 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
             // takes the arm above -- so it biases `net` upward by a constant, not by a per-load
             // term. Add a branch before reading `net` as an absolute.
             return;
+        }
+
+        // Bootstrap-allocator pointers (a slot is registered only in the monitor) belong to
+        // neither talc nor ferroc; `LocalAllocator::dealloc` drops them for the same reason, and
+        // with [`MONITOR_FERROC`] on nothing else catches them before the ferroc tail, which
+        // masks a foreign pointer to a slab it does not own. Uncounted, exactly as the arm above
+        // leaves them: the population is bounded by boot. Compiled out with the selector off, so
+        // that arm stays bit-for-bit the pre-existing behavior.
+        if MONITOR_FERROC {
+            let bslot = LOCAL_ALLOCATOR.bootstrap_alloc_slot.load(Ordering::SeqCst);
+            if bslot != 0 && (ptr as usize) / MAX_SIZE == bslot {
+                return;
+            }
         }
 
         if LOCAL_ALLOCATOR.is_ptr_early_alloc(ptr) {

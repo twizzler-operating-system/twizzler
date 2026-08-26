@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-mod alloc;
+pub(crate) mod alloc;
 mod core;
 mod debug;
 mod exec;

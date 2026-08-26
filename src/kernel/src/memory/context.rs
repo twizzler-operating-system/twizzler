@@ -176,3 +176,57 @@ pub fn kernel_context() -> &'static ContextRef {
         c
     })
 }
+
+/// Census of kernel-object mapping traffic — the emitters behind the full+global TLB broadcasts
+/// (`lock_with_consist` hands every kernel-range cursor a `Consistency::new_full_global`, so each
+/// of these ops costs a machine-wide whole-TLB flush; measured ~261 per spawn, mapsplit3).
+/// Per-site so the fix targets the actual population. Gated; ships OFF.
+pub mod kobjcensus {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub const KOBJ_CENSUS: bool = false;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Site {
+        /// `security.rs` capability verification: per-kuid `VerifyingKey` insert.
+        VerifyKey = 0,
+        /// `security.rs` sctx-base insert.
+        SctxBase,
+        /// `obj/control.rs` `ControlObjectCacher` (large-base control objects).
+        Control,
+        /// `queue.rs` kernel queue mapping.
+        Queue,
+        /// `interrupt.rs` device wait-word mapping.
+        Interrupt,
+        /// `KernelObjectVirtHandle::drop` — the unmap side of all of the above.
+        Drop,
+        /// `lock_with_consist` choosing full+global (every kernel-cursor op, map or unmap).
+        FgConsist,
+    }
+    pub const NR: usize = Site::FgConsist as usize + 1;
+    pub const NAMES: [&str; NR] = [
+        "vkey", "sctx", "ctl", "queue", "int", "drop", "fg_consist",
+    ];
+
+    static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn record(site: Site) {
+        if !KOBJ_CENSUS {
+            return;
+        }
+        COUNTS[site as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot() -> [u64; NR] {
+        let mut out = [0u64; NR];
+        if !KOBJ_CENSUS {
+            return out;
+        }
+        for (i, c) in COUNTS.iter().enumerate() {
+            out[i] = c.load(Ordering::Relaxed);
+        }
+        out
+    }
+}

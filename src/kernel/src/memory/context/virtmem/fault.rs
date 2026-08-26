@@ -184,9 +184,8 @@ const BUCKET_NS: [u64; 3] = [1_000, 10_000, 100_000];
 const NR_BUCKETS: usize = BUCKET_NS.len() + 1;
 
 pub struct FaultTracking {
-    /// Count and duration of every fault, which `SysInfo` reports. Always collected, unlike the
-    /// rest of this struct.
-    count: usize,
+    /// Duration of every fault, which `SysInfo` reports once [`TIMING_ON`] is latched. The
+    /// unconditional fault *count* lives in `ProcessorStats::page_faults`, outside this lock.
     time: TimeStatCollector,
     stages: [TimeStatCollector; NR_STAGES],
     buckets: [[usize; NR_BUCKETS]; NR_STAGES],
@@ -196,7 +195,6 @@ pub struct FaultTracking {
 impl FaultTracking {
     pub fn new() -> Self {
         Self {
-            count: 0,
             time: TimeStatCollector::new(),
             stages: core::array::from_fn(|_| TimeStatCollector::new()),
             buckets: [[0; NR_BUCKETS]; NR_STAGES],
@@ -323,9 +321,9 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
     TIMING_ON.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut time = TimeStatCollector::new();
     crate::processor::mp::with_each_active_processor(|p| {
-        let per_cpu = p.fault_stats.lock();
-        stats.page_fault_count += per_cpu.count;
-        time.merge(&per_cpu.time);
+        stats.page_fault_count +=
+            p.stats.page_faults.load(core::sync::atomic::Ordering::Relaxed) as usize;
+        time.merge(&p.fault_stats.lock().time);
     });
     stats.page_fault_stats = time.get_stats();
 }
@@ -742,20 +740,24 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
     };
     let res = do_page_fault(addr, cause, flags, ip);
     record_stage(FaultStage::Total, start_time);
-    // Per-cpu, for the same reason the syscall counters are (see `SyscallTracking`): this used to
-    // be one global spinlock taken on every fault, so every cpu in the system serialized on one
-    // lock and one cache line to record that it had taken one. Summed on the read path, in
-    // `fill_stats`. A fault before this cpu's tls is up goes uncounted; those are early-boot
-    // kernel faults, and the alternative is a null check on the hot path.
+    // Per-cpu, for the same reason the syscall counters are (see `SyscallCounts`): this used to
+    // be one global spinlock taken on every fault, then a per-cpu one -- an interrupt mask and a
+    // ticket acquisition per fault, for one monotonic counter. Relaxed and lock-free now; a
+    // preemption between resolving the processor and the increment lands the count on the cpu the
+    // thread just left, which the summing read path (`fill_stats`) does not care about. A fault
+    // before this cpu's tls is up goes uncounted; those are early-boot kernel faults, and the
+    // alternative is a null check on the hot path.
     if crate::processor::tls_ready() {
-        let sample = timing.then(|| (Instant::now() - start_time).into());
-        crate::interrupt::with_disabled(|| {
-            let mut stats = crate::processor::mp::current_processor().fault_stats.lock();
-            if let Some(sample) = sample {
-                stats.time.add_sample(sample);
-            }
-            stats.count += 1;
-        });
+        let cp = crate::processor::mp::current_processor();
+        cp.stats
+            .page_faults
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if timing {
+            let sample = (Instant::now() - start_time).into();
+            crate::interrupt::with_disabled(|| {
+                cp.fault_stats.lock().time.add_sample(sample);
+            });
+        }
     }
     if flags.contains(PageFaultFlags::USER) && !ip.is_kernel() && !addr.is_kernel() {
         log::trace!(

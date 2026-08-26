@@ -23,8 +23,22 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
                 }
             });
             info.flags = 0;
-            info.version = 1;
+            info.version = 2;
             info.page_size = 0x1000;
+            // Steal is per-cpu but reported whole-system: the reader's question is "was this
+            // host contended", not "which vcpu paid" -- schedmon carries the per-cpu split.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut steal = 0u64;
+                crate::processor::mp::with_each_active_processor(|p| {
+                    steal += crate::arch::kvm::steal_time_ns(p);
+                });
+                info.steal_ns = steal;
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                info.steal_ns = 0;
+            }
             Ok(())
         }
         InfoKind::MemoryStats => {

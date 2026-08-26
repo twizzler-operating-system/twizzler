@@ -4,10 +4,10 @@ use core::sync::atomic::AtomicUsize;
 use log::{error, trace, warn};
 use twizzler_abi::{
     device::CacheType,
-    object::{ObjID, Protections},
+    object::{MAX_SIZE, ObjID, Protections},
     syscall::{MapFlags, SctxStats},
 };
-use twizzler_rt_abi::error::{NamingError, ObjectError};
+use twizzler_rt_abi::error::{NamingError, ObjectError, TwzError};
 pub use twizzler_security::PermsInfo;
 use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingKey};
 
@@ -17,7 +17,7 @@ use crate::{
         virtmem::with_each_context,
     },
     mutex::Mutex,
-    obj::{LookupFlags, LookupResult, lookup_object},
+    obj::{LookupFlags, LookupResult, ObjectRef, PageNumber, lookup_object},
     once::{Once, OnceWait},
     spinlock::Spinlock,
 };
@@ -42,7 +42,17 @@ pub struct SecCtxMgr {
 
 /// A single security context.
 pub struct SecurityContext {
-    kobj: Option<KernelObject<SecCtxBase>>,
+    /// The backing sctx object, read via the object data API rather than a kernel mapping.
+    ///
+    /// This used to be a `KernelObject<SecCtxBase>`. Mapping every sctx into the kernel's shared
+    /// half made its PTEs GLOBAL, and the map/unmap pair plus the object's eventual teardown each
+    /// broadcast machine-wide full+global TLB flushes — measured as the single emitter population
+    /// behind ~10k broadcasts per spawn-heavy bench window (kobjcensus1: sctx=2142 cycles, every
+    /// other site zero; obj-origin teardown flushes 42.9k boot-wide on top). Copy-out reads on
+    /// the lookup-miss path cost a bounded memcpy instead, read the same live bytes the mapping
+    /// would have, and close the verify-in-place window where userspace could mutate a capability
+    /// mid-verification.
+    obj: Option<ObjectRef>,
     /// Memoized `lookup` answers.
     ///
     /// A `Spinlock`, not a `Mutex`: the page-fault path reads this once per user fault, and a
@@ -74,7 +84,7 @@ impl Drop for SecurityContext {
 
 impl core::fmt::Debug for SecurityContext {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let id = self.kobj.as_ref().map(|ko| ko.id());
+        let id = self.obj.as_ref().map(|o| o.id());
         f.debug_struct("SecurityContext")
             .field("id", &id)
             .finish_non_exhaustive()
@@ -82,6 +92,26 @@ impl core::fmt::Debug for SecurityContext {
 }
 
 pub type SecurityContextRef = Arc<SecurityContext>;
+
+/// Copy an sctx object's base out via the object data API, heap-boxed (`SecCtxBase` is 5.8KB —
+/// larger than a page, so no contiguous kernel window exists for it without a mapping, and too
+/// large for a kernel stack frame).
+fn read_base_boxed(obj: &ObjectRef) -> Result<alloc::boxed::Box<SecCtxBase>, TwzError> {
+    let mut val = alloc::boxed::Box::new(core::mem::MaybeUninit::<SecCtxBase>::uninit());
+    obj.read_bytes(
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                val.as_mut_ptr() as *mut u8,
+                core::mem::size_of::<SecCtxBase>(),
+            )
+        },
+        PageNumber::base_page().as_byte_offset(),
+    )?;
+    // Box<MaybeUninit<T>> -> Box<T>, initialized by the read above.
+    Ok(unsafe {
+        alloc::boxed::Box::from_raw(alloc::boxed::Box::into_raw(val) as *mut SecCtxBase)
+    })
+}
 
 /// The kernel gets a special, reserved sctx ID.
 pub const KERNEL_SCTX: ObjID = ObjID::new(0);
@@ -101,9 +131,12 @@ pub struct AccessInfo {
 
 impl SecurityContext {
     pub fn flags(&self) -> Option<SecCtxFlags> {
-        let obj = self.kobj.as_ref()?;
-        let base = obj.base();
-        Some(base.flags.clone())
+        let obj = self.obj.as_ref()?;
+        // Just the one field, not the 5.8KB base.
+        obj.read_at::<SecCtxFlags>(
+            PageNumber::base_page().as_byte_offset() + core::mem::offset_of!(SecCtxBase, flags),
+        )
+        .ok()
     }
 
     pub fn inc_active_count(&self) {
@@ -141,7 +174,7 @@ impl SecurityContext {
         // grants sctx 0 everything unconditionally (`fault::check_security`). Grant the same here,
         // so an eager map and a faulted-in one compute identical protections -- otherwise
         // `is_object_mapped` rejects the eager entry and the fault path remaps it anyway.
-        if self.kobj.is_none() {
+        if self.obj.is_none() {
             return PermsInfo::new(KERNEL_SCTX, Protections::all(), Protections::empty());
         }
         // Take a reference to the map, then walk it with the lock released: the hold is one
@@ -162,12 +195,20 @@ impl SecurityContext {
         // add default perms here
         granted_perms.provide = granted_perms.provide | default_prots;
 
-        let Some(ref obj) = self.kobj else {
-            // if there is no object underneath the kobj, return nothing;
+        let Some(ref obj) = self.obj else {
+            // if there is no backing object, return nothing;
             return granted_perms;
         };
 
-        let base = obj.base();
+        // Copy-out, boxed (5.8KB is too big for a kernel stack frame on this path). Reads the
+        // same live object bytes the old kernel mapping would have read at this moment.
+        let base = match read_base_boxed(obj) {
+            Ok(base) => base,
+            Err(e) => {
+                warn!("failed to read sctx base for {}: {:?}", self.id(), e);
+                return granted_perms;
+            }
+        };
 
         // check for possible items
         let Some(results) = base.map.get(&_id) else {
@@ -196,6 +237,9 @@ impl SecurityContext {
                 LookupResult::Found(v_obj) => {
                     let k_ctx = kernel_context();
 
+                    crate::memory::context::kobjcensus::record(
+                        crate::memory::context::kobjcensus::Site::VerifyKey,
+                    );
                     let handle =
                         k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
                             v_obj,
@@ -222,12 +266,25 @@ impl SecurityContext {
                 }
 
                 CtxMapItemType::Cap => {
-                    let Some(cap) = obj.lea_raw(entry.offset as *const Cap) else {
-                        error!("Failed to map capability from entry: {entry:#?}");
-                        // something weird going on, entry offset not inside object bounds,
-                        // return already granted perms to avoid panic
+                    // Copied out rather than verified in place: the signature check runs on
+                    // bytes userspace can no longer change mid-verification. Same bounds rule
+                    // lea_raw enforced.
+                    let off = entry.offset as usize;
+                    let cap: Cap = if off >= MAX_SIZE
+                        || off.checked_add(core::mem::size_of::<Cap>()).is_none_or(|end| end >= MAX_SIZE)
+                    {
+                        error!("capability entry offset out of bounds: {entry:#?}");
                         granted_perms.provide &= base.global_mask;
                         return granted_perms;
+                    } else {
+                        match obj.read_at::<Cap>(off) {
+                            Ok(cap) => cap,
+                            Err(e) => {
+                                error!("failed to read capability from entry: {entry:#?} ({e:?})");
+                                granted_perms.provide &= base.global_mask;
+                                return granted_perms;
+                            }
+                        }
                     };
 
                     if cap.verify_sig(v_key).is_ok() {
@@ -282,9 +339,9 @@ impl SecurityContext {
         drop(old);
     }
 
-    pub fn new(kobj: Option<KernelObject<SecCtxBase>>) -> Self {
+    pub fn new(obj: Option<ObjectRef>) -> Self {
         Self {
-            kobj,
+            obj,
             cache: Spinlock::new(Arc::new(BTreeMap::new())),
             attached_count: AtomicUsize::new(0),
             active_count: AtomicUsize::new(0),
@@ -292,9 +349,9 @@ impl SecurityContext {
     }
 
     pub fn id(&self) -> ObjID {
-        self.kobj
+        self.obj
             .as_ref()
-            .map(|kobj| kobj.id())
+            .map(|obj| obj.id())
             .unwrap_or(KERNEL_SCTX)
     }
 }
@@ -487,22 +544,13 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
 
     let obj =
         crate::obj::lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
-    // Built before the lock, for two reasons: it removes the recursion above, and it takes a
-    // mapping call out of a global lock that every security check in the system passes through.
-    // TODO: use control object cacher.
-    let kobj =
-        crate::memory::context::kernel_context().insert_kernel_object(ObjectContextInfo::new(
-            obj,
-            Protections::READ,
-            twizzler_abi::device::CacheType::WriteBack,
-            MapFlags::empty(),
-        ));
+    // No kernel mapping any more: the context reads its base and capabilities through the object
+    // data API on lookup misses (see the field doc on `SecurityContext::obj`). This also deletes
+    // the recursion hazard the old comment here managed around.
     let mut global = global_secctx_mgr().contexts.lock();
-    // A thread that lost the race drops its `kobj` unused, which is the cost of not holding the
-    // lock across the mapping.
     let entry = global
         .entry(id)
-        .or_insert_with(|| Arc::new(SecurityContext::new(Some(kobj))));
+        .or_insert_with(|| Arc::new(SecurityContext::new(Some(obj))));
     Ok(entry.clone())
 }
 

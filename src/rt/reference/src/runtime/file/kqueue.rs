@@ -102,7 +102,7 @@ impl KqueueFile {
     /// for EV_RECEIPT. Wakes any blocked kevent() itself if a NOTE_TRIGGER landed.
     fn apply_changes(&self, changelist: &[kevent], out: &mut Vec<kevent>) {
         let mut entries = self.entries.lock().unwrap();
-        let slots = get_fd_slots().lock().unwrap();
+        let slots = get_fd_slots().read().unwrap();
         let mut triggered = false;
         for change in changelist {
             let is_user = change.filter == EVFILT_USER;
@@ -281,7 +281,7 @@ impl ReferenceRuntime {
         eventlist: &mut [kevent],
         timeout: Option<Duration>,
     ) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(kq as usize)
             .cloned()
@@ -328,7 +328,7 @@ impl ReferenceRuntime {
             .copied()
             .collect();
 
-        let slots = get_fd_slots().lock().unwrap();
+        let slots = get_fd_slots().read().unwrap();
         let mut wps = Vec::new();
         // Per sleep in `wps`: which snapshot entry it belongs to, and whether it is a falling-edge
         // sleep (an EV_CLEAR registration waiting out a readiness it already reported) rather than

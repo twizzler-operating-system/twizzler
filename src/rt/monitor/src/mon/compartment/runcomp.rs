@@ -578,6 +578,17 @@ impl RunComp {
                 return None;
             }
         };
+        // Parent half of the spawn-latency join: this record's own timestamp is the moment
+        // `sys_spawn` returned, and vals[0] names the child it created. Paired with the child's
+        // `CHILDTOP` (twz-rt `core.rs`, same switch, flipped together), the difference is the
+        // window from spawn to the child's first instruction -- previously reachable only as a
+        // subtraction residual.
+        secgate::statlog::record_on(
+            crate::mon::compartment::SPAWN_LAT_STATS,
+            "SPAWNGO",
+            0,
+            &[mt.thread.id.raw() as u64],
+        );
         write_note!(mt.thread.id, "thread:{}(main)", self.name);
         let main_id = mt.thread.id;
         self.main = Some(mt);

@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, OnceLock, RwLock,
     },
 };
 
@@ -335,7 +335,10 @@ impl FdSlots {
 }
 
 lazy_static! {
-    static ref FD_SLOTS: Mutex<FdSlots> = {
+    // RwLock, not Mutex: lookups (every read/write/pread on every thread in the compartment)
+    // only `get` and clone a descriptor, so they share the lock; the few mutation sites
+    // (open/close/dup/init) take it exclusively.
+    static ref FD_SLOTS: RwLock<FdSlots> = {
         let mut slots = FdSlots {
             slots: [const { None }; MAX_FD],
         };
@@ -369,7 +372,7 @@ lazy_static! {
                 false,
             ),
         );
-        Mutex::new(slots)
+        RwLock::new(slots)
     };
 }
 
@@ -385,7 +388,7 @@ static RUNTIME_NAMER: OnceLock<DynamicNamingHandle> = OnceLock::new();
 static NAMING_UP: OnceLock<()> = OnceLock::new();
 
 #[track_caller]
-fn get_fd_slots() -> &'static Mutex<FdSlots> {
+fn get_fd_slots() -> &'static RwLock<FdSlots> {
     &FD_SLOTS
 }
 
@@ -511,7 +514,7 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
 
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
-        for (_i, fd) in get_fd_slots().lock().unwrap().slots.iter_mut().enumerate() {
+        for (_i, fd) in get_fd_slots().write().unwrap().slots.iter_mut().enumerate() {
             if let Some(fd) = fd.take() {
                 let _ = fd.file.close();
                 drop(fd);
@@ -533,6 +536,14 @@ impl ReferenceRuntime {
             )
         };
 
+        // The stdio binds are usually three references to one object (the console PTY), and each
+        // PTY open pays an object map plus handler registration -- measured at most of
+        // init_fds's ~147us (`PREMAIN`, spawnbench.md §30). Share the underlying Fd across
+        // identical (kind, bind-bytes) binds instead. Only PTY kinds: sharing is exactly how a
+        // Unix tty's three stdio fds behave, and registering the signal handler once is the
+        // correct count. Pipes must not share (open() applies per-direction shutdown to the
+        // elem), and Path files must not (independent seek cursors).
+        let mut opened: Vec<(open_kind, &[u8], FdImpl)> = Vec::new();
         for bi in slice {
             let Ok(kind) = OpenKind::try_from(bi.kind) else {
                 continue;
@@ -540,7 +551,33 @@ impl ReferenceRuntime {
             if bi.fd > 2 {
                 continue;
             }
-            let _ = self
+            let bytes = &bi.bind_data[..(bi.bind_len as usize).min(bi.bind_data.len())];
+            let dedupable = matches!(kind, OpenKind::PtyClient | OpenKind::PtyServer);
+            if dedupable {
+                if let Some(elem) = opened
+                    .iter()
+                    .find(|(k, b, _)| *k == bi.kind && *b == bytes)
+                    .map(|(_, _, e)| e.clone())
+                {
+                    let fdesc = FileDesc::new(
+                        elem,
+                        bi.kind,
+                        OperationOptions::from_bits_truncate(bi.flags).bits(),
+                        Some(bytes),
+                        false,
+                    );
+                    if get_fd_slots()
+                        .write()
+                        .unwrap()
+                        .insert(bi.fd as usize, fdesc)
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    // Insert failed; fall through to the ordinary open path.
+                }
+            }
+            let r = self
                 .open(
                     Some(bi.fd),
                     kind,
@@ -552,6 +589,13 @@ impl ReferenceRuntime {
                 .inspect_err(|e| {
                     twizzler_abi::klog_println!("Failed to open fd ({}): {}", bi.fd, e);
                 });
+            if dedupable {
+                if let Ok(fd) = r {
+                    if let Some(f) = get_fd_slots().read().unwrap().get(fd as usize) {
+                        opened.push((bi.kind, bytes, f.file.clone()));
+                    }
+                }
+            }
         }
     }
 
@@ -659,7 +703,7 @@ impl ReferenceRuntime {
     }
 
     pub fn read_binds(&self, binds: &mut [binding_info]) -> usize {
-        let bindings = get_fd_slots().lock().unwrap();
+        let bindings = get_fd_slots().read().unwrap();
         let mut idx = 0;
         for (fd, info) in bindings.slots.iter().enumerate() {
             if idx >= binds.len() {
@@ -689,7 +733,7 @@ impl ReferenceRuntime {
             unsafe { core::slice::from_raw_parts(bind_info.cast::<u8>(), bind_info_len) }
         };
         let existing_flags = if kind == OpenKind::SocketConnect && existing_fd.is_some() {
-            let slots = get_fd_slots().lock().unwrap();
+            let slots = get_fd_slots().read().unwrap();
             if let Some(fd) = slots.get(existing_fd.unwrap() as usize) {
                 Some(fd.flags.load(Ordering::SeqCst))
             } else {
@@ -759,7 +803,7 @@ impl ReferenceRuntime {
         }
 
         let t_fd = std::time::Instant::now();
-        let mut binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().write().unwrap();
 
         let fd = if let Some(fd) = existing_fd {
             binding.insert(fd.try_into().unwrap(), elem);
@@ -792,7 +836,7 @@ impl ReferenceRuntime {
     }
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -813,7 +857,7 @@ impl ReferenceRuntime {
         ep: *mut endpoint,
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_mut().unwrap() };
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -830,7 +874,7 @@ impl ReferenceRuntime {
         ep: *const endpoint,
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_ref().unwrap() };
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -840,7 +884,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -850,7 +894,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -860,7 +904,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_pwritev(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -876,7 +920,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_preadv(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let mut file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -892,7 +936,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
-        let mut binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().write().unwrap();
         let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return None;
         };
@@ -906,7 +950,7 @@ impl ReferenceRuntime {
         val: *mut c_void,
         val_len: usize,
     ) -> Result<()> {
-        let mut binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().write().unwrap();
         let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
@@ -931,7 +975,7 @@ impl ReferenceRuntime {
         val: *const c_void,
         val_len: usize,
     ) -> Result<()> {
-        let mut binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().write().unwrap();
         let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
@@ -948,7 +992,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
-        let mut binding = get_fd_slots().lock().unwrap();
+        let mut binding = get_fd_slots().write().unwrap();
         let file_desc = binding.get_mut(fd.try_into().unwrap());
 
         let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -1021,7 +1065,7 @@ impl ReferenceRuntime {
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -1036,7 +1080,7 @@ impl ReferenceRuntime {
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
         let Some(file_desc) = get_fd_slots()
-            .lock()
+            .write()
             .unwrap()
             .remove(fd.try_into().unwrap())
         else {
@@ -1049,7 +1093,7 @@ impl ReferenceRuntime {
     }
 
     pub fn seek(&self, fd: RawFd, pos: SeekFrom) -> Result<usize> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()
@@ -1077,7 +1121,7 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
-        let binding = get_fd_slots().lock().unwrap();
+        let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(fd.try_into().unwrap())
             .cloned()

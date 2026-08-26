@@ -54,6 +54,12 @@ pub use runcomp::*;
 /// values are microseconds.
 pub(crate) const SPAWN_PHASE_STATS: bool = false;
 
+/// Monitor half of the spawn-latency join (`SPAWNGO`); the child half is `CHILDTOP`, behind
+/// `twz_rt`'s `SPAWN_LAT_STATS`. **Flip both together** -- two crates, one measurement. One
+/// record per side per spawn, deliberately not folded into [`SPAWN_PHASE_STATS`] so the window
+/// can be read without arming the higher-volume phase counters around it.
+pub(crate) const SPAWN_LAT_STATS: bool = false;
+
 const PREFAULT_ROOT: bool = false;
 
 /// Prefault the PT_LOAD ranges of a compartment's root object, outside the dynlink lock.

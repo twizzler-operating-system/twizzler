@@ -92,6 +92,8 @@ impl Context {
         // Fall back to global search.
         if !lookup_flags.contains(LookupFlags::SKIP_GLOBAL) {
             tracing::trace!("falling back to global search for {}", name);
+            self.global_fallbacks
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
             if let Some(sym) = self.lookup_symbol_global(start_lib, name, lookup_flags) {
                 return Ok(sym);
