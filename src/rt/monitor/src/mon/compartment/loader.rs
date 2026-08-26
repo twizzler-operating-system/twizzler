@@ -638,7 +638,17 @@ impl Monitor {
         suspend_on_start: bool,
     ) -> Result<(), TwzError> {
         let deps = {
+            // Site 4 of the spawn-side lock-wait probe; see `load_compartment`'s `LCKWAIT`.
+            let _t = crate::mon::compartment::SPAWN_PHASE_STATS.then(Instant::now);
             let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+            if let Some(t) = _t {
+                secgate::statlog::record_on(
+                    crate::mon::compartment::SPAWN_PHASE_STATS,
+                    "LCKWAIT",
+                    t.elapsed().as_micros() as u64,
+                    &[4],
+                );
+            }
             let rc = cmp.get(instance)?;
 
             if mondebug {
@@ -706,8 +716,18 @@ impl Monitor {
                 }
             }
             let info = {
+                // Site 5 of the spawn-side lock-wait probe.
+                let _t = crate::mon::compartment::SPAWN_PHASE_STATS.then(Instant::now);
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+                if let Some(t) = _t {
+                    secgate::statlog::record_on(
+                        crate::mon::compartment::SPAWN_PHASE_STATS,
+                        "LCKWAIT",
+                        t.elapsed().as_micros() as u64,
+                        &[5],
+                    );
+                }
                 let rc = cmp.get_mut(instance)?;
 
                 let _start = Instant::now();

@@ -29,6 +29,57 @@ static TLB_STATS: TlbStats = TlbStats {
     flushes: AtomicUsize::new(0),
 };
 
+/// Census of *executed* local invalidations, by the branch [`do_invalidation`] actually took —
+/// the split `tlb_flush_count` cannot give (it counts sends, full or precise alike; that
+/// ambiguity produced a published misread, see sysbench.md's map/unmap CORRECTED bullet).
+/// Perfmark-differenced per bench window so `tlb_stale_slot_reuse`'s window names every
+/// TLB-affecting event between an unmap and its probe. Gated; ships OFF.
+pub mod invl_census {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub const INVL_CENSUS: bool = false;
+
+    /// calls, skipped (not ours + not global), full_global, full_local, precise execs,
+    /// precise instructions.
+    pub const NR: usize = 6;
+    static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    pub enum Outcome {
+        Skipped,
+        FullGlobal,
+        FullLocal,
+        /// Precise: carries the instruction count executed.
+        Precise(usize),
+    }
+
+    pub fn record(outcome: Outcome) {
+        if !INVL_CENSUS {
+            return;
+        }
+        COUNTS[0].fetch_add(1, Ordering::Relaxed);
+        match outcome {
+            Outcome::Skipped => COUNTS[1].fetch_add(1, Ordering::Relaxed),
+            Outcome::FullGlobal => COUNTS[2].fetch_add(1, Ordering::Relaxed),
+            Outcome::FullLocal => COUNTS[3].fetch_add(1, Ordering::Relaxed),
+            Outcome::Precise(n) => {
+                COUNTS[5].fetch_add(n as u64, Ordering::Relaxed);
+                COUNTS[4].fetch_add(1, Ordering::Relaxed)
+            }
+        };
+    }
+
+    pub fn snapshot() -> [u64; NR] {
+        let mut out = [0u64; NR];
+        if !INVL_CENSUS {
+            return out;
+        }
+        for (i, c) in COUNTS.iter().enumerate() {
+            out[i] = c.load(Ordering::Relaxed);
+        }
+        out
+    }
+}
+
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
     stats.tlb_shootdown_count = TLB_STATS
         .shootdowns

@@ -131,6 +131,10 @@ impl ReferenceRuntime {
             let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
             if id == 1 {
                 OUR_RUNTIME.close_fds();
+                // `process::exit` skips post_main_hook, and statlog no longer drains on a fresh
+                // ring's first record -- so flush here or an exit-now program's records are lost.
+                // Free when the ring is empty.
+                secgate::statlog::drain();
             }
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
@@ -430,32 +434,56 @@ impl ReferenceRuntime {
             self.init_ctors(ctor_slice);
         }
 
-        /*
-        preinit_println!(
-            "init: {}us, get_tls: {}ms, set_tls: {}ms, set_upcall: {}ms, mlibc: {}ms, ctors: {}ms",
-            (_start_2 - _start_1).as_micros(),
-            (_start_3 - _start_2).as_millis(),
-            (_start_4 - _start_3).as_millis(),
-            (_start_5 - _start_4).as_millis(),
-            (_start_6 - _start_5).as_millis(),
-            _start_6.elapsed().as_millis()
-        )
-        */
+        // Child-side bring-up split (`CHILDINI`): comp-config+TLS-lock / get_tls / set_tls /
+        // set_upcall / libc+core-thread+mlibc / ctors. The diag sweep put ~1.8ms of a ~3.5ms spawn
+        // between thread start and `pre_main_hook`, and this is most of that window; the record's
+        // own timestamp (vs `PREMAIN`'s) prices the libstd init that follows. Same switch as
+        // `PREMAIN`, deferred through statlog.
+        secgate::statlog::record_on(
+            PRE_MAIN_PHASE_STATS,
+            "CHILDINI",
+            _start_1.elapsed().as_micros() as u64,
+            &[
+                (_start_2 - _start_1).as_micros() as u64,
+                (_start_3 - _start_2).as_micros() as u64,
+                (_start_4 - _start_3).as_micros() as u64,
+                (_start_5 - _start_4).as_micros() as u64,
+                (_start_6 - _start_5).as_micros() as u64,
+                _start_6.elapsed().as_micros() as u64,
+            ],
+        );
     }
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {
-        for ctor in ctor_array {
+        for (seti, ctor) in ctor_array.iter().enumerate() {
             unsafe {
                 if let Some(legacy_init) = ctor.legacy_init {
+                    let _t = std::time::Instant::now();
                     (core::mem::transmute::<_, extern "C" fn()>(legacy_init))();
+                    // Per-ctor timing (`CTORONE`): set index, entry index (MAX = legacy DT_INIT),
+                    // entry address. CHILDINI put ~876us of a spawn in this loop; this names the
+                    // ctor. Same switch as PREMAIN/CHILDINI.
+                    secgate::statlog::record_on(
+                        PRE_MAIN_PHASE_STATS,
+                        "CTORONE",
+                        _t.elapsed().as_micros() as u64,
+                        &[seti as u64, u64::MAX, legacy_init as usize as u64],
+                    );
                 }
                 if !ctor.init_array.is_null() && ctor.init_array_len > 0 {
                     let init_slice: &[usize] = core::slice::from_raw_parts(
                         ctor.init_array as *const usize,
                         ctor.init_array_len,
                     );
-                    for call in init_slice.iter().cloned() {
+                    for (calli, call) in init_slice.iter().cloned().enumerate() {
+                        let _t = std::time::Instant::now();
                         (core::mem::transmute::<_, extern "C" fn()>(call))();
+                        secgate::statlog::record_on(
+                            PRE_MAIN_PHASE_STATS,
+                            "CTORONE",
+                            _t.elapsed().as_micros() as u64,
+                            &[seti as u64, calli as u64, call as u64],
+                        );
                     }
                 }
             }

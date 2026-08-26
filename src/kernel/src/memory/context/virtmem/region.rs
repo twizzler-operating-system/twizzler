@@ -68,7 +68,6 @@ use crate::{
 /// and stops at a present neighbour, which limits it, but a sparse object still gets 16-page runs.
 pub(crate) const ANON_FAULT_AROUND: usize = 16;
 
-#[derive(Clone)]
 pub struct MapRegion {
     pub object: ObjectRef,
     pub offset: u64,
@@ -83,10 +82,11 @@ pub struct MapRegion {
     pub default_prot: Protections,
     /// Security context to install this mapping in; zero means the mapping thread's active one.
     pub target_sctx: ObjID,
-    pub should_sync: Arc<AtomicBool>,
-    /// Set once this region has been taken out of its [RegionManager] and unmapped. Shared across
-    /// clones, since the fault path works from a clone taken before the removal.
-    pub removed: Arc<AtomicBool>,
+    pub should_sync: AtomicBool,
+    /// Set once this region has been taken out of its [RegionManager] and unmapped. Plain fields
+    /// rather than their own `Arc`s: regions are only ever shared as `Arc<MapRegion>` (the fault
+    /// path holds one taken before the removal), so the enclosing refcount already carries them.
+    pub removed: AtomicBool,
 }
 
 impl From<&MapRegion> for ObjectContextInfo {
@@ -566,10 +566,11 @@ impl MapRegion {
     }
 }
 
-/// Regions are handed out as `Arc`s rather than cloned.
+/// Regions are handed out as `Arc`s rather than cloned; `MapRegion` is not `Clone` at all.
 ///
-/// The fault path takes one per fault, and a `MapRegion` clone is four `Arc` bumps (`object`,
-/// `stable`, `should_sync`, `removed`) and four matching drops. One refcount does the same job.
+/// The fault path takes one per fault. A value clone used to be four `Arc` bumps and four drops;
+/// now the enclosing `Arc<MapRegion>` refcount is the whole cost, and `should_sync`/`removed`
+/// are plain fields (two fewer allocations per map).
 ///
 /// Every operation takes `&self`. What used to be one context-wide sleeping mutex -- taken on
 /// every fault, and measured convoying from 155 ns to 7.5 us per fault at smp4 -- is now a shard

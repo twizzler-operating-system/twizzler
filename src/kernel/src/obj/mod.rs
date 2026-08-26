@@ -888,13 +888,28 @@ fn is_reapable(obj: &ObjectRef) -> bool {
     // every delete, and the bench pattern deletes while still mapped -- and it is answerable
     // without either lock.
     if OBJ_REAP_MAP_COUNT_FAST {
-        if obj.map_count() != 0 {
+        if obj.map_count() != 0 && !stale_map_count(obj) {
             return false;
         }
         return obj.pin_info.lock().pins.len() == 0;
     }
     let _tables = obj.lock_page_tables();
-    obj.map_count() == 0 && obj.pin_info.lock().pins.len() == 0
+    (obj.map_count() == 0 || stale_map_count(obj)) && obj.pin_info.lock().pins.len() == 0
+}
+
+/// A positive map count with no live mapping is stale accounting, not reachability: installs
+/// only happen through a registered `MapRegion` (registration now precedes the install), so an
+/// object nothing maps cannot be faulted back in, whatever its count says. Bulk arch teardown
+/// paths can swallow decs -- measured as ~7.3k pending-delete objects (one ~4MB heap span per
+/// dead compartment, 8.4GB) stranded at count 1 in many-reclaim12..18 -- and this predicate is
+/// what keeps any such miss from becoming a permanent leak. Counted so a healthy boot can prove
+/// how often the escape hatch fires.
+fn stale_map_count(obj: &ObjectRef) -> bool {
+    if !obj.mappings().is_empty() {
+        return false;
+    }
+    reapstats::STALE_COUNT_REAPS.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 /// Remove `obj` from the map and hand it to the tie manager.
@@ -1169,6 +1184,9 @@ pub mod reapstats {
     /// is the work the old duplicate-carrying `Vec` did and this one does not, and it is the
     /// mechanism gate for the dedupe -- a zero here means dedupe never engaged.
     pub static DEDUPED: AtomicU64 = AtomicU64::new(0);
+    /// Reaps admitted through the stale-map-count escape hatch (`is_reapable`): a positive
+    /// count with no live mapping. Nonzero means some teardown path swallowed a dec.
+    pub static STALE_COUNT_REAPS: AtomicU64 = AtomicU64::new(0);
 
     pub fn print() {
         let sent = SIGNALS_SENT.load(Ordering::Relaxed);
@@ -1179,7 +1197,7 @@ pub mod reapstats {
         let total = sent + sup;
         // Integer math only; mean batch scaled by 1000 rather than a float.
         logln!(
-            "== reaper wake: sent={} suppressed={} ({}% of {}) wakes={} objs={} graves={} deduped={} lingers={} depth_drift={} mean_batch_x1000={} (batch_wake={} defer_teardown={} targeted={} mapcount_fast={}) ==",
+            "== reaper wake: sent={} suppressed={} ({}% of {}) wakes={} objs={} graves={} deduped={} lingers={} depth_drift={} mean_batch_x1000={} stale_count_reaps={} (batch_wake={} defer_teardown={} targeted={} mapcount_fast={}) ==",
             sent,
             sup,
             if total > 0 { sup * 100 / total } else { 0 },
@@ -1191,6 +1209,7 @@ pub mod reapstats {
             LINGERS.load(Ordering::Relaxed),
             DEPTH_DRIFT.load(Ordering::Relaxed),
             if batches > 0 { (objs + graves) * 1000 / batches } else { 0 },
+            STALE_COUNT_REAPS.load(Ordering::Relaxed),
             // Every const that governs this subsystem's behaviour, emitted with the numbers it
             // governs. A handover message describing tree state can be wrong or absent -- this
             // rides in the artifact, so a transcript is self-identifying about the configuration
@@ -1515,7 +1534,31 @@ pub fn pressure_census() {
     // count them: `removed=true` with the weak still upgradeable means the region left its
     // RegionManager but an Arc clone survives (a deferred-unmap queue somewhere);
     // `removed=false` means nothing ever unmapped it.
-    let mut detail_budget = 6usize;
+    let mut detail_budget = 4usize;
+    // Aggregate split over the WHOLE pending-delete population -- the 6-sample detail above is
+    // omap-order biased and kept landing on live compartments' legit anonymous objects
+    // (reclaim10/11). Regions classify by target_sctx: 0 (never swept by anything), live (in
+    // the sctx registry -- a live compartment's own anonymous object, not a leak), or dead
+    // (nonzero, unregistered -- the sweep should have taken it).
+    let live_sctxs = crate::security::sctx_registry_ids();
+    let mut pd_mapped_objs = 0usize;
+    let mut pd_mapped_pages = 0usize;
+    let mut pd_unmapped_objs = 0usize;
+    let mut pd_unmapped_pages = 0usize;
+    let mut r_sctx0 = 0usize;
+    let mut r_live = 0usize;
+    let mut r_dead = 0usize;
+    let mut pg_sctx0 = 0usize;
+    let mut pg_live = 0usize;
+    let mut pg_dead = 0usize;
+    let mut pd_stuck_mapcount = 0usize;
+    let mut pg_stuck_mapcount = 0usize;
+    let mut mc_sum = 0usize;
+    let mut stuck_budget = 3usize;
+    let mut pd_stuck_pins = 0usize;
+    let mut pd_stuck_linked = 0usize;
+    let mut pd_stuck_none = 0usize;
+    let mut pg_stuck_none = 0usize;
     obj_manager().sharded.for_each_chunked(|obj| {
         let pages = obj.lock_page_tables().count_pages();
         if obj.is_pending_delete() {
@@ -1539,18 +1582,75 @@ pub fn pressure_census() {
                     continue;
                 };
                 live_maps += 1;
-                if obj.is_pending_delete() && detail_budget > 0 {
-                    detail_budget -= 1;
-                    logln!(
-                        "  del-map: obj {} pages {} slot {} sctx {} prot {:?} removed {} va {:x}",
-                        obj.id(),
-                        pages,
-                        slot,
-                        region.target_sctx,
-                        region.prot,
-                        region.removed.load(Ordering::Relaxed),
-                        region.range.start.raw()
-                    );
+                if obj.is_pending_delete() {
+                    let sctx = region.target_sctx;
+                    let interesting = if sctx.raw() == 0 {
+                        r_sctx0 += 1;
+                        pg_sctx0 += pages;
+                        true
+                    } else if live_sctxs.contains(&sctx) {
+                        r_live += 1;
+                        pg_live += pages;
+                        false
+                    } else {
+                        r_dead += 1;
+                        pg_dead += pages;
+                        true
+                    };
+                    // Sample only the leak-candidate classes (sctx0/dead) -- live-compartment
+                    // regions are legit anonymous objects and drowned the old sampling.
+                    if interesting && detail_budget > 0 {
+                        detail_budget -= 1;
+                        logln!(
+                            "  del-map: obj {} pages {} slot {} sctx {} prot {:?} removed {} va {:x}",
+                            obj.id(),
+                            pages,
+                            slot,
+                            sctx,
+                            region.prot,
+                            region.removed.load(Ordering::Relaxed),
+                            region.range.start.raw()
+                        );
+                    }
+                }
+            }
+            if obj.is_pending_delete() {
+                if live_maps > 0 {
+                    pd_mapped_objs += 1;
+                    pd_mapped_pages += pages;
+                } else {
+                    pd_unmapped_objs += 1;
+                    pd_unmapped_pages += pages;
+                    // Why is this region-less pending-delete object not reaped? Exactly one of
+                    // these should explain each: a stuck map count (accounting leak --
+                    // `is_reapable` false forever), a pin, a reap request parked in the queue
+                    // (linked), or none of the above (request lost / never made).
+                    if obj.map_count() != 0 {
+                        pd_stuck_mapcount += 1;
+                        pg_stuck_mapcount += pages;
+                        // Sum says whether the phantom count is exactly 1 per object (one
+                        // specific install site leaks) or varies; the note names the class.
+                        mc_sum += obj.map_count();
+                        if stuck_budget > 0 {
+                            stuck_budget -= 1;
+                            let mut nbuf = [0u8; 64];
+                            let n = obj.vnotes.summarize(&mut nbuf);
+                            logln!(
+                                "  pd-stuck: obj {} pages {} mapcount {} note '{}'",
+                                obj.id(),
+                                pages,
+                                obj.map_count(),
+                                core::str::from_utf8(&nbuf[..n]).unwrap_or("?")
+                            );
+                        }
+                    } else if obj.pin_info.lock().pins.len() != 0 {
+                        pd_stuck_pins += 1;
+                    } else if obj.reap_link.is_linked() {
+                        pd_stuck_linked += 1;
+                    } else {
+                        pd_stuck_none += 1;
+                        pg_stuck_none += pages;
+                    }
                 }
             }
         }
@@ -1580,6 +1680,29 @@ pub fn pressure_census() {
         crate::processor::EXITED_BACKLOG.load(core::sync::atomic::Ordering::Relaxed),
         crate::security::SCTX_DELETES.load(core::sync::atomic::Ordering::Relaxed),
         crate::security::SCTX_DROPS.load(core::sync::atomic::Ordering::Relaxed)
+    );
+    logln!(
+        "PD-SPLIT: mapped {} objs / {} pages, unmapped {} objs / {} pages | regions sctx0 {} ({} pg) live {} ({} pg) dead {} ({} pg)",
+        pd_mapped_objs,
+        pd_mapped_pages,
+        pd_unmapped_objs,
+        pd_unmapped_pages,
+        r_sctx0,
+        pg_sctx0,
+        r_live,
+        pg_live,
+        r_dead,
+        pg_dead
+    );
+    logln!(
+        "PD-STUCK: mapcount {} ({} pg, mc_sum {}) pins {} linked {} none {} ({} pg)",
+        pd_stuck_mapcount,
+        pg_stuck_mapcount,
+        mc_sum,
+        pd_stuck_pins,
+        pd_stuck_linked,
+        pd_stuck_none,
+        pg_stuck_none
     );
     logln!(
         "PRESSURE-CENSUS2: sctx registry {}; threads new {} dropped {}",

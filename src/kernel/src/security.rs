@@ -525,6 +525,19 @@ pub fn sctx_registry_len() -> usize {
     global_secctx_mgr().contexts.lock().len()
 }
 
+/// Snapshot of the registered (live) sctx ids, for the pressure census to classify region
+/// targets without taking the registry lock per region. Truncated at capacity; the registry is
+/// ~a dozen entries in practice.
+pub fn sctx_registry_ids() -> heapless::Vec<ObjID, 64> {
+    let mut out = heapless::Vec::new();
+    for id in global_secctx_mgr().contexts.lock().keys() {
+        if out.push(*id).is_err() {
+            break;
+        }
+    }
+    out
+}
+
 pub fn on_sctx_object_delete(id: ObjID) {
     if id == KERNEL_SCTX {
         return;

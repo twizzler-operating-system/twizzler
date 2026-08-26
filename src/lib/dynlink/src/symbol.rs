@@ -37,6 +37,12 @@ impl<'lib> RelocatedSymbol<'lib> {
         self.sym.as_ref().map_or(0, |v| v.st_value)
     }
 
+    /// The defining library's ELF symbol, if this is a real resolution (None for weak-zero).
+    /// Used by the relocation memo to replay a resolution as an identical `RelocatedSymbol`.
+    pub(crate) fn elf_sym(&self) -> Option<&elf::symbol::Symbol> {
+        self.sym.as_ref()
+    }
+
     /// Returns the symbol's size.
     pub fn size(&self) -> u64 {
         self.sym.as_ref().map_or(0, |v| v.st_size)

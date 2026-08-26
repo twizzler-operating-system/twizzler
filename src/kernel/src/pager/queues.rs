@@ -4,7 +4,7 @@ use core::time::Duration;
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::CacheType,
-    meta::{MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
+    meta::{MEXT_MTIME, MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
     object::{ObjID, Protections},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags,
@@ -502,10 +502,10 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
         flags: MetaFlags::empty(),
         default_prot: info.def_prot,
         fotcount: 0,
-        extcount: 1,
+        extcount: if info.mtime != 0 { 2 } else { 1 },
     };
     let ext = MetaExt::new(MEXT_SIZED, info.size);
-    // Safety: the frame is freshly allocated, zeroed, and a whole page; both writes land inside it.
+    // Safety: the frame is freshly allocated, zeroed, and a whole page; all writes land inside it.
     // Unaligned because the extension follows `MetaInfo` at its natural end, not at its alignment.
     unsafe {
         let base = frame.virtaddr().as_mut_ptr::<u8>();
@@ -513,6 +513,12 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
         base.add(size_of::<MetaInfo>())
             .cast::<MetaExt>()
             .write_unaligned(ext);
+        if info.mtime != 0 {
+            let mt = MetaExt::new(MEXT_MTIME, info.mtime as u64);
+            base.add(size_of::<MetaInfo>() + size_of::<MetaExt>())
+                .cast::<MetaExt>()
+                .write_unaligned(mt);
+        }
     }
     // No refcount dance, unlike `install_meta_page`: a fresh frame arrives at zero and `map_page`
     // takes the reference that makes the object its owner.

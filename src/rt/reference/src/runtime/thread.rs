@@ -96,7 +96,17 @@ impl ReferenceRuntime {
 
     pub fn set_name(&self, name: &std::ffi::CStr) {
         with_current_thread(|cur| {
-            THREAD_MGR.with_internal(cur.id(), |th| th.set_name(name));
+            let repr_id = THREAD_MGR.with_internal(cur.id(), |th| {
+                th.set_name(name);
+                th.objid()
+            });
+            // Mirror the name into a note on the repr object so kernel-side diagnostics (the
+            // hang wait-table dump) can label the thread.
+            if let Some(repr_id) = repr_id {
+                if repr_id.raw() != 0 {
+                    let _ = twizzler_abi::syscall::sys_object_add_note(repr_id, name.to_bytes());
+                }
+            }
         })
     }
 

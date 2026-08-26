@@ -10,6 +10,7 @@ mod settings;
 mod table;
 pub mod zeroprobe;
 
+pub use consistency::invl_census;
 pub use consistency::{
     Consistency, DeferredUnmappingOps, TlbOrigin, fill_stats, print_shootdown_counters,
     print_switch_counters, tlb_shootdown_inc_count, tlb_wait_record, trace_tlb_invalidation,

@@ -21,7 +21,7 @@ use twizzler_rt_abi::{
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{Context, ContextRef, UserContext, virtmem::Slot},
+    memory::context::{Context, ContextRef, virtmem::Slot},
     mutex::Mutex,
     obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
     once::OnceWait,
@@ -624,12 +624,19 @@ pub fn sys_object_map(
 }
 
 pub fn sys_object_unmap(handle: Option<ObjID>, slot: usize) -> Result<u64> {
-    let vm = if let Some(handle) = handle {
-        get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?
+    use crate::memory::context::virtmem::unmapprofile::Initiator;
+    let (vm, initiator) = if let Some(handle) = handle {
+        (
+            get_vmcontext_from_handle(handle).ok_or(ArgumentError::BadHandle)?,
+            Initiator::Handle,
+        )
     } else {
-        current_vmc()?
+        (current_vmc()?, Initiator::Own)
     };
-    vm.remove_object(Slot::try_from(slot).map_err(|_| ArgumentError::InvalidArgument)?);
+    vm.remove_object_from(
+        Slot::try_from(slot).map_err(|_| ArgumentError::InvalidArgument)?,
+        initiator,
+    );
     Ok(0)
 }
 

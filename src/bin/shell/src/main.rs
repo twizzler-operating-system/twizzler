@@ -1048,6 +1048,10 @@ unsafe extern "C-unwind" fn upcall_handler(frame: *mut c_void, data: *const c_vo
 struct Args {
     #[clap(short)]
     cmd: Option<String>,
+    /// Joined onto `-c`'s command with spaces: the kernel command line (autostart) splits on
+    /// whitespace with no quoting, so `shell -c ls -l /x` must reassemble into one command.
+    #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
+    rest: Vec<String>,
 }
 
 fn main() {
@@ -1071,7 +1075,12 @@ fn main() {
     let args = Args::parse();
 
     if let Some(cmd) = args.cmd.as_ref() {
-        run_cmd(jobs, cmd);
+        let mut full = cmd.clone();
+        for part in &args.rest {
+            full.push(' ');
+            full.push_str(part);
+        }
+        run_cmd(jobs, &full);
         return;
     }
 

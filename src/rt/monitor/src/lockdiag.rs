@@ -78,7 +78,7 @@ fn self_id() -> u128 {
 /// through `statlog`'s ring. The clock read this needs is not the syscall the module doc assumed:
 /// userspace `Instant::now` memoizes the tickrate and is an rdtsc plus a multiply (round 5).
 const REPORT_LONG_HOLDS: bool = false;
-const LONG_HOLD_NS: u128 = 5_000_000;
+const LONG_HOLD_NS: u128 = 1_000_000;
 
 /// 16-bit FNV-1a of a file path, so a hold record can name its site in a u64.
 fn fnv16(s: &str) -> u64 {

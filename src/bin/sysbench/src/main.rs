@@ -96,6 +96,8 @@ mod benches {
         faults: usize,
         shootdowns: usize,
         flushes: usize,
+        switch_flush: usize,
+        switch_noflush: usize,
         iters: AtomicU64,
     }
 
@@ -109,6 +111,8 @@ mod benches {
                 faults: m.page_fault_count,
                 shootdowns: m.tlb_shootdown_count,
                 flushes: m.tlb_flush_count,
+                switch_flush: m.aspace_switch_flush_count,
+                switch_noflush: m.aspace_switch_noflush_count,
                 iters: AtomicU64::new(0),
             }
         }
@@ -123,12 +127,14 @@ mod benches {
         fn drop(&mut self) {
             let m = twizzler_abi::syscall::sys_memory_stats();
             console(&format!(
-                "SYSBENCH-EVENTS {} iters={} faults={} shootdowns={} flushes={}\n",
+                "SYSBENCH-EVENTS {} iters={} faults={} shootdowns={} flushes={} sw_flush={} sw_noflush={}\n",
                 self.name,
                 self.iters.load(Ordering::Relaxed),
                 m.page_fault_count.saturating_sub(self.faults),
                 m.tlb_shootdown_count.saturating_sub(self.shootdowns),
                 m.tlb_flush_count.saturating_sub(self.flushes),
+                m.aspace_switch_flush_count.saturating_sub(self.switch_flush),
+                m.aspace_switch_noflush_count.saturating_sub(self.switch_noflush),
             ));
             console(&format!("SYSBENCH-MARK end {}\n", self.name));
             twizzler_abi::syscall::sys_debug_perfmark(false);
@@ -380,6 +386,128 @@ mod benches {
             unsafe { self.obj.data().write_volatile(1) };
             self.obj.sync();
         }
+    }
+
+    /// CORRECTNESS PROBE, not a perf bench. Proves whether an object unmap fails to evict the
+    /// local CPU's leaf TLB entries for touched pages other than the slot's base page.
+    ///
+    /// Mechanism under test: unmapping an object mapping removes the object-table *link* and
+    /// enqueues exactly one non-terminal `invlpg` at the slot base (offset 0). A page touched at
+    /// any other offset keeps its leaf TLB entry on the CPU that ran the target PCID. Mapping a
+    /// different object into the same slot installs a new link but enqueues nothing (not-present ->
+    /// present), so a read of the previously-touched VA can hit the stale entry and return the
+    /// *old* object's frame.
+    ///
+    /// **Read-only on the test slot, deliberately.** A/B keep a permanent mapping in their own
+    /// slots (Sa/Sb), where their sentinels at OFF are written once and never disturbed. The test
+    /// slot S only ever *reads* — so a stale result is unambiguously a stale read, never a write
+    /// that landed in the wrong frame through an already-stale entry (which would prove the same
+    /// bug but muddy the mechanism). Each iteration: map A into S, read OFF (returns SA, caches
+    /// VA_S(OFF) -> A's frame), unmap A from S, map B into S, read OFF again. Correct == SB (walk
+    /// reached B's frame); stale == SA (TLB shortcut to A's frame). A and B map to distinct frames,
+    /// so SA vs SB is a clean discriminator.
+    ///
+    /// Deterministic on smp1 (no migration); may be probabilistic on smp>1, so the count is printed
+    /// before the assert. Result is independent of host CPU load — a functional test, not a timing
+    /// one. Expected to FAIL on a kernel without the unmap flush/granularity fix; pass after it.
+    #[bench]
+    fn tlb_stale_slot_reuse(_b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let _mark = Mark::new("tlb_stale_slot_reuse");
+        // Twizzler backs object data with 2 MiB large frames, so a touched page shares a huge-page
+        // TLB entry with everything else in its 2 MiB region -- and the unmap's single invlpg lands
+        // at the slot base (region 0). An offset inside region 0 is covered by that invlpg whether
+        // or not the bug exists (a false negative). These offsets each sit in a DISTINCT 2 MiB
+        // region well past the base, so the base invlpg cannot cover them; a stale read at any of
+        // them is the bug. Multiple offsets so one accidentally-covered region can't hide it.
+        const TWO_MIB: usize = 0x20_0000;
+        const OFFS: [usize; 5] = [2 * TWO_MIB, 6 * TWO_MIB, 10 * TWO_MIB, 20 * TWO_MIB, 40 * TWO_MIB];
+        const SA: u64 = 0xA1A1_A1A1_A1A1_A1A1;
+        const SB: u64 = 0xB2B2_B2B2_B2B2_B2B2;
+        let map = |id: ObjID, slot: usize| {
+            sys_object_map(
+                None,
+                id,
+                slot,
+                Protections::READ | Protections::WRITE,
+                MapFlags::empty(),
+            )
+            .unwrap();
+        };
+        let unmap = |slot: usize| sys_object_unmap(None, slot, UnmapFlags::empty()).unwrap();
+        // Claim a slot we own by leaking a throwaway mapping's handle, then unmap it so the index
+        // is free for our explicit maps (mirrors MapSlot's slot ownership).
+        let claim_slot = || {
+            let owner = ObjectBuilder::<()>::default().build(()).unwrap();
+            let slot = owner.handle().start() as usize / MAX_SIZE;
+            std::mem::forget(owner);
+            unmap(slot);
+            slot
+        };
+
+        let a = BenchObj::new_volatile();
+        let b = BenchObj::new_volatile();
+        let (a_id, b_id) = (a.obj().id(), b.obj().id());
+
+        // A and B each keep a permanent mapping in their own slot; their OFF sentinels are written
+        // once here and never touched again, so their frames stay pristine for the whole run.
+        let (sa_slot, sb_slot, s) = (claim_slot(), claim_slot(), claim_slot());
+        map(a_id, sa_slot);
+        map(b_id, sb_slot);
+        for &off in &OFFS {
+            unsafe {
+                ((sa_slot * MAX_SIZE + off) as *mut u64).write_volatile(SA);
+                ((sb_slot * MAX_SIZE + off) as *mut u64).write_volatile(SB);
+            }
+        }
+
+        let iters = 1024usize;
+        let (mut stale, mut other, mut setup_bad) = (0usize, 0usize, 0usize);
+        let mut stale_by_off = [0usize; OFFS.len()];
+        for _ in 0..iters {
+            map(a_id, s);
+            // Read (not write) each offset: caches VA_S(off) -> A's frame; returns SA.
+            let mut ra_ok = true;
+            for &off in &OFFS {
+                let ra = unsafe { ((s * MAX_SIZE + off) as *const u64).read_volatile() };
+                ra_ok &= ra == SA;
+            }
+            if !ra_ok {
+                setup_bad += 1;
+            }
+            unmap(s);
+            map(b_id, s);
+            for (k, &off) in OFFS.iter().enumerate() {
+                let got = unsafe { ((s * MAX_SIZE + off) as *const u64).read_volatile() };
+                if got == SA {
+                    stale += 1;
+                    stale_by_off[k] += 1;
+                } else if got != SB {
+                    other += 1;
+                }
+            }
+            unmap(s);
+        }
+        console(&format!(
+            "SYSBENCH-TLBSTALE stale={} other={} setup_bad={} / {} iters x {} offs; by_off={:?}\n",
+            stale,
+            other,
+            setup_bad,
+            iters,
+            OFFS.len(),
+            stale_by_off
+        ));
+        unmap(sa_slot);
+        unmap(sb_slot);
+        drop(a);
+        drop(b);
+        assert_eq!(
+            stale, 0,
+            "stale TLB leaf entry survived slot reuse ({} reads returned the unmapped object's frame; by_off={:?})",
+            stale, stale_by_off
+        );
     }
 
     /// Minimal syscall round trip. `sys_null` logs in-kernel, so ThreadCtrl::GetSelfId is the

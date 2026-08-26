@@ -257,6 +257,15 @@ pub mod statlog {
         // instead means the console traffic is periodic and rare rather than tied to the work, and
         // the drain marker says whether one landed inside a measured phase.
         let last = LAST_DRAIN.load(Ordering::Relaxed);
+        if last == 0 {
+            // Fresh ring (a just-started compartment): start the interval now rather than
+            // draining. The old behavior paid a console write to print exactly one record,
+            // and it landed inside whatever spawn phase took the first record -- measured at
+            // ~600us, mis-attributed to the child's post-ctor startup in `spawndiag2` until
+            // `spawndiag3` moved it into the ctor window and exposed it.
+            let _ = LAST_DRAIN.compare_exchange(0, now, Ordering::Relaxed, Ordering::Relaxed);
+            return;
+        }
         if now.saturating_sub(last) > DRAIN_INTERVAL_NS
             && LAST_DRAIN
                 .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)

@@ -81,22 +81,49 @@ impl Context {
             let r = strings
                 .get(sym.st_name as usize)
                 .map(|name| {
-                    let sym = match reloc_cache.find(name, lib.comp_id) {
-                        Some(sym) => {
-                            tracing::trace!("found {} in cache", name);
-                            Ok(sym.clone())
-                        }
-                        None => {
-                            // Only misses are timed; see RelocCache::resolve_time.
-                            let _t = std::time::Instant::now();
-                            let sym = self.lookup_symbol(lib.id(), name, flags, deps_list);
-                            reloc_cache.resolve_time += _t.elapsed();
-                            if let Ok(ref sym) = sym {
-                                reloc_cache.insert(name, lib.comp_id, unsafe {
-                                    std::mem::transmute(sym.clone())
-                                });
+    // Replay first: a memo hit skips the blooms and the whole search. It must still
+                    // populate the per-compartment cache: multiply-defined names (`malloc` lives
+                    // in both libc and twz-rt's shims) are kept order-uniform across a
+                    // compartment's libraries *by* that cache -- the first resolver wins and
+                    // everyone later reuses it. Skipping the insert let a later library re-search
+                    // by its own deps order and bind the twz-rt stub instead of libc, which killed
+                    // pager-srv's first C allocation (verifymemo round 1).
+                    let sym = if let Some(msym) = reloc_cache.memo_probe(self, name, deps_list) {
+                        reloc_cache.insert(name, lib.comp_id, unsafe {
+                            std::mem::transmute(msym.clone())
+                        });
+                        if crate::context::relocate::RELOC_MEMO_VERIFY {
+                            let live = self.lookup_symbol(lib.id(), name, flags, deps_list);
+                            let agrees = live.as_ref().is_ok_and(|l| {
+                                core::ptr::eq(
+                                    l.lib as *const Library,
+                                    msym.lib as *const Library,
+                                ) && l.raw_value() == msym.raw_value()
+                            });
+                            if !agrees {
+                                reloc_cache.memo_bad += 1;
                             }
-                            sym
+                        }
+                        Ok(msym)
+                    } else {
+                        match reloc_cache.find(name, lib.comp_id) {
+                            Some(sym) => {
+                                tracing::trace!("found {} in cache", name);
+                                Ok(sym.clone())
+                            }
+                            None => {
+                                // Only misses are timed; see RelocCache::resolve_time.
+                                let _t = std::time::Instant::now();
+                                let sym = self.lookup_symbol(lib.id(), name, flags, deps_list);
+                                reloc_cache.resolve_time += _t.elapsed();
+                                if let Ok(ref sym) = sym {
+                                    reloc_cache.memo_record(lib, name, sym, deps_list);
+                                    reloc_cache.insert(name, lib.comp_id, unsafe {
+                                        std::mem::transmute(sym.clone())
+                                    });
+                                }
+                                sym
+                            }
                         }
                     };
 

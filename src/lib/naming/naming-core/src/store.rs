@@ -438,6 +438,12 @@ trait Namespace {
     fn persist(&self) -> bool;
 
     fn create_file(&self, name: &str) -> Result<NsNode>;
+
+    /// Create a child namespace in the backing store, for namespaces that have one (external).
+    /// `Ok(None)` means there is no store: the caller builds a native namespace object instead.
+    fn create_ns(&self, _name: &str) -> Result<Option<NsNode>> {
+        Ok(None)
+    }
 }
 
 pub struct NameStore {
@@ -693,6 +699,15 @@ impl NameSession<'_> {
         let Err(name) = node else {
             return Err(NamingError::AlreadyExists.into());
         };
+        // An external container makes the directory in its store (a native namespace object's id
+        // could not be bound there -- see `ExtNamespace::insert`); `persist` is moot, the store is
+        // inherently persistent.
+        if container
+            .create_ns(&name.display().to_string())?
+            .is_some()
+        {
+            return Ok(());
+        }
         let ns = NamespaceObject::new(
             persist,
             Some(container.id()),

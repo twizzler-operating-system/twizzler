@@ -328,6 +328,76 @@ pub mod mapprofile {
     }
 }
 
+/// Stage split of [`VirtContext::map_object`] — the inside of `insert_object`'s `map_obj` stage
+/// (948 ns/call in mapsplit1, the largest map-side item, previously opaque; `MAP_PROBE` covers
+/// only the fault path's `map_page`, not this). Same pattern as [`mapprofile`]; gated, ships OFF.
+pub mod mapobjprofile {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    pub const MAPOBJ_PROFILE: bool = false;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Stage {
+        /// `security::get_sctx`.
+        Sctx = 0,
+        /// `sctx.lookup` — the per-map capability/permission lookup.
+        Lookup,
+        /// Taking the object's page-table sleeping mutex (or the stable clone's).
+        PtLock,
+        /// `try_with_arch`, whole, including the closure below.
+        Arch,
+        /// Within [Stage::Arch]: `pt.add_invalidate`.
+        AddInv,
+        /// Within [Stage::Arch]: `arch.object_map` plus the map-count charge.
+        ObjMap,
+        Total,
+    }
+
+    pub const NR: usize = Stage::Total as usize + 1;
+    pub const NAMES: [&str; NR] = [
+        "sctx", "lookup", "pt_lock", "arch", "add_inv", "obj_map", "TOTAL",
+    ];
+
+    static STAGE_COUNT: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+    static STAGE_NS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    #[inline(always)]
+    pub fn start() -> Instant {
+        if MAPOBJ_PROFILE {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record(stage: Stage, start: Instant) {
+        if !MAPOBJ_PROFILE {
+            return;
+        }
+        let ns = (Instant::now() - start).as_nanos() as u64;
+        STAGE_COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
+        STAGE_NS[stage as usize].fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// Per-stage (count, nanoseconds), cumulative, for [`crate::perfmark`] to difference.
+    pub fn snapshot() -> [(u64, u64); NR] {
+        let mut out = [(0u64, 0u64); NR];
+        if !MAPOBJ_PROFILE {
+            return out;
+        }
+        for i in 0..NR {
+            out[i] = (
+                STAGE_COUNT[i].load(Ordering::Relaxed),
+                STAGE_NS[i].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+}
+
 /// Stage split of [`VirtContext::remove_object`], the whole of `sys_object_unmap`.
 ///
 /// Separate from [`mapprofile`] rather than folded into it: the two paths have nothing in common
@@ -473,6 +543,93 @@ pub mod unmapprofile {
                 STAGE_NS[i].load(Ordering::Relaxed) / c
             );
         }
+    }
+
+    /// Per-call distribution of `remove_object`, split by who initiated the removal. A mean
+    /// cannot tell uniform inflation from tail spikes (spawnbench.md §41a wants exactly that
+    /// distinction for spawn-phase unmaps), so this keeps a log2 histogram and a per-window
+    /// maximum instead. Separate const from [`UNMAP_PROFILE`]: two clock reads per removal when
+    /// on, nothing when off.
+    pub const UNMAP_HIST: bool = false;
+
+    /// Who asked for this removal. `Own`/`Handle` are the two `sys_object_unmap` forms (a thread
+    /// unmapping its own context vs. operating on another context by handle — the monitor's
+    /// deferred unmapper is the main `Handle` caller); `Sweep` is `sweep_sctx_regions`, i.e.
+    /// sctx-unregister/context-teardown.
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Initiator {
+        Own = 0,
+        Handle,
+        Sweep,
+    }
+    pub const NR_INIT: usize = 3;
+    pub const INIT_NAMES: [&str; NR_INIT] = ["own", "handle", "sweep"];
+    /// Bucket upper bounds in ns; the last bucket is everything at or above the final bound.
+    const HIST_BOUNDS_NS: [u64; 7] = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
+    pub const NR_HBUCKETS: usize = HIST_BOUNDS_NS.len() + 1;
+
+    static H_COUNT: [AtomicU64; NR_INIT] = [const { AtomicU64::new(0) }; NR_INIT];
+    static H_NS: [AtomicU64; NR_INIT] = [const { AtomicU64::new(0) }; NR_INIT];
+    static H_MAX: [AtomicU64; NR_INIT] = [const { AtomicU64::new(0) }; NR_INIT];
+    static HIST: [[AtomicU64; NR_HBUCKETS]; NR_INIT] =
+        [const { [const { AtomicU64::new(0) }; NR_HBUCKETS] }; NR_INIT];
+
+    #[inline(always)]
+    pub fn hist_stamp() -> Instant {
+        if UNMAP_HIST {
+            Instant::now()
+        } else {
+            Instant::zero()
+        }
+    }
+
+    pub fn record_hist(init: Initiator, start: Instant) {
+        if !UNMAP_HIST {
+            return;
+        }
+        let ns = (Instant::now() - start).as_nanos() as u64;
+        let i = init as usize;
+        H_COUNT[i].fetch_add(1, Ordering::Relaxed);
+        H_NS[i].fetch_add(ns, Ordering::Relaxed);
+        H_MAX[i].fetch_max(ns, Ordering::Relaxed);
+        let b = HIST_BOUNDS_NS
+            .iter()
+            .position(|bound| ns < *bound)
+            .unwrap_or(NR_HBUCKETS - 1);
+        HIST[i][b].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Flat cumulative snapshot for [`crate::perfmark`] to difference: per initiator, (count, ns)
+    /// then the buckets.
+    pub const NR_HSNAP: usize = NR_INIT * (2 + NR_HBUCKETS);
+    pub fn hist_snapshot() -> [u64; NR_HSNAP] {
+        let mut out = [0u64; NR_HSNAP];
+        if !UNMAP_HIST {
+            return out;
+        }
+        for i in 0..NR_INIT {
+            let base = i * (2 + NR_HBUCKETS);
+            out[base] = H_COUNT[i].load(Ordering::Relaxed);
+            out[base + 1] = H_NS[i].load(Ordering::Relaxed);
+            for b in 0..NR_HBUCKETS {
+                out[base + 2 + b] = HIST[i][b].load(Ordering::Relaxed);
+            }
+        }
+        out
+    }
+
+    /// Maximum per initiator since the last call, reset on read. Not differenceable like the
+    /// counters, so the window semantics live here instead of in the caller's `prev` snapshot.
+    pub fn take_hist_max() -> [u64; NR_INIT] {
+        let mut out = [0u64; NR_INIT];
+        if !UNMAP_HIST {
+            return out;
+        }
+        for i in 0..NR_INIT {
+            out[i] = H_MAX[i].swap(0, Ordering::Relaxed);
+        }
+        out
     }
 }
 
@@ -1012,7 +1169,22 @@ impl VirtContext {
 
     /// Run `cb` against every arch context this context owns: the kernel's single one, or a user
     /// context's one per attached security context.
-    fn for_each_arch(&self, mut cb: impl FnMut(&ArchContext)) {
+    fn for_each_arch(&self, cb: impl FnMut(&ArchContext)) {
+        self.for_each_arch_in(None, cb)
+    }
+
+    /// [`Self::for_each_arch`], visiting only arches whose target is in `members` when the set is
+    /// known complete. The filter runs *before* the `users` claim: a slot the caller would skip
+    /// anyway costs one compare here instead of two RMWs and a guard round trip — measured as
+    /// ~11 skipped claims per unmap (20.4M/boot, 94% of visits, `unmap census`). `None` degrades
+    /// to visiting everything, exactly the contract the `members` set already carries at its one
+    /// cb-side check — which callers keep as a second layer, so the overflow and mutex fallbacks
+    /// (which still visit everything) rely on nothing new.
+    fn for_each_arch_in(
+        &self,
+        members: Option<&[ArchContextTarget]>,
+        mut cb: impl FnMut(&ArchContext),
+    ) {
         if let Some(arch) = self.kernel_arch.as_ref() {
             cb(arch);
             return;
@@ -1027,6 +1199,15 @@ impl VirtContext {
                 let slots = self.target_cache.lock();
                 let mut cursor = slots.front();
                 while let Some(slot) = cursor.clone_pointer() {
+                    if let Some(members) = members
+                        && !members.contains(&slot.arch.target)
+                    {
+                        // Counted here so the census's skip total keeps meaning "arches the
+                        // membership filter excluded", wherever the filter runs.
+                        unmap_census::record_skip();
+                        cursor.move_next();
+                        continue;
+                    }
                     slot.users.fetch_add(1, Ordering::Acquire);
                     if snap.push(SlotGuard(slot)).is_err() {
                         overflow = true;
@@ -1041,8 +1222,8 @@ impl VirtContext {
                 }
                 return;
             }
-            // More attached contexts than the snapshot holds. Drop what we took and fall through
-            // to the mutex path, which visits everything.
+            // More matching contexts than the snapshot holds. Drop what we took and fall through
+            // to the mutex path, which visits everything (the cb-side membership check covers it).
             drop(snap);
         }
         for slot in self.secctx.lock().iter() {
@@ -1123,19 +1304,32 @@ impl VirtContext {
 
         let len = info.range.end - info.range.start;
         let cursor = MappingCursor::new(info.range.start, len);
+        use mapobjprofile as mp;
+        let t_total = mp::start();
         // Reading the thread's own `secctx.active()` instead of `get_sctx(active_id())` is faster
         // (68% of this function). The two used to differ -- `get_sctx(0)` returned `Err` and
         // skipped this whole block -- but both now resolve to the single `kernel_sctx()`, so the
         // swap is available if this shows up in a profile again. See pagerperf.md 17.
-        if let Ok(sctx) = crate::security::get_sctx(sctx) {
+        let t = mp::start();
+        let sctx = crate::security::get_sctx(sctx);
+        mp::record(mp::Stage::Sctx, t);
+        if let Ok(sctx) = sctx {
+            let t = mp::start();
             let perms = sctx.lookup(info.object().id(), info.default_prot);
+            mp::record(mp::Stage::Lookup, t);
+            let t = mp::start();
             let mut pt = if info.stable.is_some() {
                 PtGuard::new(info.stable.as_ref().unwrap())
             } else {
                 info.object.lock_page_tables()
             };
+            mp::record(mp::Stage::PtLock, t);
+            let t_arch = mp::start();
             self.try_with_arch(sctx.id(), |arch| {
+                let t = mp::start();
                 pt.add_invalidate(arch.target, cursor);
+                mp::record(mp::Stage::AddInv, t);
+                let t = mp::start();
                 let settings = MappingSettings::new(
                     perms.effective(info.default_prot, info.prot),
                     info.cache_type,
@@ -1153,7 +1347,10 @@ impl VirtContext {
                     // Under `pt`, the page-table lock the count's field doc requires.
                     info.object().inc_map_count();
                 }
+                mp::record(mp::Stage::ObjMap, t);
             });
+            mp::record(mp::Stage::Arch, t_arch);
+            mp::record(mp::Stage::Total, t_total);
         };
     }
 
@@ -1268,9 +1465,15 @@ impl VirtContext {
         let slot = {
             let mut secctx = self.secctx.lock();
             let Some(slot) = secctx.find_mut(&sctx).remove() else {
-                // Nothing registered here. Drop whatever the slot tree yielded outside the lock.
+                // No arch state registered here -- the common case at `SecurityContext::drop`
+                // time, since the arch slot is usually torn down earlier. The *region* sweep
+                // below must still run: gating it behind the arch slot left one region (and its
+                // pinned object) per userspace-mapped object per dead compartment -- measured in
+                // many-reclaim10 as 2826 drops but only 261 sweeps, and (2894 - 261) * ~6
+                // regions = the 16k standing pending-delete objects holding 79% of RAM.
                 drop(secctx);
                 drop(removed);
+                self.sweep_sctx_regions(sctx);
                 return;
             };
             slot
@@ -1346,21 +1549,31 @@ impl VirtContext {
             }
         }
 
-        // Sweep out the regions that were *targeted* at this security context, not just its
-        // arch state. A region whose `target_sctx` is being unregistered is unreachable garbage
-        // by construction -- no thread can ever attach to that context again -- but until this
-        // sweep existed the region stayed in the shared `RegionManager`, and its `ObjectRef`
-        // pinned the object (and every page) of each dead compartment forever: the reclaim3/4
-        // census measured ~15k dead compartments' mappings holding 92% of RAM in pending-delete
-        // pages (pagerwedge.md §3.8). `remove_object` is the same path `sys_object_unmap`
-        // takes, so invalidation, fault-path ordering, and map-count accounting all hold.
+        self.sweep_sctx_regions(sctx);
+    }
+
+    /// Sweep out the regions that were *targeted* at a now-unregistering security context, not
+    /// just its arch state. A region whose `target_sctx` is being unregistered is unreachable
+    /// garbage by construction -- no thread can ever attach to that context again -- but until
+    /// this sweep existed the region stayed in the shared `RegionManager`, and its `ObjectRef`
+    /// pinned the object (and every page) of each dead compartment forever: the reclaim3/4
+    /// census measured ~15k dead compartments' mappings holding 92% of RAM in pending-delete
+    /// pages (pagerwedge.md §3.8). `remove_object` is the same path `sys_object_unmap`
+    /// takes, so invalidation, fault-path ordering, and map-count accounting all hold.
+    ///
+    /// Runs on every unregister, whether or not this context still held arch state for the sctx
+    /// -- at `SecurityContext::drop` time it usually does not, and these regions exist anyway.
+    fn sweep_sctx_regions(&self, sctx: ObjID) {
+        if sctx == KERNEL_SCTX {
+            return;
+        }
         let mut swept = 0usize;
         for region in self.regions.mappings() {
-            if region.target_sctx != sctx || sctx == KERNEL_SCTX {
+            if region.target_sctx != sctx {
                 continue;
             }
             if let Ok(slot) = Slot::try_from(region.range.start) {
-                self.remove_object(slot);
+                self.remove_object_from(slot, unmapprofile::Initiator::Sweep);
                 swept += 1;
             }
         }
@@ -1767,8 +1980,8 @@ impl UserContext for VirtContext {
             target_sctx: object_info.target_sctx(),
             stable,
             default_prot,
-            should_sync: Arc::new(AtomicBool::new(false)),
-            removed: Arc::new(AtomicBool::new(false)),
+            should_sync: AtomicBool::new(false),
+            removed: AtomicBool::new(false),
         };
 
         mapprofile::record(mapprofile::Stage::Region, t_region);
@@ -1787,12 +2000,16 @@ impl UserContext for VirtContext {
         let t_lock = mapprofile::start();
         let guard = self.regions.begin_insert(slot)?;
         mapprofile::record(mapprofile::Stage::Lock, t_lock);
+        // Registered with the object *before* the install takes the map count: `is_reapable`
+        // treats "count > 0 with no live mapping" as stale accounting, so the mapping must be
+        // visible whenever the count is. The old order (install, then register) left a window
+        // where a mid-map object looked stale.
         let t_map = mapprofile::start();
-        self.map_object(&new_slot_info, &mut fa);
-        mapprofile::record(mapprofile::Stage::MapObj, t_map);
-        let t_ins = mapprofile::start();
         let region = Arc::new(new_slot_info);
         region.object().add_mapping(slot.raw(), &region);
+        self.map_object(&region, &mut fa);
+        mapprofile::record(mapprofile::Stage::MapObj, t_map);
+        let t_ins = mapprofile::start();
         guard.commit(region);
         mapprofile::record(mapprofile::Stage::Insert, t_ins);
         mapprofile::record(mapprofile::Stage::Total, t_total);
@@ -1818,7 +2035,17 @@ impl UserContext for VirtContext {
     }
 
     fn remove_object(&self, info: Self::MappingInfo) {
+        self.remove_object_from(info, unmapprofile::Initiator::Own);
+    }
+}
+
+impl VirtContext {
+    /// [`UserContext::remove_object`] with the initiator named, for [`unmapprofile::UNMAP_HIST`].
+    /// The trait method forwards with [`unmapprofile::Initiator::Own`]; callers that know better
+    /// (the handle form of `sys_object_unmap`, `sweep_sctx_regions`) call this directly.
+    pub fn remove_object_from(&self, info: Slot, initiator: unmapprofile::Initiator) {
         use unmapprofile::Stage as UStage;
+        let t_hist = unmapprofile::hist_stamp();
         let t_total = unmapprofile::start();
         let t = unmapprofile::start();
         let mut fa = FrameAllocator::new(
@@ -1874,7 +2101,9 @@ impl UserContext for VirtContext {
                 .then(|| pt.members().map(|m| m.iter().copied().collect()))
                 .flatten();
             unmapprofile::record(UStage::Members, t_mem);
-            self.for_each_arch(|arch| {
+            self.for_each_arch_in(members.as_deref(), |arch| {
+                // Second layer behind for_each_arch_in's pre-filter: this is what the overflow
+                // and mutex fallback paths (which visit everything) rely on.
                 if let Some(members) = members.as_ref()
                     && !members.contains(&arch.target)
                 {
@@ -1915,6 +2144,32 @@ impl UserContext for VirtContext {
                 unmapprofile::record(UStage::RemInv, t_ri);
             });
             unmap_census::record(n_arches, n_mapped, counted);
+            // The map-count leak, caught in the act: a counted removal of a pending-delete
+            // object that released nothing anywhere while the count is still positive means the
+            // install's arch was neither visited nor already torn down with a dec -- the object
+            // is now permanently unreapable (PD-STUCK mapcount, reclaim15). Names the members
+            // set and visited count so the skipped arch is identifiable.
+            if counted && slot.object().is_pending_delete() {
+                let mc = slot.object().map_count();
+                // Regions gone (this was the last), count still positive: the object is now
+                // permanently unreapable. `n_mapped` says whether this removal released anything
+                // (0 = the install's arch was already gone with no dec; >=1 = an arch beyond the
+                // visited set still holds an entry).
+                if mc > 0 && slot.object().mappings().len() <= 1 {
+                    static LEAK_LOGS: core::sync::atomic::AtomicUsize =
+                        core::sync::atomic::AtomicUsize::new(0);
+                    if LEAK_LOGS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
+                        log::warn!(
+                            "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} members {:?}",
+                            slot.object().id(),
+                            mc,
+                            n_mapped,
+                            n_arches,
+                            members
+                        );
+                    }
+                }
+            }
             unmapprofile::record(UStage::Arches, t_arches);
             // Explicit so the shootdown wait in the guard's Drop is timed rather than folded into
             // whatever follows the block.
@@ -1951,6 +2206,7 @@ impl UserContext for VirtContext {
         }
         unmapprofile::record(UStage::Finish, t);
         unmapprofile::record(UStage::Total, t_total);
+        unmapprofile::record_hist(initiator, t_hist);
     }
 }
 
@@ -1975,7 +2231,21 @@ impl Drop for VirtContext {
         // dead entries from accumulating in the map. Sleeping-lock-safe by the same argument as
         // the rest of this destructor chain (region drops take object page-table mutexes).
         get_all_contexts().lock().remove(&self.id.value());
-        // TODO: remove appropriate invalidations from objects.
+        // Settle the map-count accounting before the regions and arch contexts are discarded.
+        // Making `ALL_CONTEXTS` weak let dead compartments' contexts actually drop -- but a bare
+        // drop frees the arch page tables and the `RegionManager` without ever running
+        // `dec_map_count` for the installs those arches held. Every object faulted only inside
+        // the dying context kept a phantom count of exactly 1 and became permanently unreapable:
+        // PD-STUCK measured ~7.3k objects / 2.2M pages (~8.4GB, one ~4MB heap span per dead
+        // compartment) standing across many-reclaim12..17. `unregister_sctx` is the existing
+        // teardown that walks each arch against each region, decs on release, hands newly
+        // unmapped pending-delete objects to the reaper, and sweeps sctx-targeted regions -- run
+        // it for every slot still registered. No concurrency to fear: the refcount is zero, so
+        // no thread can be switching into or faulting through this context.
+        let ids: Vec<ObjID> = self.secctx.lock().iter().map(|slot| slot.sctx).collect();
+        for id in ids {
+            self.unregister_sctx(id);
+        }
     }
 }
 
@@ -2139,8 +2409,8 @@ impl KernelMemoryContext for VirtContext {
             target_sctx: info.target_sctx(),
             stable: None,
             default_prot,
-            should_sync: Arc::new(AtomicBool::new(false)),
-            removed: Arc::new(AtomicBool::new(false)),
+            should_sync: AtomicBool::new(false),
+            removed: AtomicBool::new(false),
         };
         // Slots come off a free list that is only pushed to once an unmap has fully finished (see
         // `KernelObjectVirtHandle::drop`), so this cannot collide with a teardown in progress.
@@ -2148,9 +2418,10 @@ impl KernelMemoryContext for VirtContext {
             .regions
             .begin_insert(slot)
             .expect("kernel object slot already occupied");
-        self.map_object(&new_slot_info, &mut fa);
+        // Same order as `insert_object`: registered before the install takes the map count.
         let region = Arc::new(new_slot_info);
         region.object().add_mapping(slot.raw(), &region);
+        self.map_object(&region, &mut fa);
         guard.commit(region);
         KernelObjectVirtHandle {
             info,
@@ -2216,6 +2487,15 @@ impl<T> Drop for KernelObjectVirtHandle<T> {
         drop(pt);
         if last {
             self.object().note_last_unmap();
+            // Hand the object to the reaper, as every other last-unmap site does. TARGETED_REAP
+            // has no fallback scan, so an object whose *last* mapping was the kernel's KSO handle
+            // (sctx objects, thread reprs) was stranded here: marked pending-delete, map count 0,
+            // pages never freed -- and via ties, everything tied to it (a dead compartment's heap
+            // spans) stayed undeletable too. Measured as PD-SPLIT "unmapped 7142 objs / 2.21M
+            // pages" standing in many-reclaim12.
+            if crate::obj::TARGETED_REAP && self.object().is_pending_delete() {
+                crate::obj::request_reap(self.object());
+            }
         }
         // Release the slot *before* publishing it to the free list. `insert_kernel_object` pops
         // from that list and claims the slot immediately, and a slot still marked as being torn
@@ -2461,6 +2741,20 @@ pub mod unmap_census {
         SKIPPED.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Detached an object-table entry whose owner could not be verified (`context_table_addr`
+    /// was `None`); the dec was taken anyway. See `ArchContext::unmap_object`.
+    static UNVERIFIED: AtomicUsize = AtomicUsize::new(0);
+    /// Detached an entry that verifiably belonged to a different object; no dec.
+    static FOREIGN: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record_unverified() {
+        UNVERIFIED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_foreign() {
+        FOREIGN.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn bucket(n: usize) -> usize {
         match n {
             0..=4 => n,
@@ -2518,6 +2812,11 @@ pub mod unmap_census {
             SKIPPED.load(Ordering::Relaxed),
             MAX_ARCHES.load(Ordering::Relaxed),
             MAX_MAPPED.load(Ordering::Relaxed),
+        );
+        emerglogln!(
+            "== unmap census releases: {} unverified (dec taken), {} foreign (dec withheld)",
+            UNVERIFIED.load(Ordering::Relaxed),
+            FOREIGN.load(Ordering::Relaxed)
         );
         emerglogln!(
             "== unmap census arches/removal [0,1,2,3,4,5-8,9-16,17+]: {} {} {} {} {} {} {} {}",

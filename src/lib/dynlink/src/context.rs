@@ -84,6 +84,12 @@ pub struct Context {
     // is what exists today.
     sym_blooms: HashMap<ObjID, Arc<SymBloom>>,
 
+    // Memoized symbol resolutions per library source object (see `relocate::RELOC_MEMO`). Only
+    // mutated under `reloc_lock` (relocations are serialized), so this Mutex is uncontended; it
+    // exists because relocation runs under a shared `&Context`. Same ObjID-reuse caveat as
+    // `sym_blooms`.
+    pub(crate) reloc_memo: Mutex<HashMap<ObjID, Arc<relocate::LibReplayMemo>>>,
+
     // Relocation runs under a shared reference, so it is no longer serialized by the caller's
     // write lock. Two concurrent relocations of a shared dependency would race on its
     // `reloc_state`, and the loser would observe `PartialRelocation` and report the library as
@@ -194,6 +200,7 @@ impl Context {
             library_deps: StableDiGraph::new(),
             compartments: StableVec::new(),
             sym_blooms: HashMap::new(),
+            reloc_memo: Mutex::new(HashMap::new()),
             reloc_lock: Mutex::new(()),
         }
     }

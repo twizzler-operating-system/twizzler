@@ -275,15 +275,22 @@ impl TlbInvData {
             logln!("   -> {:x} {}", inst.addr().raw(), inst.level());
         }
         */
+        use crate::memory::pagetables::invl_census::{self, Outcome};
         // If none of the commands are global, and it's targeting a different set of
         // page tables than is active, then we can ignore it.
         let ours = our_cr3 == self.target();
         if !ours && !self.global() {
+            invl_census::record(Outcome::Skipped);
             self.drop_claim_here();
             return;
         }
 
         if self.full() {
+            invl_census::record(if self.global() {
+                Outcome::FullGlobal
+            } else {
+                Outcome::FullLocal
+            });
             if self.global() {
                 tlb_global_inv();
             } else {
@@ -298,6 +305,7 @@ impl TlbInvData {
             return;
         }
 
+        invl_census::record(Outcome::Precise(self.instructions().len()));
         for inst in self.instructions() {
             inst.execute();
         }
@@ -576,6 +584,20 @@ impl ArchTlbMgr {
         // We definitely don't want to reschedule to a different CPU while doing this.
         let proc = current_processor();
 
+        // Single-processor fast path. With no other cpu in existence there is no claim to revoke,
+        // no target to select, no IPI to send, and nothing to wait for -- the local invalidation
+        // is the entire job. This skips two full-processor sweeps and the ordering fence on every
+        // invalidation on a one-cpu system. It cannot widen to a "count == 0" check on smp>1: there
+        // the revoke below is load-bearing for every cpu we then decide *not* to target (it makes
+        // them flush on their next switch into this address space), so it must run even when the
+        // send targets nobody.
+        if crate::processor::mp::is_single_processor() {
+            self.data.do_invalidation();
+            drop(_guard);
+            self.data.reset();
+            return PendingShootdown::none();
+        }
+
         let mut count = 0;
         // Revoke every *other* processor's right to switch into this address space without
         // flushing. A processor we skip below relies on that flush to shed the entries we are
@@ -683,6 +705,13 @@ impl ArchTlbMgr {
         // a token be held across a sleep, which the object page tables need.
         drop(_guard);
         self.data.reset();
+        // No remote target: the revoke above already covered every other cpu (they flush on their
+        // next switch into this address space) and the local invalidation is done, so there is
+        // nothing to wait for. Return an empty token rather than one carrying a target set whose
+        // wait is a no-op.
+        if count == 0 {
+            return PendingShootdown::none();
+        }
         PendingShootdown {
             targets,
             count,

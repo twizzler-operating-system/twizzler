@@ -1219,20 +1219,16 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
 
-// additional definitions for C
-#[linkage = "weak"]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn malloc(len: usize) -> *mut core::ffi::c_void {
-    warn!("called c:malloc with len = {}: not yet implemented", len);
-    core::ptr::null_mut()
-}
-
-#[linkage = "weak"]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn free(ptr: *mut core::ffi::c_void) {
-    warn!("called c:free with ptr = {:p}: not yet implemented", ptr);
-}
-
+// additional definitions for C.
+//
+// `malloc`/`free` warn-stubs used to live here too. They returned NULL / did nothing, and which
+// definition an importer bound -- these or libc's real ones -- was decided by relocation order
+// plus the per-compartment RelocCache (first resolver wins), i.e. by accident. libtwz_rt itself
+// DT_NEEDs libc.so, so libc's strong definitions are present in every compartment and are now the
+// only ones. The remaining shims below (`getenv`, `fwrite`, `fprintf`) still collide with libc
+// and still win-or-lose by that same accident; each needs a deliberate keep-or-delete call
+// (getenv answers from the runtime env map, not mlibc's environ; fwrite/fprintf ignore their
+// FILE* and write to fd 1 unbuffered).
 #[linkage = "weak"]
 #[no_mangle]
 pub unsafe extern "C-unwind" fn getenv(name: *const core::ffi::c_char) -> *const core::ffi::c_char {

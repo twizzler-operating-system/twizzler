@@ -411,7 +411,29 @@ impl ArchContext {
         let t = up::start();
         consist.into_deferred().run_all();
         up::record(up::Stage::UoRun, t);
-        obj_table.is_some() && released == obj_table
+        match (released, obj_table) {
+            // Verified: the detached table is the one this object installed.
+            (Some(r), Some(t)) if r == t => true,
+            // Detached a foreign table: the entry belonged to a different object (the
+            // "replacing object table" anomaly). Do not move this object's count.
+            (Some(_), Some(_)) => {
+                crate::memory::context::virtmem::unmap_census::record_foreign();
+                false
+            }
+            // Detached an entry but the caller could not name the expected table:
+            // `context_table_addr()` walks only index 0 of the object's tables and goes `None`
+            // once that path is pruned, while the arch entry (which holds its own refcount on
+            // the table) is still live. Reporting false here skipped the map-count dec and
+            // stranded the object forever -- measured as PD-STUCK "mapcount 7252, mc_sum ==
+            // count" in many-reclaim14/15: one phantom count per compartment heap object, 92%
+            // of RAM. An object-table entry inside a counted region's own range can only have
+            // been installed for that object, so the detach is the count.
+            (Some(_), None) => {
+                crate::memory::context::virtmem::unmap_census::record_unverified();
+                true
+            }
+            (None, _) => false,
+        }
     }
 
     pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {

@@ -266,6 +266,9 @@ pub struct ObjectInfo {
     /// The object's data length, for the `MEXT_SIZED` meta extension. Only meaningful with
     /// [ObjectInfoFlags::SYNTH_META].
     pub size: u64,
+    /// Store-recorded modification time (seconds) for the `MEXT_MTIME` meta extension, or 0 when
+    /// the backend keeps none. Only meaningful with [ObjectInfoFlags::SYNTH_META].
+    pub mtime: u32,
 }
 
 impl ObjectInfo {
@@ -285,6 +288,7 @@ impl ObjectInfo {
             flags: ObjectInfoFlags::empty(),
             meta_page: PhysRange::new(0, 0),
             size: 0,
+            mtime: 0,
         }
     }
 
@@ -302,6 +306,12 @@ impl ObjectInfo {
         self.flags |= ObjectInfoFlags::SYNTH_META;
         self.size = size;
         self.with_size(size)
+    }
+
+    /// Record the store's mtime (seconds) for the synthesized meta page's `MEXT_MTIME`.
+    pub fn with_mtime(mut self, mtime: u32) -> Self {
+        self.mtime = mtime;
+        self
     }
 
     /// State the object's length in the store: there is nothing past `size` to read.

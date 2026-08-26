@@ -1,8 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     mem::size_of,
+    sync::Arc,
     time::Instant,
 };
+
+use twizzler_abi::object::ObjID;
 
 use elf::{
     abi::{
@@ -27,6 +30,42 @@ use crate::{
     DynlinkError, DynlinkErrorKind, Vec, SMALL_STRING_SIZE, SMALL_VEC_SIZE,
 };
 
+/// Cross-load memoization of symbol resolutions.
+///
+/// A resolution *decision* -- "name X binds to library L at symbol S" -- depends on the relocating
+/// library's deps search list (its members, order, and compartment relationship), the members'
+/// symbol tables (fixed per source ELF object), and the gate rules. It does not depend on the
+/// per-instance base addresses, which only enter when the decision becomes a written value. So the
+/// search can run once per (library source object, deps shape) and be replayed as a map probe on
+/// every later load -- which is every spawn after the first, since libstd/libc/libtwz_rt keep the
+/// same deps list in every compartment.
+///
+/// Only resolutions that bound to a *same-compartment* member of the deps list are memoized.
+/// Anything that resolved cross-compartment or through the global search -- the weak gate imports,
+/// notably -- always runs the live lookup, so memoization never bypasses the gate-permission
+/// checks and never depends on context-wide state the fingerprint cannot see.
+///
+/// Off until the VERIFY-armed validation sweep passes; flip with [`RELOC_MEMO_VERIFY`] for that
+/// run, then ship true.
+pub(crate) const RELOC_MEMO: bool = true;
+
+/// Verify mode: every replayed resolution also runs the live lookup and the two are compared
+/// (defining library and raw value). Disagreements are counted per `relocate_all` and reported
+/// through the `reloc_all` debug line as `memo_bad`. Must read 0; run a full `--tests` sweep with
+/// this on before trusting a change to the memo or to the lookup rules it shadows.
+pub(crate) const RELOC_MEMO_VERIFY: bool = true;
+
+/// One library source object's memoized resolutions; see [`RELOC_MEMO`].
+pub(crate) struct LibReplayMemo {
+    /// (source object, same-compartment-as-relocatee) for each deps-list entry, in BFS order.
+    /// Compared wholesale before replay; any mismatch (different deps, an LD_PRELOAD shadow, a
+    /// cross-compartment substitution) falls back to live lookup for the whole library.
+    fingerprint: std::vec::Vec<(ObjID, bool)>,
+    /// name -> (deps-list ordinal of the defining library, its ELF symbol). Replay rebuilds the
+    /// exact `RelocatedSymbol` a live lookup would have returned.
+    syms: HashMap<String, (u32, elf::symbol::Symbol)>,
+}
+
 #[derive(Default)]
 pub(crate) struct RelocCache<'a> {
     syms: HashMap<CompartmentId, HashMap<String, RelocatedSymbol<'a>>>,
@@ -40,6 +79,76 @@ pub(crate) struct RelocCache<'a> {
     /// and clocking every relocation would cost more than the thing being measured (there are
     /// thousands of relocations but only hundreds of misses).
     pub(crate) resolve_time: std::time::Duration,
+    /// Replay source for the library currently being relocated (set per `relocate_single`).
+    memo: Option<Arc<LibReplayMemo>>,
+    /// Recording target for the library currently being relocated, when it has no valid memo yet.
+    record: Option<(ObjID, LibReplayMemo)>,
+    /// Resolutions served by replay this `relocate_all`.
+    pub(crate) memo_hits: usize,
+    /// Verify-mode disagreements; must stay 0.
+    pub(crate) memo_bad: usize,
+}
+
+impl<'a> RelocCache<'a> {
+    /// Replay a memoized resolution for `name`, if the current library has a validated memo
+    /// containing it. Runs before any cache or bloom probe.
+    pub(crate) fn memo_probe<'b>(
+        &mut self,
+        ctx: &'b Context,
+        name: &str,
+        deps_list: &[NodeIndex],
+    ) -> Option<RelocatedSymbol<'b>> {
+        let m = self.memo.as_ref()?;
+        let (ord, sym) = m.syms.get(name)?;
+        // The fingerprint check in relocate_single proved every deps entry loaded and matching.
+        let dep = ctx.library_deps[*deps_list.get(*ord as usize)?].loaded()?;
+        self.memo_hits += 1;
+        Some(RelocatedSymbol::new(sym.clone(), dep))
+    }
+
+    /// Record a live resolution into the current library's pending memo, when it qualifies:
+    /// a real symbol (not weak-zero), defined by a same-compartment member of the deps list.
+    pub(crate) fn memo_record(
+        &mut self,
+        lib: &Library,
+        name: &str,
+        sym: &RelocatedSymbol<'_>,
+        deps_list: &[NodeIndex],
+    ) {
+        let Some((_, rec)) = self.record.as_mut() else {
+            return;
+        };
+        let Some(elf_sym) = sym.elf_sym() else {
+            return;
+        };
+        if !sym.lib.in_same_compartment_as(lib) {
+            return;
+        }
+        let Some(ord) = deps_list.iter().position(|n| *n == sym.lib.idx) else {
+            return;
+        };
+        rec.syms
+            .insert(name.to_string(), (ord as u32, elf_sym.clone()));
+    }
+}
+
+impl Context {
+    /// (source object, same-compartment) per deps-list entry, or None if any entry is unloaded
+    /// (in which case neither replay nor recording is safe).
+    fn deps_fingerprint(
+        &self,
+        lib: &Library,
+        deps_list: &[NodeIndex],
+    ) -> Option<std::vec::Vec<(ObjID, bool)>> {
+        deps_list
+            .iter()
+            .map(|n| {
+                self.library_deps[*n]
+                    .loaded()
+                    .map(|dep| (dep.full_obj.id(), dep.in_same_compartment_as(lib)))
+            })
+            .collect()
+    }
 }
 
 impl<'a> RelocCache<'a> {
@@ -320,6 +429,32 @@ impl Context {
                 })?;
 
         let deps_list = self.build_deps_search_list(lib.id());
+
+        // Arm the resolution memo for this library: replay if a memo exists and its deps
+        // fingerprint matches, otherwise record into a fresh one. See [`RELOC_MEMO`].
+        reloc_cache.memo = None;
+        reloc_cache.record = None;
+        if RELOC_MEMO {
+            if let Some(fp) = self.deps_fingerprint(lib, deps_list.as_slice()) {
+                let src = lib.full_obj.id();
+                if let Ok(memos) = self.reloc_memo.lock() {
+                    if let Some(m) = memos.get(&src) {
+                        if m.fingerprint == fp {
+                            reloc_cache.memo = Some(m.clone());
+                        }
+                    }
+                }
+                if reloc_cache.memo.is_none() {
+                    reloc_cache.record = Some((
+                        src,
+                        LibReplayMemo {
+                            fingerprint: fp,
+                            syms: HashMap::new(),
+                        },
+                    ));
+                }
+            }
+        }
         let _start_2 = Instant::now();
 
         // Process relocations
@@ -390,6 +525,15 @@ impl Context {
                 reloc_cache,
             )?;
         }
+        // Every table processed without error: commit the recorded memo (an error path above
+        // returns early and drops the partial recording instead).
+        if let Some((src, rec)) = reloc_cache.record.take() {
+            if let Ok(mut memos) = self.reloc_memo.lock() {
+                memos.insert(src, Arc::new(rec));
+            }
+        }
+        reloc_cache.memo = None;
+
         // Three-way split. `relr` and `apply` are pure memory writes into the data object (and the
         // COW faults they trigger); `resolve` is symbol lookup and is the only part further
         // lookup optimization can shrink.
@@ -498,13 +642,39 @@ impl Context {
                 )
             });
         tracing::debug!(
-            "reloc_all {}: {}us total, {}us resolve, {} lookups, {} cached",
+            "reloc_all {}: {}us total, {}us resolve, {} lookups, {} cached, {} memo, {} memo_bad",
             rootname,
             _start.elapsed().as_micros(),
             reloc_cache.resolve_time.as_micros(),
             reloc_cache.misses,
             reloc_cache.hits,
+            reloc_cache.memo_hits,
+            reloc_cache.memo_bad,
         );
+        // Engagement + soundness evidence for verify runs (`RELOCMEM`): replayed / disagreed /
+        // live misses / cache hits. The debug line above is invisible in a release boot, and a
+        // green sweep with zero replays would otherwise read as "memo verified" when the truth is
+        // "memo never ran". Anon variant: dynlink links into bootstrap (see `record_on_anon`).
+        secgate::statlog::record_on_anon(
+            RELOC_MEMO_VERIFY,
+            "RELOCMEM",
+            reloc_cache.memo_hits as u64,
+            &[
+                reloc_cache.memo_bad as u64,
+                reloc_cache.misses as u64,
+                reloc_cache.hits as u64,
+            ],
+        );
+        // A verify-mode disagreement is a memoization soundness bug: never silent, whatever the
+        // logging level.
+        if RELOC_MEMO_VERIFY && reloc_cache.memo_bad > 0 {
+            tracing::error!(
+                "reloc_all {}: RELOC MEMO VERIFY FAILED: {} replayed resolutions disagreed with \
+                 live lookup",
+                rootname,
+                reloc_cache.memo_bad,
+            );
+        }
         res
     }
 }

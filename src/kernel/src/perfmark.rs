@@ -35,6 +35,8 @@ const NR_MAPPROBE: usize = mapprobe::NR;
 const NR_FC: usize = framecache::stat::NR;
 const NR_MAPP: usize = mapprofile::NR;
 const NR_UNMAP: usize = unmapprofile::NR;
+const NR_MAPOBJ: usize = crate::memory::context::virtmem::mapobjprofile::NR;
+const NR_INVL: usize = crate::memory::pagetables::invl_census::NR;
 
 struct Prev {
     stages: [(usize, u64); NR_STAGES],
@@ -50,6 +52,9 @@ struct Prev {
     fc: [u64; NR_FC],
     mapp: [(u64, u64); NR_MAPP],
     unmapp: [(u64, u64); NR_UNMAP],
+    unmaph: [u64; unmapprofile::NR_HSNAP],
+    mapobj: [(u64, u64); NR_MAPOBJ],
+    invl: [u64; NR_INVL],
 }
 
 static PREV: Spinlock<Option<Prev>> = Spinlock::new(None);
@@ -72,6 +77,11 @@ pub fn mark(rebaseline: bool) {
     let fc = framecache::stat::snapshot();
     let mapp = mapprofile::snapshot();
     let unmapp = unmapprofile::snapshot();
+    let unmaph = unmapprofile::hist_snapshot();
+    // Read-and-reset regardless of rebaseline, so every window's max is its own.
+    let unmaph_max = unmapprofile::take_hist_max();
+    let mapobj = crate::memory::context::virtmem::mapobjprofile::snapshot();
+    let invl = crate::memory::pagetables::invl_census::snapshot();
 
     let prev = PREV.lock().replace(Prev {
         stages,
@@ -84,6 +94,9 @@ pub fn mark(rebaseline: bool) {
         fc,
         mapp,
         unmapp,
+        unmaph,
+        mapobj,
+        invl,
     });
     let Some(prev) = prev else {
         return;
@@ -587,5 +600,69 @@ zero={}/{}us wait={}/{}us  (singular frames = allocs - bulk)",
             let _ = write!(line, " {}={}ns/{}", unmapprofile::NAMES[i], ns / c, c);
         }
         logln!("PERFMARK-UNMAP: unmaps={} |{}", unmaps, line);
+    }
+
+    // Per-initiator distribution of remove_object, this window: count, mean, window max, and the
+    // log2-ish buckets (bounds 1/2/4/8/16/32/64 us, last = overflow). One line per initiator that
+    // removed anything, so a window with no sweeps stays quiet.
+    for i in 0..unmapprofile::NR_INIT {
+        let base = i * (2 + unmapprofile::NR_HBUCKETS);
+        let c = unmaph[base] - prev.unmaph[base];
+        if c == 0 {
+            continue;
+        }
+        let ns = unmaph[base + 1].saturating_sub(prev.unmaph[base + 1]);
+        let mut line = alloc::string::String::new();
+        for b in 0..unmapprofile::NR_HBUCKETS {
+            use core::fmt::Write;
+            let _ = write!(
+                line,
+                " {}",
+                unmaph[base + 2 + b] - prev.unmaph[base + 2 + b]
+            );
+        }
+        logln!(
+            "PERFMARK-UNMAPHIST {}: n={} mean={}ns max={}ns buckets [<1us..>=64us]:{}",
+            unmapprofile::INIT_NAMES[i],
+            c,
+            ns / c,
+            unmaph_max[i],
+            line
+        );
+    }
+
+    // Stage split of VirtContext::map_object, this window.
+    {
+        use crate::memory::context::virtmem::mapobjprofile;
+        let n = mapobj[NR_MAPOBJ - 1].0 - prev.mapobj[NR_MAPOBJ - 1].0;
+        if n > 0 {
+            let mut line = alloc::string::String::new();
+            for i in 0..NR_MAPOBJ {
+                let c = mapobj[i].0 - prev.mapobj[i].0;
+                if c == 0 {
+                    continue;
+                }
+                let ns = mapobj[i].1.saturating_sub(prev.mapobj[i].1);
+                use core::fmt::Write;
+                let _ = write!(line, " {}={}ns/{}", mapobjprofile::NAMES[i], ns / c, c);
+            }
+            logln!("PERFMARK-MAPOBJ: calls={} |{}", n, line);
+        }
+    }
+
+    // Executed-local-invalidation census, this window: which branch do_invalidation took.
+    {
+        let d = |i: usize| invl[i] - prev.invl[i];
+        if d(0) > 0 {
+            logln!(
+                "PERFMARK-INVL: execs={} skipped={} full_global={} full_local={} precise={} (insts={})",
+                d(0),
+                d(1),
+                d(2),
+                d(3),
+                d(4),
+                d(5),
+            );
+        }
     }
 }

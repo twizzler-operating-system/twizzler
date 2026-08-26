@@ -22,6 +22,20 @@ use twizzler_abi::{
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
 
+/// Early allocations at or above this size get an `ALLCBIG` record when the child-startup diag
+/// switch is armed; sized to catch mlibc's 512KB slab chunks without recording ordinary traffic.
+const EARLY_ALLOC_DIAG_MIN: usize = 16 * 1024;
+
+/// Zeroed early allocations at or above this size are served from the virgin region (see
+/// [`RuntimeOom::virgin_next`]) instead of talc + memset. Small requests stay on talc: the memset
+/// is cheap there, and burning virgin space on them would exhaust the region for the chunks that
+/// matter.
+const EARLY_ZERO_BUMP_MIN: usize = 16 * 1024;
+
+/// Span tail held back from talc as the virgin region. mlibc's ctors take ~2MB of slab chunks per
+/// compartment; 16MB leaves generous headroom, and exhaustion just falls back to talc + memset.
+const VIRGIN_RESERVE: usize = 16 * 1024 * 1024;
+
 use talc::{OomHandler, Span, Talc};
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -130,6 +144,14 @@ struct LocalAllocatorInner {
 struct RuntimeOom {
     list_obj: Option<(usize, ObjID)>,
     objects: Vec<(usize, ObjID), FailAlloc>,
+    /// Bump cursor/limit of the *virgin region*: the tail of the most recent heap span, held back
+    /// from talc at claim time. Talc writes free-list metadata into free memory, so talc-carved
+    /// memory is not provably zero — but this range is backed by a fresh zero-filled object and
+    /// nothing ever writes it before handout, so large `ZERO_MEMORY` requests served from here can
+    /// skip the memset (measured at 109us per 512KB mlibc slab chunk, 4 chunks per spawn;
+    /// `spawnbench.md` §31). Zero until the first span claim.
+    virgin_next: usize,
+    virgin_top: usize,
 }
 
 fn release_object(id: ObjID) {
@@ -210,7 +232,14 @@ fn create_and_map() -> Option<(usize, ObjID)> {
 
 impl OomHandler for RuntimeOom {
     fn handle_oom(talc: &mut Talc<Self>, _layout: Layout) -> Result<(), ()> {
+        // Arena growth cost (`OOMGROW`): object create + monitor map gate + delete-ctrl + note.
+        // Once per ~1GB span, so for a fresh compartment this fires inside the first allocation
+        // (mlibc's init_libc). Same switch as PREMAIN/CHILDINI.
+        let _t0 = crate::runtime::core::PRE_MAIN_PHASE_STATS.then(std::time::Instant::now);
         let (slot, id) = create_and_map().ok_or(())?;
+        if let Some(t0) = _t0 {
+            secgate::statlog::record_on(true, "OOMGROW", t0.elapsed().as_micros() as u64, &[]);
+        }
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
         const HEAP_OFFSET: usize = NULLPAGE_SIZE * 512;
@@ -219,16 +248,22 @@ impl OomHandler for RuntimeOom {
         const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
         let base = slot * MAX_SIZE + HEAP_OFFSET;
         let top = (slot + 1) * MAX_SIZE - TOP_OFFSET;
+        // Hold the span's tail back from talc as the virgin region (see `RuntimeOom::virgin_next`).
+        // A new span replaces the old region; whatever was left of it is abandoned (virtual space
+        // in a span this allocator owns anyway, not committed memory).
+        let talc_top = top - VIRGIN_RESERVE;
 
         unsafe {
             if talc
-                .claim(Span::new(base as *mut _, top as *mut _))
+                .claim(Span::new(base as *mut _, talc_top as *mut _))
                 .is_err()
             {
                 release_object(id);
                 return Err(());
             }
         }
+        talc.oom_handler.virgin_next = talc_top;
+        talc.oom_handler.virgin_top = top;
 
         if talc.oom_handler.list_obj.is_none() {
             talc.oom_handler.list_obj = Some(create_and_map().ok_or(())?);
@@ -325,9 +360,53 @@ impl LocalAllocator {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
+        let _diag =
+            crate::runtime::core::PRE_MAIN_PHASE_STATS && layout.size() >= EARLY_ALLOC_DIAG_MIN;
+        let _t0 = _diag.then(std::time::Instant::now);
         let mut inner = self.inner.lock();
+
+        // Serve large zeroed requests from the virgin region: guaranteed-zero, so no memset and no
+        // first-touch sweep -- measured 109us per 512KB mlibc slab chunk otherwise. Monitor
+        // excluded: `dealloc_early` frees into the early talc, which must never see a pointer talc
+        // did not carve. Compartment early frees are dropped wholesale (`is_ptr_early_alloc` is
+        // slot-based, and this region shares the span's slot), so no free path can reach talc.
+        if layout.size() >= EARLY_ZERO_BUMP_MIN
+            && !OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR)
+        {
+            let oh = &mut inner.early_talc.oom_handler;
+            let next = oh.virgin_next.next_multiple_of(layout.align());
+            if oh.virgin_top >= next + layout.size() {
+                oh.virgin_next = next + layout.size();
+                if let Some(t0) = _t0 {
+                    secgate::statlog::record_on(
+                        true,
+                        "ALLCBIG",
+                        t0.elapsed().as_micros() as u64,
+                        &[layout.size() as u64, t0.elapsed().as_micros() as u64, 0],
+                    );
+                }
+                return next as *mut u8;
+            }
+        }
+
         let ptr = unsafe { inner.do_alloc_early(layout) };
+        let _t1 = _diag.then(std::time::Instant::now);
         unsafe { ptr.write_bytes(0, layout.size()) };
+        // Large-early-allocation split (`ALLCBIG`): mlibc's slab pool maps 512KB chunks through
+        // here during ctors (`spawnbench.md` §31); vals = [size, alloc_us, memset_us]. The memset
+        // includes the first-touch faults on the fresh heap span.
+        if let (Some(t0), Some(t1)) = (_t0, _t1) {
+            secgate::statlog::record_on(
+                true,
+                "ALLCBIG",
+                t0.elapsed().as_micros() as u64,
+                &[
+                    layout.size() as u64,
+                    (t1 - t0).as_micros() as u64,
+                    t1.elapsed().as_micros() as u64,
+                ],
+            );
+        }
         ptr
     }
 }
@@ -338,10 +417,14 @@ impl LocalAllocatorInner {
             talc: Talc::new(RuntimeOom {
                 objects: Vec::new_in(FailAlloc),
                 list_obj: None,
+                virgin_next: 0,
+                virgin_top: 0,
             }),
             early_talc: Talc::new(RuntimeOom {
                 objects: Vec::new_in(FailAlloc),
                 list_obj: None,
+                virgin_next: 0,
+                virgin_top: 0,
             }),
             early_allocs_frozen: false,
         }

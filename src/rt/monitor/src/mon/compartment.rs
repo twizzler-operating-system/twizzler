@@ -855,11 +855,26 @@ impl super::Monitor {
         let _prefault = prefault_root_object(root_object);
 
         let _start_2 = Instant::now();
+        // Spawn-side lock *wait* probe (`LCKWAIT`, vals = [site]): MONHOLD names holders, but the
+        // tail question is whether a spawn queues behind them at all. Sites: 1 = dynlink.write,
+        // 2 = dynlink.read, 3 = locks.lock (build_rcs), 4/5 = start_compartment's two.
+        let lck_wait = |site: u64, t0: Option<Instant>| {
+            if let Some(t0) = t0 {
+                secgate::statlog::record_on(
+                    SPAWN_PHASE_STATS,
+                    "LCKWAIT",
+                    t0.elapsed().as_micros() as u64,
+                    &[site],
+                );
+            }
+        };
         // Two phases, two locks. Graph mutation needs the write; relocation does not, and is a
         // median 6.7 ms of the load that every reader of the lock collection used to queue behind.
         let pending = {
+            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let mut dynlink =
                 crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
+            lck_wait(1, _t);
             loader::RunCompLoader::load_graph(
                 *dynlink,
                 compname,
@@ -874,15 +889,19 @@ impl super::Monitor {
         .map_err(|_| GenericError::Internal)?;
 
         let loader = {
+            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let dynlink = crate::lockdiag::watched(self.dynlink.read(ThreadKey::get().unwrap()));
+            lck_wait(2, _t);
             pending.relocate_and_finish(*dynlink, compname, mondebug)
         }
         .inspect_err(|e| tracing::error!("failed to relocate new compartment: {}", e))
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
+            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+            lck_wait(3, _t);
 
             let controller = match config.controller {
                 ControllerOption::Inherit => cmp.get(caller)?.controller,

@@ -194,6 +194,13 @@ pub unsafe fn get_processor_mut(id: u32) -> &'static mut Processor {
 /// dominant term in a send that targets nobody, which is 83% of them.
 ///
 /// See [MAX_REGISTERED_ID] for why the bound is final before anything reads it.
+/// True when this is a single-processor system, i.e. no processor other than the caller's can
+/// exist. Used to skip cross-cpu coordination (TLB-shootdown revoke/target/IPI) that provably has
+/// no work on one cpu. `MAX_REGISTERED_ID == 0` means only cpu 0 ever registered.
+pub fn is_single_processor() -> bool {
+    MAX_REGISTERED_ID.load(Ordering::Acquire) == 0
+}
+
 pub fn with_each_active_processor(mut f: impl FnMut(&'static Processor)) {
     let max = MAX_REGISTERED_ID.load(Ordering::Acquire);
     for p in &all_processors()[..=max] {

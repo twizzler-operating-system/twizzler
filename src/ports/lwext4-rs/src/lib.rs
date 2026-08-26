@@ -285,6 +285,15 @@ impl Ext4InodeRef {
         unsafe { ext4_inode_get_size(&mut (*self.inode.fs).sb, self.inode.inode) }
     }
 
+    pub fn mtime(&self) -> u32 {
+        unsafe { lwext4::ext4_inode_get_modif_time(self.inode.inode) }
+    }
+
+    pub fn set_mtime(&mut self, mtime: u32) {
+        unsafe { lwext4::ext4_inode_set_modif_time(self.inode.inode, mtime) };
+        self.inode.dirty = true;
+    }
+
     pub fn kind(&self) -> FileKind {
         if unsafe {
             lwext4::ext4_inode_is_type(
@@ -480,7 +489,10 @@ impl Ext4Fs {
     ) -> Result<Ext4File<'_>> {
         let fs = unsafe { lwext4::ext4_mountpoint_fs(self.mnt_name.as_ptr()) };
         let mut parent = self.get_inode(cont_ino)?;
-        if cont_ino == 0 || cont_ino == 2 {
+        // Directory creation has no path-based shortcut (`open_file` only creates files), so it
+        // always takes the dentry path below -- which handles the root inode fine.
+        let creating_dir = flags & O_CREAT != 0 && mode & libc::S_IFMT == libc::S_IFDIR;
+        if (cont_ino == 0 || cont_ino == 2) && !creating_dir {
             return self.open_file(name, flags);
         }
 
@@ -502,12 +514,14 @@ impl Ext4Fs {
         });
 
         if res.is_err() && flags & O_CREAT != 0 {
-            let ft = if mode & libc::S_IFDIR != 0 {
-                return Err(ErrorKind::Unsupported.into());
-            } else if mode & libc::S_IFLNK != 0 {
-                lwext4::EXT4_INODE_MODE_SOFTLINK
-            } else {
-                lwext4::EXT4_INODE_MODE_FILE
+            // Match on the full S_IFMT field: a bare `mode & S_IFLNK != 0` also matches S_IFREG
+            // (S_IFLNK == S_IFREG | S_IFCHR bit-wise), which typed regular files as symlinks.
+            // Directories work here because `ext4_link` fully initializes a dir child
+            // ('.'/'..'/link counts) when the inode type is directory.
+            let ft = match mode & libc::S_IFMT {
+                libc::S_IFDIR => lwext4::EXT4_INODE_MODE_DIRECTORY,
+                libc::S_IFLNK => lwext4::EXT4_INODE_MODE_SOFTLINK,
+                _ => lwext4::EXT4_INODE_MODE_FILE,
             };
 
             let mut new_inode = MaybeUninit::uninit();

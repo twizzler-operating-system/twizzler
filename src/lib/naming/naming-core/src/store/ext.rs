@@ -367,6 +367,32 @@ impl Namespace for ExtNamespace {
         Ok(node)
     }
 
+    fn create_ns(&self, name: &str) -> Result<Option<NsNode>> {
+        let mode = libc::S_IRUSR
+            | libc::S_IWUSR
+            | libc::S_IXUSR
+            | libc::S_IRGRP
+            | libc::S_IXGRP
+            | libc::S_IROTH
+            | libc::S_IXOTH
+            | libc::S_IFDIR;
+        let mut guard = pager_handle();
+        let Some(h) = guard.as_mut() else {
+            tracing::warn!("failed to open handle to pager");
+            return Err(TwzError::NOT_SUPPORTED);
+        };
+        // The store makes the directory and its ino-derived id is the namespace id, mirroring
+        // `create_file` -- no native object is created, so nothing needs binding into the store.
+        let file = h.create_external_file(self.id, name, None, mode)?;
+        drop(guard);
+
+        let node = NsNode::ns(name, file.id.into())?;
+        let mut cache = self.cache();
+        cache.invalidate_order();
+        cache.cache_node(node);
+        Ok(Some(node))
+    }
+
     fn insert(&self, node: NsNode) -> Result<()> {
         tracing::debug!(
             "inserting {} into external namespace {}, id = {}",

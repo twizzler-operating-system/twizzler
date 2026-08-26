@@ -852,7 +852,10 @@ impl PagerData {
                 None,
             );
             return Ok(match len {
-                Ok(len) => info.synth_meta(len),
+                Ok(len) => {
+                    let mtime = ctx.paged_ostore(None)?.mtime(id.raw()).await.unwrap_or(0);
+                    info.synth_meta(len).with_mtime(mtime)
+                }
                 Err(e) => {
                     tracing::debug!("no length for external file {}: {}", id, e);
                     info

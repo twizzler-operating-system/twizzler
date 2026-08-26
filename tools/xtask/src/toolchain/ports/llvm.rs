@@ -65,6 +65,12 @@ pub(crate) fn setup_cmake_twizzler(
     cfg.define("CMAKE_LD", &ld);
     cfg.define("CMAKE_RANLIB", &ranlib);
 
+    // No libc++.so exists for twizzler, so shared libs static-link libc++.a; its
+    // default-visibility symbols are preemptible and PC32 relocations against them (vtables in
+    // locale.cpp.obj) are rejected by lld. --exclude-libs localizes archive-sourced symbols,
+    // which is the standard fix (rustc's dylibs get the same effect from their version script).
+    cfg.define("CMAKE_SHARED_LINKER_FLAGS", "-Wl,--exclude-libs,ALL");
+    cfg.define("CMAKE_MODULE_LINKER_FLAGS", "-Wl,--exclude-libs,ALL");
     cfg.define("CMAKE_SYSROOT", sysroot.display().to_string());
     cfg.define("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM", "NEVER");
     cfg.define("CMAKE_FIND_ROOT_PATH_MODE_LIBRARY", "ONLY");

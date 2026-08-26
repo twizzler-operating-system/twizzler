@@ -91,6 +91,9 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     let install_prefix = Path::new("toolchain/install/sysroots")
         .join(tstr)
         .join("pkg/rust");
+    // Remove any previous install: x.py overlays hashed artifacts without pruning, leaving
+    // stale duplicates (e.g. two libstd-<hash>.so) that break crate resolution on-target.
+    let _ = std::fs::remove_dir_all(&install_prefix);
     std::fs::create_dir_all(&install_prefix)?;
     let install_prefix = install_prefix.canonicalize()?;
     let build_dir = Path::new("toolchain/install/build/ports/rust").join(tstr);

@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
     bindings::{sync_info, SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
     error::ArgumentError,
     fd::FdInfo,
-    object::{MapFlags, ObjectCmd, ObjectHandle, MEXT_SIZED},
+    object::{MapFlags, ObjectCmd, ObjectHandle, MEXT_MTIME, MEXT_SIZED},
     Result,
 };
 
@@ -237,6 +237,13 @@ impl Fd for RawFile {
 
     fn stat(&self) -> Result<FdInfo> {
         self.update_len();
+        // Externally-backed objects carry the store's mtime in a meta ext (pager-synthesized);
+        // native objects have none and report zero.
+        let modified = self
+            .handle
+            .find_meta_ext(MEXT_MTIME)
+            .map(|me| std::time::Duration::from_secs(me.value.load(Ordering::SeqCst)))
+            .unwrap_or(std::time::Duration::ZERO);
         Ok(FdInfo {
             kind: twizzler_rt_abi::fd::FdKind::Regular,
             size: self.inner.len.load(Ordering::SeqCst),
@@ -244,7 +251,7 @@ impl Fd for RawFile {
             id: self.handle.id().raw(),
             unix_mode: S_IFREG | S_IRWXG | S_IRWXO | S_IRWXU,
             accessed: std::time::Duration::ZERO,
-            modified: std::time::Duration::ZERO,
+            modified,
             created: std::time::Duration::ZERO,
         })
     }
