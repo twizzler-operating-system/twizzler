@@ -68,6 +68,38 @@ use crate::{
 /// and stops at a present neighbour, which limits it, but a sparse object still gets 16-page runs.
 pub(crate) const ANON_FAULT_AROUND: usize = 16;
 
+/// Pages COW'd per write fault. 1 restores one page per fault -- the behaviour before this existed.
+///
+/// The COW path is the fill path's unbatched sibling: `ANON_FAULT_AROUND` amortises a fault's fixed
+/// cost over 16 pages, while every COW fault pays its own precharge, descent and TLB shootdown.
+/// A `--diag` boot (`cowmeas`) puts **55.5% of all faults** in the COW class (361,540 of 651,885)
+/// and **17.5% of total fault time** in the `cow` stage, with the pager at 0.0% -- so this is
+/// in-memory page-table latency, which batching can attack.
+///
+/// **SHIPPED at 8 (2026-08-26).** Three-arm A/B/A `cowA1`/`cowB`/`cowA2`, one tree state, clean
+/// consts, quiet box; spawnbench.md §66-68:
+///
+///                       1 (off)    8       1 (off)   drift   effect
+///     faults/spawn        118.3    67.3     118.3    0.00%   -43.1%
+///     flushes/spawn       120.1    57.5     120.7    0.42%   -52.3%
+///     shootdowns/spawn     13.3    12.2      13.5    1.27%    -9.3%
+///     spawn_exit          2.551ms  2.395    2.615    2.49%    -7.28%
+///
+/// The identical arms differ by **4 events in 248,518** on faults, which is why counts were the
+/// primary signal: the wall-clock floor on the same arms is 2.49%. Shootdowns fall *less* than
+/// faults proportionally (-9.3% vs -43%) because the `is_full()` break caps runs by design and much
+/// of the shootdown traffic is unmap/teardown this does not touch -- two populations, one
+/// escalation site. Measured post-TLBFIX / post-pipe-EOF(`also`) / post-predicate-alignment; that
+/// tree state is **unobtainable** now, so re-baseline rather than comparing forward to these.
+///
+/// **Starts at 8, not 16, and deliberately.** A speculative COW is more expensive than a
+/// speculative zero-fill: it burns a frame *and* a 4 KiB copy, where an over-eager anon fill burns
+/// only the frame. The fitted model behind `ANON_FAULT_AROUND` (`perf-inprogress.md`: ns/touch =
+/// F/N + P over three arms) says 8 already captures most of the fixed-cost win, so 8 buys the bulk
+/// of the benefit at half the waste. Note F and P themselves are absolutes from a possibly-armed
+/// round and are not used here to predict a saving -- only the *shape* is.
+pub(crate) const COW_FAULT_AROUND: usize = 8;
+
 pub struct MapRegion {
     pub object: ObjectRef,
     pub offset: u64,
@@ -263,6 +295,40 @@ impl MapRegion {
         (page, end - page.num(), true)
     }
 
+    /// Choose a run of pages to COW together, given a write fault on `page`.
+    ///
+    /// Mirrors [`Self::fault_around`]'s shape but inverts its central test. `fault_around` extends
+    /// over pages that are **absent** (it is about to fill them); this extends over pages that are
+    /// **present**, because a COW candidate is by definition a page that already exists in the
+    /// object's tables and faulted on permission. That inversion is the whole reason COW gets no
+    /// batching today: `fault_around` returns `(page, 1, false)` the moment it sees the faulting
+    /// page present, which is every COW fault.
+    ///
+    /// Bounded by the same 2 MiB block, and stops at the first absent neighbour. Pages that are
+    /// present but not shared cost `cow_at` a walk that finds nothing to do (~700 ns by the note at
+    /// its call site) -- wasteful but correct -- so the run stops on absence rather than trying to
+    /// read shared-ness here, which would mean a second descent per candidate to save one.
+    fn cow_around(&self, pt: &mut ObjectPageTable, page: PageNumber) -> usize {
+        const PAGES_PER_BLOCK: usize = 0x200000 / PageNumber::PAGE_SIZE;
+        if COW_FAULT_AROUND <= 1 || self.object.use_pager() {
+            return 1;
+        }
+        let mut present = |p: PageNumber| pt.get_frame(p.as_byte_offset() as u64).is_some();
+        if !present(page) {
+            // Not a COW candidate at all; leave the fault exactly as it was.
+            return 1;
+        }
+        let block_start = page.align_down(PAGES_PER_BLOCK).num();
+        let highest = (block_start + PAGES_PER_BLOCK)
+            .min(page.num() + COW_FAULT_AROUND)
+            .min(PageNumber::meta_page().num());
+        let mut end = (page.num() + 1).min(highest).max(page.num() + 1);
+        while end < highest && present(end.into()) {
+            end += 1;
+        }
+        end - page.num()
+    }
+
     pub(super) fn handle_fault(
         &self,
         addr: VirtAddr,
@@ -416,7 +482,12 @@ impl MapRegion {
             // that was never shared. That is ~700 ns on the majority of write faults.
             if !filled_fault_page {
                 let t = stage_start();
-                did_cow = obj_page_tree.maybe_cow_at(page_number.as_byte_offset() as u64, false)?;
+                let cow_run = self.cow_around(&mut *obj_page_tree, page_number);
+                did_cow = obj_page_tree.maybe_cow_range(
+                    page_number.as_byte_offset() as u64,
+                    cow_run,
+                    false,
+                )?;
                 record_stage(FaultStage::Cow, t);
                 if did_cow {
                     record_class(FaultClass::Cow);

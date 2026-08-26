@@ -512,6 +512,15 @@ impl ArchTlbMgr {
         self.data.full()
     }
 
+    /// Whether any instruction in this batch was for a global page.
+    ///
+    /// Sound to consult after an overflow: [`TlbInvData::enqueue`] records the global bit *before*
+    /// the length check discards the instruction, so a batch that mixed a kernel page with user
+    /// pages still reports true here even though that instruction is gone. Preserve that ordering.
+    pub fn is_global(&self) -> bool {
+        self.data.global()
+    }
+
     pub fn set_target(&mut self, target: ArchContextTarget) {
         self.data.target_cr3 = target.raw();
     }
@@ -1077,4 +1086,25 @@ impl TlbShootdownInfo {
             data[i] = None;
         }
     }
+}
+
+/// How many processors could still be using a translation for any of `targets`.
+///
+/// The frame-reuse question asked directly. [`DeferredUnmappingOps::run_all`] waits on the pending
+/// before returning frames to the allocator, so a path that skips the shootdown must know whether
+/// any cpu can still reach those frames. This is [`TlbInvData::should_target`]'s predicate lifted
+/// out and asked about a set of targets rather than one.
+///
+/// `CR3_IN_TRANSITION` **must** count as a match: a cpu midway through a switch may hold entries
+/// for either root, which is exactly why `should_target` treats it as matching every target. A
+/// version that skipped it would report zero while the hazard was live.
+pub fn count_reachable(targets: impl Iterator<Item = ArchContextTarget> + Clone) -> usize {
+    let mut n = 0;
+    with_each_active_processor(|p| {
+        let active = p.arch.active_cr3.load(Ordering::Acquire);
+        if active == CR3_IN_TRANSITION || targets.clone().any(|t| t.raw() == active) {
+            n += 1;
+        }
+    });
+    n
 }

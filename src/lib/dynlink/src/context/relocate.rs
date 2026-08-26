@@ -61,6 +61,17 @@ pub(crate) const RELOC_MEMO_VERIFY: bool = false;
 /// (spawnbench.md §45's null made this measurement the gate for further work here).
 pub(crate) const RELOC_STATS: bool = false;
 
+/// Sizing switch for the per-library relocation phase split (`RELOCPHA`).
+///
+/// The four-way split (prep / relr / resolve / apply) has existed in `relocate_single` for a while
+/// -- as a `tracing::debug!`, which is **invisible in a release boot**, so it has never been read
+/// on a real spawn. spawnbench.md §56 needs exactly it: `relocate` is the single largest block in
+/// a spawn (~909 us) and §34's account of it is refuted on both halves -- resolve is measured at
+/// 158 us, and the DSO set carries only ~1-2k relocations total (zero `R_X86_64_RELATIVE`), so
+/// "apply" cannot be hundreds of microseconds either. This promotes the existing split to a record
+/// so the ~600-750 us with no owner can be attributed rather than guessed at.
+pub(crate) const RELOC_PHASES: bool = false;
+
 /// One library source object's memoized resolutions; see [`RELOC_MEMO`].
 pub(crate) struct LibReplayMemo {
     /// (source object, same-compartment-as-relocatee) for each deps-list entry, in BFS order.
@@ -555,6 +566,23 @@ impl Context {
             _apply.as_micros(),
             reloc_cache.misses - _misses_0,
             reloc_cache.hits - _hits_0,
+        );
+        // Same four numbers as the debug line above, which a release boot cannot see. Tag is 8
+        // chars deliberately: `statlog` packs it through `tag8` into a single u64 and silently
+        // truncates anything longer, so a longer name would not match its own grep.
+        // Anon variant: dynlink links into bootstrap (see `record_on_anon`).
+        secgate::statlog::record_on_anon(
+            RELOC_PHASES,
+            "RELOCPHA",
+            _start_1.elapsed().as_micros() as u64,
+            &[
+                (_start_2 - _start_1).as_micros() as u64,
+                _relr_time.as_micros() as u64,
+                _resolve.as_micros() as u64,
+                _apply.as_micros() as u64,
+                (reloc_cache.misses - _misses_0) as u64,
+                (reloc_cache.hits - _hits_0) as u64,
+            ],
         );
 
         Ok(())

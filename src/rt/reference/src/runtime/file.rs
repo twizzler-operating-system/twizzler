@@ -56,6 +56,10 @@ pub type FdImpl = Arc<dyn Fd + Send + Sync + 'static>;
 /// otherwise be freed out from under a stale reference on handle reuse.
 pub struct WaitpointResult {
     pub sleep: ThreadSyncSleep,
+    /// A second word whose movement also makes this fd ready, armed in the same `sys_thread_sync`.
+    /// A bare wake cannot substitute: poll arms only after computing `ready`, so a wake landing in
+    /// that window is lost, whereas a stale armed value makes the kernel decline to sleep at all.
+    pub also: Option<ThreadSyncSleep>,
     pub ready: bool,
     pub keepalive: Option<Arc<AtomicU64>>,
 }
@@ -512,6 +516,135 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
     });
 }
 
+/// Defer a stdio bind's `open` until something actually uses the descriptor.
+///
+/// `init_fds` opens every bind eagerly: an object map plus handler registration per bind, measured
+/// at ~165 us of a spawn (`PREMAIN`, spawnbench.md §47) for descriptors a short-lived program may
+/// never touch -- `nullexit` touches none of them. This wrapper sits in the fd slot in place of the
+/// real `Fd`, so none of the 22 `get_fd_slots()` call sites change, and materializes on the first
+/// operation that needs a real one.
+///
+/// `close()` on a bind that was never used stays a no-op, which is what makes the saving survive
+/// `close_fds` at exit rather than merely moving it there.
+///
+/// Failure is cached as `None`: a bind that cannot be opened reports an error on every use instead
+/// of retrying the failing open per call. That is the one visible semantic change -- an open error
+/// that used to be printed during startup now surfaces at first use.
+/// **SHIPPED on (2026-08-26), on hygiene grounds rather than measured speed** -- spawnbench.md
+/// §59-64. What is established is a **count**: opens per spawn **4.47 -> 1.18**, i.e. 3.29 opens
+/// eliminated, with relocations/spawn flat across the arms as a control. What is *not* established
+/// is any wall-clock win: the clean A/B/A read -0.41% against one baseline and **+1.85% against the
+/// other**, inside a 2.22% drift floor -- the sign reverses with the choice of baseline, so there is
+/// no time effect to claim. Validated by boot (58/58 with this on), not merely compiled.
+///
+/// **Semantic change:** an open error that used to print during startup now surfaces at **first
+/// use** of the descriptor, and failure is cached rather than retried per call. A program that
+/// binds a bad fd and never touches it will never see the error.
+///
+/// Those measurements predate TLBFIX, the pipe-EOF work and the predicate alignment; do not treat
+/// the null as current without re-measuring.
+pub const LAZY_FDS: bool = true;
+
+struct LazyBind {
+    kind: OpenKind,
+    opts: OperationOptions,
+    bind: Vec<u8>,
+    inner: std::sync::OnceLock<Option<FdImpl>>,
+}
+
+impl LazyBind {
+    /// Pipe is excluded: `ReferenceRuntime::open` applies per-direction shutdown to a pipe elem
+    /// after opening it, and reproducing that here would duplicate logic rather than defer it.
+    /// Same exclusion, and the same reason, as the dedupe whitelist below.
+    fn eligible(kind: OpenKind) -> bool {
+        !matches!(kind, OpenKind::Pipe)
+    }
+
+    fn get(&self) -> Option<&FdImpl> {
+        self.inner
+            .get_or_init(|| {
+                kinds::open(
+                    None,
+                    self.kind,
+                    self.bind.as_ptr().cast(),
+                    self.bind.len(),
+                    self.opts,
+                )
+                .inspect_err(|e| {
+                    twizzler_abi::klog_println!("lazy bind open failed ({:?}): {}", self.kind, e)
+                })
+                .ok()
+                .flatten()
+            })
+            .as_ref()
+    }
+
+    fn fd(&self) -> Result<&FdImpl> {
+        self.get().ok_or(TwzError::NOT_SUPPORTED)
+    }
+}
+
+impl Fd for LazyBind {
+    fn read(
+        &self,
+        buf: &mut [u8],
+        flags: IoFlags,
+        offset: Option<u64>,
+        ep: Option<&mut Endpoint>,
+    ) -> Result<usize> {
+        self.fd()?.read(buf, flags, offset, ep)
+    }
+    fn write(
+        &self,
+        buf: &[u8],
+        flags: IoFlags,
+        offset: Option<u64>,
+        to: Option<&Endpoint>,
+    ) -> Result<usize> {
+        self.fd()?.write(buf, flags, offset, to)
+    }
+    fn seek(&self, pos: SeekFrom) -> Result<usize> {
+        self.fd()?.seek(pos)
+    }
+    fn flush(&self) -> Result<()> {
+        self.fd()?.flush()
+    }
+    fn stat(&self) -> Result<FdInfo> {
+        self.fd()?.stat()
+    }
+    fn fd_cmd(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
+        self.fd()?.fd_cmd(cmd, arg, ret)
+    }
+    fn get_config(&self, reg: u32, val: *mut c_void, val_len: usize) -> Result<()> {
+        self.fd()?.get_config(reg, val, val_len)
+    }
+    fn set_config(&self, reg: u32, val: *const c_void, val_len: usize) -> Result<()> {
+        self.fd()?.set_config(reg, val, val_len)
+    }
+    fn waitpoint(&self, kind: wait_kind) -> Result<WaitpointResult> {
+        self.fd()?.waitpoint(kind)
+    }
+    fn waitpoint_not_ready(&self, kind: wait_kind) -> Result<WaitpointResult> {
+        self.fd()?.waitpoint_not_ready(kind)
+    }
+    fn shutdown(&self, sh: Shutdown) -> Result<()> {
+        self.fd()?.shutdown(sh)
+    }
+    fn as_socket(&self) -> Option<&SocketKind> {
+        self.get()?.as_socket()
+    }
+    fn as_kqueue(&self) -> Option<&KqueueFile> {
+        self.get()?.as_kqueue()
+    }
+    /// The whole point: an unused bind was never opened, so there is nothing to close.
+    fn close(&self) -> Result<()> {
+        match self.inner.get() {
+            Some(Some(fd)) => fd.close(),
+            _ => Ok(()),
+        }
+    }
+}
+
 impl ReferenceRuntime {
     pub(crate) fn close_fds(&self) {
         for (_i, fd) in get_fd_slots().write().unwrap().slots.iter_mut().enumerate() {
@@ -552,6 +685,26 @@ impl ReferenceRuntime {
                 continue;
             }
             let bytes = &bi.bind_data[..(bi.bind_len as usize).min(bi.bind_data.len())];
+            // Lazy path first: it subsumes the dedupe below (two binds that would have shared an
+            // Fd now each cost nothing until used) and skips the open entirely for a program that
+            // never touches the descriptor.
+            if LAZY_FDS && LazyBind::eligible(kind) {
+                let elem: FdImpl = std::sync::Arc::new(LazyBind {
+                    kind,
+                    opts: OperationOptions::from_bits_truncate(bi.flags),
+                    bind: bytes.to_vec(),
+                    inner: std::sync::OnceLock::new(),
+                });
+                let fdesc = FileDesc::new(
+                    elem,
+                    bi.kind,
+                    OperationOptions::from_bits_truncate(bi.flags).bits(),
+                    Some(bytes),
+                    false,
+                );
+                get_fd_slots().write().unwrap().insert(bi.fd as usize, fdesc);
+                continue;
+            }
             let dedupable = matches!(kind, OpenKind::PtyClient | OpenKind::PtyServer);
             if dedupable {
                 if let Some(elem) = opened

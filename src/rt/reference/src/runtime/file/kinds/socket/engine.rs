@@ -99,6 +99,36 @@ pub(super) fn listener_socket_ready(socket: &Socket<'_>) -> bool {
     socket.is_active() && socket.state() != State::SynReceived
 }
 
+/// Read-readiness of a connected stream: bytes buffered, or a close that makes the next read
+/// return `Ok(0)` rather than block. Dropping the second term -- as bare `can_recv()` does --
+/// leaves a poller asleep on a half-closed connection, waiting for data that by definition will
+/// never arrive.
+///
+/// Call this from `read`'s branch condition, from `can_read`, and from `socket_readiness`, exactly
+/// as `listener_socket_ready` is called from the listener's three. A readiness check that disagrees
+/// with the read it predicts is the bug; one function is what stops the two drifting apart again.
+/// In `read`'s EOF arm `can_recv()` is already false, so the call reduces to the close term.
+///
+/// `rx_shutdown` is per-fd state rather than socket state, so it cannot be read from a `&Socket`
+/// and has to be passed. `socket_readiness` has no fd to read it from and passes `false`; see the
+/// note there.
+///
+/// The pre-connection states are excluded because `may_recv()` is false there too, and a socket
+/// still completing its handshake is not at EOF. No current path exposes an fd in `SynSent` --
+/// nonblocking `connect` returns `InProgress` before constructing one -- so this is presently
+/// belt-and-braces, and worth keeping for the nonblocking-connect implementation that would.
+pub(super) fn stream_socket_ready(socket: &Socket<'_>, rx_shutdown: bool) -> bool {
+    socket.can_recv()
+        || ((!socket.may_recv() || rx_shutdown)
+            && socket.state() != State::SynReceived
+            && socket.state() != State::SynSent)
+}
+
+/// Read-readiness of a datagram socket, on the same contract as `stream_socket_ready`.
+pub(super) fn udp_socket_ready(socket: &SmolUdpSocket<'_>, rx_shutdown: bool) -> bool {
+    socket.can_recv() || !socket.is_open() || rx_shutdown
+}
+
 pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
@@ -639,13 +669,18 @@ impl Core {
         sock: &smoltcp::socket::Socket<'static>,
     ) -> (bool, bool) {
         match sock {
-            smoltcp::socket::Socket::Udp(socket) => (socket.can_recv(), socket.can_send()),
+            // rx_shutdown is per-fd and invisible here, so it is passed as false: this publishes
+            // the socket's own readiness. A locally read-shutdown fd is still reported ready by
+            // can_read, which does see the flag, and poll ORs the two.
+            smoltcp::socket::Socket::Udp(socket) => {
+                (udp_socket_ready(socket, false), socket.can_send())
+            }
             smoltcp::socket::Socket::Tcp(socket) => {
                 if self.groups.contains_key(&handle) {
                     // Write is meaningless for a listener; SmolTcpListener::can_write agrees.
                     (listener_socket_ready(socket), false)
                 } else {
-                    (socket.can_recv(), socket.can_send())
+                    (stream_socket_ready(socket, false), socket.can_send())
                 }
             }
             _ => (false, false),

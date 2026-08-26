@@ -322,6 +322,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 sync::requeuebug::print();
                 crate::obj::pagetables::invl_overflow::print();
                 crate::obj::pagetables::membership::print();
+                crate::obj::pagetables::tlbfix::print_stats();
                 crate::memory::pagetables::nonleaf_cow_print();
                 print_syscall_profile();
                 crate::memory::context::virtmem::fault::print_fault_profile();

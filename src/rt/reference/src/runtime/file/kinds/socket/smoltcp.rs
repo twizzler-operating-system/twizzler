@@ -27,7 +27,7 @@ use twizzler_rt_abi::{
 
 use super::engine::ENGINE;
 use crate::runtime::file::kinds::socket::engine::{
-    listener_socket_ready, SockKind, WaitKey, WAITERS,
+    listener_socket_ready, stream_socket_ready, udp_socket_ready, SockKind, WaitKey, WAITERS,
 };
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
@@ -397,10 +397,7 @@ impl SmolTcpStream {
                 // This read may have drained the socket; publish that before anyone waits on it.
                 core.refresh_waiter(self.inner.socket_handle);
                 Ok(n)
-            } else if (!socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst))
-                && socket.state() != State::SynReceived
-                && socket.state() != State::SynSent
-            {
+            } else if stream_socket_ready(socket, self.inner.rx_shutdown.load(Ordering::SeqCst)) {
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok(0)
             } else {
@@ -446,7 +443,7 @@ impl SmolTcpStream {
     pub fn can_read(&self) -> bool {
         let mut core = ENGINE.core.lock().unwrap();
         let socket = core.get_mutable_socket(self.inner.socket_handle);
-        socket.can_recv()
+        stream_socket_ready(socket, self.inner.rx_shutdown.load(Ordering::SeqCst))
     }
 
     pub fn can_write(&self) -> bool {
@@ -669,7 +666,7 @@ impl UdpSocket {
     pub fn can_read(&self) -> bool {
         let mut core = ENGINE.core.lock().unwrap();
         let sock = core.get_mutable_udp_socket(self.inner.socket_handle);
-        sock.can_recv()
+        udp_socket_ready(sock, self.inner.rx_shutdown.load(Ordering::SeqCst))
     }
 
     pub fn read_from(
@@ -685,7 +682,7 @@ impl UdpSocket {
                 // This read may have taken the last queued datagram.
                 core.refresh_waiter(self.inner.socket_handle);
                 Ok(r)
-            } else if !socket.is_open() || self.inner.rx_shutdown.load(Ordering::SeqCst) {
+            } else if udp_socket_ready(socket, self.inner.rx_shutdown.load(Ordering::SeqCst)) {
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok((0, None))
             } else {

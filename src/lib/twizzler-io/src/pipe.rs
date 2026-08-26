@@ -82,6 +82,28 @@ impl Pipe {
         self.pipe.base().buffer.sync_for_avail_space()
     }
 
+    /// Waitpoints on the endpoint counts. The caller passes the count it sampled and must derive
+    /// its readiness test from that same sample: arm on a value read *after* the test and a close
+    /// landing in between is a lost wakeup, because the armed value then matches and the kernel
+    /// sleeps.
+    pub fn readers_waitpoint(&self, readers: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.pipe.base().readers),
+            readers,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
+    pub fn writers_waitpoint(&self, writers: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.pipe.base().writers),
+            writers,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
     pub fn is_reader(&self) -> bool {
         self.reader.load(Ordering::SeqCst)
     }

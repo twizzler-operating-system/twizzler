@@ -309,6 +309,7 @@ impl Fd for RawFile {
             let ready = self.inner.pos.load(Ordering::SeqCst) < me.value.load(Ordering::SeqCst);
             Ok(WaitpointResult {
                 sleep: (&me.value, self.inner.pos.load(Ordering::SeqCst)).into(),
+                also: None,
                 ready,
                 keepalive: None,
             })

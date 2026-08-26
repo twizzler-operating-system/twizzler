@@ -396,6 +396,13 @@ impl Consistency {
 
     /// Park an obligation produced elsewhere -- the object page tables build their own
     /// [ArchTlbMgr]s per context rather than sending this object's.
+    /// Whether this operation has frames queued for freeing. Callers that would skip the
+    /// shootdown must consult it: `DeferredUnmappingOps::run_all` waits on the pending *before*
+    /// returning frames to the allocator, so an empty pending frees them immediately.
+    pub fn has_pages(&self) -> bool {
+        !self.pages.is_empty()
+    }
+
     pub fn set_pending(&mut self, pending: PendingShootdown) {
         assert!(self.pending.is_none(), "shootdown already in flight");
         self.pending = Some(pending);

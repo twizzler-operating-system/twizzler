@@ -123,15 +123,20 @@ impl SelectState {
 
         let maybe_mark_ready =
             |wp: &ThreadSync, kind: wait_kind, fd: RawFd, fd_is_ready: bool| -> bool {
-                let is_ready = wp.ready() || fd_is_ready;
-                if is_ready {
-                    match kind {
-                        w if w == WAIT_READ => self.read.insert(fd),
-                        w if w == WAIT_WRITE => self.write.insert(fd),
-                        _ => {}
-                    }
+                if !(wp.ready() || fd_is_ready) {
+                    return false;
                 }
-                is_ready
+                // One (fd, kind) can contribute two sleeps, so count an fd only the first time.
+                let set = match kind {
+                    w if w == WAIT_READ => &self.read,
+                    w if w == WAIT_WRITE => &self.write,
+                    _ => return false,
+                };
+                if set.contains(fd) {
+                    return false;
+                }
+                set.insert(fd);
+                true
             };
 
         let mut fds = Vec::new();
@@ -143,13 +148,21 @@ impl SelectState {
             let Ok(wp) = fd_desc.file.waitpoint(*kind) else {
                 continue;
             };
+            let keepalive = wp.keepalive;
             let sleep = ThreadSync::new_sleep(wp.sleep);
-            if maybe_mark_ready(&sleep, *kind, *fd, wp.ready) {
+            let also = wp.also.map(ThreadSync::new_sleep);
+            let is_ready = wp.ready || also.as_ref().is_some_and(|also| also.ready());
+            if maybe_mark_ready(&sleep, *kind, *fd, is_ready) {
                 ready += 1;
             }
             fds.push((fd, *kind, fd_desc));
             waits.push(sleep);
-            keepalives.push(wp.keepalive);
+            keepalives.push(keepalive.clone());
+            if let Some(also) = also {
+                fds.push((fd, *kind, fd_desc));
+                waits.push(also);
+                keepalives.push(keepalive);
+            }
         }
         twizzler_abi::klog_println!("SelectState::wait: initial ready={}", ready,);
 

@@ -167,6 +167,7 @@ impl Fd for PtyHandleKind {
         };
         Ok(WaitpointResult {
             sleep: wp,
+            also: None,
             ready,
             keepalive: None,
         })
@@ -235,15 +236,25 @@ impl Fd for Pipe {
 
     fn waitpoint(&self, kind: twizzler_rt_abi::bindings::wait_kind) -> Result<WaitpointResult> {
         if kind == WAIT_WRITE {
+            // Sample once, and test readiness against that same sample -- see
+            // Pipe::readers_waitpoint. A pipe with no readers left is ready: the write fails
+            // with BrokenPipe rather than blocking.
+            let readers = self.readers();
             Ok(WaitpointResult {
                 sleep: self.write_waitpoint(),
-                ready: self.has_avail_space(),
+                also: Some(self.readers_waitpoint(readers)),
+                ready: self.has_avail_space() || readers == 0,
                 keepalive: None,
             })
         } else {
+            // Likewise: no writers left means EOF, which read reports as Ok(0). Without the
+            // writers word in the sleep set this never wakes, because close_writer moves that
+            // word and the buffer's head -- the only thing read_waitpoint arms on -- stays put.
+            let writers = self.writers();
             Ok(WaitpointResult {
                 sleep: self.read_waitpoint(),
-                ready: self.has_pending_data(),
+                also: Some(self.writers_waitpoint(writers)),
+                ready: self.has_pending_data() || writers == 0,
                 keepalive: None,
             })
         }

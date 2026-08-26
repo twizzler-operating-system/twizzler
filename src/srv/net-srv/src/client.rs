@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread::JoinHandle,
@@ -74,6 +74,12 @@ fn classify(buf: &[u8], local_macs: &[EthernetAddress]) -> Dest {
     }
 }
 
+/// Frames dropped by `inject_local` because the target's rx pool had no free packet.
+///
+/// Global rather than per-client: the warning names the target, and a per-client map would need a
+/// lock on a path that already holds two.
+static LOCAL_RX_DROPS: AtomicU64 = AtomicU64::new(0);
+
 /// Inject `frame` into every client matching `f`, skipping the sender.
 ///
 /// Takes the handles lock and then each target's `ep` lock, the same order `device_thread` uses.
@@ -87,10 +93,31 @@ fn inject_local(frame: &[u8], sender: EthernetAddress, f: impl Fn(&Client) -> bo
             continue;
         }
         let mut ep = client.ep.lock().unwrap();
-        // No free rx packet means that client is backed up. Dropping is what a real NIC does under
-        // the same pressure, and the sender will retransmit.
-        if let Some(tx) = ep.transmit(Instant::now()) {
-            tx.consume(frame.len(), |b: &mut [u8]| b.copy_from_slice(frame));
+        match ep.transmit(Instant::now()) {
+            Some(tx) => {
+                tx.consume(frame.len(), |b: &mut [u8]| b.copy_from_slice(frame));
+            }
+            // No free rx packet means that client is backed up, and dropping is the right
+            // backpressure response -- a real NIC does the same. What is *not* true is the
+            // rationale this arm used to carry ("the sender will retransmit"): that holds for TCP
+            // and fails for UDP, and this path carries both. A datagram dropped here is gone, and
+            // the sender is never told. So it is counted and reported rather than lost silently.
+            //
+            // Reported on powers of two because the alternative shapes the thing it measures: this
+            // runs under the handles lock on the local delivery path, and a line per drop would
+            // turn a burst into a stall. Retrying here is not an option for the same reason -- the
+            // target drains on its own thread, and `client_thread` needs `handles` to make
+            // progress, so waiting for it while holding that lock is a deadlock, not a fix.
+            None => {
+                let n = LOCAL_RX_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+                if n.is_power_of_two() {
+                    tracing::warn!(
+                        "dropped local frame for {} (rx pool exhausted); {} dropped so far",
+                        client.addr.hwaddr(),
+                        n
+                    );
+                }
+            }
         };
     }
 }

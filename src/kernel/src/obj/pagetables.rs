@@ -666,6 +666,151 @@ impl Drop for DirtyList {
     }
 }
 
+/// Which arm of `send_consistency`'s escalation each event took.
+///
+/// Not a cost instrument -- it answers only "did the new paths execute", which "the fix works" and
+/// "the fix never ran" are otherwise indistinguishable on. Three counters and one print line.
+pub mod tlbfix {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub const TLBFIX_STATS: bool = false;
+
+    /// Master switch for the two fast paths in `send_consistency` (skip / per-member). `false`
+    /// restores the unconditional `new_full_global()`, so the fix can be A/B'd against its own
+    /// build without reverting the diff. Added because `tlbfix3` wedged twice consecutively and
+    /// the fast paths are the prime suspect -- see tlbplan-INPROG.md §4i.
+    pub const TLBFIX_ENABLE: bool = true;
+
+    /// Conservative mode: take the fast paths only when the operation has **no frames queued for
+    /// freeing**. `PendingShootdown` gates frame reuse as well as invalidation completion
+    /// (`consistency.rs:500` waits before `free_frame`), so returning an empty pending frees
+    /// immediately. When this is `true` any operation carrying pages falls back to the broadcast,
+    /// which keeps the interlock. Costs the broadcast only on page-freeing operations.
+    pub const TLBFIX_ONLY_WHEN_NO_PAGES: bool = true;
+
+    #[derive(Clone, Copy)]
+    pub enum Outcome {
+        /// Nothing maps the object; no shootdown sent.
+        Skipped = 0,
+        /// Membership known and non-empty; one targeted full invalidation per context.
+        PerMember = 1,
+        /// Membership unknown, or a global page in the batch, or coverage check failed.
+        FullGlobal = 2,
+        /// Membership is empty but `invls` is not: the object *was* mapped and every context has
+        /// since drained. Sends nothing, like `Skipped` -- but justified by
+        /// `drop_member_if_drained`'s reasoning rather than by "never mapped", so it is counted
+        /// apart from it. Previously this fell into `PerMember` and iterated zero targets, which
+        /// produced the same behaviour under a label that denied it.
+        Drained = 3,
+        /// Membership empty, `invls` non-empty, frames queued: one targeted full invalidation per
+        /// context that ever mapped this object, instead of a machine-wide broadcast. Keeps the
+        /// frame-reuse interlock (non-empty pending) without the PGE toggle.
+        DrainedTargeted = 4,
+        /// Drained with frames queued, but `invls` has overflowed so it is a subset rather than a
+        /// superset -- targeting it would be unsound, so this takes the broadcast. Measured
+        /// separately because if it is rare the targeted arm covers essentially everything, and if
+        /// it is common the win is smaller than it looks. (twizzler-8a.)
+        DrainedOverflowed = 5,
+    }
+
+    pub const NR: usize = 6;
+    static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
+
+    /// **The direct test of the frame-reuse hazard** (twizzler-8a). `PendingShootdown` gates frame
+    /// reuse as well as invalidation completion, so a fast path returning an empty pending lets
+    /// `run_all` free queued frames without waiting. These count how many skip/drained events
+    /// carried queued pages -- a **count, not a rate**: zero refutes the mechanism outright from a
+    /// single round; nonzero confirms it and sizes the exposure in absolute terms. Testing it
+    /// through the wedge rate instead would need ~10 rounds to reach 3%, and would confirm on noise
+    /// a quarter of the time at 4.
+    ///
+    /// Must be measured with `TLBFIX_ONLY_WHEN_NO_PAGES = false`, or the guard makes the answer
+    /// zero by construction -- the instrument would then be measuring itself.
+    /// **The test that decides whether the drained arm is recoverable** (twizzler-8a). At the point
+    /// the drained arm would free frames without waiting, how many processors could still reach
+    /// them? Zero across the whole population means the frames were never reachable, the skip was
+    /// sound, and the guard costs ~64% of the win for nothing. Nonzero means it is genuinely unsafe
+    /// and sized exactly. A count, not a rate -- the alternative (do wedges stop under the guard?)
+    /// comes back clean ~26% of the time regardless at the observed failure rate.
+    static DRAINED_REACHABLE: AtomicU64 = AtomicU64::new(0);
+    static DRAINED_UNREACHABLE: AtomicU64 = AtomicU64::new(0);
+    static DRAINED_REACH_SUM: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_reachable(n: usize) {
+        if !TLBFIX_STATS {
+            return;
+        }
+        if n == 0 {
+            DRAINED_UNREACHABLE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            DRAINED_REACHABLE.fetch_add(1, Ordering::Relaxed);
+            DRAINED_REACH_SUM.fetch_add(n as u64, Ordering::Relaxed);
+        }
+    }
+
+    static SKIP_WITH_PAGES: AtomicU64 = AtomicU64::new(0);
+    static SKIP_NO_PAGES: AtomicU64 = AtomicU64::new(0);
+    static DRAINED_WITH_PAGES: AtomicU64 = AtomicU64::new(0);
+    static DRAINED_NO_PAGES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_pages(drained: bool, has_pages: bool) {
+        if !TLBFIX_STATS {
+            return;
+        }
+        match (drained, has_pages) {
+            (false, false) => &SKIP_NO_PAGES,
+            (false, true) => &SKIP_WITH_PAGES,
+            (true, false) => &DRAINED_NO_PAGES,
+            (true, true) => &DRAINED_WITH_PAGES,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record(o: Outcome) {
+        if !TLBFIX_STATS {
+            return;
+        }
+        COUNTS[o as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn print_stats() {
+        if !TLBFIX_STATS {
+            emerglogln!("== tlbfix: DISABLED");
+            return;
+        }
+        let s = COUNTS[0].load(Ordering::Relaxed);
+        let p = COUNTS[1].load(Ordering::Relaxed);
+        let f = COUNTS[2].load(Ordering::Relaxed);
+        let d = COUNTS[3].load(Ordering::Relaxed);
+        emerglogln!(
+            "== tlbfix REACH: drained w/ reachable-cpu {}, unreachable {} (mean {} cpus) -- 0 reachable => drained skip was SOUND, guard unnecessary",
+            DRAINED_REACHABLE.load(Ordering::Relaxed),
+            DRAINED_UNREACHABLE.load(Ordering::Relaxed),
+            {
+                let r = DRAINED_REACHABLE.load(Ordering::Relaxed);
+                if r == 0 { 0 } else { DRAINED_REACH_SUM.load(Ordering::Relaxed) / r }
+            },
+        );
+        emerglogln!(
+            "== tlbfix PAGES: skip w/pages {}, skip no-pages {}, drained w/pages {}, drained no-pages {} -- nonzero w/pages CONFIRMS frame-reuse hazard",
+            SKIP_WITH_PAGES.load(Ordering::Relaxed),
+            SKIP_NO_PAGES.load(Ordering::Relaxed),
+            DRAINED_WITH_PAGES.load(Ordering::Relaxed),
+            DRAINED_NO_PAGES.load(Ordering::Relaxed),
+        );
+        emerglogln!(
+            "== tlbfix: skipped(never-mapped) {}, drained(no-send) {}, drained-targeted {}, drained-overflowed {}, per-member {}, full-global {} (total {})",
+            s,
+            d,
+            COUNTS[4].load(Ordering::Relaxed),
+            COUNTS[5].load(Ordering::Relaxed),
+            p,
+            f,
+            s + p + f + d + COUNTS[4].load(Ordering::Relaxed) + COUNTS[5].load(Ordering::Relaxed)
+        );
+    }
+}
+
 impl ObjectPageTable {
     pub fn new() -> Self {
         let frame = alloc_frame(
@@ -1013,6 +1158,117 @@ impl ObjectPageTable {
         // fit and skip the rest entirely -- the same reason `invalidate` gives up and goes global.
         let overflowed = self.overflowed(invl_overflow::Site::Send);
         if consist.tlb().is_full() || overflowed {
+            // Too broad to express as addresses -- but that is a fact about the *instructions*,
+            // not about who has to act. `members` is maintained precisely so that overflow of
+            // `invls` cannot poison it, and when it is known we can name every context that maps
+            // this object. Going machine-wide costs a PGE toggle on every cpu, and it buys
+            // all-PCID scope that is only needed when the contexts cannot be named.
+            //
+            // Two guards, both cheap, both degrading to today's behaviour rather than to a bug:
+            //   * not global -- `is_global` stays true across an overflow (see its doc), so a
+            //     batch holding a kernel page still takes the toggle.
+            //   * membership covers every live `invls` target -- the invariant says it must
+            //     (`add_invalidate` calls `add_member` unconditionally), and this checks rather
+            //     than assumes it, since a violation here would be silent and durable.
+            if tlbfix::TLBFIX_ENABLE
+                && !consist.tlb().is_global()
+                && let Some(members) = self.members()
+                && self
+                    .invls
+                    .iter()
+                    .all(|(t, maps)| maps.is_empty() || members.contains(t))
+            {
+                // `PendingShootdown` carries a second guarantee beyond invalidation completion:
+                // `DeferredUnmappingOps::run_all` waits on it *before* returning frames to the
+                // allocator (`consistency.rs:500`). So an arm that returns an empty pending frees
+                // any queued frames immediately. Measured: the skip arm never carries pages
+                // (0 of 99 -- a never-mapped object has no teardown), the drained arm always does
+                // (40,318 of 40,318 -- draining *is* the teardown). Only the empty-pending arms
+                // need this; `per-member` sends, so its pending is non-empty and still gates.
+                let has_pages = consist.has_pages();
+                if members.is_empty() {
+                    // No context maps this object. Two sub-cases, and **both must terminate here**
+                    // -- falling through to the per-member loop below would iterate an empty
+                    // `members`, return an empty pending anyway, and silently defeat the guard.
+                    // That exact fall-through has now been introduced twice in this function; the
+                    // arm-count telling us `per-member` had risen from ~20k to ~56k is the only
+                    // reason it was caught the second time.
+                    tlbfix::record_reachable(crate::arch::memory::pagetables::count_reachable(
+                        self.invls.iter().map(|(t, _)| *t),
+                    ));
+                    if !(tlbfix::TLBFIX_ONLY_WHEN_NO_PAGES && has_pages) {
+                        // Safe to send nothing: either no frames are queued (so `run_all`'s wait
+                        // was gating nothing), or the guard is off because reachability said the
+                        // frames were never reachable.
+                        if self.invls.is_empty() {
+                            tlbfix::record_pages(false, has_pages);
+                            tlbfix::record(tlbfix::Outcome::Skipped);
+                        } else {
+                            tlbfix::record_pages(true, has_pages);
+                            tlbfix::record(tlbfix::Outcome::Drained);
+                        }
+                        return PendingShootdown::none();
+                    }
+                    // Frames are queued and we cannot prove they are unreachable, so the
+                    // interlock has to be kept -- but it does not need a machine-wide broadcast.
+                    // `members` is empty, yet `invls` is not: it lists every context that *ever*
+                    // held a cursor for this object, and it is append-only, so it is a superset of
+                    // anywhere a stale entry could live. Send one targeted full invalidation per
+                    // such context instead.
+                    //
+                    // This preserves both guarantees the broadcast was providing:
+                    //   * translations -- `should_target` reaches every cpu running one of those
+                    //     roots, and cpus publishing `CR3_IN_TRANSITION` match *any* target, so a
+                    //     cpu mid-switch is picked up here exactly as it would be by the broadcast.
+                    //   * frame reuse -- the pending is non-empty, so `run_all` waits before
+                    //     `free_frame`, which is the interlock the empty-pending skip destroyed.
+                    // What it drops is the PGE toggle and the bystander cpus, which is the whole
+                    // cost being avoided.
+                    // **Precondition, stated here rather than inherited**: the superset argument
+                    // above requires `!overflowed`. `invls` is capped at `MAX_INVL_TARGETS` (8) and
+                    // `add_invalidate` drops targets *silently* once full -- so past that bound it
+                    // is a strict **subset**, and targeting its entries would miss exactly the
+                    // contexts nobody recorded. Append-only makes it a superset only while it has
+                    // not overflowed.
+                    //
+                    // Written as an explicit guard because the enclosing `if` fires on
+                    // `is_full || overflowed`, so `overflowed` can be true here; and because the
+                    // whole design rests on it while being invisible at the point someone would
+                    // later "simplify" the targeting. That is the same defect that produced the
+                    // original bug: a value carrying a guarantee documented somewhere other than
+                    // where it is consumed. (twizzler-8a.)
+                    if !overflowed {
+                        tlbfix::record(tlbfix::Outcome::DrainedTargeted);
+                        let mut pending = PendingShootdown::none();
+                        for (target, _) in self.invls.iter() {
+                            let mut tlb = ArchTlbMgr::new(*target);
+                            tlb.set_origin(TlbOrigin::Object);
+                            tlb.set_full();
+                            pending.absorb(tlb.finish_send());
+                        }
+                        return pending;
+                    }
+                    // `invls` has overflowed and is no longer a complete list. Nothing cheaper is
+                    // sound here, so take the broadcast.
+                    tlbfix::record(tlbfix::Outcome::DrainedOverflowed);
+                    let mut tlb = ArchTlbMgr::new_full_global();
+                    tlb.set_origin(TlbOrigin::Object);
+                    return tlb.finish_send();
+                }
+                // One full invalidation per mapping context. Cpus running that address space are
+                // IPI'd and reload cr3, which flushes exactly that PCID; cpus that are not have
+                // their claim revoked by `finish_send` and flush on the way back in.
+                tlbfix::record(tlbfix::Outcome::PerMember);
+                let mut pending = PendingShootdown::none();
+                for target in members {
+                    let mut tlb = ArchTlbMgr::new(*target);
+                    tlb.set_origin(TlbOrigin::Object);
+                    tlb.set_full();
+                    pending.absorb(tlb.finish_send());
+                }
+                return pending;
+            }
+            tlbfix::record(tlbfix::Outcome::FullGlobal);
             let mut tlb = ArchTlbMgr::new_full_global();
             tlb.set_origin(TlbOrigin::Object);
             return tlb.finish_send();
@@ -1378,6 +1634,86 @@ impl ObjectPageTable {
 
         r?;
         Ok(dirty_list)
+    }
+
+    /// COW a *run* of pages, sharing the precharge and the invalidation batch across all of them.
+    ///
+    /// The single-page [`Self::maybe_cow_at`] pays, per page: a precharge, a page-table descent,
+    /// and a `run_consistency` -- and `run_consistency` is the TLB shootdown, by far the largest
+    /// of the three. Anonymous fills already amortise exactly these costs over
+    /// `ANON_FAULT_AROUND` pages; COW faults do not, and a `--diag` boot puts **55.5% of all
+    /// faults** in the COW class (`cowmeas`, 361,540 of 651,885) at 17.5% of total fault time.
+    ///
+    /// Deliberately conservative: this still descends the tables once per page, because
+    /// `Mapper::cow_at` -> `Table::cow_copy` resolves `cursor.start()` only and never advances the
+    /// cursor -- it takes a range and handles one address. Sharing the descent means restructuring
+    /// that recursion, which is a much larger change in a path where a mistake silently corrupts
+    /// memory. This shares the two costs that can be shared safely and leaves the walk alone; if it
+    /// pays, the walk is the next increment.
+    pub fn maybe_cow_range(
+        &mut self,
+        offset: u64,
+        npages: usize,
+        mark_dirty: bool,
+    ) -> Result<bool, TwzError> {
+        if npages <= 1 {
+            return self.maybe_cow_at(offset, mark_dirty);
+        }
+        let page = PHYS_LEVEL_LAYOUTS[0].size();
+        let mut fa = take_or_new_frame_allocator();
+        let mut need = 0;
+        for i in 0..npages {
+            let cursor = MappingCursor::new(
+                VirtAddr::new(offset + (i * page) as u64).unwrap(),
+                page,
+            );
+            need += if PRECHARGE_EXACT_RANGE {
+                self.mapper.cow_tables_needed(&cursor)
+            } else {
+                cursor.max_number_new_tables(Self::top_level(), 0)
+            };
+        }
+        if need > 0 {
+            fa.precharge(need, FrameAllocFlags::WAIT_OK);
+        }
+
+        let mut consist = Consistency::new_object_tables();
+        let mut did_cow = false;
+        for i in 0..npages {
+            let cursor = MappingCursor::new(
+                VirtAddr::new(offset + (i * page) as u64).unwrap(),
+                page,
+            );
+            // Accumulates into one `consist`, so the run produces a single invalidation batch
+            // instead of `npages` of them.
+            did_cow |= self
+                .mapper
+                .cow_at(cursor, &mut consist, mark_dirty, &mut fa)?;
+            // HARD COUPLING, and it inverts the usual "bigger batch is better".
+            //
+            // `Table::update_entry` enqueues an invalidation instruction only `if was_present`.
+            // A fill is not-present -> present, so it enqueues **nothing** -- which is why
+            // `ANON_FAULT_AROUND = 16` is free at any width. A COW is present -> present, so it
+            // enqueues **one instruction per page**. `TlbInvData` holds
+            // `MAX_INVALIDATION_INSTRUCTIONS = 16`; the next enqueue calls `set_full()`, and
+            // `send_consistency` then promotes a full-*local* batch to full+**GLOBAL**
+            // unconditionally -- defeating PCID revocation and costing every receiver a CR4.PGE
+            // toggle and a full flush.
+            //
+            // So a COW run wide enough to fill the buffer converts N cheap targeted invalidations
+            // into one machine-wide broadcast: a pessimisation wearing a batching optimisation's
+            // clothes. twizzler-b8's census puts 55,824 escalations a boot on exactly this branch.
+            //
+            // `COW_FAULT_AROUND` is held below the bound, and this break makes the run
+            // self-limiting rather than merely lucky: `cow_at` may enqueue more than one
+            // instruction per page (intermediate table updates), and `consist` may already carry
+            // instructions from earlier in this same fault.
+            if consist.tlb().is_full() {
+                break;
+            }
+        }
+        self.run_consistency(consist);
+        Ok(did_cow)
     }
 
     pub fn maybe_cow_at(&mut self, offset: u64, mark_dirty: bool) -> Result<bool, TwzError> {

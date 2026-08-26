@@ -59,6 +59,7 @@ impl Fd for NullFile {
                 ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),
             ),
+            also: None,
             ready: true,
             keepalive: None,
         })
