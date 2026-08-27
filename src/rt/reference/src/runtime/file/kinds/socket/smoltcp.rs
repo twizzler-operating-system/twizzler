@@ -730,10 +730,26 @@ impl UdpSocket {
         ENGINE.blocking_egress(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_send() {
-                let r = socket.send_slice(buf, meta).unwrap();
-                // This write may have filled the transmit queue.
-                core.refresh_waiter(self.inner.socket_handle);
-                Ok(r)
+                // `can_send()` answers "open, and able to send a packet at all" -- not "this
+                // payload fits in what is left of the tx buffer". A send that does not fit
+                // returns BufferFull, and unwrapping it killed the process: a tight send loop
+                // fills the buffer, which is ordinary backpressure, not a fault. The contract of
+                // this closure is to report WouldBlock so `blocking_inner` waits for the poll
+                // thread to drain and retries (or hands a non-blocking caller EAGAIN), which is
+                // exactly what the `else` arm below already does for the not-ready case.
+                match socket.send_slice(buf, meta) {
+                    Ok(()) => {
+                        // This write may have filled the transmit queue.
+                        core.refresh_waiter(self.inner.socket_handle);
+                        Ok(())
+                    }
+                    Err(smoltcp::socket::udp::SendError::BufferFull) => {
+                        Err(ErrorKind::WouldBlock.into())
+                    }
+                    Err(smoltcp::socket::udp::SendError::Unaddressable) => {
+                        Err(ErrorKind::AddrNotAvailable.into())
+                    }
+                }
             } else if !socket.is_open() {
                 Err(ErrorKind::ConnectionReset.into())
             } else {

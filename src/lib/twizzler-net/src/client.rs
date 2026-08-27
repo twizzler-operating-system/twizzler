@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{cell::RefCell, net::IpAddr};
 
 use monitor_api::CompartmentHandle;
 use secgate::{
@@ -15,8 +15,8 @@ use twizzler_io::packet::PacketObject;
 use twizzler_queue::{Queue, QueueBase};
 
 use crate::{
-    ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, PacketNum, PacketSet, ServerMsg,
-    ServerMsgKind, ServerRet, endpoint::Pair,
+    ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, MAX_PACKETS_SET, PacketNum, PacketSet,
+    ServerMsg, ServerMsgKind, ServerRet, endpoint::Pair,
 };
 
 pub struct NetClient {
@@ -25,6 +25,17 @@ pub struct NetClient {
     handle: Descriptor,
     pending_rx: PacketSet,
     pending_id: Option<u32>,
+    /// Frames written by smoltcp this poll but not yet submitted, and how many.
+    ///
+    /// smoltcp's `Device` hands out one `TxToken` per packet and has no batch entry point, so
+    /// submitting inside `consume` costs a queue message -- and possibly a wake -- per packet, on
+    /// a transport whose `PacketSet` carries eight. The receive direction already batches this way
+    /// (`pending_rx` drains one message into up to eight `receive()` calls); this is the same
+    /// trick pointed the other way.
+    ///
+    /// Interior mutability because `NetClientTxToken` holds `&NetClient`: `receive()` hands out an
+    /// rx and a tx token from one borrow, so the tx token cannot hold `&mut`.
+    pending_tx: RefCell<([PacketNum; MAX_PACKETS_SET], usize)>,
     pub info: NetClientOpenInfo,
 }
 
@@ -119,6 +130,7 @@ impl secgate::util::Handle for NetClient {
             handle: info.handle,
             pending_id: None,
             pending_rx: PacketSet::new(),
+            pending_tx: RefCell::new(([INVALID_PACKET; MAX_PACKETS_SET], 0)),
             info,
         })
     }
@@ -137,6 +149,56 @@ impl Drop for NetClient {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct NetClientConfig {}
+
+impl NetClient {
+    /// Whether this poll reclaimed tx packets -- progress smoltcp's `PollResult` cannot see.
+    pub fn took_progress(&self) -> bool {
+        self.tx.take_progress()
+    }
+
+    /// Hold `packet` for submission with the rest of this poll's egress.
+    ///
+    /// Submits early only when the batch is full, so a burst never stalls behind a partial one.
+    fn queue_tx(&self, packet: PacketNum) {
+        let batch = {
+            let mut pending = self.pending_tx.borrow_mut();
+            let n = pending.1;
+            pending.0[n] = packet;
+            pending.1 = n + 1;
+            if pending.1 < MAX_PACKETS_SET {
+                return;
+            }
+            pending.1 = 0;
+            pending.0
+        };
+        self.submit_tx(&batch);
+    }
+
+    /// Submit whatever this poll queued. **Must be called after every `Interface::poll`**, which
+    /// is the only thing that drives `transmit()`; miss it and a partial batch waits for the next
+    /// poll rather than going out. That is the same shape as the `shutdown()` defect where egress
+    /// was queued with nothing to push it.
+    pub fn flush_tx(&self) {
+        let batch = {
+            let mut pending = self.pending_tx.borrow_mut();
+            let n = pending.1;
+            if n == 0 {
+                return;
+            }
+            pending.1 = 0;
+            (pending.0, n)
+        };
+        self.submit_tx(&batch.0[..batch.1]);
+    }
+
+    fn submit_tx(&self, packets: &[PacketNum]) {
+        self.tx
+            .send_packets(packets, |s| ClientMsg {
+                kind: ClientMsgKind::Tx(s),
+            })
+            .expect("failed to send packets");
+    }
+}
 
 impl smoltcp::phy::Device for NetClient {
     type RxToken<'a>
@@ -200,7 +262,8 @@ impl smoltcp::phy::Device for NetClient {
         let mut cap = DeviceCapabilities::default();
         cap.medium = Medium::Ethernet;
         cap.max_transmission_unit = 1514;
-        cap.max_burst_size = Some(1);
+        // See NetServer::capabilities: Some(1) pins the TCP window to one segment.
+        cap.max_burst_size = Some(self.rx.nr_packets());
         cap
     }
 }
@@ -226,15 +289,9 @@ impl TxToken for NetClientTxToken<'_> {
         }
         let mem = self.nc.tx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
+        self.nc.tx.set_packet_len(self.packet, len);
         self.consumed = true;
-
-        self.nc
-            .tx
-            .send_packets(&[self.packet], |s| ClientMsg {
-                kind: ClientMsgKind::Tx(s),
-            })
-            .expect("failed to send packet");
-
+        self.nc.queue_tx(self.packet);
         ret
     }
 }
@@ -244,8 +301,9 @@ impl RxToken for NetClientRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
+        let len = self.nc.rx.packet_len(self.packet);
         let mem = self.nc.rx.packet_mem_mut(self.packet);
-        f(mem)
+        f(&mem[0..len])
     }
 }
 

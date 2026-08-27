@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
     thread::JoinHandle,
@@ -18,6 +18,9 @@ use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     socket::{
         dns::Socket as DnsSocket,
+        // NOTE: this shadows the `Socket` *enum*. A bare `Socket` in this file means
+        // `tcp::Socket`, so anything that wants the enum -- `SocketSet::get`/`get_mut` turbofishes,
+        // `socket_readiness`'s parameter -- must spell out `smoltcp::socket::Socket`.
         tcp::{Socket, State},
         udp::Socket as SmolUdpSocket,
     },
@@ -129,6 +132,18 @@ pub(super) fn udp_socket_ready(socket: &SmolUdpSocket<'_>, rx_shutdown: bool) ->
     socket.can_recv() || !socket.is_open() || rx_shutdown
 }
 
+/// Number of entries in `Core::tracking`, readable without taking the core lock.
+///
+/// The poll thread ran `while check_tracking() {}` at the top of every cycle: it took the core
+/// mutex and walked the list even when nothing had closed, and because it returned after a single
+/// removal it re-took the lock and restarted the walk once per closed socket.
+///
+/// Rate-limiting the call would have been the wrong fix. This is the path that releases closed
+/// sockets and returns their ports, so delaying it holds both for longer under connection churn --
+/// the opposite of the direction this file has been moving all week. Making it free when there is
+/// nothing to do costs one relaxed load, and makes the busy case one pass instead of N.
+static TRACKING_LEN: AtomicUsize = AtomicUsize::new(0);
+
 pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
@@ -136,6 +151,15 @@ pub(super) struct Core {
     // Listening sockets -> the listener group they belong to. Membership is also what marks a
     // socket as a listener, which is what selects listener_socket_ready over can_recv/can_send.
     groups: HashMap<SocketHandle, u64>,
+    /// Handles currently present in `socketset`.
+    ///
+    /// `SocketSet::get` panics on a handle whose slot has been removed, and `refresh_waiter` is
+    /// reachable from `waitpoint`/`down_waitpoint` without the caller having established that the
+    /// socket is still live -- a poll on a just-closed fd does exactly that. The scan this
+    /// replaces was safe by accident: it walked the set and simply found nothing. This keeps that
+    /// "not present -> not ready" answer while making the common case a hash lookup instead of a
+    /// walk of every socket.
+    live: HashSet<SocketHandle>,
 }
 
 struct IfaceSet {
@@ -160,6 +184,14 @@ impl IfaceSet {
             ready |= iface.poll(Instant::now(), &mut self.device, socketset)
                 == smoltcp::iface::PollResult::SocketStateChanged;
         }
+        // `iface.poll` is the only caller of `NetClient::transmit`, so this is the one place a
+        // poll's egress can be flushed. Anything queued and not flushed here waits for the next
+        // poll.
+        self.device.flush_tx();
+        // Reclaiming a tx packet unblocks a sender that had none, and smoltcp does not count it as
+        // a socket state change -- so report it as readiness here rather than notifying on every
+        // poll regardless. See `Pair::progress`.
+        ready |= self.device.took_progress();
         ready
     }
 
@@ -580,37 +612,58 @@ impl Engine {
             let waiter = _waiter;
             let notify = _notify;
 
-            fn check_tracking() -> bool {
-                let mut core = ENGINE.core.lock().unwrap();
-                for idx in 0..core.tracking.len() {
-                    let item = core.tracking[idx];
-                    let is_closed = match item.2 {
-                        SockKind::Tcp => core.get_mutable_socket(item.0).state() == State::Closed,
-                        // TODO: this causes some kind of stall.
-                        SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.0).
-                                                 * is_open(), */
-                    };
-                    if is_closed {
-                        core.release_socket(item.0);
-                        core.tracking.remove(idx);
-                        drop(core);
-                        // `track` stores 0 for a socket whose port it does not own (see
-                        // Engine::track); returning it would decrement a refcount net-srv never
-                        // incremented.
-                        if item.1 != 0 {
-                            ENGINE.return_port(item.1);
+            fn check_tracking() {
+                if TRACKING_LEN.load(Ordering::Relaxed) == 0 {
+                    return;
+                }
+                // Collected under the lock, returned after it: return_port takes the port
+                // allocator's lock, and taking that while holding `core` would invert the order
+                // the original established by dropping `core` first.
+                let mut ports: Vec<u16> = Vec::new();
+                {
+                    let mut core = ENGINE.core.lock().unwrap();
+                    let mut idx = 0;
+                    while idx < core.tracking.len() {
+                        let item = core.tracking[idx];
+                        // A handle already gone from the set has nothing left to release, and
+                        // get_mutable_socket would panic on it.
+                        let gone = !core.live.contains(&item.0);
+                        let is_closed = gone
+                            || match item.2 {
+                                SockKind::Tcp => {
+                                    core.get_mutable_socket(item.0).state() == State::Closed
+                                }
+                                // TODO: this causes some kind of stall.
+                                SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.0).
+                                                         * is_open(), */
+                            };
+                        if is_closed {
+                            if !gone {
+                                core.release_socket(item.0);
+                            }
+                            core.tracking.remove(idx);
+                            TRACKING_LEN.fetch_sub(1, Ordering::Relaxed);
+                            // `track` stores 0 for a socket whose port it does not own (see
+                            // Engine::track); returning it would decrement a refcount net-srv
+                            // never incremented.
+                            if item.1 != 0 {
+                                ports.push(item.1);
+                            }
+                        } else {
+                            idx += 1;
                         }
-                        return true;
                     }
                 }
-                false
+                for port in ports {
+                    ENGINE.return_port(port);
+                }
             }
 
             // Refilled, not rebuilt: the set changes only when an interface comes or goes, but the
             // loop below runs on every poll cycle.
             let mut waiters: Vec<ThreadSync> = Vec::new();
             loop {
-                while check_tracking() {}
+                check_tracking();
                 let time = {
                     let mut inner = inner.lock().unwrap();
                     inner.poll(&*waiter);
@@ -797,7 +850,8 @@ impl Engine {
             .lock()
             .unwrap()
             .tracking
-            .push((handle, port, kind))
+            .push((handle, port, kind));
+        TRACKING_LEN.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn with_iface_for<R>(
@@ -817,15 +871,19 @@ impl Core {
             ifaceset,
             tracking: Vec::new(),
             groups: HashMap::new(),
+            live: HashSet::new(),
         }
     }
 
     pub fn add_dns_socket(&mut self, sock: DnsSocket<'static>) -> SocketHandle {
-        self.socketset.add(sock)
+        let handle = self.socketset.add(sock);
+        self.live.insert(handle);
+        handle
     }
 
     pub fn add_udp_socket(&mut self, sock: SmolUdpSocket<'static>) -> SocketHandle {
         let handle = self.socketset.add(sock);
+        self.live.insert(handle);
         WAITERS.init_waiter(WaitKey::Sock(handle));
         handle
     }
@@ -833,6 +891,7 @@ impl Core {
     /// Add a socket, optionally as a member of listener group `group` (see WaitKey).
     pub fn add_socket(&mut self, sock: Socket<'static>, group: Option<u64>) -> SocketHandle {
         let handle = self.socketset.add(sock);
+        self.live.insert(handle);
         match group {
             // The group's words belong to the group, not to any one member: resetting them here
             // would drop a sibling's pending connection on the floor.
@@ -867,8 +926,14 @@ impl Core {
             self.refresh_group(group);
         }
         self.tracking.push((handle, 0, SockKind::Tcp));
+        TRACKING_LEN.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// TCP only, despite the name: `Socket` here is `tcp::Socket`, not the enum (see the `use`
+    /// at the top of this file).
+    ///
+    /// # Panics
+    /// If `handle` refers to a UDP or DNS socket, or to a socket already removed from the set.
     pub fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
     }
@@ -883,6 +948,7 @@ impl Core {
 
     pub fn release_socket(&mut self, handle: SocketHandle) {
         let group = self.groups.remove(&handle);
+        self.live.remove(&handle);
         self.socketset.remove(handle);
         match group {
             Some(group) => {
@@ -901,6 +967,7 @@ impl Core {
 
     /// Readiness of one socket, as its wait key's contributor. A listening socket's is "accept()
     /// has work here" rather than "there are bytes to read"; see listener_socket_ready.
+    // `sock` is the enum, spelled out because a bare `Socket` in this file is `tcp::Socket`.
     fn socket_readiness(
         &self,
         handle: SocketHandle,
@@ -941,19 +1008,36 @@ impl Core {
     }
 
     fn refresh_key(&self, key: WaitKey) {
-        let (mut read, mut write) = (false, false);
-        for (handle, sock) in self.socketset.iter() {
-            if self.wait_key(handle) != key {
-                continue;
+        let (read, write) = match key {
+            // A Sock key has exactly one contributor and we know which one, so look it up rather
+            // than walking the set. This is on the per-read and per-write path -- every `read()`
+            // and `write()` calls refresh_waiter -- where the scan cost one `groups` hash probe
+            // per socket in the set, per syscall. (Reaching here with Sock(h) implies h is not in
+            // a group: refresh_waiter routes through wait_key, which yields Group for a member.)
+            WaitKey::Sock(handle) => {
+                if self.live.contains(&handle) {
+                    self.socket_readiness(
+                        handle,
+                        self.socketset.get::<smoltcp::socket::Socket<'static>>(handle),
+                    )
+                } else {
+                    (false, false)
+                }
             }
-            let (r, w) = self.socket_readiness(handle, sock);
-            read |= r;
-            write |= w;
-            // A Sock key has exactly one contributor; only a group needs the whole scan.
-            if matches!(key, WaitKey::Sock(_)) {
-                break;
+            // A group aggregates every member, so it genuinely needs the walk.
+            WaitKey::Group(_) => {
+                let (mut read, mut write) = (false, false);
+                for (handle, sock) in self.socketset.iter() {
+                    if self.wait_key(handle) != key {
+                        continue;
+                    }
+                    let (r, w) = self.socket_readiness(handle, sock);
+                    read |= r;
+                    write |= w;
+                }
+                (read, write)
             }
-        }
+        };
         WAITERS.mark_waiter(key, read, write);
     }
 
@@ -982,6 +1066,15 @@ impl Core {
             // Notify the CV so that other waiting threads can retry their blocking operations.
             waiter.notify_all();
         }
+        // NOTE: notifying *unconditionally* here livelocks, and briefly did.
+        //
+        // The bug being fixed was real: `res` is smoltcp's `SocketStateChanged`, which cannot see
+        // `check_completions()` reclaiming tx packets, so a sender blocked for want of a slot
+        // slept through the event it was waiting for. But notifying on every poll instead closes a
+        // cycle -- `blocking_inner`'s WouldBlock arm calls `wake()` before it waits, so the woken
+        // sender's failed retry wakes the poll thread, which polls, which notifies, forever.
+        // Progress is reported through `IfaceSet::poll` (see `Pair::progress`) instead, so the
+        // notify stays conditional and only fires when something a waiter cares about happened.
         res
     }
 

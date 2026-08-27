@@ -1500,6 +1500,12 @@ pub fn is_no_exist(id: ObjID) -> bool {
     obj_manager().no_exist.lock().contains(&id)
 }
 
+/// Forget a negative-cache entry. Nothing else removes one, so an id marked nonexistent stays that
+/// way for the boot; only a create of that exact id knows the answer has changed.
+pub fn clear_no_exist(id: ObjID) {
+    obj_manager().no_exist.lock().remove(&id);
+}
+
 /// Report what large-page promotion would win, if the picture has changed since the last report.
 ///
 /// Sizing the prize before building it (`largepager.md`): promotion is real mapper work with a

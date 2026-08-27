@@ -134,6 +134,22 @@ fn take_page_in_error(id: ObjID) -> Option<TwzError> {
     PAGE_IN_ERRORS.lock().remove(&id)
 }
 
+/// Why a create failed, for the syscall that asked for it.
+///
+/// [cmd_object] waits for the completion but reports nothing, so a create the pager rejected used
+/// to return `Ok(id)` for an object that exists nowhere -- and since the pager path returns before
+/// `register_object`, the failure surfaced only at the *first map*, as `NoSuchObject`, in unrelated
+/// code. Five sweep failures over ten days were attributed to four different tests that way.
+static CREATE_ERRORS: Mutex<BTreeMap<ObjID, TwzError>> = Mutex::new(BTreeMap::new());
+
+pub(super) fn record_create_error(id: ObjID, err: TwzError) {
+    CREATE_ERRORS.lock().insert(id, err);
+}
+
+fn take_create_error(id: ObjID) -> Option<TwzError> {
+    CREATE_ERRORS.lock().remove(&id)
+}
+
 pub fn check_timed_out_requests() {
     // Runs on the idle thread. Calling inflight_mgr() here would let the *lowest priority* thread
     // in the system become the Once initializer; a higher-priority thread reaching
@@ -729,8 +745,14 @@ pub(super) fn start_deleter() {
     start_new_kernel(Priority::USER, deleter_entry, 0);
 }
 
-pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) {
+pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<(), TwzError> {
     cmd_object(ReqKind::new_create(id, create, nonce), None);
+    // Taken, not read: one failure fails one create. A pager that is not ready records nothing and
+    // still succeeds here, which is the long-standing behaviour for a create with no backing store.
+    match take_create_error(id) {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {

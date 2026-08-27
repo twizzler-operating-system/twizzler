@@ -11,7 +11,14 @@ fn main() {
 mod benches {
     extern crate test;
 
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::{
+        io::{Read, Write},
+        net::{TcpStream, UdpSocket},
+        os::fd::AsRawFd,
+        process::{Child, Command},
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
 
     use test::Bencher;
     use twizzler::object::{Object, ObjectBuilder, RawObject};
@@ -986,6 +993,483 @@ mod benches {
         };
         b.iter(|| std::hint::black_box(namer.get(&name, naming::GetFlags::empty()).is_ok()));
         let _ = std::fs::remove_file(path);
+    }
+
+    // --- network -------------------------------------------------------------------------------
+    //
+    // These need a peer in a *different compartment*, and that is not a convenience: one
+    // compartment means one `twz-rt` socket engine, one smoltcp interface and one address, so a
+    // client and a server in the same binary never exchange a packet (see `net_test`'s module
+    // doc). Every number here therefore includes a real trip through net-srv.
+    //
+    // It does *not* include the virtio NIC. `net-srv`'s `classify()` marks a frame whose
+    // destination MAC belongs to a sibling client as `Dest::Local` and `inject_local`s a copy
+    // into that sibling's endpoint; only `Dest::Device`/`Dest::Flood` reach `device.transmit`.
+    // Measured on 2026-08-27: 66,048 local deliveries against 22 device frames for a full net
+    // bench run. Anyone building a Linux analogue of these rows should mirror loopback between
+    // two processes, not a NIC.
+    //
+    // Addresses and ports are pinned and must not collide with `net_test`, which runs in the same
+    // boot and owns 10.0.2.100-.114 on ports 7701-7714 and 7799; sshd holds 5555.
+
+    const NET_SELF_ADDR: &str = "10.0.2.120";
+    /// **A distinct peer address per bench, not one shared address.** Compartment teardown is not
+    /// synchronous with `child.wait()` returning, so a second peer reusing the first's address can
+    /// overlap it -- and `net_test`'s module doc is explicit that two stacks on one address makes
+    /// ARP pick a winner at random. Observed as: peer #2 spawns, four frames cross the device
+    /// (SYN, unanswered), and `TcpStream::connect` blocks forever (`netsmoke3`, 2026-08-27).
+    const NET_PEER_ADDRS: [&str; 4] = ["10.0.2.121", "10.0.2.122", "10.0.2.123", "10.0.2.124"];
+    /// A distinct port per bench, not one shared TCP port. Each bench spawns and reaps its own
+    /// peer, so sharing would work only if the port were free the instant the previous peer
+    /// exited -- which depends on how smoltcp retires a closed listener, and is exactly the kind
+    /// of assumption that produces an occasional bind failure nobody can reproduce.
+    const NET_TCP_LATENCY_PORT: u16 = 7720;
+    const NET_TCP_THROUGHPUT_PORT: u16 = 7722;
+    const NET_TCP_THROUGHPUT_PIPE_PORT: u16 = 7723;
+    const NET_UDP_PORT: u16 = 7721;
+
+    /// Ceiling on any single transfer inside a bench. Generous relative to a round trip
+    /// (measured ~283 us) and short enough that a stall fails a row rather than the boot.
+    const NET_IO_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// How long to wait for the peer compartment to bind and answer. Generous: it is a full
+    /// compartment spawn (~2 ms measured by `compartment_spawn_exit`, but the suite may be
+    /// loaded) plus a bind, and paying for it once per bench is not in any measured loop.
+    const NET_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Pin our own address before any socket is touched; the engine initialises lazily on first
+    /// use. Peers are always given theirs explicitly, since inheriting ours would put two stacks
+    /// on one address and let ARP pick a winner.
+    fn net_setup() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe { std::env::set_var("TWZ_NET_ADDR", NET_SELF_ADDR) });
+    }
+
+    /// Where a spawned peer may live, mirroring `unittest`'s search order.
+    fn net_peer_bin() -> Option<String> {
+        ["/pkg/twizzler/bin", "/initrd"]
+            .iter()
+            .map(|dir| format!("{}/net_test_peer", dir))
+            .find(|path| std::fs::metadata(path).is_ok())
+    }
+
+    /// A `net_test_peer` running an echo server, plus the socket talking to it.
+    ///
+    /// Holds the connection open across every `b.iter` call: a benchmark that reconnected each
+    /// iteration would be measuring `connect`, which is a different and much larger number.
+    struct EchoPeer {
+        child: Child,
+        tcp: Option<TcpStream>,
+        udp: Option<UdpSocket>,
+    }
+
+    impl EchoPeer {
+        /// Spawn the peer in `mode` and establish a socket, or `None` if the network is not
+        /// usable in this boot.
+        ///
+        /// Returning `None` rather than panicking is deliberate: net-srv may be absent, and a
+        /// bench that fails loudly would take the whole round with it. The caller reports the
+        /// skip on the console so an absent row is never mistaken for a fast one.
+        fn new(mode: &str, port: u16, tcp: bool, addr_idx: usize) -> Option<Self> {
+            net_setup();
+            let peer_addr = NET_PEER_ADDRS[addr_idx];
+            let target = format!("{}:{}", peer_addr, port);
+            let child = Command::new(net_peer_bin()?)
+                .args([mode, &target, "20000"])
+                .env("TWZ_NET_ADDR", peer_addr)
+                .spawn()
+                .ok()?;
+            let mut peer = EchoPeer {
+                child,
+                tcp: None,
+                udp: None,
+            };
+
+            let deadline = Instant::now() + NET_PEER_TIMEOUT;
+            if tcp {
+                // Retry until the peer has bound: the spawn returns long before its listener
+                // exists, and a single connect would race it.
+                //
+                // **Check the peer is still alive first.** `TcpStream::connect` to an address
+                // with nothing listening does not fail here -- it retransmits SYN and blocks,
+                // indefinitely. So a peer that died during startup turns into a hung benchmark
+                // and a wedged boot rather than a skipped row, which is exactly what happened
+                // three times before this check existed. `try_wait` is the difference between a
+                // diagnosis and a five-minute timeout.
+                // The connect runs on a helper thread and the deadline is enforced here.
+                // `connect_timeout` is not usable: it made every peer fail to connect at all
+                // (pipe3, 2026-08-27 -- .121 and .122 had connected fine with blocking
+                // `connect` moments earlier), so the bound has to come from outside the call.
+                // A blocking `connect` on this thread cannot work either: `try_wait` only runs
+                // *between* attempts, so the liveness check can never fire while the thread is
+                // parked inside the call it guards -- that is what wedged pipe1 for the full
+                // five-minute harness timeout. If the helper is still blocked at the deadline it
+                // is deliberately leaked; a leaked thread costs one bench row, a parked main
+                // thread costs the whole round.
+                let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
+                let t = target.clone();
+                std::thread::spawn(move || loop {
+                    if let Ok(s) = TcpStream::connect(&t) {
+                        let _ = tx.send(s);
+                        return;
+                    }
+                    std::thread::yield_now();
+                });
+                while Instant::now() < deadline {
+                    match peer.child.try_wait() {
+                        Ok(Some(status)) => {
+                            console(&format!(
+                                "net peer ({} {}) exited before listening: {:?}\n",
+                                mode, target, status
+                            ));
+                            return None;
+                        }
+                        Ok(None) => {}
+                        Err(_) => return None,
+                    }
+                    if let Ok(s) = rx.try_recv() {
+                        peer.tcp = Some(s);
+                        return Some(peer);
+                    }
+                    std::thread::yield_now();
+                }
+                console(&format!(
+                    "net peer ({} {}) never accepted a connection within {:?}\n",
+                    mode, target, NET_PEER_TIMEOUT
+                ));
+                return None;
+            } else {
+                let sock = UdpSocket::bind(format!("{}:0", NET_SELF_ADDR)).ok()?;
+                sock.connect(&target).ok()?;
+                // UDP bind cannot tell us the peer is listening, so prove it with a round trip
+                // before any measurement. Without this the first timed iteration would absorb
+                // the peer's entire startup.
+                let mut probe = [0u8; 8];
+                while Instant::now() < deadline {
+                    if sock.send(b"probe").is_ok()
+                        && net_recv_within(sock.as_raw_fd(), &mut probe, Duration::from_millis(200))
+                            .is_some()
+                    {
+                        peer.udp = Some(sock);
+                        return Some(peer);
+                    }
+                }
+            }
+            peer.shutdown();
+            None
+        }
+
+        /// Close our socket and reap the peer. TCP ends on EOF; UDP ends on its idle deadline.
+        fn shutdown(&mut self) {
+            self.tcp.take();
+            self.udp.take();
+            let _ = self.child.wait();
+        }
+    }
+
+    impl Drop for EchoPeer {
+        fn drop(&mut self) {
+            self.shutdown();
+        }
+    }
+
+    /// Bounded datagram receive. Returns `None` on timeout rather than blocking, so a lost
+    /// datagram costs one iteration instead of the suite.
+    fn net_recv_within(fd: i32, buf: &mut [u8], timeout: Duration) -> Option<usize> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
+            match twizzler_rt_abi::io::twz_rt_fd_pread(fd, buf, &mut ctx) {
+                Ok(n) => return Some(n),
+                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Non-blocking write of the whole buffer against a deadline.
+    ///
+    /// Exists because a blocking `write_all` of more than `TX_BUF_SIZE` (8192) wedged two entire
+    /// boots: the round produced no test report at all and the 25s hang reporter fired. A bench
+    /// that can hang the guest is worse than one that fails -- a failure costs one row, a wedge
+    /// costs the whole run and reads as a system fault. Returns bytes written, so a caller can
+    /// report *where* it stalled rather than only that it did.
+    fn net_write_within(fd: i32, buf: &[u8], timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        let mut done = 0;
+        while done < buf.len() {
+            let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
+            match twizzler_rt_abi::io::twz_rt_fd_pwrite(fd, &buf[done..], &mut ctx) {
+                Ok(0) => return done,
+                Ok(n) => done += n,
+                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) => return done,
+            }
+        }
+        done
+    }
+
+    /// Non-blocking read of exactly `buf.len()` bytes against a deadline. Same reasoning.
+    fn net_read_within(fd: i32, buf: &mut [u8], timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        let mut done = 0;
+        while done < buf.len() {
+            let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
+            match twizzler_rt_abi::io::twz_rt_fd_pread(fd, &mut buf[done..], &mut ctx) {
+                Ok(0) => return done,
+                Ok(n) => done += n,
+                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) => return done,
+            }
+        }
+        done
+    }
+
+    /// One small TCP request/response over an established connection: the network analogue of
+    /// `thread_sync_ping_pong`, and the closest thing here to a latency number.
+    ///
+    /// Measures a full round trip -- our write, net-srv's local delivery to the sibling client,
+    /// the peer compartment's engine, its echo, and back -- so it is the sum of two one-way
+    /// traversals plus the peer's turnaround, not a one-way latency. The NIC is not on this path
+    /// (see the module note above). 64 bytes to keep it well inside one frame.
+    #[bench]
+    fn net_tcp_latency(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let _mark = Mark::new("net_tcp_latency");
+        let Some(mut peer) = EchoPeer::new("serve-echo", NET_TCP_LATENCY_PORT, true, 0) else {
+            console("net_tcp_latency: no network peer, skipping\n");
+            return;
+        };
+        let stream = peer.tcp.as_mut().unwrap();
+        let out = [0x5au8; 64];
+        let mut back = [0u8; 64];
+        b.iter(|| {
+            stream.write_all(&out).expect("net_tcp_latency: write");
+            stream
+                .read_exact(&mut back)
+                .expect("net_tcp_latency: read (peer died?)");
+            std::hint::black_box(back[0]);
+        });
+    }
+
+    /// TCP bulk echo: how fast bytes actually move through the stack.
+    ///
+    /// `b.bytes` counts **both directions** -- the block goes out and comes back, so that is what
+    /// crossed the wire per iteration and what libtest's MB/s should describe. Reading it as
+    /// one-way bandwidth would overstate throughput by 2x.
+    ///
+    /// The block is larger than one frame on purpose: this includes segmentation, windowing and
+    /// the peer's echo turnaround, which is what a real transfer pays. It is **not** peak link
+    /// bandwidth -- a single writer that then reads its own echo is round-trip-limited by
+    /// construction. Measuring peak would need the write and the read to overlap.
+    ///
+    /// **`BLOCK` is bounded by the socket buffers and must stay well under them.** An echo has a
+    /// deadlock in it: the writer is not reading while it writes, so the peer's reply accumulates
+    /// in the writer's receive buffer; once that fills, the peer blocks in its own write, stops
+    /// reading, and the writer then blocks too. `smoltcp.rs` sets `TX_BUF_SIZE = 8192` and
+    /// `RX_BUF_SIZE = 65536`, so a 64 KiB block sits exactly at the limit -- and duly deadlocked,
+    /// wedging a whole boot (`netsmoke1`, 2026-08-27: the guest produced no test report and the
+    /// 25s hang reporter fired). 16 KiB leaves 4x headroom in the receive buffer.
+    #[bench]
+    fn net_tcp_throughput(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let _mark = Mark::new("net_tcp_throughput");
+        // Keep the margin explicit: if either buffer is ever retuned, this is the line that has
+        // to be revisited, and a silent deadlock is the failure it prevents.
+        const BLOCK: usize = 16 * 1024;
+        const RX_BUF_SIZE: usize = 65536; // mirrors twz-rt's socket buffer
+        const _: () = assert!(BLOCK * 2 <= RX_BUF_SIZE);
+        let Some(mut peer) = EchoPeer::new("serve-echo", NET_TCP_THROUGHPUT_PORT, true, 1) else {
+            console("net_tcp_throughput: no network peer, skipping\n");
+            return;
+        };
+        let fd = peer.tcp.as_ref().unwrap().as_raw_fd();
+        // Chunked and interleaved: write a chunk, read its echo, repeat. A single large write
+        // cannot be used here -- see the deadlock note above -- and chunking below TX_BUF_SIZE
+        // also means no individual write has to block waiting for drain.
+        const CHUNK: usize = 4096;
+        const _: () = assert!(CHUNK <= 8192 && BLOCK % CHUNK == 0);
+        let out = vec![0x5au8; CHUNK];
+        let mut back = vec![0u8; CHUNK];
+        b.bytes = (BLOCK * 2) as u64;
+        let mut stalled = 0u64;
+        b.iter(|| {
+            for _ in 0..(BLOCK / CHUNK) {
+                if net_write_within(fd, &out, NET_IO_TIMEOUT) != CHUNK
+                    || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != CHUNK
+                {
+                    stalled += 1;
+                    return;
+                }
+            }
+            std::hint::black_box(back[0]);
+        });
+        if stalled > 0 {
+            console(&format!(
+                "net_tcp_throughput: {} stalled iterations -- NUMBER IS INVALID\n",
+                stalled
+            ));
+        }
+    }
+
+    /// Pipelined TCP throughput: write the whole block, *then* read the whole echo.
+    ///
+    /// The sibling [`net_tcp_throughput`] writes 4 KiB and reads its echo before writing again,
+    /// so it is round-trip-limited by construction and never has more than a few segments in
+    /// flight. That makes it nearly blind to the receive window -- it cannot tell a 1-segment
+    /// window from a 64-segment one. This variant exists to be sensitive to exactly that: the
+    /// full BLOCK goes out before any of it is read back, so the sender's progress depends on
+    /// how fast the peer's advertised window lets the tx buffer drain.
+    ///
+    /// Deadlock safety is the same argument as the sibling and rests on the same assert: at most
+    /// BLOCK is outstanding in each direction, and 2*BLOCK fits in the 64 KiB rx buffer, so the
+    /// peer's echo writes never block and the peer therefore never stops reading. Note that the
+    /// tx buffer is only 8 KiB, so a BLOCK-sized write *does* have to drain mid-write -- that is
+    /// the point, not a hazard.
+    #[bench]
+    fn net_tcp_throughput_pipelined(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let _mark = Mark::new("net_tcp_throughput_pipelined");
+        const BLOCK: usize = 16 * 1024;
+        const RX_BUF_SIZE: usize = 65536; // mirrors twz-rt's socket buffer
+        const _: () = assert!(BLOCK * 2 <= RX_BUF_SIZE);
+        let Some(mut peer) = EchoPeer::new("serve-echo", NET_TCP_THROUGHPUT_PIPE_PORT, true, 3)
+        else {
+            console("net_tcp_throughput_pipelined: no network peer, skipping\n");
+            return;
+        };
+        let fd = peer.tcp.as_ref().unwrap().as_raw_fd();
+        let out = vec![0x5au8; BLOCK];
+        let mut back = vec![0u8; BLOCK];
+        b.bytes = (BLOCK * 2) as u64;
+        let mut stalled = 0u64;
+        b.iter(|| {
+            if net_write_within(fd, &out, NET_IO_TIMEOUT) != BLOCK
+                || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != BLOCK
+            {
+                stalled += 1;
+                return;
+            }
+            std::hint::black_box(back[0]);
+        });
+        if stalled > 0 {
+            console(&format!(
+                "net_tcp_throughput_pipelined: {} stalled iterations -- NUMBER IS INVALID\n",
+                stalled
+            ));
+        }
+    }
+
+    /// UDP round trip: the same latency question without TCP's acknowledgement and windowing.
+    ///
+    /// Datagrams can be lost, and a lost one would either hang the bench or -- worse -- be
+    /// silently resent and time as a fast iteration. Neither is acceptable, so a timeout is
+    /// counted and reported on the console: a nonzero count means the number above is
+    /// contaminated and should not be read.
+    #[bench]
+    fn net_udp_latency(b: &mut Bencher) {
+        if !bench_mode() {
+            return;
+        }
+        let _mark = Mark::new("net_udp_latency");
+        let Some(peer) = EchoPeer::new("serve-udp-echo", NET_UDP_PORT, false, 2) else {
+            console("net_udp_latency: no network peer, skipping\n");
+            return;
+        };
+        let sock = peer.udp.as_ref().unwrap();
+        let fd = sock.as_raw_fd();
+        let mut out = [0x5au8; 64];
+        let mut back = [0u8; 64];
+        const UDP_BOUND: Duration = Duration::from_millis(200);
+        let (mut iters, mut lost, mut failed) = (0u64, 0u64, 0u64);
+        let (mut stale, mut ahead, mut runt) = (0u64, 0u64, 0u64);
+        let mut seq: u32 = 0;
+        b.iter(|| {
+            iters += 1;
+            seq = seq.wrapping_add(1);
+            out[..4].copy_from_slice(&seq.to_le_bytes());
+            // A full tx buffer is `WouldBlock`, not a panic (twz-rt, 2026-08-27) -- so this is a
+            // bounded retry rather than an unwrap. An unwrap here would turn ordinary
+            // backpressure into a dead boot and read as the engine being broken.
+            let deadline = Instant::now() + NET_IO_TIMEOUT;
+            loop {
+                match sock.send(&out) {
+                    Ok(_) => break,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::yield_now()
+                    }
+                    Err(_) => {
+                        failed += 1;
+                        return;
+                    }
+                }
+            }
+            // Recover on *receive*, not on timeout. A reply that misses its bound is typically
+            // still in flight when the bound expires, so draining then finds an empty queue and
+            // iteration i+1 inherits the stale reply anyway -- every later iteration then
+            // measures the wrong round trip and times near zero. Draining can only collect what
+            // has already landed, which is the subset that was never the problem. (Built and
+            // disproved by twizzler-24 with a forced-timeout canary, 2026-08-27.) So: discard
+            // anything carrying an older sequence and keep waiting for our own, inside the same
+            // bound. Self-healing, and a late reply costs one datagram rather than the row.
+            let deadline = Instant::now() + UDP_BOUND;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    lost += 1;
+                    break;
+                }
+                let Some(n) = net_recv_within(fd, &mut back, remaining) else {
+                    lost += 1;
+                    break;
+                };
+                if n < 4 {
+                    runt += 1;
+                    continue;
+                }
+                let got = u32::from_le_bytes([back[0], back[1], back[2], back[3]]);
+                if got == seq {
+                    break;
+                }
+                // Wrapping-safe "is older": we have never sent a sequence above `seq`, so a
+                // reply ahead of it cannot exist. That one is a hard failure; a stale one is not.
+                if seq.wrapping_sub(got) < 0x8000_0000 {
+                    stale += 1;
+                } else {
+                    ahead += 1;
+                    break;
+                }
+            }
+            std::hint::black_box(back[0]);
+        });
+        console(&format!(
+            "net_udp_latency: {} timeouts, {} stale discarded, {} runts, {} send failures of {} \
+             iterations{}{}\n",
+            lost,
+            stale,
+            runt,
+            failed,
+            iters,
+            if lost > 0 || stale > 0 || runt > 0 || failed > 0 {
+                " -- NUMBER IS SUSPECT"
+            } else {
+                ""
+            },
+            if ahead > 0 {
+                " -- REPLY SEQUENCE AHEAD OF SENT, NUMBER IS INVALID"
+            } else {
+                ""
+            }
+        ));
     }
 
     /// Volatile object create + map (via the builder) followed by delete.

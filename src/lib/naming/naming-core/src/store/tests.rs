@@ -309,3 +309,44 @@ fn reload_from_object_id() {
     let session = store.root_session();
     assert_eq!(get_ok(&session, "a").id, ObjID::new(42));
 }
+
+/// `cwd_path` must still name a working namespace that no walk ever recorded a parent for.
+///
+/// Every namespace a walk produces carries an in-memory parent, so the ordinary path is read
+/// straight off that chain. A namespace opened by id carries none. That gap is not hypothetical:
+/// `..` out of such a namespace used to *invent* a parent -- `ParentInfo::new(namespace, "..")`,
+/// a chain asserting that a namespace's parent is its own child -- which `cwd_path` would have
+/// walked, emitting ".." until its depth bound stopped it.
+///
+/// Nothing reachable from userspace produces this state today, so no boot exercises the recovery
+/// and no green suite is evidence about it. That is precisely why it is worth a test: without
+/// one, working code and dead code that merely compiles look identical from here.
+#[test]
+fn cwd_path_recovers_a_parent_it_was_never_given() {
+    let store = NameStore::new();
+    let mut session = store.root_session();
+    session.mkns("a", false).unwrap();
+    session.mkns("a/b", false).unwrap();
+
+    // Control: reached by a walk, so the chain exists and the path comes off it.
+    session.change_namespace("/a/b").unwrap();
+    assert_eq!(
+        session.cwd_path().unwrap(),
+        std::path::PathBuf::from("/a/b")
+    );
+    let b = session.cwd().id();
+
+    // The state a walk cannot produce: the same namespace, opened by id, with no parent. Asserted
+    // rather than assumed -- if this ever starts carrying a parent, the test below would pass for
+    // the ordinary reason and stop testing recovery at all.
+    let bare = session.open_namespace(b, false, None).unwrap();
+    assert!(bare.parent().is_none());
+    session.working_ns = Some(bare);
+
+    // Recovered: the persisted ".." gives the parent, and the name is found where names actually
+    // live -- as a binding in that parent.
+    assert_eq!(
+        session.cwd_path().unwrap(),
+        std::path::PathBuf::from("/a/b")
+    );
+}

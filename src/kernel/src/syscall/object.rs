@@ -353,7 +353,11 @@ pub fn sys_object_create(
         }
     }
     if obj.use_pager() {
-        crate::pager::create_object(id, create, nonce);
+        // This id is about to exist, so a negative-cache entry for it is stale by construction.
+        // Reachable for deterministic ids -- `ino_to_objid` derives one from an inode number, so
+        // probing an external file before it is created would otherwise poison it for the boot.
+        crate::obj::clear_no_exist(id);
+        crate::pager::create_object(id, create, nonce)?;
         if create.flags.contains(ObjectCreateFlags::DELETE) {
             obj.set_delete_on_last_unmap();
         }

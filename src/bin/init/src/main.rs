@@ -294,6 +294,11 @@ fn main() {
     let _root_id = initialize_namer(bootstrap_id);
 
     std::env::set_var("PATH", "/initrd");
+    // Give `HOME` a definition rather than leaving it unset. The runtime reports "/" for
+    // `NameRoot::Home` either way, so this changes no behaviour on its own -- it makes the value
+    // visible to programs that read the variable directly, and gives `cd` and `~` one thing to
+    // follow when it becomes something other than the root.
+    std::env::set_var("HOME", "/");
     std::env::set_var("PYTHON_HISTORY", "/data/.python_history");
     std::env::set_var("TERM", "xterm");
 

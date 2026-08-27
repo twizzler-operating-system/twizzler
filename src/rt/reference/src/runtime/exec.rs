@@ -30,7 +30,12 @@ fn c_str_array_to_vec(arr: *const *const c_char) -> Vec<String> {
 
 fn find_id(name: impl AsRef<str>) -> Result<ObjID, TwzError> {
     let path = Path::new(name.as_ref());
-    if path.is_absolute() {
+    // POSIX: a command name containing a slash is a *path* -- absolute, or relative to the working
+    // directory -- and is never looked for on PATH; only a bare name searches PATH. Without the
+    // slash test, `./prog` was searched as `<pathdir>/./prog` for each PATH entry and so could not
+    // be run at all. A relative name resolves against this compartment's working namespace, which
+    // is the naming server's, so it means the same directory the shell's prompt is showing.
+    if path.is_absolute() || name.as_ref().contains('/') {
         return twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &name);
     }
     let Ok(candidates) = std::env::var("PATH") else {

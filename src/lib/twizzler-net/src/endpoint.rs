@@ -1,4 +1,11 @@
-use std::{collections::HashMap, io::ErrorKind, sync::Mutex};
+use std::{
+    collections::HashMap,
+    io::ErrorKind,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 
 use twizzler_abi::syscall::ThreadSyncSleep;
 use twizzler_io::packet::PacketObject;
@@ -10,6 +17,14 @@ pub struct Pair<S: Copy, C: Copy> {
     buf: PacketObject,
     queue: Queue<S, C>,
     inner: Mutex<PairInner>,
+    /// Set when `check_completions` actually reclaims packets.
+    ///
+    /// Freeing a slot is progress a blocked sender is waiting on, and it is invisible to smoltcp's
+    /// `PollResult` -- which is what made the original missed-wakeup bug. Recording it here lets
+    /// the poll loop report it as progress *without* notifying unconditionally, which livelocked:
+    /// a notify on every poll woke a blocked sender, whose retry failed and which then woke the
+    /// poll thread again, forever.
+    progress: AtomicBool,
 }
 
 impl<S: Copy, C: Copy> Pair<S, C> {
@@ -18,6 +33,7 @@ impl<S: Copy, C: Copy> Pair<S, C> {
             buf,
             queue,
             inner: Mutex::new(PairInner::default()),
+            progress: AtomicBool::new(false),
         }
     }
 
@@ -75,6 +91,19 @@ impl PairInner {
 impl<S: Copy, C: Copy> Pair<S, C> {
     pub fn packet_size(&self) -> usize {
         self.buf.packet_size()
+    }
+
+    /// Slots in this endpoint's pool -- the count of network buffers behind it.
+    pub fn nr_packets(&self) -> usize {
+        self.buf.nr_packets()
+    }
+
+    pub fn set_packet_len(&self, id: PacketNum, len: usize) {
+        self.buf.set_packet_len(id, len)
+    }
+
+    pub fn packet_len(&self, id: PacketNum) -> usize {
+        self.buf.packet_len(id)
     }
 
     pub fn allocate_packet(&self) -> Option<PacketNum> {
@@ -162,7 +191,13 @@ impl<S: Copy, C: Copy> Pair<S, C> {
                 self.release_packets(set);
             }
             inner.release_id(comp.0);
+            self.progress.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Whether packets were reclaimed since the last call, clearing the flag.
+    pub fn take_progress(&self) -> bool {
+        self.progress.swap(false, Ordering::Relaxed)
     }
 
     pub fn recv_msg(&self) -> Option<(u32, S)> {

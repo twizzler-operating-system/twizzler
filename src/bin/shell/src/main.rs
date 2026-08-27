@@ -77,6 +77,31 @@ struct ShellInvoke {
     env: Vec<(String, String)>,
 }
 
+/// This shell's idea of home.
+///
+/// `HOME` is set by init; the fallback is what the runtime reports for `NameRoot::Home` when the
+/// variable is unset, so `cd` and `~` agree with `home_dir()` either way.
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+}
+
+/// Tilde expansion, POSIX-shaped and deliberately minimal: `~` and `~/...` only.
+///
+/// `~user` is left untouched. Resolving it needs a user database this system does not have, and an
+/// unexpanded `~user` fails visibly as a path -- where a guess would quietly name a directory the
+/// user did not ask for.
+fn expand_tilde(word: &str) -> String {
+    if word != "~" && !word.starts_with("~/") {
+        return word.to_string();
+    }
+    let home = home_dir();
+    if word == "~" {
+        return home;
+    }
+    // Avoid a doubled separator when home is the root.
+    format!("{}/{}", home.trim_end_matches('/'), &word[2..])
+}
+
 mod builtins {
     use std::{
         fs::File,
@@ -193,12 +218,43 @@ mod builtins {
     }
 
     pub fn cd(ctx: &mut BuiltinCtx, _invoke: &InvokeCtx) -> miette::Result<()> {
-        if ctx.cmd.command.len() != 2 {
-            writeln!(ctx.stderr(), "usage: cd <directory>").into_diagnostic()?;
+        if ctx.cmd.command.len() > 2 {
+            writeln!(ctx.stderr(), "usage: cd [directory]").into_diagnostic()?;
             return Ok(());
         }
-        if let Err(e) = std::env::set_current_dir(&ctx.cmd.command[1]) {
+
+        // Bare `cd` goes home; `cd -` returns to the previous directory and echoes it, as a POSIX
+        // shell does -- the echo is what makes `-` usable, since you cannot otherwise tell where
+        // it took you without a second command.
+        let (target, echo) = match ctx.cmd.command.get(1).map(|s| s.as_str()) {
+            None => (super::home_dir(), false),
+            Some("-") => match std::env::var("OLDPWD") {
+                Ok(prev) => (prev, true),
+                Err(_) => {
+                    writeln!(ctx.stderr(), "cd: OLDPWD not set").into_diagnostic()?;
+                    return Ok(());
+                }
+            },
+            Some(dir) => (dir.to_string(), false),
+        };
+
+        let prev = std::env::current_dir().ok();
+        if let Err(e) = std::env::set_current_dir(&target) {
             writeln!(ctx.stderr(), "failed to change directory: {}", e).into_diagnostic()?;
+            return Ok(());
+        }
+
+        // `OLDPWD` is tracked; `PWD` deliberately is not. The working directory lives in the
+        // naming server, and an environment copy of it would be a second source of truth that
+        // goes stale the moment anything changes directory without coming through this builtin --
+        // which is the exact class of bug this area was just cleaned up to remove.
+        if let Some(prev) = prev {
+            unsafe { std::env::set_var("OLDPWD", prev) };
+        }
+        if echo {
+            if let Ok(now) = std::env::current_dir() {
+                writeln!(ctx.stdout(), "{}", now.display()).into_diagnostic()?;
+            }
         }
         Ok(())
     }
@@ -930,7 +986,7 @@ impl ShellInvoke {
             } else if part.starts_with("<") {
                 (0, false, 1)
             } else {
-                command.push(part.to_string());
+                command.push(expand_tilde(part));
                 continue;
             };
 
@@ -941,7 +997,7 @@ impl ShellInvoke {
             redirect.push(Redirect {
                 fd,
                 append,
-                path: part[prefix_len..].to_string(),
+                path: expand_tilde(&part[prefix_len..]),
             });
         }
 

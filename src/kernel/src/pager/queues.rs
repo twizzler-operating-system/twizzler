@@ -592,6 +592,9 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
             if let KernelCommand::PageDataReq(obj_id, ..) = request.cmd() {
                 super::record_page_in_error(obj_id, err);
             }
+            if let KernelCommand::ObjectCreate(obj_id, ..) = request.cmd() {
+                super::record_create_error(obj_id, err);
+            }
             super::lock_inflight_for(rk).request_ready(rk);
         }
     }

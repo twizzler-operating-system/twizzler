@@ -12,7 +12,7 @@
 use std::{
     env,
     io::{Read, Write},
-    net::{TcpStream, UdpSocket},
+    net::{TcpListener, TcpStream, UdpSocket},
     os::fd::AsRawFd,
     process::ExitCode,
     thread::sleep,
@@ -20,7 +20,9 @@ use std::{
 };
 
 use twizzler_rt_abi::{
+    bindings::{kevent, option_duration, twz_rt_fd_kevent, EVFILT_READ, EV_ADD, EV_ERROR, EV_RECEIPT},
     error::TwzError,
+    fd::RawFd,
     io::{twz_rt_fd_pread, IoCtx, IoFlags},
 };
 
@@ -36,7 +38,9 @@ fn usage() -> ! {
            connect-recv <len>       connect, read `len` bytes of the bulk pattern, expect EOF\n  \
            connect-halfclose <msg>  connect, send msg, shut down writing, read the reply back\n  \
            udp-send <count>         send `count` datagrams\n  \
-           udp-echo <attempts>      send pings until one is answered, up to `attempts`"
+           udp-echo <attempts>      send pings until one is answered, up to `attempts`\n  \
+           serve-echo <idle_ms>     listen, accept one connection, echo until EOF (benchmarks)\n  \
+           serve-udp-echo <idle_ms> listen, echo datagrams back until idle for `idle_ms`"
     );
     std::process::exit(2)
 }
@@ -71,6 +75,8 @@ fn main() -> ExitCode {
         "connect-halfclose" => connect_halfclose(target, arg),
         "udp-send" => udp_send(target, arg.parse().unwrap_or(4)),
         "udp-echo" => udp_echo(target, arg.parse().unwrap_or(20)),
+        "serve-echo" => serve_echo(target, arg.parse().unwrap_or(20_000)),
+        "serve-udp-echo" => serve_udp_echo(target, arg.parse().unwrap_or(20_000)),
         _ => usage(),
     };
 
@@ -336,4 +342,128 @@ fn udp_echo(target: &str, attempts: usize) -> std::io::Result<()> {
         "no reply to any of {} pings",
         attempts
     )))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Long-lived echo servers, for the sysbench network benchmarks.
+//
+// Every other mode here is a single round trip, because `net_test` grades a peer by exit status.
+// These two are the exception: a throughput or latency number needs many round trips over one
+// established connection, so the peer has to outlive a single exchange. They still terminate on
+// their own -- on EOF for TCP, on an idle deadline for UDP -- so a benchmark that dies does not
+// leave a compartment running.
+
+/// Readiness wait, so neither `accept()` nor `recv_from()` can block forever.
+///
+/// Same reasoning as `net_test`'s `accept_within`: nothing imposes a timeout on a peer, so an
+/// unbounded block here would wedge the whole suite rather than fail one benchmark. Level
+/// triggered (no `EV_CLEAR`), so an already-pending connection or datagram still reports.
+fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
+    fn ev(ident: RawFd, filter: i16, flags: u16) -> kevent {
+        kevent {
+            ident: ident as usize,
+            filter,
+            flags,
+            fflags: 0,
+            data: 0,
+            udata: std::ptr::null_mut(),
+            ext: [0; 4],
+        }
+    }
+    fn call(kq: RawFd, chg: &[kevent], out: &mut [kevent], t: Option<Duration>) -> usize {
+        let t: option_duration = t.into();
+        let res = unsafe {
+            twz_rt_fd_kevent(kq, chg.as_ptr(), chg.len(), out.as_mut_ptr(), out.len(), t)
+        };
+        let r: twizzler_rt_abi::Result<usize> = res.into();
+        r.expect("kevent")
+    }
+
+    let Ok(kq) = twizzler_rt_abi::fd::twz_rt_fd_open_kqueue(0) else {
+        return false;
+    };
+    let mut out = [ev(0, 0, 0); 4];
+    // EV_RECEIPT forces the registration to return rather than going on to wait, so the wait
+    // below is the only thing that consumes readiness.
+    let n = call(
+        kq,
+        &[ev(fd, EVFILT_READ, EV_ADD | EV_RECEIPT)],
+        &mut out,
+        Some(Duration::ZERO),
+    );
+    let registered = n == 1 && out[0].flags & EV_ERROR == EV_ERROR && out[0].data == 0;
+    let ready = registered && call(kq, &[], &mut out, Some(timeout)) > 0;
+    twizzler_rt_abi::fd::twz_rt_fd_close(kq);
+    ready
+}
+
+/// Largest single echo chunk. Sized above the benchmark's block so a bulk transfer is not
+/// artificially split by this buffer.
+const ECHO_BUF: usize = 128 * 1024;
+
+/// Accept one connection on `listen` and echo every byte back until the client closes.
+///
+/// Terminates on EOF, so the benchmark ends this peer by dropping its stream. `idle_ms` bounds
+/// both the wait for a connection and any single stall mid-stream.
+fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
+    let idle = Duration::from_millis(idle_ms);
+    let listener = TcpListener::bind(listen)?;
+    if !wait_readable(listener.as_raw_fd(), idle) {
+        return Err(std::io::Error::other(format!(
+            "no connection within {:?}",
+            idle
+        )));
+    }
+    let (mut stream, _) = listener.accept()?;
+    let fd = stream.as_raw_fd();
+    let mut buf = vec![0u8; ECHO_BUF];
+
+    loop {
+        let deadline = Instant::now() + idle;
+        let n = loop {
+            let mut ctx = IoCtx::new(None, IoFlags::NONBLOCKING, None);
+            match twz_rt_fd_pread(fd, &mut buf, &mut ctx) {
+                Ok(n) => break n,
+                Err(e) if e == TwzError::WOULD_BLOCK => {
+                    if Instant::now() >= deadline {
+                        return Err(std::io::Error::other(format!("idle for {:?}", idle)));
+                    }
+                    // Yield rather than spin. A benchmark's next request is microseconds away so
+                    // sleeping would land in the measurement -- but a pure `spin_loop` pins a
+                    // vcpu, and this guest has four and roughly a dozen compartments. Starving
+                    // net-srv's device thread while waiting for a frame *it* has to deliver is a
+                    // deadlock built out of scheduling rather than buffers.
+                    std::thread::yield_now();
+                }
+                // A reset ends the stream as definitively as EOF does.
+                Err(_) => return Ok(()),
+            }
+        };
+        if n == 0 {
+            return Ok(());
+        }
+        stream.write_all(&buf[..n])?;
+    }
+}
+
+/// Echo datagrams back to their sender until nothing arrives for `idle_ms`.
+///
+/// UDP has no EOF, so an idle deadline is the only termination this can have. The benchmark
+/// simply stops sending and lets it expire.
+fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
+    let idle = Duration::from_millis(idle_ms);
+    let sock = UdpSocket::bind(listen)?;
+    let fd = sock.as_raw_fd();
+    let mut buf = vec![0u8; 64 * 1024];
+
+    loop {
+        if !wait_readable(fd, idle) {
+            // Expected exit: the benchmark finished and stopped sending.
+            return Ok(());
+        }
+        // Readiness was reported, so this cannot block. `recv_from` rather than a raw read
+        // because the reply needs the sender's address.
+        let (n, from) = sock.recv_from(&mut buf)?;
+        sock.send_to(&buf[..n], from)?;
+    }
 }

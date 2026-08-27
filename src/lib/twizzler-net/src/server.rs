@@ -131,7 +131,13 @@ impl smoltcp::phy::Device for NetServer {
         let mut cap = DeviceCapabilities::default();
         cap.medium = Medium::Ethernet;
         cap.max_transmission_unit = 1514;
-        cap.max_burst_size = Some(1);
+        // smoltcp clamps the advertised TCP receive window to `max_burst_size * MSS`. It is a
+        // guard for devices whose network buffers are far smaller than their TCP buffers (its own
+        // example driver has four); at `Some(1)` it pins the window to a single segment, which is
+        // stop-and-wait TCP. A full 64 KiB window is ~45 segments and this pool has 1024 slots, so
+        // the pool depth is the honest bound -- it leaves the socket buffer as the limit, and
+        // tightens automatically if anyone shrinks the pool.
+        cap.max_burst_size = Some(self.client_rx.nr_packets());
         cap
     }
 }
@@ -161,6 +167,7 @@ impl TxToken for NetServerTxToken<'_> {
         }
         let mem = self.ns.client_rx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
+        self.ns.client_rx.set_packet_len(self.packet, len);
         self.consumed = true;
 
         self.ns
@@ -179,8 +186,9 @@ impl RxToken for NetServerRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
+        let len = self.ns.client_tx.packet_len(self.packet);
         let mem = self.ns.client_tx.packet_mem_mut(self.packet);
-        f(mem)
+        f(&mem[0..len])
     }
 }
 

@@ -177,7 +177,10 @@ impl<T: Transport> Device for DeviceWrapper<T> {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.max_transmission_unit = 1514;
-        caps.max_burst_size = Some(1);
+        // See NetServer::capabilities. This is the NIC-facing device, so this clamp is what
+        // governs off-box TCP: at Some(1) a remote peer may keep one segment in flight. The queue
+        // really does hold NET_QUEUE_SIZE buffers, which is the bound smoltcp's guard wants.
+        caps.max_burst_size = Some(NET_QUEUE_SIZE);
         caps.medium = Medium::Ethernet;
         caps
     }

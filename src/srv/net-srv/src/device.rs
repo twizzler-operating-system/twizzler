@@ -76,8 +76,13 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
             }
             drop(handles);
             {
+                // Report on every change, not on a stride. A `% 32` gate printed nothing at all
+                // across six boots, and "fewer than 32 inbound frames" is indistinguishable from
+                // "device_thread never ran" -- the same milestone truncation that once hid this
+                // file's own delivery counters. Volume here is ~tens per boot, so per-change is
+                // affordable, and it cannot report a zero it did not observe.
                 let n = DEV_RX_FRAMES.load(Ordering::Relaxed);
-                if n % 32 == 0 && DEV_RX_REPORTED.swap(n, Ordering::Relaxed) != n {
+                if n > 0 && DEV_RX_REPORTED.swap(n, Ordering::Relaxed) != n {
                     tracing::warn!(
                         "DEVRX frames={} copies={} targeted={} flooded={}",
                         n,
