@@ -249,7 +249,14 @@ pub mod diag {
     pub static STATE_WAKE_SKIPPED_NO_THREAD: Counter =
         Counter::new("thread state-change wake skipped, no current thread");
 
-    static ALL: [&Counter; 30] = [
+    /// A voluntary block (`SchedFlags::YIELD`) reached `schedule` on a critical thread, so it
+    /// returned without switching and the caller resumed believing it slept. With spinlock guards
+    /// charging the critical count, this is a lock held across a block reporting itself instead of
+    /// hanging -- `critical_origin` names the acquisition site.
+    pub static BLOCK_WHILE_CRITICAL: Counter =
+        Counter::new("voluntary block skipped, thread critical");
+
+    static ALL: [&Counter; 31] = [
         &CRITICAL_LEAK_AT_ENTRY,
         &CRITICAL_LEAK_AT_EXIT,
         &NO_CURRENT_THREAD,
@@ -280,6 +287,7 @@ pub mod diag {
         &BLOCK_CHECK_CLEAR,
         &STATE_WAKE_SKIPPED_CRITICAL,
         &STATE_WAKE_SKIPPED_NO_THREAD,
+        &BLOCK_WHILE_CRITICAL,
     ];
 
     /// Token identifying who holds a `LockTracker`'s flag: cpu in the high 16 bits (biased by one
@@ -898,7 +906,7 @@ impl LockTrackerInner {
     }
 }
 
-const DISABLE_LOCK_TRACKING: bool = false; // !cfg!(debug_assertions) or test mode;
+const DISABLE_LOCK_TRACKING: bool = true; // !cfg!(debug_assertions) or test mode;
 
 /// The A/B switch for the whole tracker, `DISABLE_LOCK_TRACKING` read the way call sites want it.
 ///

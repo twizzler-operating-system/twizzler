@@ -10,7 +10,10 @@ use std::{
 use smoltcp::{
     phy::{Device, RxToken, TxToken},
     time::Instant,
-    wire::{EthernetAddress, EthernetFrame, EthernetProtocol, Ipv4Packet, PrettyPrinter},
+    wire::{
+        EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet, PrettyPrinter,
+        TcpPacket,
+    },
 };
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
 use twizzler_net::NetServer;
@@ -48,6 +51,7 @@ impl Client {
 
 /// Where a frame leaving a client should go.
 #[derive(Clone, Copy)]
+#[derive(Debug)]
 enum Dest {
     /// Off-box, out the NIC -- the ordinary case.
     Device,
@@ -92,6 +96,17 @@ fn classify(buf: &[u8], local_macs: &[EthernetAddress]) -> Dest {
 /// lock on a path that already holds two.
 static LOCAL_RX_DROPS: AtomicU64 = AtomicU64::new(0);
 
+/// `Dest::Local` frames that reached `inject_local` and matched no live client.
+///
+/// `classify` decides Local from a `local_macs` snapshot taken before this client's `ep` is held;
+/// `inject_local` re-takes the handles lock afterwards, and a sibling that went away in between
+/// leaves the frame with nowhere to go. It is not injected, and because the destination is Local
+/// it is never handed to the NIC either -- the one delivery outcome on this path that produces no
+/// record at all. Counted separately for FINs because a lost FIN is the failure under
+/// investigation and a lost ARP retry is not.
+static LOCAL_NOMATCH: AtomicU64 = AtomicU64::new(0);
+static LOCAL_NOMATCH_FIN: AtomicU64 = AtomicU64::new(0);
+
 /// Frames `inject_local` successfully handed to a sibling.
 ///
 /// The drop counter alone cannot distinguish "no frame was lost here" from "no frame came through
@@ -124,6 +139,41 @@ static LOCAL_RX_BY_DST: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 /// So `.106` answers the open question directly: roughly twenty in a passing round, and near zero
 /// in a failing one iff the peer's datagrams never reached net-srv at all.
 static LOCAL_RX_BY_SRC: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+/// TCP frames carrying FIN, counted where every client frame passes: `classify`.
+///
+/// The lost-FIN question, reduced to one measurement. `TcpStreamInner::drop` is now known to run
+/// (tcpdrops identical in failing and passing rounds), so `close()` is called and the FIN is
+/// queued -- yet only one frame ever reaches the peer, while the parent's engine polls 256+ times.
+/// Two possibilities remain and this separates them: **`TX_FIN_BY_SRC[100] == 0` in a failing
+/// round means the parent's smoltcp never emitted the FIN** (fault upstream, in the engine);
+/// nonzero means it emitted one and net-srv lost or misrouted it (fault here).
+///
+/// The `_DEVICE`/`_FLOOD` splits catch the specific misroute worth suspecting: a FIN sent out the
+/// NIC instead of delivered on-box would never increment the per-destination counter that made
+/// this population visible in the first place.
+/// FINs by IPv4 *destination*. `TX_FIN_BY_SRC` answers "did the parent emit FINs" and cannot
+/// answer "was one of them for the peer" -- which is the question the failing rounds turn on.
+static TX_FIN_BY_DST: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static TX_FIN_BY_SRC: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static TX_FIN_LOCAL: AtomicU64 = AtomicU64::new(0);
+static TX_FIN_DEVICE: AtomicU64 = AtomicU64::new(0);
+static TX_FIN_FLOOD: AtomicU64 = AtomicU64::new(0);
+static TX_FIN_REPORTED: AtomicU64 = AtomicU64::new(0);
+
+/// Source octet of an IPv4/TCP frame whose FIN flag is set, if it is one.
+fn tcp_fin_src_octet(frame: &[u8]) -> Option<(u8, u8)> {
+    let eth = EthernetFrame::new_checked(frame).ok()?;
+    if eth.ethertype() != EthernetProtocol::Ipv4 {
+        return None;
+    }
+    let ip = Ipv4Packet::new_checked(eth.payload()).ok()?;
+    if ip.next_header() != IpProtocol::Tcp {
+        return None;
+    }
+    let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
+    tcp.fin()
+        .then(|| (ip.src_addr().octets()[3], ip.dst_addr().octets()[3]))
+}
 
 /// Locally-injected frames that did not yield an IPv4 (src, dst), split by *why*.
 ///
@@ -194,12 +244,14 @@ static DEVICE_UNICAST: AtomicU64 = AtomicU64::new(0);
 /// The caller must not hold its own `ep`: two client threads cross-injecting while each held its
 /// own would deadlock, which is why `client_thread` copies frames out and dispatches them only
 /// after dropping that lock.
-fn inject_local(frame: &[u8], sender: EthernetAddress, f: impl Fn(&Client) -> bool) {
+fn inject_local(frame: &[u8], sender: EthernetAddress, f: impl Fn(&Client) -> bool) -> usize {
+    let mut matched = 0usize;
     let handles = NETINFO.get().unwrap().handles.lock().unwrap();
     for (_, _, client) in handles.handles() {
         if client.addr.hwaddr() == sender || !f(client) {
             continue;
         }
+        matched += 1;
         let mut ep = client.ep.lock().unwrap();
         match ep.transmit(Instant::now()) {
             Some(tx) => {
@@ -297,6 +349,7 @@ fn inject_local(frame: &[u8], sender: EthernetAddress, f: impl Fn(&Client) -> bo
             }
         };
     }
+    matched
 }
 
 fn client_thread(client: Arc<Client>) {
@@ -337,6 +390,23 @@ fn client_thread(client: Arc<Client>) {
                     eprintln!("client thread got {}", pp);
                 }
                 let dest = classify(buf, &local_macs);
+                if let Some((src, dst)) = tcp_fin_src_octet(buf) {
+                    TX_FIN_BY_SRC[src as usize].fetch_add(1, Ordering::Relaxed);
+                    TX_FIN_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed);
+                    match dest {
+                        Dest::Local(_) => &TX_FIN_LOCAL,
+                        Dest::Device => &TX_FIN_DEVICE,
+                        Dest::Flood => &TX_FIN_FLOOD,
+                    }
+                    .fetch_add(1, Ordering::Relaxed);
+                    // Counters only here -- NO logging. This closure runs inside `rx.consume`
+                    // while `client.ep` is locked, and every pre-existing log call in this file
+                    // fires only after `drop(ep)`. A console write is a syscall; doing one under
+                    // that lock stalls every other client thread behind it. The first version of
+                    // this probe logged here and took the test suite from 13/50 failures to
+                    // **50/50** -- an instrument that destroyed the behaviour it was measuring.
+                    // The report is emitted below, outside the lock.
+                }
                 // The NIC path keeps the zero-copy handoff of the client's own tx packet; only
                 // frames that stay on-box are copied.
                 if !matches!(dest, Dest::Local(_)) {
@@ -353,10 +423,45 @@ fn client_thread(client: Arc<Client>) {
         let has_pending_msg = ep.has_pending_msg_from_client();
         drop(ep);
 
+        // Outside the ep lock, alongside the other counter reports. Power-of-two milestones on
+        // the total, so a busy run cannot flood the console either.
+        {
+            let fins = TX_FIN_LOCAL.load(Ordering::Relaxed)
+                + TX_FIN_DEVICE.load(Ordering::Relaxed)
+                + TX_FIN_FLOOD.load(Ordering::Relaxed);
+            if fins > 0 && TX_FIN_REPORTED.swap(fins, Ordering::Relaxed) != fins {
+                tracing::warn!(
+                    "TXFIN total={} local={} device={} flood={} by_src .100={} .105={} \
+                     nomatch={} nomatch_fin={} by_dst .105={} .100={}",
+                    fins,
+                    TX_FIN_LOCAL.load(Ordering::Relaxed),
+                    TX_FIN_DEVICE.load(Ordering::Relaxed),
+                    TX_FIN_FLOOD.load(Ordering::Relaxed),
+                    TX_FIN_BY_SRC[100].load(Ordering::Relaxed),
+                    TX_FIN_BY_SRC[105].load(Ordering::Relaxed),
+                    LOCAL_NOMATCH.load(Ordering::Relaxed),
+                    LOCAL_NOMATCH_FIN.load(Ordering::Relaxed),
+                    TX_FIN_BY_DST[105].load(Ordering::Relaxed),
+                    TX_FIN_BY_DST[100].load(Ordering::Relaxed),
+                );
+            }
+        }
+
         for (frame, dest) in pending.drain(..) {
             match dest {
-                Dest::Local(dst) => inject_local(&frame, sender, |c| c.addr.hwaddr() == dst),
-                Dest::Flood => inject_local(&frame, sender, |_| true),
+                Dest::Local(dst) => {
+                    // Outside `ep` -- counters only, reported with the TXFIN block above.
+                    if inject_local(&frame, sender, |c| c.addr.hwaddr() == dst) == 0 {
+                        LOCAL_NOMATCH.fetch_add(1, Ordering::Relaxed);
+                        if tcp_fin_src_octet(&frame).is_some() {
+                            LOCAL_NOMATCH_FIN.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                // A flood matching nobody is the ordinary one-client case, not a loss.
+                Dest::Flood => {
+                    let _ = inject_local(&frame, sender, |_| true);
+                }
                 Dest::Device => unreachable!("never queued"),
             }
         }

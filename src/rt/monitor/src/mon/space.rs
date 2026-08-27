@@ -19,6 +19,12 @@ use twizzler_rt_abi::{
     object::{MapFlags, ObjID},
 };
 
+/// Creation-site provenance for the object census: which call site made an object that was
+/// never released. Costs a `format!` plus a syscall per object *create* -- not per map, unlike the
+/// `map:<comp>` note removed in runcomp.rs, which serialized every mapping in the system behind a
+/// syscall under the `comp_mgr` write lock. Armed for leak hunts only.
+const CREATE_NOTES: bool = true;
+
 use self::handle::MapHandleInner;
 
 mod handle;
@@ -475,6 +481,7 @@ impl Space {
     }
 
     /// Utility function for creating an object and mapping it, deleting it if the mapping fails.
+    #[track_caller]
     pub fn safe_create_and_map_object(
         this: &Mutex<Self>,
         spec: ObjectCreate,
@@ -483,6 +490,14 @@ impl Space {
         map_flags: MapFlags,
     ) -> miette::Result<MapHandle> {
         let id = sys_object_create(spec, sources, ties).into_diagnostic()?;
+        if CREATE_NOTES {
+            let loc = core::panic::Location::caller();
+            let file = loc.file().rsplit('/').next().unwrap_or(loc.file());
+            let _ = twizzler_abi::syscall::sys_object_add_note(
+                id,
+                format!("mk:{}:{}", file, loc.line()).as_bytes(),
+            );
+        }
         tracing::trace!(
             "created object {} for mapping: {:?} {:?}",
             id,
@@ -511,6 +526,7 @@ impl Space {
         .into_diagnostic()
     }
 
+    #[track_caller]
     pub fn safe_create_and_map_runtime_object(
         this: &Mutex<Self>,
         instance: ObjID,

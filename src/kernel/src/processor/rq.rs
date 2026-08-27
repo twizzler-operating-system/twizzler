@@ -22,14 +22,12 @@ struct SchedSpinlock<T>(GenericSpinlock<T>);
 
 impl<T> SchedSpinlock<T> {
     fn lock(&self) -> SchedLockGuard<'_, T> {
-        // The critical charge that used to live here now happens in `GenericSpinlock::lock` for
-        // every spinlock, so doing it again would double-count. The wrapper is kept only for the
-        // held-across-a-context-switch diagnostic below.
+        // The critical charge now comes from `GenericSpinlock::lock` itself, for every spinlock;
+        // charging again here would double-count. Kept only to name the acquiring thread in the
+        // crossing diagnostic below.
+        let critical = current_thread_ref().map(|c| &**c);
         let queue = self.0.lock();
-        SchedLockGuard {
-            queue,
-            critical: current_thread_ref().map(|c| &**c),
-        }
+        SchedLockGuard { queue, critical }
     }
 }
 
@@ -73,7 +71,7 @@ pub struct RunQueue<const N: usize> {
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct SchedLockGuard<'a, T> {
     pub(super) queue: LockGuard<'a, T>,
-    /// Thread charged the critical-count increment at lock time.
+    /// DIAG: thread current at acquisition, for the crossing report only.
     critical: Option<&'static crate::thread::Thread>,
 }
 

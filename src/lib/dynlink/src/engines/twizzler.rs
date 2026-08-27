@@ -17,6 +17,9 @@ fn within_object(slot: usize, addr: usize) -> bool {
     addr >= slot * MAX_SIZE + NULLPAGE_SIZE && addr < (slot + 1) * MAX_SIZE - NULLPAGE_SIZE * 2
 }
 
+/// Tags each per-DSO data object with its origin, for the leak census. Off by default.
+const DSO_CREATE_NOTES: bool = true;
+
 /// Load segments according to Twizzler requirements. Helper function for implementing a
 /// ContextEngine.
 pub fn load_segments(
@@ -122,6 +125,11 @@ pub fn load_segments(
     )
     .inspect_err(|e| tracing::error!("failed to create data object: {:?}", e))
     .map_err(|_| DynlinkErrorKind::NewBackingFail)?;
+
+    // Provenance for the object census; see monitor space.rs CREATE_NOTES.
+    if DSO_CREATE_NOTES {
+        let _ = twizzler_abi::syscall::sys_object_add_note(data_id, b"mk:dso-data");
+    }
 
     /*
         let text_id = sys_object_create(

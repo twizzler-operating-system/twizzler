@@ -203,8 +203,13 @@ impl Processor {
     }
 
     fn run_ipi_tasks(&self) {
-        let mut tasks = self.ipi_tasks.lock();
-        for task in tasks.drain(..) {
+        // Take the list, then run outside the lock. These closures are arbitrary kernel code, and
+        // one of them is `schedule_resched` -- which asks whether the current thread needs
+        // preempting, and `needs_reschedule` answers no for any thread in a critical section. Run
+        // under this lock, every IPI-delivered reschedule request is silently discarded, which is
+        // how `Thread::suspend` loses a suspend against a running target.
+        let tasks = core::mem::take(&mut *self.ipi_tasks.lock());
+        for task in tasks {
             (task.func)();
             task.outstanding.fetch_sub(1, Ordering::Release);
         }

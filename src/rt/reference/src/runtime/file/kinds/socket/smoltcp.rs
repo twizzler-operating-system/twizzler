@@ -579,8 +579,22 @@ impl Drop for TcpStreamInner {
         {
             let mut core = ENGINE.core.lock().unwrap();
             let sock = core.get_mutable_socket(self.socket_handle);
-            super::engine::note_tcp_drop(sock.state());
+            // Endpoints captured before close(): they identify which of the ~20 closes per boot
+            // this is, which the old global counter could not.
+            let (lport, rep) = (sock.local_endpoint(), sock.remote_endpoint());
+            let before = sock.state();
             sock.close();
+            let after = sock.state();
+            super::engine::note_tcp_drop(before);
+            super::engine::note_tcp_close(
+                lport.map(|e| e.port).unwrap_or(0),
+                rep.map(|e| e.addr.into()).unwrap_or(core::net::IpAddr::V4(
+                    core::net::Ipv4Addr::UNSPECIFIED,
+                )),
+                rep.map(|e| e.port).unwrap_or(0),
+                before,
+                after,
+            );
         }
         ENGINE.track(
             self.socket_handle,

@@ -89,13 +89,17 @@ pub fn note(id: ObjID) -> Option<String> {
     let mut keys = [0u64; 8];
     let n = twizzler_abi::syscall::sys_object_enumerate_notes(id, 0, &mut keys).ok()?;
     let mut buf = [0u8; 64];
+    // All notes, not the first. An object can carry several -- the monitor's creation-site note
+    // and its own `stack:<comp>`/`comp-config:<comp>` tag -- and returning the first silently
+    // shadowed the more informative one.
+    let mut found: Vec<String> = Vec::new();
     for key in keys.iter().take(n) {
         if let Ok(len) = twizzler_abi::syscall::sys_object_get_note(id, *key, &mut buf) {
             let len = len.min(buf.len());
             if len > 0 {
-                return Some(String::from_utf8_lossy(&buf[..len]).into_owned());
+                found.push(String::from_utf8_lossy(&buf[..len]).into_owned());
             }
         }
     }
-    None
+    (!found.is_empty()).then(|| found.join("|"))
 }

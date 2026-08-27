@@ -220,6 +220,48 @@ static TCPDROPS: AtomicU64 = AtomicU64::new(0);
 static TCPDROP_STATE: AtomicU64 = AtomicU64::new(999);
 
 /// Called from `TcpStreamInner::drop`, before `close()`.
+/// One line per TCP close, keyed by endpoint, with state either side of `close()`.
+///
+/// Replaces the scalar `TCPDROP_STATE`, which was overwritten by every drop and therefore only
+/// ever described the last of ~20 per boot. Single `sys_kernel_console_write` for the whole line:
+/// `klog_println!` issues a syscall per fragment and klog interleaving splices the pieces, which
+/// cost 75% of one earlier probe's records.
+pub(super) fn note_tcp_close(
+    lport: u16,
+    raddr: core::net::IpAddr,
+    rport: u16,
+    before: State,
+    after: State,
+) {
+    use core::fmt::Write;
+    struct Line { b: [u8; 256], n: usize }
+    impl Write for Line {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let end = (self.n + s.len()).min(self.b.len());
+            self.b[self.n..end].copy_from_slice(&s.as_bytes()[..end - self.n]);
+            self.n = end;
+            Ok(())
+        }
+    }
+    let mut line = Line { b: [0; 256], n: 0 };
+    let _ = writeln!(
+        line,
+        "TCPCLOSE octet={} lport={} raddr={} rport={} before={:?} after={:?} n={}",
+        ENGINE_OCTET.load(Ordering::Relaxed),
+        lport,
+        raddr,
+        rport,
+        before,
+        after,
+        TCPDROPS.fetch_add(1, Ordering::Relaxed) + 1,
+    );
+    twizzler_abi::syscall::sys_kernel_console_write(
+        twizzler_abi::syscall::KernelConsoleSource::Console,
+        &line.b[..line.n],
+        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+    );
+}
+
 pub(super) fn note_tcp_drop(state: State) {
     TCPDROP_STATE.store(
         match state {

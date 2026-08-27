@@ -1347,6 +1347,12 @@ impl VirtContext {
                 if took_ref && info.stable.is_none() {
                     // Under `pt`, the page-table lock the count's field doc requires.
                     info.object().inc_map_count();
+                    info.object().inc_sites[0]
+                        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    info.object().inc_sctx.store(
+                        sctx.id().raw() as u64,
+                        core::sync::atomic::Ordering::Relaxed,
+                    );
                 }
                 mp::record(mp::Stage::ObjMap, t);
             });
@@ -1385,6 +1391,7 @@ impl VirtContext {
                 Some(took_ref) => {
                     if took_ref && let Some(obj) = obj {
                         obj.inc_map_count();
+                        obj.inc_sites[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     }
                     true
                 }
@@ -2123,15 +2130,21 @@ impl VirtContext {
                 // (0 = the install's arch was already gone with no dec; >=1 = an arch beyond the
                 // visited set still holds an entry).
                 if mc > 0 && slot.object().mappings().len() <= 1 {
+                    unmap_census::PD_STUCK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     static LEAK_LOGS: core::sync::atomic::AtomicUsize =
                         core::sync::atomic::AtomicUsize::new(0);
-                    if LEAK_LOGS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 8 {
+                    if LEAK_LOGS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 64 {
                         log::warn!(
-                            "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} members {:?}",
+                            "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} inc[map={} fault={}] charged-sctx {:x} members {:?}",
                             slot.object().id(),
                             mc,
                             n_mapped,
                             n_arches,
+                            slot.object().inc_sites[0]
+                                .load(core::sync::atomic::Ordering::Relaxed),
+                            slot.object().inc_sites[1]
+                                .load(core::sync::atomic::Ordering::Relaxed),
+                            slot.object().inc_sctx.load(core::sync::atomic::Ordering::Relaxed),
                             members
                         );
                     }
@@ -2709,6 +2722,12 @@ pub mod unmap_census {
         SKIPPED.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Objects left permanently unreapable by a removal: last region gone, `map_count` still
+    /// positive because `for_each_arch_in` visited none of the membership set. The `log::warn!`
+    /// at the detection site is capped at 8 lines, so that cap is a *cap* and not a count --
+    /// this is the count. (Requested by twizzler-d3, whose two runs both saturated the cap.)
+    pub static PD_STUCK: AtomicUsize = AtomicUsize::new(0);
+
     /// Detached an object-table entry whose owner could not be verified (`context_table_addr`
     /// was `None`); the dec was taken anyway. See `ArchContext::unmap_object`.
     static UNVERIFIED: AtomicUsize = AtomicUsize::new(0);
@@ -2785,6 +2804,10 @@ pub mod unmap_census {
             "== unmap census releases: {} unverified (dec taken), {} foreign (dec withheld)",
             UNVERIFIED.load(Ordering::Relaxed),
             FOREIGN.load(Ordering::Relaxed)
+        );
+        emerglogln!(
+            "== unmap census pd-stuck: {} objects left unreapable (log capped at 8)",
+            PD_STUCK.load(Ordering::Relaxed)
         );
         emerglogln!(
             "== unmap census arches/removal [0,1,2,3,4,5-8,9-16,17+]: {} {} {} {} {} {} {} {}",

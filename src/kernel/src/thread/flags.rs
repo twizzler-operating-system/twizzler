@@ -98,6 +98,18 @@ pub fn exit_kernel() {
         // return to user, almost always writing the zero that was already there.
         thread.upcalls_since_user.store(0, Ordering::Relaxed);
         thread.remove_donated_priority();
+        // A suspend requested while this thread was critical is only recorded:
+        // `maybe_suspend_self` declines, and `exit_critical` does nothing on the 0 transition, so
+        // it waits for a poll point. Returning to user is one -- no kernel lock is held, no drop
+        // glue is in flight, and suspending here is what userspace already expects. Interrupts are
+        // off at every call site, which is the condition `schedule(REINSERT)` arranges around its
+        // own call for the same reason: who is current must not change under us.
+        //
+        // Suspend only. `maybe_exit` can call `exit()`, which must not run with interrupts masked;
+        // `enter_kernel` already polls it, and MUST_EXIT is sticky.
+        if thread.must_suspend() {
+            thread.maybe_suspend_self();
+        }
         if thread.arch.has_upcall_restore_frame() {
             return;
         }

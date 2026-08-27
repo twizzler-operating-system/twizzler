@@ -87,9 +87,13 @@ impl<T> GenericSpinlock<T> {
         // Suppress preemption for the holder. `schedule()` returns immediately for a critical
         // thread (sched.rs), so a holder cannot be descheduled -- neither by preemption (already
         // covered by the interrupt disable above) nor by voluntarily blocking, which is the path
-        // `obj/mod.rs` documents as unchecked. Charged to the thread taking the lock, not to
-        // whoever is current when the guard drops: a guard held across a context switch would
-        // otherwise unbalance both threads. Same discipline `rq.rs`'s SchedSpinlock used locally.
+        // `obj/mod.rs` documents as unchecked anywhere in this kernel. Charged to the thread taking
+        // the lock, not to whoever is current when the guard drops: a guard held across a context
+        // switch would otherwise unbalance both threads.
+        //
+        // Released before interrupts come back on, below, so that the interrupt this unmasks --
+        // the one that could not be delivered during the hold -- lands on a thread that is already
+        // non-critical, and `post_interrupt` can act on it rather than deferring again.
         let critical = crate::thread::current_thread_ref().map(|c| {
             c.enter_critical_unguarded();
             &**c
@@ -192,8 +196,8 @@ pub struct LockGuard<'a, T> {
     tracker_index: Option<usize>,
     /// DIAG: thread current at acquisition, for reporting only.
     locked_thread: u64,
-    /// Thread charged the critical-count increment at lock time, released on whichever exit
-    /// path runs first. `None` before threading is up.
+    /// Thread charged the critical-count increment at lock time, released on whichever exit path
+    /// runs first. `None` before threading is up.
     critical: Option<&'static crate::thread::Thread>,
 }
 

@@ -1075,6 +1075,30 @@ pub fn schedule(flags: SchedFlags) {
     /* TODO: if we preempt, just put the thread back on our list (or decide to not resched) */
     let istate = interrupt::disable();
     if cur.is_critical() {
+        // A voluntary block that cannot block. `finish_blocking` has already dropped its
+        // CriticalGuard and set the state to Sleeping, so returning here means the caller resumes
+        // believing it slept: harmless when it re-checks its condition in a loop, a busy-wait when
+        // it does not, and on one cpu a wedge if what it waits for needs this cpu. Naming the site
+        // that took the count off zero is the only thing that identifies the offending lock --
+        // without it the failure mode suppresses its own evidence. Bounded by the report budget.
+        if flags.contains(SchedFlags::YIELD)
+            && crate::thread::locktrack::diag::BLOCK_WHILE_CRITICAL.hit()
+        {
+            let count = cur.critical_counter.load(Ordering::SeqCst);
+            match cur.critical_origin() {
+                Some(loc) => emerglogln!(
+                    "locktrack: thread {} blocked voluntarily while critical (count {}), taken off zero at {}",
+                    cur.id(),
+                    count,
+                    loc,
+                ),
+                None => emerglogln!(
+                    "locktrack: thread {} blocked voluntarily while critical (count {}), origin unknown",
+                    cur.id(),
+                    count,
+                ),
+            }
+        }
         interrupt::set(istate);
         return;
     }
@@ -1398,8 +1422,17 @@ pub fn schedule_resched() {
         .stats
         .wakeups
         .fetch_add(1, Ordering::Relaxed);
-    let is_idle = current_thread_ref().map_or(true, |t| t.is_idle_thread());
-    if is_idle || needs_reschedule(false) {
+    let cur = current_thread_ref();
+    let is_idle = cur.map_or(true, |t| t.is_idle_thread());
+    // A critical thread makes `needs_reschedule` answer no -- which means "I cannot tell yet", not
+    // "no reschedule is needed". Reading it as the latter discards the request outright, and
+    // nothing retries: an IPI-delivered suspend against a running target then never takes.
+    //
+    // Mark anyway and let the consumer decide. `schedule_maybe_preempt` already leaves the flag
+    // set when it cannot act on it, for exactly this reason, so the mark is taken at the first
+    // moment the thread is not critical. This is the request side of that same fix.
+    let cannot_tell = cur.is_some_and(|t| t.is_critical());
+    if is_idle || cannot_tell || needs_reschedule(false) {
         schedule_mark_preempt();
     }
 }

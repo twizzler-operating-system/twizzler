@@ -426,6 +426,65 @@ fn report_census(op: &str, before: &census::Census, after: &census::Census, iter
             n
         );
     }
+    report_grower_histograms(op, &deltas, iters);
+}
+
+/// The list above is truncation-blind: `leak1` printed 40 of 448 growers, so the population that
+/// carried the count was never visible. These cover every grower, so a silence here is a
+/// measurement rather than a cap. `COVER` is the arithmetic check -- `covered` must equal
+/// `growers`, or something is filtering between the two.
+fn report_grower_histograms(op: &str, deltas: &[census::Delta], iters: usize) {
+    use std::collections::HashMap;
+
+    let mut by_note: HashMap<String, (usize, usize, i64)> = HashMap::new();
+    let mut by_size: HashMap<i64, (usize, usize)> = HashMap::new();
+    for d in deltas.iter() {
+        let n = census::note(d.id).unwrap_or_else(|| "-".to_string());
+        let e = by_note.entry(n).or_insert((0, 0, 0));
+        e.0 += 1;
+        e.1 += d.is_new as usize;
+        e.2 += d.growth();
+        let s = by_size.entry(d.growth()).or_insert((0, 0));
+        s.0 += 1;
+        s.1 += d.is_new as usize;
+    }
+
+    let mut notes: Vec<_> = by_note.into_iter().collect();
+    notes.sort_by_key(|(_, v)| -(v.0 as i64));
+    let covered: usize = notes.iter().map(|(_, v)| v.0).sum();
+    for (note, (count, new, pages)) in notes.iter() {
+        out!(
+            "LEAKCHECK-GROWER-BYNOTE {} note={} count={} new={} pages={} per_iter={:.4}\n",
+            op,
+            note,
+            count,
+            new,
+            pages,
+            *count as f64 / iters as f64
+        );
+    }
+
+    let mut sizes: Vec<_> = by_size.into_iter().collect();
+    sizes.sort_by_key(|(_, v)| -(v.0 as i64));
+    for (pages, (count, new)) in sizes.iter().take(24) {
+        out!(
+            "LEAKCHECK-GROWER-BYSIZE {} pages={} count={} new={} per_iter={:.4}\n",
+            op,
+            pages,
+            count,
+            new,
+            *count as f64 / iters as f64
+        );
+    }
+
+    out!(
+        "LEAKCHECK-GROWER-COVER {} growers={} covered={} distinct_notes={} distinct_sizes={}\n",
+        op,
+        deltas.len(),
+        covered,
+        notes.len(),
+        sizes.len()
+    );
 }
 
 /// No single step may account for more than this much of the tail's growth. Above it, the counter
