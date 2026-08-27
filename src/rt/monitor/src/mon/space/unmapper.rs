@@ -17,15 +17,16 @@ use twizzler_rt_abi::object::ObjID;
 use super::MapInfo;
 use crate::mon::get_monitor;
 
-/// Backlog depth at which the unmapper boosts itself to Realtime, and it de-boosts at zero.
+/// Backlog depth at which the unmapper boosts itself; it releases again at `DEBOOST_AT`.
 ///
 /// Same pattern and rationale as the kernel thread reaper's self-boost: this thread runs at
 /// default User priority, and a saturated machine of same-class threads starves it while every
 /// dead compartment's mappings queue up behind it. The reclaim3 census measured the end state —
 /// ~14k deleted objects each pinned by one never-unmapped mapping (92% of RAM) — with the
 /// unmapper runnable the whole time (`sched true`, no mutex waits): pure cpu starvation, so
-/// priority is the correct lever. Boost is class-level (Realtime beats any User value); the
-/// work self-drains and the de-boost at empty bounds the intrusion.
+/// priority is the correct lever. The boost is to the top of the *User* band, deliberately not
+/// to `Realtime` -- see the priority site below and `DEBOOST_AT` for why that distinction is
+/// load-bearing rather than cosmetic.
 const BOOST_AT: usize = 64;
 
 /// Kill switch for the self-boost. Shipped `true`; `false` reproduces the pre-boost behaviour.
@@ -142,7 +143,7 @@ impl Unmapper {
                                     boosted_since = boosted.then(Instant::now);
                                     if boosted {
                                         tracing::info!(
-                                            "unmapper boosted to Realtime (backlog {})",
+                                            "unmapper boosted to User/127 (backlog {})",
                                             depth
                                         );
                                     }

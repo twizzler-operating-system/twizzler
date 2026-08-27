@@ -578,6 +578,37 @@ pub struct CompartmentLoader {
     flags: NewCompartmentFlags,
     config: CompartmentLoaderConfig,
     _fd_spec: Vec<binding_info>,
+    _initial_cwd: Vec<u8>,
+}
+
+/// Read the loading compartment's working directory, to hand to the compartment it is loading.
+///
+/// The default is "inherit", which is what every caller wants and what the environment variable
+/// used to provide; [`CompartmentLoader::with_initial_cwd`] overrides it. An error here means
+/// this compartment has no working directory of its own to pass on (the monitor, or anything
+/// running before the namer), and the new compartment starts at the root.
+fn load_cwd_from_runtime() -> Vec<u8> {
+    let mut v = vec![0u8; 256];
+    loop {
+        match twizzler_rt_abi::fd::twz_rt_get_nameroot(
+            twizzler_rt_abi::fd::NameRoot::Current,
+            &mut v,
+        ) {
+            Ok(len) if len < v.len() => {
+                v.truncate(len);
+                return v;
+            }
+            // Filled the buffer exactly: the path may have been truncated, so grow and re-ask.
+            Ok(_) => {
+                let bigger = v.len() * 2;
+                if bigger > 4096 {
+                    return Vec::new();
+                }
+                v.resize(bigger, 0);
+            }
+            Err(_) => return Vec::new(),
+        }
+    }
 }
 
 fn load_fd_specs_from_runtime() -> Vec<binding_info> {
@@ -606,6 +637,11 @@ impl CompartmentLoader {
         let mut config = CompartmentLoaderConfig::default();
         let fd_spec = load_fd_specs_from_runtime();
         config.with_fd_spec(&fd_spec);
+        // Inherit by default, the way fd bindings already do.
+        let initial_cwd = load_cwd_from_runtime();
+        if !initial_cwd.is_empty() {
+            config.with_initial_cwd(&initial_cwd);
+        }
         Self {
             name: format!("{}::{}", compname.to_string(), exename.to_string()),
             flags,
@@ -614,7 +650,21 @@ impl CompartmentLoader {
             config,
             root_object,
             _fd_spec: fd_spec,
+            _initial_cwd: initial_cwd,
         }
+    }
+
+    /// Start the new compartment somewhere other than where this one is.
+    pub fn with_initial_cwd<'a>(&'a mut self, cwd: &'a [u8]) -> &'a mut Self {
+        self.config.with_initial_cwd(cwd);
+        self
+    }
+
+    /// Hand the new compartment a bequest to collect: the naming server is holding a root and
+    /// working namespace for it. Takes precedence over any path set with `with_initial_cwd`.
+    pub fn with_initial_cwd_token(&mut self, token: u64) -> &mut Self {
+        self.config.with_initial_cwd_token(token);
+        self
     }
 
     pub fn with_controller(&mut self, con: ControllerOption) -> &mut Self {
@@ -1197,6 +1247,28 @@ pub struct CompartmentLoaderConfig {
     pub controller: ControllerOption,
     pub fd_spec: *const binding_info,
     pub fd_spec_len: usize,
+    /// The working directory the new compartment starts in, as a path.
+    ///
+    /// Points into the *loading* compartment's memory when the config is handed to the monitor;
+    /// the monitor copies the bytes into the new compartment's own memory and rewrites this to
+    /// point there (exactly as it does for `fd_spec`). Null means "start at the root".
+    ///
+    /// This used to travel as `TWZ_RT_INITIAL_DIR` in the child's environment, which made the
+    /// value visible to the program, inherited wholesale by anything it went on to spawn, and
+    /// stale for any spawn path that did not overwrite it.
+    pub initial_cwd: *const u8,
+    pub initial_cwd_len: usize,
+    /// A bequest token: the naming server is holding the loading compartment's root and working
+    /// namespace for this one to collect. Zero means none.
+    ///
+    /// This is how *inheriting* a working directory travels, as opposed to being sent to a
+    /// particular one. `initial_cwd` above is a name, and a name cannot carry what the child
+    /// needs: it loses identity if the directory is renamed between the spawn and the child's
+    /// first instruction, and an ObjID instead would lose the parent chain, leaving the child's
+    /// `getcwd` reporting `/`. The token names live server state that has both. `initial_cwd` is
+    /// left for the case where a caller asks for a *different* directory, which genuinely is a
+    /// name.
+    pub initial_cwd_token: u64,
 }
 
 impl CompartmentLoaderConfig {
@@ -1216,6 +1288,27 @@ impl CompartmentLoaderConfig {
     #[allow(dead_code)]
     pub fn fd_spec(&self) -> &[binding_info] {
         unsafe { core::slice::from_raw_parts(self.fd_spec, self.fd_spec_len) }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_initial_cwd<'a>(&'a mut self, cwd: &'a [u8]) -> &'a mut Self {
+        self.initial_cwd = cwd.as_ptr();
+        self.initial_cwd_len = cwd.len();
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_initial_cwd_token(&mut self, token: u64) -> &mut Self {
+        self.initial_cwd_token = token;
+        self
+    }
+
+    /// The working directory the compartment should start in, or `None` for the root.
+    pub fn initial_cwd(&self) -> Option<&[u8]> {
+        if self.initial_cwd.is_null() || self.initial_cwd_len == 0 {
+            return None;
+        }
+        Some(unsafe { core::slice::from_raw_parts(self.initial_cwd, self.initial_cwd_len) })
     }
 }
 

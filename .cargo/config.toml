@@ -16,3 +16,10 @@ rustdocflags = "-Zunstable-options --enable-index-page"
 rustflags = ["--cfg", "curve25519_dalek_backend=\"serial\""]
 [env]
 PROJECT_NAME_FOR_VERSION_STRING = "twizzler uucoreutils"
+# smoltcp's neighbour cache is a fixed-size LinearMap; the default of 4 is far below the number of
+# peers a single interface here talks to (11 observed in one net_test boot). On a full cache the
+# oldest entry is evicted, and a packet whose neighbour is missing is *dropped* rather than queued
+# -- then `limit_rate` suppresses ARP for a full second, globally rather than per-address, so the
+# discovery that would repopulate the entry is itself blocked. A FIN losing that race stalls the
+# connection until the peer times out, which is the lost-FIN flake.
+SMOLTCP_IFACE_NEIGHBOR_CACHE_COUNT = "32"

@@ -162,6 +162,12 @@ impl LoadInfo {
         let mut alloc = Talc::new(ErrOnOom);
         unsafe { alloc.claim(comp_config.alloc_span()).unwrap() };
 
+        // Both of these arrive pointing into the *loading* compartment's memory, which means
+        // nothing in the new one. Copy each into the compartment's own allocation and rewrite the
+        // pointer, then write the config back once, after every rewrite -- writing it inside the
+        // first branch would publish a config still carrying the second stale pointer.
+        let mut rewrote = false;
+
         if !loader_config.fd_spec.is_null() {
             let fd_spec_layout = Layout::array::<binding_info>(loader_config.fd_spec_len).unwrap();
             let fd_spec_ptr =
@@ -174,6 +180,33 @@ impl LoadInfo {
             };
             fd_spec_slice.copy_from_slice(src_fd_spec_slice);
             loader_config.fd_spec = fd_spec_ptr.as_ptr();
+            rewrote = true;
+        }
+
+        if !loader_config.initial_cwd.is_null() && loader_config.initial_cwd_len > 0 {
+            let len = loader_config.initial_cwd_len;
+            // A path we cannot place is not worth failing a compartment load over: drop the
+            // inheritance and let it start at the root, rather than panicking the monitor.
+            match Layout::array::<u8>(len)
+                .ok()
+                .and_then(|layout| unsafe { alloc.malloc(layout).ok() })
+            {
+                Some(ptr) => {
+                    let dst = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) };
+                    let src = unsafe { core::slice::from_raw_parts(loader_config.initial_cwd, len) };
+                    dst.copy_from_slice(src);
+                    loader_config.initial_cwd = ptr.as_ptr();
+                }
+                None => {
+                    tracing::warn!("no room for initial cwd in compartment config; starting at /");
+                    loader_config.initial_cwd = core::ptr::null();
+                    loader_config.initial_cwd_len = 0;
+                }
+            }
+            rewrote = true;
+        }
+
+        if rewrote {
             comp_config.write_config(SharedCompConfig::new(
                 self.sctx_id,
                 null_mut(),

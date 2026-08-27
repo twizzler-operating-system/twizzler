@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU32, Ordering},
         OnceLock,
@@ -179,6 +179,51 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         }
         let (slot, len) = self.spill(&path)?;
         self.api.change_namespace(self.desc, slot.offset(), len)
+    }
+
+    /// Hand this handle's root and working namespace to a compartment being spawned; see
+    /// [`crate::api::NamerAPI::bequeath`].
+    pub fn bequeath(&self) -> Result<u64> {
+        self.api.bequeath(self.desc)
+    }
+
+    /// Collect a bequest onto this handle. A token that has expired or was already collected
+    /// leaves the handle at its root.
+    pub fn redeem_bequest(&self, token: u64) -> Result<()> {
+        self.api.redeem_bequest(self.desc, token)
+    }
+
+    /// Re-root this handle: absolute paths resolve under `path` and `..` stops there.
+    pub fn change_root<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        if let Some(p) = InlinePath::new(&path) {
+            return self.api.change_root_inline(self.desc, p);
+        }
+        let (slot, len) = self.spill(&path)?;
+        self.api.change_root(self.desc, slot.offset(), len)
+    }
+
+    /// This handle's working directory, as text.
+    ///
+    /// Asked of the server every time it is not already known to the caller: the working
+    /// namespace is per-handle state there, and the path is derived from the namespace chain, so
+    /// there is no client-side copy to keep in step.
+    pub fn cwd(&self) -> Result<PathBuf> {
+        let reply = self.api.get_cwd_inline(self.desc)?;
+        if let Some(path) = reply.as_str() {
+            return Ok(PathBuf::from(path?));
+        }
+        // Longer than an inline reply holds; re-ask through a slot.
+        let buffer = self.buffer()?;
+        let slot = self.take_slot();
+        let len = self.api.get_cwd(self.desc, slot.offset(), BUFFER_SLOT_SIZE)?;
+        if len > BUFFER_SLOT_SIZE {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        let mut bytes = vec![0u8; len];
+        buffer.read_offset(&mut bytes, slot.offset());
+        Ok(PathBuf::from(
+            String::from_utf8(bytes).map_err(|_| ArgumentError::InvalidArgument)?,
+        ))
     }
 
     pub fn put_namespace<P: AsRef<Path>>(&self, path: P, persist: bool) -> Result<()> {

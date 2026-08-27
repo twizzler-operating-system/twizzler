@@ -1,4 +1,4 @@
-use naming_core::{api::NamerAPI, gates, handle::NamingHandle, InlinePath, Result};
+use naming_core::{api::NamerAPI, gates, handle::NamingHandle, CwdPath, InlinePath, Result};
 pub use naming_core::{dynamic::*, gates::namer_start, GetFlags, NsNode, NsNodeKind};
 use secgate::util::Descriptor;
 use twizzler_rt_abi::object::ObjID;
@@ -36,6 +36,10 @@ impl NamerAPI for StaticNamingAPI {
 
     fn change_namespace_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
         gates::change_namespace_inline(desc, path)
+    }
+
+    fn change_root_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        gates::change_root_inline(desc, path)
     }
 
     fn put(&self, desc: Descriptor, offset: usize, name_len: usize, id: ObjID) -> Result<()> {
@@ -84,6 +88,18 @@ impl NamerAPI for StaticNamingAPI {
         gates::change_namespace(desc, offset, name_len)
     }
 
+    fn change_root(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        gates::change_root(desc, offset, name_len)
+    }
+
+    fn get_cwd_inline(&self, desc: Descriptor) -> Result<CwdPath> {
+        gates::get_cwd_inline(desc)
+    }
+
+    fn get_cwd(&self, desc: Descriptor, offset: usize, cap: usize) -> Result<usize> {
+        gates::get_cwd(desc, offset, cap)
+    }
+
     fn enumerate_names(
         &self,
         desc: Descriptor,
@@ -104,6 +120,14 @@ impl NamerAPI for StaticNamingAPI {
         count: usize,
     ) -> Result<usize> {
         gates::enumerate_names_nsid(desc, id, offset, skip, count)
+    }
+
+    fn bequeath(&self, desc: Descriptor) -> Result<u64> {
+        gates::bequeath(desc)
+    }
+
+    fn redeem_bequest(&self, desc: Descriptor, token: u64) -> Result<()> {
+        gates::redeem_bequest(desc, token)
     }
 
     fn open_handle(&self) -> Result<Descriptor> {

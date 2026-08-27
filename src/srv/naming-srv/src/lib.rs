@@ -3,18 +3,21 @@
 #![feature(thread_local)]
 #[warn(unused_variables)]
 use std::{
+    collections::BTreeMap,
     io::ErrorKind,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex, OnceLock, RwLock,
     },
+    time::{Duration, Instant},
 };
 
 use lazy_init::LazyTransform;
 use lazy_static::lazy_static;
 use naming_core::{
-    GetFlags, InlinePath, NameSession, NameStore, NsNode, Result, BUFFER_SLOT_SIZE, PATH_MAX,
+    CwdPath, GetFlags, InlinePath, NameSession, NameStore, NsNode, Result, BUFFER_SLOT_SIZE,
+    PATH_MAX,
 };
 use secgate::{
     util::{Descriptor, HandleMgr, SimpleBuffer},
@@ -26,8 +29,8 @@ use twizzler_abi::{
     aux::KernelInitInfo,
     object::{Protections, MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
-        sys_object_create, BackingType, CreateTieFlags, CreateTieSpec, LifetimeType, ObjectCreate,
-        ObjectCreateFlags,
+        sys_get_random, sys_object_create, BackingType, CreateTieFlags, CreateTieSpec,
+        GetRandomFlags, LifetimeType, ObjectCreate, ObjectCreateFlags,
     },
 };
 use twizzler_rt_abi::{
@@ -81,8 +84,9 @@ pub fn release_sb_object(obj: ObjectHandle) {
 /// itself -- in which case it corrupts only its own results.
 struct NamespaceClient<'a> {
     instance: ObjID,
-    /// The working namespace, i.e. what `change_namespace` durably changes. Snapshot-cloned per
-    /// call; written only by `change_namespace`.
+    /// This client's authoritative naming state: its root and its working namespace. The
+    /// runtime on the other side of the gate keeps no copy of either -- it asks. Snapshot-cloned
+    /// per call for reads; write-locked in place by `change_namespace`/`change_root`.
     session: RwLock<NameSession<'a>>,
     /// Created on demand: a client that only does inline calls never needs one, and making every
     /// handle carry one is what made handles expensive.
@@ -180,6 +184,30 @@ impl<'a> NamespaceClient<'a> {
         Some(buffer.into_handle())
     }
 }
+
+/// A root and working namespace held for a compartment that has not started yet.
+///
+/// The chain each namespace carries -- the name it was opened under in its parent, all the way up
+/// -- is live server state. That is precisely what a path or an ObjID in the child's config could
+/// not carry: a path loses identity across a rename, an ObjID loses the chain and would leave the
+/// child's `getcwd` reporting `/`. So the state stays here and the child collects it.
+struct Bequest {
+    session: NameSession<'static>,
+    issued: Instant,
+}
+
+// Safety: the same assertion `NamespaceClient` makes for the session it holds; a bequest is a
+// session snapshot and is only ever reached under `BEQUESTS`.
+unsafe impl Send for Bequest {}
+
+/// An uncollected bequest pins its namespaces, so it expires. A compartment that starts later
+/// than this simply begins at its root.
+const BEQUEST_TTL: Duration = Duration::from_secs(60);
+/// Bound on outstanding bequests, so a compartment that mints without ever spawning cannot grow
+/// the table without limit.
+const MAX_BEQUESTS: usize = 64;
+
+static BEQUESTS: Mutex<BTreeMap<u64, Bequest>> = Mutex::new(BTreeMap::new());
 
 /// Look up a client and take a reference to it, releasing the handle-table lock before the caller
 /// does any work. The table is read-locked per call and write-locked only by open/close, so calls
@@ -334,6 +362,57 @@ pub fn open_handle() -> Result<Descriptor> {
 }
 
 #[secgate::entry(lib = "naming-core")]
+pub fn bequeath(desc: Descriptor) -> Result<u64> {
+    let client = client_for(desc)?;
+    let session = client.session();
+
+    // Unguessable: possession of the token is what authorises collecting the bequest, and the
+    // token reaches the child through its compartment config, which only it can read.
+    let mut raw = [core::mem::MaybeUninit::<u8>::uninit(); 8];
+    let n = sys_get_random(&mut raw, GetRandomFlags::empty())?;
+    if n != raw.len() {
+        return Err(ResourceError::Unavailable.into());
+    }
+    // Safety: `sys_get_random` reported all 8 bytes written.
+    let token = u64::from_le_bytes(unsafe { core::mem::transmute::<_, [u8; 8]>(raw) });
+    // Zero is "no bequest" in the compartment config, so it cannot name one.
+    if token == 0 {
+        return Err(ResourceError::Unavailable.into());
+    }
+
+    let mut table = BEQUESTS.lock().unwrap();
+    let now = Instant::now();
+    table.retain(|_, b| now.duration_since(b.issued) < BEQUEST_TTL);
+    if table.len() >= MAX_BEQUESTS {
+        // Drop the oldest rather than refusing to mint: a bequest still outstanding after 63
+        // others is one nobody is coming for, and refusing would break the live spawn instead.
+        if let Some(oldest) = table.iter().min_by_key(|(_, b)| b.issued).map(|(k, _)| *k) {
+            table.remove(&oldest);
+        }
+    }
+    table.insert(token, Bequest { session, issued: now });
+    Ok(token)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn redeem_bequest(desc: Descriptor, token: u64) -> Result<()> {
+    let client = client_for(desc)?;
+    let bequest = BEQUESTS.lock().unwrap().remove(&token);
+    match bequest {
+        Some(bequest) => {
+            *client.session.write().unwrap() = bequest.session;
+            Ok(())
+        }
+        // Expired, already collected, or never existed. Not an error: the handle stays at its
+        // root, which is where a compartment without a bequest starts anyway.
+        None => {
+            tracing::debug!("no bequest for token {:#x}", token);
+            Ok(())
+        }
+    }
+}
+
+#[secgate::entry(lib = "naming-core")]
 pub fn get_buffer(desc: Descriptor) -> Result<ObjID> {
     let info = secgate::get_caller().ok_or(SecurityError::InvalidGate)?;
     let client = lookup_client(info.source_context().unwrap_or(0.into()), desc)
@@ -421,13 +500,49 @@ pub fn rename_inline(desc: Descriptor, old: InlinePath, new: InlinePath) -> Resu
         .rename(old.as_str()?, new.as_str()?)
 }
 
+/// Moves are made *in place* under the write lock rather than snapshot-mutate-write-back: root
+/// and working namespace now live in the same session, so a concurrent `change_root` and
+/// `change_namespace` would otherwise each write back a session missing the other's change. The
+/// walk runs under the lock, which briefly blocks this handle's other calls; a chdir is rare and
+/// a lost one is not.
 #[secgate::entry(lib = "naming-core")]
 pub fn change_namespace_inline(desc: Descriptor, path: InlinePath) -> Result<()> {
     let client = client_for(desc)?;
-    let mut session = client.session();
-    session.change_namespace(path.as_str()?)?;
-    *client.session.write().unwrap() = session;
-    Ok(())
+    let mut session = client.session.write().unwrap();
+    session.change_namespace(path.as_str()?)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn change_root_inline(desc: Descriptor, path: InlinePath) -> Result<()> {
+    let client = client_for(desc)?;
+    let mut session = client.session.write().unwrap();
+    session.change_root(path.as_str()?)
+}
+
+/// The caller's working directory, derived from the namespace chain on every call.
+#[secgate::entry(lib = "naming-core")]
+pub fn get_cwd_inline(desc: Descriptor) -> Result<CwdPath> {
+    let client = client_for(desc)?;
+    let path = client.session().cwd_path()?;
+    Ok(CwdPath::new(path))
+}
+
+/// Spill form of [`get_cwd_inline`]: writes the path at `offset` and reports its length.
+#[secgate::entry(lib = "naming-core")]
+pub fn get_cwd(desc: Descriptor, offset: usize, cap: usize) -> Result<usize> {
+    let client = client_for(desc)?;
+    let path = client.session().cwd_path()?;
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let buffer = client.buffer()?;
+    let end = offset
+        .checked_add(bytes.len())
+        .ok_or(ArgumentError::InvalidArgument)?;
+    if bytes.len() > cap || end > buffer.max_len() {
+        return Err(ArgumentError::InvalidArgument.into());
+    }
+    let n = buffer.write_offset(bytes, offset);
+    client.note_used(offset + n);
+    Ok(n)
 }
 
 // ---- buffer (spill) forms: paths live at caller-chosen slot offsets ----------------------------
@@ -481,10 +596,16 @@ pub fn rename(desc: Descriptor, offset: usize, old_len: usize, new_len: usize) -
 pub fn change_namespace(desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
     let client = client_for(desc)?;
     let path = client.read_path(offset, name_len)?;
-    let mut session = client.session();
-    session.change_namespace(path)?;
-    *client.session.write().unwrap() = session;
-    Ok(())
+    let mut session = client.session.write().unwrap();
+    session.change_namespace(path)
+}
+
+#[secgate::entry(lib = "naming-core")]
+pub fn change_root(desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+    let client = client_for(desc)?;
+    let path = client.read_path(offset, name_len)?;
+    let mut session = client.session.write().unwrap();
+    session.change_root(path)
 }
 
 // ---- enumeration: the reply is written back into the caller's slot -----------------------------

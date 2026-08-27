@@ -4,7 +4,7 @@ use monitor_api::CompartmentHandle;
 use secgate::{util::Descriptor, DynamicSecGate};
 use twizzler_rt_abi::object::ObjID;
 
-use crate::{api::NamerAPI, handle::NamingHandle, GetFlags, InlinePath, NsNode, Result};
+use crate::{api::NamerAPI, handle::NamingHandle, CwdPath, GetFlags, InlinePath, NsNode, Result};
 
 /// Gate addresses are resolved on first use, not all at once -- and weakly-bound gates never
 /// touch the monitor at all.
@@ -74,6 +74,8 @@ lazy_gates! {
         DynamicSecGate<'static, (Descriptor, InlinePath, InlinePath), ()> = "rename_inline",
     change_namespace_inline / __twz_secgate_impl_change_namespace_inline_mod:
         DynamicSecGate<'static, (Descriptor, InlinePath), ()> = "change_namespace_inline",
+    change_root_inline / __twz_secgate_impl_change_root_inline_mod:
+        DynamicSecGate<'static, (Descriptor, InlinePath), ()> = "change_root_inline",
     put / __twz_secgate_impl_put_mod:
         DynamicSecGate<'static, (Descriptor, usize, usize, ObjID), ()> = "put",
     mkns / __twz_secgate_impl_mkns_mod:
@@ -88,12 +90,22 @@ lazy_gates! {
         DynamicSecGate<'static, (Descriptor, usize, usize, usize), ()> = "rename",
     change_namespace / __twz_secgate_impl_change_namespace_mod:
         DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "change_namespace",
+    change_root / __twz_secgate_impl_change_root_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize), ()> = "change_root",
+    get_cwd_inline / __twz_secgate_impl_get_cwd_inline_mod:
+        DynamicSecGate<'static, (Descriptor,), CwdPath> = "get_cwd_inline",
+    get_cwd / __twz_secgate_impl_get_cwd_mod:
+        DynamicSecGate<'static, (Descriptor, usize, usize), usize> = "get_cwd",
     enumerate_names / __twz_secgate_impl_enumerate_names_mod:
         DynamicSecGate<'static, (Descriptor, usize, usize, usize, usize), usize>
         = "enumerate_names",
     enumerate_names_nsid / __twz_secgate_impl_enumerate_names_nsid_mod:
         DynamicSecGate<'static, (Descriptor, ObjID, usize, usize, usize), usize>
         = "enumerate_names_nsid",
+    bequeath / __twz_secgate_impl_bequeath_mod:
+        DynamicSecGate<'static, (Descriptor,), u64> = "bequeath",
+    redeem_bequest / __twz_secgate_impl_redeem_bequest_mod:
+        DynamicSecGate<'static, (Descriptor, u64), ()> = "redeem_bequest",
     open_handle / __twz_secgate_impl_open_handle_mod:
         DynamicSecGate<'static, (), Descriptor> = "open_handle",
     get_buffer / __twz_secgate_impl_get_buffer_mod:
@@ -129,6 +141,10 @@ impl NamerAPI for DynamicNamerAPI {
 
     fn change_namespace_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
         (self.change_namespace_inline())(desc, path)
+    }
+
+    fn change_root_inline(&self, desc: Descriptor, path: InlinePath) -> Result<()> {
+        (self.change_root_inline())(desc, path)
     }
 
     fn put(&self, desc: Descriptor, offset: usize, name_len: usize, id: ObjID) -> Result<()> {
@@ -177,6 +193,18 @@ impl NamerAPI for DynamicNamerAPI {
         (self.change_namespace())(desc, offset, name_len)
     }
 
+    fn change_root(&self, desc: Descriptor, offset: usize, name_len: usize) -> Result<()> {
+        (self.change_root())(desc, offset, name_len)
+    }
+
+    fn get_cwd_inline(&self, desc: Descriptor) -> Result<CwdPath> {
+        (self.get_cwd_inline())(desc)
+    }
+
+    fn get_cwd(&self, desc: Descriptor, offset: usize, cap: usize) -> Result<usize> {
+        (self.get_cwd())(desc, offset, cap)
+    }
+
     fn enumerate_names(
         &self,
         desc: Descriptor,
@@ -197,6 +225,14 @@ impl NamerAPI for DynamicNamerAPI {
         count: usize,
     ) -> Result<usize> {
         (self.enumerate_names_nsid())(desc, id, offset, skip, count)
+    }
+
+    fn bequeath(&self, desc: Descriptor) -> Result<u64> {
+        (self.bequeath())(desc)
+    }
+
+    fn redeem_bequest(&self, desc: Descriptor, token: u64) -> Result<()> {
+        (self.redeem_bequest())(desc, token)
     }
 
     fn open_handle(&self) -> Result<Descriptor> {

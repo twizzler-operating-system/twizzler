@@ -106,12 +106,6 @@ pub struct Object {
     /// never to neither. Weaker orderings break that argument, which is the whole reason the fast
     /// path is safe to take without the lock.
     map_count: AtomicUsize,
-    /// Diagnostic: which site charged [Object::inc_map_count], indexed by
-    /// 0 = `map_object`, 1 = `ensure_object_mapped`. Reported at the PD-STUCK site so an
-    /// unmatched charge can be attributed to the path that made it.
-    pub inc_sites: [core::sync::atomic::AtomicU32; 2],
-    /// Diagnostic: low 64 bits of the sctx `map_object` charged the map count to.
-    pub inc_sctx: core::sync::atomic::AtomicU64,
     pin_info: Mutex<PinInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
@@ -452,11 +446,6 @@ impl Object {
             sleep_slot,
             sleepers: AtomicUsize::new(0),
             map_count: AtomicUsize::new(0),
-            inc_sites: [
-                core::sync::atomic::AtomicU32::new(0),
-                core::sync::atomic::AtomicU32::new(0),
-            ],
-            inc_sctx: core::sync::atomic::AtomicU64::new(0),
             pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),

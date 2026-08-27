@@ -76,3 +76,44 @@ impl InlinePath {
         Ok(PathBuf::from(self.as_str()?))
     }
 }
+
+/// The reply to a working-directory query.
+///
+/// Carries the *full* length even when the path did not fit, so a caller can tell a short cwd
+/// from a truncated one. [`InlinePath`] clamps its length on read, which would turn an over-long
+/// cwd into its first [`INLINE_PATH_MAX`] bytes with nothing to say so.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CwdPath {
+    len: u32,
+    bytes: [u8; INLINE_PATH_MAX],
+}
+
+impl CwdPath {
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        let bytes = path.as_ref().as_os_str().as_encoded_bytes();
+        let mut this = Self {
+            len: bytes.len() as u32,
+            bytes: [0; INLINE_PATH_MAX],
+        };
+        let n = bytes.len().min(INLINE_PATH_MAX);
+        this.bytes[..n].copy_from_slice(&bytes[..n]);
+        this
+    }
+
+    /// Length of the cwd in bytes, whether or not it fit inline.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// `None` when the cwd was too long to inline; the caller re-asks through the buffer.
+    pub fn as_str(&self) -> Option<Result<&str>> {
+        if self.len() > INLINE_PATH_MAX {
+            return None;
+        }
+        Some(
+            str::from_utf8(&self.bytes[..self.len()])
+                .map_err(|_| twizzler_rt_abi::error::ArgumentError::InvalidArgument.into()),
+        )
+    }
+}

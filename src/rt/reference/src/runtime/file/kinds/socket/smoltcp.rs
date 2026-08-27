@@ -61,6 +61,8 @@ impl Drop for Listener {
             .get_mutable_socket(self.socket_handle)
             .abort();
         ENGINE.track(self.socket_handle, self.port, false, SockKind::Tcp);
+        // The RST abort() queued still has to be transmitted by the poll thread.
+        super::engine::wake_after_close();
     }
 }
 
@@ -557,11 +559,15 @@ impl SmolTcpStream {
             }
             Shutdown::Write => {
                 socket.close();
+                drop(core);
+                super::engine::wake_after_close();
                 return Ok(());
             }
             Shutdown::Both => {
                 socket.close();
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
+                drop(core);
+                super::engine::wake_after_close();
                 return Ok(());
             }
         }
@@ -576,26 +582,30 @@ impl Drop for TcpStreamInner {
         // no FIN, lingered in the socket set for the life of the process, and never gave its
         // ephemeral port back. close() is a no-op in the states an explicit shutdown() leaves
         // behind, so doing it unconditionally here is safe.
-        {
+        // Capture under the lock, report after it. `note_tcp_close` writes to the console, and a
+        // syscall inside this critical section blocks every other socket operation in the
+        // compartment plus the poll thread -- which would perturb the very race being measured.
+        let (lport, raddr, rport, before, after) = {
             let mut core = ENGINE.core.lock().unwrap();
             let sock = core.get_mutable_socket(self.socket_handle);
             // Endpoints captured before close(): they identify which of the ~20 closes per boot
             // this is, which the old global counter could not.
-            let (lport, rep) = (sock.local_endpoint(), sock.remote_endpoint());
+            let (lp, rep) = (sock.local_endpoint(), sock.remote_endpoint());
             let before = sock.state();
             sock.close();
             let after = sock.state();
             super::engine::note_tcp_drop(before);
-            super::engine::note_tcp_close(
-                lport.map(|e| e.port).unwrap_or(0),
+            (
+                lp.map(|e| e.port).unwrap_or(0),
                 rep.map(|e| e.addr.into()).unwrap_or(core::net::IpAddr::V4(
                     core::net::Ipv4Addr::UNSPECIFIED,
                 )),
                 rep.map(|e| e.port).unwrap_or(0),
                 before,
                 after,
-            );
-        }
+            )
+        };
+        super::engine::note_tcp_close(lport, raddr, rport, before, after);
         ENGINE.track(
             self.socket_handle,
             self.port,
@@ -866,11 +876,15 @@ impl UdpSocket {
             }
             Shutdown::Write => {
                 socket.close();
+                drop(core);
+                super::engine::wake_after_close();
                 return Ok(());
             }
             Shutdown::Both => {
                 socket.close();
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
+                drop(core);
+                super::engine::wake_after_close();
                 return Ok(());
             }
         }

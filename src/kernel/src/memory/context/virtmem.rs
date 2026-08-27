@@ -1314,6 +1314,20 @@ impl VirtContext {
         let t = mp::start();
         let sctx = crate::security::get_sctx(sctx);
         mp::record(mp::Stage::Sctx, t);
+        // The map count belongs to the *region*, not to whichever arch context happens to install
+        // it. Charging the installing arch made the count outlive its creditor: the monitor maps a
+        // compartment's stack/comp-config with `target_sctx == 0`, so the charge landed on the
+        // calling thread's active sctx -- the compartment's -- while the mapping itself is owned by
+        // a monitor `MapHandle` that drops later, asynchronously. When the compartment died its
+        // arch went with it and the eventual unmap had nothing to release from: measured as
+        // `inc[map=1 fault=0]` on 64/64 stuck objects, each charged to a distinct per-compartment
+        // sctx. One region is one count, released when the region is removed, and arch lifetime
+        // stops mattering. Taken before any install, so the count is never visible without the
+        // mapping (see `insert_object`'s ordering note).
+        if info.stable.is_none() {
+            let _pt = info.object.lock_page_tables();
+            info.object().inc_map_count();
+        }
         if let Ok(sctx) = sctx {
             let t = mp::start();
             let perms = sctx.lookup(info.object().id(), info.default_prot);
@@ -1344,16 +1358,9 @@ impl VirtContext {
                 // count moved onto `Object` this fell out for free: the increment landed on
                 // whichever `ObjectPageTable` was in hand, and for a clone that field was never
                 // read by anything.
-                if took_ref && info.stable.is_none() {
-                    // Under `pt`, the page-table lock the count's field doc requires.
-                    info.object().inc_map_count();
-                    info.object().inc_sites[0]
-                        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    info.object().inc_sctx.store(
-                        sctx.id().raw() as u64,
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
-                }
+                // No charge here: the region already took one. `took_ref` still governs the
+                // arch's own table refcount, it just no longer moves the object's map count.
+                let _ = took_ref;
                 mp::record(mp::Stage::ObjMap, t);
             });
             mp::record(mp::Stage::Arch, t_arch);
@@ -1389,10 +1396,8 @@ impl VirtContext {
             object_tables.add_invalidate(arch.target, cursor);
             match arch.ensure_object_mapped(cursor, object_tables, settings, &mut fa) {
                 Some(took_ref) => {
-                    if took_ref && let Some(obj) = obj {
-                        obj.inc_map_count();
-                        obj.inc_sites[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    }
+                    // A fault installs into an arch but creates no region, so it charges nothing.
+                    let _ = (took_ref, obj);
                     true
                 }
                 None => false,
@@ -1538,16 +1543,11 @@ impl VirtContext {
                         pt.invls_len(),
                     );
                 }
-                let last = if counted && released {
-                    if region.object().dec_map_count() == 0 {
-                        region.object().note_last_unmap();
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                // Tearing an arch down removes no region, so it releases no count. Under the old
+                // arch-charged model this walk was the only thing returning those counts, and the
+                // ones it could not reach became permanently unreapable.
+                let _ = (counted, released);
+                let last = false;
                 drop(pt);
                 if crate::obj::TARGETED_REAP && last && region.object().is_pending_delete() {
                     crate::obj::request_reap(region.object());
@@ -2111,13 +2111,16 @@ impl VirtContext {
                             pt.invls_len(),
                         );
                     }
-                    if released && slot.object().dec_map_count() == 0 {
-                        slot.object().note_last_unmap();
-                    }
+                    // Dec moved out of this loop: it is per-region now, below.
                 }
                 unmapprofile::record(UStage::RemInv, t_ri);
             });
             unmap_census::record(n_arches, n_mapped, counted);
+            // The region is going away, so give back the one count it took. Unconditional on what
+            // any arch released -- that coupling is what lost counts when an arch died first.
+            if counted && slot.object().dec_map_count() == 0 {
+                slot.object().note_last_unmap();
+            }
             // The map-count leak, caught in the act: a counted removal of a pending-delete
             // object that released nothing anywhere while the count is still positive means the
             // install's arch was neither visited nor already torn down with a dec -- the object
@@ -2135,16 +2138,11 @@ impl VirtContext {
                         core::sync::atomic::AtomicUsize::new(0);
                     if LEAK_LOGS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 64 {
                         log::warn!(
-                            "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} inc[map={} fault={}] charged-sctx {:x} members {:?}",
+                            "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} members {:?}",
                             slot.object().id(),
                             mc,
                             n_mapped,
                             n_arches,
-                            slot.object().inc_sites[0]
-                                .load(core::sync::atomic::Ordering::Relaxed),
-                            slot.object().inc_sites[1]
-                                .load(core::sync::atomic::Ordering::Relaxed),
-                            slot.object().inc_sctx.load(core::sync::atomic::Ordering::Relaxed),
                             members
                         );
                     }

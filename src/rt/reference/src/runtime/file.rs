@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
-        Arc, OnceLock, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
 };
 
@@ -37,7 +37,7 @@ use twizzler_rt_abi::{
     Result,
 };
 
-use super::ReferenceRuntime;
+use super::{ReferenceRuntime, OUR_RUNTIME};
 use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
@@ -387,6 +387,102 @@ lazy_static! {
 static RUNTIME_NAMER: OnceLock<DynamicNamingHandle> = OnceLock::new();
 static NAMING_UP: OnceLock<()> = OnceLock::new();
 
+/// This compartment's memo of its working directory.
+///
+/// Not a second place the cwd lives: the only value ever written here is one the naming server
+/// returned (or one we know without asking, see [`cwd_memo_seed_root`]), and the only thing that
+/// can move this handle's working namespace is this runtime asking it to. So the memo caches an
+/// answer rather than holding an opinion, and it is dropped rather than updated on every move.
+///
+/// It replaces a `NameRoot::Current` entry in the runtime's nameroot map that was maintained by
+/// joining and lexically normalising path strings client-side -- arithmetic that could, and did,
+/// come to a different answer than the namespace walk the server performed for the same call.
+static CWD_MEMO: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Bumped under [`CWD_MEMO`]'s lock whenever this runtime moves. A reader that fetched a cwd
+/// while a move was in flight sees the count change and drops its answer instead of memoizing a
+/// path that is already wrong.
+static CWD_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Forget the memoized working directory: this runtime just moved, or re-rooted.
+pub(crate) fn cwd_memo_invalidate() {
+    let mut memo = CWD_MEMO.lock().unwrap();
+    CWD_GEN.fetch_add(1, Ordering::SeqCst);
+    *memo = None;
+}
+
+/// A bequest this compartment was spawned with, not yet collected.
+///
+/// Collected on first naming use rather than at startup. A compartment that never names anything
+/// never acquires a naming handle at all, and spending a gate call at spawn to set a working
+/// directory nothing will read is exactly the cost [`crate::runtime::core`]'s
+/// `SKIP_ROOT_NAMESPACE_SET` exists to avoid.
+static PENDING_BEQUEST: AtomicU64 = AtomicU64::new(0);
+
+/// Record the bequest named in this compartment's config, to collect on first use.
+pub(crate) fn set_pending_bequest(token: u64) {
+    PENDING_BEQUEST.store(token, Ordering::SeqCst);
+}
+
+/// Mint a bequest carrying this compartment's working namespace, for one it is spawning.
+///
+/// `None` when there is nothing worth handing over -- no namer, or we are at the root, where the
+/// child's default already agrees. Skipping the root case is what keeps a plain spawn free of
+/// naming traffic.
+pub(crate) fn mint_cwd_bequest() -> Option<u64> {
+    if current_dir().ok()? == Path::new("/") {
+        return None;
+    }
+    get_naming_handle()?.bequeath().ok()
+}
+
+/// This compartment's working directory, without the trip out through libstd.
+///
+/// `canon_name` used to reach this value with `std::env::current_dir()`, which is
+/// `twz_rt_get_nameroot` -> `OUR_RUNTIME.get_nameroot` -- the runtime asking libstd for something
+/// it holds in a static one frame below, paying a C-ABI round trip, libstd's grow-and-retry
+/// buffer loop and a `PathBuf` allocation on *every relative path it resolves*.
+pub(crate) fn current_dir() -> Result<PathBuf> {
+    if let Some(path) = CWD_MEMO.lock().unwrap().clone() {
+        return Ok(path);
+    }
+    // The monitor has no working namespace -- it is not a naming client and must not become one
+    // while loading a compartment (`CompartmentLoader::new` reads this to seed the child's
+    // initial directory).
+    if OUR_RUNTIME.state().contains(super::RuntimeState::IS_MONITOR) {
+        return Ok(PathBuf::from("/"));
+    }
+    let gen = CWD_GEN.load(Ordering::SeqCst);
+    // No namer yet (the bootstrap chain: logboi, devmgr, pager, naming itself, init) means there
+    // is no working namespace to be anywhere in, and a handle opened once one exists starts at
+    // its root. Report "/" rather than failing -- and do not memoize it, so the first reader
+    // after the namer is up asks.
+    let Some(handle) = get_naming_handle() else {
+        return Ok(PathBuf::from("/"));
+    };
+    let path = handle.cwd()?;
+    let mut memo = CWD_MEMO.lock().unwrap();
+    // Discard the answer if this runtime moved while we were fetching it; the next reader
+    // re-asks rather than being served a path that is already stale.
+    if CWD_GEN.load(Ordering::SeqCst) == gen {
+        *memo = Some(path.clone());
+    }
+    Ok(path)
+}
+
+/// Seed the memo with a cwd known without asking.
+///
+/// A naming handle this runtime has not opened yet sits at its root, so a compartment that has
+/// not moved is at `/` -- a fact, not a default. This is what lets `SKIP_ROOT_NAMESPACE_SET`
+/// keep its saving: a child that never names anything still answers `current_dir()` without
+/// acquiring a handle or crossing a gate.
+pub(crate) fn cwd_memo_seed_root() {
+    let mut memo = CWD_MEMO.lock().unwrap();
+    if memo.is_none() {
+        *memo = Some(PathBuf::from("/"));
+    }
+}
+
 #[track_caller]
 fn get_fd_slots() -> &'static RwLock<FdSlots> {
     &FD_SLOTS
@@ -421,7 +517,18 @@ pub fn get_naming_handle() -> Option<&'static DynamicNamingHandle> {
         ],
     );
     // A racing initializer loses here; its handle drops and closes its descriptor.
-    let _ = RUNTIME_NAMER.set(handle);
+    if RUNTIME_NAMER.set(handle).is_ok() {
+        // Only the winner collects. `swap` makes the token single-use on this side too, so a
+        // loser's about-to-be-dropped handle cannot consume the bequest first and strand the
+        // handle everyone else will use at the root.
+        let token = PENDING_BEQUEST.swap(0, Ordering::SeqCst);
+        if token != 0 {
+            // Unwrap-Ok: set immediately above, by us.
+            let _ = RUNTIME_NAMER.get().unwrap().redeem_bequest(token);
+            // We inherited a working namespace but not its name; the first reader asks.
+            cwd_memo_invalidate();
+        }
+    }
     RUNTIME_NAMER.get()
 }
 
@@ -432,6 +539,7 @@ pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
     let handle = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
     let _t_handle = _t0.elapsed();
     handle.change_namespace(path)?;
+    cwd_memo_invalidate();
     // Called once per compartment from `pre_main_hook`, i.e. inside `Command::spawn`. Splits
     // acquiring the naming handle (for a fresh compartment: possibly a compartment lookup, plus
     // open_handle) from the namespace call itself.
@@ -777,7 +885,7 @@ impl ReferenceRuntime {
         }
         let path = PathBuf::from(str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?);
         let path = if !path.is_absolute() {
-            let mut cd = std::env::current_dir()?;
+            let mut cd = current_dir()?;
             cd.push(path);
             cd
         } else {
@@ -1255,21 +1363,30 @@ impl ReferenceRuntime {
         file_desc.seek(pos)
     }
 
+    /// `Current` and `Root` are the naming server's to hold: both live on this compartment's
+    /// handle there, so setting either is one gate call and *nothing* is recorded here. The rest
+    /// (`Home`, `Temp`, `Exe`) are compartment-local conventions with no namespace behind them,
+    /// and stay in the map.
+    ///
+    /// This used to call `set_naming_namespace` for **every** root, so setting `Home` moved the
+    /// working directory -- and moved it without updating the `Current` entry, leaving the
+    /// runtime reporting one directory while resolving relative paths in another.
     pub fn set_nameroot(&self, root: NameRoot, slice: &[u8]) -> Result<()> {
-        let path = PathBuf::from(str::from_utf8(slice).unwrap());
-        let mut nr = self.nameroots.lock();
-        set_naming_namespace(&path)?;
-        if path.is_absolute() {
-            let path = path.canonicalize()?;
-            nr.insert(root, path);
-            return Ok(());
+        let path = PathBuf::from(str::from_utf8(slice).map_err(|_| TwzError::INVALID_ARGUMENT)?);
+        match root {
+            NameRoot::Current => set_naming_namespace(&path),
+            NameRoot::Root => {
+                let handle = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+                handle.change_root(&path)?;
+                // `/` moved, so what the working directory is called moved with it.
+                cwd_memo_invalidate();
+                Ok(())
+            }
+            // Nothing to set. `Home`, `Temp` and `Exe` are derived from where they actually
+            // live (see `get_nameroot`) rather than stored, so there is no slot to write -- and
+            // saying so is better than accepting a value that the next read would ignore.
+            _ => Err(TwzError::NOT_SUPPORTED),
         }
-        let mut cur = nr.get(&root).cloned().unwrap_or_else(|| PathBuf::from("/"));
-        cur.push(path);
-        let cur = cur.canonicalize()?;
-        nr.insert(root, cur);
-
-        Ok(())
     }
 
     pub fn fd_waitpoint(&self, fd: RawFd, kind: wait_kind) -> Result<(ThreadSyncSleep, bool)> {
@@ -1291,14 +1408,43 @@ impl ReferenceRuntime {
     }
 
     pub fn get_nameroot(&self, root: NameRoot, slice: &mut [u8]) -> Result<usize> {
-        let nr = self.nameroots.lock();
-        let data = nr
-            .get(&root)
-            .map(|n| n.to_str().unwrap().as_bytes())
-            .unwrap_or(b"/");
-        let len = data.len().min(slice.len());
-        slice[0..len].copy_from_slice(&data[0..len]);
-        Ok(len)
+        /// A short write is how the caller is told to grow its buffer (see libstd's `read_name`),
+        /// so report what was copied, never what was wanted.
+        fn copy_out(data: &[u8], slice: &mut [u8]) -> usize {
+            let len = data.len().min(slice.len());
+            slice[0..len].copy_from_slice(&data[0..len]);
+            len
+        }
+        match root {
+            // Asked of the server, which is the only thing that knows: the working namespace is
+            // per-handle state there and the path is derived from the namespace chain, so the
+            // answer agrees with what a relative lookup -- and `..` -- will actually do.
+            NameRoot::Current => Ok(copy_out(
+                current_dir()?.as_os_str().as_encoded_bytes(),
+                slice,
+            )),
+            // From inside, the root is `/` -- that is what a root is. *Which* namespace it names
+            // is the server's business, on the handle.
+            NameRoot::Root => Ok(copy_out(b"/", slice)),
+            // Derived, not stored. Each of these has a real source, and a settable map of three
+            // constants was standing in for all of them: the environment carries `HOME` and
+            // `TMPDIR` the way it does everywhere else, and the executable is something the
+            // monitor already knows about this compartment.
+            NameRoot::Home => Ok(copy_out(
+                std::env::var("HOME").as_deref().unwrap_or("/").as_bytes(),
+                slice,
+            )),
+            NameRoot::Temp => Ok(copy_out(
+                std::env::var("TMPDIR")
+                    .as_deref()
+                    .unwrap_or("/tmp")
+                    .as_bytes(),
+                slice,
+            )),
+            // TODO: this should come from the compartment config -- the monitor knows which
+            // program it loaded -- rather than being a placeholder that reports the root.
+            NameRoot::Exe => Ok(copy_out(b"/", slice)),
+        }
     }
 
     pub fn fd_enumerate(

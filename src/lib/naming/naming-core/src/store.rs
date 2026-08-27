@@ -499,6 +499,7 @@ impl NameStore {
         path.extend(namespace);
         let mut this = NameSession {
             store: self,
+            root_ns: None,
             working_ns: None,
         };
         this.change_namespace(namespace).unwrap();
@@ -508,6 +509,7 @@ impl NameStore {
     pub fn root_session(&self) -> NameSession<'_> {
         NameSession {
             store: self,
+            root_ns: None,
             working_ns: None,
         }
     }
@@ -518,11 +520,128 @@ impl NameStore {
 #[derive(Clone)]
 pub struct NameSession<'a> {
     store: &'a NameStore,
+    /// What an absolute path resolves against, and the ceiling `..` cannot walk past. `None` is
+    /// the store's own root.
+    root_ns: Option<Arc<dyn Namespace>>,
+    /// The working namespace: where a relative path starts. `None` is the session's root.
     working_ns: Option<Arc<dyn Namespace>>,
 }
 
 impl NameSession<'_> {
     pub const MAX_SYMLINK_DEREF: usize = 32;
+
+    /// Depth bound for [`Self::cwd_path`]'s walk. A cycle in a parent chain would otherwise hang
+    /// the server inside a client's gate call; this is a depth no real tree reaches, not a claim
+    /// about how deep one may be.
+    const MAX_PATH_DEPTH: usize = 128;
+
+    /// Where `/` lands for this session.
+    fn root(&self) -> &Arc<dyn Namespace> {
+        self.root_ns.as_ref().unwrap_or(&self.store.nameroot)
+    }
+
+    /// Where a relative path starts -- the working directory, as a namespace rather than a name.
+    fn cwd(&self) -> &Arc<dyn Namespace> {
+        self.working_ns.as_ref().unwrap_or_else(|| self.root())
+    }
+
+    /// The parent of a namespace opened without one, recovered from the `..` entry that every
+    /// namespace object persists, together with the name it is bound under there.
+    ///
+    /// A namespace reached by id -- rather than by a walk that recorded each step -- has no
+    /// in-memory parent, so there is no chain to read a path off. `..` supplies the parent's id;
+    /// the *name* is not a property of the namespace at all, it is a binding in the parent, so it
+    /// has to be looked for. A Unix `getcwd` does exactly this with inode numbers, for exactly
+    /// this reason -- and inherits the same two caveats, which apply here unchanged: it costs a
+    /// scan of the parent per level, and where several names are bound to one namespace it
+    /// reports the first.
+    ///
+    /// `None` leaves the caller where it was: a namespace with no `..` (the store root) or a
+    /// backing store that does not keep one.
+    fn recover_parent(&self, ns: &Arc<dyn Namespace>) -> Option<(String, Arc<dyn Namespace>)> {
+        let parent_id = ns.find("..")?.id;
+        let parent = self.open_namespace(parent_id, ns.persist(), None).ok()?;
+        let id = ns.id();
+        let items = parent.items(0, usize::MAX);
+        let name = items.iter().find_map(|n| {
+            if n.id != id || n.kind != NsNodeKind::Namespace {
+                return None;
+            }
+            let name = n.name().ok()?;
+            // "." is this namespace under its own name and ".." is it under its child's; neither
+            // is the name it is bound under in its parent.
+            if name == "." || name == ".." {
+                return None;
+            }
+            Some(name.to_string())
+        })?;
+        Some((name, parent))
+    }
+
+    /// The working directory as text, derived from the namespace chain rather than remembered.
+    ///
+    /// Every namespace records the name it was opened under in its parent, so the path is read
+    /// back out of the chain the walk itself built. There is no second copy to drift from, and
+    /// -- the property that matters -- the answer is derived from the same links `..` walks, so
+    /// `getcwd` and `..` cannot disagree.
+    ///
+    /// A chain that does not pass through this session's root (too deep, cyclic, or a working
+    /// namespace left outside the root) has no path relative to that root, and reports `/`
+    /// rather than a name for something outside it.
+    pub fn cwd_path(&self) -> Result<PathBuf> {
+        let root_id = self.root().id();
+        let mut parts: Vec<String> = Vec::new();
+        let mut ns = self.cwd().clone();
+        let mut reached_root = false;
+        for _ in 0..Self::MAX_PATH_DEPTH {
+            if ns.id() == root_id {
+                reached_root = true;
+                break;
+            }
+            let Some((name, parent)) = ns
+                .parent()
+                .map(|p| (p.name_in_parent.clone(), p.ns.clone()))
+                .or_else(|| self.recover_parent(&ns))
+            else {
+                break;
+            };
+            parts.push(name);
+            ns = parent;
+        }
+        if !reached_root {
+            parts.clear();
+        }
+        let mut path = PathBuf::from("/");
+        path.extend(parts.iter().rev());
+        Ok(path)
+    }
+
+    /// Re-root this session: `/` then means `name`, and `..` cannot walk above it.
+    ///
+    /// The working namespace resets to the new root rather than being carried over. A cwd left
+    /// outside the new root is the chroot-escape shape, and there is no path relative to the new
+    /// root that names it (see [`Self::cwd_path`]).
+    pub fn change_root<P: AsRef<Path>>(&mut self, name: P) -> Result<()> {
+        tracing::trace!("change_root: {:?}", name.as_ref());
+        let (node, container) = self.namei_exist(None, name, Self::MAX_SYMLINK_DEREF, true)?;
+        if node.kind != NsNodeKind::Namespace {
+            return Err(NamingError::WrongNameKind.into());
+        }
+        // Same self-reference care as `change_namespace`: `container` already *is* the target
+        // when namei never moved off it, with its real parent chain intact.
+        let root = if node.id == container.id() {
+            container
+        } else {
+            self.open_namespace(
+                node.id,
+                container.persist(),
+                Some(ParentInfo::new(container, node.name()?)),
+            )?
+        };
+        self.root_ns = Some(root);
+        self.working_ns = None;
+        Ok(())
+    }
     fn open_namespace(
         &self,
         id: ObjID,
@@ -552,12 +671,7 @@ impl NameSession<'_> {
     ) -> Result<(std::result::Result<NsNode, PathBuf>, Arc<dyn Namespace>)> {
         tracing::trace!("namei: {:?}", name.as_ref());
 
-        let mut namespace = namespace.unwrap_or_else(|| {
-            self.working_ns
-                .as_ref()
-                .unwrap_or(&self.store.nameroot)
-                .clone()
-        });
+        let mut namespace = namespace.unwrap_or_else(|| self.cwd().clone());
 
         // Peeked rather than collected: `is_last` and the trailing component are the only things
         // the walk ever wanted from the component list, and both are available without putting a
@@ -576,23 +690,35 @@ impl NameSession<'_> {
             match item {
                 Component::Prefix(_) => continue,
                 Component::RootDir => {
-                    namespace = self.store.nameroot.clone();
+                    namespace = self.root().clone();
                     node = Some(NsNode::ns("/", namespace.id())?);
                 }
                 Component::CurDir => {
                     node = namespace.find(".");
                 }
                 Component::ParentDir => {
-                    if let Some(parent) = namespace.parent() {
+                    // `..` at the root is the root, as it is at `/` on any Unix -- a path must
+                    // not be able to name anything above the root it resolves under. Previously
+                    // this fell through to `find("..")`, which the store root has no entry for,
+                    // so `cd /` followed by `cd ..` was an error rather than a no-op.
+                    if namespace.id() == self.root().id() {
+                        node = Some(NsNode::ns(".", namespace.id())?);
+                    } else if let Some(parent) = namespace.parent() {
                         node = Some(NsNode::ns(&parent.name_in_parent, parent.ns.id())?);
                         namespace = parent.ns.clone();
                     } else {
+                        // No recorded parent, so `..` comes from the persisted entry. Open the
+                        // parent *without* a `ParentInfo` rather than inventing one: the obvious
+                        // `ParentInfo::new(namespace, "..")` describes a chain in which a
+                        // namespace's parent is its own child, bound under the name "..". A
+                        // subsequent `..` would then walk back down, and `cwd_path` reading that
+                        // chain would emit "/.." repeatedly until its depth bound caught it.
+                        // `recover_parent` reconstructs the real name on demand instead.
                         node = Some(namespace.find("..").ok_or(NamingError::NotFound)?);
-                        let parent_info = ParentInfo::new(namespace, "..");
                         namespace = self.open_namespace(
                             node.as_ref().unwrap().id,
-                            parent_info.ns.persist(),
-                            Some(parent_info),
+                            namespace.persist(),
+                            None,
                         )?;
                     }
                 }
@@ -732,17 +858,19 @@ impl NameSession<'_> {
     /// Where a relative path starts. Part of the memo key: the same path means different things
     /// from different working namespaces.
     fn start_id(&self) -> ObjID {
-        self.working_ns
-            .as_ref()
-            .unwrap_or(&self.store.nameroot)
-            .id()
+        self.cwd().id()
     }
 
     pub fn get<P: AsRef<Path>>(&self, name: P, flags: GetFlags) -> Result<NsNode> {
         tracing::debug!("get {:?}: {:?}", name.as_ref(), flags);
         // Only a plain lookup is memoized. CREATE mutates on a miss, and a path that is not UTF-8
         // has no key -- both fall through to the walk.
-        let memoized = (memo::MEMO_ON && !flags.contains(GetFlags::CREATE))
+        // A re-rooted session is never memoized: the memo key is (start namespace, path, flags)
+        // and does not identify the root, so two sessions sharing a working namespace but not a
+        // root would read each other's answers for any path touching `/` or `..`.
+        let memoized = (memo::MEMO_ON
+            && self.root_ns.is_none()
+            && !flags.contains(GetFlags::CREATE))
             .then(|| name.as_ref().to_str())
             .flatten();
         let start = if memoized.is_some() {

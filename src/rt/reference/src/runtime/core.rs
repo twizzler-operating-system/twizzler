@@ -4,7 +4,7 @@ use core::mem::MaybeUninit;
 use std::{
     collections::BTreeMap,
     ffi::{c_char, c_void, CStr, CString},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Mutex, OnceLock},
     time::Instant,
 };
@@ -103,9 +103,10 @@ pub(crate) fn run_mlibc_thread_dtors(tp: *mut u8, code: i32) {
 /// plus a server-side buffer, paid by every compartment at startup whether or not it ever names
 /// anything.
 ///
-/// Setting the namespace to "/" changes nothing: `NameRoot::Current` is set to "/" just above,
-/// and a freshly-created server handle already sits at the root -- with a single handle per
-/// runtime there is no pool to re-sync, so skipping the call skips a whole gate round-trip.
+/// Setting the namespace to "/" changes nothing: a naming handle this runtime has not opened yet
+/// already sits at its root -- with a single handle per runtime there is no pool to re-sync, so
+/// skipping the call skips a whole gate round-trip. The cwd memo is seeded from that same fact,
+/// so `current_dir()` still answers without acquiring a handle.
 /// `TWZ_RT_INITIAL_DIR` is the parent's cwd, so this fires whenever the parent is at the root --
 /// the common case.
 ///
@@ -293,7 +294,6 @@ impl ReferenceRuntime {
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
-        use twizzler_rt_abi::fd::NameRoot;
         let _t0 = std::time::Instant::now();
         // TODO: control this with env vars
         tracing::subscriber::set_global_default(
@@ -311,21 +311,27 @@ impl ReferenceRuntime {
             OUR_RUNTIME.init_fds();
             let _t_fds = _t0.elapsed();
 
-            let mut nr = self.nameroots.lock();
-            //twizzler_abi::klog_println!("got: {:?}", std::env::var("TWZ_RT_INITIAL_DIR"));
-
-            let current_dir = std::env::var("TWZ_RT_INITIAL_DIR").unwrap_or("/".to_string());
-
-            // TODO
-            nr.insert(NameRoot::Home, PathBuf::from("/"));
-            nr.insert(NameRoot::Root, PathBuf::from("/"));
-            nr.insert(NameRoot::Exe, PathBuf::from("/"));
-            nr.insert(NameRoot::Temp, PathBuf::from("/tmp"));
-            nr.insert(NameRoot::Current, PathBuf::from("/"));
-            if !(SKIP_ROOT_NAMESPACE_SET && current_dir == "/")
-                && crate::runtime::file::set_naming_namespace(Path::new(&current_dir)).is_ok()
-            {
-                nr.insert(NameRoot::Current, Path::new(&current_dir).to_path_buf());
+            // Where this compartment starts is carried in its compartment config, written by the
+            // monitor at load time from what the loading compartment asked for. The
+            // compartment-local roots (`Home`/`Temp`/`Exe`) are not written here at all any more
+            // -- their defaults live in `NameRoots::get`, so a spawn no longer stores three
+            // constants under a lock on its way past.
+            let loader_config = monitor_api::get_comp_config().loader_config;
+            if loader_config.initial_cwd_token != 0 {
+                // Inherited. Recorded, not collected: acquiring a naming handle here would cost
+                // every spawn a gate call for a working directory the compartment may never read.
+                crate::runtime::file::set_pending_bequest(loader_config.initial_cwd_token);
+            } else {
+                // Sent somewhere specific, or nowhere -- both of which are names.
+                let initial_cwd = loader_config
+                    .initial_cwd()
+                    .and_then(|bytes| core::str::from_utf8(bytes).ok())
+                    .unwrap_or("/");
+                if SKIP_ROOT_NAMESPACE_SET && initial_cwd == "/" {
+                    crate::runtime::file::cwd_memo_seed_root();
+                } else {
+                    let _ = crate::runtime::file::set_naming_namespace(Path::new(initial_cwd));
+                }
             }
             let _t_naming = _t0.elapsed();
             // Everything here runs *before* the compartment signals READY, so it is inside the

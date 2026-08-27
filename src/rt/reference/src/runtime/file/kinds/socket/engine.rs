@@ -205,6 +205,8 @@ static ENGINE_WAKES: AtomicU64 = AtomicU64::new(0);
 /// "the fix engaged" is a measurement and not an inference from `polls` having moved -- `polls`
 /// can rise for reasons that have nothing to do with this change.
 static ENGINE_TXWAKE: AtomicU64 = AtomicU64::new(0);
+/// Wakes issued after a `close()`/`abort()` on the paths that had none.
+static ENGINE_CLOSEWAKE: AtomicU64 = AtomicU64::new(0);
 /// Entries to `TcpStreamInner::drop`, and the socket state seen there before `close()`.
 ///
 /// The lost-FIN population's decisive question. net-srv's per-destination frame counters show a
@@ -260,6 +262,24 @@ pub(super) fn note_tcp_close(
         &line.b[..line.n],
         twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
     );
+}
+
+/// Wake the poll thread after a socket state change that queued egress.
+///
+/// `close()` queues a FIN and `abort()` a RST; neither transmits. The poll thread does, and it is
+/// asleep under a deadline `poll_delay` returned *before* that segment existed -- `None` for an
+/// otherwise-idle established socket, so the sleep has no timeout at all. Same stale-deadline
+/// defect as the send fast path (see `blocking_egress`), at the sites that bypass `blocking`
+/// entirely by taking `core` directly.
+///
+/// `TcpStreamInner::drop` is deliberately not a caller: it already wakes.
+///
+/// Unconditional, unlike `blocking`: close/shutdown/drop are not the hot send path. Callers must
+/// drop the `core` guard first -- `wake()` is a syscall, and holding the mutex across it
+/// serialises every socket operation in the compartment behind the poll thread waking up.
+pub(super) fn wake_after_close() {
+    ENGINE_CLOSEWAKE.fetch_add(1, Ordering::Relaxed);
+    ENGINE.wake();
 }
 
 pub(super) fn note_tcp_drop(state: State) {
@@ -328,7 +348,7 @@ fn pollprobe(site: &str) {
     let mut line = Line { b: [0; 256], n: 0 };
     let _ = writeln!(
         line,
-        "POLLPROBE octet={} site={} calls={} fastok={} polls={} wakes={} txwake={} tcpdrops={} dropstate={}",
+        "POLLPROBE octet={} site={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={}",
         ENGINE_OCTET.load(Ordering::Relaxed),
         site,
         ENGINE_CALLS.load(Ordering::Relaxed),
@@ -336,6 +356,7 @@ fn pollprobe(site: &str) {
         ENGINE_POLLS.load(Ordering::Relaxed),
         ENGINE_WAKES.load(Ordering::Relaxed),
         ENGINE_TXWAKE.load(Ordering::Relaxed),
+        ENGINE_CLOSEWAKE.load(Ordering::Relaxed),
         TCPDROPS.load(Ordering::Relaxed),
         TCPDROP_STATE.load(Ordering::Relaxed),
     );

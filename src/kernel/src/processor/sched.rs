@@ -628,6 +628,30 @@ static ALL_THREADS: Spinlock<RBTree<AllThreadsAdapter>> =
 static ALL_THREADS_REPR: Spinlock<RBTree<AllThreadsReprAdapter>> =
     Spinlock::new(RBTree::new(AllThreadsReprAdapter::NEW));
 
+/// Run `f` over every live thread.
+///
+/// **`f` runs inside a spinlock, so it must not take a mutex, sleep, or fault.** Anything that
+/// ends in `Mutex::lock` panics with "cannot lock mutex in critical context" -- including the
+/// non-obvious route `lookup_object(..) -> get_notes().summarize(..)`, which reaches
+/// `ControlObjectCacher`'s notes mutex. That is not a hypothetical: the hang-report table did
+/// exactly this and killed 10/10 sysbench boots on 2026-08-27, printing its header and no rows.
+///
+/// If you need anything mutex-guarded per thread, snapshot first and do the work outside:
+///
+/// ```ignore
+/// let mut threads: heapless::Vec<ThreadRef, N> = heapless::Vec::new();
+/// with_all_threads(|at| {
+///     let mut cursor = at.front();
+///     while let Some(t) = cursor.clone_pointer() {
+///         cursor.move_next();
+///         let _ = threads.push(t);
+///     }
+/// });
+/// for t in threads.iter() { /* mutexes are safe here */ }
+/// ```
+///
+/// `clone_pointer` rather than `iter()`: the iterator yields borrows that cannot outlive the
+/// guard, which is the whole point.
 pub fn with_all_threads<F>(mut f: F)
 where
     F: FnMut(&RBTree<AllThreadsAdapter>),

@@ -11,8 +11,8 @@ use smoltcp::{
     phy::{Device, RxToken, TxToken},
     time::Instant,
     wire::{
-        EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet, PrettyPrinter,
-        TcpPacket,
+        ArpPacket, EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet,
+        Ipv6Packet, PrettyPrinter, TcpPacket,
     },
 };
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
@@ -59,6 +59,80 @@ enum Dest {
     Local(EthernetAddress),
     /// Broadcast/multicast: every other client *and* the NIC.
     Flood,
+}
+
+/// The interface MTU net-srv advertises to every client (`NetServer::capabilities`).
+const MTU: usize = 1514;
+
+/// True length of the Ethernet frame sitting in `buf`, which is a whole 2048-byte packet slot.
+///
+/// The packet protocol carries no length -- `RxToken::consume` hands back the entire slot -- so
+/// the only surviving record of how much of it is real is the headers. Every consumer already
+/// relies on exactly that: smoltcp reads the ethertype, then the IP total-length, and ignores the
+/// tail. This computes the same number those parsers do, so trimming to it cannot change what any
+/// receiver sees; it only stops us copying, and transmitting, the ~2KB of stale slot behind it.
+///
+/// Anything unrecognised falls back to the full slot, i.e. to today's behaviour. The fallback is
+/// the safe direction: too long is what we already do everywhere.
+fn frame_len(buf: &[u8]) -> usize {
+    let Ok(frame) = EthernetFrame::new_checked(buf) else {
+        return buf.len();
+    };
+    let payload = match frame.ethertype() {
+        EthernetProtocol::Ipv4 => Ipv4Packet::new_checked(frame.payload())
+            .ok()
+            .map(|p| p.total_len() as usize),
+        EthernetProtocol::Ipv6 => Ipv6Packet::new_checked(frame.payload())
+            .ok()
+            .map(|p| p.total_len()),
+        // ArpPacket has no buffer_len (that lives on Repr), but the wire layout is fixed:
+        // 8 bytes of header, then sender/target hardware and protocol addresses twice over.
+        EthernetProtocol::Arp => ArpPacket::new_checked(frame.payload())
+            .ok()
+            .map(|p| 8 + 2 * (p.hardware_len() as usize + p.protocol_len() as usize)),
+        _ => None,
+    };
+    match payload {
+        Some(n) => (EthernetFrame::<&[u8]>::header_len() + n).min(buf.len()),
+        None => buf.len(),
+    }
+}
+
+/// Frames handed to the NIC, and how many exceeded the MTU we advertise.
+///
+/// These exist because the test suite cannot go red on the defect they measure. net-srv hands the
+/// NIC the whole packet slot rather than the frame; QEMU's SLIRP backend parses by header and
+/// ignores the tail, so an oversized frame is still delivered and every test passes. Reading test
+/// outcomes would therefore show green through both the bug and its fix, and a change that merely
+/// shrank the copies would be indistinguishable from one that corrected the framing. These
+/// counters separate the two: DEV_TX_OVERSIZED is ~100% of frames before the fix and must be 0
+/// after, and the byte totals say how much of what we copied was slot padding.
+static DEV_TX_FRAMES: AtomicU64 = AtomicU64::new(0);
+static DEV_TX_OVERSIZED: AtomicU64 = AtomicU64::new(0);
+static DEV_TX_MAXLEN: AtomicU64 = AtomicU64::new(0);
+static DEV_TX_SENTBYTES: AtomicU64 = AtomicU64::new(0);
+static DEV_TX_FRAMEBYTES: AtomicU64 = AtomicU64::new(0);
+static DEV_TX_REPORTED: AtomicU64 = AtomicU64::new(0);
+
+/// Which length net-srv hands the NIC and copies on the local path.
+///
+/// `false` reproduces the pre-fix behaviour exactly (the whole packet slot) and is the control
+/// arm; `true` is the fix. A named const rather than an edit to the call sites so that which arm
+/// a given build actually was can be read straight out of the source with one grep, instead of
+/// being inferred from a file mtime -- a flag flipped before a build window is invisible to any
+/// `find -newermt` audit.
+const TRIM_TX_TO_FRAME: bool = true;
+
+/// Record one frame on its way to the NIC. `sent` is what we actually hand over; `real` is what
+/// the headers say the frame is. They are equal only once the fix is in.
+fn note_dev_tx(sent: usize, real: usize) {
+    DEV_TX_FRAMES.fetch_add(1, Ordering::Relaxed);
+    if sent > MTU {
+        DEV_TX_OVERSIZED.fetch_add(1, Ordering::Relaxed);
+    }
+    DEV_TX_MAXLEN.fetch_max(sent as u64, Ordering::Relaxed);
+    DEV_TX_SENTBYTES.fetch_add(sent as u64, Ordering::Relaxed);
+    DEV_TX_FRAMEBYTES.fetch_add(real as u64, Ordering::Relaxed);
 }
 
 fn classify(buf: &[u8], local_macs: &[EthernetAddress]) -> Dest {
@@ -410,11 +484,15 @@ fn client_thread(client: Arc<Client>) {
                 // The NIC path keeps the zero-copy handoff of the client's own tx packet; only
                 // frames that stay on-box are copied.
                 if !matches!(dest, Dest::Local(_)) {
-                    let tx = TxBuffer::from_packet(tx_po.clone(), buf.len(), packet, false);
+                    let real = frame_len(buf);
+                    let sent = if TRIM_TX_TO_FRAME { real } else { buf.len() };
+                    note_dev_tx(sent, real);
+                    let tx = TxBuffer::from_packet(tx_po.clone(), sent, packet, false);
                     device.transmit(tx);
                 }
                 if !matches!(dest, Dest::Device) {
-                    pending.push((buf.to_vec(), dest));
+                    let n = if TRIM_TX_TO_FRAME { frame_len(buf) } else { buf.len() };
+                    pending.push((buf[..n].to_vec(), dest));
                 }
             })
         }
@@ -443,6 +521,28 @@ fn client_thread(client: Arc<Client>) {
                     LOCAL_NOMATCH_FIN.load(Ordering::Relaxed),
                     TX_FIN_BY_DST[105].load(Ordering::Relaxed),
                     TX_FIN_BY_DST[100].load(Ordering::Relaxed),
+                );
+            }
+        }
+
+        // Permanent, not scaffolding: silent while framing is correct, loud the moment it is not.
+        // The suite structurally cannot fail on oversized frames -- SLIRP parses by header and
+        // ignores the tail -- so without this the defect could return and every test would stay
+        // green. Emitted here rather than at the tx site because that runs under `client.ep`, and
+        // a console write under that lock once took this suite from 13/50 failures to 50/50.
+        {
+            let bad = DEV_TX_OVERSIZED.load(Ordering::Relaxed);
+            if bad > 0 && DEV_TX_REPORTED.swap(bad, Ordering::Relaxed) != bad {
+                tracing::warn!(
+                    "FRAMING BROKEN: handed the NIC {} frame(s) above the {}-byte MTU (max {}); \
+                     {} of {} bytes sent were slot padding",
+                    bad,
+                    MTU,
+                    DEV_TX_MAXLEN.load(Ordering::Relaxed),
+                    DEV_TX_SENTBYTES
+                        .load(Ordering::Relaxed)
+                        .saturating_sub(DEV_TX_FRAMEBYTES.load(Ordering::Relaxed)),
+                    DEV_TX_SENTBYTES.load(Ordering::Relaxed),
                 );
             }
         }

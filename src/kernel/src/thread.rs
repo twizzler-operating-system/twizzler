@@ -1219,6 +1219,11 @@ const STUCK_EXIT_SCANS: u32 = 20;
 /// How long one thread must sit in a single uninterrupted thread-sync sleep before the wait table
 /// below is printed. Long waits are ordinary here -- sshd waiting for a connection, the cleaner's
 /// 8s poll -- so this is set past anything the test suite does on purpose.
+/// Upper bound on rows in the hang table, and therefore on the `ThreadRef`s held across the
+/// print. A bench boot can have thousands of threads; the table exists to identify a wedge, not to
+/// enumerate a workload. Overflow is reported rather than dropped.
+const HANG_TABLE_MAX_THREADS: usize = 64;
+
 const HANG_REPORT_SECS: u64 = 25;
 /// Tables one thread may cause per stuck episode, where an episode ends when the thread moves.
 ///
@@ -1310,11 +1315,30 @@ pub fn check_system_hang() {
         stuck_objid,
         HANG_REPORT_SECS
     );
+    // Snapshot the thread list, then print outside the lock. The name lookup below ends in
+    // `ControlObjectCacher::summarize`, which takes a **mutex**, while `with_all_threads` holds a
+    // spinlock -- so doing it inline panics with "cannot lock mutex in critical context" the first
+    // time a repr object is actually findable. That is not hypothetical: it killed 10/10 sysbench
+    // boots on 2026-08-27, always on the first thread reaching the lookup, so the table printed
+    // its header and no rows.
+    let mut threads: heapless::Vec<ThreadRef, HANG_TABLE_MAX_THREADS> = heapless::Vec::new();
+    let mut untabled = 0usize;
     with_all_threads(|at| {
-        for thread in at.iter() {
+        // `clone_pointer` rather than `iter()`: the iterator yields borrows that cannot outlive
+        // the guard, and the whole point here is to outlive it.
+        let mut cursor = at.front();
+        while let Some(thread) = cursor.clone_pointer() {
+            cursor.move_next();
             if thread.is_idle_thread() {
                 continue;
             }
+            if threads.push(thread).is_err() {
+                untabled += 1;
+            }
+        }
+    });
+    {
+        for thread in threads.iter() {
             // The runtime mirrors thread names into notes on the repr object; without one the
             // table is a list of anonymous parked threads (rustchang.md).
             let mut namebuf = [0u8; 24];
@@ -1351,7 +1375,16 @@ pub fn check_system_hang() {
                 thread.has_timed_wait(),
             );
         }
-    });
+    }
+    // Never silently: a truncated table that looks complete is how a missing thread becomes a
+    // thread nobody was looking for.
+    if untabled > 0 {
+        emerglogln!(
+            "  ... and {} further threads the table could not hold (cap {})",
+            untabled,
+            HANG_TABLE_MAX_THREADS
+        );
+    }
     // The counters are otherwise only printed at shutdown, which a wedged boot never reaches -- so
     // the one run in a thousand that actually hangs is the one that reports none of them. Printing
     // them here costs a few lines on a boot already in trouble, and makes a hung transcript
