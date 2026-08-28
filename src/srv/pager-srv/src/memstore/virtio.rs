@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_io::block_on;
 use object_store::{
     DevicePage, PagedDevice, PagedPhysMem, PhysRange, PosIo, INLINE_LEN, PAGE_SIZE,
 };
@@ -10,9 +9,7 @@ use twizzler::{
 };
 use twizzler_driver::{bus::pcie::PcieDeviceInfo, device::Device, dma::PhysInfo};
 
-use crate::{
-    disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, threads::run_async, PAGER_CTX,
-};
+use crate::{disk::SECTOR_SIZE, helpers::PAGE, physrw::register_phys, PAGER_CTX};
 
 #[derive(Clone)]
 pub struct VirtioMem {
@@ -28,7 +25,7 @@ impl VirtioMem {
 }
 
 impl PosIo for VirtioMem {
-    async fn read(&self, start: u64, mut buf: &mut [u8]) -> Result<usize> {
+    fn read(&self, start: u64, mut buf: &mut [u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
@@ -51,7 +48,7 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + read_buffer.len() as u64,
             };
-            crate::physrw::read_physical_pages(&mut read_buffer, phys).await?;
+            crate::physrw::read_physical_pages(&mut read_buffer, phys)?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -65,7 +62,7 @@ impl PosIo for VirtioMem {
         Ok(bytes_written)
     }
 
-    async fn write(&self, start: u64, mut buf: &[u8]) -> Result<usize> {
+    fn write(&self, start: u64, mut buf: &[u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
@@ -85,8 +82,7 @@ impl PosIo for VirtioMem {
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = pos.try_into().unwrap();
                 // TODO: check if full read
-                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)
-                    .await?;
+                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -99,7 +95,7 @@ impl PosIo for VirtioMem {
                 start,
                 end: start + write_buffer.len() as u64,
             };
-            crate::physrw::fill_physical_pages(&write_buffer, phys).await?;
+            crate::physrw::fill_physical_pages(&write_buffer, phys)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -108,7 +104,7 @@ impl PosIo for VirtioMem {
 }
 
 impl PagedDevice for VirtioMem {
-    async fn sequential_read(
+    fn sequential_read(
         &self,
         start: u64,
         _nr_pages: usize,
@@ -119,7 +115,7 @@ impl PagedDevice for VirtioMem {
         Ok(0)
     }
 
-    async fn sequential_write(
+    fn sequential_write(
         &self,
         start: u64,
         _nr_pages: usize,
@@ -130,11 +126,11 @@ impl PagedDevice for VirtioMem {
         Ok(list.len())
     }
 
-    async fn len(&self) -> Result<usize> {
+    fn len(&self) -> Result<usize> {
         Ok(self.len as usize)
     }
 
-    async fn phys_addrs(
+    fn phys_addrs(
         &self,
         _obj_start_page: i64,
         _obj_nr_pages: u32,
@@ -154,7 +150,7 @@ impl PagedDevice for VirtioMem {
                         if !phys_list.is_empty() {
                             return None;
                         }
-                        run_async(mw)
+                        mw.wait()
                     }
                 };
                 let phys_range = PhysRange::new(page, page + PAGE);
@@ -182,7 +178,7 @@ impl PagedDevice for VirtioMem {
     }
 }
 
-pub async fn init_virtio() -> Result<VirtioMem> {
+pub fn init_virtio() -> Result<VirtioMem> {
     let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::Vendor(0x1af4, 0x105b),
     })?;
@@ -207,7 +203,7 @@ pub async fn init_virtio() -> Result<VirtioMem> {
                 .read();
 
             tracing::info!("virtio-mem start at {:x} len: {:x}", start, len);
-            if register_phys(start, len).await.is_ok() {
+            if register_phys(start, len).is_ok() {
                 tracing::info!("virtio-mem registered physical region with kernel",);
                 let ctrl = VirtioMem {
                     device: Arc::new(device),

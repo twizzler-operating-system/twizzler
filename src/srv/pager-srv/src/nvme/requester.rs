@@ -7,7 +7,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
     },
-    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -102,10 +101,10 @@ impl<'a> InflightRequest<'a> {
                 return Ok(cc);
             }
             // Timed, not indefinite. Data queues have no reaper thread -- they are drained by
-            // whoever is waiting on them -- and this blocking path does not know its queue's
-            // interrupt word, so it re-checks rather than trusting someone else to wake it. The
-            // async path (`poll_completion` under `threads::park_poll`) is the one that sleeps on
-            // the interrupt properly; this is the admin queue and the odd blocking caller.
+            // whoever is waiting on them -- and this path does not know its queue's interrupt
+            // word, so it re-checks rather than trusting someone else to wake it. `wait_owned` is
+            // the one that sleeps on the interrupt properly; this is the admin queue and the odd
+            // caller that submitted from another thread.
             sys_thread_sync(
                 &mut [ThreadSync::new_sleep(wait.0)],
                 Some(Duration::from_micros(200)),
@@ -142,31 +141,16 @@ impl<'a> InflightRequest<'a> {
             let _ = ops.push(ThreadSync::new_sleep(self.wait_item_read().0));
             if let Some(int) = crate::nvme::current_queue_sleep() {
                 let _ = ops.push(ThreadSync::new_sleep(int));
+                // The parks/ints diagnostic used to be stamped by `threads::park_poll`, which was
+                // then the only place a data queue was waited on. This is that place now, so the
+                // counter moves with it -- left behind it would have read 0 forever and quietly
+                // stopped being able to report the state it exists to catch (parks with no
+                // interrupts = completions arriving only via the spin drain).
+                crate::nvme::controller::note_park();
             }
             sys_thread_sync(&mut ops, None).ok();
             crate::nvme::reap_current_queue();
         }
-    }
-
-    pub fn poll_completion(&self, cx: &mut Context<'_>) -> Poll<std::io::Result<CommonCompletion>> {
-        if let Some(cc) = self.completion() {
-            return Poll::Ready(Ok(cc));
-        }
-        // Only spin on the first poll; on a re-poll the waker is already registered.
-        if self.entry.flags.load(Ordering::Acquire) & WAKER == 0 {
-            if let Some(cc) = self.spin() {
-                return Poll::Ready(Ok(cc));
-            }
-        }
-
-        // Store the waker before advertising it, for the same reason as WAITER above.
-        *self.entry.waker.lock().unwrap() = Some(cx.waker().clone());
-        if self.entry.flags.fetch_or(WAKER, Ordering::SeqCst) & READY != 0 {
-            return Poll::Ready(Ok(unsafe {
-                self.entry.ready.get().as_ref().unwrap().assume_init_read()
-            }));
-        }
-        Poll::Pending
     }
 }
 
@@ -176,13 +160,11 @@ unsafe impl Sync for NvmeRequester {}
 const READY: u64 = 1;
 const DROPPED: u64 = 2;
 const WAITER: u64 = 4;
-const WAKER: u64 = 8;
 
 pub struct NvmeRequest {
     cmd: CommonCommand,
     ready: UnsafeCell<MaybeUninit<CommonCompletion>>,
     flags: AtomicU64,
-    waker: Mutex<Option<Waker>>,
 }
 
 impl<'a> Drop for InflightRequest<'a> {
@@ -231,7 +213,6 @@ impl NvmeRequest {
             cmd,
             ready: UnsafeCell::new(MaybeUninit::uninit()),
             flags: AtomicU64::new(0),
-            waker: Mutex::new(None),
         }
     }
 }
@@ -289,12 +270,6 @@ impl NvmeRequesterInner {
                 ))],
                 None,
             );
-        }
-        if flags & WAKER != 0 {
-            let mut w = entry.waker.lock().unwrap();
-            if let Some(waker) = w.take() {
-                waker.wake();
-            }
         }
         if flags & DROPPED != 0 {
             tracing::info!("removing request {} due completion", id);

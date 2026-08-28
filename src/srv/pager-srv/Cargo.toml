@@ -28,7 +28,6 @@ async-channel = { workspace = true }
 smallvec = { workspace = true }
 libc = "*"
 
-async-trait = { workspace = true }
 volatile = { workspace = true }
 bitvec = { workspace = true }
 
@@ -37,11 +36,5 @@ tracing-subscriber = { workspace = true }
 miette = { workspace = true }
 tracing-log = { workspace = true }
 
-async-io = { workspace = true }
-async-executor = { workspace = true, features = [] }
 twizzler-futures = { workspace = true }
-polling = { workspace = true }
-futures = { workspace = true }
 colored = { workspace = true }
-async-condvar-fair = { workspace = true }
-async-lock = { workspace = true }

@@ -7,12 +7,11 @@ use std::{
     time::Duration,
 };
 
-use async_io::Timer;
 use disk::Disk;
 use memstore::virtio::init_virtio;
 use object_store::{Ext4Store, PagedObjectStore};
 use physrw::{init_pr_mgr, report_ready};
-use threads::{run_async, spawn_async, PagerThreadPool};
+use threads::PagerThreadPool;
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
@@ -159,7 +158,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let sq = Arc::new(sq);
     init_pr_mgr(sq);
     #[allow(unused_variables)]
-    let disk = run_async(Disk::new()).unwrap();
+    let disk = Disk::new().unwrap();
 
     let _ = PAGER_CTX.set(PagerContext {
         data,
@@ -172,40 +171,38 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     // Optional: a guest booted without the virtio-pmem device has no virtio-mem controller to find,
     // and nothing here consumes the store yet -- `ctx.store` is the ext4 one. Unwrapping made an
     // absent device fatal, which took pager_start down and init with it.
-    if let Err(e) = run_async(init_virtio()) {
+    if let Err(e) = init_virtio() {
         tracing::info!("no virtio-mem store ({}); continuing without one", e);
     }
-    let ext4_store = run_async(Ext4Store::new(disk.clone(), "/")).unwrap();
+    let ext4_store = Ext4Store::new(disk.clone(), "/").unwrap();
 
     let _ = ctx.store.set(ext4_store);
 
-    run_async(async move {
-        let _ = report_ready().await.unwrap();
-    });
+    let _ = report_ready().unwrap();
 
     tracing::info!("pager ready");
     heapdiag::start_sampler();
 
     //disk::benches::bench_disk(ctx);
     if false {
-        spawn_async(async {
+        std::thread::spawn(|| {
             let pager = PAGER_CTX.get().unwrap();
             loop {
                 pager.data.print_stats();
                 pager.data.reset_stats();
-                Timer::after(Duration::from_millis(1000)).await;
+                std::thread::sleep(Duration::from_millis(1000));
             }
         });
     }
 
     let bootstrap_id = ctx.paged_ostore(None).map_or(0u128, |po| {
-        if let Ok(id) = run_async(po.get_config_id()) {
+        if let Ok(id) = po.get_config_id() {
             id
         } else {
             tracing::info!("creating new naming object");
             let vo = VecObject::<u32, VecObjectAlloc>::new(ObjectBuilder::default().persist(true))
                 .unwrap();
-            run_async(po.set_config_id(vo.object().id().raw())).unwrap();
+            po.set_config_id(vo.object().id().raw()).unwrap();
             vo.object().id().raw()
         }
     });
@@ -221,13 +218,22 @@ pub fn pager_start(q1: ObjID, q2: ObjID) -> Result<ObjID> {
 
 #[secgate::entry(lib = "pager")]
 pub fn adv_lethe() -> Result<()> {
-    run_async(PAGER_CTX.get().unwrap().paged_ostore(None)?.flush()).unwrap();
+    PAGER_CTX
+        .get()
+        .unwrap()
+        .paged_ostore(None)?
+        .flush()
+        .unwrap();
     Ok(())
 }
 
 #[secgate::entry(lib = "pager")]
 pub fn disk_len(id: ObjID) -> Result<u64> {
-    run_async(PAGER_CTX.get().unwrap().paged_ostore(None)?.len(id.raw()))
+    PAGER_CTX
+        .get()
+        .unwrap()
+        .paged_ostore(None)?
+        .len(id.raw())
         // TODO: err
         .map_err(|_| TwzError::NOT_SUPPORTED)
 }

@@ -1,27 +1,22 @@
 use std::{
-    cell::{Cell, RefCell},
-    future::Future,
+    cell::Cell,
     ops::Range,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
     },
-    task::{Context, Poll, Wake, Waker},
     thread::{available_parallelism, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use async_executor::LocalExecutor;
+use object_store::ProbeMiss;
 use twizzler_abi::{
     object::ObjID,
     pager::{
         CompletionToKernel, KernelCommand, ObjectEvictFlags, ObjectRange, PagerFlags,
         RequestFromKernel,
     },
-    syscall::{
-        sys_thread_set_priority, sys_thread_sync, PriorityClass, ThreadPriority, ThreadSync,
-        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
-    },
+    syscall::{sys_thread_set_priority, PriorityClass, ThreadPriority},
 };
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
@@ -99,33 +94,56 @@ fn lane_name(fast: bool, index: usize) -> &'static str {
     Box::leak(name.into_boxed_str())
 }
 
-/// Largest page-data request a fast lane will accept. Three shapes reach us from
-/// `Object::ensure_in_core_pager`: a single page (a meta page, or a tail), a run capped at 64, and
-/// a whole 512-page large-page fill when the level-1 entry is empty. 16 pages (64 KiB) keeps the
-/// first shape and the small tails, and leaves anything where the transfer itself dominates -- the
-/// 256 KiB runs and the 2 MiB fills -- on a bulk lane, which is the traffic the reservation exists
-/// to get out from behind.
+/// Largest *urgent segment* a fast lane will accept -- the pages a thread is blocked on, not the
+/// whole range the kernel widened around them.
+///
+/// Measured against the widened range instead, this admitted nothing at all: `LANESTATS` reported
+/// 0 of 32 page-data requests fast, 31 rejected on size, and 0 admitted even at a limit of 512
+/// (`pagerplan.md` stage 4). That is because `ensure_in_core_pager` widens a one-page touch to a
+/// 64-page run or a whole 512-page region, so the size test was reading the read-ahead and
+/// rejecting the fault attached to it -- and a lane that only ever runs `ObjectInfoReq` and
+/// `DramPages` is not a page-fault reservation at all.
+///
+/// What makes the urgent segment the right metric is that the pager transfers it first and
+/// completes it separately, so it is the work that stands between the faulting thread and its
+/// wakeup ([`crate::request_handle::urgent_segment`]). The read-ahead behind it is not on that
+/// path. 16 pages (64 KiB) matches `REQUIRED_SEGMENT_LIMIT`, so what the cut actually excludes is
+/// the case where the two differ: a required range served as a whole 2 MiB region for the sake of
+/// the large-page merge, which buys no early wake and belongs on a bulk lane.
 const FAST_PAGE_LIMIT: usize = 16;
 
 /// Whether a request belongs on a reserved fast lane. `DramPages` is pure bookkeeping and
 /// `ObjectInfoReq` is a `len()` probe the length cache usually answers without touching the disk
-/// (see pagerperf.md 12). Page data qualifies only when it is small, not a prefetch, not raised for
-/// a background thread, and answerable without the fs lock. Prefetch ranges run to the whole
+/// (see pagerperf.md 12). Page data qualifies only when the segment someone is *blocked on* is
+/// small ([`FAST_PAGE_LIMIT`]), it is not a prefetch, it was not raised for a background thread,
+/// and it is answerable without the fs lock. Prefetch ranges run to the whole
 /// object, which is exactly the traffic the reservation exists to dodge; create/delete/evict all do
 /// synchronous filesystem work under the global `fs` lock, so they are bulk by definition.
 fn is_fast(req: &RequestFromKernel) -> bool {
     match req.cmd() {
         KernelCommand::ObjectInfoReq(_) | KernelCommand::DramPages(_) => true,
-        KernelCommand::PageDataReq(id, range, flags, _) => {
+        KernelCommand::PageDataReq(id, range, flags, required) => {
             let flags_ok = !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND);
+            let urgent_range = crate::request_handle::urgent_segment(range, required);
+            let urgent = urgent_range.page_count();
             let pages = range.page_count();
+            // Probed on the whole range, not the urgent segment: the lane serves the read-ahead
+            // inline after the urgent pages, so it parks on the fs lock if any part of the request
+            // needs it.
+            //
             // Deliberately not short-circuited: the question `FAST_PAGE_LIMIT` has never been able
             // to answer is whether raising it would *let anything through*, and that needs the
             // probe evaluated on the requests the size test currently rejects. Two cache reads on
             // the dequeue thread, which is the same cost the accepted path already pays.
-            let probe_ok = !would_block_on_store(id, range);
-            LANE_STATS.record(flags_ok, pages, probe_ok);
-            flags_ok && pages <= FAST_PAGE_LIMIT && probe_ok
+            let miss = probe_store(id, range);
+            let probe_ok = !miss.would_block();
+            // The counterfactual the probe cannot otherwise answer: if the lane served only the
+            // urgent segment and handed the read-ahead tail back to a bulk lane, would the fs lock
+            // still be in the way? Only asked when the widened range was refused, so the common
+            // path pays nothing extra.
+            let urgent_probe_ok = probe_ok || !probe_store(id, urgent_range).would_block();
+            LANE_STATS.record(flags_ok, urgent, pages, probe_ok, miss, urgent_probe_ok);
+            flags_ok && urgent <= FAST_PAGE_LIMIT && probe_ok
         }
         KernelCommand::ObjectCreate(..) | KernelCommand::ObjectDel(_) => false,
         KernelCommand::ObjectEvict(_) => false,
@@ -147,7 +165,24 @@ struct LaneStats {
     would_be_fast_at_64: AtomicU64,
     would_be_fast_at_512: AtomicU64,
     would_be_fast_unlimited: AtomicU64,
+    /// [`Self::rejected_probe`] split by which cache came up short. `len` and `no_extents` mean
+    /// the store must go to disk for this object; `partial` means it has the extents cached but
+    /// was asked about a range they do not span.
+    probe_len: AtomicU64,
+    probe_no_extents: AtomicU64,
+    probe_partial: AtomicU64,
+    /// The decisive counterfactual: requests that a fast lane could take **today** if it served
+    /// only the urgent segment and handed the read-ahead tail to a bulk lane. Flags and size held
+    /// fixed, so this is exactly what tail re-dispatch would buy -- and if it is ~0, nothing short
+    /// of the fs lock itself will open the fast lanes (`pagerplan.md` stages 4 and 6).
+    would_be_fast_urgent_only: AtomicU64,
     pages_fast: AtomicU64,
+    /// Of [`Self::pages_fast`], the pages nobody was blocked on -- the read-ahead a fast lane
+    /// carries inline after the urgent segment it was admitted for. This is the cost of sizing
+    /// admission on the urgent segment, and the number that decides whether the tail needs
+    /// handing back to a bulk lane (`pagerplan.md` stage 4). Zero means the widened range and the
+    /// urgent segment always coincided and the re-cut changed nothing.
+    pages_fast_tail: AtomicU64,
     pages_total: AtomicU64,
     report_due: std::sync::atomic::AtomicBool,
 }
@@ -161,33 +196,61 @@ static LANE_STATS: LaneStats = LaneStats {
     would_be_fast_at_64: AtomicU64::new(0),
     would_be_fast_at_512: AtomicU64::new(0),
     would_be_fast_unlimited: AtomicU64::new(0),
+    probe_len: AtomicU64::new(0),
+    probe_no_extents: AtomicU64::new(0),
+    probe_partial: AtomicU64::new(0),
+    would_be_fast_urgent_only: AtomicU64::new(0),
     pages_fast: AtomicU64::new(0),
+    pages_fast_tail: AtomicU64::new(0),
     pages_total: AtomicU64::new(0),
     report_due: std::sync::atomic::AtomicBool::new(false),
 };
 
 impl LaneStats {
-    fn record(&self, flags_ok: bool, pages: usize, probe_ok: bool) {
+    /// `urgent` is what the size test judges (the pages a waiter is blocked on); `total` is what
+    /// the lane ends up transferring for the request either way.
+    fn record(
+        &self,
+        flags_ok: bool,
+        urgent: usize,
+        total: usize,
+        probe_ok: bool,
+        miss: ProbeMiss,
+        urgent_probe_ok: bool,
+    ) {
         let n = self.page_data.fetch_add(1, Ordering::Relaxed) + 1;
-        self.pages_total.fetch_add(pages as u64, Ordering::Relaxed);
+        self.pages_total.fetch_add(total as u64, Ordering::Relaxed);
         if !flags_ok {
             self.rejected_flags.fetch_add(1, Ordering::Relaxed);
         }
-        if pages > FAST_PAGE_LIMIT {
+        if urgent > FAST_PAGE_LIMIT {
             self.rejected_size.fetch_add(1, Ordering::Relaxed);
         }
         if !probe_ok {
             self.rejected_probe.fetch_add(1, Ordering::Relaxed);
+            match miss {
+                ProbeMiss::Len => &self.probe_len,
+                ProbeMiss::NoExtents => &self.probe_no_extents,
+                ProbeMiss::Partial => &self.probe_partial,
+                ProbeMiss::Cached => unreachable!("probe_ok is this same predicate"),
+            }
+            .fetch_add(1, Ordering::Relaxed);
+        }
+        if flags_ok && urgent_probe_ok && urgent <= FAST_PAGE_LIMIT {
+            self.would_be_fast_urgent_only
+                .fetch_add(1, Ordering::Relaxed);
         }
         if flags_ok && probe_ok {
-            if pages <= FAST_PAGE_LIMIT {
+            if urgent <= FAST_PAGE_LIMIT {
                 self.fast.fetch_add(1, Ordering::Relaxed);
-                self.pages_fast.fetch_add(pages as u64, Ordering::Relaxed);
+                self.pages_fast.fetch_add(total as u64, Ordering::Relaxed);
+                self.pages_fast_tail
+                    .fetch_add(total.saturating_sub(urgent) as u64, Ordering::Relaxed);
             }
-            if pages <= 64 {
+            if urgent <= 64 {
                 self.would_be_fast_at_64.fetch_add(1, Ordering::Relaxed);
             }
-            if pages <= 512 {
+            if urgent <= 512 {
                 self.would_be_fast_at_512.fetch_add(1, Ordering::Relaxed);
             }
             self.would_be_fast_unlimited.fetch_add(1, Ordering::Relaxed);
@@ -209,22 +272,27 @@ impl LaneStats {
             return;
         }
         tracing::info!(
-            "LANESTATS: {} page-data ({} pages); fast {} ({} pages); rejected {} flags / {} size / {} probe; would be fast at limit 64: {}, 512: {}, unlimited: {}",
+            "LANESTATS: {} page-data ({} pages); fast {} ({} pages, {} of them read-ahead tail); rejected {} flags / {} size / {} probe ({} len, {} no-extents, {} partial); would be fast at urgent limit 64: {}, 512: {}, unlimited: {}; on urgent segment alone: {}",
             self.page_data.load(Ordering::Relaxed),
             self.pages_total.load(Ordering::Relaxed),
             self.fast.load(Ordering::Relaxed),
             self.pages_fast.load(Ordering::Relaxed),
+            self.pages_fast_tail.load(Ordering::Relaxed),
             self.rejected_flags.load(Ordering::Relaxed),
             self.rejected_size.load(Ordering::Relaxed),
             self.rejected_probe.load(Ordering::Relaxed),
+            self.probe_len.load(Ordering::Relaxed),
+            self.probe_no_extents.load(Ordering::Relaxed),
+            self.probe_partial.load(Ordering::Relaxed),
             self.would_be_fast_at_64.load(Ordering::Relaxed),
             self.would_be_fast_at_512.load(Ordering::Relaxed),
             self.would_be_fast_unlimited.load(Ordering::Relaxed),
+            self.would_be_fast_urgent_only.load(Ordering::Relaxed),
         );
     }
 }
 
-/// Whether serving this range would park the lane on the object store's fs lock.
+/// Why serving this range would park the lane on the object store's fs lock, if it would.
 ///
 /// That lock is global and held across NVMe round trips (pagerperf.md 2), so a fast lane that takes
 /// it can sit behind a bulk transfer for a whole disk round trip -- the queueing the reservation
@@ -235,10 +303,10 @@ impl LaneStats {
 ///
 /// Asked on the dequeue thread, which nothing may stall, so it must stay a cache read: it takes
 /// only the length and extent caches' own short locks and never touches the disk.
-fn would_block_on_store(id: ObjID, range: ObjectRange) -> bool {
-    PAGER_CTX
-        .get()
-        .is_some_and(|ctx| crate::helpers::page_in_would_block(ctx, id, range))
+fn probe_store(id: ObjID, range: ObjectRange) -> ProbeMiss {
+    PAGER_CTX.get().map_or(ProbeMiss::Cached, |ctx| {
+        crate::helpers::page_in_would_block(ctx, id, range)
+    })
 }
 
 pub struct WorkItem {
@@ -265,15 +333,6 @@ pub struct WorkerThread {
     /// see [`DepthGuard`].
     depth: Arc<AtomicUsize>,
 }
-
-#[thread_local]
-static LOCAL_EXEC: LocalExecutor<'static> = LocalExecutor::new();
-
-/// The running worker's depth counter, so work detached onto this executor can keep counting
-/// against the lane that owns it. `None` on the dequeue thread and at init, where `spawn_async`
-/// and `run_async` are also called but no lane is being charged.
-#[thread_local]
-static LANE_DEPTH: RefCell<Option<Arc<AtomicUsize>>> = RefCell::new(None);
 
 /// This worker's nvme queue pair, so workers never contend on one submission queue.
 ///
@@ -339,25 +398,15 @@ pub fn nr_workers() -> usize {
 /// Holds a lane's depth raised for the lifetime of one unit of work.
 ///
 /// The reason this exists rather than a bare fetch_add/fetch_sub pair: page-data and fence-sync
-/// requests `spawn_async` a detached task and return, so the work item finishes while the paging it
-/// asked for is still running. Releasing the count there would show a worker buried in detached
-/// page-ins as idle and send it more. The detached task takes its own guard before the item's is
-/// dropped, so the count never dips between the two.
+/// requests used to detach a task and return, so the work item finished while the paging it asked
+/// for was still running. With blocking workers the item and the work are the same thing, so the
+/// count is now just "queued plus in progress" -- `pagerplan.md` stage 3 collapses it further.
 pub struct DepthGuard(Option<Arc<AtomicUsize>>);
 
 impl DepthGuard {
     /// Take over a count already raised by the dispatcher when it queued the item.
     fn adopt(depth: Arc<AtomicUsize>) -> Self {
         Self(Some(depth))
-    }
-
-    /// Raise a fresh count against the lane running this code, if any.
-    fn acquire() -> Self {
-        let depth = LANE_DEPTH.borrow().clone();
-        if let Some(depth) = &depth {
-            depth.fetch_add(1, Ordering::Relaxed);
-        }
-        Self(depth)
     }
 }
 
@@ -381,13 +430,9 @@ impl WorkerThread {
                 } else {
                     BULK_LANE_PRIORITY
                 });
-                LANE_DEPTH.replace(Some(thread_depth.clone()));
                 QUEUE_INDEX.set(index);
                 loop {
-                    // `run_async`, not a bare park: detached tasks from earlier requests are still
-                    // on this executor and their completions still land on this
-                    // thread's queue.
-                    let wi = run_async(recv.recv()).unwrap();
+                    let wi = recv.recv_blocking().unwrap();
                     let _depth = DepthGuard::adopt(thread_depth.clone());
                     // Labelled by the *lane's* class, not the request's: a fast request that
                     // borrowed an idle bulk lane waited in that lane's queue, which is what this
@@ -403,12 +448,8 @@ impl WorkerThread {
                     );
 
                     let work = watchdog::begin(name, wi.qid, wi.req);
-                    let resp = run_async(handle_kernel_request(
-                        PAGER_CTX.get().unwrap(),
-                        wi.qid,
-                        wi.req,
-                        &work,
-                    ));
+                    let resp =
+                        handle_kernel_request(PAGER_CTX.get().unwrap(), wi.qid, wi.req, &work);
                     tracing::trace!(
                         "{}: done handling after {}us",
                         wi.qid,
@@ -585,134 +626,16 @@ impl PagerThreadPool {
     }
 }
 
-/// Detach work onto this thread's executor, keeping the lane charged for it. The guard is taken
-/// before the caller's own is dropped, so the lane never momentarily reads as idle while it still
-/// owes this work.
-pub fn spawn_async<O: 'static>(f: impl Future<Output = O> + 'static) {
-    let depth = DepthGuard::acquire();
-    LOCAL_EXEC
-        .spawn(async move {
-            let _depth = depth;
-            f.await
-        })
-        .detach();
-}
-
-/// Per-thread park word, and the `Waker` that signals it.
+/// Nothing here parks on a future any more.
 ///
-/// This is the whole point of the custom parker: `async_io::block_on` parks on a global `Reactor`
-/// behind a `try_lock`, so a completion has to be noticed by whichever thread holds that lock and
-/// then handed to the thread whose executor owns the task. Parking on our own word lets a
-/// completion wake the thread that is going to poll the task, directly.
-struct ThreadPark {
-    word: AtomicU64,
-}
-
-impl ThreadPark {
-    fn signal(&self) {
-        self.word.store(1, Ordering::SeqCst);
-        let _ = sys_thread_sync(
-            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                ThreadSyncReference::Virtual(&self.word),
-                usize::MAX,
-            ))],
-            None,
-        );
-    }
-
-    fn sleep_op(&self) -> ThreadSyncSleep {
-        ThreadSyncSleep::new(
-            ThreadSyncReference::Virtual(&self.word),
-            0,
-            ThreadSyncOp::Equal,
-            ThreadSyncFlags::empty(),
-        )
-    }
-}
-
-impl Wake for ThreadPark {
-    fn wake(self: Arc<Self>) {
-        self.signal();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.signal();
-    }
-}
-
-#[thread_local]
-static PARK: RefCell<Option<Arc<ThreadPark>>> = RefCell::new(None);
-
-fn new_park() -> Arc<ThreadPark> {
-    Arc::new(ThreadPark {
-        word: AtomicU64::new(0),
-    })
-}
-
-/// Drive `f` to completion on this thread, sleeping on our own park word and -- when this thread
-/// has an nvme queue -- that queue's interrupt word, in one `sys_thread_sync`.
-///
-/// Waking on the interrupt directly is what removes the handoff: this thread reaps its own queue,
-/// which marks the request ready and signals the very waker we are about to poll. Arming both words
-/// is what makes it safe either way, since another thread reaping first still signals our park
-/// word.
-///
-/// Note this deliberately does not drive `async_io`'s reactor. Nothing on this path needs it -- the
-/// only reactor-backed futures left in the pager are one behind `if false` and `Disk::yield_now`,
-/// which no longer uses a timer.
-fn park_poll<O>(f: impl Future<Output = O>) -> O {
-    // A nested call must not share the outer call's word. The loop below clears it before every
-    // poll, so an inner loop would swallow a wake meant for the future the outer one is parked on
-    // and strand it -- and nesting is normal here (`Disk::run_async` and `data.rs`'s
-    // `read_physical_pages` both run inside a future this is already driving). Holding the
-    // `RefMut` for the duration is what makes a re-entrant call take the fresh-parker arm;
-    // `async_io::block_on` does exactly this, for exactly this reason.
-    // `cached` is held (not dropped) for the whole call on purpose -- that is the nesting guard.
-    let mut cached = PARK.try_borrow_mut().ok();
-    let park = match cached.as_mut() {
-        Some(slot) => slot.get_or_insert_with(new_park).clone(),
-        None => new_park(),
-    };
-    let waker = Waker::from(park.clone());
-    let mut cx = Context::from_waker(&waker);
-    let mut f = core::pin::pin!(f);
-    loop {
-        // Clear before polling, so a wake landing during the poll is seen below rather than lost.
-        park.word.store(0, Ordering::SeqCst);
-        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        // Drain first: a completion already sitting in the queue must not be slept on. This also
-        // consumes the interrupt word, without which the sleep below would never block.
-        crate::nvme::reap_current_queue();
-        if park.word.load(Ordering::SeqCst) != 0 {
-            continue;
-        }
-        let mut ops = heapless::Vec::<ThreadSync, 2>::new();
-        let _ = ops.push(ThreadSync::new_sleep(park.sleep_op()));
-        if let Some(int) = crate::nvme::current_queue_sleep() {
-            let _ = ops.push(ThreadSync::new_sleep(int));
-            crate::nvme::controller::note_park();
-        }
-        let _ = sys_thread_sync(&mut ops, None);
-        crate::nvme::reap_current_queue();
-    }
-}
-
-/// Run `f` on this thread's executor, so anything already detached here keeps making progress.
-pub fn run_async<O: 'static>(f: impl Future<Output = O>) -> O {
-    park_poll(LOCAL_EXEC.run(f))
-}
-
-/// Run `f` and *only* `f` -- no executor, so no unrelated task can be polled from inside this call.
-///
-/// For lwext4's block-device callbacks, which always run with `Ext4Store::fs` held. Driving the
-/// shared executor there polls some other pager task on this thread, and any of them that reaches
-/// for `fs` -- a non-reentrant std mutex already held further up this very stack -- blocks the
-/// thread forever. See pagerperf.md 2 for the post-mortem.
-pub fn run_isolated<O>(f: impl Future<Output = O>) -> O {
-    park_poll(f)
-}
+/// This is where the executor was: a thread-local `LocalExecutor`, a hand-written parker
+/// (`park_poll`) driving it against this thread's nvme interrupt word, `spawn_async` to detach a
+/// page-in so the worker could take the next item, and `run_isolated` to poll one future without
+/// the executor -- that last one existing only to keep lwext4's callbacks from re-entering it and
+/// deadlocking on `Ext4Store::fs` (pagerperf.md 2). A blocking worker does the work on the thread
+/// that took the item, so the handoff, the parker and the whole deadlock class go with it
+/// (`pagerplan.md` stage 2). What replaced the parker is `InflightRequest::wait_owned`, which
+/// sleeps on the flags word and this thread's queue interrupt together and reaps for itself.
 
 fn kq_handler_main(
     workers: Arc<Workers>,
@@ -771,12 +694,7 @@ fn kq_handler_main(
                     // Handled inline, so anything that blocks here stops the pager dequeuing from
                     // the kernel at all -- worth naming separately from a stuck worker.
                     let work = watchdog::begin("kq-handler-inline", id, req);
-                    let resp = run_async(handle_kernel_request(
-                        PAGER_CTX.get().unwrap(),
-                        id,
-                        req,
-                        &work,
-                    ));
+                    let resp = handle_kernel_request(PAGER_CTX.get().unwrap(), id, req, &work);
                     work.phase("notify-kernel");
                     if let Some(resp) = resp {
                         PAGER_CTX
@@ -804,14 +722,78 @@ fn kq_handler_main(
     }
 }
 
+/// How long any blocking waiter in the pager sleeps before rechecking its own predicate.
+///
+/// Not a timeout in the usual sense -- nothing below gives up when it fires, they all loop until
+/// their condition holds. It bounds the damage a lost wake can do, and it is the only way to
+/// *detect* one: a wait that ends on this fallback with its condition **already true** is a
+/// notification that should have arrived and did not.
+///
+/// The concrete reason it exists is one bug's worth, not a general distrust of the runtime:
+/// `PagerData::free_page` returned pages to the pool without signalling `mem_avail`, so a thread
+/// parked for memory could not be woken by another thread freeing some. That is fixed at the
+/// source, and this is the backstop for the next one of its kind -- the async version of these
+/// waiters was covered incidentally by an executor polling other tasks on the same thread, and
+/// nothing covers them now. **The expected count is zero**, and a run that reports zero is
+/// evidence the fallback is inert rather than load-bearing.
+///
+/// 500 ms is a bound on latency in an already-degraded state (a pager thread that would otherwise
+/// be parked forever), deliberately far above anything on a working path, so it cannot turn into
+/// a poll loop if the count is ever nonzero for a benign reason.
+pub const WAKE_FALLBACK: Duration = Duration::from_millis(500);
+
+/// Counts what [`WAKE_FALLBACK`] catches.
+///
+/// `missed` is the one that matters: a waiter whose condition was already satisfied when its
+/// sleep timed out. It should be zero, and every increment is a wake that went missing between a
+/// notifier and a waiter holding the same mutex.
+pub struct WakeWatch {
+    fallbacks: AtomicU64,
+    missed: AtomicU64,
+}
+
+pub static WAKE_WATCH: WakeWatch = WakeWatch {
+    fallbacks: AtomicU64::new(0),
+    missed: AtomicU64::new(0),
+};
+
+impl WakeWatch {
+    /// Record a sleep that ended on the fallback rather than on a notification. `satisfied` is
+    /// whether the condition was true at that moment -- i.e. whether a wake was owed.
+    pub fn fallback(&self, satisfied: bool, what: &str) {
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        if satisfied {
+            let n = self.missed.fetch_add(1, Ordering::Relaxed) + 1;
+            // Powers of two: a systematically-dropped wake would otherwise flood the console with
+            // the evidence and slow down the thing being diagnosed.
+            if n.is_power_of_two() {
+                tracing::warn!(
+                    "WAKEWATCH: {} woke on the {}ms fallback with its condition already met ({} such, {} fallbacks total) -- a notify was owed and not delivered",
+                    what,
+                    WAKE_FALLBACK.as_millis(),
+                    n,
+                    self.fallbacks.load(Ordering::Relaxed),
+                );
+            }
+        }
+    }
+}
+
+/// A one-shot slot: one thread blocks on it, another fills it exactly once.
+///
+/// Was a `Waker` in an `Option` and a `Future` impl on `&Waiter<T>`. The waking side is unchanged
+/// -- it takes the lock, stores the item, releases the waiter -- so this is the same handoff with
+/// a condvar in place of the executor that used to notice it.
 pub struct Waiter<T: Send> {
-    data: Mutex<(Option<T>, Option<Waker>)>,
+    data: Mutex<Option<T>>,
+    ready: Condvar,
 }
 
 impl<T: Send> Default for Waiter<T> {
     fn default() -> Self {
         Self {
-            data: Mutex::new((None, None)),
+            data: Mutex::new(None),
+            ready: Condvar::new(),
         }
     }
 }
@@ -819,26 +801,23 @@ impl<T: Send> Default for Waiter<T> {
 impl<T: Send> Waiter<T> {
     pub fn finish(&self, item: T) {
         let mut data = self.data.lock().unwrap();
-        data.0 = Some(item);
-        if let Some(w) = data.1.take() {
-            w.wake();
-        }
+        *data = Some(item);
+        drop(data);
+        self.ready.notify_all();
     }
-}
 
-impl<T: Send> Future for &Waiter<T> {
-    type Output = T;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
+    /// Block until [`Self::finish`] has run, and take what it left.
+    pub fn wait(&self) -> T {
         let mut data = self.data.lock().unwrap();
-        if data.0.is_some() {
-            std::task::Poll::Ready(data.0.take().unwrap())
-        } else {
-            data.1.replace(cx.waker().clone());
-            std::task::Poll::Pending
+        loop {
+            if let Some(item) = data.take() {
+                return item;
+            }
+            let (guard, timeout) = self.ready.wait_timeout(data, WAKE_FALLBACK).unwrap();
+            data = guard;
+            if timeout.timed_out() {
+                WAKE_WATCH.fallback(data.is_some(), "physrw completion");
+            }
         }
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    future::Future,
     sync::{Arc, Mutex},
     u32, u64,
 };
@@ -12,7 +11,6 @@ use twizzler_driver::dma::{PhysAddr, PhysInfo};
 use crate::{
     helpers::PAGE,
     nvme::{init_nvme, NvmeController},
-    threads::run_isolated,
     PAGER_CTX,
 };
 
@@ -28,8 +26,8 @@ pub struct Disk {
 }
 
 impl Disk {
-    pub async fn new() -> Result<Disk> {
-        let ctrl = init_nvme().await.expect("failed to open nvme controller");
+    pub fn new() -> Result<Disk> {
+        let ctrl = init_nvme().expect("failed to open nvme controller");
         let len = ctrl.blocking_get_flash_size();
         // Warm the MDTS query here so the first I/O doesn't pay a blocking admin command.
         let _ = ctrl.blocking_get_max_transfer_pages::<PAGE_SIZE>();
@@ -47,7 +45,7 @@ impl Disk {
 }
 
 impl PagedDevice for Disk {
-    async fn sequential_read(
+    fn sequential_read(
         &self,
         start: u64,
         nr_pages: usize,
@@ -96,12 +94,11 @@ impl PagedDevice for Disk {
 
         let count = self
             .ctrl
-            .sequential_read_async::<PAGE_SIZE>(start, phys.as_slice())
-            .await?;
+            .sequential_read_async::<PAGE_SIZE>(start, phys.as_slice())?;
         Ok(count)
     }
 
-    async fn sequential_write(
+    fn sequential_write(
         &self,
         start: u64,
         nr_pages: usize,
@@ -129,16 +126,15 @@ impl PagedDevice for Disk {
 
         let count = self
             .ctrl
-            .sequential_write_async::<PAGE_SIZE>(start, phys.as_slice())
-            .await?;
+            .sequential_write_async::<PAGE_SIZE>(start, phys.as_slice())?;
         Ok(count)
     }
 
-    async fn len(&self) -> Result<usize> {
+    fn len(&self) -> Result<usize> {
         Ok(self.len)
     }
 
-    async fn phys_addrs(
+    fn phys_addrs(
         &self,
         start_obj_page: i64,
         nr_obj_pages: u32,
@@ -167,7 +163,7 @@ impl PagedDevice for Disk {
                         "task out of memory, waiting (pool avail {} KB)",
                         ctx.data.avail_mem() / 1024
                     );
-                    run_isolated(mw);
+                    mw.wait();
                     continue;
                 }
             };
@@ -208,24 +204,14 @@ impl PagedDevice for Disk {
         std::thread::yield_now();
     }
 
-    fn run_async<R: 'static>(&self, f: impl Future<Output = R>) -> R {
-        // `run_isolated`, never `run_async`: the only callers are lwext4's block-device callbacks,
-        // which always run with `Ext4Store::fs` held, and driving the shared executor there polls
-        // unrelated pager tasks on this thread -- any of which reaching for `fs`, a non-reentrant
-        // std mutex already held further up this very stack, blocks the thread forever. See
-        // pagerperf.md 2. `run_isolated` polls only `f`, but still parks on this thread's nvme
-        // interrupt and reaps, so the completion it waits for arrives without a reaper thread.
-        crate::threads::run_isolated(f)
-    }
-
-    async fn free_phys_range(&self, _range: PhysRange) {
+    fn free_phys_range(&self, _range: PhysRange) {
         let ctx = PAGER_CTX.get().unwrap();
         ctx.data.add_memory_range(_range);
     }
 }
 
 impl PosIo for Disk {
-    async fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
+    fn read(&self, start: u64, buf: &mut [u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_written: usize = 0;
@@ -243,9 +229,7 @@ impl PosIo for Disk {
                 left + buf.len() - bytes_written
             }; // If I want to write more than the boundary of a page
 
-            self.ctrl
-                .async_read_page(lba as u64, &mut read_buffer, 0)
-                .await?;
+            self.ctrl.async_read_page(lba as u64, &mut read_buffer, 0)?;
 
             let bytes_to_read = right - left;
             buf[bytes_written..bytes_written + bytes_to_read]
@@ -259,7 +243,7 @@ impl PosIo for Disk {
         Ok(bytes_written)
     }
 
-    async fn write(&self, start: u64, buf: &[u8]) -> Result<usize> {
+    fn write(&self, start: u64, buf: &[u8]) -> Result<usize> {
         let mut pos = start as usize;
         let mut lba = (pos / PAGE_SIZE) * 8;
         let mut bytes_read = 0;
@@ -279,8 +263,7 @@ impl PosIo for Disk {
             if right - left != PAGE_SIZE {
                 let temp_pos: u64 = pos.try_into().unwrap();
                 // TODO: check if full read
-                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)
-                    .await?;
+                self.read(temp_pos & !(PAGE_SIZE - 1) as u64, &mut write_buffer)?;
             }
 
             write_buffer[left..right].copy_from_slice(&buf[bytes_read..bytes_read + right - left]);
@@ -289,8 +272,7 @@ impl PosIo for Disk {
             pos += right - left;
 
             self.ctrl
-                .async_write_page(lba as u64, &mut write_buffer, 0)
-                .await?;
+                .async_write_page(lba as u64, &mut write_buffer, 0)?;
             lba += PAGE_SIZE / SECTOR_SIZE;
         }
 
@@ -299,7 +281,6 @@ impl PosIo for Disk {
 }
 
 pub mod benches {
-    use async_io::block_on;
     use rand::{rng, seq::SliceRandom};
     use twizzler_driver::dma::{PhysAddr, PhysInfo};
 
@@ -335,7 +316,7 @@ pub mod benches {
             .all(|window| window[0].addr().0 + PAGE_SIZE as u64 == window[1].addr().0);
 
         let phys_size = phys.len() * PAGE_SIZE;
-        let ctrl = block_on(crate::disk::init_nvme()).unwrap();
+        let ctrl = crate::disk::init_nvme().unwrap();
         if is_sequential {
             tracing::info!(
                 "benching disk sequential read (with sequential memory): {} KB",

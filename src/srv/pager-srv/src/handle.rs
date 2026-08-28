@@ -12,7 +12,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{bindings::NAME_DATA_MAX, error::TwzError, object::MapFlags};
 
-use crate::{threads::run_async, PAGER_CTX};
+use crate::PAGER_CTX;
 
 // Per-client metadata.
 pub(crate) struct PagerClient {
@@ -143,11 +143,9 @@ pub fn pager_enumerate_external(
     let pager = &PAGER_CTX.get().unwrap();
 
     let mut entries: Vec<ExternalFile> = Vec::new();
-    run_async(
-        pager
-            .paged_ostore(None)?
-            .readdir_external(id.raw(), skip, count, &mut entries),
-    )?;
+    pager
+        .paged_ostore(None)?
+        .readdir_external(id.raw(), skip, count, &mut entries)?;
 
     pager
         .data
@@ -186,13 +184,13 @@ pub fn pager_lookup_external(
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
     let t_store = std::time::Instant::now();
-    let file = run_async(pager.paged_ostore(None)?.open_external(
+    let file = pager.paged_ostore(None)?.open_external(
         Some(id.raw()),
         name,
         ExternalOpenFlags::READ,
         0,
         None,
-    ))?;
+    )?;
     lookupstats::record(t_store.elapsed().as_nanos() as u64);
 
     pager
@@ -243,13 +241,13 @@ pub fn pager_create_external(
     let name =
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
-    let file = run_async(pager.paged_ostore(None)?.open_external(
+    let file = pager.paged_ostore(None)?.open_external(
         Some(dir.raw()),
         name,
         ExternalOpenFlags::CREATE,
         mode,
         link_to.map(|x| x.raw()),
-    ))?;
+    )?;
 
     pager
         .data
@@ -272,11 +270,9 @@ pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Re
     let name =
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
-    run_async(
-        pager
-            .paged_ostore(None)?
-            .unlink_external(Some(dir.raw()), name),
-    )?;
+    pager
+        .paged_ostore(None)?
+        .unlink_external(Some(dir.raw()), name)?;
 
     Ok(())
 }
@@ -287,7 +283,7 @@ pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, Twz
     let comp = info.source_context().unwrap_or(0.into());
     let pager = &PAGER_CTX.get().unwrap();
 
-    let name = run_async(pager.paged_ostore(None)?.readlink_external(id.raw()))?;
+    let name = pager.paged_ostore(None)?.readlink_external(id.raw())?;
     let namelen = pager
         .data
         .with_handle_mut(comp, desc, |pc| pc.buffer.write(name.as_bytes()))

@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     io::ErrorKind,
     mem::size_of,
     sync::{
@@ -798,7 +797,7 @@ impl NvmeController {
         }
     }
 
-    pub async fn async_read_page(
+    pub fn async_read_page(
         &self,
         lba_start: u64,
         out_buffer: &mut [u8],
@@ -820,7 +819,7 @@ impl NvmeController {
             .unwrap();
 
         let cc = inflight
-            .await
+            .wait_owned()
             .inspect_err(|e| tracing::warn!("nvme err async_r_p: {}", e))?;
         tracing::trace!("async read took {}us", start.elapsed().as_micros());
 
@@ -874,7 +873,7 @@ impl NvmeController {
         })
     }
 
-    pub async fn async_write_page(
+    pub fn async_write_page(
         &self,
         lba_start: u64,
         in_buffer: &[u8],
@@ -897,7 +896,7 @@ impl NvmeController {
             .unwrap();
 
         let cc = inflight
-            .await
+            .wait_owned()
             .inspect_err(|e| tracing::warn!("nvme err async_w_p: {}", e))?;
         tracing::trace!("async write took {}us", start.elapsed().as_micros());
         self.inner.dma_pool.put_page(buffer.into_inner());
@@ -1121,7 +1120,7 @@ impl NvmeController {
         }
     }
 
-    pub async fn sequential_read_async<const PAGE_SIZE: usize>(
+    pub fn sequential_read_async<const PAGE_SIZE: usize>(
         &self,
         disk_page_start: u64,
         phys: &[PhysInfo],
@@ -1129,7 +1128,7 @@ impl NvmeController {
         self.pipelined_transfer::<PAGE_SIZE>(disk_page_start, phys, false)
     }
 
-    pub async fn sequential_write_async<const PAGE_SIZE: usize>(
+    pub fn sequential_write_async<const PAGE_SIZE: usize>(
         &self,
         disk_page_start: u64,
         phys: &[PhysInfo],
@@ -1178,16 +1177,5 @@ impl NvmeController {
             return Err(ErrorKind::Other.into());
         }
         Ok(())
-    }
-}
-
-impl<'a> Future for InflightRequest<'a> {
-    type Output = std::io::Result<CommonCompletion>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.poll_completion(cx)
     }
 }

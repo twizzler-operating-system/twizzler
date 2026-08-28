@@ -96,7 +96,6 @@ pub struct DispatchStats {
     /// uniprocessor guest a hand-off is a wake plus a wait for a CPU -- which is the shape the
     /// kernel's 740 us blocked against 35 us of task points at.
     info_pickup: Hist,
-    info_spawn: Hist,
     /// The info task itself, from the worker starting it to the completion going back, and the two
     /// things it does: the store's `len()` probe, and paging in the meta page. The second is a
     /// disk read for a stored object -- it is the reason an info request is not the cheap length
@@ -125,7 +124,6 @@ pub static DISPATCH_STATS: DispatchStats = DispatchStats {
     inline: Hist::new(),
     info_transit: Hist::new(),
     info_pickup: Hist::new(),
-    info_spawn: Hist::new(),
     info_task: Hist::new(),
     info_len: Hist::new(),
     info_meta: Hist::new(),
@@ -179,11 +177,6 @@ impl DispatchStats {
     /// Dispatch to the lane worker picking the info request up.
     pub fn info_pickup(&self, ns: u64) {
         self.info_pickup.record(ns);
-    }
-
-    /// The lane worker reaching the spawn to the detached task starting.
-    pub fn info_spawn(&self, ns: u64) {
-        self.info_spawn.record(ns);
     }
 
     /// The two things a lookup does: the store's length probe, and the meta-page fetch. `meta` is
@@ -272,10 +265,9 @@ impl DispatchStats {
             self.unstamped.load(Ordering::Relaxed),
         );
         tracing::info!(
-            "DISPATCH-INFO: {}; {}; {}; {}; {}; {}",
+            "DISPATCH-INFO: {}; {}; {}; {}; {}",
             self.info_transit.line("transit"),
             self.info_pickup.line("pickup"),
-            self.info_spawn.line("spawn"),
             self.info_task.line("task"),
             self.info_len.line("store-len"),
             self.info_meta.line("meta-page-in"),

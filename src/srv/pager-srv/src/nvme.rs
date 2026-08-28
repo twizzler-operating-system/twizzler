@@ -26,7 +26,7 @@ pub fn queue_diag() {
     }
 }
 
-pub async fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
+pub fn init_nvme() -> Result<Arc<NvmeController>, TwzError> {
     let devices = devmgr::enumerate_devices(devmgr::DriverSpec {
         supported: devmgr::Supported::PcieClass(1, 8, 2),
     })?;

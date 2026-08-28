@@ -39,8 +39,8 @@ impl Request {
         }
     }
 
-    async fn wait(&self) -> CompletionToPager {
-        (&*self.waiter).await
+    fn wait(&self) -> CompletionToPager {
+        self.waiter.wait()
     }
 
     fn finish(&self, comp: CompletionToPager) {
@@ -55,11 +55,11 @@ struct PageRequestMgr {
 }
 
 impl PageRequestMgr {
-    pub async fn submit_and_wait(&self, req: RequestFromPager) -> CompletionToPager {
+    pub fn submit_and_wait(&self, req: RequestFromPager) -> CompletionToPager {
         let req = Request::new(req);
         let waiter = req.clone();
         self.sender.send(req).unwrap();
-        waiter.wait().await
+        waiter.wait()
     }
 }
 
@@ -101,17 +101,17 @@ fn pr_mgr() -> &'static PageRequestMgr {
     PR_MGR.get().unwrap()
 }
 
-pub async fn report_ready() -> Option<PagerCompletionData> {
+pub fn report_ready() -> Option<PagerCompletionData> {
     tracing::debug!("sending ready signal to kernel");
     let request = RequestFromPager::new(twizzler_abi::pager::PagerRequest::Ready);
-    let comp = pr_mgr().submit_and_wait(request).await;
+    let comp = pr_mgr().submit_and_wait(request);
     tracing::debug!("received completion for ready signal: {:?}", comp);
     Some(comp.data())
 }
 
-pub async fn register_phys(start: u64, len: u64) -> Result<()> {
+pub fn register_phys(start: u64, len: u64) -> Result<()> {
     let request = RequestFromPager::new(PagerRequest::RegisterPhys(start, len));
-    let comp = pr_mgr().submit_and_wait(request).await;
+    let comp = pr_mgr().submit_and_wait(request);
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
         twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
@@ -119,7 +119,7 @@ pub async fn register_phys(start: u64, len: u64) -> Result<()> {
     }
 }
 
-async fn do_physrw_request(
+fn do_physrw_request(
     target_object: ObjID,
     offset: usize,
     len: usize,
@@ -133,7 +133,7 @@ async fn do_physrw_request(
         phys,
         write_phys,
     });
-    let comp = pr_mgr().submit_and_wait(request).await;
+    let comp = pr_mgr().submit_and_wait(request);
     match comp.data() {
         twizzler_abi::pager::PagerCompletionData::Okay => Ok(()),
         twizzler_abi::pager::PagerCompletionData::Error(e) => Err(e.error()),
@@ -144,15 +144,15 @@ async fn do_physrw_request(
 /// Writes phys.len() bytes from the buffer into physical addresses specified in phys. If the
 /// supplied buffer is shorter than the physical range, then the remaining bytes in the physical
 /// memory are filled with 0.
-pub async fn fill_physical_pages(buf: &[u8], phys: PhysRange) -> Result<()> {
+pub fn fill_physical_pages(buf: &[u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
-    do_physrw_request(obj.0, obj.1, buf.len(), phys, true).await
+    do_physrw_request(obj.0, obj.1, buf.len(), phys, true)
 }
 
 /// Reads buf.len() bytes from physical addresses in phys into the buffer. If the supplied physical
 /// range is shorter than the buffer, then the remaining bytes in the buffer are filled with 0.
 #[allow(dead_code)]
-pub async fn read_physical_pages(buf: &mut [u8], phys: PhysRange) -> Result<()> {
+pub fn read_physical_pages(buf: &mut [u8], phys: PhysRange) -> Result<()> {
     let obj = get_object(buf.as_ptr());
-    do_physrw_request(obj.0, obj.1, buf.len(), phys, false).await
+    do_physrw_request(obj.0, obj.1, buf.len(), phys, false)
 }

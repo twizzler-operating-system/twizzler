@@ -1,4 +1,4 @@
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore};
+use object_store::{objid_to_ino, PageRequest, PagedObjectStore, ProbeMiss};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_MTIME, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -74,23 +74,18 @@ fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32) {
 }
 
 /// Fill a fresh physical page with an external file's meta page.
-pub async fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
+pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
     let len = ctx
         .paged_ostore(None)?
         .len(obj_id.raw())
-        .await
         .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
-    let mtime = ctx
-        .paged_ostore(None)?
-        .mtime(obj_id.raw())
-        .await
-        .unwrap_or(0);
+    let mtime = ctx.paged_ostore(None)?.mtime(obj_id.raw()).unwrap_or(0);
     let phys_range = {
         let page = match ctx.data.try_alloc_page() {
             Ok(page) => page,
             Err(mw) => {
                 tracing::warn!("out of memory -- task waiting");
-                mw.await
+                mw.wait()
             }
         };
         PhysRange::new(page, page + PAGE)
@@ -98,7 +93,7 @@ pub async fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) ->
     tracing::debug!("building meta page for external file, len: {}", len);
     let mut buffer = [0; PAGE as usize];
     fill_external_meta(&mut buffer, len, mtime);
-    crate::physrw::fill_physical_pages(&buffer, phys_range).await?;
+    crate::physrw::fill_physical_pages(&buffer, phys_range)?;
     Ok(phys_range)
 }
 
@@ -109,21 +104,27 @@ pub async fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) ->
 /// Mirrors [page_in]'s range-to-store-page mapping, including the meta page: for an external
 /// (ext4-backed) object it is synthesized from the length alone, so a cached length is the whole
 /// question there. Answers "no" before the store is open, which is the pre-store behavior.
-pub fn page_in_would_block(ctx: &PagerContext, obj_id: ObjID, obj_range: ObjectRange) -> bool {
+pub fn page_in_would_block(ctx: &PagerContext, obj_id: ObjID, obj_range: ObjectRange) -> ProbeMiss {
     let Some(store) = ctx.try_paged_ostore() else {
-        return false;
+        return ProbeMiss::Cached;
     };
     let mut start_page = obj_range.start / PAGE;
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
         if objid_to_ino(obj_id.raw()).is_some() {
-            return !store.len_is_cached(obj_id.raw());
+            // An external file's meta page is synthesized from the length alone, so a cached
+            // length is the whole answer and extents never come into it.
+            return if store.len_is_cached(obj_id.raw()) {
+                ProbeMiss::Cached
+            } else {
+                ProbeMiss::Len
+            };
         }
         start_page = 0;
     }
     store.page_in_would_block(obj_id.raw(), start_page, obj_range.page_count() as u32)
 }
 
-pub async fn page_in(
+pub fn page_in(
     ctx: &'static PagerContext,
     obj_id: ObjID,
     obj_range: ObjectRange,
@@ -136,18 +137,18 @@ pub async fn page_in(
         tracing::debug!("found meta page, using 0 page",);
         start_page = 0;
         if objid_to_ino(obj_id.raw()).is_some() {
-            return page_in_external_meta(ctx, obj_id).await;
+            return page_in_external_meta(ctx, obj_id);
         }
     }
 
     let nr_pages = obj_range.len() / PAGE as usize;
     let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
-    page_in_many(ctx, obj_id, &mut reqs).await.map(|_| ())?;
+    page_in_many(ctx, obj_id, &mut reqs).map(|_| ())?;
     let range = reqs.first().unwrap().phys_list.first().unwrap().range;
     Ok(range)
 }
 
-pub async fn page_out_many(
+pub fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
     reqs: &mut [PageRequest],
@@ -157,14 +158,13 @@ pub async fn page_out_many(
         let donecount = ctx
             .paged_ostore(None)?
             .page_out_object(obj_id.raw(), reqslice)
-            .await
             .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
         reqslice = &mut reqslice[donecount..];
     }
     Ok(reqs.len())
 }
 
-pub async fn page_in_many(
+pub fn page_in_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
     reqs: &mut [PageRequest],
@@ -172,7 +172,6 @@ pub async fn page_in_many(
     let ret = ctx
         .paged_ostore(None)?
         .page_in_object(obj_id.raw(), reqs)
-        .await
         .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
     Ok(ret)
 }

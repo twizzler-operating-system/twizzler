@@ -18,7 +18,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{error::TwzError, object::Nonce, Result};
 
-use crate::{helpers::PAGE, threads::spawn_async, watchdog, PagerContext};
+use crate::{helpers::PAGE, watchdog, PagerContext};
 
 /// In-flight page-data requests, with high-water marks.
 ///
@@ -132,16 +132,14 @@ fn whole_region(req_range: ObjectRange, offset: u64) -> Option<ObjectRange> {
     (req_range.start <= region.start && req_range.end >= region.end).then_some(region)
 }
 
-/// Order the pieces of a page-data request: the pages a thread is blocked on first, then the rest
-/// in address order.
+/// The piece of a page-data request a thread is actually blocked on: the first segment
+/// [`transfer_segments`] emits, and the one whose completion wakes the faulter.
 ///
-/// An empty `required`, or one that already spans the whole request, yields a single segment --
-/// the old behaviour, and what a prefetch wants. The segments always cover exactly `req_range` and
-/// never overlap, so no page is transferred twice.
-fn transfer_segments(
-    req_range: ObjectRange,
-    required: ObjectRange,
-) -> impl Iterator<Item = ObjectRange> {
+/// Equal to `req_range` when nothing in it is more urgent than the rest -- a prefetch, a caller
+/// that needs all of it, or a required range being served as a whole large-page region for the
+/// merge. Also what the fast-lane reservation sizes admission on ([`crate::threads`]), so that
+/// decision and the transfer it predicts cannot drift apart.
+pub(crate) fn urgent_segment(req_range: ObjectRange, required: ObjectRange) -> ObjectRange {
     let mut start = required.start.max(req_range.start);
     let mut end = required.end.min(req_range.end);
     if end > start {
@@ -153,17 +151,33 @@ fn transfer_segments(
             None => end = end.min(start + REQUIRED_SEGMENT_LIMIT * PAGE),
         }
     }
-    let mut segs: heapless::Vec<ObjectRange, 3> = heapless::Vec::new();
     if end > start && (start > req_range.start || end < req_range.end) {
-        let _ = segs.push(ObjectRange::new(start, end));
-        if start > req_range.start {
-            let _ = segs.push(ObjectRange::new(req_range.start, start));
-        }
-        if end < req_range.end {
-            let _ = segs.push(ObjectRange::new(end, req_range.end));
-        }
+        ObjectRange::new(start, end)
     } else {
-        let _ = segs.push(req_range);
+        req_range
+    }
+}
+
+/// Order the pieces of a page-data request: the pages a thread is blocked on first, then the rest
+/// in address order.
+///
+/// An empty `required`, or one that already spans the whole request, yields a single segment --
+/// the old behaviour, and what a prefetch wants. The segments always cover exactly `req_range` and
+/// never overlap, so no page is transferred twice.
+fn transfer_segments(
+    req_range: ObjectRange,
+    required: ObjectRange,
+) -> impl Iterator<Item = ObjectRange> {
+    let urgent = urgent_segment(req_range, required);
+    let mut segs: heapless::Vec<ObjectRange, 3> = heapless::Vec::new();
+    let _ = segs.push(urgent);
+    if urgent != req_range {
+        if urgent.start > req_range.start {
+            let _ = segs.push(ObjectRange::new(req_range.start, urgent.start));
+        }
+        if urgent.end < req_range.end {
+            let _ = segs.push(ObjectRange::new(urgent.end, req_range.end));
+        }
     }
     segs.into_iter()
 }
@@ -172,7 +186,7 @@ fn transfer_segments(
 ///
 /// `req_range` is passed only so diagnostics name the range the kernel asked about rather than the
 /// piece being worked on.
-async fn transfer_range(
+fn transfer_range(
     ctx: &'static PagerContext,
     qid: u32,
     id: ObjID,
@@ -195,7 +209,6 @@ async fn transfer_range(
         let pages = match ctx
             .data
             .fill_mem_pages_partial(ctx, id, range)
-            .await
             .inspect_err(|e| tracing::warn!("page data request failed: {}", e))
         {
             Ok(pages) => pages,
@@ -259,7 +272,7 @@ async fn transfer_range(
     Ok(())
 }
 
-async fn handle_page_data_request_task(
+fn handle_page_data_request_task(
     ctx: &'static PagerContext,
     qid: u32,
     id: ObjID,
@@ -275,7 +288,7 @@ async fn handle_page_data_request_task(
         req_range.start = PAGE;
     }
     let start_time = Instant::now();
-    let obj_len = ctx.paged_ostore(None).unwrap().len(id.raw()).await.ok();
+    let obj_len = ctx.paged_ostore(None).unwrap().len(id.raw()).ok();
     let max_len = obj_len
         .map(|x| x + PAGE)
         .unwrap_or(MAX_SIZE as u64)
@@ -379,10 +392,7 @@ async fn handle_page_data_request_task(
     // region containing the fault -- so splitting could only ever cost that region's merge, and
     // `whole_region` declines to split where the merge is still on the table.
     for range in transfer_segments(req_range, required) {
-        if transfer_range(ctx, qid, id, range, req_range, prefetch)
-            .await
-            .is_err()
-        {
+        if transfer_range(ctx, qid, id, range, req_range, prefetch).is_err() {
             return;
         }
     }
@@ -406,7 +416,7 @@ async fn handle_page_data_request_task(
     ctx.notify_kernel(qid, done);
 }
 
-async fn handle_page_data_request(
+fn handle_page_data_request(
     ctx: &'static PagerContext,
     qid: u32,
     id: ObjID,
@@ -435,16 +445,16 @@ async fn handle_page_data_request(
             KernelCompletionFlags::DONE,
         ));
     }
-    // Detached: the caller's `Work` ends when this returns, so the task needs its own.
-    spawn_async(async move {
-        let _work = watchdog::begin("pagedata-task", qid, req);
-        handle_page_data_request_task(ctx, qid, id, req_range, flags, required).await;
-    });
+    // Its own `Work`: the caller's ends when this returns, and the watchdog should be naming the
+    // transfer rather than the dispatch that started it. The task sends its own DONE completion
+    // through `ctx.notify_kernel`, which is why there is still nothing to return here.
+    let _work = watchdog::begin("pagedata-task", qid, req);
+    handle_page_data_request_task(ctx, qid, id, req_range, flags, required);
     None
 }
 
-async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
-    ctx.data.lookup_object(ctx, id).await
+fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
+    ctx.data.lookup_object(ctx, id)
 }
 
 /// Detached, for the same reason page-data requests are.
@@ -453,19 +463,17 @@ async fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<Object
 /// real I/O and a physrw round trip. Run inline it holds a whole worker lane for its duration --
 /// and that lane is one of the ones page-data requests need, during a read phase that is mostly
 /// page-data. Handing the kernel its completion from a task instead frees the lane immediately.
-async fn handle_object_info_request(
+fn handle_object_info_request(
     ctx: &'static PagerContext,
     qid: u32,
     obj_id: ObjID,
     req: RequestFromKernel,
 ) -> Option<CompletionToKernel> {
-    // Detached: the caller's `Work` ends when this returns, so the task needs its own.
-    let spawned_at = crate::dispatch_stats::DispatchStats::now_ns();
-    spawn_async(async move {
-        let _work = watchdog::begin("info-task", qid, req);
-        let start = crate::dispatch_stats::DispatchStats::now_ns();
-        crate::dispatch_stats::DISPATCH_STATS.info_spawn(start - spawned_at);
-        let data = match object_info_req(ctx, obj_id).await {
+    // Its own `Work`, for the same reason page-data requests take one.
+    let _work = watchdog::begin("info-task", qid, req);
+    let start = crate::dispatch_stats::DispatchStats::now_ns();
+    {
+        let data = match object_info_req(ctx, obj_id) {
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
             Err(e) => KernelCompletionData::Error(e.into()),
         };
@@ -475,40 +483,46 @@ async fn handle_object_info_request(
         );
         crate::dispatch_stats::DISPATCH_STATS
             .info_task(crate::dispatch_stats::DispatchStats::now_ns() - start);
-    });
+    }
     None
 }
 
-async fn handle_sync_region(
+fn handle_sync_region(
     ctx: &'static PagerContext,
     id: u32,
     info: ObjectEvictInfo,
     req: RequestFromKernel,
     work: &watchdog::Work,
-) -> CompletionToKernel {
+) -> Option<CompletionToKernel> {
     tracing::trace!("sync request: {:?}", info);
     if !info.flags.contains(ObjectEvictFlags::SYNC) {
-        return CompletionToKernel::new(
+        return Some(CompletionToKernel::new(
             KernelCompletionData::Error(TwzError::NOT_SUPPORTED.into()),
             KernelCompletionFlags::DONE,
-        );
+        ));
     }
 
     if info.flags.contains(ObjectEvictFlags::FENCE) {
-        // Detached: the caller's `Work` ends when this returns, so the task needs its own.
-        spawn_async(async move {
-            let work = watchdog::begin("sync-task", id, req);
-            let comp = ctx.data.sync_region(ctx, &info, &work).await;
-            work.phase("notify-kernel");
-            ctx.notify_kernel(id, comp);
-        });
-        CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty())
+        // A fence sync is acked twice: an immediate non-DONE `Okay` to say the pager has taken it,
+        // then the real DONE completion once the data is on disk. Detaching used to give that
+        // ordering for free -- the ack was this function's return value and the task ran after it.
+        // Doing the sync inline means sending the ack *here*, before starting, or the kernel would
+        // see it after the completion it is supposed to precede.
+        ctx.notify_kernel(
+            id,
+            CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::empty()),
+        );
+        let work = watchdog::begin("sync-task", id, req);
+        let comp = ctx.data.sync_region(ctx, &info, &work);
+        work.phase("notify-kernel");
+        ctx.notify_kernel(id, comp);
+        None
     } else {
-        ctx.data.sync_region(ctx, &info, work).await
+        Some(ctx.data.sync_region(ctx, &info, work))
     }
 }
 
-pub async fn handle_kernel_request(
+pub fn handle_kernel_request(
     ctx: &'static PagerContext,
     qid: u32,
     request: RequestFromKernel,
@@ -517,20 +531,19 @@ pub async fn handle_kernel_request(
     let data = match request.cmd() {
         KernelCommand::PageDataReq(obj_id, range, flags, required) => {
             work.phase("pagedata:spawn");
-            return handle_page_data_request(ctx, qid, obj_id, range, flags, required, request)
-                .await;
+            return handle_page_data_request(ctx, qid, obj_id, range, flags, required, request);
         }
         KernelCommand::ObjectInfoReq(obj_id) => {
             work.phase("info:spawn");
-            return handle_object_info_request(ctx, qid, obj_id, request).await;
+            return handle_object_info_request(ctx, qid, obj_id, request);
         }
         KernelCommand::ObjectDel(obj_id) => match ctx.paged_ostore(None) {
             Ok(po) => {
                 work.phase("del:delete");
-                match po.delete_object(obj_id.raw()).await {
+                match po.delete_object(obj_id.raw()) {
                     Ok(_) => {
                         work.phase("del:flush");
-                        let _ = po.flush().await;
+                        let _ = po.flush();
                         KernelCompletionData::Okay
                     }
                     Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
@@ -541,9 +554,9 @@ pub async fn handle_kernel_request(
         KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
             Ok(po) => {
                 work.phase("create:delete-existing");
-                let _ = po.delete_object(id.raw()).await;
+                let _ = po.delete_object(id.raw());
                 work.phase("create:create");
-                match po.create_object(id.raw()).await {
+                match po.create_object(id.raw()) {
                     Ok(_) => {
                         let mut buffer = [0; 0x1000];
                         let meta = MetaInfo {
@@ -568,14 +581,12 @@ pub async fn handle_kernel_request(
                         ctx.paged_ostore(None)
                             .unwrap()
                             .write_object(id.raw(), 0, &buffer)
-                            .await
                             .unwrap();
 
                         work.phase("create:read-back");
                         ctx.paged_ostore(None)
                             .unwrap()
                             .read_object(id.raw(), 0, &mut buffer)
-                            .await
                             .unwrap();
 
                         // Validated, not merely echoed. The kernel derived `id` from these very
@@ -603,7 +614,7 @@ pub async fn handle_kernel_request(
         }
         KernelCommand::ObjectEvict(info) => {
             work.phase("evict");
-            return Some(handle_sync_region(ctx, qid, info, request, work).await);
+            return handle_sync_region(ctx, qid, info, request, work);
         }
     };
 

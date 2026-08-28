@@ -262,17 +262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-condvar-fair"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "295cd7b1012ff38050caca55808d99972b6c6ce92fefaa8d98b6571e7d5eff38"
-dependencies = [
- "dlv-list",
- "parking_lot",
- "pin-project-lite",
-]
-
-[[package]]
 name = "async-executor"
 version = "1.13.2"
 dependencies = [
@@ -1090,26 +1079,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
-name = "const-random"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87e00182fe74b066627d63b85fd550ac2998d4b0bd86bfed477a0ae4c7c71359"
-dependencies = [
- "const-random-macro",
-]
-
-[[package]]
-name = "const-random-macro"
-version = "0.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
-dependencies = [
- "getrandom 0.2.16",
- "once_cell",
- "tiny-keccak",
-]
-
-[[package]]
 name = "constant_time_eq"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,15 +1592,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "dlv-list"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442039f5147480ba31067cb00ada1adae6892028e40e45fc5de7b7df6dcc1b5f"
-dependencies = [
- "const-random",
 ]
 
 [[package]]
@@ -4988,11 +4948,8 @@ dependencies = [
 name = "object-store"
 version = "0.1.0"
 dependencies = [
- "async-executor",
- "async-io",
  "bitflags 2.9.1",
  "chacha20",
- "futures",
  "intervaltree",
  "libc",
  "lru",
@@ -5233,15 +5190,9 @@ name = "pager-srv"
 version = "0.1.0"
 dependencies = [
  "async-channel",
- "async-condvar-fair",
- "async-executor",
- "async-io",
- "async-lock",
- "async-trait",
  "bitvec",
  "colored",
  "devmgr",
- "futures",
  "heapless 0.9.2",
  "itertools 0.14.0",
  "libc",
@@ -5249,7 +5200,6 @@ dependencies = [
  "nvme",
  "object-store",
  "pager",
- "polling",
  "rand 0.9.2",
  "secgate",
  "slab",
@@ -7008,15 +6958,6 @@ checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
 dependencies = [
  "num-conv",
  "time-core",
-]
-
-[[package]]
-name = "tiny-keccak"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
-dependencies = [
- "crunchy",
 ]
 
 [[package]]

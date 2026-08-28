@@ -1,15 +1,15 @@
 use std::{
     collections::HashMap,
-    future::Future,
-    sync::{atomic::Ordering, Arc, Mutex},
-    task::Waker,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::Instant,
 };
 
 use itertools::Itertools;
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, INLINE_LEN};
 use secgate::util::{Descriptor, HandleMgr};
-use stable_vec::StableVec;
 use twizzler::{
     error::ObjectError,
     object::{MetaExt, MetaInfo, ObjID, ObjectHandle},
@@ -31,7 +31,6 @@ use crate::{
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, EXTERNAL_META, PAGE},
     stats::RecentStats,
-    threads::run_async,
     PagerContext,
 };
 
@@ -83,14 +82,11 @@ impl PerObjectInner {
 #[derive(Clone)]
 pub struct PerObject {
     id: ObjID,
-    inner: Arc<(
-        async_condvar_fair::Condvar,
-        async_lock::Mutex<PerObjectInner>,
-    )>,
+    inner: Arc<(Condvar, Mutex<PerObjectInner>)>,
 }
 
 impl PerObject {
-    async fn do_sync_region(
+    fn do_sync_region(
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
@@ -99,13 +95,20 @@ impl PerObject {
         let start = Instant::now();
         let pages = {
             work.phase("sync:lock");
-            let mut inner = self.inner.1.lock().await;
+            let mut inner = self.inner.1.lock().unwrap();
             inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             while inner.syncing {
                 tracing::info!("waiting for syncing {:?}", info);
                 work.phase("sync:wait-for-other-sync");
-                self.inner.0.wait_no_relock(inner).await;
-                inner = self.inner.1.lock().await;
+                let (guard, timeout) = self
+                    .inner
+                    .0
+                    .wait_timeout(inner, crate::threads::WAKE_FALLBACK)
+                    .unwrap();
+                if timeout.timed_out() {
+                    crate::threads::WAKE_WATCH.fallback(!guard.syncing, "object sync fence");
+                }
+                inner = guard;
             }
             work.phase("sync:collect-pages");
             inner.syncing = true;
@@ -146,11 +149,7 @@ impl PerObject {
                         if objid_to_ino(self.id.raw()).is_some() {
                             let mut buffer = [0; PAGE as usize];
 
-                            run_async(crate::physrw::read_physical_pages(
-                                &mut buffer,
-                                p.1[0].range,
-                            ))
-                            .unwrap();
+                            crate::physrw::read_physical_pages(&mut buffer, p.1[0].range).unwrap();
                             let me_ptr = unsafe {
                                 buffer.as_ptr().add(size_of::<MetaInfo>()).cast::<MetaExt>()
                             };
@@ -191,9 +190,9 @@ impl PerObject {
         }
         let reqs_done = Instant::now();
         work.phase("sync:page-out");
-        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()).await {
+        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()) {
             Err(e) => {
-                let mut inner = self.inner.1.lock().await;
+                let mut inner = self.inner.1.lock().unwrap();
                 inner.syncing = false;
                 self.inner.0.notify_all();
                 return (
@@ -222,7 +221,7 @@ impl PerObject {
             );
         }
         work.phase("sync:relock");
-        let mut inner = self.inner.1.lock().await;
+        let mut inner = self.inner.1.lock().unwrap();
         inner.syncing = false;
         self.inner.0.notify_one();
         let done = Instant::now();
@@ -240,7 +239,7 @@ impl PerObject {
         )
     }
 
-    pub async fn sync_region(
+    pub fn sync_region(
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
@@ -248,10 +247,10 @@ impl PerObject {
     ) -> (usize, CompletionToKernel) {
         tracing::debug!("push pending sync: {:?}", info);
         if info.flags.contains(ObjectEvictFlags::FENCE) {
-            self.do_sync_region(ctx, info, work).await
+            self.do_sync_region(ctx, info, work)
         } else {
             work.phase("track:lock");
-            let mut inner = self.inner.1.lock().await;
+            let mut inner = self.inner.1.lock().unwrap();
             inner.track(info.range, info.phys, info.version, info.uniq_id.raw());
             (
                 0,
@@ -263,16 +262,22 @@ impl PerObject {
     pub fn new(id: ObjID) -> Self {
         Self {
             id,
-            inner: Arc::new((
-                async_condvar_fair::Condvar::new(),
-                async_lock::Mutex::new(PerObjectInner::new(id)),
-            )),
+            inner: Arc::new((Condvar::new(), Mutex::new(PerObjectInner::new(id)))),
         }
     }
 }
 
 pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
+    /// How many threads are parked in [`MemoryWaiter`], so the hot free path can skip the notify
+    /// syscall when nobody is waiting.
+    mem_waiters: Arc<AtomicUsize>,
+    /// Signalled whenever pages are returned to the pool, for threads parked in [`MemoryWaiter`].
+    ///
+    /// Replaces a `StableVec<Option<Waker>>` of registered wakers: with blocking allocators every
+    /// waiter is a thread that can recheck the pool for itself, so one condvar on the pool's own
+    /// mutex says everything the per-waiter slots did.
+    mem_avail: Arc<Condvar>,
 }
 
 #[allow(dead_code)]
@@ -303,6 +308,16 @@ impl PagerData {
             tracing::error!("PRPTRACE misaligned page freed to pool: {:x}", page);
         }
         self.inner.lock().unwrap().free_page(page);
+        // A page returned here satisfies a waiter just as a kernel donation does, but only
+        // `add_memory_range` ever signalled -- so a thread parked for memory could not be woken by
+        // another thread freeing some, and waited for the kernel instead. That gap predates the
+        // blocking rewrite (the waker list had the same one); this is where it closes.
+        //
+        // Gated on the count so the common case stays a relaxed load: waiters only exist while the
+        // pool is empty, which is already the slow path.
+        if self.mem_waiters.load(Ordering::Relaxed) > 0 {
+            self.mem_avail.notify_all();
+        }
     }
 
     pub fn try_alloc_page(&self) -> core::result::Result<u64, MemoryWaiter> {
@@ -310,10 +325,13 @@ impl PagerData {
         if let Some(page) = inner.get_next_available_page() {
             return Ok(page);
         }
-        let pos = inner.waiters.push(None);
         tracing::debug!("memory allocation failed");
         drop(inner);
-        Err(MemoryWaiter::new(pos, self.inner.clone()))
+        Err(MemoryWaiter::new(
+            self.inner.clone(),
+            self.mem_avail.clone(),
+            self.mem_waiters.clone(),
+        ))
     }
 
     pub fn try_alloc_pages(
@@ -379,10 +397,13 @@ impl PagerData {
             }
             return Ok((page, 1));
         }
-        let pos = inner.waiters.push(None);
         tracing::debug!("memory allocation failed");
         drop(inner);
-        Err(MemoryWaiter::new(pos, self.inner.clone()))
+        Err(MemoryWaiter::new(
+            self.inner.clone(),
+            self.mem_avail.clone(),
+            self.mem_waiters.clone(),
+        ))
     }
 
     pub fn print_stats(&self) {
@@ -398,44 +419,55 @@ impl PagerData {
 
 pub struct PagerDataInner {
     memory: Memory,
-    waiters: StableVec<Option<Waker>>,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
     pub recent_stats: RecentStats,
 }
 
+/// What an allocator hands back when the pool is empty: block on this until it is not.
+///
+/// The condvar is signalled by [`PagerData::add_memory_range`], i.e. when the kernel donates
+/// memory back. Rechecked in a loop rather than trusted, since several waiters wake together and
+/// only some of them will find a page.
 pub struct MemoryWaiter {
-    pos: usize,
     inner: Arc<Mutex<PagerDataInner>>,
+    avail: Arc<Condvar>,
+    waiters: Arc<AtomicUsize>,
 }
 
 impl MemoryWaiter {
-    pub fn new(pos: usize, inner: Arc<Mutex<PagerDataInner>>) -> Self {
-        Self { pos, inner }
-    }
-}
-
-impl Future for MemoryWaiter {
-    type Output = u64;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let mut inner = self.inner.lock().unwrap();
-
-        if let Some(page) = inner.get_next_available_page() {
-            std::task::Poll::Ready(page)
-        } else {
-            inner.waiters[self.pos] = Some(cx.waker().clone());
-            std::task::Poll::Pending
+    pub fn new(
+        inner: Arc<Mutex<PagerDataInner>>,
+        avail: Arc<Condvar>,
+        waiters: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            inner,
+            avail,
+            waiters,
         }
     }
-}
 
-impl Drop for MemoryWaiter {
-    fn drop(&mut self) {
-        self.inner.lock().unwrap().waiters.remove(self.pos);
+    pub fn wait(self) -> u64 {
+        self.waiters.fetch_add(1, Ordering::Relaxed);
+        let mut inner = self.inner.lock().unwrap();
+        let page = loop {
+            if let Some(page) = inner.get_next_available_page() {
+                break page;
+            }
+            let (guard, timeout) = self
+                .avail
+                .wait_timeout(inner, crate::threads::WAKE_FALLBACK)
+                .unwrap();
+            if timeout.timed_out() {
+                // Peek rather than take: reporting has to leave the page for the loop to claim.
+                let owed = guard.memory.available_memory() > 0;
+                crate::threads::WAKE_WATCH.fallback(owed, "pager memory pool");
+            }
+            inner = guard;
+        };
+        self.waiters.fetch_sub(1, Ordering::Relaxed);
+        page
     }
 }
 
@@ -590,7 +622,6 @@ impl PagerDataInner {
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
             handles: HandleMgr::new(None),
-            waiters: StableVec::new(),
             recent_stats: RecentStats::new(),
         }
     }
@@ -657,6 +688,8 @@ impl PagerData {
         tracing::trace!("creating new PagerData instance");
         PagerData {
             inner: Arc::new(Mutex::new(PagerDataInner::new())),
+            mem_avail: Arc::new(Condvar::new()),
+            mem_waiters: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -664,7 +697,11 @@ impl PagerData {
     pub fn add_memory_range(&self, range: PhysRange) {
         // PRPTRACE (see nvme/dma.rs): catch garbage at the pool boundary.
         if range.start & 0xFFF != 0 || range.end & 0xFFF != 0 || range.start >= range.end {
-            tracing::error!("PRPTRACE bad donated range {:x}..{:x}", range.start, range.end);
+            tracing::error!(
+                "PRPTRACE bad donated range {:x}..{:x}",
+                range.start,
+                range.end
+            );
         }
         let mut inner = self.inner.lock().unwrap();
         tracing::debug!("add memory range: {} pages", range.pages().count());
@@ -686,14 +723,11 @@ impl PagerData {
                 }
             }
         }
-        for item in inner.waiters.values() {
-            if let Some(waker) = item {
-                waker.wake_by_ref();
-            }
-        }
+        drop(inner);
+        self.mem_avail.notify_all();
     }
 
-    async fn do_fill_pages(
+    fn do_fill_pages(
         &self,
         ctx: &'static PagerContext,
         id: ObjID,
@@ -718,7 +752,7 @@ impl PagerData {
             obj_range.page_count().min(max_pages).max(1)
         };
         let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
-        let count = page_in_many(ctx, id, &mut reqs).await?;
+        let count = page_in_many(ctx, id, &mut reqs)?;
         if count == 0 {
             // TODO: free pages in incomplete requests.
             todo!();
@@ -729,7 +763,7 @@ impl PagerData {
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
-    pub async fn fill_mem_pages_partial(
+    pub fn fill_mem_pages_partial(
         &self,
         ctx: &'static PagerContext,
         id: ObjID,
@@ -738,14 +772,13 @@ impl PagerData {
         // TODO: will need to check if the range contains this, not just starts here.
         if obj_range.start == (MAX_SIZE as u64) - PAGE {
             return Ok(self
-                .fill_mem_pages_legacy(ctx, id, obj_range)
-                .await?
+                .fill_mem_pages_legacy(ctx, id, obj_range)?
                 .into_iter()
                 .map(|p| PagedPhysMem::new(p.1).completed())
                 .collect());
         }
 
-        let pages = self.do_fill_pages(ctx, id, obj_range, true).await?;
+        let pages = self.do_fill_pages(ctx, id, obj_range, true)?;
 
         {
             let mut inner = self.inner.lock().unwrap();
@@ -758,7 +791,7 @@ impl PagerData {
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
-    pub async fn fill_mem_pages_legacy(
+    pub fn fill_mem_pages_legacy(
         &self,
         ctx: &'static PagerContext,
         id: ObjID,
@@ -770,14 +803,14 @@ impl PagerData {
                 obj_range.start + i * PAGE,
                 obj_range.start + i * PAGE + PAGE,
             );
-            r.push((range, self.fill_mem_page(ctx, id, range).await?));
+            r.push((range, self.fill_mem_page(ctx, id, range)?));
         }
         Ok(r)
     }
     /// Allocate a memory page and associate it with an object and range.
     /// Page in the data from disk
     /// Returns the physical range corresponding to the allocated page.
-    pub async fn fill_mem_page(
+    pub fn fill_mem_page(
         &self,
         ctx: &'static PagerContext,
         id: ObjID,
@@ -791,7 +824,7 @@ impl PagerData {
         // TODO: remove this restriction
         assert_eq!(obj_range.len(), 0x1000);
 
-        let phys_range = page_in(ctx, id, obj_range).await?;
+        let phys_range = page_in(ctx, id, obj_range)?;
 
         {
             let mut inner = self.inner.lock().unwrap();
@@ -814,7 +847,7 @@ impl PagerData {
     /// state it and send no page at all. A stored object's metadata is on disk, and `page_in` gets
     /// it into a physical page over the disk's own path -- so we send the page but cannot vouch
     /// for its contents, having never looked at them. Either way the kernel stops faulting for it.
-    pub async fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
+    pub fn lookup_object(&self, ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> {
         tracing::trace!(
             "lookup_object: {:?} (ino = {:?})",
             id,
@@ -846,14 +879,14 @@ impl PagerData {
             // Deliberately not `?`: this path never checked existence, and returning an error here
             // would make the kernel cache the ID in `no_exist` permanently. Without a length we
             // just skip the synthesis and the meta page gets faulted in later, as it used to be.
-            let len = ctx.paged_ostore(None)?.len(id.raw()).await;
+            let len = ctx.paged_ostore(None)?.len(id.raw());
             crate::dispatch_stats::DISPATCH_STATS.info_lookup(
                 crate::dispatch_stats::DispatchStats::now_ns() - len_start,
                 None,
             );
             return Ok(match len {
                 Ok(len) => {
-                    let mtime = ctx.paged_ostore(None)?.mtime(id.raw()).await.unwrap_or(0);
+                    let mtime = ctx.paged_ostore(None)?.mtime(id.raw()).unwrap_or(0);
                     info.synth_meta(len).with_mtime(mtime)
                 }
                 Err(e) => {
@@ -867,7 +900,7 @@ impl PagerData {
         // it lets the kernel answer faults past the end of the object without a round trip at all;
         // leaving it unstated is what made every stored object look zero-length to the kernel.
         let len_start = crate::dispatch_stats::DispatchStats::now_ns();
-        let base = match ctx.paged_ostore(None)?.len(id.raw()).await {
+        let base = match ctx.paged_ostore(None)?.len(id.raw()) {
             Ok(len) => base.with_size(len),
             Err(_) => return Err(ObjectError::NoSuchObject.into()),
         };
@@ -879,8 +912,7 @@ impl PagerData {
             ctx,
             id,
             ObjectRange::new(MAX_SIZE as u64 - PAGE, MAX_SIZE as u64),
-        )
-        .await;
+        );
         crate::dispatch_stats::DISPATCH_STATS.info_lookup(
             meta_start - len_start,
             Some(crate::dispatch_stats::DispatchStats::now_ns() - meta_start),
@@ -898,7 +930,7 @@ impl PagerData {
         }
     }
 
-    pub async fn sync_region(
+    pub fn sync_region(
         &self,
         ctx: &'static PagerContext,
         info: &ObjectEvictInfo,
@@ -909,7 +941,7 @@ impl PagerData {
             inner.get_per_object(info.obj_id).clone()
         };
 
-        let (count, compl) = po.sync_region(ctx, info, work).await;
+        let (count, compl) = po.sync_region(ctx, info, work);
         if count > 0 {
             let mut inner = self.inner.lock().unwrap();
             inner.recent_stats.write_pages(info.obj_id, count);
