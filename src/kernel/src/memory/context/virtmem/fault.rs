@@ -321,8 +321,10 @@ pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
     TIMING_ON.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut time = TimeStatCollector::new();
     crate::processor::mp::with_each_active_processor(|p| {
-        stats.page_fault_count +=
-            p.stats.page_faults.load(core::sync::atomic::Ordering::Relaxed) as usize;
+        stats.page_fault_count += p
+            .stats
+            .page_faults
+            .load(core::sync::atomic::Ordering::Relaxed) as usize;
         time.merge(&p.fault_stats.lock().time);
     });
     stats.page_fault_stats = time.get_stats();

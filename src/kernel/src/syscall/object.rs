@@ -5,28 +5,28 @@ use alloc::{
 
 use twizzler_abi::{
     meta::{MetaFlags, MetaInfo},
-    object::{ObjID, Protections, MAX_SIZE},
+    object::{MAX_SIZE, ObjID, Protections},
     pager::PagerFlags,
     syscall::{
-        EnumerateKind, HandleType, MapControlCmd, MapFlags, MapInfo, ObjectControlCmd,
-        ObjectCreate, ObjectCreateFlags, ObjectInfo, PreloadRangeSpec, MAX_PRELOAD_RANGES,
+        EnumerateKind, HandleType, MAX_PRELOAD_RANGES, MapControlCmd, MapFlags, MapInfo,
+        ObjectControlCmd, ObjectCreate, ObjectCreateFlags, ObjectInfo, PreloadRangeSpec,
     },
 };
 use twizzler_rt_abi::{
+    Result,
     bindings::{object_source, object_tie},
     error::{ArgumentError, NamingError, ObjectError, ResourceError, TwzError},
     object::Nonce,
-    Result,
 };
 
 use crate::{
     arch::context::ArchContext,
-    memory::context::{virtmem::Slot, Context, ContextRef},
+    memory::context::{Context, ContextRef, virtmem::Slot},
     mutex::Mutex,
-    obj::{id::calculate_new_id, lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, id::calculate_new_id, lookup_object},
     once::OnceWait,
     random::getrandom,
-    security::{get_sctx, KERNEL_SCTX},
+    security::{KERNEL_SCTX, get_sctx},
     syscall::create_user_slice,
     thread::{current_memory_context, current_thread_ref},
 };

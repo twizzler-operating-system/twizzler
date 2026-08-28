@@ -390,7 +390,13 @@ pub fn bequeath(desc: Descriptor) -> Result<u64> {
             table.remove(&oldest);
         }
     }
-    table.insert(token, Bequest { session, issued: now });
+    table.insert(
+        token,
+        Bequest {
+            session,
+            issued: now,
+        },
+    );
     Ok(token)
 }
 

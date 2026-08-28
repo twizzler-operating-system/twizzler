@@ -583,15 +583,16 @@ impl ThreadMgr {
         };
         phases.stack = spawnstats::since(t_stack);
         // The thread's args go at the *base* of its own super stack, and the base pointer handed to
-        // `spawn_thread` is unchanged -- no reserve, so nothing has to agree with us about where the
-        // stack top is. The stack grows down from base + SUPER_UPCALL_STACK_SIZE, so reaching these
-        // bytes is already an overflow, and the entry copies them to a local at depth ~0 before
-        // anything else runs.
+        // `spawn_thread` is unchanged -- no reserve, so nothing has to agree with us about where
+        // the stack top is. The stack grows down from base + SUPER_UPCALL_STACK_SIZE, so
+        // reaching these bytes is already an overflow, and the entry copies them to a local
+        // at depth ~0 before anything else runs.
         //
         // Written *after* the branch above, so both positions of `ZERO_WHOLE_SUPER_STACK` work by
         // construction, and unconditionally, because `pool::take_stack` hands back a recycled stack
-        // holding the previous thread's bytes. Unaligned because `Box<[MaybeUninit<u8>]>` is align 1
-        // by type while `ObjID` is align 16 -- true in practice, not guaranteed by anything.
+        // holding the previous thread's bytes. Unaligned because `Box<[MaybeUninit<u8>]>` is align
+        // 1 by type while `ObjID` is align 16 -- true in practice, not guaranteed by
+        // anything.
         let arg = super_stack.as_ptr() as usize;
         unsafe { core::ptr::write_unaligned(super_stack.as_mut_ptr().cast::<EntryArgs>(), args) };
         let t_spawn = std::time::Instant::now();
@@ -649,7 +650,6 @@ impl ThreadMgr {
             instance,
         }))
     }
-
 
     /// Start a thread with the monitor's locks already held.
     ///

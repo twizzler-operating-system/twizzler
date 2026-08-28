@@ -449,7 +449,10 @@ pub(crate) fn current_dir() -> Result<PathBuf> {
     // The monitor has no working namespace -- it is not a naming client and must not become one
     // while loading a compartment (`CompartmentLoader::new` reads this to seed the child's
     // initial directory).
-    if OUR_RUNTIME.state().contains(super::RuntimeState::IS_MONITOR) {
+    if OUR_RUNTIME
+        .state()
+        .contains(super::RuntimeState::IS_MONITOR)
+    {
         return Ok(PathBuf::from("/"));
     }
     let gen = CWD_GEN.load(Ordering::SeqCst);

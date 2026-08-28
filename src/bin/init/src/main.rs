@@ -293,7 +293,14 @@ fn main() {
 
     let _root_id = initialize_namer(bootstrap_id);
 
-    std::env::set_var("PATH", "/initrd");
+    // `/initrd` first: it holds everything shipped in the boot image, so the common case still
+    // hits on the first entry. The `/pkg/*/bin` directories are what make a bare command name
+    // resolve for the ported toolchain -- `ld.lld` in particular, which rustc spawns by name and
+    // which otherwise needs `-Clinker=<absolute path>` on every native compile.
+    std::env::set_var(
+        "PATH",
+        "/initrd:/pkg/rust/bin:/pkg/lld/bin:/pkg/llvm/bin:/pkg/binutils/bin:/pkg/python/bin",
+    );
     // Give `HOME` a definition rather than leaving it unset. The runtime reports "/" for
     // `NameRoot::Home` either way, so this changes no behaviour on its own -- it makes the value
     // visible to programs that read the variable directly, and gives `cd` and `~` one thing to

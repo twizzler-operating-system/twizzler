@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use intrusive_collections::{intrusive_adapter, LinkedList};
+use intrusive_collections::{LinkedList, intrusive_adapter};
 
 use super::{
     sched::{DEFAULT_TIMESLICE_TICKS, MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS},
@@ -10,9 +10,8 @@ use crate::{
     clock::get_current_ticks,
     spinlock::{GenericSpinlock, LockGuard},
     thread::{
-        current_thread_ref,
-        priority::{Priority, PriorityClass, MAX_PRIORITY},
-        Thread, ThreadRef,
+        Thread, ThreadRef, current_thread_ref,
+        priority::{MAX_PRIORITY, Priority, PriorityClass},
     },
 };
 
@@ -537,10 +536,10 @@ mod test {
 
     use twizzler_kernel_macros::kernel_test;
 
-    use super::{PriorityQueue, NR_QUEUES};
+    use super::{NR_QUEUES, PriorityQueue};
     use crate::thread::{
-        priority::{Priority, PriorityClass, MAX_PRIORITY},
         Thread, ThreadRef,
+        priority::{MAX_PRIORITY, Priority, PriorityClass},
     };
 
     const BUCKET_WIDTH: u16 = MAX_PRIORITY / NR_QUEUES as u16;

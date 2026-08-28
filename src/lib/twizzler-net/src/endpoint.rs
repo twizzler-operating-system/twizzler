@@ -2,8 +2,8 @@ use std::{
     collections::HashMap,
     io::ErrorKind,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 

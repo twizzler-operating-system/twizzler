@@ -33,7 +33,16 @@ use crate::runtime::file::kinds::socket::engine::{
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
 const RX_BUF_SIZE: usize = 65536;
-const TX_BUF_SIZE: usize = 8192;
+/// Parity with rx, up from 8 KiB.
+///
+/// This bounds in-flight data from a sender regardless of what the peer advertises: at 8 KiB and
+/// an MSS of ~1474 that was ~5.5 segments, so raising the receive window elsewhere could not help
+/// a sender. Linux's `tcp_wmem` reaches 4 MiB, but that is a *ceiling under demand* -- it
+/// autotunes. Ours is a fixed allocation taken up front, and `SmolTcpListener::BACKLOG` is 8, so
+/// every bound port pays 8x this whether or not a connection ever arrives (1 MiB per listener at
+/// parity). Matching Linux's constant would be matching a symbol rather than a behaviour; if this
+/// still binds, the answer is autotuning, not a bigger number.
+const TX_BUF_SIZE: usize = 65536;
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
@@ -597,9 +606,8 @@ impl Drop for TcpStreamInner {
             super::engine::note_tcp_drop(before);
             (
                 lp.map(|e| e.port).unwrap_or(0),
-                rep.map(|e| e.addr.into()).unwrap_or(core::net::IpAddr::V4(
-                    core::net::Ipv4Addr::UNSPECIFIED,
-                )),
+                rep.map(|e| e.addr.into())
+                    .unwrap_or(core::net::IpAddr::V4(core::net::Ipv4Addr::UNSPECIFIED)),
                 rep.map(|e| e.port).unwrap_or(0),
                 before,
                 after,
@@ -702,7 +710,29 @@ impl UdpSocket {
         engine.blocking(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_recv() {
-                let r = socket.recv_slice(buf).map(|x| (x.0, Some(x.1))).unwrap();
+                // `can_recv()` answers "is a datagram queued", not "does it fit in `buf`" -- and
+                // `recv_slice` dequeues *before* it checks the length, returning Truncated with
+                // the datagram already consumed. Unwrapping that aborted the process and lost the
+                // data, on nothing worse than a reader with a small buffer. POSIX truncates and
+                // discards the remainder; `recv()` hands the payload back so the copy is bounded
+                // here and cannot fail for size.
+                //
+                // ASYMMETRY, because it reads like an inconsistency and is not: `TcpStream::read`
+                // unwraps `recv_slice` and is correct to. A stream read is partial-capable, so a
+                // short buffer is merely a short read. A datagram is atomic, so the guard that
+                // suffices for TCP does not suffice here -- in *either* direction; see
+                // `write_to`, where `can_send()` likewise cannot promise the payload fits.
+                // Auditing these four sites by pattern gives the right answer for the two TCP
+                // ones and the wrong answer for the two UDP ones.
+                let r = match socket.recv() {
+                    Ok((payload, meta)) => {
+                        let n = payload.len().min(buf.len());
+                        buf[..n].copy_from_slice(&payload[..n]);
+                        (n, Some(meta))
+                    }
+                    // can_recv() said there was one; treat losing the race as "nothing yet".
+                    Err(_) => return Err(ErrorKind::WouldBlock.into()),
+                };
                 // This read may have taken the last queued datagram.
                 core.refresh_waiter(self.inner.socket_handle);
                 Ok(r)
@@ -730,6 +760,7 @@ impl UdpSocket {
         ENGINE.blocking_egress(flags.contains(IoFlags::NONBLOCKING), |core| {
             let socket = core.get_mutable_udp_socket(self.inner.socket_handle);
             if socket.can_send() {
+                // See the ASYMMETRY note in `read_from`: this is the send-side half of it.
                 // `can_send()` answers "open, and able to send a packet at all" -- not "this
                 // payload fits in what is left of the tx buffer". A send that does not fit
                 // returns BufferFull, and unwrapping it killed the process: a tight send loop

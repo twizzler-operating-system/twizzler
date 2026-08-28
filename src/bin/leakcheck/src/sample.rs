@@ -129,7 +129,15 @@ impl Sample {
                 m.handles.nr_lib_handles as u64,
                 m.dynlink.nr_libs as u64,
             ),
-            None => (u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX),
+            None => (
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+            ),
         };
 
         Self {

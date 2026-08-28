@@ -1,11 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use secgate::TwzError;
-use smoltcp::{
-    phy::{Device as _, TxToken},
-    time::Instant,
-    wire::{EthernetFrame, PrettyPrinter},
-};
+use smoltcp::wire::{EthernetFrame, PrettyPrinter};
 use twizzler_abi::syscall::sys_thread_sync;
 use twizzler_net::drivers::{NetDriver, Packet, QueueHandle, WorkItems};
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
@@ -69,10 +65,13 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
                 // A client with no free rx packet is backed up; drop its copy rather than taking
                 // the whole network service down with it. Unwrapping here made one wedged client
                 // fatal for every other one.
-                if let Some(ctx) = ep.transmit(Instant::now()) {
+                //
+                // Same primitive the local-delivery batch path uses, called with one frame: the
+                // NIC hands us frames one at a time, so there is nothing here to batch, and "move
+                // one when that is all there is" needs no special case -- just a shorter slice.
+                if ep.inject(&[&buf[..]]) == 1 {
                     DEV_RX_COPIES.fetch_add(1, Ordering::Relaxed);
-                    ctx.consume(buf.len(), |cbuf| cbuf.copy_from_slice(buf));
-                };
+                }
             }
             drop(handles);
             {

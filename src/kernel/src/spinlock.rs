@@ -4,10 +4,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
-use crate::{
-    processor::spin_wait_until,
-    thread::locktrack,
-};
+use crate::{processor::spin_wait_until, thread::locktrack};
 
 /// Both ticket counters on one line: an uncontended cross-core acquire then pays a single line
 /// transfer where the old one-aligned-line-per-counter layout cost two. The split existed as

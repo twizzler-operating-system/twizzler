@@ -47,10 +47,10 @@ struct Config {
     track: Option<(u64, u64)>,
     /// How many times to run each op when tracking. **Two by default, and the second pass is the
     /// point.** A tracked window reports the blocks allocated inside it and not freed, which a
-    /// one-time fill -- a cache, a lazily-populated table, a high-water reserve -- produces just as
-    /// readily as a leak does. Repeating the identical op in the same boot separates them: a
-    /// per-iteration leak must retain at the same rate every time, and a fill cannot. Measured on
-    /// `l3-thread-x10`: 42 blocks on the first pass, 9 on the second.
+    /// one-time fill -- a cache, a lazily-populated table, a high-water reserve -- produces just
+    /// as readily as a leak does. Repeating the identical op in the same boot separates them:
+    /// a per-iteration leak must retain at the same rate every time, and a fill cannot.
+    /// Measured on `l3-thread-x10`: 42 blocks on the first pass, 9 on the second.
     ///
     /// This is deliberately a repeat rather than a statistic computed inside one window. A
     /// heuristic over the age spread was tried first and rejected: it labels correctly on a fill
@@ -99,9 +99,7 @@ fn parse_args() -> Config {
             "-n" | "--iters" => cfg.iters = next().parse().unwrap_or(cfg.iters),
             "--warmup" => cfg.warmup = next().parse().unwrap_or(cfg.warmup),
             "--quiesce-ms" => cfg.quiesce_ms = next().parse().unwrap_or(cfg.quiesce_ms),
-            "--quiesce-min-ms" => {
-                cfg.quiesce_min_ms = next().parse().unwrap_or(cfg.quiesce_min_ms)
-            }
+            "--quiesce-min-ms" => cfg.quiesce_min_ms = next().parse().unwrap_or(cfg.quiesce_min_ms),
             "--ops" => {
                 let v = next();
                 cfg.ops = if v == "all" {
@@ -190,7 +188,11 @@ fn main() {
             "LEAKCHECK-COUNTER {} {} {}\n",
             i,
             c.name,
-            if c.kind == Kind::Level { "level" } else { "cumulative" }
+            if c.kind == Kind::Level {
+                "level"
+            } else {
+                "cumulative"
+            }
         );
     }
 
@@ -200,7 +202,12 @@ fn main() {
     // exact). Paying every page here, outside all measurement windows, makes the instrument
     // invisible to itself; leakplan §11 confounder #1, closed.
     let mut series: Vec<Sample> = Vec::new();
-    series.resize(cfg.iters, Sample { v: [0; sample::NR_COUNTERS] });
+    series.resize(
+        cfg.iters,
+        Sample {
+            v: [0; sample::NR_COUNTERS],
+        },
+    );
     std::hint::black_box(&series);
     series.clear();
 
@@ -209,7 +216,11 @@ fn main() {
             out!("LEAKCHECK-SKIP {} unknown-op\n", name);
             continue;
         };
-        let passes = if cfg.track.is_some() { cfg.track_passes } else { 1 };
+        let passes = if cfg.track.is_some() {
+            cfg.track_passes
+        } else {
+            1
+        };
         for pass in 1..=passes {
             if passes > 1 {
                 out!("LEAKCHECK-PASS {} {}/{}\n", op.name, pass, passes);
@@ -297,7 +308,13 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
         // format and `leakplot.py` keeps parsing; the pass number only ever matters here.
         out!(
             "LEAKCHECK-TRACK {}#{} live={} inserted={} removed={} overflow={} free_miss={}\n",
-            op.name, pass, t.live, t.inserted, t.removed, t.overflow, t.free_miss
+            op.name,
+            pass,
+            t.live,
+            t.inserted,
+            t.removed,
+            t.overflow,
+            t.free_miss
         );
         sys_kalloc_track(KALLOC_TRACK_OFF, 0, 0);
     }
@@ -333,7 +350,15 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
         unsafe { __twz_rt_diag_decommit_stats(d.as_mut_ptr()) };
         out!(
             "LEAKCHECK-DECOMMIT {} hook_decommit={} hook_dealloc={} ranges={} no_id={} bytes_declined={} base_alloc={}/{} base_dealloc_bytes={}\n",
-            op.name, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
+            op.name,
+            d[0],
+            d[1],
+            d[2],
+            d[3],
+            d[4],
+            d[5],
+            d[6],
+            d[7]
         );
     }
 
@@ -374,7 +399,11 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
             "LEAKCHECK-FIT {} {} {} slope={:.4} r2={:.4} growth={:.1} duty={:.3} maxstep={:.3} net={} n={}\n",
             op.name,
             COUNTERS[ci].name,
-            if COUNTERS[ci].kind == Kind::Level { "level" } else { "cumulative" },
+            if COUNTERS[ci].kind == Kind::Level {
+                "level"
+            } else {
+                "cumulative"
+            },
             f.slope,
             f.r2,
             f.growth,
@@ -552,8 +581,8 @@ unsafe extern "C" fn probe_dtor(_: *mut core::ffi::c_void) {
 /// `ThreadLocal::put(id)` through `pthread_key_create`, and recycling that id is what lets the next
 /// spawn reuse the dead thread's context and slabs. Until `InternalThread::drop` called
 /// `__mlibc_handle_thread_exit`, nothing on the spawn path reached mlibc's destructor machinery at
-/// all, and every spawn took a fresh 4 MiB slab it never gave back. `ran` dropping below `set` means
-/// that call has been lost again.
+/// all, and every spawn took a fresh 4 MiB slab it never gave back. `ran` dropping below `set`
+/// means that call has been lost again.
 fn pthread_dtor_probe() {
     use std::sync::atomic::Ordering::SeqCst;
     const N: usize = 10;

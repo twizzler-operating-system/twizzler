@@ -433,10 +433,8 @@ pub fn start(
                 // harmless.
                 if cli.prog.sample {
                     for thread in comp.threads() {
-                        let _ = sys_thread_set_trace_events(
-                            thread.repr_id,
-                            PERTHREAD_TRACE_GEN_SAMPLE,
-                        );
+                        let _ =
+                            sys_thread_set_trace_events(thread.repr_id, PERTHREAD_TRACE_GEN_SAMPLE);
                     }
                 }
                 flags = comp.info().unwrap().flags;

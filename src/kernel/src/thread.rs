@@ -1342,13 +1342,11 @@ pub fn check_system_hang() {
             // The runtime mirrors thread names into notes on the repr object; without one the
             // table is a list of anonymous parked threads (rustchang.md).
             let mut namebuf = [0u8; 24];
-            let namelen = match crate::obj::lookup_object(
-                thread.objid(),
-                crate::obj::LookupFlags::empty(),
-            ) {
-                crate::obj::LookupResult::Found(obj) => obj.get_notes().summarize(&mut namebuf),
-                _ => 0,
-            };
+            let namelen =
+                match crate::obj::lookup_object(thread.objid(), crate::obj::LookupFlags::empty()) {
+                    crate::obj::LookupResult::Found(obj) => obj.get_notes().summarize(&mut namebuf),
+                    _ => 0,
+                };
             emerglogln!(
                 "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
                 thread.id(),

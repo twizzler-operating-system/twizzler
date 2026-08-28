@@ -51,7 +51,11 @@ pub fn fit(ys: &[u64]) -> Option<Fit> {
     let slope = sxy / sxx;
     // A perfectly flat series explains nothing and needs to explain nothing: call it r2 = 1 rather
     // than 0/0, or every clean counter reports as unexplained noise.
-    let r2 = if syy == 0.0 { 1.0 } else { (sxy * sxy) / (sxx * syy) };
+    let r2 = if syy == 0.0 {
+        1.0
+    } else {
+        (sxy * sxy) / (sxx * syy)
+    };
 
     let growth = ys[n - 1] as f64 - ys[0] as f64;
     let mut rises = 0usize;
@@ -70,7 +74,11 @@ pub fn fit(ys: &[u64]) -> Option<Fit> {
         r2,
         growth,
         duty: rises as f64 / steps,
-        max_step_frac: if growth > 0.0 { max_step as f64 / growth } else { 0.0 },
+        max_step_frac: if growth > 0.0 {
+            max_step as f64 / growth
+        } else {
+            0.0
+        },
         n,
     })
 }

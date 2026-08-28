@@ -33,10 +33,10 @@ pub struct TwizzlerTransport {
     /// The BAR mapping `config_space` points into, held for exactly as long as the pointer.
     ///
     /// Identical to virtio-net's: every other field is a `CfgLocation` re-resolved against a fresh
-    /// `MmioObject` per access, but `config_space` captures a raw pointer once, so without this the
-    /// mapping is dropped at the end of `new` and the pointer lives on the handle cache's grace
-    /// period alone. It faulted in `display` (`Read: 31c0004000`) once net-srv's copy was fixed and
-    /// display became the first compartment to hit it.
+    /// `MmioObject` per access, but `config_space` captures a raw pointer once, so without this
+    /// the mapping is dropped at the end of `new` and the pointer lives on the handle cache's
+    /// grace period alone. It faulted in `display` (`Read: 31c0004000`) once net-srv's copy
+    /// was fixed and display became the first compartment to hit it.
     _config_space_bar: Option<MmioObject>,
     config_space: Option<NonNull<[u32]>>,
 }

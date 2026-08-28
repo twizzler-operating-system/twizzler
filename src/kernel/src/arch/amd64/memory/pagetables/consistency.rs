@@ -932,13 +932,14 @@ pub struct TlbShootdownInfo {
     /// Set by `insert` with Release *after* the slot write, so a reader that sees `true` sees the
     /// slot. Cleared by `complete` with Release only once every invalidation has been applied and
     /// while the lock is still held, so a reader that sees `false` happens-after those
-    /// invalidations -- which is exactly the guarantee that makes freeing the unmapped frames safe.
+    /// invalidations -- which is exactly the guarantee that makes freeing the unmapped frames
+    /// safe.
     ///
     /// Read together with `full_invl`, never alone. For slots the lock serializes set against
     /// clear, so this flag alone would do; the `full_invl` bail is the exception, because it runs
-    /// having *failed* to take the lock, and a `complete` finishing concurrently can land its clear
-    /// between that path's two stores. No store order fixes that -- only reading both does, which
-    /// is what the old lock-taking reader did by accident.
+    /// having *failed* to take the lock, and a `complete` finishing concurrently can land its
+    /// clear between that path's two stores. No store order fixes that -- only reading both
+    /// does, which is what the old lock-taking reader did by accident.
     has_work: AtomicBool,
 }
 

@@ -427,7 +427,6 @@ pub fn sys_kalloc_census() -> KallocCensus {
     }
 }
 
-
 /// Control block for the kernel-heap live-block tracker.
 ///
 /// [`KallocCensus`] names the size class that fails to balance; it cannot name which blocks in that

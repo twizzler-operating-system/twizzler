@@ -45,8 +45,11 @@ impl Context {
         // definitions under their bare name too), so both the hash-table probe and the prefixed
         // retry are skipped. A library without a filter is probed as before.
         let hash = super::sym_hash(name);
-        let may_define =
-            |lib: &Library| lib.sym_bloom.as_ref().is_none_or(|b| b.maybe_contains(hash));
+        let may_define = |lib: &Library| {
+            lib.sym_bloom
+                .as_ref()
+                .is_none_or(|b| b.maybe_contains(hash))
+        };
         // First try looking up within ourselves.
         if !lookup_flags.contains(LookupFlags::SKIP_SELF) && may_define(start_lib) {
             if let Some(sym) = start_lib.lookup_symbol(name, allow_weak, false) {

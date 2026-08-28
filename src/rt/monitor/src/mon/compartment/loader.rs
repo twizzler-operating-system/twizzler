@@ -193,7 +193,8 @@ impl LoadInfo {
             {
                 Some(ptr) => {
                     let dst = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) };
-                    let src = unsafe { core::slice::from_raw_parts(loader_config.initial_cwd, len) };
+                    let src =
+                        unsafe { core::slice::from_raw_parts(loader_config.initial_cwd, len) };
                     dst.copy_from_slice(src);
                     loader_config.initial_cwd = ptr.as_ptr();
                 }

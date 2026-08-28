@@ -256,7 +256,10 @@ pub fn copy_twizzler_build(
                 ext4.remove(rt_dest).unwrap();
             }
             let mut rt_file = ext4
-                .open(rt_dest, OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE)
+                .open(
+                    rt_dest,
+                    OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+                )
                 .unwrap();
             let mut rt_src = File::open(&cd.path)?;
             std::io::copy(&mut rt_src, &mut rt_file).unwrap();

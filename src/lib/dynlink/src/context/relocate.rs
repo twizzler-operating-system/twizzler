@@ -5,8 +5,6 @@ use std::{
     time::Instant,
 };
 
-use twizzler_abi::object::ObjID;
-
 use elf::{
     abi::{
         DF_TEXTREL, DT_FLAGS, DT_FLAGS_1, DT_JMPREL, DT_PLTGOT, DT_PLTREL, DT_PLTRELSZ, DT_REL,
@@ -21,6 +19,7 @@ use elf::{
 use petgraph::graph::NodeIndex;
 use smallstr::SmallString;
 use tracing::{debug, error, trace};
+use twizzler_abi::object::ObjID;
 
 use super::{Context, Library};
 use crate::{

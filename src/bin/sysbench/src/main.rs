@@ -25,14 +25,12 @@ mod benches {
     use twizzler_abi::{
         object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
         syscall::{
-            ClockSource, MapControlCmd, MapFlags, ReadClockFlags, ThreadSync, ThreadSyncFlags,
-            ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, UnmapFlags,
-            sys_map_ctrl, sys_object_map, sys_object_unmap, sys_read_clock_info,
+            ClockSource, DeleteFlags, MapControlCmd, MapFlags, ObjectControlCmd, ObjectCreate,
+            ReadClockFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+            ThreadSyncSleep, ThreadSyncWake, UnmapFlags, sys_map_ctrl, sys_object_create,
+            sys_object_ctrl, sys_object_map, sys_object_unmap, sys_read_clock_info,
             sys_thread_self_id, sys_thread_sync,
         },
-    };
-    use twizzler_abi::syscall::{
-        DeleteFlags, ObjectControlCmd, ObjectCreate, sys_object_create, sys_object_ctrl,
     };
     use twizzler_rt_abi::{
         io::IoCtx,
@@ -140,8 +138,10 @@ mod benches {
                 m.page_fault_count.saturating_sub(self.faults),
                 m.tlb_shootdown_count.saturating_sub(self.shootdowns),
                 m.tlb_flush_count.saturating_sub(self.flushes),
-                m.aspace_switch_flush_count.saturating_sub(self.switch_flush),
-                m.aspace_switch_noflush_count.saturating_sub(self.switch_noflush),
+                m.aspace_switch_flush_count
+                    .saturating_sub(self.switch_flush),
+                m.aspace_switch_noflush_count
+                    .saturating_sub(self.switch_noflush),
             ));
             console(&format!("SYSBENCH-MARK end {}\n", self.name));
             twizzler_abi::syscall::sys_debug_perfmark(false);
@@ -430,7 +430,13 @@ mod benches {
         // region well past the base, so the base invlpg cannot cover them; a stale read at any of
         // them is the bug. Multiple offsets so one accidentally-covered region can't hide it.
         const TWO_MIB: usize = 0x20_0000;
-        const OFFS: [usize; 5] = [2 * TWO_MIB, 6 * TWO_MIB, 10 * TWO_MIB, 20 * TWO_MIB, 40 * TWO_MIB];
+        const OFFS: [usize; 5] = [
+            2 * TWO_MIB,
+            6 * TWO_MIB,
+            10 * TWO_MIB,
+            20 * TWO_MIB,
+            40 * TWO_MIB,
+        ];
         const SA: u64 = 0xA1A1_A1A1_A1A1_A1A1;
         const SB: u64 = 0xB2B2_B2B2_B2B2_B2B2;
         let map = |id: ObjID, slot: usize| {
@@ -1108,12 +1114,14 @@ mod benches {
                 // thread costs the whole round.
                 let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
                 let t = target.clone();
-                std::thread::spawn(move || loop {
-                    if let Ok(s) = TcpStream::connect(&t) {
-                        let _ = tx.send(s);
-                        return;
+                std::thread::spawn(move || {
+                    loop {
+                        if let Ok(s) = TcpStream::connect(&t) {
+                            let _ = tx.send(s);
+                            return;
+                        }
+                        std::thread::yield_now();
                     }
-                    std::thread::yield_now();
                 });
                 while Instant::now() < deadline {
                     match peer.child.try_wait() {
@@ -1145,15 +1153,27 @@ mod benches {
                 // before any measurement. Without this the first timed iteration would absorb
                 // the peer's entire startup.
                 let mut probe = [0u8; 8];
+                let pfd = sock.as_raw_fd();
                 while Instant::now() < deadline {
-                    if sock.send(b"probe").is_ok()
-                        && net_recv_within(sock.as_raw_fd(), &mut probe, Duration::from_millis(200))
-                            .is_some()
+                    // Bounded non-blocking send, never `sock.send`. A `std` UDP socket is
+                    // blocking, and once the peer stops draining, the tx buffer fills and
+                    // `send` parks forever -- observed in pipe4 (2026-08-27): 128 datagrams
+                    // reached .123, the peer closed, and the client never returned from `send`,
+                    // taking the whole boot with it. The old loop also had no yield, which is
+                    // why it managed to emit 128 probes in the first place.
+                    if net_write_within(pfd, b"probe", Duration::from_millis(200)) == 5
+                        && net_recv_within(pfd, &mut probe, Duration::from_millis(200)).is_some()
                     {
                         peer.udp = Some(sock);
                         return Some(peer);
                     }
+                    std::thread::yield_now();
                 }
+                console(&format!(
+                    "net peer ({} {}) never answered a probe within {:?}\n",
+                    mode, target, NET_PEER_TIMEOUT
+                ));
+                return None;
             }
             peer.shutdown();
             None
@@ -1394,24 +1414,14 @@ mod benches {
             iters += 1;
             seq = seq.wrapping_add(1);
             out[..4].copy_from_slice(&seq.to_le_bytes());
-            // A full tx buffer is `WouldBlock`, not a panic (twz-rt, 2026-08-27) -- so this is a
-            // bounded retry rather than an unwrap. An unwrap here would turn ordinary
-            // backpressure into a dead boot and read as the engine being broken.
-            let deadline = Instant::now() + NET_IO_TIMEOUT;
-            loop {
-                match sock.send(&out) {
-                    Ok(_) => break,
-                    Err(e)
-                        if e.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::yield_now()
-                    }
-                    Err(_) => {
-                        failed += 1;
-                        return;
-                    }
-                }
+            // Bounded non-blocking send. `sock.send` on a blocking socket parks indefinitely
+            // once the tx buffer fills and nothing drains it -- that, not the earlier
+            // `BufferFull` panic, is what wedged this bench's boot. A `WouldBlock` retry cannot
+            // help, because a blocking socket never returns `WouldBlock`; the bound has to come
+            // from the non-blocking fd path, the same one the reads already use.
+            if net_write_within(fd, &out, NET_IO_TIMEOUT) != out.len() {
+                failed += 1;
+                return;
             }
             // Recover on *receive*, not on timeout. A reply that misses its bound is typically
             // still in flight when the bound expires, so draining then finds an empty queue and
@@ -1549,7 +1559,6 @@ mod benches {
         b.iter(|| std::hint::black_box(pager::disk_len(id).unwrap()));
     }
 
-
     /// Time `n` spawns individually and print the distribution, not just a mean.
     ///
     /// `compartment_spawn_exit` first read 14.9 ms +/- 9.4 ms -- a +/-63% band, which no A/B and
@@ -1570,7 +1579,13 @@ mod benches {
             reap.push(r);
             total.push(c + r);
         }
-        let mean = |v: &[u64]| if v.is_empty() { 0 } else { v.iter().sum::<u64>() / v.len() as u64 };
+        let mean = |v: &[u64]| {
+            if v.is_empty() {
+                0
+            } else {
+                v.iter().sum::<u64>() / v.len() as u64
+            }
+        };
         let first10 = mean(&total[..10.min(total.len())]);
         let last10 = mean(&total[total.len().saturating_sub(10)..]);
         let tmean = mean(&total);
@@ -1580,8 +1595,15 @@ mod benches {
         let q = |v: &Vec<u64>, f: f64| v[((v.len() - 1) as f64 * f) as usize];
         console(&format!(
             "SYSBENCH-SPAWN {} n={} min={} p50={} p90={} max={} mean={} first10={} last10={}\n",
-            label, n, total[0], q(&total, 0.5), q(&total, 0.9),
-            total[total.len() - 1], tmean, first10, last10,
+            label,
+            n,
+            total[0],
+            q(&total, 0.5),
+            q(&total, 0.9),
+            total[total.len() - 1],
+            tmean,
+            first10,
+            last10,
         ));
         // The split that says which half to look at. `create` is everything up to `Command::spawn`
         // returning -- the naming lookup, the gate into the monitor, the whole `RunCompLoader`
@@ -1590,8 +1612,13 @@ mod benches {
         // measured from the same clock in the same iteration, so they sum to the total exactly.
         console(&format!(
             "SYSBENCH-SPAWNSPLIT {} create_p50={} create_mean={} reap_p50={} reap_mean={} create_min={} reap_min={}\n",
-            label, q(&create, 0.5), mean(&create), q(&reap, 0.5), mean(&reap),
-            create[0], reap[0],
+            label,
+            q(&create, 0.5),
+            mean(&create),
+            q(&reap, 0.5),
+            mean(&reap),
+            create[0],
+            reap[0],
         ));
     }
 
@@ -1603,7 +1630,6 @@ mod benches {
     /// measurement: the delta is what dynamic linking a real program adds to a spawn, which a
     /// single number cannot separate from compartment creation itself.
     const BIG_PROG: &str = "/pkg/twizzler/bin/leakcheck";
-
 
     /// One spawn and one wait, the unit every spawn bench times.
     fn spawn_once(prog: &str, args: &[&str]) -> (u64, u64) {
@@ -1618,10 +1644,7 @@ mod benches {
         // A child that failed to start would otherwise time as a *fast* spawn and read as a good
         // result, which is the failure mode `sysbench.md` keeps warning about.
         assert!(status.success(), "{prog} exited {status:?}");
-        (
-            (t1 - t0).as_nanos() as u64,
-            (t2 - t1).as_nanos() as u64,
-        )
+        ((t1 - t0).as_nanos() as u64, (t2 - t1).as_nanos() as u64)
     }
 
     /// Start a compartment that immediately exits, and wait for it -- Twizzler's analogue of
@@ -1690,5 +1713,4 @@ mod benches {
             spawn_once(BIG_PROG, &["--child-exit"])
         });
     }
-
 }

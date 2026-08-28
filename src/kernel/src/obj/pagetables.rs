@@ -788,7 +788,11 @@ pub mod tlbfix {
             DRAINED_UNREACHABLE.load(Ordering::Relaxed),
             {
                 let r = DRAINED_REACHABLE.load(Ordering::Relaxed);
-                if r == 0 { 0 } else { DRAINED_REACH_SUM.load(Ordering::Relaxed) / r }
+                if r == 0 {
+                    0
+                } else {
+                    DRAINED_REACH_SUM.load(Ordering::Relaxed) / r
+                }
             },
         );
         emerglogln!(
@@ -1165,8 +1169,8 @@ impl ObjectPageTable {
             // all-PCID scope that is only needed when the contexts cannot be named.
             //
             // Two guards, both cheap, both degrading to today's behaviour rather than to a bug:
-            //   * not global -- `is_global` stays true across an overflow (see its doc), so a
-            //     batch holding a kernel page still takes the toggle.
+            //   * not global -- `is_global` stays true across an overflow (see its doc), so a batch
+            //     holding a kernel page still takes the toggle.
             //   * membership covers every live `invls` target -- the invariant says it must
             //     (`add_invalidate` calls `add_member` unconditionally), and this checks rather
             //     than assumes it, since a violation here would be silent and durable.
@@ -1663,10 +1667,8 @@ impl ObjectPageTable {
         let mut fa = take_or_new_frame_allocator();
         let mut need = 0;
         for i in 0..npages {
-            let cursor = MappingCursor::new(
-                VirtAddr::new(offset + (i * page) as u64).unwrap(),
-                page,
-            );
+            let cursor =
+                MappingCursor::new(VirtAddr::new(offset + (i * page) as u64).unwrap(), page);
             need += if PRECHARGE_EXACT_RANGE {
                 self.mapper.cow_tables_needed(&cursor)
             } else {
@@ -1680,10 +1682,8 @@ impl ObjectPageTable {
         let mut consist = Consistency::new_object_tables();
         let mut did_cow = false;
         for i in 0..npages {
-            let cursor = MappingCursor::new(
-                VirtAddr::new(offset + (i * page) as u64).unwrap(),
-                page,
-            );
+            let cursor =
+                MappingCursor::new(VirtAddr::new(offset + (i * page) as u64).unwrap(), page);
             // Accumulates into one `consist`, so the run produces a single invalidation batch
             // instead of `npages` of them.
             did_cow |= self

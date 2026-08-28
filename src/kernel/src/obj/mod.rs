@@ -1208,7 +1208,11 @@ pub mod reapstats {
             DEDUPED.load(Ordering::Relaxed),
             LINGERS.load(Ordering::Relaxed),
             DEPTH_DRIFT.load(Ordering::Relaxed),
-            if batches > 0 { (objs + graves) * 1000 / batches } else { 0 },
+            if batches > 0 {
+                (objs + graves) * 1000 / batches
+            } else {
+                0
+            },
             STALE_COUNT_REAPS.load(Ordering::Relaxed),
             // Every const that governs this subsystem's behaviour, emitted with the numbers it
             // governs. A handover message describing tree state can be wrong or absent -- this

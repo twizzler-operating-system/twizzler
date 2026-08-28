@@ -8,7 +8,7 @@ use std::{
 };
 
 use smoltcp::{
-    phy::{Device, RxToken, TxToken},
+    phy::{Device, RxToken},
     time::Instant,
     wire::{
         ArpPacket, EthernetAddress, EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet,
@@ -16,7 +16,7 @@ use smoltcp::{
     },
 };
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
-use twizzler_net::NetServer;
+use twizzler_net::{MAX_PACKETS_SET, NetServer};
 use virtio_net::TxBuffer;
 
 use crate::{addr::ClientAddr, NETINFO};
@@ -50,8 +50,7 @@ impl Client {
 }
 
 /// Where a frame leaving a client should go.
-#[derive(Clone, Copy)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Dest {
     /// Off-box, out the NIC -- the ordinary case.
     Device,
@@ -202,6 +201,12 @@ static LOCAL_RX_OK: AtomicU64 = AtomicU64::new(0);
 /// that already exists.
 static LOCAL_RX_BY_DST: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 
+/// Drops bucketed by destination octet. `LOCAL_RX_DROPS` is global, which cannot answer the
+/// question actually under investigation: whether *one* backed-up client is losing everything
+/// while the rest are fine. A boot drops a handful of frames for ordinary reasons, so a global
+/// count near zero and a total wipe-out of one destination look the same.
+static LOCAL_RX_DROPS_BY_DST: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
 /// The same, bucketed by the last octet of the IPv4 *source*.
 ///
 /// This is the higher-contrast half, and the reason is a property of the test rather than of the
@@ -318,112 +323,322 @@ static DEVICE_UNICAST: AtomicU64 = AtomicU64::new(0);
 /// The caller must not hold its own `ep`: two client threads cross-injecting while each held its
 /// own would deadlock, which is why `client_thread` copies frames out and dispatches them only
 /// after dropping that lock.
-fn inject_local(frame: &[u8], sender: EthernetAddress, f: impl Fn(&Client) -> bool) -> usize {
-    let mut matched = 0usize;
+/// Whether server->client delivery batches frames into one queue message.
+///
+/// `false` reproduces the pre-change behaviour exactly -- one frame per queue message, the shape
+/// the send half had before `NetServer::inject` existed -- by capping the batch at one. Everything
+/// else (loop order, lock scope, reporting outside the locks) is identical between arms, so the
+/// only thing varying is the batch cap.
+///
+/// A const rather than two source trees, for the same reason `FILTER_UNICAST` in device.rs is one:
+/// both arms build from a single tree state, and which arm a build actually was is one grep on the
+/// source rather than an inference from a file mtime, which cannot see a constant flipped before
+/// the build window.
+const BATCH_LOCAL_DELIVERY: bool = true;
+
+/// Frames per queue message. `MAX_PACKETS_SET` is what `PacketSet` has always carried.
+const BATCH_MAX: usize = if BATCH_LOCAL_DELIVERY {
+    MAX_PACKETS_SET
+} else {
+    1
+};
+
+/// Engagement counters for multipacket delivery: frames handed to clients, and queue messages
+/// used to do it.
+///
+/// The ratio is the *control* for this change, not a performance figure. `frames/msgs == 1.0`
+/// means the batch never filled and the change is inert, in which case any timing difference is
+/// something else and must not be attributed here. It can only ever confirm that batching
+/// happened; it says nothing about whether batching helped.
+static BATCH_FRAMES: AtomicU64 = AtomicU64::new(0);
+static BATCH_MSGS: AtomicU64 = AtomicU64::new(0);
+
+/// What an injected frame is, so the singleton population can be *named* rather than assumed.
+///
+/// The batch ratio alone cannot separate "the cap is too small" from "there was only ever one
+/// frame to send". A pure ACK is emitted on its own poll with nothing to accompany it: it is
+/// structurally a singleton and no batch cap can help it. Payload-carrying segments are the
+/// population a larger cap could coalesce, so they are what a cap change has to be read against.
+/// Without this split, a ratio that fails to rise has two explanations and no way to choose.
+#[derive(Clone, Copy)]
+enum FrameClass {
+    TcpData = 0,
+    TcpAck = 1,
+    Arp = 2,
+    Other = 3,
+}
+
+fn classify_frame(frame: &[u8]) -> FrameClass {
+    let Ok(eth) = EthernetFrame::new_checked(frame) else {
+        return FrameClass::Other;
+    };
+    match eth.ethertype() {
+        EthernetProtocol::Arp => FrameClass::Arp,
+        EthernetProtocol::Ipv4 => {
+            let Ok(ip) = Ipv4Packet::new_checked(eth.payload()) else {
+                return FrameClass::Other;
+            };
+            if ip.next_header() != IpProtocol::Tcp {
+                return FrameClass::Other;
+            }
+            let Ok(tcp) = TcpPacket::new_checked(ip.payload()) else {
+                return FrameClass::Other;
+            };
+            if tcp.payload().is_empty() {
+                FrameClass::TcpAck
+            } else {
+                FrameClass::TcpData
+            }
+        }
+        _ => FrameClass::Other,
+    }
+}
+
+/// Whether the batch-shape milestone line is printed.
+///
+/// **Default off, and the default matters.** The counters below are relaxed atomics and free;
+/// *printing* them is a serial-console write on a path that already prints one milestone line,
+/// and enabling it doubled the delivery path's per-frame console output. The arms that carried it
+/// (`mps8`/`mps16`) ran ~60% slower on both throughput benches than the otherwise-identical
+/// `nb-on1` at the same HEAD -- enough that a timing number taken from an armed tree and
+/// inherited as a baseline would corrupt every later comparison. Ratios are intensive and were
+/// unaffected (3.52 armed vs 3.50/3.49/3.49 clean), which is why the cap experiment is sound and
+/// its timing column is not.
+///
+/// Turn on to re-measure batch shape; leave off for anything timed. A timing arm should also
+/// silence the pre-existing `local delivery ok` line, which is the heavier of the two.
+/// Whether the per-injection delivery milestones are printed.
+///
+/// **Counters stay live; only the printing is gated.** This one line is 7,631 of a boot's 15,336
+/// console lines -- over half of everything the guest prints -- and a console write is a syscall
+/// on the delivery path. It is diagnostic scaffolding from the lost-FIN investigation, not
+/// product behaviour, and it has to be off for any arm whose timing is going to be read.
+///
+/// The correctness alarms are deliberately NOT gated: `FRAMING BROKEN` and the local-drop and
+/// TXFIN reports are silent when nothing is wrong (0, 0 and 49 lines respectively in a clean
+/// round), so they cost nothing and must keep firing.
+const REPORT_DELIVERY_MILESTONES: bool = false;
+
+const REPORT_BATCH_SHAPE: bool = false;
+
+/// Frames by class, and the same restricted to frames that rode a **one-frame** message.
+///
+/// The second table is the one that matters: if the singletons are overwhelmingly ACKs, the
+/// residual ratio is not headroom and the search stops here rather than continuing to chase it.
+static CLS_TOTAL: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static CLS_ALONE: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// Delivered batch lengths. Fixed at 17 entries rather than `MAX_PACKETS_SET + 1` so the report
+/// line has the same shape in both arms of the cap experiment and the two can be diffed directly.
+static INJECT_HIST: [AtomicU64; 17] = [const { AtomicU64::new(0) }; 17];
+
+/// Format the per-octet tables for a milestone snapshot.
+fn fmt_octets(t: &[AtomicU64; 256]) -> String {
+    let mut s = String::new();
+    for (i, c) in t.iter().enumerate() {
+        let v = c.load(Ordering::Relaxed);
+        if v != 0 {
+            s.push_str(&format!(" .{}={}", i, v));
+        }
+    }
+    s
+}
+
+/// Account one successfully injected frame. Milestones are *appended*, never logged: see
+/// `deliver_local` for why nothing on this path may write to the console.
+fn note_inject_ok(frame: &[u8], batch_len: usize, notes: &mut Vec<String>) {
+    if REPORT_BATCH_SHAPE {
+        INJECT_HIST[batch_len.min(16)].fetch_add(1, Ordering::Relaxed);
+        let cls = classify_frame(frame) as usize;
+        CLS_TOTAL[cls].fetch_add(1, Ordering::Relaxed);
+        if batch_len == 1 {
+            CLS_ALONE[cls].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if let Some((src, dst)) = ipv4_src_dst_octets(frame) {
+        // Per-address progress on powers of two of that address's own count -- monotonic, so
+        // ".106 reached 16" is a fact about the boot regardless of where the round stopped. A
+        // global snapshot cannot answer "how much arrived from .X": whether .X appears depends on
+        // when the round ended, and that once made a *passing* round look like proof of absence.
+        let sv = LOCAL_RX_BY_SRC[src as usize].fetch_add(1, Ordering::Relaxed) + 1;
+        if sv.is_power_of_two() {
+            notes.push(format!("local src .{} reached {}", src, sv));
+        }
+        let dv = LOCAL_RX_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed) + 1;
+        if dv.is_power_of_two() {
+            notes.push(format!("local dst .{} reached {}", dst, dv));
+        }
+    }
+    let n = LOCAL_RX_OK.fetch_add(1, Ordering::Relaxed) + 1;
+    // Every 16, not only powers of two: a boot injects 250-500 frames, so a power-of-two stride
+    // lands its last snapshot at 256 and truncates the tail this counter exists to measure.
+    if REPORT_DELIVERY_MILESTONES && (n % 16 == 0 || n.is_power_of_two()) {
+        let (ipv4, arp, bad, other, noteth) = (
+            LOCAL_RX_IPV4.load(Ordering::Relaxed),
+            LOCAL_RX_ARP.load(Ordering::Relaxed),
+            LOCAL_RX_BAD_IPV4.load(Ordering::Relaxed),
+            LOCAL_RX_OTHER_ET.load(Ordering::Relaxed),
+            LOCAL_RX_NOT_ETH.load(Ordering::Relaxed),
+        );
+        let (bf, bm) = (
+            BATCH_FRAMES.load(Ordering::Relaxed),
+            BATCH_MSGS.load(Ordering::Relaxed),
+        );
+        notes.push(format!(
+            "local delivery ok: {} injected; accounted {} (ipv4 {} arp {} badip {} otherET {} \
+             noteth {} lastET {:#06x}); batch {}f/{}m mean {:.2}; src:{} dst:{}",
+            n,
+            ipv4 + arp + bad + other + noteth,
+            ipv4,
+            arp,
+            bad,
+            other,
+            noteth,
+            LOCAL_RX_LAST_ETHERTYPE.load(Ordering::Relaxed),
+            bf,
+            bm,
+            if bm == 0 { 0.0 } else { bf as f64 / bm as f64 },
+            fmt_octets(&LOCAL_RX_BY_SRC),
+            fmt_octets(&LOCAL_RX_BY_DST)
+        ));
+        if !REPORT_BATCH_SHAPE {
+            return;
+        }
+        let mut hist = String::new();
+        for (k, c) in INJECT_HIST.iter().enumerate() {
+            let v = c.load(Ordering::Relaxed);
+            if v != 0 {
+                hist.push_str(&format!(" {}:{}", k, v));
+            }
+        }
+        let ld = |t: &[AtomicU64; 4]| {
+            (
+                t[0].load(Ordering::Relaxed),
+                t[1].load(Ordering::Relaxed),
+                t[2].load(Ordering::Relaxed),
+                t[3].load(Ordering::Relaxed),
+            )
+        };
+        let (td, ta, tr, to) = ld(&CLS_TOTAL);
+        let (sd, sa, sr, so) = ld(&CLS_ALONE);
+        notes.push(format!(
+            "batchshape cap={} hist{}; class data={} ack={} arp={} other={}; \
+             alone data={} ack={} arp={} other={}",
+            BATCH_MAX, hist, td, ta, tr, to, sd, sa, sr, so
+        ));
+    }
+}
+
+/// Account one frame dropped because the target's rx pool was empty.
+///
+/// Dropping is the right backpressure response and a real NIC does the same. What is *not* true is
+/// the rationale this path used to carry ("the sender will retransmit"): that holds for TCP and
+/// fails for UDP, and this path carries both. A datagram dropped here is gone and the sender is
+/// never told, so it is counted rather than lost silently. Retrying is not an option: the target
+/// drains on its own thread, which needs the handles lock the caller is holding.
+fn note_inject_drop(frame: &[u8], target: EthernetAddress, notes: &mut Vec<String>) {
+    if let Some((src, dst)) = ipv4_src_dst_octets(frame) {
+        let dv = LOCAL_RX_DROPS_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed) + 1;
+        if dv.is_power_of_two() {
+            notes.push(format!("local DROP dst .{} reached {} (from .{})", dst, dv, src));
+        }
+    }
+    let n = LOCAL_RX_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        notes.push(format!(
+            "dropped local frame for {} (rx pool exhausted); {} dropped so far",
+            target, n
+        ));
+    }
+}
+
+/// Deliver this poll's whole egress batch to every local target, in one queue message per
+/// `MAX_PACKETS_SET` frames per target.
+///
+/// Replaces the old per-frame `inject_local`. The batch is already in hand -- `client_thread`
+/// drains the client's tx queue into `pending` and drops its own `ep` before calling here -- so
+/// the count is known at the call and nothing is deferred, timed, or flushed. A target with one
+/// frame gets a one-frame message; the "move one if that is all there is" case is the same code
+/// path with a shorter slice.
+///
+/// Takes the handles lock and then each target's `ep`, the order `device_thread` also uses. The
+/// caller must not hold its own `ep`: two client threads cross-injecting while each held its own
+/// would deadlock.
+///
+/// **Nothing here writes to the console.** Milestones accumulate in `notes` and are emitted after
+/// both locks drop. A console write is a syscall, and doing one under these locks stalls every
+/// other client thread behind it -- the probe that logged on this path once took the suite from
+/// 13/50 failures to 50/50. Batching sharpens that: one `ep` acquisition now covers up to
+/// `MAX_PACKETS_SET` frames, so a burst that used to emit one line per hold could emit eight.
+fn deliver_local(pending: &[(Vec<u8>, Dest)], sender: EthernetAddress) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut notes: Vec<String> = Vec::new();
+    // Whether any live client matched this frame's destination -- distinct from whether it was
+    // delivered. A frame that matched but hit an empty pool is a drop, already counted as one, and
+    // must not also count as "matched nobody".
+    let mut matched = vec![false; pending.len()];
+
     let handles = NETINFO.get().unwrap().handles.lock().unwrap();
     for (_, _, client) in handles.handles() {
-        if client.addr.hwaddr() == sender || !f(client) {
+        let hw = client.addr.hwaddr();
+        if hw == sender {
             continue;
         }
-        matched += 1;
+        // This target's frames **in the order the sender emitted them**. Order is load-bearing:
+        // delivering all unicast and then all floods would reorder a stream TCP expects in
+        // sequence, and a single-client test cannot see it because floods match nobody.
+        let idx: Vec<usize> = pending
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, d))| match d {
+                Dest::Local(dst) => *dst == hw,
+                Dest::Flood => true,
+                Dest::Device => false,
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if idx.is_empty() {
+            continue;
+        }
+        for i in &idx {
+            matched[*i] = true;
+        }
+
         let mut ep = client.ep.lock().unwrap();
-        match ep.transmit(Instant::now()) {
-            Some(tx) => {
-                tx.consume(frame.len(), |b: &mut [u8]| b.copy_from_slice(frame));
-                if let Some((src, dst)) = ipv4_src_dst_octets(frame) {
-                    // Per-address progress, reported on powers of two of that address's own
-                    // count. This is deliberately NOT tied to the global snapshot below, because
-                    // the global one cannot answer "how much arrived from .X": a boot injects ~350
-                    // frames and a single test contributes its handful in the last thirty, so
-                    // whether .X appears depends on where the round happened to stop. Measured,
-                    // not feared -- source .106 first appeared at injection 320-336 in passing
-                    // rounds and was missing from the final snapshot of two *passing* rounds, so a
-                    // failing round stopping at 304 would have looked like proof of absence.
-                    //
-                    // Keyed on the address's own count, the report is immune to that: the counters
-                    // are monotonic, so ".106 reached 16" is a fact about the boot regardless of
-                    // when it ended. Powers of two also separate the cases that matter here --
-                    // "twenty arrived" from "one ARP-driven frame arrived" -- which bare presence
-                    // cannot. Cost is a compare on the value `fetch_add` already returns.
-                    let sv = LOCAL_RX_BY_SRC[src as usize].fetch_add(1, Ordering::Relaxed) + 1;
-                    if sv.is_power_of_two() {
-                        tracing::warn!("local src .{} reached {}", src, sv);
-                    }
-                    let dv = LOCAL_RX_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed) + 1;
-                    if dv.is_power_of_two() {
-                        tracing::warn!("local dst .{} reached {}", dst, dv);
-                    }
-                }
-                let n = LOCAL_RX_OK.fetch_add(1, Ordering::Relaxed) + 1;
-                // Every 16, not on powers of two. Powers of two truncate the tail: a boot injects
-                // 250-500 frames, so the last snapshot lands at 256 and everything after it is
-                // never reported. That silently hid the traffic this counter exists to measure --
-                // source .106 was absent from the final snapshot of a *passing* round, which would
-                // have read as "absent in both arms" and settled nothing.
-                //
-                // A fixed stride still conditions each snapshot on the same total injection count,
-                // so failing and passing rounds compare at equal denominators rather than equal
-                // wall-clock. And because these counters are monotonic, "did .106 ever receive
-                // anything" is answered by *any* snapshot after its traffic, not only the last.
-                if n % 16 == 0 || n.is_power_of_two() {
-                    let fmt = |t: &[AtomicU64; 256]| {
-                        let mut s = String::new();
-                        for (i, c) in t.iter().enumerate() {
-                            let v = c.load(Ordering::Relaxed);
-                            if v != 0 {
-                                s.push_str(&format!(" .{}={}", i, v));
-                            }
-                        }
-                        s
-                    };
-                    let (ipv4, arp, bad, other, noteth) = (
-                        LOCAL_RX_IPV4.load(Ordering::Relaxed),
-                        LOCAL_RX_ARP.load(Ordering::Relaxed),
-                        LOCAL_RX_BAD_IPV4.load(Ordering::Relaxed),
-                        LOCAL_RX_OTHER_ET.load(Ordering::Relaxed),
-                        LOCAL_RX_NOT_ETH.load(Ordering::Relaxed),
-                    );
-                    let accounted = ipv4 + arp + bad + other + noteth;
-                    tracing::warn!(
-                        "local delivery ok: {} injected; accounted {} (ipv4 {} arp {} badip {} \
-                         otherET {} noteth {} lastET {:#06x}); src:{} dst:{}",
-                        n,
-                        accounted,
-                        ipv4,
-                        arp,
-                        bad,
-                        other,
-                        noteth,
-                        LOCAL_RX_LAST_ETHERTYPE.load(Ordering::Relaxed),
-                        fmt(&LOCAL_RX_BY_SRC),
-                        fmt(&LOCAL_RX_BY_DST)
-                    );
+        for chunk in idx.chunks(BATCH_MAX) {
+            let frames: Vec<&[u8]> = chunk.iter().map(|i| pending[*i].0.as_slice()).collect();
+            let n = ep.inject(&frames);
+            BATCH_MSGS.fetch_add(1, Ordering::Relaxed);
+            BATCH_FRAMES.fetch_add(n as u64, Ordering::Relaxed);
+            for (k, i) in chunk.iter().enumerate() {
+                if k < n {
+                    note_inject_ok(&pending[*i].0, n, &mut notes);
+                } else {
+                    note_inject_drop(&pending[*i].0, hw, &mut notes);
                 }
             }
-            // No free rx packet means that client is backed up, and dropping is the right
-            // backpressure response -- a real NIC does the same. What is *not* true is the
-            // rationale this arm used to carry ("the sender will retransmit"): that holds for TCP
-            // and fails for UDP, and this path carries both. A datagram dropped here is gone, and
-            // the sender is never told. So it is counted and reported rather than lost silently.
-            //
-            // Reported on powers of two because the alternative shapes the thing it measures: this
-            // runs under the handles lock on the local delivery path, and a line per drop would
-            // turn a burst into a stall. Retrying here is not an option for the same reason -- the
-            // target drains on its own thread, and `client_thread` needs `handles` to make
-            // progress, so waiting for it while holding that lock is a deadlock, not a fix.
-            None => {
-                let n = LOCAL_RX_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
-                if n.is_power_of_two() {
-                    tracing::warn!(
-                        "dropped local frame for {} (rx pool exhausted); {} dropped so far",
-                        client.addr.hwaddr(),
-                        n
-                    );
-                }
-            }
-        };
+        }
     }
-    matched
+    drop(handles);
+
+    // A `Dest::Local` frame that matched no live client is the one delivery outcome producing no
+    // record at all: `classify` decided Local from a snapshot taken before this client's `ep` was
+    // held, and a sibling that went away since leaves the frame with nowhere to go -- it is not
+    // injected, and being Local it never reaches the NIC either.
+    for (i, (frame, dest)) in pending.iter().enumerate() {
+        if matches!(dest, Dest::Local(_)) && !matched[i] {
+            LOCAL_NOMATCH.fetch_add(1, Ordering::Relaxed);
+            if tcp_fin_src_octet(frame).is_some() {
+                LOCAL_NOMATCH_FIN.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    for n in notes {
+        tracing::warn!("{}", n);
+    }
 }
 
 fn client_thread(client: Arc<Client>) {
@@ -491,7 +706,11 @@ fn client_thread(client: Arc<Client>) {
                     device.transmit(tx);
                 }
                 if !matches!(dest, Dest::Device) {
-                    let n = if TRIM_TX_TO_FRAME { frame_len(buf) } else { buf.len() };
+                    let n = if TRIM_TX_TO_FRAME {
+                        frame_len(buf)
+                    } else {
+                        buf.len()
+                    };
                     pending.push((buf[..n].to_vec(), dest));
                 }
             })
@@ -547,24 +766,10 @@ fn client_thread(client: Arc<Client>) {
             }
         }
 
-        for (frame, dest) in pending.drain(..) {
-            match dest {
-                Dest::Local(dst) => {
-                    // Outside `ep` -- counters only, reported with the TXFIN block above.
-                    if inject_local(&frame, sender, |c| c.addr.hwaddr() == dst) == 0 {
-                        LOCAL_NOMATCH.fetch_add(1, Ordering::Relaxed);
-                        if tcp_fin_src_octet(&frame).is_some() {
-                            LOCAL_NOMATCH_FIN.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-                // A flood matching nobody is the ordinary one-client case, not a loss.
-                Dest::Flood => {
-                    let _ = inject_local(&frame, sender, |_| true);
-                }
-                Dest::Device => unreachable!("never queued"),
-            }
-        }
+        // One pass over the whole batch, grouped per target, rather than one pass per frame.
+        // A flood matching nobody is the ordinary one-client case, not a loss.
+        deliver_local(&pending, sender);
+        pending.clear();
 
         if has_pending_msg {
             continue;

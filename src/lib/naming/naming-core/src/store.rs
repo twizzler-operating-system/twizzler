@@ -828,10 +828,7 @@ impl NameSession<'_> {
         // An external container makes the directory in its store (a native namespace object's id
         // could not be bound there -- see `ExtNamespace::insert`); `persist` is moot, the store is
         // inherently persistent.
-        if container
-            .create_ns(&name.display().to_string())?
-            .is_some()
-        {
+        if container.create_ns(&name.display().to_string())?.is_some() {
             return Ok(());
         }
         let ns = NamespaceObject::new(
@@ -868,11 +865,10 @@ impl NameSession<'_> {
         // A re-rooted session is never memoized: the memo key is (start namespace, path, flags)
         // and does not identify the root, so two sessions sharing a working namespace but not a
         // root would read each other's answers for any path touching `/` or `..`.
-        let memoized = (memo::MEMO_ON
-            && self.root_ns.is_none()
-            && !flags.contains(GetFlags::CREATE))
-            .then(|| name.as_ref().to_str())
-            .flatten();
+        let memoized =
+            (memo::MEMO_ON && self.root_ns.is_none() && !flags.contains(GetFlags::CREATE))
+                .then(|| name.as_ref().to_str())
+                .flatten();
         let start = if memoized.is_some() {
             self.start_id()
         } else {

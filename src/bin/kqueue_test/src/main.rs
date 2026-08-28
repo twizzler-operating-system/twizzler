@@ -345,7 +345,10 @@ fn test_pipe_eof_reports_readable() {
 
     // An idle pipe with a live writer is not readable.
     let n = kevent_call(kq, &changes, &mut events, Some(Duration::from_millis(50)));
-    assert_eq!(n, 0, "expected no events while the write end is open and idle");
+    assert_eq!(
+        n, 0,
+        "expected no events while the write end is open and idle"
+    );
 
     // The close has to land while kevent is *blocked*, which is the whole point. Closing first
     // and then calling kevent only exercises the level check (`wp.ready`), which the widened
@@ -359,7 +362,10 @@ fn test_pipe_eof_reports_readable() {
 
     let n = kevent_call(kq, &[], &mut events, Some(Duration::from_secs(5)));
     closer.join().expect("closer thread");
-    assert_eq!(n, 1, "closing the write end must make the read end readable (EOF)");
+    assert_eq!(
+        n, 1,
+        "closing the write end must make the read end readable (EOF)"
+    );
     assert_eq!(events[0].ident, read_fd as usize);
     assert_eq!(events[0].filter, EVFILT_READ);
 
@@ -383,7 +389,10 @@ fn test_pipe_eof_visible_through_fd_waitpoint() {
 
     let (word, value, ready) =
         twz_rt_fd_waitpoint(read_fd, WAIT_READ).expect("waitpoint on a live pipe");
-    assert!(!ready, "an idle pipe with a live writer must not report read-ready");
+    assert!(
+        !ready,
+        "an idle pipe with a live writer must not report read-ready"
+    );
 
     twz_rt_fd_close(write_fd);
 

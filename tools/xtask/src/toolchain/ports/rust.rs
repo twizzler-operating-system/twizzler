@@ -165,6 +165,15 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     rustflags_array.push("-C");
     rustflags_array.push("link-arg=-lunwind");
 
+    // Marks this as the native std: the one a Twizzler-hosted rustc links programs against, where
+    // `-ltwz_rt` can be emitted from libstd itself so a bare `rustc prog.rs` links without extra
+    // flags. The cross-compiler's std is built without it (it builds libtwz_rt.so in the first
+    // place). --check-cfg keeps the unexpected_cfgs lint quiet for every other crate built here.
+    rustflags_array.push("--cfg");
+    rustflags_array.push("twizzler_hosted");
+    rustflags_array.push("--check-cfg");
+    rustflags_array.push("cfg(twizzler_hosted)");
+
     toml["target"][tstr]["rustflags"] = toml_edit::value(rustflags_array);
     toml["target"][tstr]["llvm-libunwind"] = toml_edit::value("in-tree");
 

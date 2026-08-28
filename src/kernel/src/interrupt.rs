@@ -342,7 +342,9 @@ unsafe impl Sync for DeviceInterrupter {}
 
 impl DeviceInterrupter {
     fn new(wi: &WakeInfo) -> Self {
-        crate::memory::context::kobjcensus::record(crate::memory::context::kobjcensus::Site::Interrupt);
+        crate::memory::context::kobjcensus::record(
+            crate::memory::context::kobjcensus::Site::Interrupt,
+        );
         let word_object = kernel_context().insert_kernel_object(ObjectContextInfo::new(
             wi.obj.clone(),
             Protections::WRITE | Protections::READ,

@@ -473,13 +473,22 @@ fn xfree_setup(cross: bool) -> State {
     let (done_tx, rx) = std::sync::mpsc::channel::<Batch>();
     let worker = std::thread::spawn(move || {
         while let Ok(batch) = work_rx.recv() {
-            let reply = if cross { drop(batch); Vec::new() } else { batch };
+            let reply = if cross {
+                drop(batch);
+                Vec::new()
+            } else {
+                batch
+            };
             if done_tx.send(reply).is_err() {
                 break;
             }
         }
     });
-    State::Xfree(Xfree { tx: Some(tx), rx, worker: Some(worker) })
+    State::Xfree(Xfree {
+        tx: Some(tx),
+        rx,
+        worker: Some(worker),
+    })
 }
 
 fn xfree_cross_setup() -> State {
@@ -591,7 +600,11 @@ fn xfree_worker_setup() -> State {
         "LEAKCHECK-MAINHEAP main={:x} worker={:x}\n",
         main_heap, worker_heap
     ));
-    State::XfreeWorker(XfreeWorker { go: Some(go), done, worker: Some(worker) })
+    State::XfreeWorker(XfreeWorker {
+        go: Some(go),
+        done,
+        worker: Some(worker),
+    })
 }
 
 fn xfree_worker_run(st: &mut State) {
@@ -1016,51 +1029,215 @@ pub fn failures(st: &State) -> usize {
 }
 
 pub const OPS: &[Op] = &[
-    Op { name: "l0-null", setup: no_setup, run: l0_run },
-    Op { name: "l0-stats10", setup: no_setup, run: l0_stats10_run },
-    Op { name: "l0-kstats10", setup: no_setup, run: l0_kstats10_run },
-    Op { name: "l0-slow500", setup: no_setup, run: l0_slow500_run },
-    Op { name: "p1-leak-object", setup: p1_setup, run: p1_run },
-    Op { name: "p2-microleak-64", setup: no_setup, run: p2_micro64_run },
-    Op { name: "p3-microleak-16", setup: no_setup, run: p3_micro16_run },
-    Op { name: "l1a-obj-create-delete", setup: no_setup, run: l1a_run },
-    Op { name: "l1b-map-unmap", setup: l1b_setup, run: l1b_run },
-    Op { name: "l1c-map-unmap-slots", setup: l1b_setup, run: l1c_rotate_run },
-    Op { name: "l2a-handle-map-drop", setup: l2a_setup, run: l2a_run },
-    Op { name: "l2b-heap", setup: no_setup, run: l2b_run },
-    Op { name: "l2c-heap-2mb", setup: no_setup, run: l2c_run },
-    Op { name: "l2d-heap-2mb-touched", setup: no_setup, run: l2d_run },
-    Op { name: "l2e-heap-small", setup: no_setup, run: l2e_run },
-    Op { name: "l2f-heap-2mb-touched-gc", setup: no_setup, run: l2f_run },
-    Op { name: "l3-thread", setup: no_setup, run: l3_run },
-    Op { name: "l3-thread-x10", setup: no_setup, run: l3_x10_run },
-    Op { name: "l3-x10-spaced", setup: no_setup, run: l3_x10_spaced_run },
-    Op { name: "l3-x10-idle", setup: no_setup, run: l3_x10_idle_run },
-    Op { name: "l3-thread-userspin", setup: no_setup, run: l3_userspin_run },
-    Op { name: "l3-thread-addr", setup: no_setup, run: l3_addr_run },
-    Op { name: "l3-thread-parts", setup: no_setup, run: l3_parts_run },
-    Op { name: "l3-thread-b", setup: no_setup, run: l3_run },
-    Op { name: "l3-thread-c", setup: no_setup, run: l3_run },
-    Op { name: "l3-thread-slow", setup: no_setup, run: l3_slow_run },
-    Op { name: "l3x-xfree-cross", setup: xfree_cross_setup, run: xfree_run },
-    Op { name: "l3x-xfree-same", setup: xfree_same_setup, run: xfree_run },
-    Op { name: "l3x-xfree-local", setup: no_setup, run: xfree_local_run },
-    Op { name: "l3x-xfree-seq", setup: no_setup, run: xfree_seq_run },
-    Op { name: "l3x-xfree-worker", setup: xfree_worker_setup, run: xfree_worker_run },
-    Op { name: "l7-spawn-proc", setup: l7_setup, run: l7_run },
-    Op { name: "l2ctl-48k", setup: no_setup, run: l2ctl_48k_run },
-    Op { name: "l2ctl-48b", setup: no_setup, run: l2ctl_48b_run },
-    Op { name: "l7p-resolve", setup: no_setup, run: l7p_resolve_run },
-    Op { name: "l7p-command", setup: no_setup, run: l7p_command_run },
-    Op { name: "l7p-fd", setup: no_setup, run: l7p_fd_run },
-    Op { name: "l7p-binds", setup: no_setup, run: l7p_binds_run },
-    Op { name: "l7p-loader", setup: l7_setup, run: l7p_loader_run },
-    Op { name: "l7p-sctxlive", setup: l7p_sctxlive_setup, run: l7p_sctxlive_run },
+    Op {
+        name: "l0-null",
+        setup: no_setup,
+        run: l0_run,
+    },
+    Op {
+        name: "l0-stats10",
+        setup: no_setup,
+        run: l0_stats10_run,
+    },
+    Op {
+        name: "l0-kstats10",
+        setup: no_setup,
+        run: l0_kstats10_run,
+    },
+    Op {
+        name: "l0-slow500",
+        setup: no_setup,
+        run: l0_slow500_run,
+    },
+    Op {
+        name: "p1-leak-object",
+        setup: p1_setup,
+        run: p1_run,
+    },
+    Op {
+        name: "p2-microleak-64",
+        setup: no_setup,
+        run: p2_micro64_run,
+    },
+    Op {
+        name: "p3-microleak-16",
+        setup: no_setup,
+        run: p3_micro16_run,
+    },
+    Op {
+        name: "l1a-obj-create-delete",
+        setup: no_setup,
+        run: l1a_run,
+    },
+    Op {
+        name: "l1b-map-unmap",
+        setup: l1b_setup,
+        run: l1b_run,
+    },
+    Op {
+        name: "l1c-map-unmap-slots",
+        setup: l1b_setup,
+        run: l1c_rotate_run,
+    },
+    Op {
+        name: "l2a-handle-map-drop",
+        setup: l2a_setup,
+        run: l2a_run,
+    },
+    Op {
+        name: "l2b-heap",
+        setup: no_setup,
+        run: l2b_run,
+    },
+    Op {
+        name: "l2c-heap-2mb",
+        setup: no_setup,
+        run: l2c_run,
+    },
+    Op {
+        name: "l2d-heap-2mb-touched",
+        setup: no_setup,
+        run: l2d_run,
+    },
+    Op {
+        name: "l2e-heap-small",
+        setup: no_setup,
+        run: l2e_run,
+    },
+    Op {
+        name: "l2f-heap-2mb-touched-gc",
+        setup: no_setup,
+        run: l2f_run,
+    },
+    Op {
+        name: "l3-thread",
+        setup: no_setup,
+        run: l3_run,
+    },
+    Op {
+        name: "l3-thread-x10",
+        setup: no_setup,
+        run: l3_x10_run,
+    },
+    Op {
+        name: "l3-x10-spaced",
+        setup: no_setup,
+        run: l3_x10_spaced_run,
+    },
+    Op {
+        name: "l3-x10-idle",
+        setup: no_setup,
+        run: l3_x10_idle_run,
+    },
+    Op {
+        name: "l3-thread-userspin",
+        setup: no_setup,
+        run: l3_userspin_run,
+    },
+    Op {
+        name: "l3-thread-addr",
+        setup: no_setup,
+        run: l3_addr_run,
+    },
+    Op {
+        name: "l3-thread-parts",
+        setup: no_setup,
+        run: l3_parts_run,
+    },
+    Op {
+        name: "l3-thread-b",
+        setup: no_setup,
+        run: l3_run,
+    },
+    Op {
+        name: "l3-thread-c",
+        setup: no_setup,
+        run: l3_run,
+    },
+    Op {
+        name: "l3-thread-slow",
+        setup: no_setup,
+        run: l3_slow_run,
+    },
+    Op {
+        name: "l3x-xfree-cross",
+        setup: xfree_cross_setup,
+        run: xfree_run,
+    },
+    Op {
+        name: "l3x-xfree-same",
+        setup: xfree_same_setup,
+        run: xfree_run,
+    },
+    Op {
+        name: "l3x-xfree-local",
+        setup: no_setup,
+        run: xfree_local_run,
+    },
+    Op {
+        name: "l3x-xfree-seq",
+        setup: no_setup,
+        run: xfree_seq_run,
+    },
+    Op {
+        name: "l3x-xfree-worker",
+        setup: xfree_worker_setup,
+        run: xfree_worker_run,
+    },
+    Op {
+        name: "l7-spawn-proc",
+        setup: l7_setup,
+        run: l7_run,
+    },
+    Op {
+        name: "l2ctl-48k",
+        setup: no_setup,
+        run: l2ctl_48k_run,
+    },
+    Op {
+        name: "l2ctl-48b",
+        setup: no_setup,
+        run: l2ctl_48b_run,
+    },
+    Op {
+        name: "l7p-resolve",
+        setup: no_setup,
+        run: l7p_resolve_run,
+    },
+    Op {
+        name: "l7p-command",
+        setup: no_setup,
+        run: l7p_command_run,
+    },
+    Op {
+        name: "l7p-fd",
+        setup: no_setup,
+        run: l7p_fd_run,
+    },
+    Op {
+        name: "l7p-binds",
+        setup: no_setup,
+        run: l7p_binds_run,
+    },
+    Op {
+        name: "l7p-loader",
+        setup: l7_setup,
+        run: l7p_loader_run,
+    },
+    Op {
+        name: "l7p-sctxlive",
+        setup: l7p_sctxlive_setup,
+        run: l7p_sctxlive_run,
+    },
     // The same op as `l7-spawn-proc`, run again after `l7p-loader`. Ordering is a live confounder
     // in this harness: whichever spawn-heavy op runs first pays any one-time fill, so "the part
     // leaks as much as the whole" and "the part ran first" produce the same table. Two readings of
     // the identical op on either side of the parts separate them.
-    Op { name: "l7-spawn-proc-b", setup: l7_setup, run: l7_run },
+    Op {
+        name: "l7-spawn-proc-b",
+        setup: l7_setup,
+        run: l7_run,
+    },
 ];
 
 /// The phase-1 default: the two controls plus the cheap kernel layers. Nothing here depends on

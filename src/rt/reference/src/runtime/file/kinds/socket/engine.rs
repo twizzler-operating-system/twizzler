@@ -19,8 +19,9 @@ use smoltcp::{
     socket::{
         dns::Socket as DnsSocket,
         // NOTE: this shadows the `Socket` *enum*. A bare `Socket` in this file means
-        // `tcp::Socket`, so anything that wants the enum -- `SocketSet::get`/`get_mut` turbofishes,
-        // `socket_readiness`'s parameter -- must spell out `smoltcp::socket::Socket`.
+        // `tcp::Socket`, so anything that wants the enum -- `SocketSet::get`/`get_mut`
+        // turbofishes, `socket_readiness`'s parameter -- must spell out
+        // `smoltcp::socket::Socket`.
         tcp::{Socket, State},
         udp::Socket as SmolUdpSocket,
     },
@@ -233,6 +234,15 @@ static ENGINE_FAST_OK: AtomicU64 = AtomicU64::new(0);
 /// the second separates "blocked and never woken" from "woken repeatedly, still not ready".
 static ENGINE_CALLS: AtomicU64 = AtomicU64::new(0);
 static ENGINE_WAKES: AtomicU64 = AtomicU64::new(0);
+// Poll-thread wake accounting (diagnostic). A compartment that only *waits* -- any server --
+// depends entirely on the rx waiter firing, because it has no socket calls of its own to wake
+// its poll thread. These say whether that waiter ever does.
+static POLL_ITERS: AtomicU64 = AtomicU64::new(0);
+static POLL_SLEEPS: AtomicU64 = AtomicU64::new(0);
+/// Where the poll thread is. Written only; the watchdog that read it was a diagnostic and is
+/// stripped for timing arms (see prereg-mss-0827.md). A relaxed store is free enough to keep so
+/// the next investigation does not have to re-thread it.
+static POLL_PHASE: AtomicU64 = AtomicU64::new(0);
 /// Wakes issued because a fast-path send queued egress. Separate from every other counter so that
 /// "the fix engaged" is a measurement and not an inference from `polls` having moved -- `polls`
 /// can rise for reasons that have nothing to do with this change.
@@ -268,7 +278,10 @@ pub(super) fn note_tcp_close(
     after: State,
 ) {
     use core::fmt::Write;
-    struct Line { b: [u8; 256], n: usize }
+    struct Line {
+        b: [u8; 256],
+        n: usize,
+    }
     impl Write for Line {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             let end = (self.n + s.len()).min(self.b.len());
@@ -634,7 +647,8 @@ impl Engine {
                                     core.get_mutable_socket(item.0).state() == State::Closed
                                 }
                                 // TODO: this causes some kind of stall.
-                                SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.0).
+                                SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.
+                                                         * 0).
                                                          * is_open(), */
                             };
                         if is_closed {
@@ -663,9 +677,12 @@ impl Engine {
             // loop below runs on every poll cycle.
             let mut waiters: Vec<ThreadSync> = Vec::new();
             loop {
+                POLL_PHASE.store(1, Ordering::Relaxed);
                 check_tracking();
+                POLL_PHASE.store(2, Ordering::Relaxed);
                 let time = {
                     let mut inner = inner.lock().unwrap();
+                    POLL_PHASE.store(3, Ordering::Relaxed);
                     inner.poll(&*waiter);
                     let time = inner.poll_time();
 
@@ -677,6 +694,7 @@ impl Engine {
                     time
                 };
 
+                POLL_PHASE.store(4, Ordering::Relaxed);
                 let core = inner.lock().unwrap();
                 waiters.clear();
                 waiters.extend(
@@ -697,8 +715,35 @@ impl Engine {
                     .any(|iface| iface.device.has_rx_pending());
                 drop(core);
                 let n = notify.swap(0, Ordering::SeqCst);
+                POLL_ITERS.fetch_add(1, Ordering::Relaxed);
                 if !any_ready && n == 0 {
-                    let _ = sys_thread_sync(&mut waiters, time.map(|t| t.into()));
+                    POLL_SLEEPS.fetch_add(1, Ordering::Relaxed);
+                    POLL_PHASE.store(5, Ordering::Relaxed);
+                    // A bounded fallback when smoltcp has no deadline of its own. `poll_delay`
+                    // returns None for an idle compartment, which made this an *unbounded* sleep
+                    // on the rx waiter -- so a single missed wake wedged the compartment
+                    // permanently rather than delaying it. Measured (udpdiag2): the UDP peer's
+                    // poll thread ran five iterations and its last sleep never returned while 128
+                    // frames sat queued for it. A poll thread that can only be woken by a waiter
+                    // it does not control should not stake liveness on that waiter being perfect.
+                    // Capped, not just defaulted. Two separate ways this sleep could run long:
+                    // `poll_delay()` returns None for an idle compartment (unbounded sleep), and
+                    // it can also return a *large* deadline when no socket has near-term work.
+                    // Either way the thread's liveness rests entirely on a waiter it does not
+                    // control, which is why a UDP echo server parked in kevent never woke while
+                    // 128 frames sat queued for it. Capping makes a missed wake cost <=50ms
+                    // instead of costing the compartment.
+                    //
+                    // The `missed` counter that used to sit after this sleep is gone with the rest
+                    // of the SLEEPPROBE diagnostics (stripped for timing arms, prereg-mss-0827.md)
+                    // and should not be restored as it was: `rx pending && !notified` is equally
+                    // the signature of the rx waiter firing *correctly*, so it could not tell a
+                    // dropped wake from a working one. Time the sleep and compare against
+                    // FALLBACK if that question is asked again.
+                    const FALLBACK: std::time::Duration = std::time::Duration::from_millis(50);
+                    let timeout: std::time::Duration =
+                        time.map(|t| t.into()).unwrap_or(FALLBACK).min(FALLBACK);
+                    let _ = sys_thread_sync(&mut waiters, Some(timeout));
                 }
             }
         });
@@ -1018,7 +1063,8 @@ impl Core {
                 if self.live.contains(&handle) {
                     self.socket_readiness(
                         handle,
-                        self.socketset.get::<smoltcp::socket::Socket<'static>>(handle),
+                        self.socketset
+                            .get::<smoltcp::socket::Socket<'static>>(handle),
                     )
                 } else {
                     (false, false)

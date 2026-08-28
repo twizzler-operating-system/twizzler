@@ -205,9 +205,7 @@ pub mod kobjcensus {
         FgConsist,
     }
     pub const NR: usize = Site::FgConsist as usize + 1;
-    pub const NAMES: [&str; NR] = [
-        "vkey", "sctx", "ctl", "queue", "int", "drop", "fg_consist",
-    ];
+    pub const NAMES: [&str; NR] = ["vkey", "sctx", "ctl", "queue", "int", "drop", "fg_consist"];
 
     static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
 

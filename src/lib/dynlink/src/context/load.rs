@@ -574,6 +574,13 @@ impl Context {
             )
         })?;
         // Step 2: load the library. This call recurses on dependencies.
-        self.load_library(comp_id, unlib.clone(), idx, allowed_gates, load_ctx, backing)
+        self.load_library(
+            comp_id,
+            unlib.clone(),
+            idx,
+            allowed_gates,
+            load_ctx,
+            backing,
+        )
     }
 }

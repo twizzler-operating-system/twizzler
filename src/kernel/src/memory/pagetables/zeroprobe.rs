@@ -28,8 +28,8 @@
 //!
 //! - `clean & zero`   -- the population both optimizations would serve.
 //! - `clean & nonzero` -- **the falsifier.** The MMU said untouched and the bytes disagree. Any
-//!   non-zero count here means the dirty bit is not a sound basis for skipping a re-zero, and
-//!   names how much the direct-map writers cost.
+//!   non-zero count here means the dirty bit is not a sound basis for skipping a re-zero, and names
+//!   how much the direct-map writers cost.
 //! - `dirty & zero`   -- written per the MMU but zero anyway (a write of zeroes, or a COW break).
 //!   Conservative, a missed opportunity, harmless.
 //! - `dirty & nonzero` -- ordinary written pages.
@@ -91,8 +91,7 @@ static SEEN: AtomicUsize = AtomicUsize::new(0);
 /// Probed unmaps skipped because the frame still has other references.
 static SHARED: AtomicUsize = AtomicUsize::new(0);
 /// `[dirty][nonzero]`.
-static MATRIX: [[AtomicUsize; 2]; 2] =
-    [const { [const { AtomicUsize::new(0) }; 2] }; 2];
+static MATRIX: [[AtomicUsize; 2]; 2] = [const { [const { AtomicUsize::new(0) }; 2] }; 2];
 /// Bytes covered by the entries in [`MATRIX`], so a large page is not counted as one 4 KiB page.
 static BYTES: [[AtomicUsize; 2]; 2] = [const { [const { AtomicUsize::new(0) }; 2] }; 2];
 
@@ -161,11 +160,7 @@ pub fn print() {
         counted
     );
     let pct = |n: usize| {
-        if counted == 0 {
-            0
-        } else {
-            n * 100 / counted
-        }
+        if counted == 0 { 0 } else { n * 100 / counted }
     };
     emerglogln!(
         "   clean+zero    {:>8} ({:>2}%) {:>9} KB   <- never written, still zero",

@@ -34,11 +34,11 @@ pub struct TwizzlerTransport {
     ///
     /// Every other field here is a `CfgLocation` -- an offset, re-resolved against a freshly
     /// obtained `MmioObject` on each access -- but `config_space` is a raw pointer captured once.
-    /// Without keeping its `MmioObject`, the mapping is dropped at the end of `new` and the pointer
-    /// survives only on the runtime handle cache's 2s grace period plus the incidental cache hits
-    /// from other methods re-resolving the same BAR. That is a use-after-release; it faulted
-    /// immediately (`core::ptr::read::<Unalign<Status>>` under `start_network_direct`) as soon as
-    /// that grace period was removed.
+    /// Without keeping its `MmioObject`, the mapping is dropped at the end of `new` and the
+    /// pointer survives only on the runtime handle cache's 2s grace period plus the incidental
+    /// cache hits from other methods re-resolving the same BAR. That is a use-after-release;
+    /// it faulted immediately (`core::ptr::read::<Unalign<Status>>` under
+    /// `start_network_direct`) as soon as that grace period was removed.
     _config_space_bar: Option<MmioObject>,
     config_space: Option<NonNull<[u32]>>,
 }

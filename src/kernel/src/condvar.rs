@@ -86,10 +86,7 @@ impl CondVar {
     }
 
     #[track_caller]
-    pub fn wait<'a, T>(
-        &self,
-        mut guard: LockGuard<'a, T>,
-    ) -> LockGuard<'a, T> {
+    pub fn wait<'a, T>(&self, mut guard: LockGuard<'a, T>) -> LockGuard<'a, T> {
         let current_thread =
             current_thread_ref().expect("cannot call wait before threading is enabled");
         let mut inner = self.inner.lock();

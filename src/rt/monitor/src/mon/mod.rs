@@ -329,7 +329,6 @@ impl Monitor {
         start: unsafe extern "C" fn(usize) -> !,
         args: thread::EntryArgs,
     ) -> Result<ManagedThread, TwzError> {
-
         // Two ways to get a TLS region. The prebuilt one is the point of the pool: it needs no
         // dynlink state, so this takes `thread_mgr` alone for an id instead of the whole lock
         // collection, and stops queueing behind every unrelated monitor operation. Falling back

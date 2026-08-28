@@ -159,7 +159,8 @@ impl Table {
         // construction. Non-leaf changes (installing an intermediate table) move no pages.
         let new_leaf = Self::entry_is_leaf(&new_entry, level);
         if was_leaf != new_leaf {
-            let units = (Self::level_to_page_size(level) / Self::level_to_page_size(Self::last_level())) as isize;
+            let units = (Self::level_to_page_size(level)
+                / Self::level_to_page_size(Self::last_level())) as isize;
             consist.add_page_delta(if new_leaf { units } else { -units });
         }
 

@@ -31,8 +31,8 @@ mod handle;
 mod unmapper;
 
 pub use handle::MapHandle;
-pub(crate) use unmapper::SLOT_UNMAPS_SENT;
 pub use unmapper::Unmapper;
+pub(crate) use unmapper::SLOT_UNMAPS_SENT;
 
 // Temporary instrumentation for the File::open latency hunt (pagerperf.md). `sys_object_map` runs
 // with the space lock dropped, so separating it says how much of `Space::map` is real kernel work
@@ -73,7 +73,6 @@ pub mod spacesplit {
     /// 33%% of a compartment spawn), and a spawn-heavy workload exits a compartment per spawn.
     /// The accumulators stay unconditional -- they are relaxed adds and cost nothing.
     pub const REPORT_ON: bool = false;
-
 
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static HITS: AtomicU64 = AtomicU64::new(0);
@@ -225,7 +224,10 @@ pub(crate) fn report_map_history(slot: usize) {
         return;
     }
     let Ok(hist) = MAP_HIST.try_lock() else {
-        tracing::warn!("  map-diag: slot {:x} history unavailable (lock held)", slot);
+        tracing::warn!(
+            "  map-diag: slot {:x} history unavailable (lock held)",
+            slot
+        );
         return;
     };
     let h = &hist[slot];

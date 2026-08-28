@@ -6,7 +6,7 @@ use core::{
     time::Duration,
 };
 
-use super::{ClockSource, ReadClockFlags, sys_read_clock_info};
+use super::{sys_read_clock_info, ClockSource, ReadClockFlags};
 
 /// Read the CPU's tick counter.
 ///

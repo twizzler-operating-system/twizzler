@@ -19,6 +19,20 @@ use crate::{
     ServerMsg, ServerMsgKind, ServerRet, endpoint::Pair,
 };
 
+/// Ethernet MTU advertised to smoltcp by both ends of the local delivery path.
+///
+/// A named const, not a literal at the call site, so which arm a build actually was can be read
+/// out of the source with one grep rather than inferred from a file mtime -- a constant flipped
+/// before a build window is invisible to any `find -newermt` audit. The MSS sweep
+/// (prereg-mss-0827.md) moves this and nothing else: 1514 / 4014 / 9014, same bytes per
+/// iteration, to separate per-frame cost from per-byte cost.
+///
+/// Bounded above by the packet slot size in net-srv's `twz_net_open_client` (16 KiB): a frame
+/// larger than a slot panics in `NetServerTxToken::consume`. net-srv's own `MTU` const stays at
+/// 1514 in every arm on purpose -- it is the threshold of the oversized-frame counter for the NIC
+/// path, i.e. the detector that says a jumbo frame escaped local delivery, not a knob.
+pub const LOCAL_MTU: usize = 1514;
+
 pub struct NetClient {
     tx: Pair<ClientMsg, ServerRet>,
     rx: Pair<ServerMsg, ClientRet>,
@@ -261,7 +275,7 @@ impl smoltcp::phy::Device for NetClient {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut cap = DeviceCapabilities::default();
         cap.medium = Medium::Ethernet;
-        cap.max_transmission_unit = 1514;
+        cap.max_transmission_unit = LOCAL_MTU;
         // See NetServer::capabilities: Some(1) pins the TCP window to one segment.
         cap.max_burst_size = Some(self.rx.nr_packets());
         cap

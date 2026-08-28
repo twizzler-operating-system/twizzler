@@ -741,7 +741,8 @@ impl RunComp {
             // `compartment_wait`, and a waiter that reads the exit code between the flag and the
             // code would see the main thread's untouched zero -- the very success this is here to
             // stop being reported.
-            self.fault_code.store(COMP_FAULT_EXIT_CODE, Ordering::SeqCst);
+            self.fault_code
+                .store(COMP_FAULT_EXIT_CODE, Ordering::SeqCst);
             // The faulting thread is about to exit without ever reaching the normal exit paths, so
             // nothing else would mark this compartment dead. Without this, anyone in
             // `compartment_wait` (init, and the test runner behind it) blocks forever and the

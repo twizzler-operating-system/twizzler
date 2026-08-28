@@ -81,7 +81,7 @@ impl Context {
             let r = strings
                 .get(sym.st_name as usize)
                 .map(|name| {
-    // Replay first: a memo hit skips the blooms and the whole search. It must still
+                    // Replay first: a memo hit skips the blooms and the whole search. It must still
                     // populate the per-compartment cache: multiply-defined names (`malloc` lives
                     // in both libc and twz-rt's shims) are kept order-uniform across a
                     // compartment's libraries *by* that cache -- the first resolver wins and
@@ -95,10 +95,8 @@ impl Context {
                         if crate::context::relocate::RELOC_MEMO_VERIFY {
                             let live = self.lookup_symbol(lib.id(), name, flags, deps_list);
                             let agrees = live.as_ref().is_ok_and(|l| {
-                                core::ptr::eq(
-                                    l.lib as *const Library,
-                                    msym.lib as *const Library,
-                                ) && l.raw_value() == msym.raw_value()
+                                core::ptr::eq(l.lib as *const Library, msym.lib as *const Library)
+                                    && l.raw_value() == msym.raw_value()
                             });
                             if !agrees {
                                 reloc_cache.memo_bad += 1;

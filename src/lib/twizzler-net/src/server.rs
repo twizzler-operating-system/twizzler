@@ -6,9 +6,11 @@ use twizzler_io::packet::PacketObject;
 use twizzler_queue::{Queue, QueueBase};
 
 use crate::{
-    ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, PacketNum, PacketSet, ServerMsg,
-    ServerMsgKind, ServerRet, client::NetClientOpenInfo, endpoint::Pair,
+    ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, MAX_PACKETS_SET, PacketNum, PacketSet,
+    ServerMsg, ServerMsgKind, ServerRet, client::NetClientOpenInfo, endpoint::Pair,
 };
+
+use crate::client::LOCAL_MTU;
 
 pub struct NetServer {
     client_tx: Pair<ClientMsg, ServerRet>,
@@ -62,6 +64,56 @@ impl NetServer {
             pending_client_id: None,
             pending_client_tx: PacketSet::new(),
         })
+    }
+}
+
+impl NetServer {
+    /// Deliver up to `MAX_PACKETS_SET` frames to this client in **one** queue message.
+    ///
+    /// Returns how many were accepted. A short return means the client's rx pool ran dry and the
+    /// remaining frames were not delivered; the caller must count those as drops, exactly as the
+    /// one-frame-at-a-time path did. A backed-up client is dropped rather than blocking the
+    /// switch, and retrying here would deadlock: the pool is drained by that client's own thread,
+    /// which needs the handles lock this caller is holding.
+    ///
+    /// The transport has always carried `MAX_PACKETS_SET` packets per message -- only the send
+    /// half submitted one at a time, wasting seven slots and a doorbell per frame. The receiving
+    /// client already drains a multi-packet message through successive `receive()` calls
+    /// (`client.rs`, `pending_rx`), so nothing on that side changes.
+    pub fn inject(&mut self, frames: &[&[u8]]) -> usize {
+        self.client_rx.check_completions();
+        let mut packets = [INVALID_PACKET; MAX_PACKETS_SET];
+        let mut n = 0;
+        for frame in frames.iter().take(MAX_PACKETS_SET) {
+            // Cannot happen while LOCAL_MTU <= the slot size, but `TxToken::consume` *panics* on
+            // it and a panic here takes the whole net service down. Stop rather than skip: a hole
+            // in the middle of a batch reorders everything after it.
+            if frame.len() > self.client_rx.packet_size() {
+                break;
+            }
+            let Some(p) = self.client_rx.allocate_packet() else {
+                break;
+            };
+            self.client_rx.packet_mem_mut(p)[..frame.len()].copy_from_slice(frame);
+            self.client_rx.set_packet_len(p, frame.len());
+            packets[n] = p;
+            n += 1;
+        }
+        if n > 0 {
+            self.submit_rx(&packets[..n]);
+        }
+        n
+    }
+
+    /// The one place frames are handed to the client. Both the batch path (`inject`) and smoltcp's
+    /// one-token-at-a-time `TxToken::consume` route through here, so there is a single submission
+    /// site to reason about rather than two that can drift.
+    fn submit_rx(&self, packets: &[PacketNum]) {
+        self.client_rx
+            .send_packets(packets, |s| ServerMsg {
+                kind: ServerMsgKind::Tx(s),
+            })
+            .expect("failed to send packets");
     }
 }
 
@@ -130,7 +182,7 @@ impl smoltcp::phy::Device for NetServer {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut cap = DeviceCapabilities::default();
         cap.medium = Medium::Ethernet;
-        cap.max_transmission_unit = 1514;
+        cap.max_transmission_unit = LOCAL_MTU;
         // smoltcp clamps the advertised TCP receive window to `max_burst_size * MSS`. It is a
         // guard for devices whose network buffers are far smaller than their TCP buffers (its own
         // example driver has four); at `Some(1)` it pins the window to a single segment, which is
@@ -170,12 +222,7 @@ impl TxToken for NetServerTxToken<'_> {
         self.ns.client_rx.set_packet_len(self.packet, len);
         self.consumed = true;
 
-        self.ns
-            .client_rx
-            .send_packets(&[self.packet], |s| ServerMsg {
-                kind: ServerMsgKind::Tx(s),
-            })
-            .expect("failed to send packet");
+        self.ns.submit_rx(&[self.packet]);
 
         ret
     }

@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use intrusive_collections::LinkedList;
 
 use super::rq::SchedLinkAdapter;
-use crate::thread::{priority::MAX_PRIORITY, Thread, ThreadRef};
+use crate::thread::{Thread, ThreadRef, priority::MAX_PRIORITY};
 
 /// Own cache line; see `PriorityQueue` in `rq.rs` for why.
 #[repr(align(64))]

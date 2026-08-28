@@ -12,7 +12,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn setup_cmake(cfg: &mut cmake::Config, install_path: Option<&Path>) -> anyhow::Result<()> {
+pub(crate) fn setup_cmake(
+    cfg: &mut cmake::Config,
+    install_path: Option<&Path>,
+) -> anyhow::Result<()> {
     cfg.define("CMAKE_INSTALL_MESSAGE", "LAZY");
     if let Some(install_path) = install_path {
         std::fs::create_dir_all(&install_path)?;

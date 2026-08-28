@@ -149,8 +149,15 @@ pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
 
-    let tx_buf = PacketObject::new(ObjectCreate::default(), 1024, 2048)?;
-    let rx_buf = PacketObject::new(ObjectCreate::default(), 1024, 2048)?;
+    // Slot size, not frame size: a slot must hold the largest frame either side can hand over, and
+    // `NetServerTxToken::consume` *panics* if it cannot (server.rs), so this bounds the MTU any
+    // arm may advertise. Held at 16384 across every arm of the MSS sweep (prereg-mss-0827.md) so
+    // pool geometry is common-mode and only the advertised MTU varies. Slots are demand-paged
+    // object memory, so the unused tail costs address space, not frames. (Checked against the
+    // round-wedge rate in `ctrl0`: 2048 vs 16384 is Fisher p = 1.000, so this is not the wedge.)
+    const SLOT: usize = 16384;
+    let tx_buf = PacketObject::new(ObjectCreate::default(), 1024, SLOT)?;
+    let rx_buf = PacketObject::new(ObjectCreate::default(), 1024, SLOT)?;
 
     let rx_queue_obj = unsafe {
         twizzler::object::ObjectBuilder::<()>::default()

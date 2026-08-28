@@ -1,12 +1,12 @@
 use std::{
     panic::catch_unwind,
-    time::{Duration, Instant},
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc::Sender,
         Arc,
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use twizzler_abi::syscall::{

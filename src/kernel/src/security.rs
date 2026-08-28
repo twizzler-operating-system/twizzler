@@ -108,9 +108,7 @@ fn read_base_boxed(obj: &ObjectRef) -> Result<alloc::boxed::Box<SecCtxBase>, Twz
         PageNumber::base_page().as_byte_offset(),
     )?;
     // Box<MaybeUninit<T>> -> Box<T>, initialized by the read above.
-    Ok(unsafe {
-        alloc::boxed::Box::from_raw(alloc::boxed::Box::into_raw(val) as *mut SecCtxBase)
-    })
+    Ok(unsafe { alloc::boxed::Box::from_raw(alloc::boxed::Box::into_raw(val) as *mut SecCtxBase) })
 }
 
 /// The kernel gets a special, reserved sctx ID.
@@ -271,7 +269,9 @@ impl SecurityContext {
                     // lea_raw enforced.
                     let off = entry.offset as usize;
                     let cap: Cap = if off >= MAX_SIZE
-                        || off.checked_add(core::mem::size_of::<Cap>()).is_none_or(|end| end >= MAX_SIZE)
+                        || off
+                            .checked_add(core::mem::size_of::<Cap>())
+                            .is_none_or(|end| end >= MAX_SIZE)
                     {
                         error!("capability entry offset out of bounds: {entry:#?}");
                         granted_perms.provide &= base.global_mask;
@@ -349,10 +349,7 @@ impl SecurityContext {
     }
 
     pub fn id(&self) -> ObjID {
-        self.obj
-            .as_ref()
-            .map(|obj| obj.id())
-            .unwrap_or(KERNEL_SCTX)
+        self.obj.as_ref().map(|obj| obj.id()).unwrap_or(KERNEL_SCTX)
     }
 }
 

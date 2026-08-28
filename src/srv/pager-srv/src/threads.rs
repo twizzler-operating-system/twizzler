@@ -740,6 +740,15 @@ fn kq_handler_main(
 /// 500 ms is a bound on latency in an already-degraded state (a pager thread that would otherwise
 /// be parked forever), deliberately far above anything on a working path, so it cannot turn into
 /// a poll loop if the count is ever nonzero for a benign reason.
+///
+/// **Known blind spot, and it inverts the reading above.** This detector is itself a timed wait.
+/// Against a failure class that kills *timed* waits -- a compartment where `thread::sleep` and
+/// poll timeouts stop returning while event-driven paths keep running, which pid 852030 measured
+/// on this runtime the same night this was written -- it cannot fire, because it is waiting on the
+/// same broken primitive. So a silent `WAKEWATCH` does **not** establish "no missed wakes"; it is
+/// equally the signature of the detector being in the same coma as the thing it watches. It only
+/// reports on wakes lost while timers still work. An instrument that can only ever confirm is the
+/// shape to distrust; treat zero here as untested until something independent of timers agrees.
 pub const WAKE_FALLBACK: Duration = Duration::from_millis(500);
 
 /// Counts what [`WAKE_FALLBACK`] catches.

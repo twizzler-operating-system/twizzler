@@ -20,7 +20,10 @@ use std::{
 };
 
 use twizzler_rt_abi::{
-    bindings::{kevent, option_duration, twz_rt_fd_kevent, EVFILT_READ, EV_ADD, EV_ERROR, EV_RECEIPT},
+    bindings::{
+        kevent, option_duration, twz_rt_fd_kevent, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_ERROR,
+        EV_RECEIPT,
+    },
     error::TwzError,
     fd::RawFd,
     io::{twz_rt_fd_pread, IoCtx, IoFlags},
@@ -358,7 +361,7 @@ fn udp_echo(target: &str, attempts: usize) -> std::io::Result<()> {
 /// Same reasoning as `net_test`'s `accept_within`: nothing imposes a timeout on a peer, so an
 /// unbounded block here would wedge the whole suite rather than fail one benchmark. Level
 /// triggered (no `EV_CLEAR`), so an already-pending connection or datagram still reports.
-fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
+fn wait_ready(fd: RawFd, filter: i16, timeout: Duration) -> bool {
     fn ev(ident: RawFd, filter: i16, flags: u16) -> kevent {
         kevent {
             ident: ident as usize,
@@ -387,7 +390,7 @@ fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
     // below is the only thing that consumes readiness.
     let n = call(
         kq,
-        &[ev(fd, EVFILT_READ, EV_ADD | EV_RECEIPT)],
+        &[ev(fd, filter, EV_ADD | EV_RECEIPT)],
         &mut out,
         Some(Duration::ZERO),
     );
@@ -395,6 +398,14 @@ fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
     let ready = registered && call(kq, &[], &mut out, Some(timeout)) > 0;
     twizzler_rt_abi::fd::twz_rt_fd_close(kq);
     ready
+}
+
+fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
+    wait_ready(fd, EVFILT_READ, timeout)
+}
+
+fn wait_writable(fd: RawFd, timeout: Duration) -> bool {
+    wait_ready(fd, EVFILT_WRITE, timeout)
 }
 
 /// Largest single echo chunk. Sized above the benchmark's block so a bulk transfer is not
@@ -442,7 +453,26 @@ fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
         if n == 0 {
             return Ok(());
         }
-        stream.write_all(&buf[..n])?;
+        // Same backpressure rule as the UDP path, but a stream cannot drop bytes: wait for
+        // writability and finish the write, and only give up when the peer has gone quiet for
+        // the whole idle bound.
+        let mut off = 0usize;
+        while off < n {
+            match stream.write(&buf[off..n]) {
+                Ok(0) => return Ok(()),
+                Ok(w) => off += w,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if !wait_writable(fd, idle) {
+                        return Err(std::io::Error::other(format!(
+                            "peer stopped reading for {:?} with {} bytes left",
+                            idle,
+                            n - off
+                        )));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -454,16 +484,105 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     let idle = Duration::from_millis(idle_ms);
     let sock = UdpSocket::bind(listen)?;
     let fd = sock.as_raw_fd();
+    if SPIN_PROBE {
+        match sock.set_nonblocking(true) {
+            Ok(()) => println!("UDPECHO nonblocking=ok"),
+            Err(e) => println!("UDPECHO nonblocking=FAILED {:?}", e),
+        }
+    }
     let mut buf = vec![0u8; 64 * 1024];
 
+    // Diagnostics: the failure here has survived three rounds of inference, so count what the
+    // loop actually does rather than deducing it from engine counters that instrument a
+    // different code path.
+    // Probe retired: it established (netprobe2) that datagrams are queued and reachable all along
+    // -- the peer echoed 18,902 of them and the bench reported 0 timeouts of 18,901 -- so the
+    // defect was never delivery, it was the readiness path failing to wake a parked waiter.
+    // Back on the kevent path, which is what the fix has to make work.
+    const SPIN_PROBE: bool = false;
+    let (mut recvs, mut sends, mut wb, mut wwfail, mut notready) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut spins = 0u64;
+    let mut report = std::time::Instant::now();
     loop {
+        if report.elapsed() >= Duration::from_secs(2) {
+            report = std::time::Instant::now();
+            println!(
+                "UDPECHO recv={} sent={} wouldblock={} waitwrite_timeout={} notready={}",
+                recvs, sends, wb, wwfail, notready
+            );
+        }
+        // PROBE (netprobe1): does the data reach the socket at all, or is only the readiness
+        // path broken? Spin on a non-blocking recv instead of parking in `wait_readable`. A
+        // recv is a socket call, so this also wakes our own poll thread -- which is the point:
+        // if datagrams appear now, they were queued and reachable all along and the kevent
+        // readiness path is what fails. If they still do not appear, the data never arrived.
+        if SPIN_PROBE {
+            let deadline = std::time::Instant::now() + idle;
+            let mut got = None;
+            while std::time::Instant::now() < deadline {
+                match sock.recv_from(&mut buf) {
+                    Ok(v) => {
+                        got = Some(v);
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        spins += 1;
+                        std::thread::yield_now();
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            let Some((n, from)) = got else {
+                println!(
+                    "UDPECHO exit-idle-spin recv={} sent={} spins={} wouldblock={}",
+                    recvs, sends, spins, wb
+                );
+                return Ok(());
+            };
+            recvs += 1;
+            let _ = sock.send_to(&buf[..n], from);
+            sends += 1;
+            continue;
+        }
         if !wait_readable(fd, idle) {
+            notready += 1;
+            println!(
+                "UDPECHO exit-idle recv={} sent={} wouldblock={} waitwrite_timeout={}",
+                recvs, sends, wb, wwfail
+            );
             // Expected exit: the benchmark finished and stopped sending.
             return Ok(());
         }
         // Readiness was reported, so this cannot block. `recv_from` rather than a raw read
         // because the reply needs the sender's address.
         let (n, from) = sock.recv_from(&mut buf)?;
-        sock.send_to(&buf[..n], from)?;
+        recvs += 1;
+        // `WouldBlock` here is backpressure, not failure. It became reachable when twz-rt
+        // started returning it instead of panicking on a full tx buffer; before that this line
+        // could only ever see a hard error, so a bare `?` was survivable. It is not now: the
+        // server exited on the first full buffer, the client went on sending to a dead
+        // endpoint, and the client's own tx then filled with nothing left to drain it -- which
+        // is what wedged the boot. An echo server must outlive its peer's backpressure.
+        let mut waited = false;
+        loop {
+            match sock.send_to(&buf[..n], from) {
+                Ok(_) => {
+                    sends += 1;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    wb += 1;
+                    // One bounded wait for writability, then drop the datagram. Dropping is
+                    // correct for UDP and is what the client's sequence check is there to
+                    // survive; dying is not.
+                    if waited || !wait_writable(fd, idle) {
+                        wwfail += 1;
+                        break;
+                    }
+                    waited = true;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 }

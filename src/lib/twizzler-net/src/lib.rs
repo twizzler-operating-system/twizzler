@@ -14,7 +14,7 @@ pub use server::{NetServer, NetServerRxToken, NetServerTxToken};
 
 pub type PacketNum = u32;
 
-pub const MAX_PACKETS_SET: usize = 8;
+pub const MAX_PACKETS_SET: usize = 16;
 pub const INVALID_PACKET: PacketNum = !0;
 
 #[derive(Clone, Copy, Debug)]

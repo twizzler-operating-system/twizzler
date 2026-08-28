@@ -279,8 +279,8 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     // from `MemoryTracker::wake` under `DeferredUnmappingOps::run_all`.
     //
     // The two points are exactly:
-    //  - `schedule_thread`, which returns early for an exiting thread without storing the
-    //    reference it was given (see `add_to_requeue`), so it can hold the last one;
+    //  - `schedule_thread`, which returns early for an exiting thread without storing the reference
+    //    it was given (see `add_to_requeue`), so it can hold the last one;
     //  - `do_add_to_requeue` handing back the reference for a thread already queued.
     //
     // Releasing there rather than every iteration keeps the acquisition count at what it was: one
@@ -1189,11 +1189,7 @@ pub mod syncbatch {
     }
 
     fn calls_pct(part: u64, whole: u64) -> u64 {
-        if whole == 0 {
-            0
-        } else {
-            part * 100 / whole
-        }
+        if whole == 0 { 0 } else { part * 100 / whole }
     }
 }
 

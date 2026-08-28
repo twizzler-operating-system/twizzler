@@ -215,7 +215,9 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         // Longer than an inline reply holds; re-ask through a slot.
         let buffer = self.buffer()?;
         let slot = self.take_slot();
-        let len = self.api.get_cwd(self.desc, slot.offset(), BUFFER_SLOT_SIZE)?;
+        let len = self
+            .api
+            .get_cwd(self.desc, slot.offset(), BUFFER_SLOT_SIZE)?;
         if len > BUFFER_SLOT_SIZE {
             return Err(ArgumentError::InvalidArgument.into());
         }
