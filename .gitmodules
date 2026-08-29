@@ -95,3 +95,9 @@
 	path = toolchain/src/mlibc
 	url = https://github.com/cosdet/mlibc-twiz.git
 	branch = twizzler
+[submodule "src/ports/rustix"]
+	path = src/ports/rustix
+	url = ../../twizzler-operating-system/rustix.git
+[submodule "src/ports/coreutils"]
+	path = src/ports/coreutils
+	url = ../../twizzler-operating-system/coreutils.git

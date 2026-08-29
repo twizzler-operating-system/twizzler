@@ -73,7 +73,12 @@ members = [
     #"src/bin/sqlite_test",
 
     #"src/bin/persistent-hashmap-test",
-    "src/bin/debug",
+    # Temporarily out of the build for the target_family = "unix" work: `debug` pulls gdbstub,
+    # whose `conn/impls/mod.rs` gates `mod unixstream;` on bare `unix` and so now tries to
+    # import `std::os::unix::net` -- unix-domain sockets, which twizzler does not have. It is
+    # a one-line fix but gdbstub has no port yet. Not in the initrd either (see "crate:debug"
+    # below), so nothing ships differently -- but this must come back before the flip is done.
+    # "src/bin/debug",
     "src/bin/trace",
 
     "src/bin/schedtest",
@@ -99,6 +104,9 @@ members = [
 
 exclude = [
     "toolchain/src/rust",
+    # A nested workspace: its crates use `edition.workspace = true` and friends, so without
+    # this they attach to *this* root, which has no [workspace.package] to inherit from.
+    "src/ports/coreutils",
     "src/ports/candle-test/candle",
     "src/ports/candle-test/gemm",
 ]
@@ -193,10 +201,6 @@ async-lock = "3.4"
 async-trait = "0.1.66"
 atomic = "0.6"
 backtracer_core = { git = "https://github.com/twizzler-operating-system/backtracer", branch = "twizzler" }
-base32 = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-base64 = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-basename = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-basenc = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 bitset-core = { version = "0.1.1", default-features = false }
 bitvec = "1.0.1"
 blake3 = { version = "1.8.2", default-features = false }
@@ -204,37 +208,25 @@ cache-srv = { path = "src/srv/cache-srv" }
 cargo = "0.88"
 cargo_metadata = "0.21"
 cargo_toml = "0.21"
-cat = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 cc = "1.0"
 cfg-if = "1.0"
 chacha20 = "0.9.1"
-cksum = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 clap = "4.5.45"
 clap_complete = "4.5.44"
 clap_mangen = "0.2.26"
 colog = "1.3.0"
 colored = "3.0"
-comm = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 core = "1.0.0"
-csplit = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 ctor = "0.6"
-cut = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 darling = "0.23"
-date = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 devmgr = { path = "src/lib/devmgr" }
 digest = "0.10.7"
 display-srv = { path = "src/srv/display-srv" }
 dynlink = { path = "src/lib/dynlink" }
-echo = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 elf = "0.8"
 embedded-io = "0.6"
 equivalent = "1.0.2"
-expand = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-factor = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-false = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 ferroc = { version = "=1.0.0-pre.4-twz", default-features = false }
-fmt = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-fold = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 fs_extra = "1.3.0"
 futures = "0.3.21"
 futures-util = "0.3.21"
@@ -255,19 +247,16 @@ indicatif = "0.17.1"
 intervaltree = "0.2.7"
 intrusive-collections = "0.9.6"
 itertools = { version = "0.14", default-features = false }
-join = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 lazy-init = "0.5.1"
 lazy_static = "1.5.0"
 libc = "*"
 limine = "0.5.0"
 linked_list_allocator = "0.10"
-ln = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 locate-cargo-manifest = "0.2.0"
 log = "0.4.27"
 logboi = { path = "src/lib/logboi" }
 logboi-srv = { path = "src/srv/logboi-srv" }
 lru = "0.12"
-ls = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 lwext4-rs = { path = "src/ports/lwext4-rs" }
 smallvec = "1.15"
 memoffset = "0.9.0"
@@ -280,16 +269,13 @@ naming-core = { path = "src/lib/naming/naming-core" }
 naming-srv = { path = "src/srv/naming-srv" }
 ndarray = "0.16"
 ndarray-stats = "0.6"
-nix = { version = "0.29.0", path = "src/ports/nix" }
-nl = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
+nix = { version = "0.31.2", path = "src/ports/nix" }
 noline = "0.5"
 num_enum = { version = "0.7", default-features = false }
-numfmt = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 nvme = { path = "src/lib/nvme-rs" }
 object = { version = "0.37", default-features = false }
 object-store = { path = "src/srv/pager-srv/object-store" }
 obliviate-core = { version = "0.1.0", git = "https://github.com/twizzler-operating-system/obliviate.git", branch = "nonstatic_lifetime_support" }
-od = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 once_cell = "1.19.0"
 ouroboros = "0.18.5"
 p256 = { version = "0.13.2", default-features = false }
@@ -302,12 +288,8 @@ petgraph = "0.8"
 phf = { version = "0.12", default-features = false }
 phf_codegen = "0.12"
 polling = "3.6.0"
-pr = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-printenv = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-printf = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 printf-compat = { version = "0.3", default-features = false }
 proc-macro2 = "1.0"
-ptx = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 quote = "1.0"
 rand_chacha = { version = "0.9.0", default-features = false }
 rand_core = { version = "0.9.3", default-features = false }
@@ -316,22 +298,17 @@ reqwest = "0.12.15"
 secgate = { path = "src/lib/secgate" }
 secgate-macros = { path = "src/lib/secgate/secgate-macros" }
 semver = "1.0"
-seq = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 serde = "1.0"
 serde_json = "1.0"
 sha2 = { version = "0.10.8", default-features = false }
-shuf = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 slab = "0.4"
 slabmalloc = "0.11.0"
-sleep = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 smallstr = "0.3"
-sort = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 spin = "0.9"
 stable-vec = { version = "0.4.1", default-features = false }
 static_assertions = "1.1.0"
 strum = "0.27"
 strum_macros = "0.27"
-sum = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 syn = "2.0"
 talc = { version = "4.4", default-features = false }
 tar = "0.4"
@@ -342,12 +319,9 @@ tick_counter = "0.4"
 tinyvec = "1.10"
 tokio = "^1.17.0"
 toml_edit = "0.22"
-tr = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 tracing = "0.1.41"
 tracing-log = "0.2"
 tracing-subscriber = "0.3.19"
-true = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-tsort = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 twizzler = { path = "src/lib/twizzler" }
 twizzler-derive = { path = "src/lib/twizzler/twizzler-derive" }
 twizzler-display = { path = "src/lib/twizzler-display" }
@@ -360,16 +334,13 @@ twizzler-runtime = { path = "src/rt" }
 twizzler-security = { path = "src/lib/twizzler-security", default-features = false }
 twizzler-types = { path = "src/abi/types" }
 twz-rt = { path = "src/rt/reference" }
-unexpand = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
-uniq = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 unittest-report = { path = "src/bin/unittest/unittest-report" }
-uucore = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
+uucore = { version = "0.10.0", path = "src/ports/coreutils/src/uucore" }
 virtio-drivers = "0.12"
 virtio-gpu = { path = "src/lib/virtio-gpu" }
 wait-timeout = "0.2"
 walkdir = "2.5.0"
 xmas-elf = "0.10.0"
-yes = { version = "0.0.30", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler" }
 zerocopy = "0.8"
 fatfs = "0.3"
 volatile = "0.6"
@@ -418,6 +389,11 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
 # Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
 getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
+# 0.4 arrives via rand 0.10 <- uu_shuf/uu_sort. Upstream 0.4 ends its backend chain in
+# compile_error! for unknown targets; this is 0.4.3 plus a twizzler arm over
+# twz_rt_get_random, the same shape as the 0.2/0.3 forks. Vendored rather than a
+# submodule only because the fork repo has no 0.4 branch yet.
+getrandom04 = { path = "src/ports/getrandom", package = "getrandom" }
 
 #polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 polling = { path = "src/ports/polling" }
@@ -425,6 +401,9 @@ polling = { path = "src/ports/polling" }
 async-io = { path = "src/ports/async-io" }
 #async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
 async-executor = { path = "src/ports/async-executor" }
+# The submodule existed but was never patched in, so the registry copy was used. Its `unix`
+# module is `std::os::unix::net` (unix-domain sockets), which twizzler does not have.
+async-net = { path = "src/ports/async-net" }
 parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 #parking_lot = { path = "src/ports/parking_lot" }
 # lock_api comes from the parking_lot repo
@@ -440,7 +419,11 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #candle-nn = { git = "https://github.com/dbittman/candle.git", branch = "dbittman" }
 #gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 
-nix = { version = "0.29.0", path = "src/ports/nix" }
+nix = { version = "0.31.2", path = "src/ports/nix" }
+# rustix 1.x for the twizzler target: the registry crate's libc backend is per-OS and has no
+# arm for an unknown unix. Reaches the target build via terminal_size (clap wrap_help + miette).
+# The `0.38` requirement from gix-* is host-only and stays on the registry crate.
+rustix = { path = "src/ports/rustix" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }

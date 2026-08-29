@@ -8,6 +8,7 @@ edition = "2021"
 default = ["feat_os_twizzler"]
 
 feat_os_twizzler = [
+    "b2sum",
     "base32",
     "base64",
     "basename",
@@ -15,26 +16,40 @@ feat_os_twizzler = [
     "cat",
     "cksum",
     "comm",
+    "cp",
     "csplit",
     "cut",
     "date",
+    "dir",
+    "dircolors",
+    "dirname",
     "echo",
     "expand",
+    "expr",
     "factor",
     "false",
     "fmt",
     "fold",
+    "join",
     "ln",
     "ls",
+    "md5sum",
+    "mkdir",
     "nl",
     "numfmt",
     "od",
     "paste",
+    "pathchk",
     "pr",
     "printenv",
     "printf",
     "ptx",
     "seq",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
     "shuf",
     "sleep",
     "sort",
@@ -44,48 +59,66 @@ feat_os_twizzler = [
     "tsort",
     "unexpand",
     "uniq",
+    "vdir",
+    "wc",
     "yes",
 ]
 
 [dependencies]
-base32 = { optional = true, version = "0.0.30", package = "uu_base32", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-base64 = { optional = true, version = "0.0.30", package = "uu_base64", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-basename = { optional = true, version = "0.0.30", package = "uu_basename", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-basenc = { optional = true, version = "0.0.30", package = "uu_basenc", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-cat = { optional = true, version = "0.0.30", package = "uu_cat", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-cksum = { optional = true, version = "0.0.30", package = "uu_cksum", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-comm = { optional = true, version = "0.0.30", package = "uu_comm", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-csplit = { optional = true, version = "0.0.30", package = "uu_csplit", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-cut = { optional = true, version = "0.0.30", package = "uu_cut", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-date = { optional = true, version = "0.0.30", package = "uu_date", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-echo = { optional = true, version = "0.0.30", package = "uu_echo", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-expand = { optional = true, version = "0.0.30", package = "uu_expand", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-factor = { optional = true, version = "0.0.30", package = "uu_factor", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-false = { optional = true, version = "0.0.30", package = "uu_false", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-fmt = { optional = true, version = "0.0.30", package = "uu_fmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-fold = { optional = true, version = "0.0.30", package = "uu_fold", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-join = { optional = true, version = "0.0.30", package = "uu_join", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-ln = { optional = true, version = "0.0.30", package = "uu_ln", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-ls = { optional = true, version = "0.0.30", package = "uu_ls", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-nl = { optional = true, version = "0.0.30", package = "uu_nl", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-numfmt = { optional = true, version = "0.0.30", package = "uu_numfmt", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-od = { optional = true, version = "0.0.30", package = "uu_od", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-paste = { optional = true, version = "0.0.30", package = "uu_paste", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-printenv = { optional = true, version = "0.0.30", package = "uu_printenv", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-printf = { optional = true, version = "0.0.30", package = "uu_printf", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-pr = { optional = true, version = "0.0.30", package = "uu_pr", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-ptx = { optional = true, version = "0.0.30", package = "uu_ptx", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-seq = { optional = true, version = "0.0.30", package = "uu_seq", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-shuf = { optional = true, version = "0.0.30", package = "uu_shuf", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-sleep = { optional = true, version = "0.0.30", package = "uu_sleep", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-sort = { optional = true, version = "0.0.30", package = "uu_sort", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-sum = { optional = true, version = "0.0.30", package = "uu_sum", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-tr = { optional = true, version = "0.0.30", package = "uu_tr", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-true = { optional = true, version = "0.0.30", package = "uu_true", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-tsort = { optional = true, version = "0.0.30", package = "uu_tsort", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-unexpand = { optional = true, version = "0.0.30", package = "uu_unexpand", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-uniq = { optional = true, version = "0.0.30", package = "uu_uniq", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
-yes = { optional = true, version = "0.0.30", package = "uu_yes", git = "https://github.com/twizzler-operating-system/coreutils.git", branch = "twizzler"}
+b2sum = { optional = true, version = "0.10.0", package = "uu_b2sum", path = "../../ports/coreutils/src/uu/b2sum" }
+base32 = { optional = true, version = "0.10.0", package = "uu_base32", path = "../../ports/coreutils/src/uu/base32" }
+base64 = { optional = true, version = "0.10.0", package = "uu_base64", path = "../../ports/coreutils/src/uu/base64" }
+basename = { optional = true, version = "0.10.0", package = "uu_basename", path = "../../ports/coreutils/src/uu/basename" }
+basenc = { optional = true, version = "0.10.0", package = "uu_basenc", path = "../../ports/coreutils/src/uu/basenc" }
+cat = { optional = true, version = "0.10.0", package = "uu_cat", path = "../../ports/coreutils/src/uu/cat" }
+cksum = { optional = true, version = "0.10.0", package = "uu_cksum", path = "../../ports/coreutils/src/uu/cksum" }
+comm = { optional = true, version = "0.10.0", package = "uu_comm", path = "../../ports/coreutils/src/uu/comm" }
+cp = { optional = true, version = "0.10.0", package = "uu_cp", path = "../../ports/coreutils/src/uu/cp" }
+csplit = { optional = true, version = "0.10.0", package = "uu_csplit", path = "../../ports/coreutils/src/uu/csplit" }
+cut = { optional = true, version = "0.10.0", package = "uu_cut", path = "../../ports/coreutils/src/uu/cut" }
+date = { optional = true, version = "0.10.0", package = "uu_date", path = "../../ports/coreutils/src/uu/date" }
+dir = { optional = true, version = "0.10.0", package = "uu_dir", path = "../../ports/coreutils/src/uu/dir" }
+dircolors = { optional = true, version = "0.10.0", package = "uu_dircolors", path = "../../ports/coreutils/src/uu/dircolors" }
+dirname = { optional = true, version = "0.10.0", package = "uu_dirname", path = "../../ports/coreutils/src/uu/dirname" }
+echo = { optional = true, version = "0.10.0", package = "uu_echo", path = "../../ports/coreutils/src/uu/echo" }
+expand = { optional = true, version = "0.10.0", package = "uu_expand", path = "../../ports/coreutils/src/uu/expand" }
+expr = { optional = true, version = "0.10.0", package = "uu_expr", path = "../../ports/coreutils/src/uu/expr" }
+factor = { optional = true, version = "0.10.0", package = "uu_factor", path = "../../ports/coreutils/src/uu/factor" }
+false = { optional = true, version = "0.10.0", package = "uu_false", path = "../../ports/coreutils/src/uu/false" }
+fmt = { optional = true, version = "0.10.0", package = "uu_fmt", path = "../../ports/coreutils/src/uu/fmt" }
+fold = { optional = true, version = "0.10.0", package = "uu_fold", path = "../../ports/coreutils/src/uu/fold" }
+join = { optional = true, version = "0.10.0", package = "uu_join", path = "../../ports/coreutils/src/uu/join" }
+ln = { optional = true, version = "0.10.0", package = "uu_ln", path = "../../ports/coreutils/src/uu/ln" }
+ls = { optional = true, version = "0.10.0", package = "uu_ls", path = "../../ports/coreutils/src/uu/ls" }
+md5sum = { optional = true, version = "0.10.0", package = "uu_md5sum", path = "../../ports/coreutils/src/uu/md5sum" }
+mkdir = { optional = true, version = "0.10.0", package = "uu_mkdir", path = "../../ports/coreutils/src/uu/mkdir" }
+nl = { optional = true, version = "0.10.0", package = "uu_nl", path = "../../ports/coreutils/src/uu/nl" }
+numfmt = { optional = true, version = "0.10.0", package = "uu_numfmt", path = "../../ports/coreutils/src/uu/numfmt" }
+od = { optional = true, version = "0.10.0", package = "uu_od", path = "../../ports/coreutils/src/uu/od" }
+paste = { optional = true, version = "0.10.0", package = "uu_paste", path = "../../ports/coreutils/src/uu/paste" }
+pathchk = { optional = true, version = "0.10.0", package = "uu_pathchk", path = "../../ports/coreutils/src/uu/pathchk" }
+pr = { optional = true, version = "0.10.0", package = "uu_pr", path = "../../ports/coreutils/src/uu/pr" }
+printenv = { optional = true, version = "0.10.0", package = "uu_printenv", path = "../../ports/coreutils/src/uu/printenv" }
+printf = { optional = true, version = "0.10.0", package = "uu_printf", path = "../../ports/coreutils/src/uu/printf" }
+ptx = { optional = true, version = "0.10.0", package = "uu_ptx", path = "../../ports/coreutils/src/uu/ptx" }
+seq = { optional = true, version = "0.10.0", package = "uu_seq", path = "../../ports/coreutils/src/uu/seq" }
+sha1sum = { optional = true, version = "0.10.0", package = "uu_sha1sum", path = "../../ports/coreutils/src/uu/sha1sum" }
+sha224sum = { optional = true, version = "0.10.0", package = "uu_sha224sum", path = "../../ports/coreutils/src/uu/sha224sum" }
+sha256sum = { optional = true, version = "0.10.0", package = "uu_sha256sum", path = "../../ports/coreutils/src/uu/sha256sum" }
+sha384sum = { optional = true, version = "0.10.0", package = "uu_sha384sum", path = "../../ports/coreutils/src/uu/sha384sum" }
+sha512sum = { optional = true, version = "0.10.0", package = "uu_sha512sum", path = "../../ports/coreutils/src/uu/sha512sum" }
+shuf = { optional = true, version = "0.10.0", package = "uu_shuf", path = "../../ports/coreutils/src/uu/shuf" }
+sleep = { optional = true, version = "0.10.0", package = "uu_sleep", path = "../../ports/coreutils/src/uu/sleep" }
+sort = { optional = true, version = "0.10.0", package = "uu_sort", path = "../../ports/coreutils/src/uu/sort" }
+sum = { optional = true, version = "0.10.0", package = "uu_sum", path = "../../ports/coreutils/src/uu/sum" }
+tr = { optional = true, version = "0.10.0", package = "uu_tr", path = "../../ports/coreutils/src/uu/tr" }
+true = { optional = true, version = "0.10.0", package = "uu_true", path = "../../ports/coreutils/src/uu/true" }
+tsort = { optional = true, version = "0.10.0", package = "uu_tsort", path = "../../ports/coreutils/src/uu/tsort" }
+unexpand = { optional = true, version = "0.10.0", package = "uu_unexpand", path = "../../ports/coreutils/src/uu/unexpand" }
+uniq = { optional = true, version = "0.10.0", package = "uu_uniq", path = "../../ports/coreutils/src/uu/uniq" }
+vdir = { optional = true, version = "0.10.0", package = "uu_vdir", path = "../../ports/coreutils/src/uu/vdir" }
+wc = { optional = true, version = "0.10.0", package = "uu_wc", path = "../../ports/coreutils/src/uu/wc" }
+yes = { optional = true, version = "0.10.0", package = "uu_yes", path = "../../ports/coreutils/src/uu/yes" }
 uucore = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }

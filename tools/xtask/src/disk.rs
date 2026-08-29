@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::Context as _;
 use ext4_lwext4::{mkfs, OpenFlags};
 
 use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOptions};
@@ -190,6 +191,28 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
     Ok(())
 }
 
+/// The names `uuhelper` answers to, read from its own manifest rather than duplicated here.
+///
+/// uuhelper is a multi-call binary: it picks the utility from the file stem of `argv[0]`, so each
+/// name is a symlink to the one executable. The set is exactly the `feat_os_twizzler` feature
+/// list, because that is what decides which `uu_*` crates are compiled in -- a name not in it
+/// resolves to a binary that then fails to dispatch, which is a worse failure than the name
+/// simply not existing.
+///
+/// Derived, not copied: a hardcoded list here drifted within minutes of being written, when
+/// uuhelper gained 15 utilities in another session. Reading the manifest makes that class of
+/// skew impossible rather than merely discouraged.
+fn uuhelper_utils(repo_root: &Path) -> anyhow::Result<Vec<String>> {
+    let manifest_path = repo_root.join("src/bin/uuhelper/Cargo.toml");
+    let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let feats = manifest
+        .features
+        .get("feat_os_twizzler")
+        .ok_or_else(|| anyhow::anyhow!("uuhelper has no feat_os_twizzler feature"))?;
+    Ok(feats.clone())
+}
+
 pub fn copy_twizzler_build(
     build: &TwizzlerCompilation,
     triple: &Triple,
@@ -263,6 +286,27 @@ pub fn copy_twizzler_build(
                 .unwrap();
             let mut rt_src = File::open(&cd.path)?;
             std::io::copy(&mut rt_src, &mut rt_file).unwrap();
+        }
+    }
+
+    // uuhelper's aliases are made here, at image build time, rather than by init on every boot.
+    // They describe the contents of the image, so they belong to whatever writes the image: as
+    // runtime work they cost a naming call per utility per boot and, being naming-server nodes
+    // rather than ext4 entries, they did not survive into the image at all -- every boot rebuilt
+    // state that was already known when the disk was made.
+    //
+    // Guarded on uuhelper actually being staged: a link to a binary that is not there resolves
+    // to a name that then fails to spawn, which is a worse failure than the name not existing.
+    if ext4.exists("/sysroot/pkg/twizzler/bin/uuhelper") {
+        for util in uuhelper_utils(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path())? {
+            let link = format!("/sysroot/pkg/twizzler/bin/{}", util);
+            if ext4.exists(&link) {
+                ext4.remove(&link).unwrap();
+            }
+            // The target is a *guest* path, not an image path: it is resolved on Twizzler, where
+            // the image's /sysroot is reached as /pkg. Same convention as the terminfo link above.
+            ext4.symlink("/pkg/twizzler/bin/uuhelper", &link)
+                .unwrap();
         }
     }
 

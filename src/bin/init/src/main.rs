@@ -299,7 +299,11 @@ fn main() {
     // which otherwise needs `-Clinker=<absolute path>` on every native compile.
     std::env::set_var(
         "PATH",
-        "/initrd:/pkg/rust/bin:/pkg/lld/bin:/pkg/llvm/bin:/pkg/binutils/bin:/pkg/python/bin",
+        // `/pkg/twizzler/bin` is where `xtask disk` stages the userspace build and, with it,
+        // uuhelper's coreutils aliases -- ext4 symlinks in the image rather than naming-server
+        // nodes rebuilt on every boot. `/initrd` stays first so a name shipped in the boot image
+        // still wins over the disk copy of the same program.
+        "/initrd:/pkg/twizzler/bin:/pkg/rust/bin:/pkg/lld/bin:/pkg/llvm/bin:/pkg/binutils/bin:/pkg/python/bin",
     );
     // Give `HOME` a definition rather than leaving it unset. The runtime reports "/" for
     // `NameRoot::Home` either way, so this changes no behaviour on its own -- it makes the value
@@ -370,19 +374,6 @@ fn main() {
         // Load and wait for tests to complete
         run_tests();
         std::env::remove_var("TWZ_TEST_MODE");
-    }
-
-    let utils = [
-        "ls", "cat", "base64", "base32", "basename", "basenc", "cksum", "comm", "csplit", "cut",
-        "date", "echo", "expand", "factor", "false", "fmt", "fold", "ln", "nl", "numfmt", "od",
-        "paste", "pr", "printenv", "printf", "ptx", "seq", "shuf", "sleep", "sort", "sum", "tr",
-        "true", "tsort", "unexpand", "uniq", "yes",
-    ];
-    for util in utils {
-        let link = format!("/initrd/{}", util);
-        tracing::debug!("creating link: {}", link);
-        let _ = std::os::twizzler::fs::symlink("/pkg/twizzler/bin/uuhelper", link)
-            .inspect_err(|e| tracing::warn!("failed to softlink util {}: {}", util, e));
     }
 
     println!("Hi, welcome to the basic twizzler test console.");
@@ -589,17 +580,25 @@ fn main() {
 ///   a guest that keeps running produces no exit status, so the run ends at whatever silence or
 ///   progress budget the harness applies instead of when the work finished.
 fn run_autostart(autostart: &str, autostart_args: &[String]) {
+    // Two fallbacks, in PATH order: the boot image first, then the on-disk program directory.
+    // The second is what finds uuhelper's coreutils aliases, which are ext4 symlinks in the image
+    // rather than naming-server nodes init used to make -- so `--autostart="ls /"` still works.
     let fallback = format!("/initrd/{}", autostart);
+    let disk_fallback = format!("/pkg/twizzler/bin/{}", autostart);
     let resolved = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), autostart)
         .map(|id| (autostart, id))
         .or_else(|_| {
             twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &fallback)
                 .map(|id| (fallback.as_str(), id))
+        })
+        .or_else(|_| {
+            twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &disk_fallback)
+                .map(|id| (disk_fallback.as_str(), id))
         });
     let Ok((path, id)) = resolved else {
         warn!(
-            "failed to find autostart program: tried {} and {}",
-            autostart, fallback
+            "failed to find autostart program: tried {}, {} and {}",
+            autostart, fallback, disk_fallback
         );
         return;
     };
