@@ -1367,3 +1367,72 @@ exited 0.
 - The gated runner was launched as `script &` inside a background call, so the tool reported
   "completed" for the *wrapper* while the script ran on undetached. A completion notice for the
   thing that launched the work is not a completion notice for the work.
+
+## Follow-up: stop keeping a second copy of `libtwz_rt.so` (2026-08-29, not started)
+
+Raised by the owner off the back of the libc collapse: since `toolchain/src/rust` now
+*references* the in-tree ports by path (`libc`, `libloading`, `rustix`) instead of carrying its
+own, twz_rt should probably work the same way rather than being copied into the sysroot.
+
+The premise checks out. There are **three** copies of twz_rt in play and the build already knows
+one of them is a lie:
+
+| copy | written by | state on 2026-08-29 00:0x |
+|---|---|---|
+| `target/dynamic/<triple>/<profile>/libtwz_rt.so` | every OS build | 08-29 00:03, md5 `d34398c3` |
+| `toolchain/install/sysroots/<triple>/lib/libtwz_rt.so` | `build.rs:593-611`, **release only**, under `only_runtime` (i.e. `bootstrap --step rt`) | 08-28 09:14, md5 `533bca7f` — **15h stale, different content** |
+| `/sysroot/lib/libtwz_rt.so` in the disk image | `disk.rs:276` | fresh, copied from the build output |
+
+`disk.rs:161` **deletes** the sysroot's copy while staging the image
+(`ext4.remove("/sysroot/lib/libtwz_rt.so")`) and `copy_twizzler_build` puts the freshly built one
+back. Its own comment says why: the staged copy "is written at toolchain-install time and goes
+stale as soon as the runtime is rebuilt". So the workaround for the stale artifact already exists
+downstream; what is missing is not having the stale artifact.
+
+Note the staleness is structural, not an accident of this tree: the sysroot copy is refreshed
+*only* by `--step rt`, and *only* in release, so an ordinary `build-all` — let alone a debug one —
+cannot update it. It is stale by construction between bootstraps.
+
+### Two candidate designs
+
+1. **Do not stage it at all.** Drop the copy in `build.rs`, drop the delete in `disk.rs`, let
+   `copy_twizzler_build` be the only producer. Removes an artifact whose sole remaining purpose is
+   to be deleted.
+2. **Symlink** the sysroot entry at the build output so it cannot go stale on the host.
+   `copy_sysroot`'s symlink branch would recreate it as a *dangling* link in the image (the target
+   is a host path), which is harmless only because `disk.rs:161` removes that entry anyway — so
+   this design quietly depends on the delete staying, which is the kind of coupling that breaks
+   later. Weaker than (1) unless (1) is impossible.
+
+Note the analogy to the libc collapse is not exact, and that is the whole difficulty: `libc` is a
+*Rust crate* and can be path-referenced from a manifest. `libtwz_rt.so` is a built shared object
+that has to physically exist in a `-L` search path at the moment something links against it.
+
+### The question that decides it — answer this first
+
+**Is the sysroot copy a build input for `ports rust`'s hosted std?** `ports/rust.rs:169-171` marks
+the native std with `--cfg twizzler_hosted` so that "`-ltwz_rt` can be emitted from libstd itself
+and a bare `rustc prog.rs` links without extra flags", and notes the *cross* std is built without
+it "(it builds libtwz_rt.so in the first place)". That reads as a deliberate ordering — cross std,
+then twz_rt from the OS tree, then hosted std, which links against it — and if the hosted-std link
+really does resolve `-ltwz_rt` out of `-L <sysroot>/lib`, then the sysroot copy is **not**
+vestigial and design (1) breaks `ports rust`. In that case the fix is to keep the copy but make it
+un-stale: refresh it from every runtime build rather than only from `--step rt`.
+
+Settle it by reading the actual link line for the hosted std in a completed `ports rust` log, not
+by reasoning from the comment.
+
+### What is already established
+
+- **No C port links `-ltwz_rt`** — `grep` over `ports/*.rs` finds it only in `rust.rs`.
+- **mlibc's dependency is load-time, not link-time.** The sysroot's `libc.so` has 39 undefined
+  `twz_rt_*` symbols, resolved by dynlink at load; the dynamic collection passes
+  `--allow-shlib-undefined` precisely so this links.
+- So the only *identified* consumer of a `libtwz_rt.so` on a `-L` path is an **on-target** rustc,
+  and that one reads the image copy, which is already fresh.
+
+### Why it was not done now
+
+`ports rust` (attempt 3) was running out of that exact sysroot at the time this was written, and
+this change edits what it reads. Do it when the toolchain has settled — and the completed run is
+also what answers the open question above.
