@@ -14,7 +14,29 @@ pub use server::{NetServer, NetServerRxToken, NetServerTxToken};
 
 pub type PacketNum = u32;
 
-pub const MAX_PACKETS_SET: usize = 16;
+/// Arm selector: use the non-blocking queue paths on the poll thread.
+///
+/// `false` restores the blocking `SubmissionFlags::empty()` submits that ran inside `Core::poll`
+/// while holding the engine core mutex. Kept as a flippable constant so the fix has a control on
+/// the same toolchain, and greppable in the source so an arm cannot be misattributed.
+pub const NONBLOCK_POLL_QUEUE: bool = true;
+
+/// Frames dropped, and completions deferred, because a ring was full. Never silent: a blocking
+/// submit that used to wedge the compartment becomes a drop, and a drop nobody counts is just a
+/// quieter bug.
+pub static POLLQ_TX_DROPPED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static POLLQ_COMP_DEFERRED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Report at power-of-two milestones only; this is on the per-frame path.
+pub fn note_pollq(counter: &core::sync::atomic::AtomicU64, what: &str) {
+    let n = counter.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        twizzler_abi::klog_println!("POLLQ {} reached {}", what, n);
+    }
+}
+
+pub const MAX_PACKETS_SET: usize = 8;
 pub const INVALID_PACKET: PacketNum = !0;
 
 #[derive(Clone, Copy, Debug)]

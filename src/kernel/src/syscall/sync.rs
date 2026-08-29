@@ -938,7 +938,11 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     }
 
     let start = trace_now();
-    let first = ops[0];
+    // `ops.first()`, not `ops[0]`: a zero-op call with no timeout reaches here (the `ops.is_empty()`
+    // early-out above is guarded on `timeout.is_some()`), and indexing panicked the kernel -- for a
+    // `log::trace!` that is compiled-in but almost never enabled. `select(0, NULL, NULL, NULL,
+    // NULL)` and a `poll`/`kevent` whose wait set came out empty all produce exactly that call.
+    let first = ops.first().copied();
 
     let mut ready_count = 0;
     let mut unsleeps = heapless::Vec::<_, 1024>::new();
@@ -1053,8 +1057,9 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     log::trace!(
         "ts[0]: {} {:7?} {:7?} {:7?}",
         match first {
-            ThreadSync::Sleep(_thread_sync_sleep, _) => "sleep",
-            ThreadSync::Wake(_thread_sync_wake, _) => " wake",
+            Some(ThreadSync::Sleep(_thread_sync_sleep, _)) => "sleep",
+            Some(ThreadSync::Wake(_thread_sync_wake, _)) => " wake",
+            None => "empty",
         },
         prep_done - start,
         woke_up - prep_done,

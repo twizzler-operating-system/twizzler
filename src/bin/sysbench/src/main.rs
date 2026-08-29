@@ -16,7 +16,10 @@ mod benches {
         net::{TcpStream, UdpSocket},
         os::fd::AsRawFd,
         process::{Child, Command},
-        sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -1114,13 +1117,24 @@ mod benches {
                 // thread costs the whole round.
                 let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
                 let t = target.clone();
+                // The helper is abandoned at the deadline, and the note below argues that costs
+                // "one bench row". That holds only if it *parks*. When `connect` returns quickly
+                // -- peer gone, port closed -- this is a `yield_now` spin that never exits, and
+                // four net benches can leave four of them burning cpu for the rest of the boot.
+                // The flag stops that case. It cannot reach a helper parked *inside* `connect`;
+                // that one still leaks, as before.
+                let give_up = Arc::new(AtomicBool::new(false));
+                let helper_stop = give_up.clone();
                 std::thread::spawn(move || {
                     loop {
+                        if helper_stop.load(Ordering::Relaxed) {
+                            return;
+                        }
                         if let Ok(s) = TcpStream::connect(&t) {
                             let _ = tx.send(s);
                             return;
                         }
-                        std::thread::yield_now();
+                        spin_backoff();
                     }
                 });
                 while Instant::now() < deadline {
@@ -1130,17 +1144,22 @@ mod benches {
                                 "net peer ({} {}) exited before listening: {:?}\n",
                                 mode, target, status
                             ));
+                            give_up.store(true, Ordering::Relaxed);
                             return None;
                         }
                         Ok(None) => {}
-                        Err(_) => return None,
+                        Err(_) => {
+                            give_up.store(true, Ordering::Relaxed);
+                            return None;
+                        }
                     }
                     if let Ok(s) = rx.try_recv() {
                         peer.tcp = Some(s);
                         return Some(peer);
                     }
-                    std::thread::yield_now();
+                    spin_backoff();
                 }
+                give_up.store(true, Ordering::Relaxed);
                 console(&format!(
                     "net peer ({} {}) never accepted a connection within {:?}\n",
                     mode, target, NET_PEER_TIMEOUT
@@ -1167,7 +1186,7 @@ mod benches {
                         peer.udp = Some(sock);
                         return Some(peer);
                     }
-                    std::thread::yield_now();
+                    spin_backoff();
                 }
                 console(&format!(
                     "net peer ({} {}) never answered a probe within {:?}\n",
@@ -1180,10 +1199,43 @@ mod benches {
         }
 
         /// Close our socket and reap the peer. TCP ends on EOF; UDP ends on its idle deadline.
+        ///
+        /// The reap is **bounded**, and this is the last unbounded blocking call in this file --
+        /// every other one was bounded after it wedged a boot (`net_write_within`,
+        /// `net_read_within`, `net_recv_within`, the connect deadline, the `try_wait` liveness
+        /// check). A plain `child.wait()` blocks forever when the peer has *already exited* but
+        /// its compartment is never reaped: COMP-CENSUS in the wedged boots shows
+        /// `net_test_peer` as `exited-but-held use_count 1`. Because Drop order runs `peer`
+        /// before `_mark`, a hang here emits neither the EVENTS line nor the end mark, which is
+        /// exactly the signature of all 14 net wedges observed across six sweep arms.
+        ///
+        /// The timeout **reports**. Bounding this silently would turn a loud whole-round wedge
+        /// into an invisible one, and the unreaped compartment is a real defect that still needs
+        /// its own fix -- this makes the test survive it, not hide it.
         fn shutdown(&mut self) {
             self.tcp.take();
             self.udp.take();
-            let _ = self.child.wait();
+            // Entry marker: three sites can hang between a bench's begin and its EVENTS line
+            // (peer setup, the timed body, and this teardown), and nothing in the log
+            // distinguished them -- which is why the wedge could be characterised but not
+            // localised. One line per peer makes the next occurrence say which.
+            console("SYSBENCH-NETPHASE teardown-begin\n");
+            let deadline = Instant::now() + NET_PEER_TIMEOUT;
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => {}
+                }
+                if Instant::now() >= deadline {
+                    console(&format!(
+                        "net peer did not reap within {:?}; abandoning it (compartment leak)\n",
+                        NET_PEER_TIMEOUT
+                    ));
+                    break;
+                }
+                spin_backoff();
+            }
+            console("SYSBENCH-NETPHASE teardown-end\n");
         }
     }
 
@@ -1195,13 +1247,25 @@ mod benches {
 
     /// Bounded datagram receive. Returns `None` on timeout rather than blocking, so a lost
     /// datagram costs one iteration instead of the suite.
+    /// Surrender the cpu instead of spinning on it.
+    ///
+    /// `yield_now` does not stop this thread being runnable, so a parent waiting on its peer keeps
+    /// four lanes of cpu busy while the peer's engine threads need cpu to drain frames already
+    /// queued for them. Measured: a starved peer's poll loop advanced 9 -> 10 iterations in twelve
+    /// seconds while its own main thread, which sleeps on a timer, ran normally throughout. A short
+    /// sleep is a real yield; it costs at most this much latency per retry and the waits it guards
+    /// are milliseconds-scale when the system is healthy.
+    fn spin_backoff() {
+        std::thread::sleep(Duration::from_micros(200));
+    }
+
     fn net_recv_within(fd: i32, buf: &mut [u8], timeout: Duration) -> Option<usize> {
         let deadline = Instant::now() + timeout;
         loop {
             let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
             match twizzler_rt_abi::io::twz_rt_fd_pread(fd, buf, &mut ctx) {
                 Ok(n) => return Some(n),
-                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) if Instant::now() < deadline => spin_backoff(),
                 Err(_) => return None,
             }
         }
@@ -1222,7 +1286,7 @@ mod benches {
             match twizzler_rt_abi::io::twz_rt_fd_pwrite(fd, &buf[done..], &mut ctx) {
                 Ok(0) => return done,
                 Ok(n) => done += n,
-                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) if Instant::now() < deadline => spin_backoff(),
                 Err(_) => return done,
             }
         }
@@ -1238,7 +1302,7 @@ mod benches {
             match twizzler_rt_abi::io::twz_rt_fd_pread(fd, &mut buf[done..], &mut ctx) {
                 Ok(0) => return done,
                 Ok(n) => done += n,
-                Err(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Err(_) if Instant::now() < deadline => spin_backoff(),
                 Err(_) => return done,
             }
         }
@@ -1317,17 +1381,43 @@ mod benches {
         let mut back = vec![0u8; CHUNK];
         b.bytes = (BLOCK * 2) as u64;
         let mut stalled = 0u64;
+        let mut peer_gone = false;
         b.iter(|| {
+            // Remaining iterations become ~free once the peer is gone, so libtest's chosen
+            // count completes quickly and the row is reported INVALID rather than wedging.
+            if peer_gone {
+                return;
+            }
             for _ in 0..(BLOCK / CHUNK) {
                 if net_write_within(fd, &out, NET_IO_TIMEOUT) != CHUNK
                     || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != CHUNK
                 {
                     stalled += 1;
+                    // A dead peer must be *detected*, not waited on. `EchoPeer::new` already
+                    // uses `try_wait` for exactly this during connect, because a peer that died
+                    // in startup used to hang the connect and wedge the boot; the timed body
+                    // never learned the same lesson. `serve_echo` exits after a 20s read-idle
+                    // even with the client still connected, so a stalled data path kills the
+                    // peer, and from then on every iteration burns 2x NET_IO_TIMEOUT. libtest
+                    // chooses the iteration count, so that cannot finish inside the 5m22s
+                    // harness window: the round wedges instead of reporting a bad number.
+                    // Report the status, not just the fact. A peer that reaches any return path
+                    // in `serve_echo` prints why; the failing ones print nothing at all, so the
+                    // only remaining evidence about how they died is the code they died with.
+                    if let Ok(Some(st)) = peer.child.try_wait() {
+                        if !peer_gone {
+                            console(&format!("net peer died: status {:?}\n", st));
+                        }
+                        peer_gone = true;
+                    }
                     return;
                 }
             }
             std::hint::black_box(back[0]);
         });
+        if peer_gone {
+            console("net_tcp_throughput: peer exited mid-benchmark -- NUMBER IS INVALID\n");
+        }
         if stalled > 0 {
             console(&format!(
                 "net_tcp_throughput: {} stalled iterations -- NUMBER IS INVALID\n",
@@ -1369,15 +1459,36 @@ mod benches {
         let mut back = vec![0u8; BLOCK];
         b.bytes = (BLOCK * 2) as u64;
         let mut stalled = 0u64;
+        let mut peer_gone = false;
         b.iter(|| {
+            if peer_gone {
+                return;
+            }
             if net_write_within(fd, &out, NET_IO_TIMEOUT) != BLOCK
                 || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != BLOCK
             {
                 stalled += 1;
+                // A dead peer must be *detected*, not waited on. `EchoPeer::new` already
+                // uses `try_wait` for exactly this during connect, because a peer that died
+                // in startup used to hang the connect and wedge the boot; the timed body
+                // never learned the same lesson. `serve_echo` exits after a 20s read-idle
+                // even with the client still connected, so a stalled data path kills the
+                // peer, and from then on every iteration burns 2x NET_IO_TIMEOUT. libtest
+                // chooses the iteration count, so that cannot finish inside the 5m22s
+                // harness window: the round wedges instead of reporting a bad number.
+                if let Ok(Some(st)) = peer.child.try_wait() {
+                    if !peer_gone {
+                        console(&format!("net peer died: status {:?}\n", st));
+                    }
+                    peer_gone = true;
+                }
                 return;
             }
             std::hint::black_box(back[0]);
         });
+        if peer_gone {
+            console("net_tcp_throughput_pipelined: peer exited mid-benchmark -- NUMBER IS INVALID\n");
+        }
         if stalled > 0 {
             console(&format!(
                 "net_tcp_throughput_pipelined: {} stalled iterations -- NUMBER IS INVALID\n",

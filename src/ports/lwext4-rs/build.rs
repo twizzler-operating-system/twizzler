@@ -8,7 +8,17 @@ fn main() {
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
-    let cflags = format!("{} -DCONFIG_USE_DEFAULT_CFG -g", cflags);
+    // A/B ARM: lwext4's block cache is CONFIG_BLOCK_DEV_CACHE_SIZE blocks, default 1024 (4 MiB at
+    // a 4 KiB block). `ext4_block_cache_flush` only walks the dirty list and never evicts clean
+    // buffers, so metadata should stay cached -- and measured on 08-26 it did, with block reads
+    // plateauing at 57,545 and stopping. From 08-27 they never plateau, which is the signature of
+    // a working set crossing a fixed bound. Set here rather than via the CFLAGS environment so the
+    // arm is visible in `git diff`; an env-var arm is invisible to every mtime and fingerprint
+    // check we have.
+    let cflags = format!(
+        "{} -DCONFIG_USE_DEFAULT_CFG -DCONFIG_BLOCK_DEV_CACHE_SIZE=1024 -g",
+        cflags
+    );
 
     //let _ = std::fs::remove_dir_all(&cmake_build);
 

@@ -522,6 +522,23 @@ fn handle_sync_region(
     }
 }
 
+/// Whether `ObjectCreate` unlinks the id before creating it.
+///
+/// It used to, unconditionally, to guarantee a create lands on a clean object. For a *fresh* id --
+/// which is what the kernel sends almost every time -- that unlink is a global-fs-lock acquisition
+/// and a full directory lookup whose only possible outcome is `NotFound`, i.e. one of the six store
+/// round trips per create doing no work but paying for block reads. `create` now implies `O_TRUNC`
+/// (see `Ext4Store::do_get_object_as_file`), so the clean-object guarantee comes from the lookup
+/// the create was already doing.
+///
+/// Kept as a constant rather than deleted so the two can be A/B'd from one build: this sits on the
+/// path of a 2x regression that is not yet explained, and being able to put the probe back without
+/// a source change is worth one `if`.
+const CREATE_PROBE_DELETE: bool = false;
+
+/// Restore the redundant post-delete flush. See the note at its site.
+const DEL_EXTRA_FLUSH: bool = false;
+
 pub fn handle_kernel_request(
     ctx: &'static PagerContext,
     qid: u32,
@@ -542,8 +559,13 @@ pub fn handle_kernel_request(
                 work.phase("del:delete");
                 match po.delete_object(obj_id.raw()) {
                     Ok(_) => {
-                        work.phase("del:flush");
-                        let _ = po.flush();
+                        // `delete_object` flushes internally after `remove_file`, so this second
+                        // flush re-took the global fs lock for an already-empty dirty list.
+                        // Measured at 891us mean, 6.0% of `pager_create_delete_persistent`.
+                        if DEL_EXTRA_FLUSH {
+                            work.phase("del:flush");
+                            let _ = po.flush();
+                        }
                         KernelCompletionData::Okay
                     }
                     Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
@@ -553,8 +575,10 @@ pub fn handle_kernel_request(
         },
         KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
             Ok(po) => {
-                work.phase("create:delete-existing");
-                let _ = po.delete_object(id.raw());
+                if CREATE_PROBE_DELETE {
+                    work.phase("create:delete-existing");
+                    let _ = po.delete_object(id.raw());
+                }
                 work.phase("create:create");
                 match po.create_object(id.raw()) {
                     Ok(_) => {

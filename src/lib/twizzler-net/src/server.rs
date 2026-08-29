@@ -17,6 +17,14 @@ pub struct NetServer {
     client_rx: Pair<ServerMsg, ClientRet>,
     pending_client_tx: PacketSet,
     pending_client_id: Option<u32>,
+    /// We owe the client a completion that the ring had no space for.
+    ///
+    /// Same MPSC caveat as `NetClient::comp_deferred`: one flag, a queue that permits many
+    /// producers, and correctness resting on all of them being serialised. Here the lock is
+    /// net-srv's per-client `client.ep` -- held by the per-client thread, by `deliver_local` on
+    /// behalf of every *other* client, and by `device_thread`. **A path that reaches `inject` or
+    /// `receive` without `ep` breaks this flag.**
+    comp_deferred: bool,
 }
 
 impl NetServer {
@@ -30,6 +38,12 @@ impl NetServer {
 
     pub fn completions_waiter(&self) -> ThreadSyncSleep {
         self.client_rx.comp_waiters()
+    }
+
+    /// Space in the client_tx completion ring, and only while we owe one. See
+    /// `Pair::comp_space_waiter` for why this is conditional.
+    pub fn completion_space_waiter(&self) -> Option<ThreadSyncSleep> {
+        self.comp_deferred.then(|| self.client_tx.comp_space_waiter())
     }
 
     pub fn has_pending_msg_from_client(&self) -> bool {
@@ -63,6 +77,7 @@ impl NetServer {
             client_rx: rx,
             pending_client_id: None,
             pending_client_tx: PacketSet::new(),
+            comp_deferred: false,
         })
     }
 }
@@ -109,11 +124,19 @@ impl NetServer {
     /// one-token-at-a-time `TxToken::consume` route through here, so there is a single submission
     /// site to reason about rather than two that can drift.
     fn submit_rx(&self, packets: &[PacketNum]) {
-        self.client_rx
-            .send_packets(packets, |s| ServerMsg {
-                kind: ServerMsgKind::Tx(s),
-            })
-            .expect("failed to send packets");
+        let msg = |s| ServerMsg {
+            kind: ServerMsgKind::Tx(s),
+        };
+        if !crate::NONBLOCK_POLL_QUEUE {
+            self.client_rx.send_packets(packets, msg).expect("send packets");
+            return;
+        }
+        // Same rule as `inject`'s short return, applied to the ring rather than the pool: a
+        // backed-up client is dropped, never waited on. This runs under net-srv's `handles` lock,
+        // so blocking here stalls the whole switch, not just one client.
+        if self.client_rx.try_send_packets(packets, msg).is_err() {
+            crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx dropped");
+        }
     }
 }
 
@@ -156,7 +179,14 @@ impl smoltcp::phy::Device for NetServer {
         }
 
         if let Some(pending_id) = self.pending_client_id.take() {
-            self.client_tx.complete(pending_id, ServerRet {});
+            if self.client_tx.try_complete(pending_id, ServerRet {}) {
+                self.comp_deferred = false;
+            } else {
+                self.comp_deferred = true;
+                self.pending_client_id = Some(pending_id);
+                crate::note_pollq(&crate::POLLQ_COMP_DEFERRED, "server completion deferred");
+                return None;
+            }
         }
 
         let (id, msg) = self.client_tx.recv_msg()?;

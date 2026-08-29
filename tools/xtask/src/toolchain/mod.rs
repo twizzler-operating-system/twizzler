@@ -262,6 +262,14 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     let mut sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
     // This is a bit of a cursed linker line, but it's needed to work around some limitations in
+    // The unwinder lives only in libunwind.so: rustc's version script keeps the in-tree
+    // unwinder's symbols local, libstd exports just _Unwind_Resume, and libc exports none. The
+    // monitor imports five _Unwind_* symbols, so without a DT_NEEDED on libunwind nothing in its
+    // dependency graph defines the other four and dynlink fails the relocation at boot
+    // ("needed symbol _Unwind_GetIP not found"). `--allow-shlib-undefined` below means the link
+    // succeeds anyway, so this only shows up at runtime. Trailing args land after rustc's own
+    // --as-needed, which is what makes the record stick -- same pairing as set_static() and
+    // toolchain/ports/rust.rs.
     // rust's linkage support.
     let extra_rustflags = if target.arch == Arch::X86_64 {
         "-C target-feature=+sse3,+avx,+avx2,+fma -C target-cpu=x86-64-v3"
@@ -269,7 +277,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
         ""
     };
     let args = format!(
-        "-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr {}",
+        "-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind {}",
         extra_rustflags,
         sysroot_path.display(),
         sysroot_path.display(),

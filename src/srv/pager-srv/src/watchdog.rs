@@ -38,11 +38,105 @@ struct Entry {
     req: RequestFromKernel,
     start: Instant,
     phase: &'static str,
+    /// When the current phase began, so each phase can be charged its own duration.
+    phase_start: Instant,
     reported: Option<Instant>,
 }
 
 static ACTIVE: Mutex<BTreeMap<u64, Entry>> = Mutex::new(BTreeMap::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Per-phase time, keyed by the phase name a work item was *leaving*.
+///
+/// The phase markers already bracket every store call on the create, delete and sync paths, so
+/// timing them costs one `Instant::now()` per marker and needs no new instrumentation sites. This
+/// is deliberately separate from the watchdog's stall reporting: that fires only when something
+/// wedges, and says nothing about where a request that completes normally spent its time.
+static PHASE_STATS: Mutex<BTreeMap<&'static str, PhaseAcc>> = Mutex::new(BTreeMap::new());
+
+#[derive(Default, Clone, Copy)]
+struct PhaseAcc {
+    n: u64,
+    sum_ns: u64,
+    max_ns: u64,
+    /// Watermarks for the delta report; see [`phase_delta_report`].
+    last_n: u64,
+    last_sum_ns: u64,
+}
+
+fn record_phase(phase: &'static str, ns: u64) {
+    let mut stats = PHASE_STATS.lock().unwrap_or_else(|e| e.into_inner());
+    let acc = stats.entry(phase).or_default();
+    acc.n += 1;
+    acc.sum_ns += ns;
+    acc.max_ns = acc.max_ns.max(ns);
+}
+
+/// Phase time accrued since the last call, omitting phases that did not move.
+///
+/// Deltas rather than cumulative totals, for two reasons. Attribution: consecutive ticks bracket
+/// whatever ran between them, so a tick pair spanning one `SYSBENCH-MARK` charges that bench.
+/// Cost: an idle interval prints nothing and a busy one prints only the handful of phases actually
+/// running, instead of ~18 every time. A console line costs on the order of a millisecond of
+/// emulated UART, so a chatty diagnostic inside a measured window inflates the number it exists to
+/// explain.
+pub fn phase_delta_report() -> Option<String> {
+    let mut stats = PHASE_STATS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rows: Vec<(&'static str, u64, u64, u64)> = Vec::new();
+    for (name, acc) in stats.iter_mut() {
+        let dn = acc.n - acc.last_n;
+        let dsum = acc.sum_ns - acc.last_sum_ns;
+        if dn == 0 {
+            continue;
+        }
+        acc.last_n = acc.n;
+        acc.last_sum_ns = acc.sum_ns;
+        rows.push((name, dn, dsum, acc.max_ns));
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    rows.sort_by_key(|r| core::cmp::Reverse(r.2));
+    Some(
+        rows.iter()
+            .map(|(name, dn, dsum, max)| {
+                format!(
+                    "{} n={} total={}us mean={}us maxever={}us",
+                    name,
+                    dn,
+                    dsum / 1000,
+                    dsum / (*dn).max(1) / 1000,
+                    max / 1000,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
+/// Per-phase totals, ordered by total time spent, which is the order that answers "where did the
+/// request go". Mean alone hides a phase that is cheap per call and runs on every request.
+pub fn phase_report() -> String {
+    let stats = PHASE_STATS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rows: Vec<_> = stats.iter().map(|(k, v)| (*k, *v)).collect();
+    rows.sort_by_key(|(_, v)| core::cmp::Reverse(v.sum_ns));
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+    rows.iter()
+        .map(|(name, acc)| {
+            format!(
+                "{} n={} total={}us mean={}us max={}us",
+                name,
+                acc.n,
+                acc.sum_ns / 1000,
+                acc.sum_ns / acc.n.max(1) / 1000,
+                acc.max_ns / 1000,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 /// A registered unit of work. Deregisters on drop, so an early return cannot leave a phantom entry
 /// behind that the sampler would report forever.
@@ -51,13 +145,25 @@ pub struct Work {
 }
 
 impl Work {
-    /// Record that this work item has reached `phase`, which the sampler prints if it wedges here.
+    /// Record that this work item has reached `phase`, which the sampler prints if it wedges here,
+    /// and charge the elapsed time to the phase being left.
+    ///
+    /// `PHASE_STATS` is taken *after* `ACTIVE` is released rather than nested inside it: the two
+    /// locks are then never held together, so no ordering discipline is needed between them.
     pub fn phase(&self, phase: &'static str) {
-        with_active(|active| {
-            if let Some(entry) = active.get_mut(&self.id) {
+        let now = Instant::now();
+        let left = with_active(|active| {
+            active.get_mut(&self.id).map(|entry| {
+                let prev = entry.phase;
+                let elapsed = now.saturating_duration_since(entry.phase_start);
                 entry.phase = phase;
-            }
+                entry.phase_start = now;
+                (prev, elapsed)
+            })
         });
+        if let Some((prev, elapsed)) = left {
+            record_phase(prev, elapsed.as_nanos() as u64);
+        }
     }
 }
 
@@ -67,6 +173,12 @@ impl Drop for Work {
         // Only interesting if the sampler already complained about it: that distinguishes work that
         // was merely slow from work that never came back.
         if let Some(entry) = finished {
+            // The last phase has no successor marker to close it, so it is charged here; without
+            // this every request's final phase would be missing from the totals.
+            record_phase(
+                entry.phase,
+                entry.phase_start.elapsed().as_nanos() as u64,
+            );
             if entry.reported.is_some() {
                 tracing::warn!(
                     "pager watchdog: {} finished qid {} after {}ms in phase '{}': {:?}",
@@ -94,6 +206,7 @@ pub fn begin(owner: &'static str, qid: u32, req: RequestFromKernel) -> Work {
                 req,
                 start: Instant::now(),
                 phase: "start",
+                phase_start: Instant::now(),
                 reported: None,
             },
         );
@@ -119,14 +232,33 @@ pub fn start() {
 /// it is not folded into the stall report.
 const QUEUE_DIAG_EVERY: Duration = Duration::from_secs(20);
 
+/// Cadence for the cumulative phase dump.
+///
+/// `DispatchStats::report` also prints one, but it fires on powers of two of the transit count, so
+/// late in a boot -- which is when the benchmarks run -- reports are thousands of requests apart
+/// and cannot be aligned to any single bench. A fixed interval gives a series whose consecutive
+/// differences attribute time to whatever ran between them, against the `SYSBENCH-MARK` lines in
+/// the same log.
+const PHASE_REPORT_EVERY: Duration = Duration::from_secs(2);
+
 fn sampler_main() {
     let mut last_diag = Instant::now();
+    let mut last_phase = Instant::now();
     loop {
         std::thread::sleep(SAMPLE_EVERY);
         let now = Instant::now();
         if now.duration_since(last_diag) >= QUEUE_DIAG_EVERY {
             last_diag = now;
             crate::nvme::queue_diag();
+        }
+        // Before the `try_lock`/`due` early-outs below: those skip most rounds, and a dump that
+        // only appeared when something was already stuck would be missing for every healthy boot,
+        // which is exactly the population being measured.
+        if now.duration_since(last_phase) >= PHASE_REPORT_EVERY {
+            last_phase = now;
+            if let Some(delta) = phase_delta_report() {
+                tracing::info!("PHASETICK: {}", delta);
+            }
         }
 
         // try_lock, not lock: if some future change ever holds the registry longer, the sampler

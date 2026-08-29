@@ -220,7 +220,26 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         return Some((slot, id));
     }
 
-    if std::env::var("MONDEBUG").is_ok() {
+    // MONDEBUG is a debug knob, but this runs inside the allocator's OOM path. `std::env::var`
+    // allocates and reads a thread-local, and this can run before the runtime has set up TLS --
+    // which is exactly the "avoid calling into std" case this module's doc comment describes.
+    // With no thread pointer yet, `twz_rt_tls_get_addr` loads a garbage %fs:0 and #GPs, taking
+    // out init before it starts a single server. Consult the variable at most once, and only
+    // after the runtime is READY; before that, treat it as off.
+    const MONDEBUG_UNKNOWN: usize = 0;
+    const MONDEBUG_OFF: usize = 1;
+    const MONDEBUG_ON: usize = 2;
+    static MONDEBUG: AtomicUsize = AtomicUsize::new(MONDEBUG_UNKNOWN);
+    let mondebug = match MONDEBUG.load(Ordering::Relaxed) {
+        MONDEBUG_ON => true,
+        MONDEBUG_UNKNOWN if OUR_RUNTIME.state().contains(RuntimeState::READY) => {
+            let on = std::env::var("MONDEBUG").is_ok();
+            MONDEBUG.store(if on { MONDEBUG_ON } else { MONDEBUG_OFF }, Ordering::Relaxed);
+            on
+        }
+        _ => false,
+    };
+    if mondebug {
         twizzler_abi::klog_println!("created object {} for allocation", id,)
     }
 

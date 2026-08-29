@@ -1224,7 +1224,53 @@ const STUCK_EXIT_SCANS: u32 = 20;
 /// enumerate a workload. Overflow is reported rather than dropped.
 const HANG_TABLE_MAX_THREADS: usize = 64;
 
-const HANG_REPORT_SECS: u64 = 25;
+/// Set under the *lifetime of the thing being diagnosed*, not just under "longer than a legitimate
+/// wait". At 25s this could never fire for a sysbench net peer, which gives up and exits at 20s --
+/// so the one detector that asks exactly the right question (has this thread's `sync_sleep_gen`
+/// stopped moving while it is `Sleeping`?) was structurally blind to the case it was needed for.
+/// 6s leaves room for the two scans a report requires inside that window.
+///
+/// Service threads parked on a condvar now cross this in every boot. That is affordable because
+/// what each one costs is a single line (see `StuckRecord`), not a table: the expensive table is
+/// still rationed by [`MAX_HANG_REPORTS`].
+const HANG_REPORT_SECS: u64 = 6;
+
+/// What a newly-stuck thread reports, gathered under `with_all_threads`' spinlock and printed
+/// after it drops.
+///
+/// Plain `Copy` scalars rather than a `ThreadRef` on purpose: cloning references here would put
+/// their drops -- `IdCounter::release`, a *sleeping* mutex -- on a path that has just walked the
+/// thread list, and printing under the lock would take the console lock beneath a spinlock.
+///
+/// These fields are chosen to answer one question: parked, or runnable and not run? `Sleeping` with
+/// `sync`/`timed` set is parked on a wait nobody has satisfied; `sched` set is on a run queue and
+/// not getting cpu.
+#[derive(Clone, Copy)]
+struct StuckRecord {
+    id: u64,
+    objid: ObjID,
+    /// The compartment. Without it a record cannot be attributed to the failing peer, which is the
+    /// only reason to be reading these at all -- the rationed table carries the name, but its rows
+    /// come back nameless far more often than not.
+    sctx: ObjID,
+    state: ExecutionState,
+    /// Executing on a cpu at scan time. With `sched`, this is the discriminator the whole change
+    /// is for: `sched` set and `active` clear over the window is ready-but-never-run.
+    active: bool,
+    ip: u64,
+    sync: bool,
+    timed: bool,
+    sched: bool,
+    requeue: bool,
+    condvar: bool,
+    mutex: bool,
+    pager: bool,
+    memwait: bool,
+}
+
+/// Newly-stuck threads recorded per scan. One line each, and a thread only earns one per episode
+/// (see [`MAX_THREAD_HANG_REPORTS`]), so this bounds a scan rather than the boot.
+const HANG_STUCK_MAX: usize = 32;
 /// Tables one thread may cause per stuck episode, where an episode ends when the thread moves.
 ///
 /// A thread parked legitimately never moves, so it spends this much and then goes quiet for the
@@ -1240,6 +1286,8 @@ const MAX_THREAD_HANG_REPORTS: u32 = 1;
 const MAX_HANG_REPORTS: u32 = 16;
 
 static HANG_REPORTS: AtomicU32 = AtomicU32::new(0);
+/// Passes of [check_system_hang], for the heartbeat that makes its silence readable.
+static HANG_SCANS: AtomicU64 = AtomicU64::new(0);
 
 /// Print where every thread is parked, once any one of them has been in the same thread-sync sleep
 /// for [`HANG_REPORT_SECS`].
@@ -1261,15 +1309,30 @@ pub fn check_system_hang() {
     let now = crate::instant::Instant::now().into_time_span().as_nanos() as u64 + 1;
     let mut any_stuck = false;
     let mut stuck_id = None;
+    let mut stuck: heapless::Vec<StuckRecord, HANG_STUCK_MAX> = heapless::Vec::new();
+    let mut stuck_unrecorded = 0usize;
+    let mut examined = 0usize;
     with_all_threads(|at| {
         for thread in at.iter() {
             if thread.is_idle_thread() {
                 continue;
             }
+            examined += 1;
             let sleep_gen = thread.sync_sleep_gen();
-            if thread.hang_gen.swap(sleep_gen, Ordering::Relaxed) != sleep_gen
-                || thread.get_state() != ExecutionState::Sleeping
-            {
+            // Not `state != Sleeping`, which is what this asked before. `Running` in this kernel
+            // covers *runnable and sitting on a run queue* as well as on-cpu, so requiring
+            // `Sleeping` made the scan structurally blind to a thread that is ready and simply
+            // never scheduled -- one of the two hypotheses it exists to tell apart. It answered
+            // "none of those" by construction, which reads as evidence and is not.
+            //
+            // On-cpu is progress by definition, and an exited thread is done; everything else stays
+            // in the window and is classified by the flags on its line rather than filtered out
+            // here. The cost is real: a pure-compute thread never advances `sync_sleep_gen` and is
+            // off-cpu whenever a scan misses its quantum, so it can trip this. Read the new arm by
+            // its `active`/`sched` flags, never by counting it.
+            let progressing =
+                thread.is_active_running() || thread.get_state() == ExecutionState::Exited;
+            if thread.hang_gen.swap(sleep_gen, Ordering::Relaxed) != sleep_gen || progressing {
                 thread.hang_since.store(now, Ordering::Relaxed);
                 // Having moved is what earns a thread its voice back. A thread that ran and then
                 // stopped is the one worth a table; a thread that has been parked since boot has
@@ -1302,10 +1365,86 @@ pub fn check_system_hang() {
                 // wrong threads entirely.
                 stuck_id = Some((thread.id(), thread.objid()));
                 any_stuck = true;
+                let rec = StuckRecord {
+                    id: thread.id(),
+                    objid: thread.objid(),
+                    sctx: thread.active_sctx_id(),
+                    state: thread.get_state(),
+                    active: thread.is_active_running(),
+                    ip: thread.read_ip(),
+                    sync: thread.sync_links.is_linked(),
+                    timed: thread.has_timed_wait(),
+                    sched: thread.sched_link.is_linked(),
+                    requeue: thread.requeue_link.is_linked(),
+                    condvar: thread.condvar_link.is_linked(),
+                    mutex: thread.mutex_link.is_linked(),
+                    pager: thread.pager_link.is_linked(),
+                    memwait: thread.memwait_link.is_linked(),
+                };
+                if stuck.push(rec).is_err() {
+                    stuck_unrecorded += 1;
+                }
             }
         }
     });
-    if !any_stuck || HANG_REPORTS.fetch_add(1, Ordering::Relaxed) >= MAX_HANG_REPORTS {
+    // Ahead of the budget check, and never rationed by it. The table below is capped at
+    // [`MAX_HANG_REPORTS`] for the whole boot, and the threads that cross the threshold *first* are
+    // the ones that park early and legitimately -- so on a long boot the budget is spent before
+    // anything interesting happens, and the detector goes quiet in a way indistinguishable from
+    // "nothing was stuck". These lines cannot be exhausted that way: one per thread per episode.
+    for rec in &stuck {
+        emerglogln!(
+            "[hang] thread {} ({}) sctx {} unmoved for {}s: {:?} active {} ip {:x} | sync {} timed {} sched {} requeue {} condvar {} mutex {} pager {} memwait {}",
+            rec.id,
+            rec.objid,
+            rec.sctx,
+            HANG_REPORT_SECS,
+            rec.state,
+            rec.active,
+            rec.ip,
+            rec.sync,
+            rec.timed,
+            rec.sched,
+            rec.requeue,
+            rec.condvar,
+            rec.mutex,
+            rec.pager,
+            rec.memwait,
+        );
+    }
+    if stuck_unrecorded > 0 {
+        emerglogln!(
+            "[hang] ... and {} further threads this scan could not record (cap {})",
+            stuck_unrecorded,
+            HANG_STUCK_MAX
+        );
+    }
+    // A scan that finds nothing and a scan that never ran are both silent, and the difference is
+    // the whole result when the question is "was this compartment sampled?". This runs from the
+    // bsp idle loop, so during a benchmark it may genuinely not run for long stretches -- say so
+    // periodically rather than leaving the reader to guess which kind of silence they have.
+    let scans = HANG_SCANS.fetch_add(1, Ordering::Relaxed) + 1;
+    if scans == 1 || scans % 16 == 0 {
+        emerglogln!(
+            "[hang] scan #{}: {} threads examined, {} newly stuck",
+            scans,
+            examined,
+            stuck.len()
+        );
+    }
+    if !any_stuck {
+        return;
+    }
+    // Say so once, rather than returning silently: with the budget gone, no table and no wedge look
+    // identical in a transcript.
+    let spent = HANG_REPORTS.fetch_add(1, Ordering::Relaxed);
+    if spent >= MAX_HANG_REPORTS {
+        if spent == MAX_HANG_REPORTS {
+            emerglogln!(
+                "[hang] wait-table budget exhausted ({} printed); further reports are the lines above only",
+                MAX_HANG_REPORTS
+            );
+        }
         return;
     }
     let (stuck_tid, stuck_objid) = stuck_id.unwrap_or((0, 0.into()));

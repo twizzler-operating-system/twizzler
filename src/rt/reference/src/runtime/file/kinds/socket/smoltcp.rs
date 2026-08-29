@@ -111,6 +111,12 @@ impl SmolTcpListener {
     }
 
     pub fn waitpoint(&self, kind: wait_kind) -> Result<(Arc<AtomicU64>, u64), TwzError> {
+        // Engine liveness, reported from the *caller's* thread rather than from the engine's.
+        // Every previous readout rode on a line the poll thread had to emit, so a poll thread that
+        // stopped also stopped reporting that it had stopped -- four instruments in a row blinded
+        // the same way. A listener's waitpoint is driven by the waiting thread, which is the one
+        // still demonstrably running when this fails.
+        super::engine::report_engine_liveness();
         // See SmolTcpStream::waitpoint. Refreshing the group rather than one socket is the point:
         // readiness here is "any of the backlog has a connection for accept()", and which socket
         // that is changes on every accept.
@@ -603,7 +609,6 @@ impl Drop for TcpStreamInner {
             let before = sock.state();
             sock.close();
             let after = sock.state();
-            super::engine::note_tcp_drop(before);
             (
                 lp.map(|e| e.port).unwrap_or(0),
                 rep.map(|e| e.addr.into())
@@ -613,6 +618,10 @@ impl Drop for TcpStreamInner {
                 after,
             )
         };
+        // Both reports outside the lock, not just one. `note_tcp_drop` reaches `pollprobe` on
+        // power-of-two counts, which is a console write -- the same syscall-under-`core` the
+        // capture block above exists to avoid, three lines from the comment saying so.
+        super::engine::note_tcp_drop(before);
         super::engine::note_tcp_close(lport, raddr, rport, before, after);
         ENGINE.track(
             self.socket_handle,

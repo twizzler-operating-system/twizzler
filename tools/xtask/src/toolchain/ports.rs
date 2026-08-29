@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use crate::triple::{Arch, Host, Machine, Triple};
 
@@ -83,30 +83,48 @@ pub(crate) fn patch_libtool_for_twizzler(
 pub struct PortOptions {
     #[clap(long, help = "The target architecture.", default_value = "x86-64")]
     pub arch: Arch,
+    #[clap(
+        long,
+        help = "Build only the named ports, without first building what they depend on."
+    )]
+    pub no_deps: bool,
     pub ports: Vec<String>,
 }
 
-pub fn list_ports() -> anyhow::Result<()> {
-    let ports = vec![
-        ("python3", "zlib,openssl,ncurses"),
-        ("llvm", "zlib"),
-        ("zlib", ""),
-        ("ncurses", ""),
-        //("rust", ""),
-        ("openssl", "zlib"),
-        ("curl", "zlib,openssl"),
-        ("libssh2", "zlib,openssl"),
-        ("libgit2", "zlib,openssl,libssh2"),
-        ("neatvi", ""),
-        ("psl", ""),
-        ("binutils", ""),
-    ];
+/// Known ports: name, the ports it must be built after, and whether `@all` includes it.
+const PORTS: &[(&str, &[&str], bool)] = &[
+    ("zlib", &[], true),
+    ("ncurses", &[], true),
+    ("psl", &[], true),
+    ("neatvi", &[], true),
+    ("binutils", &[], true),
+    ("openssl", &["zlib"], true),
+    ("llvm", &["zlib"], true),
+    ("libssh2", &["zlib", "openssl"], true),
+    ("curl", &["zlib", "openssl", "libssh2"], true),
+    ("libgit2", &["zlib", "openssl", "libssh2"], true),
+    ("python3", &["zlib", "openssl", "ncurses"], true),
+    // In-progress support: buildable by name, but not part of @all.
+    ("rust", &[], false),
+];
 
-    for port in ports {
-        if port.1.is_empty() {
-            println!("{}", port.0);
+fn port_deps(name: &str) -> anyhow::Result<&'static [&'static str]> {
+    PORTS
+        .iter()
+        .find(|(port, _, _)| *port == name)
+        .map(|(_, deps, _)| *deps)
+        .ok_or_else(|| anyhow::anyhow!("Unknown port: {}", name))
+}
+
+pub fn list_ports() -> anyhow::Result<()> {
+    for (name, deps, in_all) in PORTS {
+        if !in_all {
+            continue;
+        }
+        if deps.is_empty() {
+            println!("{}", name);
         } else {
-            println!("{} (requires {})", port.0, port.1);
+            println!("{} (requires {})", name, deps.join(","));
         }
     }
 
@@ -121,45 +139,81 @@ pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
         return list_ports();
     }
 
+    let mut requested = Vec::new();
     for port in &cli.ports {
         if port == "@all" {
-            build_ports(&triple)?;
-            continue;
+            requested.extend(
+                PORTS
+                    .iter()
+                    .filter(|(_, _, in_all)| *in_all)
+                    .map(|(name, _, _)| *name),
+            );
+        } else {
+            // Reject unknown names before building anything.
+            let (name, _, _) = PORTS
+                .iter()
+                .find(|(name, _, _)| name == port)
+                .ok_or_else(|| anyhow::anyhow!("Unknown port: {}", port))?;
+            requested.push(*name);
         }
-        match port.as_str() {
-            "python3" => python3::install(&triple)?,
-            "llvm" => llvm::install(&triple)?,
-            "zlib" => zlib::install(&triple)?,
-            "ncurses" => ncurses::install(&triple)?,
-            // in-progress support
-            "rust" => rust::install(&triple)?,
-            "openssl" => openssl::install(&triple)?,
-            "curl" => curl::install(&triple)?,
-            "libssh2" => libssh2::install(&triple)?,
-            "libgit2" => libgit2::install(&triple)?,
-            "neatvi" => neatvi::install(&triple)?,
-            "psl" => psl::install(&triple)?,
-            "binutils" => binutils::install(&triple)?,
-            _ => anyhow::bail!("Unknown port: {}", port),
-        }
+    }
+
+    let mut attempted = HashSet::new();
+    let mut failed = Vec::new();
+    for port in requested {
+        build_port(port, &triple, cli.no_deps, &mut attempted, &mut failed)?;
+    }
+
+    if !failed.is_empty() {
+        anyhow::bail!("failed to build ports: {}", failed.join(", "));
     }
 
     Ok(())
 }
 
-fn build_ports(triple: &Triple) -> anyhow::Result<()> {
-    python3::install(triple)?;
-    zlib::install(triple)?;
-    ncurses::install(triple)?;
-    llvm::install(triple)?;
-    //rust::install(triple)?;
-    openssl::install(triple)?;
-    psl::install(triple)?;
-    curl::install(triple)?;
-    libssh2::install(triple)?;
-    libgit2::install(triple)?;
-    neatvi::install(triple)?;
-    binutils::install(triple)?;
+/// Build `name` after its dependencies, or alone under `no_deps`. A port is attempted at most once
+/// per run, whether it succeeded or failed, so a shared dependency is not rebuilt and a failure
+/// does not stall the remaining ports.
+fn build_port(
+    name: &'static str,
+    triple: &Triple,
+    no_deps: bool,
+    attempted: &mut HashSet<&'static str>,
+    failed: &mut Vec<&'static str>,
+) -> anyhow::Result<()> {
+    if !attempted.insert(name) {
+        return Ok(());
+    }
+
+    if !no_deps {
+        for dep in port_deps(name)? {
+            build_port(dep, triple, no_deps, attempted, failed)?;
+        }
+    }
+
+    println!("=== building port {}", name);
+    if let Err(e) = install_port(name, triple) {
+        eprintln!("=== port {} failed: {:?}", name, e);
+        failed.push(name);
+    }
 
     Ok(())
+}
+
+fn install_port(name: &str, triple: &Triple) -> anyhow::Result<()> {
+    match name {
+        "python3" => python3::install(triple),
+        "llvm" => llvm::install(triple),
+        "zlib" => zlib::install(triple),
+        "ncurses" => ncurses::install(triple),
+        "rust" => rust::install(triple),
+        "openssl" => openssl::install(triple),
+        "curl" => curl::install(triple),
+        "libssh2" => libssh2::install(triple),
+        "libgit2" => libgit2::install(triple),
+        "neatvi" => neatvi::install(triple),
+        "psl" => psl::install(triple),
+        "binutils" => binutils::install(triple),
+        _ => anyhow::bail!("Unknown port: {}", name),
+    }
 }

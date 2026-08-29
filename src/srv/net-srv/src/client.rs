@@ -717,6 +717,7 @@ fn client_thread(client: Arc<Client>) {
         }
 
         let rx_waiter = ep.rx_waiter();
+        let comp_space_waiter = ep.completion_space_waiter();
         let has_pending_msg = ep.has_pending_msg_from_client();
         drop(ep);
 
@@ -775,6 +776,14 @@ fn client_thread(client: Arc<Client>) {
             continue;
         }
 
-        let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(rx_waiter)], None);
+        // Every word this thread can be woken by, and no others. It reads client submissions
+        // (rx_waiter) and writes completions (comp_space_waiter, only while one is owed). It also
+        // reads client_rx completions in `inject`, but never retries on them, so waking for a
+        // packet reclaim would be churn with nothing to do -- `inject` drains them itself.
+        let mut sleeps = vec![ThreadSync::new_sleep(rx_waiter)];
+        if let Some(w) = comp_space_waiter {
+            sleeps.push(ThreadSync::new_sleep(w));
+        }
+        let _ = sys_thread_sync(&mut sleeps, None);
     }
 }

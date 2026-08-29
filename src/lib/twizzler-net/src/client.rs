@@ -50,6 +50,16 @@ pub struct NetClient {
     /// Interior mutability because `NetClientTxToken` holds `&NetClient`: `receive()` hands out an
     /// rx and a tx token from one borrow, so the tx token cannot hold `&mut`.
     pending_tx: RefCell<([PacketNum; MAX_PACKETS_SET], usize)>,
+    /// We owe the server a completion that the ring had no space for.
+    ///
+    /// One flag for the whole subqueue, which the MPSC submission queue does *not* guarantee is
+    /// enough: it permits several producers, and two of them would race here -- one deferring while
+    /// the other clears the flag, stranding the deferral with no registered waiter and no fallback
+    /// timeout left to rescue it. It is sound only because every producer of this subqueue runs
+    /// inside `Core::poll`, and every `Core::poll` call site holds `ENGINE.core`. **Anything that
+    /// submits or completes on this pair from outside that lock breaks this flag**, not just its
+    /// performance.
+    comp_deferred: bool,
     pub info: NetClientOpenInfo,
 }
 
@@ -70,6 +80,21 @@ pub struct NetClientOpenInfo {
 impl NetClient {
     pub fn rx_waiter(&self) -> ThreadSyncSleep {
         self.rx.rx_waiter()
+    }
+
+    /// The wake reason `rx_waiter` does not cover: the server completing a tx message is what
+    /// returns packet slots, and `transmit()` returning `None` for want of one is how egress
+    /// stalls. Reclaim was previously visible only to a poll that had already happened for some
+    /// other reason -- which is what `Pair::progress` reports and why the poll loop needed a
+    /// timeout to be correct rather than merely prompt.
+    pub fn tx_completions_waiter(&self) -> ThreadSyncSleep {
+        self.tx.comp_waiters()
+    }
+
+    /// Space in the rx completion ring, and only while we owe one. See `Pair::comp_space_waiter`
+    /// for why this must not be registered unconditionally.
+    pub fn rx_completion_space_waiter(&self) -> Option<ThreadSyncSleep> {
+        self.comp_deferred.then(|| self.rx.comp_space_waiter())
     }
 
     pub fn has_rx_pending(&self) -> bool {
@@ -145,6 +170,7 @@ impl secgate::util::Handle for NetClient {
             pending_id: None,
             pending_rx: PacketSet::new(),
             pending_tx: RefCell::new(([INVALID_PACKET; MAX_PACKETS_SET], 0)),
+            comp_deferred: false,
             info,
         })
     }
@@ -206,11 +232,21 @@ impl NetClient {
     }
 
     fn submit_tx(&self, packets: &[PacketNum]) {
-        self.tx
-            .send_packets(packets, |s| ClientMsg {
-                kind: ClientMsgKind::Tx(s),
-            })
-            .expect("failed to send packets");
+        let msg = |s| ClientMsg {
+            kind: ClientMsgKind::Tx(s),
+        };
+        if !crate::NONBLOCK_POLL_QUEUE {
+            self.tx.send_packets(packets, msg).expect("send packets");
+            return;
+        }
+        // Runs inside `Core::poll` with the engine core mutex held. A full ring is the server
+        // being behind, which TCP already handles by retransmitting; blocking here instead
+        // stalls every socket in this compartment until something outside releases it.
+        // `try_send_packets` returns the slots to the pool on failure, so a drop is a drop and
+        // not also a leak.
+        if self.tx.try_send_packets(packets, msg).is_err() {
+            crate::note_pollq(&crate::POLLQ_TX_DROPPED, "client tx dropped");
+        }
     }
 }
 
@@ -249,7 +285,17 @@ impl smoltcp::phy::Device for NetClient {
         }
 
         if let Some(pending_id) = self.pending_id.take() {
-            self.rx.complete(pending_id, ClientRet {});
+            if self.rx.try_complete(pending_id, ClientRet {}) {
+                self.comp_deferred = false;
+            } else {
+                self.comp_deferred = true;
+                // Keep the id and stop receiving. Completing is what returns the server's packet
+                // slots, so we must not drop it, and we must not take a new message on top of it
+                // -- but blocking for ring space here would hold the core mutex indefinitely.
+                self.pending_id = Some(pending_id);
+                crate::note_pollq(&crate::POLLQ_COMP_DEFERRED, "client completion deferred");
+                return None;
+            }
         }
 
         let (id, msg) = self.rx.recv_msg()?;

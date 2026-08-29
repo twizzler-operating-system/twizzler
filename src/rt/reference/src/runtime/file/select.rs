@@ -93,7 +93,7 @@ impl SelectState {
                 // Unsupported for now
             }
         }
-        twizzler_abi::klog_println!(
+        tracing::debug!(
             "SelectState::new: nfds={}, timeout={:?}, read={:?}, write={:?}, except={:?}",
             nfds,
             timeout,
@@ -151,13 +151,17 @@ impl SelectState {
             waits.push(sleep);
             keepalives.push(wp.keepalive);
         }
-        twizzler_abi::klog_println!("SelectState::wait: initial ready={}", ready,);
+        tracing::debug!("SelectState::wait: initial ready={}", ready,);
 
         if ready > 0 {
             return Ok(ready);
         }
 
-        sys_thread_sync(&mut waits, self.timeout)?;
+        match sys_thread_sync(&mut waits, self.timeout) {
+            Ok(_) => {}
+            Err(TwzError::TIMED_OUT) => {}
+            Err(e) => return Err(e),
+        }
 
         for ((fd, kind, _), wp) in fds.into_iter().zip(waits.into_iter()) {
             if maybe_mark_ready(&wp, kind, *fd, false) {

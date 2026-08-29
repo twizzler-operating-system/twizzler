@@ -45,6 +45,16 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.queue.setup_read_com_sleep()
     }
 
+    /// Wake when the completion ring has space again.
+    ///
+    /// **Register only while a completion is actually deferred.** `setup_send_sleep_simple`
+    /// returns a never-equal sentinel when the ring is not full, so an unconditional registration
+    /// makes the sleep return instantly every pass -- a busy spin, not a wait -- and it also sets
+    /// the async-submit-waiting bit, which makes the consumer ring a bell nobody is waiting on.
+    pub fn comp_space_waiter(&self) -> ThreadSyncSleep {
+        self.queue.setup_write_com_sleep()
+    }
+
     pub fn has_pending_msg(&self) -> bool {
         self.queue.has_pending_submission()
     }
@@ -125,7 +135,6 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.buf.packet_mem_mut(id)
     }
 
-    #[allow(dead_code)]
     pub fn try_send_packets(
         &self,
         packets: &[PacketNum],
@@ -204,9 +213,15 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.queue.receive(ReceiveFlags::NON_BLOCK).ok()
     }
 
-    pub fn complete(&self, id: u32, msg: C) {
+    /// Non-blocking completion. `false` means the ring had no space and the caller still owns
+    /// `id`.
+    ///
+    /// The blocking form this replaces was reached from inside `Core::poll` with the engine's core
+    /// mutex held, so a full ring stalled every socket in the compartment rather than one message
+    /// -- and, being a `Mutex` wait, it could only be released from outside.
+    pub fn try_complete(&self, id: u32, msg: C) -> bool {
         self.queue
-            .complete(id, msg, SubmissionFlags::empty())
-            .unwrap();
+            .complete(id, msg, SubmissionFlags::NON_BLOCK)
+            .is_ok()
     }
 }

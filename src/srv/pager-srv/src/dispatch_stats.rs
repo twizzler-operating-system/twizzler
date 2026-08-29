@@ -272,5 +272,9 @@ impl DispatchStats {
             self.info_len.line("store-len"),
             self.info_meta.line("meta-page-in"),
         );
+        // Where a request's time actually went, by phase. `DISPATCH`/`DISPATCH-INFO` above cover
+        // the hops before a worker starts; this covers everything after, which is where the
+        // create/delete and sync paths spend theirs.
+        tracing::info!("PHASESTATS: {}", crate::watchdog::phase_report());
     }
 }

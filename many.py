@@ -1031,6 +1031,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bench-iters", type=int, default=1, metavar="N",
                         help="Run --bench N times in one boot, so later passes see the kernel "
                              "state the earlier ones left.")
+    parser.add_argument("--allow-tag-reuse", action="store_true",
+                        help="Permit writing into a results dir that already has round logs "
+                             "(they will be overwritten). Off by default: see the guard in main().")
     parser.add_argument("--tag", default=None,
                         help="Names this sweep, keeping its results, lanes and serial-log labels "
                              "clear of any other sweep running at the same time (default: "
@@ -1099,6 +1102,30 @@ def main() -> int:
         args.tag = default_tag()
     if args.results_dir is None:
         args.results_dir = REPO_ROOT / "target" / "results" / f"many-{args.tag}"
+
+    # Reusing a tag silently overwrites the previous sweep's round logs, and afterwards the
+    # directory still looks like a healthy populated sweep -- there is nothing in a log that says
+    # "some of these rounds are from a different day and a different tree". That makes the damage
+    # unfalsifiable later, and directory mtime stops being a trustworthy dating signal for the
+    # whole corpus, not just the reused tag.
+    #
+    # This happened on 2026-08-28: `netfix1`/`netfix2` were reused and destroyed two boots another
+    # session had already cited in an analysis. Every other guard around this tool is about *when*
+    # to run (guest up, sweep live, tree dirty mid-build); none was about where the output lands.
+    #
+    # Refuse rather than warn: a warning scrolls past inside a nohup log nobody reads until the
+    # sweep finishes, by which point the old logs are gone.
+    existing = sorted(args.results_dir.glob("round*.log")) if args.results_dir.is_dir() else []
+    if existing and not args.allow_tag_reuse:
+        print(
+            f"REFUSING: {args.results_dir} already holds {len(existing)} round log(s) from an "
+            f"earlier sweep (e.g. {existing[0].name}).\n"
+            f"  Reusing the tag would overwrite them, and the result is indistinguishable from a\n"
+            f"  clean sweep afterwards. Pick a fresh --tag, or pass --allow-tag-reuse if you\n"
+            f"  genuinely mean to discard them.",
+            file=sys.stderr,
+        )
+        return 3
 
     work: Path = args.work_dir
     # Over ALL_PROFILES, not PROFILES: --config can name a profile the default matrix never sweeps,

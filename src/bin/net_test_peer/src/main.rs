@@ -419,7 +419,20 @@ const ECHO_BUF: usize = 128 * 1024;
 fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     let idle = Duration::from_millis(idle_ms);
     let listener = TcpListener::bind(listen)?;
-    if !wait_readable(listener.as_raw_fd(), idle) {
+    // Sliced, not one long wait. Identical total bound, but each slice re-enters the runtime from
+    // this thread -- the only one still running when the engine stops -- so engine liveness gets
+    // sampled from outside the thing being measured.
+    let mut waited = Duration::ZERO;
+    let slice = Duration::from_secs(1);
+    let mut got = false;
+    while waited < idle {
+        if wait_readable(listener.as_raw_fd(), slice) {
+            got = true;
+            break;
+        }
+        waited += slice;
+    }
+    if !got {
         return Err(std::io::Error::other(format!(
             "no connection within {:?}",
             idle
@@ -428,6 +441,7 @@ fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     let (mut stream, _) = listener.accept()?;
     let fd = stream.as_raw_fd();
     let mut buf = vec![0u8; ECHO_BUF];
+    let mut echoed: usize = 0;
 
     loop {
         let deadline = Instant::now() + idle;
@@ -447,19 +461,32 @@ fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
                     std::thread::yield_now();
                 }
                 // A reset ends the stream as definitively as EOF does.
-                Err(_) => return Ok(()),
+                //
+                // Reporting the reason, not just returning: every `Ok(())` here exits the peer
+                // silently, and the parent then reads "peer exited mid-benchmark" with no cause.
+                // Seven of nine failures in netarm-t1 left no message at all, so the dominant
+                // failure mode of this whole investigation has been invisible by construction.
+                Err(e) => {
+                    eprintln!("serve-echo EXIT: read error after {} bytes: {:?}", echoed, e);
+                    return Ok(());
+                }
             }
         };
         if n == 0 {
+            eprintln!("serve-echo EXIT: EOF after {} bytes echoed", echoed);
             return Ok(());
         }
+        echoed += n;
         // Same backpressure rule as the UDP path, but a stream cannot drop bytes: wait for
         // writability and finish the write, and only give up when the peer has gone quiet for
         // the whole idle bound.
         let mut off = 0usize;
         while off < n {
             match stream.write(&buf[off..n]) {
-                Ok(0) => return Ok(()),
+                Ok(0) => {
+                    eprintln!("serve-echo EXIT: write returned 0 after {} bytes", echoed);
+                    return Ok(());
+                }
                 Ok(w) => off += w,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if !wait_writable(fd, idle) {

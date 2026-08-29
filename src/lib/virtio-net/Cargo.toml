@@ -19,14 +19,17 @@ twizzler-rt-abi = { path = "../../abi/rt-abi" }
 [dependencies.smoltcp]
 version = "0.13.1"
 optional = false
-default-features = true
+# smoltcp's defaults minus phy-raw_socket and phy-tuntap_interface: those are gated on unix
+# inside smoltcp and compile its BSD `phy/sys/bpf.rs` backend (BIOCSETIF/BIOCGBLEN/BPF_HDRLEN),
+# which is meaningless here -- the runtime drives its own device. Twizzler only started
+# matching them when the target claimed the unix family. Cargo unions features across the
+# whole graph, so leaving default-features on here re-enables them for every other crate too.
+default-features = false
 features = [
-    "alloc",
-    "log",
-    "medium-ethernet",
-    "proto-ipv4",
-    "socket-raw",
-    "socket-icmp",
-    "socket-udp",
-    "socket-tcp",
+    "std", "log", "medium-ethernet", "medium-ip", "medium-ieee802154",
+    "proto-ipv4", "proto-dhcpv4", "proto-ipv6", "proto-ipv6-slaac", "proto-dns",
+    "proto-ipv4-fragmentation", "proto-sixlowpan-fragmentation",
+    "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dhcpv4",
+    "socket-dns", "socket-mdns", "packetmeta-id", "async", "multicast",
+    "auto-icmp-echo-reply",
 ]
