@@ -1527,7 +1527,9 @@ mod benches {
             std::hint::black_box(back[0]);
         });
         if peer_gone {
-            console("net_tcp_throughput_pipelined: peer exited mid-benchmark -- NUMBER IS INVALID\n");
+            console(
+                "net_tcp_throughput_pipelined: peer exited mid-benchmark -- NUMBER IS INVALID\n",
+            );
         }
         if stalled > 0 {
             console(&format!(

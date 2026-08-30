@@ -83,6 +83,16 @@ pub fn toolchain_stamp_flag() -> String {
 pub use pathfinding::*;
 pub use utils::*;
 
+/// The directory name of the toolchain in use -- the computed tag normally, or the pinned
+/// directory when `--toolchain`/`TWIZZLER_TOOLCHAIN` is set.
+pub fn active_toolchain_name() -> anyhow::Result<String> {
+    let path = get_toolchain_path()?;
+    Ok(path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or(generate_tag()?))
+}
+
 #[derive(clap::Args, Debug)]
 pub struct BootstrapOptions {
     #[clap(
@@ -188,9 +198,12 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
         ToolchainCommands::Compress => compress_toolchain(),
         ToolchainCommands::Ports(opts) => build_and_install_ports(&opts),
         ToolchainCommands::Active => {
+            // Report the directory actually in use, which a `--toolchain` pin can divorce from the
+            // tag the current submodule pointers compute.
             match get_toolchain_path()?.canonicalize() {
-                Ok(_) => {
-                    println!("{}", generate_tag()?);
+                Ok(path) => {
+                    println!("{}", active_toolchain_name()?);
+                    let _ = path;
                 }
 
                 Err(_) => {
@@ -204,7 +217,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             Ok(())
         }
         ToolchainCommands::List => {
-            let active = generate_tag()?;
+            let active = active_toolchain_name()?;
 
             for tc in get_installed_toolchains()? {
                 if tc == active {
@@ -235,7 +248,7 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
             }
 
             if opts.inactive {
-                let active_tc = generate_tag()?;
+                let active_tc = active_toolchain_name()?;
 
                 for tc in &toolchains {
                     if *tc != active_tc {

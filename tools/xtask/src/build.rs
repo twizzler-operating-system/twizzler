@@ -603,7 +603,7 @@ fn compile(
                     crate::triple::Host::Twizzler,
                     None,
                 );
-                let mut sysroot = Path::new("toolchain/install/sysroots")
+                let mut sysroot = crate::toolchain::get_sysroots_root()?
                     .join(&triple.to_string())
                     .join("lib");
                 sysroot.push(cd.path.file_name().unwrap());

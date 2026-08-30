@@ -139,29 +139,36 @@ impl Context {
 
                 // set the parameter to be used directly in the resolver function
                 // calculate st_value + load_offset + addend
-                if rel.sym() == 0 {
-                    let tls_val = 0u64;
-                    let module_offset = lib
-                        .tls_id
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: lib.name.as_str().into(),
-                        })?
-                        .offset();
-                    desc.value = tls_val + module_offset as u64 + addend as u64;
+                let (tls_val, target_lib) = if rel.sym() == 0 {
+                    (0u64, lib)
                 } else {
                     let sym_res = open_sym();
                     let tls_val = sym_res.as_ref().map(|sym| sym.raw_value()).unwrap_or(0);
-                    let other_lib = sym_res?.lib;
-                    let module_offset = other_lib
-                        .tls_id
-                        .as_ref()
-                        .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
-                            library: other_lib.name.as_str().into(),
-                        })?
-                        .offset();
-                    desc.value = tls_val + module_offset as u64 + addend as u64;
+                    (tls_val, sym_res?.lib)
+                };
+                // `_tlsdesc_static` resolves to a TP-relative constant, which is only valid if
+                // the target module is in every thread's static region. A runtime-loaded module
+                // is absent from already-running threads' regions; refuse the load (a
+                // `_tlsdesc_dynamic` resolver does not exist yet).
+                if target_lib.runtime_load {
+                    error!(
+                        "{}: TLSDESC relocation targets runtime-loaded module {}",
+                        lib, target_lib
+                    );
+                    return Err(DynlinkErrorKind::UnsupportedReloc {
+                        library: lib.name.as_str().into(),
+                        reloc: "TLSDESC against runtime-loaded module".into(),
+                    }
+                    .into());
                 }
+                let module_offset = target_lib
+                    .tls_id
+                    .as_ref()
+                    .ok_or_else(|| DynlinkErrorKind::NoTLSInfo {
+                        library: target_lib.name.as_str().into(),
+                    })?
+                    .offset();
+                desc.value = tls_val + module_offset as u64 + addend as u64;
             }
             REL_RELATIVE => unsafe {
                 // aarch64 calculates Delta(S) + A:
@@ -211,6 +218,19 @@ impl Context {
                 // from thread-local symbol S.
                 let sym_res = open_sym()?;
                 let other_lib = sym_res.lib;
+                // Same constraint as TLSDESC above: TP-relative offsets into a runtime-loaded
+                // module are invalid for already-running threads.
+                if other_lib.runtime_load {
+                    error!(
+                        "{}: initial-exec TLS relocation targets runtime-loaded module {}",
+                        lib, other_lib
+                    );
+                    return Err(DynlinkErrorKind::UnsupportedReloc {
+                        library: lib.name.as_str().into(),
+                        reloc: "TPOFF against runtime-loaded module".into(),
+                    }
+                    .into());
+                }
                 let tls_val = sym_res.raw_value();
                 let module_offset = other_lib
                     .tls_id

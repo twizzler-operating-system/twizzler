@@ -18,7 +18,7 @@ use space::Space;
 use talc::{ErrOnOom, Talc};
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
-    syscall::{sys_thread_exit, sys_thread_send_message},
+    syscall::{sys_thread_change_state_in_sctx, sys_thread_exit, sys_thread_send_message},
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
     write_note,
 };
@@ -707,6 +707,37 @@ impl Monitor {
                     }
                     self.wait_for_compartment_state_change(src, flags);
                 }
+            }
+            // Process-exit requested from a non-main thread (`exit(2)` semantics: any thread may
+            // end the process). Only pin the code and force-exit the threads; teardown proper
+            // stays with the cleaner's `main_thread_exited` pass when the main thread's death is
+            // reaped, so dep use-counts are decremented exactly once. A thread spawned while this
+            // runs is caught by that same pass, which recollects the thread list.
+            MonitorCompControlCmd::Exit(code) => {
+                let threads = {
+                    let Ok(key) = reentrant_key() else {
+                        sys_thread_exit(code as u64);
+                    };
+                    let (ref tmgr, ref cmgr, _, _, _) =
+                        *crate::lockdiag::watched(self.locks.lock(key));
+                    let Ok(rc) = cmgr.get(src) else {
+                        sys_thread_exit(code as u64);
+                    };
+                    rc.set_exit_code(code);
+                    rc.thread_ids_including(&tmgr.threads_of(src))
+                };
+                // Restricted to `src` for the same reason `main_thread_exited` restricts it: a
+                // thread mid-gate elsewhere must die at home, not holding a foreign compartment's
+                // locks. The caller is in that set (it is mid-gate here), so its own exit is
+                // delivered once it crosses back; the runtime exits it directly regardless.
+                for thread in threads {
+                    let _ = sys_thread_change_state_in_sctx(
+                        thread,
+                        twizzler_abi::thread::ExecutionState::Exited,
+                        src,
+                    );
+                }
+                Some(code)
             }
         }
     }

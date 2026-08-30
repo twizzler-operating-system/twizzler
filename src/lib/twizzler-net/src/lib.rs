@@ -36,6 +36,17 @@ pub static POLLQ_COMP_DEFERRED: core::sync::atomic::AtomicU64 =
 /// the per-address "local dst .N reached M" figures count frames that reached a *slot*, not
 /// frames that reached the queue, and every reading built on them inherits that. This counts the
 /// operation that can fail, at the place it can fail.
+/// Datagrams `UdpSocket::write_to` handed to smoltcp (i.e. `send_slice` returned Ok).
+///
+/// Paired with `DEV_TX_FRAMES`: smoltcp accepting a datagram into the socket's tx buffer is not
+/// the same as it dispatching one. If this climbs and `DEV_TX_FRAMES` does not, the datagram died
+/// between the socket and the device -- dispatch dropped it (unresolved neighbour, no route),
+/// which the caller cannot see because `send_slice` already returned Ok.
+pub static UDP_SEND_ACCEPTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Ethernet frames actually handed to the device by smoltcp's `TxToken::consume`.
+pub static DEV_TX_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 pub static POLLQ_TX_SUBMITTED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 

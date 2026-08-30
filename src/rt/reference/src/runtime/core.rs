@@ -151,12 +151,36 @@ impl ReferenceRuntime {
                 // ring's first record -- so flush here or an exit-now program's records are lost.
                 // Free when the ring is empty.
                 secgate::statlog::drain();
+            } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
+                // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
+                // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and
+                // `process::exit`/`exit(3)` arrive with any code. A nonzero code from a non-main
+                // thread is therefore always a process-exit request, and POSIX says it ends the
+                // whole process -- without this, only the calling thread died, the main thread
+                // stayed parked on whatever it was waiting for, and the compartment never
+                // finished exiting (spawn-test's watchdog `exit(2)` hung the whole suite).
+                //
+                // `exit(0)` from a non-main thread is indistinguishable from a thread completing
+                // and keeps thread-exit behavior for now. `twz_rt_thread_exit` exists and the
+                // in-tree std/mlibc trampolines use it, but a *shipping* std predating that
+                // change still retires every finished thread through here with code 0 -- treat
+                // all codes as process-exit only once the deployed toolchain is known to carry
+                // the trampoline switch (see unix.md / the bootstrap keep-stage-std pin).
+                let _ = monitor_api::monitor_rt_comp_ctrl(
+                    monitor_api::MonitorCompControlCmd::Exit(code),
+                );
             }
             twizzler_abi::syscall::sys_thread_exit(code as u64);
         } else {
             preinit_println!("runtime exit before runtime ready: {}", code);
             preinit_abort();
         }
+    }
+
+    /// Exit only the calling thread (`twz_rt_thread_exit`): the trampolines' path for a thread
+    /// whose entry function returned. Never ends the process; process exit is [`Self::exit`].
+    pub fn thread_exit(&self, code: i32) -> ! {
+        twizzler_abi::syscall::sys_thread_exit(code as u64);
     }
 
     pub fn gc(&self) {

@@ -213,6 +213,76 @@ impl TlsGenMgr {
     // it hits zero, notify the monitor.
 }
 
+/// Bring the current thread's DTV up to the compartment's current TLS template.
+///
+/// Called from the `__tls_get_addr` slow path when a module ID lands beyond this thread's DTV:
+/// a library with a PT_TLS segment was loaded after this thread's region was built, and the
+/// monitor republished the template with the new generation.
+///
+/// The thread's existing region is untouched -- DTV entries for modules it already has keep
+/// pointing into it, so live thread-locals keep their values and addresses. Blocks for the new
+/// modules come from a fresh copy of the template's prototype region (which also materializes
+/// blocks for the old modules; those go unused -- the price of not shipping per-module layout
+/// info across the monitor boundary). A new, larger DTV replaces the fixed-size one inside the
+/// thread's region.
+///
+/// The replaced DTV and, on thread exit, the appendix region and DTV allocation are leaked;
+/// reclaiming them is part of TLS generation retirement (tracked in the TODO above). Note this
+/// only serves general-dynamic accesses: initial-exec and TLSDESC relocations against a
+/// runtime-loaded module resolve to static offsets that only threads built from the new
+/// template have.
+///
+/// Returns false if the thread is already at (or beyond) the current template, meaning the
+/// caller's lookup failure was a genuinely bad module ID.
+pub(crate) fn upgrade_current_thread_dtv() -> bool {
+    let cc = monitor_api::get_comp_config();
+    let template = unsafe { cc.get_tls_template().as_ref().unwrap() };
+
+    let tcb: *mut Tcb<()> = unsafe { dynlink::tls::get_current_thread_control_block() };
+    if tcb.is_null() {
+        return false;
+    }
+    let (old_dtv, old_len) = unsafe { ((*tcb).dtv, (*tcb).dtv_len) };
+    let new_len = template.num_dtv_entries;
+    if new_len <= old_len {
+        return false;
+    }
+
+    unsafe {
+        let region = LOCAL_ALLOCATOR.alloc(template.layout);
+        if region.is_null() {
+            return false;
+        }
+        core::ptr::copy_nonoverlapping(
+            template.alloc_base.as_ptr(),
+            region,
+            template.layout.size(),
+        );
+
+        let dtv_layout = Layout::array::<usize>(new_len).unwrap();
+        let new_dtv = LOCAL_ALLOCATOR.alloc(dtv_layout) as *mut usize;
+        if new_dtv.is_null() {
+            LOCAL_ALLOCATOR.dealloc(region, template.layout);
+            return false;
+        }
+
+        // dtv[0] is the generation count; old modules keep their blocks; new modules point into
+        // the fresh region copy at the offsets the prototype's own DTV records.
+        *new_dtv = template.gen as usize;
+        core::ptr::copy_nonoverlapping(old_dtv.add(1), new_dtv.add(1), old_len - 1);
+        let proto_dtv = template.alloc_base.as_ptr().add(template.dtv_offset) as *const usize;
+        for i in old_len..new_len {
+            let offset = *proto_dtv.add(i) - template.alloc_base.as_ptr() as usize;
+            *new_dtv.add(i) = region as usize + offset;
+        }
+
+        // Only this thread reads its own dtv/dtv_len, so plain stores publish safely.
+        (*tcb).dtv = new_dtv;
+        (*tcb).dtv_len = new_len;
+    }
+    true
+}
+
 extern "C" {
     #[linkage = "extern_weak"]
     static __mlibc_init_tcb: *mut u8;

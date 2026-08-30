@@ -184,6 +184,11 @@ pub struct Library {
     /// The module ID for the TLS region, if any.
     pub tls_id: Option<TlsModId>,
 
+    /// Loaded into a live compartment (dlopen) rather than at compartment start. Such a module's
+    /// TLS block is absent from already-running threads' static regions, so initial-exec style
+    /// relocations targeting it are refused during relocation.
+    pub(crate) runtime_load: bool,
+
     /// Information about constructors.
     pub(crate) ctors: CtorSet,
     pub(crate) secgate_info: SecgateInfo,
@@ -220,6 +225,7 @@ impl Library {
             full_obj,
             backings,
             tls_id,
+            runtime_load: false,
             ctors,
             reloc_state: AtomicRelocState::new(RelocState::Unrelocated),
             comp_id,

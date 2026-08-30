@@ -101,6 +101,7 @@ members = [
 
     "src/ports/femto", "src/bin/top", "src/bin/otop",
     "src/bin/brush",
+    "src/bin/pipestat",
 ]
 
 exclude = [
@@ -120,12 +121,13 @@ resolver = "2"
 #
 # logboi-test is deliberately left out: it hits an intermittent #GP fault inside the compartment
 #
-# lltest is left out for now: on an SMP boot it can jump into an unmapped slot right after its
-# dlopen (MemoryContextViolation InstructionFetch), and the re-faulting upcall then loops forever
-# instead of killing the thread, hanging the whole suite. It stays in the initrd, so
-# `cargo start-qemu --autostart lltest` still reproduces it.
+# lltest covers runtime library loading (dlopen): symbol lookup, .init_array ctors, and TLS in a
+# dlopen'd module (tdata/tbss init, threads that predate the load catching up, per-thread
+# isolation). Re-enabled 2026-08-30; it used to hang SMP boots by jumping into an unmapped slot
+# right after its dlopen (MemoryContextViolation InstructionFetch, re-faulting upcall loop) --
+# if the suite wedges here again, that fault is back.
 test-programs = [
-    #{ crate = "lltest" },
+    { crate = "lltest" },
     { crate = "spawn-test" },
 ]
 initrd = [

@@ -42,6 +42,13 @@ impl MinimalRuntime {
         twizzler_abi::syscall::sys_thread_exit(code as u64);
     }
 
+    /// `twz_rt_thread_exit`: exit only the calling thread. In this runtime that is the same
+    /// operation as `exit` -- there is no monitor to end sibling threads either way -- but the
+    /// symbol must exist for the trampolines that call it.
+    pub fn thread_exit(&self, code: i32) -> ! {
+        twizzler_abi::syscall::sys_thread_exit(code as u64);
+    }
+
     pub fn abort(&self) -> ! {
         // Unsure why this causes a warning without this.
         #[allow(unused_unsafe)]

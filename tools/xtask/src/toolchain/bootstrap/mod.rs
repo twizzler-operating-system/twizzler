@@ -103,6 +103,27 @@ pub(crate) fn do_bootstrap(cli: BootstrapOptions) -> anyhow::Result<()> {
         anyhow::bail!("failed to copy twizzler ABI headers");
     }
 
+    // Same copy-in as twizzler-abis above, and for the same reason: `src/ports/libc` is the
+    // authoritative checkout, but std cannot reach it by a relative path that survives
+    // installation. `library/Cargo.toml` used to say `../../../../src/ports/libc`, which resolves
+    // to the repo root from the source tree and to `toolchain/<tag>/lib/` once rust-src is
+    // installed -- so every build reading the installed rust-src died with "failed to load source
+    // for dependency `libc`". Copying it inside the rust tree makes `./twizzler-libc` correct in
+    // both locations.
+    //
+    // Deliberately not `library/libc`: that path is a submodule of the rust repo, and replacing it
+    // would both confuse git and discard whatever is checked out there.
+    println!("copying twizzler libc to rust");
+    let _ = fs_extra::dir::remove("toolchain/src/rust/library/twizzler-libc");
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg("src/ports/libc")
+        .arg("toolchain/src/rust/library/twizzler-libc")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to copy twizzler libc");
+    }
+
     let usr_link = format!("{}/usr", get_toolchain_path()?.display());
     let local_link = format!("{}/local", get_toolchain_path()?.display());
     let _ = std::fs::remove_file(&usr_link);

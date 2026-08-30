@@ -196,13 +196,28 @@ impl Context {
             REL_TPOFF => {
                 // sym 0: an offset into this library's own TLS block (local IE TLS), same
                 // convention REL_DTPMOD handles above.
-                let (raw, tls_id) = if rel.sym() == 0 {
-                    (0, lib.tls_id)
+                let (raw, target_lib) = if rel.sym() == 0 {
+                    (0, lib)
                 } else {
                     let sym = open_sym()?;
-                    (sym.raw_value(), sym.lib.tls_id)
+                    (sym.raw_value(), sym.lib)
                 };
-                if let Some(tls) = tls_id {
+                // A runtime-loaded module's block is absent from already-running threads'
+                // static TLS regions, so a TP-relative offset would read the wrong memory
+                // there. Refuse the load, like glibc with an exhausted static-TLS surplus;
+                // general-dynamic (DTPMOD/DTPOFF) accesses remain fine.
+                if target_lib.runtime_load {
+                    error!(
+                        "{}: initial-exec TLS relocation targets runtime-loaded module {} (sym {})",
+                        lib, target_lib, sn
+                    );
+                    return Err(DynlinkErrorKind::UnsupportedReloc {
+                        library: lib.name.as_str().into(),
+                        reloc: "TPOFF against runtime-loaded module".into(),
+                    }
+                    .into());
+                }
+                if let Some(tls) = target_lib.tls_id {
                     unsafe {
                         *target = raw
                             .wrapping_sub(tls.offset() as u64)

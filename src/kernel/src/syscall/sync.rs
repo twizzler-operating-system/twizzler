@@ -938,10 +938,11 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     }
 
     let start = trace_now();
-    // `ops.first()`, not `ops[0]`: a zero-op call with no timeout reaches here (the `ops.is_empty()`
-    // early-out above is guarded on `timeout.is_some()`), and indexing panicked the kernel -- for a
-    // `log::trace!` that is compiled-in but almost never enabled. `select(0, NULL, NULL, NULL,
-    // NULL)` and a `poll`/`kevent` whose wait set came out empty all produce exactly that call.
+    // `ops.first()`, not `ops[0]`: a zero-op call with no timeout reaches here (the
+    // `ops.is_empty()` early-out above is guarded on `timeout.is_some()`), and indexing
+    // panicked the kernel -- for a `log::trace!` that is compiled-in but almost never enabled.
+    // `select(0, NULL, NULL, NULL, NULL)` and a `poll`/`kevent` whose wait set came out empty
+    // all produce exactly that call.
     let first = ops.first().copied();
 
     let mut ready_count = 0;

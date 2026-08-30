@@ -58,6 +58,9 @@ pub const COMP_EXITED: u64 = CompartmentFlags::EXITED.bits();
 /// and possibly wrong claim into `status.signal()`.
 pub const COMP_FAULT_EXIT_CODE: u64 = 128 + 11;
 
+/// Valid bit for [`RunComp::exit_code`]; the low 32 bits hold the requested code.
+const EXIT_CODE_SET: u64 = 1 << 32;
+
 /// A runnable or running compartment.
 pub struct RunComp {
     /// The security context for this compartment.
@@ -77,6 +80,12 @@ pub struct RunComp {
     /// *success* all the way out through `compartment_wait` and `Child::wait`, which is how
     /// `unittest` (grading purely on exit status) scored a crashed test binary `Passed`.
     fault_code: AtomicU64,
+    /// The code from a `MonitorCompControlCmd::Exit` request (process-exit from a non-main
+    /// thread), with [`EXIT_CODE_SET`] as the valid bit so a requested code of 0 is
+    /// representable. First writer wins, matching POSIX `exit` racing itself. Read by
+    /// [`RunComp::read_error_code`] after `fault_code`: a fault must not be maskable as a
+    /// voluntary exit.
+    exit_code: AtomicU64,
     pub deps: Vec<ObjID>,
     comp_config_object: CompConfigObject,
     alloc: Talc<ErrOnOom>,
@@ -296,6 +305,7 @@ impl RunComp {
             compartment_id,
             main: None,
             fault_code: AtomicU64::new(0),
+            exit_code: AtomicU64::new(0),
             deps,
             comp_config_object,
             alloc,
@@ -631,12 +641,19 @@ impl RunComp {
         Some(true)
     }
 
-    fn build_tls_template(&mut self, dynlink: &mut Context) -> Option<()> {
+    /// Build a TLS template region for the compartment's current TLS generation and publish it
+    /// in the comp config. Called at compartment start, and again after a runtime library load
+    /// adds a TLS module (the old template is leaked until generation retirement exists).
+    pub(crate) fn build_tls_template(&mut self, dynlink: &mut Context) -> Option<()> {
         let region = dynlink
             .get_compartment_mut(self.compartment_id)
             .unwrap()
             .build_tls_region(RuntimeThreadControl::default(), |layout| {
-                unsafe { self.alloc.malloc(layout) }.ok()
+                let ptr = unsafe { self.alloc.malloc(layout) }.ok()?;
+                // The template is copied wholesale into each new thread's region, so its tbss
+                // ranges must read zero; talc may hand back recycled memory.
+                unsafe { ptr.as_ptr().write_bytes(0, layout.size()) };
+                Some(ptr)
             })
             .ok()?;
 
@@ -655,10 +672,25 @@ impl RunComp {
         if fault != 0 {
             return fault;
         }
+        let requested = self.exit_code.load(Ordering::SeqCst);
+        if requested & EXIT_CODE_SET != 0 {
+            return requested & !EXIT_CODE_SET;
+        }
         let Some(ref main) = self.main else {
             return 0;
         };
         main.thread.repr.get_repr().get_code()
+    }
+
+    /// Record a process-exit request's code. First writer wins; later requests (and the 101 the
+    /// force-exited main thread will report) lose to it.
+    pub fn set_exit_code(&self, code: i32) {
+        let _ = self.exit_code.compare_exchange(
+            0,
+            (code as u32 as u64) | EXIT_CODE_SET,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
     pub fn get_nth_thread_info(&self, n: usize) -> Option<ThreadInfo> {

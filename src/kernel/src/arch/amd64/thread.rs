@@ -148,9 +148,9 @@ unsafe extern "C" fn __do_switch(
         "sfence",
         /* okay, now we can release the switch lock. We can probably relax this, but for now do
          * a seq_cst store (mov + mfence).
-         * This store, after the rsp save above, is what `Thread::has_left_kernel_stack` reads to
-         * decide the outgoing thread's stack is dead. Moving it earlier hands that stack to
-         * another thread while this one is still on it. */
+         * This store, after the rsp save above, is what `Thread::has_left_kernel_stack` reads
+         * to decide the outgoing thread's stack is dead. Moving it earlier hands that
+         * stack to another thread while this one is still on it. */
         "mov qword ptr [rcx], 0",
         "mfence",
         /* try to grab the new switch lock for the new thread. if we fail, jump to a spin loop.

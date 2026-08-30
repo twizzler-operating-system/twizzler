@@ -106,7 +106,42 @@ impl ReferenceRuntime {
 
         let bindings = unsafe { core::slice::from_raw_parts(args.fd_binds, args.fd_bind_count) };
 
-        loader.with_fd_specs(bindings);
+        // A pipe object the child receives as stdio must not also arrive at fd>2: the extra
+        // reference holds the pipe's reader/writer counts up, so EOF-on-close never fires
+        // (spawn-test's stdin-pipe-eof deadlocked on the child holding the write end of its
+        // own stdin). The extras exist because the toolchain std's anon_pipe predates the
+        // cloexec fix in library/std/src/sys/pipe/unix.rs; this drop restores the semantics
+        // pipe2(O_CLOEXEC) intends, and is deliberately narrow -- only Pipe binds duplicating
+        // a stdio Pipe's *object* are dropped, so a jobserver-style deliberate pipe pass
+        // (never stdio-duplicated) survives. Harmlessly redundant once the std fix ships.
+        let pipe_obj = |b: &twizzler_rt_abi::bindings::binding_info| -> Option<u128> {
+            if !matches!(OpenKind::try_from(b.kind), Ok(OpenKind::Pipe)) {
+                return None;
+            }
+            if (b.bind_len as usize) < size_of::<object_bind_info>() {
+                return None;
+            }
+            Some(unsafe { b.bind_data.as_ptr().cast::<object_bind_info>().read_unaligned() }.id)
+        };
+        let stdio_pipes: Vec<u128> = bindings
+            .iter()
+            .filter(|b| b.fd <= 2)
+            .filter_map(&pipe_obj)
+            .collect();
+        let filtered: Vec<twizzler_rt_abi::bindings::binding_info> = bindings
+            .iter()
+            .filter(|b| {
+                let drop = b.fd > 2
+                    && pipe_obj(b).is_some_and(|id| stdio_pipes.contains(&id));
+                if drop {
+                    twizzler_abi::klog_println!("SPAWNDROP {} fd={} (stdio pipe dup)", name, b.fd);
+                }
+                !drop
+            })
+            .cloned()
+            .collect();
+
+        loader.with_fd_specs(&filtered);
 
         // Inheriting a working directory and being sent to one are different things, and only the
         // second is really a name. If the requested directory is the one we are already in, hand

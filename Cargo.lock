@@ -6345,6 +6345,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipestat"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -20,6 +20,11 @@ use triple::{Arch, Machine, Triple};
 #[derive(Parser, Debug)]
 #[clap(name = "xtask", author = "Daniel Bittman <danielbittman1@gmail.com>", version = "1.0", about = "Build system for Twizzler", long_about = None)]
 struct Cli {
+    /// Use a specific installed toolchain instead of the one implied by the current submodule
+    /// pointers. Accepts a tag (`toolchain_a-b-c`), a bare hash triple, or a path. Also settable
+    /// via TWIZZLER_TOOLCHAIN.
+    #[clap(long = "toolchain", global = true, value_name = "TAG|PATH")]
+    toolchain_dir: Option<String>,
     #[clap(subcommand)]
     command: Option<Commands>,
 }
@@ -383,6 +388,7 @@ fn main() -> anyhow::Result<()> {
     )
     .unwrap();
     let cli = Cli::parse();
+    toolchain::set_toolchain_override(cli.toolchain_dir)?;
     if let Some(command) = cli.command {
         match command {
             Commands::Toolchain(x) => toolchain::handle_cli(x),

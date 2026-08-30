@@ -108,6 +108,12 @@ pub unsafe extern "C-unwind" fn twz_rt_exit(code: i32) {
 check_ffi_type!(twz_rt_exit, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_thread_exit(code: i32) {
+    OUR_RUNTIME.thread_exit(code);
+}
+check_ffi_type!(twz_rt_thread_exit, _);
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_pre_main_hook() -> option_exit_code {
     match OUR_RUNTIME.pre_main_hook() {
         Some(ec) => option_exit_code {

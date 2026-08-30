@@ -814,6 +814,8 @@ impl UdpSocket {
                 // exactly what the `else` arm below already does for the not-ready case.
                 match socket.send_slice(buf, meta) {
                     Ok(()) => {
+                        twizzler_net::UDP_SEND_ACCEPTED
+                            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         // This write may have filled the transmit queue.
                         core.refresh_waiter(self.inner.socket_handle);
                         Ok(())

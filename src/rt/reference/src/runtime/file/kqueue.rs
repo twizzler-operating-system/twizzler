@@ -454,7 +454,10 @@ impl ReferenceRuntime {
                     // One console write for the whole line: `klog_println!` issues a syscall per
                     // fragment and a dozen compartments splice each other character by character.
                     use core::fmt::Write as _;
-                    struct L { b: [u8; 200], n: usize }
+                    struct L {
+                        b: [u8; 200],
+                        n: usize,
+                    }
                     impl core::fmt::Write for L {
                         fn write_str(&mut self, s: &str) -> core::fmt::Result {
                             let e = (self.n + s.len()).min(self.b.len());

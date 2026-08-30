@@ -391,6 +391,33 @@ pub fn build_libunwind(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         install_dir.join("lib/libunwind.a"),
     )?;
 
+    // The archive alone is not enough. The monitor imports five _Unwind_* symbols and needs a
+    // DT_NEEDED on libunwind to resolve them at load (see toolchain::set_dynamic), which only a
+    // shared object provides -- and `image.rs` stages libunwind.so into the initrd, so a
+    // bootstrap into a fresh directory fails at image build without it.
+    //
+    // Linked from the archive rather than from build_dir's loose objects: cc leaves hashed .o
+    // files behind across builds, so a glob would silently pick up stale ones.
+    let so_path = install_dir.join("lib/libunwind.so");
+    let status = std::process::Command::new(bin_path.join("clang").canonicalize()?)
+        .arg(format!("--target={}", triple))
+        .arg(format!("--sysroot={}", install_dir.display()))
+        .arg("-shared")
+        // libunwind calls into libc (abort, fprintf, dl_iterate_phdr, ...). Those stay undefined
+        // here and are resolved from the process image at load, which is how consumers already
+        // link against it (--allow-shlib-undefined in set_dynamic).
+        .arg("-nostdlib")
+        .arg("-Wl,-soname,libunwind.so")
+        .arg("-Wl,--whole-archive")
+        .arg(build_dir.join("libunwind.a"))
+        .arg("-Wl,--no-whole-archive")
+        .arg("-o")
+        .arg(&so_path)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to link libunwind.so for {}", triple);
+    }
+
     Ok(())
 }
 

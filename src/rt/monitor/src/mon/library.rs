@@ -125,6 +125,10 @@ impl Monitor {
         let (lib_id, loads) = if let Some(id) = dynlink.lookup_library(comp_id, &name) {
             (id, None)
         } else {
+            let prev_tls_gen = dynlink
+                .get_compartment(comp_id)
+                .map_err(|_| GenericError::Internal)?
+                .tls_generation();
             // Load the library and all its dependencies into the caller's compartment.
             let unlib = if let Some(id) = id {
                 UnloadedLibrary::new_object(name.clone(), id)
@@ -142,10 +146,31 @@ impl Monitor {
             // built by `RunCompLoader` starts with an empty cache, and a torn-down one drops it.)
             rc.invalidate_dynlink_cache();
             let root_id = loads.first().ok_or(GenericError::Internal)?.lib;
+            // These are runtime loads into a live compartment: mark them so relocation refuses
+            // initial-exec TLS relocations targeting them (already-running threads lack their
+            // TLS blocks).
+            for l in &loads {
+                dynlink
+                    .set_runtime_load(l.lib)
+                    .map_err(|_| GenericError::Internal)?;
+            }
             // Relocate the newly loaded library graph.
             dynlink
                 .relocate_all(root_id)
                 .map_err(|_| GenericError::Internal)?;
+            // A loaded DSO with a PT_TLS segment advanced the compartment's TLS generation.
+            // Republish the template so threads created from here on get the new modules;
+            // already-running threads catch up in twz-rt's __tls_get_addr slow path.
+            let new_tls_gen = dynlink
+                .get_compartment(comp_id)
+                .map_err(|_| GenericError::Internal)?
+                .tls_generation();
+            if new_tls_gen != prev_tls_gen {
+                comps
+                    .get_mut(caller)?
+                    .build_tls_template(dynlink)
+                    .ok_or(TwzError::from(ResourceError::OutOfResources))?;
+            }
             (root_id, Some(loads))
         };
 

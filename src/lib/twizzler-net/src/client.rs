@@ -53,12 +53,12 @@ pub struct NetClient {
     /// We owe the server a completion that the ring had no space for.
     ///
     /// One flag for the whole subqueue, which the MPSC submission queue does *not* guarantee is
-    /// enough: it permits several producers, and two of them would race here -- one deferring while
-    /// the other clears the flag, stranding the deferral with no registered waiter and no fallback
-    /// timeout left to rescue it. It is sound only because every producer of this subqueue runs
-    /// inside `Core::poll`, and every `Core::poll` call site holds `ENGINE.core`. **Anything that
-    /// submits or completes on this pair from outside that lock breaks this flag**, not just its
-    /// performance.
+    /// enough: it permits several producers, and two of them would race here -- one deferring
+    /// while the other clears the flag, stranding the deferral with no registered waiter and
+    /// no fallback timeout left to rescue it. It is sound only because every producer of this
+    /// subqueue runs inside `Core::poll`, and every `Core::poll` call site holds
+    /// `ENGINE.core`. **Anything that submits or completes on this pair from outside that lock
+    /// breaks this flag**, not just its performance.
     comp_deferred: bool,
     pub info: NetClientOpenInfo,
 }
@@ -277,6 +277,12 @@ impl smoltcp::phy::Device for NetClient {
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let idx = self.pending_rx.0.iter().position(|x| *x != INVALID_PACKET);
         if let Some(idx) = idx {
+            // See the note in NetServer::receive: allocate tx before dequeuing rx, so an
+            // exhausted pool cannot silently drop an already-received frame.
+            let Some(tx) = self.tx.allocate_packet() else {
+                crate::note_pollq(&crate::POLLQ_TX_DROPPED, "client rx: tx pool exhausted");
+                return None;
+            };
             let next = self.pending_rx.0[idx];
             self.pending_rx.0[idx] = INVALID_PACKET;
             self.tx.check_completions();
@@ -288,7 +294,7 @@ impl smoltcp::phy::Device for NetClient {
                 },
                 NetClientTxToken {
                     nc: self,
-                    packet: self.tx.allocate_packet().unwrap(),
+                    packet: tx,
                     consumed: false,
                 },
             ));
@@ -361,6 +367,7 @@ impl TxToken for NetClientTxToken<'_> {
         let ret = f(&mut mem[0..len]);
         self.nc.tx.set_packet_len(self.packet, len);
         self.consumed = true;
+        crate::DEV_TX_FRAMES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.nc.queue_tx(self.packet);
         ret
     }

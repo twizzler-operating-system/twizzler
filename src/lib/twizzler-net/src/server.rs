@@ -7,10 +7,10 @@ use twizzler_queue::{Queue, QueueBase};
 
 use crate::{
     ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, MAX_PACKETS_SET, PacketNum, PacketSet,
-    ServerMsg, ServerMsgKind, ServerRet, client::NetClientOpenInfo, endpoint::Pair,
+    ServerMsg, ServerMsgKind, ServerRet,
+    client::{LOCAL_MTU, NetClientOpenInfo},
+    endpoint::Pair,
 };
-
-use crate::client::LOCAL_MTU;
 
 pub struct NetServer {
     client_tx: Pair<ClientMsg, ServerRet>,
@@ -43,7 +43,8 @@ impl NetServer {
     /// Space in the client_tx completion ring, and only while we owe one. See
     /// `Pair::comp_space_waiter` for why this is conditional.
     pub fn completion_space_waiter(&self) -> Option<ThreadSyncSleep> {
-        self.comp_deferred.then(|| self.client_tx.comp_space_waiter())
+        self.comp_deferred
+            .then(|| self.client_tx.comp_space_waiter())
     }
 
     pub fn has_pending_msg_from_client(&self) -> bool {
@@ -128,7 +129,9 @@ impl NetServer {
             kind: ServerMsgKind::Tx(s),
         };
         if !crate::NONBLOCK_POLL_QUEUE {
-            self.client_rx.send_packets(packets, msg).expect("send packets");
+            self.client_rx
+                .send_packets(packets, msg)
+                .expect("send packets");
             return;
         }
         // Same rule as `inject`'s short return, applied to the ring rather than the pool: a
@@ -165,6 +168,12 @@ impl smoltcp::phy::Device for NetServer {
             .iter()
             .position(|x| *x != INVALID_PACKET);
         if let Some(idx) = idx {
+            // Allocate the tx packet first: smoltcp hands out rx and tx together, and on pool
+            // exhaustion we must leave the rx entry queued rather than dequeue and drop it.
+            let Some(tx) = self.client_rx.allocate_packet() else {
+                crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx: tx pool exhausted");
+                return None;
+            };
             let next = self.pending_client_tx.0[idx];
             self.pending_client_tx.0[idx] = INVALID_PACKET;
             self.client_rx.check_completions();
@@ -176,7 +185,7 @@ impl smoltcp::phy::Device for NetServer {
                 },
                 NetServerTxToken {
                     ns: self,
-                    packet: self.client_rx.allocate_packet().unwrap(),
+                    packet: tx,
                     consumed: false,
                 },
             ));

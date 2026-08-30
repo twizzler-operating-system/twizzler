@@ -84,6 +84,14 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         "--with-zlib={}",
         sysroot_dir.join("pkg/zlib").display()
     ));
+    // HTTP/2. Cargo makes this mandatory: with http.multiplexing on (the default) it asks libcurl
+    // for CURL_HTTP_VERSION_2_0 and treats a refusal as fatal ("failed to enable HTTP/2, is curl
+    // not built right?"). configure falls back to -I/-L/-lnghttp2 from this path because
+    // PKG_CONFIG is disabled below, same as the zlib/openssl/libssh2 flags above.
+    cmd.arg(format!(
+        "--with-nghttp2={}",
+        sysroot_dir.join("pkg/nghttp2").display()
+    ));
     // Runtime paths inside the guest: /pkg maps to the sysroot pkg tree on the disk image.
     cmd.arg("--with-ca-bundle=/pkg/curl/cacert.pem")
         .arg("--without-ca-path");

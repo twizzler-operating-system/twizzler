@@ -16,7 +16,7 @@ use smoltcp::{
     },
 };
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
-use twizzler_net::{MAX_PACKETS_SET, NetServer};
+use twizzler_net::{NetServer, MAX_PACKETS_SET};
 use virtio_net::TxBuffer;
 
 use crate::{addr::ClientAddr, NETINFO};
@@ -540,7 +540,10 @@ fn note_inject_drop(frame: &[u8], target: EthernetAddress, notes: &mut Vec<Strin
     if let Some((src, dst)) = ipv4_src_dst_octets(frame) {
         let dv = LOCAL_RX_DROPS_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed) + 1;
         if dv.is_power_of_two() {
-            notes.push(format!("local DROP dst .{} reached {} (from .{})", dst, dv, src));
+            notes.push(format!(
+                "local DROP dst .{} reached {} (from .{})",
+                dst, dv, src
+            ));
         }
     }
     let n = LOCAL_RX_DROPS.fetch_add(1, Ordering::Relaxed) + 1;

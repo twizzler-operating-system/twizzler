@@ -384,6 +384,13 @@ impl Context {
         self.add_dep(parent.0, dependee.0);
     }
 
+    /// Mark a library as loaded into a live compartment (see `Library::runtime_load`). Call
+    /// before relocating so initial-exec TLS relocations against it are refused.
+    pub fn set_runtime_load(&mut self, id: LibraryId) -> Result<(), DynlinkError> {
+        self.get_library_mut(id)?.runtime_load = true;
+        Ok(())
+    }
+
     pub fn unload_compartment(
         &mut self,
         comp_id: CompartmentId,

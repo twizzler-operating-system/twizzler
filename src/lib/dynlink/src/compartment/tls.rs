@@ -22,6 +22,12 @@ impl Compartment {
         id
     }
 
+    /// The current TLS generation of this compartment. Advances when a library with a PT_TLS
+    /// segment is loaded.
+    pub fn tls_generation(&self) -> u64 {
+        self.tls_gen
+    }
+
     /// Advance the TLS generation count by 1.
     pub fn advance_tls_generation(&mut self) -> u64 {
         let tng = self.tls_gen + 1;

@@ -175,10 +175,7 @@ impl Drop for Work {
         if let Some(entry) = finished {
             // The last phase has no successor marker to close it, so it is charged here; without
             // this every request's final phase would be missing from the totals.
-            record_phase(
-                entry.phase,
-                entry.phase_start.elapsed().as_nanos() as u64,
-            );
+            record_phase(entry.phase, entry.phase_start.elapsed().as_nanos() as u64);
             if entry.reported.is_some() {
                 tracing::warn!(
                     "pager watchdog: {} finished qid {} after {}ms in phase '{}': {:?}",

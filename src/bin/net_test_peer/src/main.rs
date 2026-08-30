@@ -489,7 +489,10 @@ fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
                 // Seven of nine failures in netarm-t1 left no message at all, so the dominant
                 // failure mode of this whole investigation has been invisible by construction.
                 Err(e) => {
-                    eprintln!("serve-echo EXIT: read error after {} bytes: {:?}", echoed, e);
+                    eprintln!(
+                        "serve-echo EXIT: read error after {} bytes: {:?}",
+                        echoed, e
+                    );
                     return Ok(());
                 }
             }

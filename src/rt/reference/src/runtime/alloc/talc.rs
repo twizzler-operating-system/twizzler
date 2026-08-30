@@ -234,7 +234,10 @@ fn create_and_map() -> Option<(usize, ObjID)> {
         MONDEBUG_ON => true,
         MONDEBUG_UNKNOWN if OUR_RUNTIME.state().contains(RuntimeState::READY) => {
             let on = std::env::var("MONDEBUG").is_ok();
-            MONDEBUG.store(if on { MONDEBUG_ON } else { MONDEBUG_OFF }, Ordering::Relaxed);
+            MONDEBUG.store(
+                if on { MONDEBUG_ON } else { MONDEBUG_OFF },
+                Ordering::Relaxed,
+            );
             on
         }
         _ => false,

@@ -46,12 +46,14 @@ fn build_rust(triple: &Triple) -> anyhow::Result<()> {
 
     // cargo's -sys crates (openssl-sys, curl-sys, libgit2-sys, libssh2-sys, libz-sys) have to
     // find the ports in the sysroot rather than vendoring and cross-building their own C.
+    // libcurl.pc lists `Requires.private: libnghttp2`, so nghttp2 has to be resolvable here too
+    // or pkg-config fails the whole libcurl query.
     // pkg-config refuses to answer at all under cross-compilation without ALLOW_CROSS, and
     // LIBDIR (not PATH) *replaces* the host's search path -- with PATH, a host libcurl wins and
     // links a host library into a twizzler binary. SYSROOT_DIR re-roots the ports' on-target
     // `/pkg/<name>` prefixes onto the host, which is the same mechanism ports/libgit2.rs
     // already uses to consume its own dependencies.
-    let pkgconfig = ["openssl", "curl", "libgit2", "libssh2", "zlib"]
+    let pkgconfig = ["openssl", "curl", "libgit2", "libssh2", "nghttp2", "zlib"]
         .iter()
         .map(|p| format!("{}/pkg/{}/lib/pkgconfig", sysroot.display(), p))
         .collect::<Vec<_>>()

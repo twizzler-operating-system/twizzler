@@ -5,6 +5,7 @@ use std::{
 };
 
 use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use secgate::TwzError;
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
 use twizzler_abi::{
@@ -550,22 +551,48 @@ fn main() {
         run_autostart(&autostart, &autostart_args);
     }
 
+    std::env::set_var(
+        "PS1",
+        "\\[\x1b[1;32m\\]root@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
+    );
+
     loop {
-        let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/shell")
-            .expect("failed to find shell object");
-        let mut shell_comp =
-            CompartmentLoader::new("shell", "shell", id, NewCompartmentFlags::empty());
-        shell_comp.with_controller(monitor_api::ControllerOption::Object(pty.id()));
-        shell_comp.args(["shell"]);
-        let shell_comp = shell_comp.load().expect("failed to start shell");
-
-        let mut flags = shell_comp.info().unwrap().flags;
-        while !flags.contains(CompartmentFlags::EXITED) {
-            flags = shell_comp.wait(flags);
+        if run_brush(pty.id()).is_err() {
+            warn!("failed to start brush");
+            run_shell(pty.id()).expect("failed to start any shell");
         }
-
         println!("shell exited -- restarting shell");
     }
+}
+
+fn run_shell(pty_id: ObjID) -> Result<(), TwzError> {
+    let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/initrd/shell")?;
+    let mut shell_comp = CompartmentLoader::new("shell", "shell", id, NewCompartmentFlags::empty());
+    shell_comp.with_controller(monitor_api::ControllerOption::Object(pty_id));
+    shell_comp.args(["shell"]);
+    let shell_comp = shell_comp.load()?;
+
+    let mut flags = shell_comp.info().unwrap().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = shell_comp.wait(flags);
+    }
+
+    Ok(())
+}
+
+fn run_brush(pty_id: ObjID) -> Result<(), TwzError> {
+    let id =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/pkg/twizzler/bin/brush")?;
+    let mut shell_comp = CompartmentLoader::new("brush", "brush", id, NewCompartmentFlags::empty());
+    shell_comp.with_controller(monitor_api::ControllerOption::Object(pty_id));
+    shell_comp.args(["brush"]);
+    let shell_comp = shell_comp.load()?;
+
+    let mut flags = shell_comp.info().unwrap().flags;
+    while !flags.contains(CompartmentFlags::EXITED) {
+        flags = shell_comp.wait(flags);
+    }
+    Ok(())
 }
 
 /// Run the program named by `--autostart` and shut the guest down when it exits.

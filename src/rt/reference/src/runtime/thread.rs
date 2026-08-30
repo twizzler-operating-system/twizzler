@@ -136,17 +136,30 @@ impl ReferenceRuntime {
     }
 
     pub fn tls_get_addr(&self, index: &TlsIndex) -> Option<*mut u8> {
-        let tp: &Tcb<()> = unsafe {
-            match dynlink::tls::get_current_thread_control_block().as_ref() {
-                Some(tp) => tp,
-                None => {
-                    preinit_println!("failed to locate TLS data");
-                    self.abort();
+        {
+            let tp: &Tcb<()> = unsafe {
+                match dynlink::tls::get_current_thread_control_block().as_ref() {
+                    Some(tp) => tp,
+                    None => {
+                        preinit_println!("failed to locate TLS data");
+                        self.abort();
+                    }
                 }
-            }
-        };
+            };
 
-        tp.get_addr(index)
+            if let Some(addr) = tp.get_addr(index) {
+                return Some(addr);
+            }
+        }
+        // Slow path: the module ID is beyond this thread's DTV. If a library with TLS was
+        // loaded after this thread's region was built, the compartment's template advanced;
+        // catch up and retry.
+        if tcb::upgrade_current_thread_dtv() {
+            let tp: &Tcb<()> =
+                unsafe { dynlink::tls::get_current_thread_control_block().as_ref()? };
+            return tp.get_addr(index);
+        }
+        None
     }
 
     pub fn spawn(&self, args: ThreadSpawnArgs) -> Result<(u32, *mut c_void)> {

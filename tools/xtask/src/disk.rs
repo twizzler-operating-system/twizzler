@@ -48,7 +48,7 @@ pub fn create_fresh_disk_image(triple: &Triple, path: &Path) -> anyhow::Result<(
 }
 
 pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result<()> {
-    let sysroot = Path::new("toolchain/install/sysroots").join(triple.to_string());
+    let sysroot = crate::toolchain::get_sysroots_root()?.join(triple.to_string());
 
     let mut latest_time = std::time::UNIX_EPOCH;
     let mut total_bytes = 0;
@@ -298,15 +298,18 @@ pub fn copy_twizzler_build(
     // Guarded on uuhelper actually being staged: a link to a binary that is not there resolves
     // to a name that then fails to spawn, which is a worse failure than the name not existing.
     if ext4.exists("/sysroot/pkg/twizzler/bin/uuhelper") {
-        for util in uuhelper_utils(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path())? {
+        for util in uuhelper_utils(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .as_path(),
+        )? {
             let link = format!("/sysroot/pkg/twizzler/bin/{}", util);
             if ext4.exists(&link) {
                 ext4.remove(&link).unwrap();
             }
             // The target is a *guest* path, not an image path: it is resolved on Twizzler, where
             // the image's /sysroot is reached as /pkg. Same convention as the terminfo link above.
-            ext4.symlink("/pkg/twizzler/bin/uuhelper", &link)
-                .unwrap();
+            ext4.symlink("/pkg/twizzler/bin/uuhelper", &link).unwrap();
         }
     }
 

@@ -256,8 +256,8 @@ impl Processor {
     /// the next thread created took it, zeroed its top page and wrote its own initial frame over
     /// frames the victim was still using. The victim then jumped through a clobbered slot: a
     /// kernel-mode instruction fetch on a present, non-executable page, panicking in `assert_valid`
-    /// with no usable backtrace. 22 occurrences in the 35,761 rounds logged after the reaper landed,
-    /// none in the 29,442 before it, first one 28 hours after it.
+    /// with no usable backtrace. 22 occurrences in the 35,761 rounds logged after the reaper
+    /// landed, none in the 29,442 before it, first one 28 hours after it.
     ///
     /// Held causally, not just by that correlation: widening the window with a spin between
     /// `set_active_running(false)` and `arch_switch_to`, on builds differing in nothing but the

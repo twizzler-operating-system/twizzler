@@ -516,7 +516,13 @@ static POLL_SUB: AtomicU64 = AtomicU64::new(0);
 ///
 /// `false` removes only the in-lock probes; every probe outside the lock stays, so the failure
 /// count is still readable from sysbench's own markers.
-const PROBE_UNDER_LOCK: bool = true;
+/// 2026-08-30: set `false`. Two reasons, and the second matters more than the first.
+/// A synchronous console write inside the engine's core mutex perturbs the subsystem being
+/// measured -- 87 fired inside the lock in one bench window. And per the analysis above it is a
+/// candidate *cause* of the peer freeze, not merely noise, so a measurement taken with it on
+/// cannot distinguish the bug from the instrument. Flip it back to reproduce that hypothesis
+/// deliberately; do not leave it on for baselines.
+const PROBE_UNDER_LOCK: bool = false;
 
 /// Emit the engine's liveness counters from whatever thread calls this, plus the one thing the
 /// poll thread cannot report about itself: whether it is wedged, and whether frames are waiting.
@@ -596,7 +602,7 @@ fn pollprobe(site: &str) {
         // `sctx` joins this line to the kernel's `[hang]` records, which carry the same id. Without
         // it the two instruments describe the same frozen compartment in vocabularies that cannot
         // be matched up -- octet on one side, thread ids on the other.
-        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={}",
+        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={} udpacc={} devtx={}",
         ENGINE_OCTET.load(Ordering::Relaxed),
         secgate::get_sctx_id().raw(),
         site,
@@ -634,6 +640,8 @@ fn pollprobe(site: &str) {
         RX_TAIL.load(Ordering::Relaxed),
         RX_NONEMPTY.load(Ordering::Relaxed),
         RX_TURN.load(Ordering::Relaxed),
+        twizzler_net::UDP_SEND_ACCEPTED.load(Ordering::Relaxed),
+        twizzler_net::DEV_TX_FRAMES.load(Ordering::Relaxed),
     );
     twizzler_abi::syscall::sys_kernel_console_write(
         twizzler_abi::syscall::KernelConsoleSource::Console,
@@ -1335,9 +1343,10 @@ impl Engine {
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
                     if (ENGINE_WAKES.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-                        // Flag inside the body, never in the condition: `&&` would short-circuit the
-                        // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
-                        // from never reaching here.
+                        // Flag inside the body, never in the condition: `&&` would short-circuit
+                        // the fetch_add away and the counter would read 0
+                        // in the off arm -- indistinguishable from never
+                        // reaching here.
                         if PROBE_UNDER_LOCK {
                             pollprobe("wake");
                         }
@@ -1540,7 +1549,11 @@ impl Core {
                 }
             }
             if !ready {
-                groupcensus("pollthread", GROUP_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1, &census);
+                groupcensus(
+                    "pollthread",
+                    GROUP_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1,
+                    &census,
+                );
             }
         }
     }

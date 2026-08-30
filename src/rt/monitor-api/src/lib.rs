@@ -1186,6 +1186,10 @@ pub struct DynlinkStats {
 pub enum MonitorCompControlCmd {
     RuntimeReady,
     RuntimePostMain,
+    /// Process-exit the calling compartment with this code: every thread of the compartment is
+    /// force-exited, and the code overrides the main thread's own exit code (a force-exited
+    /// thread reports 101, not the code the exiting thread asked for).
+    Exit(i32),
 }
 
 #[repr(C)]

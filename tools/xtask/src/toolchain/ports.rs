@@ -9,6 +9,7 @@ mod libssh2;
 mod llvm;
 mod ncurses;
 mod neatvi;
+mod nghttp2;
 mod openssl;
 mod psl;
 mod python3;
@@ -101,7 +102,8 @@ const PORTS: &[(&str, &[&str], bool)] = &[
     ("openssl", &["zlib"], true),
     ("llvm", &["zlib"], true),
     ("libssh2", &["zlib", "openssl"], true),
-    ("curl", &["zlib", "openssl", "libssh2"], true),
+    ("nghttp2", &[], true),
+    ("curl", &["zlib", "openssl", "libssh2", "nghttp2"], true),
     ("libgit2", &["zlib", "openssl", "libssh2"], true),
     ("python3", &["zlib", "openssl", "ncurses"], true),
     // In-progress support: buildable by name, but not part of @all.
@@ -210,6 +212,7 @@ fn install_port(name: &str, triple: &Triple) -> anyhow::Result<()> {
         "openssl" => openssl::install(triple),
         "curl" => curl::install(triple),
         "libssh2" => libssh2::install(triple),
+        "nghttp2" => nghttp2::install(triple),
         "libgit2" => libgit2::install(triple),
         "neatvi" => neatvi::install(triple),
         "psl" => psl::install(triple),
