@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use libc::{termios, winsize, S_IFCHR};
+use libc::{termios, winsize, S_IFCHR, S_IFIFO};
 use twizzler_io::{
     pipe::Pipe,
     pty::{PtyClientHandle, PtyServerHandle},
@@ -209,7 +209,10 @@ impl Fd for Pipe {
             created: Duration::ZERO,
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
-            unix_mode: S_IFCHR | 0o666,
+            // S_IFIFO, not the S_IFCHR the Pty impl above uses: mlibc takes unix_mode verbatim
+            // whenever it carries type bits, so its FdKind_Pipe -> S_IFIFO fallback never runs
+            // and whatever is written here is what fstat reports.
+            unix_mode: S_IFIFO | 0o666,
         })
     }
 
