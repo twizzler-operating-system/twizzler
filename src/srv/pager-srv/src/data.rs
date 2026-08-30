@@ -879,16 +879,15 @@ impl PagerData {
             // Deliberately not `?`: this path never checked existence, and returning an error here
             // would make the kernel cache the ID in `no_exist` permanently. Without a length we
             // just skip the synthesis and the meta page gets faulted in later, as it used to be.
-            let len = ctx.paged_ostore(None)?.len(id.raw());
+            let len = ctx.paged_ostore(None)?.len_and_mtime(id.raw());
+            // The segment now covers mtime as well, which used to sit outside it while costing a
+            // whole fs-lock acquisition. `store-len` figures are not comparable across this change.
             crate::dispatch_stats::DISPATCH_STATS.info_lookup(
                 crate::dispatch_stats::DispatchStats::now_ns() - len_start,
                 None,
             );
             return Ok(match len {
-                Ok(len) => {
-                    let mtime = ctx.paged_ostore(None)?.mtime(id.raw()).unwrap_or(0);
-                    info.synth_meta(len).with_mtime(mtime)
-                }
+                Ok((len, mtime)) => info.synth_meta(len).with_mtime(mtime),
                 Err(e) => {
                     tracing::debug!("no length for external file {}: {}", id, e);
                     info

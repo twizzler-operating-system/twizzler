@@ -1,3 +1,6 @@
+static KEV_SLEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static KEV_SHORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -429,7 +432,58 @@ impl ReferenceRuntime {
                     ThreadSyncFlags::empty(),
                 )));
             }
-            match sys_thread_sync(&mut wps, timeout) {
+            let __t0 = std::time::Instant::now();
+            let __res = sys_thread_sync(&mut wps, timeout);
+            let __slept = __t0.elapsed();
+            // Denominator first: every timed sleep counts, so a silent report means "none were
+            // short", never "the probe never ran".
+            if timeout.is_some() {
+                KEV_SLEEPS.fetch_add(1, Ordering::Relaxed);
+            }
+            // Fire on the anomaly itself -- returned in under a quarter of what was asked for --
+            // and name the return value, which is the whole discriminator. TIMED_OUT here means
+            // the timeout fired early (kernel fault); Ok means a wake arrived (kernel fine).
+            if let Some(t) = timeout {
+                if __slept * 4 < t {
+                    KEV_SHORT.fetch_add(1, Ordering::Relaxed);
+                    let __k = match &__res {
+                        Ok(n) => *n as i64,
+                        Err(e) if *e == TwzError::TIMED_OUT => -1,
+                        Err(_) => -2,
+                    };
+                    // One console write for the whole line: `klog_println!` issues a syscall per
+                    // fragment and a dozen compartments splice each other character by character.
+                    use core::fmt::Write as _;
+                    struct L { b: [u8; 200], n: usize }
+                    impl core::fmt::Write for L {
+                        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                            let e = (self.n + s.len()).min(self.b.len());
+                            self.b[self.n..e].copy_from_slice(&s.as_bytes()[..e - self.n]);
+                            self.n = e;
+                            Ok(())
+                        }
+                    }
+                    let mut l = L { b: [0; 200], n: 0 };
+                    // ret: >=0 is Ok(n) -- a wake arrived, kernel behaving correctly.
+                    //      -1 is TIMED_OUT -- the timeout fired early, a kernel fault.
+                    let _ = writeln!(
+                        l,
+                        "KEVSHORT req_ms={} actual_us={} ret={} nops={} sleeps={} short={}",
+                        t.as_millis() as u64,
+                        __slept.as_micros() as u64,
+                        __k,
+                        wps.len(),
+                        KEV_SLEEPS.load(Ordering::Relaxed),
+                        KEV_SHORT.load(Ordering::Relaxed),
+                    );
+                    twizzler_abi::syscall::sys_kernel_console_write(
+                        twizzler_abi::syscall::KernelConsoleSource::Console,
+                        &l.b[..l.n],
+                        twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
+                    );
+                }
+            }
+            match __res {
                 Ok(_) => {}
                 Err(TwzError::TIMED_OUT) => {}
                 Err(e) => return Err(e),

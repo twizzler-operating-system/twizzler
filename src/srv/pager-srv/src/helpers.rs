@@ -75,11 +75,10 @@ fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32) {
 
 /// Fill a fresh physical page with an external file's meta page.
 pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
-    let len = ctx
+    let (len, mtime) = ctx
         .paged_ostore(None)?
-        .len(obj_id.raw())
+        .len_and_mtime(obj_id.raw())
         .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
-    let mtime = ctx.paged_ostore(None)?.mtime(obj_id.raw()).unwrap_or(0);
     let phys_range = {
         let page = match ctx.data.try_alloc_page() {
             Ok(page) => page,

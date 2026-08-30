@@ -100,6 +100,7 @@ members = [
     #"src/bin/lltest/llt",
 
     "src/ports/femto", "src/bin/top", "src/bin/otop",
+    "src/bin/brush",
 ]
 
 exclude = [
@@ -107,6 +108,7 @@ exclude = [
     # A nested workspace: its crates use `edition.workspace = true` and friends, so without
     # this they attach to *this* root, which has no [workspace.package] to inherit from.
     "src/ports/coreutils",
+    "src/ports/brush",
     "src/ports/candle-test/candle",
     "src/ports/candle-test/gemm",
 ]
@@ -404,11 +406,13 @@ async-executor = { path = "src/ports/async-executor" }
 # The submodule existed but was never patched in, so the registry copy was used. Its `unix`
 # module is `std::os::unix::net` (unix-domain sockets), which twizzler does not have.
 async-net = { path = "src/ports/async-net" }
-parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
-#parking_lot = { path = "src/ports/parking_lot" }
-# lock_api comes from the parking_lot repo
-lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
-#lock_api = { path = "src/ports/parking_lot/lock_api" }
+# parking_lot/lock_api forks dropped: the fork's twizzler ThreadParker became unreachable when
+# this target gained `target_family = "unix"`. Its cfg_if tries `else if #[cfg(unix)]` *before*
+# `target_os = "twizzler"`, so the 108-line twizzler.rs has been dead code and the registry
+# crate's pthread-based unix parker is what the monitor has actually been running. Pinning to
+# the fork also held parking_lot at 0.12.4, which blocked `cached` 2.x (brush).
+#parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+#lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 #blocking = { path = "src/ports/blocking" }
 
 #num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }
@@ -420,6 +424,11 @@ lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git
 #gemm-common = { git = "https://github.com/dbittman/gemm.git", branch = "dbittman-fixes" }
 
 nix = { version = "0.31.2", path = "src/ports/nix" }
+# brush-builtins depends on the registry `uucore`, which requires a libc newer than
+# src/ports/libc provides -- that alone silently disables the libc [patch] for the whole
+# graph (cargo resolves versions target-agnostically, so even an unused arm constrains).
+# Point it at the same ported uucore that uuhelper already uses by path.
+uucore = { path = "src/ports/coreutils/src/uucore" }
 # rustix 1.x for the twizzler target: the registry crate's libc backend is per-OS and has no
 # arm for an unknown unix. Reaches the target build via terminal_size (clap wrap_help + miette).
 # The `0.38` requirement from gix-* is host-only and stays on the registry crate.

@@ -134,8 +134,12 @@ impl NetServer {
         // Same rule as `inject`'s short return, applied to the ring rather than the pool: a
         // backed-up client is dropped, never waited on. This runs under net-srv's `handles` lock,
         // so blocking here stalls the whole switch, not just one client.
-        if self.client_rx.try_send_packets(packets, msg).is_err() {
-            crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx dropped");
+        match self.client_rx.try_send_packets(packets, msg) {
+            Ok(_) => {
+                crate::POLLQ_TX_SUBMITTED
+                    .fetch_add(packets.len() as u64, core::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx dropped"),
         }
     }
 }

@@ -44,9 +44,38 @@ fn build_rust(triple: &Triple) -> anyhow::Result<()> {
         format!("--sysroot={}", sysroot.display()),
     );
 
+    // cargo's -sys crates (openssl-sys, curl-sys, libgit2-sys, libssh2-sys, libz-sys) have to
+    // find the ports in the sysroot rather than vendoring and cross-building their own C.
+    // pkg-config refuses to answer at all under cross-compilation without ALLOW_CROSS, and
+    // LIBDIR (not PATH) *replaces* the host's search path -- with PATH, a host libcurl wins and
+    // links a host library into a twizzler binary. SYSROOT_DIR re-roots the ports' on-target
+    // `/pkg/<name>` prefixes onto the host, which is the same mechanism ports/libgit2.rs
+    // already uses to consume its own dependencies.
+    let pkgconfig = ["openssl", "curl", "libgit2", "libssh2", "zlib"]
+        .iter()
+        .map(|p| format!("{}/pkg/{}/lib/pkgconfig", sysroot.display(), p))
+        .collect::<Vec<_>>()
+        .join(":");
+    std::env::set_var(format!("PKG_CONFIG_ALLOW_CROSS_{}", triple), "1");
+    std::env::set_var(format!("PKG_CONFIG_LIBDIR_{}", triple), pkgconfig);
+    std::env::set_var(
+        format!("PKG_CONFIG_SYSROOT_DIR_{}", triple),
+        sysroot.display().to_string(),
+    );
+    std::env::set_var("LIBGIT2_SYS_USE_PKG_CONFIG", "1");
+    std::env::set_var("LIBSSH2_SYS_USE_PKG_CONFIG", "1");
+    std::env::set_var("OPENSSL_NO_VENDOR", "1");
+
     let log = setup_logfile("ports/rust", "xtask-install", Some(triple))?;
+    // --host: `build.host` also lists the build machine, so without this the Cargo tool step
+    // (IS_HOST) builds cargo for the *host* as well -- pulling libgit2-sys/libssh2-sys into a
+    // build that resolves against the twizzler ports and dies on "skipping incompatible
+    // libgit2.so". A host-native cargo installed into the twizzler sysroot prefix was never
+    // wanted anyway; this port exists to produce the twizzler-hosted toolchain.
     let status = Command::new("./x.py")
         .arg("install")
+        .arg("--host")
+        .arg(triple.to_string())
         .stdout(log.try_clone()?)
         .stderr(log)
         .current_dir("toolchain/src/rust")
@@ -111,6 +140,14 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
         .push(guess_host_triple().unwrap());
     toml["build"]["host"].as_array_mut().unwrap().push(tstr);
     toml["install"]["prefix"] = toml_edit::value(install_prefix.display().to_string());
+
+    // bootstrap's `tool_enabled` (src/bootstrap/src/lib.rs) requires BOTH of these before the
+    // Cargo step will run. Std/Rustc/LlvmTools install unconditionally, so naming only cargo in
+    // `tools` adds a component rather than dropping any.
+    toml["build"]["extended"] = toml_edit::value(true);
+    let mut tools = Array::new();
+    tools.push("cargo");
+    toml["build"]["tools"] = toml_edit::value(tools);
 
     let cc = llvm_bin
         .join("clang")

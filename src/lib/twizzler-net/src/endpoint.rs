@@ -55,6 +55,11 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         self.queue.setup_write_com_sleep()
     }
 
+    /// See [`twizzler_queue_raw::RawQueueHdr::pending_parts`].
+    pub fn pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.queue.submission_pending_parts()
+    }
+
     pub fn has_pending_msg(&self) -> bool {
         self.queue.has_pending_submission()
     }

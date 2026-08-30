@@ -55,7 +55,15 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
 
     let mut cfg = cmake::Config::new(&src_dir);
     cfg.out_dir(&build_dir);
-    super::llvm::setup_cmake(&mut cfg, Some(&install_dir))?;
+    // Install under the same on-target prefix the autotools ports use, staged into the
+    // sysroot with DESTDIR. Handing setup_cmake an absolute install path makes it canonicalize
+    // that path into CMAKE_INSTALL_PREFIX, which lands verbatim in libgit2.pc -- and
+    // canonicalize resolves the toolchain-tag symlink, so the .pc ends up naming a directory
+    // whose name changes every time the tag does.
+    super::llvm::setup_cmake(&mut cfg, None)?;
+    std::fs::create_dir_all(&install_dir)?;
+    cfg.define("CMAKE_INSTALL_PREFIX", "/pkg/libgit2");
+    cfg.env("DESTDIR", sysroot_dir.display().to_string());
     super::llvm::setup_cmake_twizzler(&mut cfg, triple, vec!["-fPIC".to_string()])?;
 
     cfg.define("BUILD_SHARED_LIBS", "ON")

@@ -201,6 +201,10 @@ impl Thread {
 
     /// True while this thread is some cpu's current thread -- on-cpu, or executing the last few
     /// instructions before a switch hands the cpu away.
+    ///
+    /// False does *not* mean the thread is off its kernel stack: those last few instructions are
+    /// `save_extended_state` and `__do_switch`, both of which write through it. Use
+    /// [`Thread::has_left_kernel_stack`] for that question.
     #[inline]
     pub fn is_active_running(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_ACTIVE_RUNNING != 0

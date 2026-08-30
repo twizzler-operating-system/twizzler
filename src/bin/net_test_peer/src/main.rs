@@ -422,19 +422,41 @@ fn serve_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     // Sliced, not one long wait. Identical total bound, but each slice re-enters the runtime from
     // this thread -- the only one still running when the engine stops -- so engine liveness gets
     // sampled from outside the thing being measured.
-    let mut waited = Duration::ZERO;
+    // Bounded by a deadline, not by accumulated intended slices. `waited += slice` added a full
+    // second per iteration however long the wait actually took, so a `wait_readable` returning
+    // early -- for any reason -- made twenty ~2.5ms polls report a twenty-second timeout. That
+    // fabricated duration sat upstream of every other measurement here: the peer exited after
+    // ~50ms while its own engine was still initialising, and the "20s hang" it reported sent an
+    // entire investigation looking for a stuck thread that never existed.
     let slice = Duration::from_secs(1);
+    let start = Instant::now();
+    let deadline = start + idle;
     let mut got = false;
-    while waited < idle {
-        if wait_readable(listener.as_raw_fd(), slice) {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        // Still sliced, for the reason above, but each slice is clamped to what is actually left
+        // so slicing can never overshoot or undershoot the real bound.
+        if wait_readable(listener.as_raw_fd(), remaining.min(slice)) {
             got = true;
             break;
         }
-        waited += slice;
     }
     if !got {
+        // Report the *measured* elapsed time, not the requested bound. A timeout message that
+        // states its own parameter can only ever agree with itself; had this printed 48ms next
+        // to a 20s request, the defect would have been visible the first time it fired.
+        // Name the listener. A round runs four net benches across ~20 compartments and this
+        // message appeared without an address or port, so a single failure could not be tied to
+        // the compartment that produced it -- every per-compartment trace had to be matched by
+        // guessing which one had a ~20s engine. `listen` is "10.0.2.N:PORT" and has been in
+        // scope the whole time.
         return Err(std::io::Error::other(format!(
-            "no connection within {:?}",
+            "no connection on {}: waited {:?} of {:?}",
+            listen,
+            start.elapsed(),
             idle
         )));
     }

@@ -484,6 +484,19 @@ impl RawQueueHdr {
         !self.is_empty(b, t) && self.is_turn(t, item)
     }
 
+    /// `has_pending`'s two conjuncts, separately, plus the words they came from.
+    ///
+    /// `has_pending` answering false has two causes that no counter downstream can separate:
+    /// nothing was ever submitted (`nonempty` false), or entries are present but their turn bit
+    /// does not match the consumer's tail (`turn` false), which makes them invisible to `receive`
+    /// as well and cannot be fixed by any wake. A single bool collapses those into one silence.
+    pub fn pending_parts<T>(&self, raw_buf: *mut QueueEntry<T>) -> (u64, u64, bool, bool) {
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let b = self.bell.load(Ordering::SeqCst);
+        let item = unsafe { raw_buf.add((t as usize) & (self.len() - 1)) };
+        (b, t, !self.is_empty(b, t), self.is_turn(t, item))
+    }
+
     pub fn has_space<T>(&self) -> bool {
         let h = self.producer.head.load(Ordering::SeqCst);
         let t = self.tail.load(Ordering::SeqCst);
@@ -772,6 +785,11 @@ impl<T: Copy> RawQueue<T> {
 
     pub fn has_pending(&self) -> bool {
         self.hdr().has_pending(unsafe { *self.buf.get() })
+    }
+
+    /// See [`RawQueueHdr::pending_parts`].
+    pub fn pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.hdr().pending_parts(unsafe { *self.buf.get() })
     }
 
     pub fn has_space(&self) -> bool {

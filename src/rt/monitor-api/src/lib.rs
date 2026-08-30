@@ -623,6 +623,9 @@ fn load_fd_specs_from_runtime() -> Vec<binding_info> {
             break;
         }
     }
+    // A close-on-exec descriptor is by definition not inherited. `read_binds` reports every open
+    // descriptor and leaves this policy to whoever is building a child.
+    v.retain(|b| !twizzler_rt_abi::fd::twz_rt_fd_get_cloexec(b.fd).unwrap_or(false));
     v
 }
 

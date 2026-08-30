@@ -263,8 +263,23 @@ static ENGINE_WAKES: AtomicU64 = AtomicU64::new(0);
 /// behaviour exactly. A const rather than an env var deliberately: an environment arm is invisible
 /// to `git diff` and to every mtime audit, which is the "flag flipped before your window" case
 /// that no provenance check can see.
-const POLL_WAIT_COMPLETIONS: bool = false;
-const POLL_FALLBACK_MS: Option<u64> = Some(50);
+const POLL_WAIT_COMPLETIONS: bool = true;
+/// `None`: the wait set is the whole set, so there is no periodic wake.
+///
+/// This was `Some(50)` as a backstop against a missed wake wedging a compartment forever, from
+/// when `poll_delay()` returning `None` meant an unbounded sleep on a waiter the poll thread does
+/// not control. It cost every compartment 20 wakeups a second whether or not anything was
+/// happening -- work in exactly the case where there is none.
+///
+/// It can be dropped now because the two things it insured against are covered. The wait set
+/// reads both queue sides it can be woken by (rx submissions via `recv_msg`, tx completions via
+/// `check_completions`) plus `notify` for same-compartment changes, and a half-open connection --
+/// previously the one state that could sit forever with no deadline -- now carries a socket
+/// timeout that gives `poll_delay` a real deadline for exactly as long as the half-open exists
+/// (see `LISTENER_HALF_OPEN_TIMEOUT`). Anything still missing is a hang the stall watchdog names,
+/// which is the point: a missed wake should be a fault someone can see, not latency absorbed by a
+/// timer that hides it.
+const POLL_FALLBACK_MS: Option<u64> = None;
 
 // Poll-thread wake accounting (diagnostic). A compartment that only *waits* -- any server --
 // depends entirely on the rx waiter firing, because it has no socket calls of its own to wake
@@ -298,6 +313,35 @@ static POLL_PHASE: AtomicU64 = AtomicU64::new(0);
 static ENGINE_TXWAKE: AtomicU64 = AtomicU64::new(0);
 /// Wakes issued after a `close()`/`abort()` on the paths that had none.
 static ENGINE_CLOSEWAKE: AtomicU64 = AtomicU64::new(0);
+
+/// Sleeps entered vs sleeps returned, and when the current one started.
+///
+/// `POLL_MAX_SLEEP_MS` is a `fetch_max` *after* the sleep returns, so it can only ever describe
+/// sleeps that ended: the one sleep that matters -- the one still running -- is invisible to it.
+/// `enter > exit` says a sleep is in flight right now, and `T0_MS` says for how long, so
+/// "woke and did not progress" stops reading identically to "never woke".
+static POLL_SLEEP_ENTER: AtomicU64 = AtomicU64::new(0);
+static POLL_SLEEP_EXIT: AtomicU64 = AtomicU64::new(0);
+/// Monotonic ms at the last sleep entry, published *before* the syscall.
+static POLL_SLEEP_T0_MS: AtomicU64 = AtomicU64::new(0);
+/// Timeout requested for the in-flight sleep, ms. `u64::MAX` = none requested.
+static POLL_SLEEP_REQ_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Watchdog `sleep()` entered vs returned. The watchdog is a 0-op timed `sys_thread_sync`; if it
+/// stops returning, the compartment loses its only outside observer, so it needs its own pair.
+static WD_SLEEP_ENTER: AtomicU64 = AtomicU64::new(0);
+static WD_SLEEP_EXIT: AtomicU64 = AtomicU64::new(0);
+
+/// Raw rx-ring state sampled where `any_ready` is computed, i.e. on the pass that decides whether
+/// to sleep.
+///
+/// `has_rx_pending()` is `nonempty && turn`, and a false from it has two causes a bool cannot
+/// separate: nothing was submitted, or entries are present with a turn bit the consumer does not
+/// accept -- which also hides them from `receive`, so no wake would help. Published as the two
+/// conjuncts plus the words behind them.
+static RX_BELL: AtomicU64 = AtomicU64::new(0);
+static RX_TAIL: AtomicU64 = AtomicU64::new(0);
+static RX_NONEMPTY: AtomicU64 = AtomicU64::new(2);
+static RX_TURN: AtomicU64 = AtomicU64::new(2);
 /// Entries to `TcpStreamInner::drop`, and the socket state seen there before `close()`.
 ///
 /// The lost-FIN population's decisive question. net-srv's per-destination frame counters show a
@@ -414,7 +458,7 @@ static ENGINE_OCTET: AtomicU64 = AtomicU64::new(999);
 static GROUP_NOTREADY: AtomicU64 = AtomicU64::new(0);
 
 /// One line naming the backlog's per-state census when a listener group is not ready.
-fn groupcensus(n: u64, c: &[u16; 11]) {
+fn groupcensus(site: &str, n: u64, c: &[u16; 11]) {
     use core::fmt::Write;
     struct Line {
         b: [u8; 256],
@@ -431,8 +475,11 @@ fn groupcensus(n: u64, c: &[u16; 11]) {
     let mut line = Line { b: [0; 256], n: 0 };
     let _ = writeln!(
         line,
-        "GROUPCENSUS octet={} n={} closed={} listen={} synsent={} synrecv={} estab={} finw1={} finw2={} closewait={} closing={} lastack={} timewait={}",
-        ENGINE_OCTET.load(Ordering::Relaxed), n,
+        "GROUPCENSUS octet={} src={} iters={} n={} closed={} listen={} synsent={} synrecv={} estab={} finw1={} finw2={} closewait={} closing={} lastack={} timewait={}",
+        ENGINE_OCTET.load(Ordering::Relaxed),
+        site,
+        POLL_ITERS.load(Ordering::Relaxed),
+        n,
         c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10]
     );
     twizzler_abi::syscall::sys_kernel_console_write(
@@ -453,6 +500,23 @@ static EXT_CORE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// nonblock A/B. A timing race scatters those counts; the same three numbers every time is a state
 /// machine stopping at one statement. This splits that statement apart so the count names a line.
 static POLL_SUB: AtomicU64 = AtomicU64::new(0);
+
+/// Arm selector: emit the three probes that run **while the engine core mutex is held**.
+///
+/// `pollprobe` ends in `sys_kernel_console_write`. Three of its call sites -- "poll", "fast",
+/// "wake" -- are inside the lock, and the "poll" one is gated on `is_power_of_two()`, so it fires
+/// on exactly the 1st, 2nd, 4th, 8th... poll. Every frozen peer this session stopped at
+/// `polls=8 iters=7 sleeps=6`, and `sub=1` with `phase=3` places the thread between
+/// `POLL_PHASE.store(3)` and the first `POLL_SUB.store(10)` -- a gap whose only substantial
+/// content is that console write. A constant rather than a distribution is what a fixed-count gate
+/// predicts and a race does not.
+///
+/// There is prior measurement for the pattern in this same subsystem: `net-srv`'s `deliver_local`
+/// records that a probe logging under its locks "took the suite from 13/50 failures to 50/50".
+///
+/// `false` removes only the in-lock probes; every probe outside the lock stays, so the failure
+/// count is still readable from sysbench's own markers.
+const PROBE_UNDER_LOCK: bool = true;
 
 /// Emit the engine's liveness counters from whatever thread calls this, plus the one thing the
 /// poll thread cannot report about itself: whether it is wedged, and whether frames are waiting.
@@ -483,6 +547,18 @@ pub(super) fn report_engine_liveness() {
         Err(_) => 3,
     };
     EXT_CORE.store(state, Ordering::Relaxed);
+    // Fire on the condition, not on a power-of-two schedule. The gated schedule gave each failing
+    // peer four lines across its entire 20s life, which is why the freeze had to be inferred from
+    // counters rather than observed. A sleep in flight for more than twice its own requested
+    // timeout (floor 1s) is the anomaly itself, so report it every time it is true.
+    let stuck = sleep_inflight_ms().is_some_and(|age| {
+        let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
+        age > req.saturating_mul(2).max(1000)
+    });
+    if stuck {
+        pollprobe("SLEEPSTUCK");
+        return;
+    }
     pollprobe("extern");
 }
 
@@ -520,7 +596,7 @@ fn pollprobe(site: &str) {
         // `sctx` joins this line to the kernel's `[hang]` records, which carry the same id. Without
         // it the two instruments describe the same frozen compartment in vocabularies that cannot
         // be matched up -- octet on one side, thread ids on the other.
-        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={}",
+        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={}",
         ENGINE_OCTET.load(Ordering::Relaxed),
         secgate::get_sctx_id().raw(),
         site,
@@ -542,12 +618,50 @@ fn pollprobe(site: &str) {
         POLL_OVERSLEPT.load(Ordering::Relaxed),
         POLL_MAX_SLEEP_MS.load(Ordering::Relaxed),
         WATCHDOG_TICKS.load(Ordering::Relaxed),
+        POLL_SLEEP_ENTER.load(Ordering::Relaxed),
+        POLL_SLEEP_EXIT.load(Ordering::Relaxed),
+        // -1 rather than 0 for "no sleep in flight": 0 is a legitimate age, and a field that
+        // renders both as the same number is the defect this whole probe exists to avoid.
+        sleep_inflight_ms().map(|v| v as i64).unwrap_or(-1),
+        POLL_SLEEP_REQ_MS.load(Ordering::Relaxed) as i64,
+        WD_SLEEP_ENTER.load(Ordering::Relaxed),
+        WD_SLEEP_EXIT.load(Ordering::Relaxed),
+        // Engine age. Separates the two live hypotheses: ~20000 means the engine was built at
+        // bind and its poll thread then did almost nothing (starvation); ~400 means the engine
+        // itself was only constructed moments ago (late start). Zeroed at `pollprobe("init")`.
+        mono_ms(),
+        RX_BELL.load(Ordering::Relaxed),
+        RX_TAIL.load(Ordering::Relaxed),
+        RX_NONEMPTY.load(Ordering::Relaxed),
+        RX_TURN.load(Ordering::Relaxed),
     );
     twizzler_abi::syscall::sys_kernel_console_write(
         twizzler_abi::syscall::KernelConsoleSource::Console,
         &line.b[..line.n],
         twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
     );
+}
+
+lazy_static::lazy_static! {
+    static ref ENGINE_T0: std::time::Instant = std::time::Instant::now();
+}
+
+fn mono_ms() -> u64 {
+    ENGINE_T0.elapsed().as_millis() as u64
+}
+
+/// Age of the in-flight sleep in ms, or `None` if no sleep is currently in flight.
+fn sleep_inflight_ms() -> Option<u64> {
+    // ENTER must be read before EXIT, and swapping these two operands is the one edit that breaks
+    // this function. Read ENTER first: a sleep that completes between the two loads then yields
+    // enter == exit -- stale by one sample, reported as "not in flight", harmless. Read EXIT first
+    // and the same interleaving yields an old EXIT against a new ENTER, i.e. a *false in-flight*
+    // for a sleep that already returned -- which is precisely the "stuck sleep" this exists to
+    // detect, manufactured by the detector. Only one order fails safe.
+    if POLL_SLEEP_ENTER.load(Ordering::Relaxed) == POLL_SLEEP_EXIT.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(mono_ms().saturating_sub(POLL_SLEEP_T0_MS.load(Ordering::Relaxed)))
 }
 
 lazy_static::lazy_static! {
@@ -923,6 +1037,16 @@ impl Engine {
                     .ifaceset
                     .iter()
                     .any(|iface| iface.device.has_rx_pending());
+                // Sampled here, not in `pollprobe`: this is the pass that decides to sleep, and the
+                // question is what the ring looked like at that decision rather than whenever a
+                // probe next fires.
+                if let Some(iface) = core.ifaceset.iter().next() {
+                    let (bell, tail, nonempty, turn) = iface.device.rx_pending_parts();
+                    RX_BELL.store(bell, Ordering::Relaxed);
+                    RX_TAIL.store(tail, Ordering::Relaxed);
+                    RX_NONEMPTY.store(nonempty as u64, Ordering::Relaxed);
+                    RX_TURN.store(turn as u64, Ordering::Relaxed);
+                }
                 drop(core);
                 let n = notify.swap(0, Ordering::SeqCst);
                 POLL_ITERS.fetch_add(1, Ordering::Relaxed);
@@ -968,7 +1092,17 @@ impl Engine {
                         None => time.map(|t| t.into()),
                     };
                     let t0 = std::time::Instant::now();
+                    // Published before the syscall, so a sleep that never returns is still
+                    // describable. Order matters: timestamp and request first, then the entry
+                    // count, so a reader that sees enter>exit always has a valid T0 to subtract.
+                    POLL_SLEEP_REQ_MS.store(
+                        timeout.map(|t| t.as_millis() as u64).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
+                    POLL_SLEEP_T0_MS.store(mono_ms(), Ordering::Relaxed);
+                    POLL_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
                     let _ = sys_thread_sync(&mut waiters, timeout);
+                    POLL_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
                     let slept = t0.elapsed();
                     POLL_MAX_SLEEP_MS.fetch_max(slept.as_millis() as u64, Ordering::Relaxed);
                     // Only when smoltcp named a deadline. An unbounded sleep ending on a word is
@@ -987,10 +1121,22 @@ impl Engine {
         // line reports `phase=3` tautologically and cannot say where the poll thread is. This
         // reads the same word from outside.
         //
-        // The predicate is exact rather than heuristic. The poll loop sleeps at most `FALLBACK`
-        // (50ms) per pass and increments `POLL_ITERS` every pass, so a live engine advances it
-        // at >=20/s unconditionally -- idle, busy, or socketless. Two seconds without an
-        // increment is therefore a stall, not a quiet period, for every compartment.
+        // The predicate used to be "POLL_ITERS did not advance in 2s", justified by the poll
+        // loop sleeping at most `FALLBACK` (50ms) per pass and so advancing at >=20/s
+        // unconditionally. `POLL_FALLBACK_MS` is now `None` -- the loop sleeps on the wait set
+        // and on smoltcp's own deadline, which for an idle compartment is neither -- so a quiet
+        // engine legitimately sits still for far longer than 2s and that predicate fires
+        // constantly. Measured: 450 STALL lines in an 8-round sweep where every round passed
+        // 57/57 with no network failure at all. A detector that cries wolf 450 times cannot
+        // report the one real stall, so removing the fallback without fixing this would have
+        // silently retired the watchdog rather than merely making it noisy.
+        //
+        // The replacement does not depend on how long a sleep is *allowed* to be, only on
+        // whether the one in flight has outlived what it asked for: `ENTER > EXIT` means a sleep
+        // is in progress, and `slpage` is its age against `slpreq`. A sleep that has run past
+        // several times its own requested timeout is stuck whatever the fallback constant says.
+        // An engine sleeping on an untimed wait set (`slpreq == u64::MAX`) is idle by design and
+        // is not a stall; that case is now what the rx-pending check below is for.
         //
         // The heartbeat is the positive control: without it "never stalled" and "watchdog thread
         // never ran" are the same silence, which is the trap the phase reading above already set
@@ -999,11 +1145,20 @@ impl Engine {
             let mut last = u64::MAX;
             let mut ticks: u64 = 0;
             loop {
+                WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(std::time::Duration::from_secs(2));
+                WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
                 ticks += 1;
                 WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
                 let iters = POLL_ITERS.load(Ordering::Relaxed);
-                if iters == last {
+                // Stalled = not advancing AND demonstrably owing work: either a timed sleep has
+                // overrun its own request, or frames are queued that nothing is collecting.
+                let overdue = sleep_inflight_ms().is_some_and(|age| {
+                    let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
+                    req != u64::MAX && age > req.saturating_mul(4).max(2000)
+                });
+                let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
+                if iters == last && (overdue || rx_waiting) {
                     pollprobe("STALL");
                 } else if ticks == 1 || ticks % 30 == 0 {
                     // Tick 1, not just every 30th. A peer compartment lives ~20s and the 60s
@@ -1122,7 +1277,12 @@ impl Engine {
         let mut core = self.core.lock().unwrap();
         if let Ok(r) = f(&mut *core) {
             if (ENGINE_FAST_OK.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-                pollprobe("fast");
+                // Flag inside the body, never in the condition: `&&` would short-circuit the
+                // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
+                // from never reaching here.
+                if PROBE_UNDER_LOCK {
+                    pollprobe("fast");
+                }
             }
             if egress {
                 // Guard first: wake() is a syscall, and holding the core mutex across it would
@@ -1175,7 +1335,12 @@ impl Engine {
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
                     if (ENGINE_WAKES.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-                        pollprobe("wake");
+                        // Flag inside the body, never in the condition: `&&` would short-circuit the
+                        // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
+                        // from never reaching here.
+                        if PROBE_UNDER_LOCK {
+                            pollprobe("wake");
+                        }
                     }
                 }
                 Err(e) => return Err(e),
@@ -1375,7 +1540,7 @@ impl Core {
                 }
             }
             if !ready {
-                groupcensus(GROUP_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1, &census);
+                groupcensus("pollthread", GROUP_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1, &census);
             }
         }
     }
@@ -1437,7 +1602,7 @@ impl Core {
                 if !read {
                     let n = GROUP_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1;
                     if n.is_power_of_two() {
-                        groupcensus(n, &census);
+                        groupcensus("readiness", n, &census);
                     }
                 }
                 (read, write)
@@ -1448,7 +1613,12 @@ impl Core {
 
     fn poll(&mut self, waiter: &Condvar) -> bool {
         if (ENGINE_POLLS.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-            pollprobe("poll");
+            // Flag inside the body, never in the condition: `&&` would short-circuit the
+            // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
+            // from never reaching here.
+            if PROBE_UNDER_LOCK {
+                pollprobe("poll");
+            }
         }
         POLL_SUB.store(10, Ordering::Relaxed);
         let mut res = false;
@@ -1558,6 +1728,14 @@ fn get_twznet_device_and_interface() -> (Interface, NetClient) {
     // unconditional, which would have made a non-V4 compartment read as unarmed: the control
     // reacquiring the exact blind spot it exists to remove, behind a comment asserting otherwise.
     // A non-V4 address now reports octet=999, which is a value, not an absence.
+    //
+    // Force `ENGINE_T0` to initialise *here*, at engine startup, and not wherever it is first
+    // dereferenced. It is a `lazy_static`, so its zero point is set by the first reader -- which
+    // would otherwise be `mono_ms()` inside the poll thread's sleep bracket. `engms` would then
+    // measure "time since the first sleep" while being read as "engine age", and would report a
+    // small number no matter which of the two hypotheses were true: an instrument that cannot
+    // distinguish the cases it exists to distinguish.
+    let _ = *ENGINE_T0;
     pollprobe("init");
 
     tracing::info!(

@@ -721,6 +721,17 @@ fn client_thread(client: Arc<Client>) {
         let has_pending_msg = ep.has_pending_msg_from_client();
         drop(ep);
 
+        // Unconditional totals on a fixed stride, not milestones: the question is whether a
+        // handoff to the client's rx ring ever failed, and a report that only appears when the
+        // count is nonzero cannot say "zero" -- which is the state `POLLQ ... reached N` has been
+        // in for ~65,000 sweep logs.
+        {
+            static PQ_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if PQ_TICK.fetch_add(1, Ordering::Relaxed) % 64 == 0 {
+                twizzler_net::report_pollq();
+            }
+        }
+
         // Outside the ep lock, alongside the other counter reports. Power-of-two milestones on
         // the total, so a busy run cannot flood the console either.
         {

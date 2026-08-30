@@ -97,6 +97,11 @@ impl<S: Copy, C: Copy> Queue<S, C> {
         self.submission.has_pending()
     }
 
+    /// See [`twizzler_queue_raw::RawQueueHdr::pending_parts`].
+    pub fn submission_pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.submission.pending_parts()
+    }
+
     pub fn has_pending_completion(&self) -> bool {
         self.completion.has_pending()
     }

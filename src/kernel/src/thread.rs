@@ -474,6 +474,32 @@ impl Thread {
         self.has_run.swap(true, Ordering::SeqCst)
     }
 
+    /// True once this thread's switch has saved its stack pointer and is provably no longer
+    /// executing on its kernel stack.
+    ///
+    /// `is_active_running` does *not* answer this, and reading it as if it did is what let
+    /// `drain_exited` free a stack out from under its owner: `switch_thread` clears that flag
+    /// *before* `arch_switch_to`, on purpose (see `set_active_running`), so it reads false while
+    /// the thread is still running `save_extended_state` and pushing registers inside
+    /// `__do_switch`. `switch_lock` is the real release point -- `__do_switch` stores 0 to it
+    /// immediately after `mov [rsi], rsp`, behind an `sfence`, so observing 0 means the saved rsp
+    /// and every push before it are visible and the stack is dead.
+    pub fn has_left_kernel_stack(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.switch_lock.load(Ordering::SeqCst) == 0
+        }
+        // aarch64's `arch_switch_to` never touches `switch_lock`, so it reads 0 the whole time a
+        // thread is running and would answer "yes" always. Saying "no" instead costs cross-cpu
+        // reaping there -- `Processor::cleanup_exited` on the owning cpu still runs, which is the
+        // behaviour that predates the reaper thread, leak and all. Restoring it means giving that
+        // switch a release point of its own, not relaxing this.
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            false
+        }
+    }
+
     pub fn objid(&self) -> ObjID {
         self.control_object.object().id()
     }

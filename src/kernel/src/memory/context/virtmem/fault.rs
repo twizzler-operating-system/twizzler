@@ -453,10 +453,31 @@ fn get_context(addr: VirtAddr, flags: PageFaultFlags) -> (ContextRef, ObjID, Con
         assert!(!flags.contains(PageFaultFlags::USER));
         (kernel_context().clone(), KERNEL_SCTX, map_ctx)
     } else {
-        // Seen once, at a user fault with no memory context, and never reproduced -- so say
-        // everything that distinguishes the candidates. A thread mid-exit or mid-context-switch
-        // has a reason to have dropped its context; a plain running user thread does not, and
-        // that is a different bug from a stray kernel access to a non-kernel-object address.
+        // Was "seen once and never reproduced". It reproduces: twice in 48 rounds of a build with
+        // `drain_exited`'s old `is_active_running()` guard plus a widened exit window, and zero
+        // times in 110 rounds with the current guard. Both hits reported `state Some(Running),
+        // exiting Some(false), critical Some(false)` -- the "plain running user thread" this
+        // comment called unexplained.
+        //
+        // The explanation is that the thread was freed under us. `set_current_thread` does
+        // `ptr.write(*r)` where `r` derives from `thread.self_reference` (thread.rs:286-288) --
+        // a bitwise duplicate of the `ThreadRef`, taking no reference count of its own. The
+        // owning copy lives in the Box that `drain_exited` reclaims via `Box::from_raw` on that
+        // same `self_reference` (processor.rs:238). So dropping the Box can release the last
+        // count while `CURRENT_THREAD` still points at the allocation; a premature drain makes
+        // `current_thread_ref()` a reference into freed heap, and
+        // `current_memory_context()` then reads a dead field and yields `None`. No stack clobber
+        // is needed, which is why this presents differently from the instruction-fetch panic.
+        //
+        // Read the fields below with that in mind: they are fetched *through the dangling
+        // reference*, so on this path they describe freed memory rather than a thread. "Running,
+        // not exiting, not critical" is what a stale allocation happens to say -- it is the
+        // signature of the bug, not a report of the thread's state. The distinctions the next
+        // paragraph draws are still the right ones to draw for any *other* cause.
+        //
+        // A thread mid-exit or mid-context-switch has a reason to have dropped its context; a
+        // plain running user thread does not, and that is a different bug from a stray kernel
+        // access to a non-kernel-object address.
         match user_ctx {
             Some(ctx) => (ctx, sctx_id, map_ctx),
             None => {

@@ -175,8 +175,38 @@ impl SmolTcpListener {
                 "failed to listen on owned port",
             )
         })?;
+        sock.set_timeout(Some(Self::LISTENER_HALF_OPEN_TIMEOUT));
         Ok(sock)
     }
+
+    /// Reap a handshake that starts and never finishes.
+    ///
+    /// A socket in SYN-RECEIVED is invisible to every other recovery path: `listener_socket_ready`
+    /// excludes it so it is never accepted, `accept()`'s repair branch only fires on `!is_open()`
+    /// and SYN-RECEIVED *is* open so it is never rebound, and smoltcp reaps it only via
+    /// `timed_out()`, which consults exactly this field. With `BACKLOG` of them pinned the listener
+    /// goes silently deaf -- no error, no log, just a port that stops answering.
+    ///
+    /// Costs nothing while idle, which is the reason it can be unconditional: `Socket::poll_at`
+    /// returns `PollAt::Ingress` when `tuple.is_none()` (a listening socket has no peer) and again
+    /// when `remote_last_ts.is_none()` (nothing ever received). A deadline therefore exists only
+    /// after a packet has arrived -- exactly the half-open case -- so eight idle listeners add no
+    /// timer and no wakeups.
+    ///
+    /// Generous rather than tight: a real handshake completes in milliseconds, and the only thing
+    /// this must beat is "forever". `remote_last_ts` refreshes on every received packet, so on an
+    /// *accepted* connection this same field would abort a healthy-but-idle stream -- which is why
+    /// `accept()` clears it before handing the socket over, and why that clear is load-bearing
+    /// rather than tidiness.
+    /// smoltcp's own `Duration`, not `core::time::Duration` -- `set_timeout` takes the former.
+    ///
+    /// Verified against the implementation rather than the doc comment: `set_timeout`'s docs
+    /// describe the established-connection case as requiring "data in the transmit buffer", but
+    /// `dispatch()` checks `timed_out()` unconditionally (tcp.rs:2389) and closes the socket. So
+    /// an accepted-but-idle stream really would be aborted if this were left set, and the clear in
+    /// `accept()` is required, not defensive.
+    const LISTENER_HALF_OPEN_TIMEOUT: smoltcp::time::Duration =
+        smoltcp::time::Duration::from_secs(10);
 
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let mut sock = {
@@ -278,6 +308,11 @@ impl SmolTcpListener {
                     // the group. Both sides are then republished, which is what lets the group's
                     // falling edge be recorded when this was the last pending connection.
                     let accepted = listener.socket_handle;
+                    // Clear the half-open reaper before this stops being a listener. It fires on
+                    // `remote_last_ts + timeout`, and `remote_last_ts` refreshes on every packet
+                    // received -- so left in place it would abort an established connection that
+                    // is merely idle, which is a far worse failure than the one it prevents.
+                    core.get_mutable_socket(accepted).set_timeout(None);
                     core.detach_from_group(accepted);
                     let newhandle = core.add_socket(sock, Some(self.group));
                     listener.socket_handle = newhandle;

@@ -244,16 +244,45 @@ impl Processor {
     ///
     /// A thread pushes itself here from `do_schedule` *before* it switches away, so for a moment it
     /// is on this list while still running on the kernel stack that its drop returns to the free
-    /// list. `is_active_running` is cleared by whoever publishes the next thread on that cpu, so an
-    /// entry reading false has completed its switch and is safe to drop from any cpu. That is what
-    /// makes a single reaper thread sound rather than needing one pinned per cpu.
+    /// list. An entry is only safe to drop from another cpu once that switch has saved its stack
+    /// pointer, which is what [`Thread::has_left_kernel_stack`] tests. That is what makes a single
+    /// reaper thread sound rather than needing one pinned per cpu.
+    ///
+    /// This guard used to be `is_active_running()`, on the stated belief that the flag went down
+    /// after the switch. It goes down *before* `arch_switch_to` instead, and had done for two weeks
+    /// when this was written, so the window it was meant to close -- `save_extended_state`, then
+    /// `__do_switch`'s seven pushes onto the stack being freed -- was wide open. A cpu draining
+    /// inside it dropped the last two refs, `Thread::drop` returned the stack to the free list, and
+    /// the next thread created took it, zeroed its top page and wrote its own initial frame over
+    /// frames the victim was still using. The victim then jumped through a clobbered slot: a
+    /// kernel-mode instruction fetch on a present, non-executable page, panicking in `assert_valid`
+    /// with no usable backtrace. 22 occurrences in the 35,761 rounds logged after the reaper landed,
+    /// none in the 29,442 before it, first one 28 hours after it.
+    ///
+    /// Held causally, not just by that correlation: widening the window with a spin between
+    /// `set_active_running(false)` and `arch_switch_to`, on builds differing in nothing but the
+    /// guard, gave 0/48 rounds passing against 48/48, with `LIVE_STACK_SKIPS` at 102-284 declined
+    /// drains per boot on the passing side.
+    ///
+    /// It does not only wear the fetch panic, which matters when reading a failure against this.
+    /// A clobbered frame is a corrupted *slot*, and `__do_switch` restores eight of them: the
+    /// return address gives the fetch fault, rflags gives `popfq` of garbage and #GP in
+    /// `generic_isr_handler`, and the six callee-saved slots give a wild pointer that surfaces
+    /// wherever it is next used. Freeing the `Box<ThreadRef>` also dangles `CURRENT_THREAD`, which
+    /// aliases it, so `current_thread_ref()` reads freed heap. The old-guard arm produced all of
+    /// it: #GP, "tried to switch to a non-registered sctx", "page fault ... with no memory
+    /// context" on a thread reporting `state Running, exiting false`, and a wild kernel data
+    /// access -- five sites, none of which occurred in any round with this guard in place.
     pub fn drain_exited(&self, out: &mut Vec<ThreadRef>) {
         let mut taken = 0;
         {
             let mut ex = self.exited.lock();
             let mut i = 0;
             while i < ex.len() {
-                if ex[i].is_active_running() {
+                if !ex[i].has_left_kernel_stack() {
+                    if !ex[i].is_active_running() {
+                        LIVE_STACK_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    }
                     i += 1;
                     continue;
                 }
@@ -298,13 +327,23 @@ pub static EXITED_BACKLOG: AtomicUsize = AtomicUsize::new(0);
 /// reaping has stopped, not that it is behind.
 pub static REAPED: AtomicUsize = AtomicUsize::new(0);
 
+/// Drains this fix declined that the old `is_active_running()` guard would have allowed -- i.e.
+/// times a cpu was about to free a kernel stack its owner was still executing on.
+///
+/// Kept rather than removed with the bug because it is the only thing that says the guard is doing
+/// work: a boot that never enters the window and a boot whose guard has been broken again both
+/// report a clean run and nothing else. Nonzero here is the race, observed directly, without
+/// needing it to land on something that crashes.
+pub static LIVE_STACK_SKIPS: AtomicUsize = AtomicUsize::new(0);
+
 /// Per-cpu cleanup-list depth, now and at its watermark.
 ///
 /// Reported rather than only counted because the aggregate cannot distinguish a pacing shortfall
 /// spread over every cpu from one cpu that has stopped reaping entirely.
 pub fn report_exited_backlog() {
     let total = EXITED_BACKLOG.load(Ordering::Relaxed);
-    if total == 0 {
+    let live_stack = LIVE_STACK_SKIPS.load(Ordering::Relaxed);
+    if total == 0 && live_stack == 0 {
         return;
     }
     let mut line = alloc::string::String::new();
@@ -317,9 +356,10 @@ pub fn report_exited_backlog() {
         }
     }
     logln!(
-        "[reap] backlog={} reaped={}{}",
+        "[reap] backlog={} reaped={} livestack={}{}",
         total,
         REAPED.load(Ordering::Relaxed),
+        live_stack,
         line
     );
 }

@@ -28,6 +28,32 @@ pub static POLLQ_TX_DROPPED: core::sync::atomic::AtomicU64 = core::sync::atomic:
 pub static POLLQ_COMP_DEFERRED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Frames whose *submission* to the client's rx ring returned Ok, counted at the submission
+/// itself rather than upstream of it.
+///
+/// `inject` returns the number of frames it copied into packet slots, and `note_inject_ok` counts
+/// that -- but the handoff is `submit_rx`, which runs afterwards and can drop the whole batch. So
+/// the per-address "local dst .N reached M" figures count frames that reached a *slot*, not
+/// frames that reached the queue, and every reading built on them inherits that. This counts the
+/// operation that can fail, at the place it can fail.
+pub static POLLQ_TX_SUBMITTED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Print the queue-handoff totals, unconditionally.
+///
+/// Deliberately not milestone-gated like [`note_pollq`]: the question these answer is whether a
+/// drop happened *at all*, and a counter that only prints when it is nonzero cannot distinguish
+/// "no drops" from "never reached". `POLLQ ... reached N` has never appeared in ~65,000 sweep
+/// logs, which is exactly that ambiguity.
+pub fn report_pollq() {
+    twizzler_abi::klog_println!(
+        "POLLQSTAT submitted={} tx_dropped={} comp_deferred={}",
+        POLLQ_TX_SUBMITTED.load(core::sync::atomic::Ordering::Relaxed),
+        POLLQ_TX_DROPPED.load(core::sync::atomic::Ordering::Relaxed),
+        POLLQ_COMP_DEFERRED.load(core::sync::atomic::Ordering::Relaxed),
+    );
+}
+
 /// Report at power-of-two milestones only; this is on the per-frame path.
 pub fn note_pollq(counter: &core::sync::atomic::AtomicU64, what: &str) {
     let n = counter.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;

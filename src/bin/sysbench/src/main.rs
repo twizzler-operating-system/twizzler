@@ -1116,27 +1116,46 @@ mod benches {
                 // is deliberately leaked; a leaked thread costs one bench row, a parked main
                 // thread costs the whole round.
                 let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
-                let t = target.clone();
-                // The helper is abandoned at the deadline, and the note below argues that costs
-                // "one bench row". That holds only if it *parks*. When `connect` returns quickly
-                // -- peer gone, port closed -- this is a `yield_now` spin that never exits, and
-                // four net benches can leave four of them burning cpu for the rest of the boot.
-                // The flag stops that case. It cannot reach a helper parked *inside* `connect`;
-                // that one still leaks, as before.
+                // One attempt per thread, and a fresh thread per retry -- the retry must not live
+                // *inside* the helper.
+                //
+                // It used to: `loop { if connect().ok() {..} spin_backoff() }`. That loop can only
+                // iterate when `connect` returns, and the case the retry exists for -- "the spawn
+                // returns long before its listener exists" -- is exactly the case where it does
+                // not return. With nothing listening there is no RST to refuse the SYN, so
+                // `connect` retransmits and parks, `spin_backoff()` is never reached, and the
+                // retry is dead in the only situation that needs it. The first attempt's race
+                // then decided the whole benchmark: measured, the peer's engine is ~24ms old when
+                // it begins listening, and a connect issued at spawn loses that race routinely.
+                //
+                // Retrying from the parent fixes it because the parent is never inside `connect`:
+                // a parked attempt is abandoned rather than waited on, and the next attempt gets
+                // its own socket. Parked threads leak, which this function already accepts and
+                // documents above; `connect_timeout` is not an alternative (tried, and it made
+                // every peer fail to connect at all). This is the same principle the UDP arm
+                // below already follows -- bounded operations, never a blocking call that cannot
+                // be retried.
+                //
+                // A late attempt may also succeed after an earlier one did; the extra stream is
+                // dropped with the receiver, and the peer accepts exactly one connection anyway.
+                // Bounded by the peer's `BACKLOG` (8), not by the deadline.
+                //
+                // Every abandoned attempt is parked *inside* `connect` still holding its socket,
+                // so it never sends a RST, and the peer's half-open stays in SYN-RECEIVED. That
+                // state pins a backlog slot permanently: `listener_socket_ready` excludes
+                // SYN-RECEIVED so it is never accepted, `accept()`'s repair branch only fires on
+                // `!is_open()` so it is never rebound, and smoltcp reaps it only via `timed_out()`
+                // which needs `Socket::set_timeout` and is never set (engine.rs:93-101). So each
+                // retry can cost the listener a slot for good, and enough of them make it deaf --
+                // this retry would then *cause* the failure it exists to avoid.
+                //
+                // Three leaves five of eight slots clear. The real fix is the one that comment
+                // names -- a timeout on the listening sockets, cleared in `accept()` -- after
+                // which this bound can be raised.
+                const CONNECT_ATTEMPTS: u32 = 3;
                 let give_up = Arc::new(AtomicBool::new(false));
-                let helper_stop = give_up.clone();
-                std::thread::spawn(move || {
-                    loop {
-                        if helper_stop.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        if let Ok(s) = TcpStream::connect(&t) {
-                            let _ = tx.send(s);
-                            return;
-                        }
-                        spin_backoff();
-                    }
-                });
+                let mut attempts: u32 = 0;
+                let mut next_attempt = Instant::now();
                 while Instant::now() < deadline {
                     match peer.child.try_wait() {
                         Ok(Some(status)) => {
@@ -1157,12 +1176,33 @@ mod benches {
                         peer.tcp = Some(s);
                         return Some(peer);
                     }
+                    if attempts < CONNECT_ATTEMPTS && Instant::now() >= next_attempt {
+                        let tx = tx.clone();
+                        let t = target.clone();
+                        let stop = give_up.clone();
+                        std::thread::spawn(move || {
+                            if stop.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            // No inner loop, deliberately: if this parks, the parent spawns the
+                            // next attempt rather than waiting for this one to come back.
+                            if let Ok(s) = TcpStream::connect(&t) {
+                                let _ = tx.send(s);
+                            }
+                        });
+                        attempts += 1;
+                        // First attempt immediate, then 200ms, 400, 800, 1.6s, 3.2s -- the
+                        // deadline bounds the tail. Backoff rather than a fixed interval so a
+                        // genuinely-absent peer does not accumulate parked threads.
+                        next_attempt =
+                            Instant::now() + Duration::from_millis(100u64 << attempts.min(6));
+                    }
                     spin_backoff();
                 }
                 give_up.store(true, Ordering::Relaxed);
                 console(&format!(
-                    "net peer ({} {}) never accepted a connection within {:?}\n",
-                    mode, target, NET_PEER_TIMEOUT
+                    "net peer ({} {}) never accepted a connection within {:?} ({} attempts)\n",
+                    mode, target, NET_PEER_TIMEOUT, attempts
                 ));
                 return None;
             } else {

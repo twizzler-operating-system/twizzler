@@ -97,6 +97,16 @@ impl NetClient {
         self.comp_deferred.then(|| self.rx.comp_space_waiter())
     }
 
+    /// Raw state of the rx submission ring, for the case `has_rx_pending()` says false.
+    ///
+    /// Returns `(bell, tail, nonempty, turn)`. `has_rx_pending` is the AND of the last two, and
+    /// which one is false is the whole question when a poll thread sleeps with frames outstanding:
+    /// `nonempty == false` means nothing was ever submitted, `turn == false` means entries are
+    /// present and invisible to `receive` as well, which no wake can repair.
+    pub fn rx_pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.rx.pending_parts()
+    }
+
     pub fn has_rx_pending(&self) -> bool {
         self.rx.has_pending_msg() || self.pending_rx.0.iter().any(|p| *p != INVALID_PACKET)
     }

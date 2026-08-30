@@ -6,7 +6,7 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock, RwLock,
     },
 };
@@ -29,7 +29,8 @@ use twizzler_rt_abi::{
     bindings::{
         binding_info, create_options, endpoint, io_ctx, iovec, object_bind_info, open_kind,
         open_kind_OpenKind_KernelConsole, socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP,
-        FD_CMD_DUP2, FD_CMD_SYNC, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        FD_CMD_DUP2, FD_CMD_GET_CLOEXEC, FD_CMD_SET_CLOEXEC, FD_CMD_SYNC, IO_REGISTER_IO_FLAGS,
+        OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
@@ -193,6 +194,9 @@ struct FileDesc {
     file: FdImpl,
     binding: MaybeNoDrop<Arc<binding_info>>,
     flags: Arc<AtomicU32>,
+    /// Close-on-exec. Per-descriptor, not per-description: the dup paths below install a fresh
+    /// cell rather than sharing this one, because POSIX has dup() clear the flag on the copy.
+    cloexec: Arc<AtomicBool>,
 }
 
 impl FileDesc {
@@ -228,6 +232,7 @@ impl FileDesc {
             file,
             binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
             flags: Arc::new(AtomicU32::new(0)),
+            cloexec: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -788,9 +793,13 @@ impl ReferenceRuntime {
             let Ok(kind) = OpenKind::try_from(bi.kind) else {
                 continue;
             };
-            if bi.fd > 2 {
-                continue;
-            }
+            // Deliberately no `bi.fd > 2` filter. That guard was correct when stdio was the
+            // only thing that could cross a spawn, and became a silent discard once the parent
+            // began sending a binding for every open descriptor (`read_binds` walks all slots).
+            // Everything upstream of here already works: the parent builds the binding, it
+            // marshals through exec_spawn -> with_fd_specs -> loader_config.fd_spec, and this
+            // loop receives it -- dropping a jobserver pipe or a shell's `exec 3>file`
+            // redirection with nothing reported at either end.
             let bytes = &bi.bind_data[..(bi.bind_len as usize).min(bi.bind_data.len())];
             // Lazy path first: it subsumes the dedupe below (two binds that would have shared an
             // Fd now each cost nothing until used) and skips the open entirely for a program that
@@ -1260,6 +1269,24 @@ impl ReferenceRuntime {
 
         let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
 
+        if cmd == FD_CMD_GET_CLOEXEC {
+            if ret.is_null() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            let v = file_desc.cloexec.load(Ordering::SeqCst) as u32;
+            unsafe { ret.cast::<u32>().write(v) };
+            return Ok(());
+        }
+
+        if cmd == FD_CMD_SET_CLOEXEC {
+            if arg.is_null() {
+                return Err(TwzError::INVALID_ARGUMENT);
+            }
+            let v = unsafe { arg.cast::<u32>().read() };
+            file_desc.cloexec.store(v != 0, Ordering::SeqCst);
+            return Ok(());
+        }
+
         if cmd == FD_CMD_DUP {
             let file = file_desc
                 .file
@@ -1267,6 +1294,7 @@ impl ReferenceRuntime {
                 .unwrap_or_else(|| file_desc.file.clone());
             let mut nfd = file_desc.clone();
             nfd.file = file;
+            nfd.cloexec = Arc::new(AtomicBool::new(false));
             let b = **nfd.binding;
             nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
             let newfd = binding
@@ -1302,6 +1330,7 @@ impl ReferenceRuntime {
             let dup_file = file.clone();
             let mut nfd = file_desc.clone();
             nfd.file = file;
+            nfd.cloexec = Arc::new(AtomicBool::new(false));
             let b = **nfd.binding;
             nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
 
