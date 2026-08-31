@@ -1086,6 +1086,9 @@ mod benches {
             let child = Command::new(net_peer_bin()?)
                 .args([mode, &target, "20000"])
                 .env("TWZ_NET_ADDR", peer_addr)
+                // For packet-level debugging, add .env("TWZ_LOG_TRACE", "1") here: it promotes the
+                // peer to TRACE so smoltcp names why each packet is rejected. Never leave it on
+                // for measurement -- it puts a console line per packet on the delivery path.
                 .spawn()
                 .ok()?;
             let mut peer = EchoPeer {
@@ -1213,6 +1216,7 @@ mod benches {
                 // the peer's entire startup.
                 let mut probe = [0u8; 8];
                 let pfd = sock.as_raw_fd();
+                let pw = IoWaits::new(pfd)?;
                 while Instant::now() < deadline {
                     // Bounded non-blocking send, never `sock.send`. A `std` UDP socket is
                     // blocking, and once the peer stops draining, the tx buffer fills and
@@ -1220,8 +1224,9 @@ mod benches {
                     // reached .123, the peer closed, and the client never returned from `send`,
                     // taking the whole boot with it. The old loop also had no yield, which is
                     // why it managed to emit 128 probes in the first place.
-                    if net_write_within(pfd, b"probe", Duration::from_millis(200)) == 5
-                        && net_recv_within(pfd, &mut probe, Duration::from_millis(200)).is_some()
+                    if net_write_within(&pw, pfd, b"probe", Duration::from_millis(200)) == 5
+                        && net_recv_within(&pw, pfd, &mut probe, Duration::from_millis(200))
+                            .is_some()
                     {
                         peer.udp = Some(sock);
                         return Some(peer);
@@ -1295,18 +1300,204 @@ mod benches {
     /// seconds while its own main thread, which sleeps on a timer, ran normally throughout. A short
     /// sleep is a real yield; it costs at most this much latency per retry and the waits it guards
     /// are milliseconds-scale when the system is healthy.
+    /// Counted and timed so a bench can report how much of its number is this sleep's cadence
+    /// rather than the stack. Timed because the request is not the cost: kernel timeout ticks are
+    /// 1ms (`nano_to_ticks` = ns/1e6, clock.rs), so a 200us request rounds to the next hardtick.
+    static SPIN_BACKOFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static SPIN_BACKOFF_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn spin_backoff() {
+        let t0 = Instant::now();
         std::thread::sleep(Duration::from_micros(200));
+        SPIN_BACKOFF_NS.fetch_add(
+            t0.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        SPIN_BACKOFFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn net_recv_within(fd: i32, buf: &mut [u8], timeout: Duration) -> Option<usize> {
+    /// (invocations, total ns actually slept).
+    fn spin_backoffs() -> (u64, u64) {
+        (
+            SPIN_BACKOFFS.load(std::sync::atomic::Ordering::Relaxed),
+            SPIN_BACKOFF_NS.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn report_backoffs(name: &str, before: (u64, u64), iters: u64) {
+        let (c1, ns1) = spin_backoffs();
+        let (dc, dns) = (c1 - before.0, ns1 - before.1);
+        console(&format!(
+            "{}: {} spin_backoffs over {} iterations, avg actual sleep {} us\n",
+            name,
+            dc,
+            iters,
+            if dc > 0 { dns / dc / 1000 } else { 0 }
+        ));
+    }
+
+    /// A kqueue armed once per (fd, filter) and reused for every wait — the pattern validated in
+    /// net_test_peer's ArmedWait: the registration receipt is identified (EV_ERROR flag), not
+    /// counted, and the registration is level-triggered so readiness returned alongside the
+    /// receipt is re-reported by the next wait. Replaces the sleep-poll whose 200µs request
+    /// really cost a kernel tick (then ~250µs): with it, the bench's net rows measured their own
+    /// cadence, not the stack.
+    struct FdWait {
+        kq: i32,
+        fd: i32,
+        filter: i16,
+    }
+
+    impl FdWait {
+        fn new(fd: i32, filter: i16) -> Option<Self> {
+            use twizzler_rt_abi::bindings::{EV_ADD, EV_ERROR, EV_RECEIPT};
+            let kq = twizzler_rt_abi::fd::twz_rt_fd_open_kqueue(0).ok()?;
+            let mut out = [kev(0, 0, 0); 4];
+            let n = kev_call(
+                kq,
+                &[kev(fd, filter, EV_ADD | EV_RECEIPT)],
+                &mut out,
+                Some(Duration::ZERO),
+            );
+            if !out[..n.min(out.len())]
+                .iter()
+                .any(|e| e.flags & EV_ERROR == EV_ERROR && e.data == 0)
+            {
+                twizzler_rt_abi::fd::twz_rt_fd_close(kq);
+                return None;
+            }
+            Some(Self { kq, fd, filter })
+        }
+
+        fn wait(&self, timeout: Duration) -> bool {
+            use twizzler_rt_abi::bindings::EV_ERROR;
+            let t0 = Instant::now();
+            let mut out = [kev(0, 0, 0); 4];
+            let n = kev_call(self.kq, &[], &mut out, Some(timeout));
+            FD_WAIT_NS.fetch_add(
+                t0.elapsed().as_nanos() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            FD_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out[..n.min(out.len())]
+                .iter()
+                .any(|e| e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0)
+        }
+    }
+
+    impl Drop for FdWait {
+        fn drop(&mut self) {
+            twizzler_rt_abi::fd::twz_rt_fd_close(self.kq);
+        }
+    }
+
+    fn kev(ident: i32, filter: i16, flags: u16) -> twizzler_rt_abi::bindings::kevent {
+        twizzler_rt_abi::bindings::kevent {
+            ident: ident as usize,
+            filter,
+            flags,
+            fflags: 0,
+            data: 0,
+            udata: std::ptr::null_mut(),
+            ext: [0; 4],
+        }
+    }
+
+    fn kev_call(
+        kq: i32,
+        chg: &[twizzler_rt_abi::bindings::kevent],
+        out: &mut [twizzler_rt_abi::bindings::kevent],
+        t: Option<Duration>,
+    ) -> usize {
+        let t: twizzler_rt_abi::bindings::option_duration = t.into();
+        let res = unsafe {
+            twizzler_rt_abi::bindings::twz_rt_fd_kevent(
+                kq,
+                chg.as_ptr(),
+                chg.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                t,
+            )
+        };
+        let r: twizzler_rt_abi::Result<usize> = res.into();
+        r.expect("kevent")
+    }
+
+    /// Read and write waiters for one socket. Separate kqueues per filter on purpose: a socket
+    /// is almost always writable, so a shared level-triggered registration would make every
+    /// read wait return instantly with write-readiness.
+    struct IoWaits {
+        rd: FdWait,
+        wr: FdWait,
+    }
+
+    impl IoWaits {
+        fn new(fd: i32) -> Option<Self> {
+            use twizzler_rt_abi::bindings::{EVFILT_READ, EVFILT_WRITE};
+            Some(Self {
+                rd: FdWait::new(fd, EVFILT_READ)?,
+                wr: FdWait::new(fd, EVFILT_WRITE)?,
+            })
+        }
+    }
+
+    static FD_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static FD_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    /// Times a wait reported ready but the op still WouldBlocked — a stale readiness level.
+    /// Nonzero means the engine published ready and never recorded the falling edge; the guard
+    /// below turns the resulting hot spin (measured: 33M calls, wakehunt1 r6) back into bounded
+    /// waiting, and this counter is the tripwire that says the underlying bug fired.
+    static SPURIOUS_READY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Call after an op WouldBlocked even though the preceding wait said ready. After a few
+    /// consecutive lies, sleep a tick instead of spinning on the stale level.
+    fn spurious_ready_guard(consecutive: &mut u32) {
+        *consecutive += 1;
+        SPURIOUS_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if *consecutive >= 3 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn fd_waits() -> (u64, u64) {
+        (
+            FD_WAITS.load(std::sync::atomic::Ordering::Relaxed),
+            FD_WAIT_NS.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    fn report_fd_waits(name: &str, before: (u64, u64), iters: u64) {
+        let (c1, ns1) = fd_waits();
+        let (dc, dns) = (c1 - before.0, ns1 - before.1);
+        console(&format!(
+            "{}: {} fd_waits over {} iterations, avg wait {} us, {} spurious_ready\n",
+            name,
+            dc,
+            iters,
+            if dc > 0 { dns / dc / 1000 } else { 0 },
+            SPURIOUS_READY.load(std::sync::atomic::Ordering::Relaxed)
+        ));
+    }
+
+    fn net_recv_within(w: &IoWaits, fd: i32, buf: &mut [u8], timeout: Duration) -> Option<usize> {
         let deadline = Instant::now() + timeout;
+        let mut lies = 0u32;
+        let mut waited = false;
         loop {
             let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
             match twizzler_rt_abi::io::twz_rt_fd_pread(fd, buf, &mut ctx) {
                 Ok(n) => return Some(n),
-                Err(_) if Instant::now() < deadline => spin_backoff(),
-                Err(_) => return None,
+                Err(_) => {
+                    if waited {
+                        spurious_ready_guard(&mut lies);
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return None;
+                    }
+                    waited = w.rd.wait(remaining);
+                }
             }
         }
     }
@@ -1318,32 +1509,52 @@ mod benches {
     /// that can hang the guest is worse than one that fails -- a failure costs one row, a wedge
     /// costs the whole run and reads as a system fault. Returns bytes written, so a caller can
     /// report *where* it stalled rather than only that it did.
-    fn net_write_within(fd: i32, buf: &[u8], timeout: Duration) -> usize {
+    fn net_write_within(w: &IoWaits, fd: i32, buf: &[u8], timeout: Duration) -> usize {
         let deadline = Instant::now() + timeout;
         let mut done = 0;
+        let mut lies = 0u32;
+        let mut waited = false;
         while done < buf.len() {
             let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
             match twizzler_rt_abi::io::twz_rt_fd_pwrite(fd, &buf[done..], &mut ctx) {
                 Ok(0) => return done,
                 Ok(n) => done += n,
-                Err(_) if Instant::now() < deadline => spin_backoff(),
-                Err(_) => return done,
+                Err(_) => {
+                    if waited {
+                        spurious_ready_guard(&mut lies);
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return done;
+                    }
+                    waited = w.wr.wait(remaining);
+                }
             }
         }
         done
     }
 
     /// Non-blocking read of exactly `buf.len()` bytes against a deadline. Same reasoning.
-    fn net_read_within(fd: i32, buf: &mut [u8], timeout: Duration) -> usize {
+    fn net_read_within(w: &IoWaits, fd: i32, buf: &mut [u8], timeout: Duration) -> usize {
         let deadline = Instant::now() + timeout;
         let mut done = 0;
+        let mut lies = 0u32;
+        let mut waited = false;
         while done < buf.len() {
             let mut ctx = IoCtx::new(None, twizzler_rt_abi::io::IoFlags::NONBLOCKING, None);
             match twizzler_rt_abi::io::twz_rt_fd_pread(fd, &mut buf[done..], &mut ctx) {
                 Ok(0) => return done,
                 Ok(n) => done += n,
-                Err(_) if Instant::now() < deadline => spin_backoff(),
-                Err(_) => return done,
+                Err(_) => {
+                    if waited {
+                        spurious_ready_guard(&mut lies);
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return done;
+                    }
+                    waited = w.rd.wait(remaining);
+                }
             }
         }
         done
@@ -1369,13 +1580,18 @@ mod benches {
         let stream = peer.tcp.as_mut().unwrap();
         let out = [0x5au8; 64];
         let mut back = [0u8; 64];
+        // Blocking I/O -- no spin_backoff on this path, so the count below should be 0: the
+        // zero-control proving the counter's plumbing where the other net benches read nonzero.
+        let (sb0, mut iters) = (spin_backoffs(), 0u64);
         b.iter(|| {
+            iters += 1;
             stream.write_all(&out).expect("net_tcp_latency: write");
             stream
                 .read_exact(&mut back)
                 .expect("net_tcp_latency: read (peer died?)");
             std::hint::black_box(back[0]);
         });
+        report_backoffs("net_tcp_latency", sb0, iters);
     }
 
     /// TCP bulk echo: how fast bytes actually move through the stack.
@@ -1422,15 +1638,21 @@ mod benches {
         b.bytes = (BLOCK * 2) as u64;
         let mut stalled = 0u64;
         let mut peer_gone = false;
+        let Some(iow) = IoWaits::new(fd) else {
+            console("net bench: kqueue registration failed, skipping\n");
+            return;
+        };
+        let (sb0, fw0, mut iters) = (spin_backoffs(), fd_waits(), 0u64);
         b.iter(|| {
+            iters += 1;
             // Remaining iterations become ~free once the peer is gone, so libtest's chosen
             // count completes quickly and the row is reported INVALID rather than wedging.
             if peer_gone {
                 return;
             }
             for _ in 0..(BLOCK / CHUNK) {
-                if net_write_within(fd, &out, NET_IO_TIMEOUT) != CHUNK
-                    || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != CHUNK
+                if net_write_within(&iow, fd, &out, NET_IO_TIMEOUT) != CHUNK
+                    || net_read_within(&iow, fd, &mut back, NET_IO_TIMEOUT) != CHUNK
                 {
                     stalled += 1;
                     // A dead peer must be *detected*, not waited on. `EchoPeer::new` already
@@ -1455,6 +1677,8 @@ mod benches {
             }
             std::hint::black_box(back[0]);
         });
+        report_backoffs("net_tcp_throughput", sb0, iters);
+        report_fd_waits("net_tcp_throughput", fw0, iters);
         if peer_gone {
             console("net_tcp_throughput: peer exited mid-benchmark -- NUMBER IS INVALID\n");
         }
@@ -1500,12 +1724,18 @@ mod benches {
         b.bytes = (BLOCK * 2) as u64;
         let mut stalled = 0u64;
         let mut peer_gone = false;
+        let Some(iow) = IoWaits::new(fd) else {
+            console("net bench: kqueue registration failed, skipping\n");
+            return;
+        };
+        let (sb0, fw0, mut iters) = (spin_backoffs(), fd_waits(), 0u64);
         b.iter(|| {
+            iters += 1;
             if peer_gone {
                 return;
             }
-            if net_write_within(fd, &out, NET_IO_TIMEOUT) != BLOCK
-                || net_read_within(fd, &mut back, NET_IO_TIMEOUT) != BLOCK
+            if net_write_within(&iow, fd, &out, NET_IO_TIMEOUT) != BLOCK
+                || net_read_within(&iow, fd, &mut back, NET_IO_TIMEOUT) != BLOCK
             {
                 stalled += 1;
                 // A dead peer must be *detected*, not waited on. `EchoPeer::new` already
@@ -1526,6 +1756,8 @@ mod benches {
             }
             std::hint::black_box(back[0]);
         });
+        report_backoffs("net_tcp_throughput_pipelined", sb0, iters);
+        report_fd_waits("net_tcp_throughput_pipelined", fw0, iters);
         if peer_gone {
             console(
                 "net_tcp_throughput_pipelined: peer exited mid-benchmark -- NUMBER IS INVALID\n",
@@ -1561,21 +1793,42 @@ mod benches {
         let mut back = [0u8; 64];
         const UDP_BOUND: Duration = Duration::from_millis(200);
         let (mut iters, mut lost, mut failed) = (0u64, 0u64, 0u64);
+        let Some(iow) = IoWaits::new(fd) else {
+            console("net_udp_latency: kqueue registration failed, skipping\n");
+            return;
+        };
+        let (sb0, fw0) = (spin_backoffs(), fd_waits());
+        // Latency decomposition: the magic opts the peer's serve-udp-echo into stamping its
+        // recv/send times at [16..24]/[24..32]; we stamp our send time at [8..16]. All on the
+        // shared kernel clock epoch. The return segment includes our own poll cadence — the
+        // reply is readable before a sleeping poller notices it.
+        out[4..8].copy_from_slice(b"TSTM");
+        let (mut seg_in, mut seg_turn, mut seg_ret) = (0i128, 0i128, 0i128);
+        // Time spent inside our own send call, separately: a WouldBlock->spin_backoff retry in
+        // net_write_within lands in the "inbound" segment (the stamp precedes the call), and
+        // only this split can tell a slow delivery from a stalled sender.
+        let mut seg_send = 0i128;
+        let mut seg_n = 0u64;
+        let mono_ns =
+            || twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
         let (mut stale, mut ahead, mut runt) = (0u64, 0u64, 0u64);
         let mut seq: u32 = 0;
         b.iter(|| {
             iters += 1;
             seq = seq.wrapping_add(1);
             out[..4].copy_from_slice(&seq.to_le_bytes());
+            let t_send = mono_ns();
+            out[8..16].copy_from_slice(&t_send.to_le_bytes());
             // Bounded non-blocking send. `sock.send` on a blocking socket parks indefinitely
             // once the tx buffer fills and nothing drains it -- that, not the earlier
             // `BufferFull` panic, is what wedged this bench's boot. A `WouldBlock` retry cannot
             // help, because a blocking socket never returns `WouldBlock`; the bound has to come
             // from the non-blocking fd path, the same one the reads already use.
-            if net_write_within(fd, &out, NET_IO_TIMEOUT) != out.len() {
+            if net_write_within(&iow, fd, &out, NET_IO_TIMEOUT) != out.len() {
                 failed += 1;
                 return;
             }
+            seg_send += mono_ns() as i128 - t_send as i128;
             // Recover on *receive*, not on timeout. A reply that misses its bound is typically
             // still in flight when the bound expires, so draining then finds an empty queue and
             // iteration i+1 inherits the stale reply anyway -- every later iteration then
@@ -1591,7 +1844,7 @@ mod benches {
                     lost += 1;
                     break;
                 }
-                let Some(n) = net_recv_within(fd, &mut back, remaining) else {
+                let Some(n) = net_recv_within(&iow, fd, &mut back, remaining) else {
                     lost += 1;
                     break;
                 };
@@ -1601,6 +1854,16 @@ mod benches {
                 }
                 let got = u32::from_le_bytes([back[0], back[1], back[2], back[3]]);
                 if got == seq {
+                    if n >= 32 {
+                        let rd = |o: usize| u64::from_le_bytes(back[o..o + 8].try_into().unwrap());
+                        let (t_send, p_recv, p_send) = (rd(8), rd(16), rd(24));
+                        if p_recv != 0 && p_send != 0 {
+                            seg_in += p_recv as i128 - t_send as i128;
+                            seg_turn += p_send as i128 - p_recv as i128;
+                            seg_ret += mono_ns() as i128 - p_send as i128;
+                            seg_n += 1;
+                        }
+                    }
                     break;
                 }
                 // Wrapping-safe "is older": we have never sent a sequence above `seq`, so a
@@ -1633,6 +1896,19 @@ mod benches {
                 ""
             }
         ));
+        report_backoffs("net_udp_latency", sb0, iters);
+        report_fd_waits("net_udp_latency", fw0, iters);
+        if seg_n > 0 {
+            console(&format!(
+                "net_udp_latency: segments over {}: inbound {}us (send-call {}us of it), \
+                 peer-turnaround {}us, return+poll {}us\n",
+                seg_n,
+                seg_in / seg_n as i128 / 1000,
+                seg_send / seg_n as i128 / 1000,
+                seg_turn / seg_n as i128 / 1000,
+                seg_ret / seg_n as i128 / 1000,
+            ));
+        }
     }
 
     /// Volatile object create + map (via the builder) followed by delete.

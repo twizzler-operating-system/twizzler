@@ -9,6 +9,7 @@
 //! it as a synchronous step -- spawn, wait for exit, assert. Its address is pinned by
 //! `TWZ_NET_ADDR`, which `net_test` sets when spawning; see that crate's `PEER_ADDR`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     env,
     io::{Read, Write},
@@ -361,26 +362,85 @@ fn udp_echo(target: &str, attempts: usize) -> std::io::Result<()> {
 /// Same reasoning as `net_test`'s `accept_within`: nothing imposes a timeout on a peer, so an
 /// unbounded block here would wedge the whole suite rather than fail one benchmark. Level
 /// triggered (no `EV_CLEAR`), so an already-pending connection or datagram still reports.
-fn wait_ready(fd: RawFd, filter: i16, timeout: Duration) -> bool {
-    fn ev(ident: RawFd, filter: i16, flags: u16) -> kevent {
-        kevent {
-            ident: ident as usize,
-            filter,
-            flags,
-            fflags: 0,
-            data: 0,
-            udata: std::ptr::null_mut(),
-            ext: [0; 4],
+static BACKOFF_HITS: AtomicU64 = AtomicU64::new(0);
+static WR_REGISTERED: AtomicU64 = AtomicU64::new(0);
+static WR_REGFAIL: AtomicU64 = AtomicU64::new(0);
+static WR_NOTREADY: AtomicU64 = AtomicU64::new(0);
+
+fn ev(ident: RawFd, filter: i16, flags: u16) -> kevent {
+    kevent {
+        ident: ident as usize,
+        filter,
+        flags,
+        fflags: 0,
+        data: 0,
+        udata: std::ptr::null_mut(),
+        ext: [0; 4],
+    }
+}
+
+fn kev_call(kq: RawFd, chg: &[kevent], out: &mut [kevent], t: Option<Duration>) -> usize {
+    let t: option_duration = t.into();
+    let res =
+        unsafe { twz_rt_fd_kevent(kq, chg.as_ptr(), chg.len(), out.as_mut_ptr(), out.len(), t) };
+    let r: twizzler_rt_abi::Result<usize> = res.into();
+    r.expect("kevent")
+}
+
+/// A kqueue armed once and reused across waits — the point of kqueue. The open/register/close-
+/// per-call pattern in `wait_ready` costs a kqueue fd, a registration (which republishes
+/// readiness into the engine), and a teardown *per datagram* on the UDP echo path.
+///
+/// Registration keeps `wait_ready`'s rule: the receipt is *identified* among the returned events
+/// (an already-readable fd yields its readiness event from the same call). The registration is
+/// level-triggered (no EV_CLEAR), so readiness delivered alongside the receipt is not lost — the
+/// next wait re-reports it.
+struct ArmedWait {
+    kq: RawFd,
+    fd: RawFd,
+    filter: i16,
+}
+
+impl ArmedWait {
+    fn new(fd: RawFd, filter: i16) -> Option<Self> {
+        let kq = twizzler_rt_abi::fd::twz_rt_fd_open_kqueue(0).ok()?;
+        let mut out = [ev(0, 0, 0); 4];
+        let n = kev_call(
+            kq,
+            &[ev(fd, filter, EV_ADD | EV_RECEIPT)],
+            &mut out,
+            Some(Duration::ZERO),
+        );
+        let registered = out[..n.min(out.len())]
+            .iter()
+            .any(|e| e.flags & EV_ERROR == EV_ERROR && e.data == 0);
+        if !registered {
+            println!("WAITREG armed registration did not take (n={})", n);
+            twizzler_rt_abi::fd::twz_rt_fd_close(kq);
+            return None;
         }
+        Some(Self { kq, fd, filter })
     }
-    fn call(kq: RawFd, chg: &[kevent], out: &mut [kevent], t: Option<Duration>) -> usize {
-        let t: option_duration = t.into();
-        let res = unsafe {
-            twz_rt_fd_kevent(kq, chg.as_ptr(), chg.len(), out.as_mut_ptr(), out.len(), t)
-        };
-        let r: twizzler_rt_abi::Result<usize> = res.into();
-        r.expect("kevent")
+
+    /// One readiness wait. Identity, not count: an EV_ERROR or another registration's event is
+    /// not readiness on this fd.
+    fn wait(&self, timeout: Duration) -> bool {
+        let mut out = [ev(0, 0, 0); 4];
+        let n = kev_call(self.kq, &[], &mut out, Some(timeout));
+        out[..n.min(out.len())]
+            .iter()
+            .any(|e| e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0)
     }
+}
+
+impl Drop for ArmedWait {
+    fn drop(&mut self) {
+        twizzler_rt_abi::fd::twz_rt_fd_close(self.kq);
+    }
+}
+
+fn wait_ready(fd: RawFd, filter: i16, timeout: Duration) -> bool {
+    let call = kev_call;
 
     let Ok(kq) = twizzler_rt_abi::fd::twz_rt_fd_open_kqueue(0) else {
         return false;
@@ -394,8 +454,50 @@ fn wait_ready(fd: RawFd, filter: i16, timeout: Duration) -> bool {
         &mut out,
         Some(Duration::ZERO),
     );
-    let registered = n == 1 && out[0].flags & EV_ERROR == EV_ERROR && out[0].data == 0;
-    let ready = registered && call(kq, &[], &mut out, Some(timeout)) > 0;
+    // `n == 1` was wrong, and wrong precisely when the socket has data.
+    //
+    // EV_RECEIPT makes the registration call return without waiting, so it yields the receipt --
+    // but if the fd is *already* readable the same call also returns the readiness event, giving
+    // n == 2. The old check read that as a failed registration, short-circuited `ready` to false
+    // without ever consulting the level, and reported "not ready" for a socket holding data. That
+    // is the whole bug: measured, a plain read taken immediately after a 20s not-ready returned 64
+    // bytes, and `registered-but-notready` never once fired -- the level check was always right
+    // when it was allowed to run.
+    //
+    // The receipt is the event matching the change we submitted (EV_ERROR set, data == 0 meaning
+    // success); anything else returned alongside it is real readiness, not a problem.
+    let registered = out[..n.min(out.len())]
+        .iter()
+        .any(|e| e.flags & EV_ERROR == EV_ERROR && e.data == 0);
+    // `ready` is false when registration fails, WITHOUT the level ever being consulted -- so a
+    // registration that quietly does not take is indistinguishable from "no data", which is
+    // exactly the shape of this bug (a read straight after a 20s not-ready returns 64 bytes).
+    // Count the two outcomes separately so they can never be confused again.
+    if registered {
+        WR_REGISTERED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        let c = WR_REGFAIL.fetch_add(1, Ordering::Relaxed) + 1;
+        if c.is_power_of_two() {
+            println!(
+                "WAITREG fail n={} ret={} flags={:#x} data={} (registration did not take)",
+                c, n, out[0].flags, out[0].data
+            );
+        }
+    }
+    // Same rule as the receipt above: identify the event, do not count events. `> 0` would accept
+    // an EV_ERROR, or an event for some other registration, as readiness on this fd.
+    let ready = registered && {
+        let n2 = call(kq, &[], &mut out, Some(timeout));
+        out[..n2.min(out.len())]
+            .iter()
+            .any(|e| e.ident == fd as usize && e.filter == filter && e.flags & EV_ERROR == 0)
+    };
+    if registered && !ready {
+        let c = WR_NOTREADY.fetch_add(1, Ordering::Relaxed) + 1;
+        if c.is_power_of_two() {
+            println!("WAITREG registered-but-notready n={}", c);
+        }
+    }
     twizzler_rt_abi::fd::twz_rt_fd_close(kq);
     ready
 }
@@ -406,6 +508,53 @@ fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
 
 fn wait_writable(fd: RawFd, timeout: Duration) -> bool {
     wait_ready(fd, EVFILT_WRITE, timeout)
+}
+
+/// `wait_readable` bounded by a measured deadline rather than one intended timeout.
+///
+/// `wait_ready` returns false for "no events", and a kevent call can return early with none --
+/// KEVSHORT records 20000ms requests returning in 39us. A single such return is indistinguishable
+/// from a genuine timeout, so treating one as the whole idle period retires the peer roughly 20s
+/// early. `serve_echo` already slices against a real deadline for exactly this reason; this is the
+/// same fix for the datagram path, which was left on the single-shot wait.
+/// Monotonic ns anchored to the kernel clock at FastClock calibration, so values are comparable
+/// across compartments — the latency-decomposition stamps rely on that.
+fn mono_ns() -> u64 {
+    twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64
+}
+
+fn wait_readable_until(rw: &ArmedWait, idle: Duration) -> bool {
+    let slice = Duration::from_secs(1);
+    let deadline = Instant::now() + idle;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let t0 = Instant::now();
+        if rw.wait(remaining.min(slice)) {
+            return true;
+        }
+        // Back off when the wait returned early. `wait_ready` cannot distinguish "timed out" from
+        // "returned with no events", and KEVSHORT records 20000ms requests coming back in 39us --
+        // so retrying immediately is a hot spin, not a wait. The first version of this loop did
+        // exactly that for a full 20s: every iteration opens a kqueue and re-arms, and each arm
+        // calls `refresh_waiter`, which published readiness 1.4 million times in one run and
+        // starved the engine it was waiting on. Only sleep when the call came back short; a wait
+        // that genuinely consumed its slice needs no delay.
+        let elapsed = t0.elapsed();
+        if elapsed < Duration::from_millis(1) {
+            // Counted: twizzler-56 observes net_udp_latency's ~1.01ms RTT matching this 1ms
+            // backoff exactly, and if it fires once per echo it *is* the measurement. It may now
+            // be dead code -- the registration bug made `wait_ready` return instantly without ever
+            // blocking, which is precisely what drove this path -- so measure before tuning it.
+            let c = BACKOFF_HITS.fetch_add(1, Ordering::Relaxed) + 1;
+            if c.is_power_of_two() {
+                println!("WAITBACKOFF hits={} last_elapsed_us={}", c, elapsed.as_micros());
+            }
+            std::thread::sleep(Duration::from_millis(1) - elapsed);
+        }
+    }
 }
 
 /// Largest single echo chunk. Sized above the benchmark's block so a bulk transfer is not
@@ -536,6 +685,13 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     let idle = Duration::from_millis(idle_ms);
     let sock = UdpSocket::bind(listen)?;
     let fd = sock.as_raw_fd();
+    // Non-blocking so the post-readiness drain below can end on WouldBlock rather than parking
+    // again. `wait_readable_until` still provides the blocking behaviour; this only changes how
+    // the loop discovers it has emptied the socket.
+    sock.set_nonblocking(true)?;
+    // Armed once, reused for every wait below; see ArmedWait.
+    let rw = ArmedWait::new(fd, EVFILT_READ)
+        .ok_or_else(|| std::io::Error::other("kqueue registration failed"))?;
     if SPIN_PROBE {
         match sock.set_nonblocking(true) {
             Ok(()) => println!("UDPECHO nonblocking=ok"),
@@ -553,14 +709,16 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     // Back on the kevent path, which is what the fix has to make work.
     const SPIN_PROBE: bool = false;
     let (mut recvs, mut sends, mut wb, mut wwfail, mut notready) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    // Readiness under-report tripwire; see the drain loop below.
+    let (mut multidrain, mut maxdrain) = (0u64, 0usize);
     let mut spins = 0u64;
     let mut report = std::time::Instant::now();
     loop {
         if report.elapsed() >= Duration::from_secs(2) {
             report = std::time::Instant::now();
             println!(
-                "UDPECHO recv={} sent={} wouldblock={} waitwrite_timeout={} notready={}",
-                recvs, sends, wb, wwfail, notready
+                "UDPECHO recv={} sent={} wouldblock={} waitwrite_timeout={} notready={} multidrain={} maxdrain={}",
+                recvs, sends, wb, wwfail, notready, multidrain, maxdrain
             );
         }
         // PROBE (netprobe1): does the data reach the socket at all, or is only the readiness
@@ -596,45 +754,130 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
             sends += 1;
             continue;
         }
-        if !wait_readable(fd, idle) {
+        let t_wait_ret;
+        let idle_start = Instant::now();
+        if !wait_readable_until(&rw, idle) {
             notready += 1;
+            // THE discriminator, taken at the one instant it is decisive: readiness has just
+            // claimed nothing arrived for a full 20s. If a plain non-blocking read succeeds here,
+            // the data was in the socket the whole time and the readiness path lied. If it returns
+            // WouldBlock, the socket really is empty and the datagrams never persisted -- which
+            // sends the hunt upstream instead. Every earlier "can_recv() was false" observation
+            // came from a log that only fires when it is false, and so could not tell these apart.
+            let post = match sock.recv_from(&mut buf) {
+                Ok((n, _)) => format!("READ_{}_BYTES_AFTER_IDLE", n),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => "empty".to_string(),
+                Err(e) => format!("err:{:?}", e.kind()),
+            };
+            println!("UDPECHO post-idle-probe={}", post);
+            // Print the *measured* wait next to the bound: an exit that states only its own
+            // parameter can never disagree with itself, which is how this survived several
+            // rounds of investigation while exiting after microseconds.
             println!(
-                "UDPECHO exit-idle recv={} sent={} wouldblock={} waitwrite_timeout={}",
-                recvs, sends, wb, wwfail
+                "UDPECHO exit-idle recv={} sent={} wouldblock={} waitwrite_timeout={} waited={:?} of {:?} multidrain={} maxdrain={}",
+                recvs, sends, wb, wwfail, idle_start.elapsed(), idle, multidrain, maxdrain
             );
             // Expected exit: the benchmark finished and stopped sending.
             return Ok(());
         }
-        // Readiness was reported, so this cannot block. `recv_from` rather than a raw read
-        // because the reply needs the sender's address.
-        let (n, from) = sock.recv_from(&mut buf)?;
-        recvs += 1;
-        // `WouldBlock` here is backpressure, not failure. It became reachable when twz-rt
-        // started returning it instead of panicking on a full tx buffer; before that this line
-        // could only ever see a hard error, so a bare `?` was survivable. It is not now: the
-        // server exited on the first full buffer, the client went on sending to a dead
-        // endpoint, and the client's own tx then filled with nothing left to drain it -- which
-        // is what wedged the boot. An echo server must outlive its peer's backpressure.
-        let mut waited = false;
-        loop {
-            match sock.send_to(&buf[..n], from) {
-                Ok(_) => {
-                    sends += 1;
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    wb += 1;
-                    // One bounded wait for writability, then drop the datagram. Dropping is
-                    // correct for UDP and is what the client's sequence check is there to
-                    // survive; dying is not.
-                    if waited || !wait_writable(fd, idle) {
-                        wwfail += 1;
-                        break;
-                    }
-                    waited = true;
-                }
+        t_wait_ret = mono_ns();
+        // Drain every datagram the socket holds, not one per readiness event.
+        //
+        // Measured (smoltcp's own `net_trace!` on the peer): 109 datagrams were accepted into this
+        // socket's receive buffer and the application dequeued 9 -- exactly one per rising edge of
+        // the readiness word. Reading a single datagram per wake makes throughput a function of
+        // how many edges the readiness path happens to produce rather than of how much data
+        // arrived, and a socket that stays continuously readable produces no further edges at all.
+        // Draining is what an echo server should do regardless; it also makes the loop correct
+        // under a readiness path that under-reports, which this one demonstrably does.
+        let mut drained = 0usize;
+        loop {  // see MULTIDRAIN below: the count itself is the readiness tripwire
+            let (n, from) = match sock.recv_from(&mut buf) {
+                Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e),
+            };
+            let t_recv = mono_ns();
+            if drained == 0 {
+                // wait-return -> first recv-return: the app-side remainder once the kevent wait
+                // has reported readiness. With KQWAKE and UDPRISE this closes the split of the
+                // rise -> recv gap into kernel-wake / kevent-bookkeeping / recv-call thirds.
+                static WSUM: AtomicU64 = AtomicU64::new(0);
+                static WCNT: AtomicU64 = AtomicU64::new(0);
+                WSUM.fetch_add(t_recv.saturating_sub(t_wait_ret), Ordering::Relaxed);
+                let n = WCNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if n.is_power_of_two() {
+                    println!(
+                        "WAITSPLIT n={} wait_ret_to_recv_avg_us={}",
+                        n,
+                        WSUM.load(Ordering::Relaxed) / n / 1000
+                    );
+                }
             }
+            recvs += 1;
+            drained += 1;
+            // Latency-decomposition stamps for sysbench's net_udp_latency (the only user of
+            // serve-udp-echo): a datagram carrying the magic gets our recv/send times at
+            // [16..24]/[24..32], on the shared kernel clock epoch. Anything else is echoed
+            // byte-identical.
+            if n >= 32 && &buf[4..8] == b"TSTM" {
+                buf[16..24].copy_from_slice(&t_recv.to_le_bytes());
+                buf[24..32].copy_from_slice(&mono_ns().to_le_bytes());
+            }
+            echo_one(&sock, &buf[..n], from, &mut sends, &mut wb, &mut wwfail, fd);
+        }
+        if drained == 0 {
+            // Readiness said ready and the socket had nothing: a spurious wake. Counted so it
+            // cannot masquerade as progress.
+            notready += 1;
+        }
+        // The drain fixes throughput and would otherwise HIDE the defect that made it necessary:
+        // a consumer that reads everything available never notices that it was told about only
+        // one. Every other consumer in this system already compensates the same way -- serve_echo
+        // streams to EOF, TCP retransmits, the bench spins to drive its own engine -- which is
+        // very likely why this has survived repeated investigation. So record it: draining more
+        // than one datagram per readiness event means readiness reported one arrival and the
+        // socket held several, which is the under-report itself, measured.
+        if drained > 1 {
+            multidrain += 1;
+            if drained > maxdrain {
+                maxdrain = drained;
+            }
+        }
+    }
+}
+
+/// Echo one datagram back, tolerating transmit backpressure.
+///
+/// `WouldBlock` here is backpressure, not failure: twz-rt returns it instead of panicking on a full
+/// tx buffer. One bounded wait for writability, then drop the datagram -- dropping is correct for
+/// UDP and is what the client's sequence check survives; dying is not, and an echo server that
+/// exits on its peer's backpressure wedges the whole boot.
+fn echo_one(
+    sock: &UdpSocket,
+    payload: &[u8],
+    from: std::net::SocketAddr,
+    sends: &mut u64,
+    wb: &mut u64,
+    wwfail: &mut u64,
+    fd: RawFd,
+) {
+    let mut waited = false;
+    loop {
+        match sock.send_to(payload, from) {
+            Ok(_) => {
+                *sends += 1;
+                return;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                *wb += 1;
+                if waited || !wait_writable(fd, Duration::from_secs(1)) {
+                    *wwfail += 1;
+                    return;
+                }
+                waited = true;
+            }
+            Err(_) => return,
         }
     }
 }

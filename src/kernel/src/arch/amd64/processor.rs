@@ -301,10 +301,7 @@ pub fn init_pcid() {
             .get_feature_info()
             .is_some_and(|f| f.has_pcid());
     PCID_ENABLED.store(ok, Ordering::SeqCst);
-    logln!(
-        "[kernel::mm] pcid: {}",
-        if ok { "enabled" } else { "disabled" }
-    );
+    log::debug!("pcid: {}", if ok { "enabled" } else { "disabled" });
 }
 
 pub(super) fn pcid_enabled() -> bool {

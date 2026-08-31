@@ -326,9 +326,9 @@ impl RunComp {
     /// Returns an owned handle rather than a borrow: the caller drops the manager's lock before
     /// using the buffer, and the `Arc` is what keeps the buffer alive for that window -- not the
     /// `RunComp`, which a concurrent teardown may remove. (In practice a thread cannot be inside
-    /// the monitor when its own compartment is torn down: `main_thread_exited` force-exits with
-    /// `sys_thread_change_state_in_sctx` restricted to the instance, so the kernel holds the exit
-    /// until the victim is back on its own code. The `Arc` means correctness does not rest on it.)
+    /// the monitor when its own compartment is torn down: force-exit delivery is gated on the
+    /// home context stamped at spawn, so the kernel holds the exit until the victim is back on
+    /// its own code. The `Arc` means correctness does not rest on it.)
     pub fn get_per_thread(&self, id: ObjID) -> Arc<Mutex<PerThread>> {
         let instance = self.instance;
         // `PerThread::new` creates and maps an object under this lock. Deliberate: it runs once per

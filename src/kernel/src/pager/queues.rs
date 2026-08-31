@@ -137,7 +137,7 @@ pub(super) fn pager_request_handler_main() {
     loop {
         receiver.handle_request(|_id, req| match req.cmd() {
             PagerRequest::Ready => {
-                log::info!("pager ready");
+                log::debug!("pager ready");
                 super::inflight::set_pager_ready();
                 request_pager_memory(DEFAULT_PAGER_OUTSTANDING_FRAMES, false);
 
@@ -200,7 +200,7 @@ mod largepage {
             MERGED.fetch_add(1, Ordering::Relaxed);
         }
         let n = CANDIDATES.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::kdiag_pager() {
             log::info!(
                 "LARGEPAGE: {} object-aligned candidates, {} also phys-aligned, {} merged",
                 n,

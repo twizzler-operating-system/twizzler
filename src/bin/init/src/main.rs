@@ -265,10 +265,24 @@ fn main() {
         }
         match arg.as_str() {
             "--tests" | "--bench" | "--benches" => start_unittest = true,
+            // Diagnostic classes (`net`, `pager`, `naming`, or `all`), exported so every
+            // compartment inherits the choice without a rebuild: gated instruments check
+            // `TWZ_DIAG` once at first use. Passed as `--kernel-arg=--diag=net,pager`; the
+            // kernel's own bare `--diag` is a different, exact-match flag and is unaffected.
+            a if a.starts_with("--diag=") => {
+                std::env::set_var("TWZ_DIAG", &a["--diag=".len()..]);
+            }
             a if a.starts_with("--") => {}
             _ => autostart = Some(arg),
         }
     }
+    // One line whichever way it is set, before any server loads: a log with no diagnostic output
+    // must be attributable to "off" rather than to a broken instrument, and this is the artifact
+    // that says which.
+    tracing::info!(
+        "TWZDIAG classes={}",
+        std::env::var("TWZ_DIAG").as_deref().unwrap_or("off")
+    );
 
     tracing::info!("starting logger");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "liblogboi_srv.so")
@@ -300,11 +314,17 @@ fn main() {
     // which otherwise needs `-Clinker=<absolute path>` on every native compile.
     std::env::set_var(
         "PATH",
-        // `/pkg/twizzler/bin` is where `xtask disk` stages the userspace build and, with it,
-        // uuhelper's coreutils aliases -- ext4 symlinks in the image rather than naming-server
-        // nodes rebuilt on every boot. `/initrd` stays first so a name shipped in the boot image
+        // `*` is expanded at each lookup, not here: by the runtime's own PATH search (exec.rs's
+        // `find_id`) and by brush (`sys/twizzler/fs.rs`). It has to be, because `/pkg` gains a
+        // directory whenever a package is installed and this runs once, at boot -- the list this
+        // used to spell out had drifted from what the sysroot actually ships in both directions.
+        //
+        // `/pkg/twizzler/bin` is named ahead of the glob, not left to it: that is where `xtask
+        // disk` stages the userspace build and, with it, uuhelper's coreutils aliases, and the
+        // glob is expanded in name order, which would put `twizzler` behind every package
+        // alphabetically before it. `/initrd` stays first so a name shipped in the boot image
         // still wins over the disk copy of the same program.
-        "/initrd:/pkg/twizzler/bin:/pkg/rust/bin:/pkg/lld/bin:/pkg/llvm/bin:/pkg/binutils/bin:/pkg/python/bin",
+        "/initrd:/pkg/twizzler/bin:/pkg/*/bin",
     );
     // Give `HOME` a definition rather than leaving it unset. The runtime reports "/" for
     // `NameRoot::Home` either way, so this changes no behaviour on its own -- it makes the value
@@ -553,7 +573,7 @@ fn main() {
 
     std::env::set_var(
         "PS1",
-        "\\[\x1b[1;32m\\]root@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
+        "\\[\x1b[1;32m\\]root\x1b[1;35m@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
     );
 
     loop {
@@ -606,6 +626,14 @@ fn run_brush(pty_id: ObjID) -> Result<(), TwzError> {
 ///   autostart run is unattended by construction -- it is how the harness drives one program -- and
 ///   a guest that keeps running produces no exit status, so the run ends at whatever silence or
 ///   progress budget the harness applies instead of when the work finished.
+///
+/// That second point holds for the failure paths as well, and it did not used to. Warning and
+/// returning left `main` to fall through to the shell loop, so a name that resolved to nothing
+/// kept the guest alive until the harness gave up: an observed mistyped `--autostart` cost 5m22s
+/// and was reported as "no test report (timeout or early exit)", which reads like a hang rather
+/// than a typo. The two failures exit with the shell's codes for them -- 127 for a name that
+/// resolved to nothing, 126 for one that resolved but could not be run -- so the harness's status
+/// distinguishes them from anything the program itself returns.
 fn run_autostart(autostart: &str, autostart_args: &[String]) {
     // Two fallbacks, in PATH order: the boot image first, then the on-disk program directory.
     // The second is what finds uuhelper's coreutils aliases, which are ext4 symlinks in the image
@@ -627,6 +655,7 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
             "failed to find autostart program: tried {}, {} and {}",
             autostart, fallback, disk_fallback
         );
+        shutdown(127);
         return;
     };
 
@@ -638,6 +667,7 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
         .load();
     let Ok(comp) = comp else {
         warn!("failed to start {}", path);
+        shutdown(126);
         return;
     };
 
@@ -663,13 +693,21 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     }
 
     // Same clamp as run_tests: isa-debug-exit reports (code << 1) | 1 in an 8-bit status, so
-    // anything above 127 aliases onto another code.
-    #[allow(deprecated)]
-    twizzler_abi::syscall::sys_debug_shutdown(if exit_code == 0 {
+    // anything above 127 aliases onto another code. Clamped before the cast, since `exit_code` is
+    // wider than what is being clamped to.
+    shutdown(if exit_code == 0 {
         0
     } else {
         exit_code.min(127) as u32
     });
+}
+
+/// Take the guest down. Every exit from `run_autostart` goes through here, including the two
+/// failures -- the whole point of the function is that the boot ends when the program does, and a
+/// path that returns instead hands the harness a timeout to interpret.
+fn shutdown(code: u32) {
+    #[allow(deprecated)]
+    twizzler_abi::syscall::sys_debug_shutdown(code);
 }
 
 fn run_tests() {

@@ -49,6 +49,9 @@ pub fn start_new_user(args: ThreadSpawnArgs) -> twizzler_rt_abi::Result<ObjID> {
         Thread::new(Some(ctx), Some(args), Priority::USER)
     };
     log::trace!("started user thread ID {}", thread.id());
+    // The home context gates force-exit delivery for this thread's whole life (see
+    // `ThreadSpawnArgs::home_sctx`); zero means unrestricted.
+    thread.set_exit_sctx(args.home_sctx);
     match args.upcall_target {
         UpcallTargetSpawnOption::DefaultAbort => {}
         UpcallTargetSpawnOption::Inherit => {
@@ -109,6 +112,7 @@ pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> Th
         flags: ThreadSpawnFlags::empty(),
         vm_context_handle: None,
         upcall_target: UpcallTargetSpawnOption::DefaultAbort,
+        home_sctx: 0.into(),
     });
     schedule_new_thread(thread)
 }

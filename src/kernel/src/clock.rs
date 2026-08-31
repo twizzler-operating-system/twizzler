@@ -59,6 +59,10 @@ impl TimeoutOnce {
 struct TimeoutEntry {
     timeout: TimeoutOnce,
     expire_ticks: u64,
+    /// Absolute deadline on the bench clock. Firing is decided by this, not by the wheel:
+    /// window placement only schedules the *visit* (tick-coarse); this carries the sub-tick
+    /// remainder. 0 when no clock was registered at insert (early boot) — due on visit.
+    expire_ns: u64,
     key: usize,
 }
 
@@ -71,8 +75,8 @@ impl core::fmt::Debug for TimeoutEntry {
 }
 
 impl TimeoutEntry {
-    fn is_ready(&self, cur: u64) -> bool {
-        cur >= self.expire_ticks
+    fn is_ready(&self, now_ns: u64) -> bool {
+        now_ns >= self.expire_ns
     }
 
     fn call(self) {
@@ -86,14 +90,16 @@ struct TimeoutQueue {
     queues: [heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES>; NR_WINDOWS],
     /// One bit per window, set while that window has entries.
     ///
-    /// [`TimeoutQueue::get_next_ticks`] asks "which is the next non-empty window", and used to
+    /// [`TimeoutQueue::next_wake_delta_ns`] asks "which is the next non-empty window", and used to
     /// answer it by reading `is_empty()` on up to 1023 of the `queues` themselves. Each window is
     /// a `heapless::Vec` of 32 entries, so consecutive windows are ~1.3 KiB apart: that scan
     /// touched 1023 distinct cache lines spread over 1.3 MiB, on **every hardtick**. This
     /// bitmap is 128 bytes -- two cache lines -- and answers the same question.
     occupied: [u64; NR_WINDOWS / 64],
     current: usize,
-    next_wake: usize,
+    /// Absolute ns deadline of the wake currently programmed on the bsp's oneshot; inserts
+    /// compare against this to decide whether to pull the wake in (the old TODO #41).
+    next_wake_abs_ns: u64,
     soft_current: usize,
     keys: heapless::Vec<usize, { NR_WINDOW_ENTRIES * NR_WINDOWS }>,
     next_key: usize,
@@ -121,7 +127,7 @@ impl TimeoutQueue {
             queues: [INIT; NR_WINDOWS],
             occupied: [0; NR_WINDOWS / 64],
             current: 0,
-            next_wake: 0,
+            next_wake_abs_ns: u64::MAX,
             soft_current: 0,
             keys: heapless::Vec::new(),
             next_key: 0,
@@ -176,28 +182,45 @@ impl TimeoutQueue {
         }
     }
 
-    fn get_next_ticks(&self) -> u64 {
+    /// Delta ns from `now_ns` to the next wake this queue needs; `None` when empty, `Some(0)`
+    /// when an entry is already due. Within the head windows (this tick and the next) the answer
+    /// is the entries' actual min deadline, which is what makes sub-tick timeouts fire on time;
+    /// farther out it is whole ticks, deliberately one short so the arrival tick can refine.
+    /// With no clock yet (`now_ns == 0`) everything is whole ticks.
+    fn next_wake_delta_ns(&self, now_ns: u64) -> Option<Nanoseconds> {
         // Nothing pending at all is the common case on a tick, and it costs 16 loads to say so.
         if self.occupied.iter().all(|word| *word == 0) {
-            return NR_WINDOWS as u64;
+            return None;
         }
-        for i in 1..(NR_WINDOWS - 1) {
+        for i in 0..NR_WINDOWS {
             let idx = (i + self.current) % NR_WINDOWS;
-            if self.occupied[idx / 64] & (1u64 << (idx % 64)) != 0 {
-                return i as u64;
+            if self.occupied[idx / 64] & (1u64 << (idx % 64)) == 0 {
+                continue;
             }
+            if i <= 1 && now_ns != 0 {
+                // A head window can also hold next-revolution entries; their deadlines are at
+                // least a full revolution out, so taking the min stays correct.
+                let min = self.queues[idx].iter().map(|e| e.expire_ns).min().unwrap();
+                return Some(min.saturating_sub(now_ns));
+            }
+            return Some(ticks_to_nano((i as u64).saturating_sub(1).max(1)).unwrap());
         }
-        NR_WINDOWS as u64
+        None
     }
 
-    fn insert(&mut self, time: Nanoseconds, timeout: TimeoutOnce) -> TimeoutKey {
-        let ticks = nano_to_ticks(time);
+    fn insert(&mut self, time: Nanoseconds, timeout: TimeoutOnce) -> (TimeoutKey, u64) {
+        let now = crate::instant::current_ns();
+        // Ceil placement: the wheel must never *owe* a window a visit before its whole-tick
+        // deadlines pass; the sub-tick remainder is expire_ns's job, not the window's.
+        let ticks = nano_to_ticks_ceil(time);
         let expire_ticks = self.current + ticks as usize;
         let window = expire_ticks % NR_WINDOWS;
+        let expire_ns = if now == 0 { 0 } else { now.saturating_add(time) };
         let key = self.next_key();
         let entry = TimeoutEntry {
             timeout,
             expire_ticks: expire_ticks as u64,
+            expire_ns,
             key,
         };
         if let Err(entry) = self.queues[window].push(entry) {
@@ -205,10 +228,7 @@ impl TimeoutQueue {
             entry.call();
         }
         self.sync_occupied(window);
-        if expire_ticks < self.next_wake {
-            // TODO: #41 signal CPU to wake up early.
-        }
-        TimeoutKey { key, window }
+        (TimeoutKey { key, window }, expire_ns)
     }
 
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
@@ -226,11 +246,11 @@ impl TimeoutQueue {
         old_len != self.queues[key.window].len()
     }
 
-    fn check_window(&mut self, window: usize) -> Option<TimeoutEntry> {
+    fn check_window(&mut self, window: usize, now_ns: u64) -> Option<TimeoutEntry> {
         if !self.queues[window].is_empty() {
             let index = self.queues[window]
                 .iter()
-                .position(|x| x.is_ready(self.current as u64));
+                .position(|x| x.is_ready(now_ns));
             let entry = index.map(|index| self.queues[window].swap_remove(index));
             self.sync_occupied(window);
             return entry;
@@ -238,16 +258,45 @@ impl TimeoutQueue {
         None
     }
 
-    fn soft_advance(&mut self) -> Option<TimeoutEntry> {
+    /// Move this-revolution entries the wheel is about to walk past that have not reached their
+    /// ns deadline (a ceil-placed window can be visited up to one insert-carry early) to just
+    /// ahead of the head, where `soft_advance`'s peek and the oneshot refinement can still reach
+    /// them. Next-revolution entries (`expire_ticks > current`) stay — their window recurs.
+    fn rehome_undue(&mut self, window: usize) {
+        let mut i = 0;
+        while i < self.queues[window].len() {
+            if self.queues[window][i].expire_ticks > self.current as u64 {
+                i += 1;
+                continue;
+            }
+            let mut entry = self.queues[window].swap_remove(i);
+            entry.expire_ticks = (self.current + 1) as u64;
+            let dest = (self.current + 1) % NR_WINDOWS;
+            if let Err(entry) = self.queues[dest].push(entry) {
+                log::warn!("timeout queue overflow");
+                entry.call();
+            }
+            self.sync_occupied(dest);
+        }
+        self.sync_occupied(window);
+    }
+
+    fn soft_advance(&mut self, now_ns: u64) -> Option<TimeoutEntry> {
         while self.soft_current < self.current {
             let window = self.soft_current % NR_WINDOWS;
-            if let Some(t) = self.check_window(window) {
+            if let Some(t) = self.check_window(window, now_ns) {
                 return Some(t);
             }
+            self.rehome_undue(window);
             self.soft_current += 1;
         }
         let window = self.soft_current % NR_WINDOWS;
-        self.check_window(window)
+        if let Some(t) = self.check_window(window, now_ns) {
+            return Some(t);
+        }
+        // Ceil placement puts a sub-tick deadline one window ahead of the head; checking it
+        // early is safe because readiness is the ns deadline, not the visit.
+        self.check_window((self.soft_current + 1) % NR_WINDOWS, now_ns)
     }
 }
 
@@ -273,14 +322,34 @@ pub fn register_timeout_callback(
     sleep_gen: u64,
 ) -> TimeoutKey {
     let timeout = TimeoutOnce::new(cb, thread, sleep_gen);
-    TIMEOUT_QUEUE.lock().insert(time, timeout)
+    let (key, kick) = {
+        let mut tq = TIMEOUT_QUEUE.lock();
+        let (key, expire_ns) = tq.insert(time, timeout);
+        // A deadline sooner than the bsp's programmed wake would otherwise wait out that wake
+        // (up to a full tick) — the quantization that made every sub-ms sleep cost ~1ms.
+        let kick =
+            expire_ns != 0 && expire_ns.saturating_add(KICK_SLACK_NS) < tq.next_wake_abs_ns;
+        (key, kick)
+    };
+    if kick {
+        if current_processor().is_bsp() {
+            check_reschedule_oneshot();
+        } else {
+            crate::processor::ipi::ipi_exec(
+                crate::interrupt::Destination::Bsp,
+                alloc::boxed::Box::new(check_reschedule_oneshot),
+                false,
+            );
+        }
+    }
+    key
 }
 
 extern "C" fn soft_timeout_clock() {
     /* TODO: use some heuristic to decide if we need to spend more time handling timeouts */
     loop {
         let mut tq = TIMEOUT_QUEUE.lock();
-        let timeout = tq.soft_advance();
+        let timeout = tq.soft_advance(crate::instant::current_ns());
         if let Some(timeout) = timeout {
             drop(tq);
             timeout.call();
@@ -297,9 +366,25 @@ pub fn ticks_to_nano(ticks: u64) -> Option<Nanoseconds> {
     ticks.checked_mul(1000000)
 }
 
-fn nano_to_ticks(ticks: Nanoseconds) -> u64 {
-    ticks / 1000000
+fn nano_to_ticks_ceil(time: Nanoseconds) -> u64 {
+    time.div_ceil(NANOS_PER_TICK)
 }
+
+const NANOS_PER_TICK: Nanoseconds = 1_000_000;
+/// Floor on any programmed oneshot, bounding the interrupt rate a burst of due-now deadlines
+/// can produce while the timeout thread drains them. A chosen policy, not a hardware limit —
+/// the APIC oneshot path expresses finer — so anything that someday wants sub-50µs timeouts
+/// quantizes *here*, deliberately.
+const MIN_ONESHOT_NS: Nanoseconds = 50_000;
+/// A new deadline must beat the programmed wake by at least this much before we pay for a
+/// reprogram (and possibly an IPI) to pull the wake in.
+const KICK_SLACK_NS: Nanoseconds = 100_000;
+
+/// Wheel advancement is by *measured* elapsed time on the bsp (sub-tick oneshots fire before a
+/// whole tick passes; programmed-interval accounting would drift the wheel off real time).
+/// The carry keeps the sub-tick remainder so no time is lost to the whole-tick division.
+static BSP_LAST_NS: AtomicU64 = AtomicU64::new(0);
+static BSP_CARRY_NS: AtomicU64 = AtomicU64::new(0);
 
 #[thread_local]
 static NR_CPU_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -372,16 +457,37 @@ pub fn schedule_oneshot_tick(next: u64) {
     crate::arch::schedule_oneshot_tick(time);
 }
 
+/// Program the oneshot at ns resolution. `NEXT_TICK` still carries the whole-tick count for the
+/// per-cpu tick stats (0 for a sub-tick wake); the arch layer takes nanoseconds directly.
+fn schedule_oneshot_nanos(time: Nanoseconds) {
+    NEXT_TICK.store(time / NANOS_PER_TICK, Ordering::SeqCst);
+    crate::arch::schedule_oneshot_tick(time);
+}
+
+/// Pull the bsp's programmed wake in if the nearest timeout deadline is sooner — the "signal CPU
+/// to wake up early" half of sub-tick timeouts. Non-bsp callers reach it by IPI (see
+/// `register_timeout_callback`); timeouts are advanced only on the bsp.
 pub fn check_reschedule_oneshot() {
     if !current_processor().is_bsp() {
         return;
     }
     crate::interrupt::with_disabled(|| {
+        let now = crate::instant::current_ns();
+        if now == 0 {
+            return;
+        }
         let mut timeout_queue = TIMEOUT_QUEUE.lock();
-        let next = timeout_queue.get_next_ticks();
-        if next < NEXT_TICK.load(Ordering::SeqCst) {
-            timeout_queue.next_wake = next as usize;
-            schedule_oneshot_tick(next);
+        let Some(delta) = timeout_queue.next_wake_delta_ns(now) else {
+            return;
+        };
+        if delta == 0 {
+            TIMEOUT_THREAD_CONDVAR.signal();
+        }
+        let programmed = delta.clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
+        let deadline = now.saturating_add(programmed);
+        if deadline.saturating_add(KICK_SLACK_NS) < timeout_queue.next_wake_abs_ns {
+            timeout_queue.next_wake_abs_ns = deadline;
+            schedule_oneshot_nanos(programmed);
         }
     });
 }
@@ -389,13 +495,34 @@ pub fn check_reschedule_oneshot() {
 pub fn oneshot_clock_hardtick() {
     let ticks = NEXT_TICK.load(Ordering::SeqCst);
     NR_CPU_TICKS.fetch_add(ticks, Ordering::SeqCst);
-    let to_next_tick = if current_processor().is_bsp() {
-        BSP_TICK.fetch_add(ticks, Ordering::SeqCst);
+    let bsp_next_ns = if current_processor().is_bsp() {
+        let now = crate::instant::current_ns();
+        let whole = if now == 0 {
+            ticks
+        } else {
+            let last = BSP_LAST_NS.swap(now, Ordering::Relaxed);
+            if last == 0 {
+                ticks
+            } else {
+                let elapsed = now.saturating_sub(last) + BSP_CARRY_NS.load(Ordering::Relaxed);
+                BSP_CARRY_NS.store(elapsed % NANOS_PER_TICK, Ordering::Relaxed);
+                elapsed / NANOS_PER_TICK
+            }
+        };
+        BSP_TICK.fetch_add(whole, Ordering::SeqCst);
         let mut timeout_queue = TIMEOUT_QUEUE.lock();
-        timeout_queue.hard_advance(ticks as usize);
-        let next = timeout_queue.get_next_ticks();
-        timeout_queue.next_wake = next as usize;
-        Some(next)
+        timeout_queue.hard_advance(whole as usize);
+        let next = timeout_queue.next_wake_delta_ns(now);
+        if next == Some(0) {
+            // Due by ns in a head window `hard_advance`'s passed-window scan cannot see
+            // (a sub-tick wake advances the wheel by zero whole ticks).
+            TIMEOUT_THREAD_CONDVAR.signal();
+        }
+        // The scheduler pins the bsp to a one-tick cadence regardless (below), so the timer
+        // gets the sooner of that and the nearest deadline.
+        let programmed = next.unwrap_or(u64::MAX).clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
+        timeout_queue.next_wake_abs_ns = now.saturating_add(programmed);
+        Some(programmed)
     } else {
         None
     };
@@ -406,32 +533,29 @@ pub fn oneshot_clock_hardtick() {
     // common case, but draining every hardtick bounds how long anything can sit there if some
     // path doesn't -- without it, a single missed drain stalls that thread indefinitely.
     requeue_all();
-    let mut sched_next_tick = schedule_hardtick();
-    if current_processor().is_bsp() {
-        sched_next_tick = Some(1);
-    }
+    let sched_next_tick = schedule_hardtick();
     log::trace!(
         "hardtick {} {} {:?} {:?}",
         current_processor().id,
         ticks,
         sched_next_tick,
-        to_next_tick
-    );
-    let next = core::cmp::min(
-        to_next_tick.unwrap_or(u64::MAX),
-        sched_next_tick.unwrap_or(u64::MAX),
+        bsp_next_ns
     );
 
     // Always rearm. The timer is one-shot, so a cpu that leaves a hardtick without programming the
     // next one takes no further timer interrupt for the rest of the boot -- it keeps running, and
     // keeps answering IPIs, so nothing looks wrong until you notice its timeslices never expire.
     //
-    // The bsp is already guarded against this (`sched_next_tick = Some(1)` above, unconditionally).
-    // No other cpu was: `to_next_tick` is `None` off-bsp by construction, so a non-bsp cpu that
-    // takes one hardtick while `schedule_hardtick` returns `None` -- which is any hardtick with no
-    // current thread -- retires its own clock permanently. One tick is all it costs.
-    let next = if next == u64::MAX { REARM_TICKS } else { next };
-    schedule_oneshot_tick(next);
+    // The bsp is pinned to at most a one-tick cadence (its `bsp_next_ns` is clamped to
+    // `NANOS_PER_TICK`, the old unconditional `Some(1)`), programmed at ns resolution so
+    // sub-tick timeout deadlines actually fire on time. No other cpu advances timeouts:
+    // a non-bsp cpu whose `schedule_hardtick` returns `None` -- any hardtick with no current
+    // thread -- must still rearm or it retires its own clock permanently.
+    if let Some(ns) = bsp_next_ns {
+        schedule_oneshot_nanos(ns);
+    } else {
+        schedule_oneshot_tick(sched_next_tick.unwrap_or(REARM_TICKS));
+    }
 }
 
 /// Fallback rearm interval, in ticks (milliseconds), when nothing else asked for one.

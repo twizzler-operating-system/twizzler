@@ -58,6 +58,7 @@ lazy_gates! {
         = "pager_create_external",
     unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>
         = "pager_unlink_external",
+    set_mtime_external: DynamicSecGate<'static, (ObjID, u64), ()> = "pager_set_mtime_external",
     readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>
         = "pager_readlink_external",
 }
@@ -75,11 +76,20 @@ mod handlestats {
     static GATE: AtomicU64 = AtomicU64::new(0);
     static MAP: AtomicU64 = AtomicU64::new(0);
 
+    /// `TWZ_DIAG` contains `pager` (comma list, or `all`). Runs in whichever client compartment
+    /// opened the handle; those all inherit init's environment. Same contract as
+    /// `twizzler_net::diag_enabled`, which this crate does not depend on.
+    fn diag_enabled() -> bool {
+        static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
+        set.split(',').any(|c| c == "pager" || c == "all")
+    }
+
     pub fn record(gate: u64, map: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let g = GATE.fetch_add(gate, Ordering::Relaxed) + gate;
         let m = MAP.fetch_add(map, Ordering::Relaxed) + map;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && diag_enabled() {
             twizzler_abi::klog_println!(
                 "PHSTATS {} pager handles: open-gate {} us, map {} us (per handle: {} us)",
                 n,
@@ -231,6 +241,12 @@ impl PagerHandle {
         }
         Ok(())
     }
+}
+
+/// Record `mtime` (seconds) on the store inode backing external object `id`. Needs no handle:
+/// the call is inode-addressed and moves no buffer data.
+pub fn set_mtime_external(id: ObjID, mtime: u64) -> Result<()> {
+    (pager_api().set_mtime_external())(id, mtime)
 }
 
 pub fn objid_to_ino(id: u128) -> Option<u32> {

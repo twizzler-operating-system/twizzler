@@ -127,6 +127,8 @@ impl MinimalRuntime {
                 flags: ThreadSpawnFlags::empty(),
                 vm_context_handle: None,
                 upcall_target: twizzler_abi::syscall::UpcallTargetSpawnOption::Inherit,
+                // No compartments in this runtime; force-exit delivery is unrestricted.
+                home_sctx: 0.into(),
             })?
         };
 

@@ -18,7 +18,7 @@ use space::Space;
 use talc::{ErrOnOom, Talc};
 use thread::DEFAULT_STACK_SIZE;
 use twizzler_abi::{
-    syscall::{sys_thread_change_state_in_sctx, sys_thread_exit, sys_thread_send_message},
+    syscall::{sys_thread_change_state, sys_thread_exit, sys_thread_send_message},
     upcall::{ResumeFlags, UpcallData, UpcallFrame},
     write_note,
 };
@@ -726,15 +726,14 @@ impl Monitor {
                     rc.set_exit_code(code);
                     rc.thread_ids_including(&tmgr.threads_of(src))
                 };
-                // Restricted to `src` for the same reason `main_thread_exited` restricts it: a
-                // thread mid-gate elsewhere must die at home, not holding a foreign compartment's
-                // locks. The caller is in that set (it is mid-gate here), so its own exit is
-                // delivered once it crosses back; the runtime exits it directly regardless.
+                // Delivery of each exit is gated on the thread's home context, stamped at spawn:
+                // a thread mid-gate elsewhere dies at home, not holding a foreign compartment's
+                // locks. The caller is in this set (it is mid-gate here), so its own exit lands
+                // once it crosses back; the runtime exits it directly regardless.
                 for thread in threads {
-                    let _ = sys_thread_change_state_in_sctx(
+                    let _ = sys_thread_change_state(
                         thread,
                         twizzler_abi::thread::ExecutionState::Exited,
-                        src,
                     );
                 }
                 Some(code)

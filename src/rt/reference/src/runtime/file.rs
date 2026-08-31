@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock, RwLock,
     },
+    time::Duration,
 };
 
 use bitflags::bitflags;
@@ -27,10 +28,10 @@ use twizzler_abi::{
 use twizzler_io::pty::{PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
     bindings::{
-        binding_info, create_options, endpoint, io_ctx, iovec, object_bind_info, open_kind,
-        open_kind_OpenKind_KernelConsole, socket_address, wait_kind, BIND_DATA_MAX, FD_CMD_DUP,
-        FD_CMD_DUP2, FD_CMD_GET_CLOEXEC, FD_CMD_SET_CLOEXEC, FD_CMD_SYNC, IO_REGISTER_IO_FLAGS,
-        OPEN_FLAG_READ, OPEN_FLAG_WRITE,
+        binding_info, create_options, endpoint, fd_set_times, io_ctx, iovec, object_bind_info,
+        open_kind, open_kind_OpenKind_KernelConsole, socket_address, wait_kind, BIND_DATA_MAX,
+        FD_CMD_DUP, FD_CMD_DUP2, FD_CMD_GET_CLOEXEC, FD_CMD_SET_CLOEXEC, FD_CMD_SET_TIMES,
+        FD_CMD_SYNC, IO_REGISTER_IO_FLAGS, OPEN_FLAG_READ, OPEN_FLAG_WRITE,
     },
     error::{ArgumentError, NamingError, ResourceError, TwzError},
     fd::{FdInfo, NameRoot, OpenKind, RawFd, SocketAddress},
@@ -89,6 +90,12 @@ pub trait Fd {
     fn stat(&self) -> Result<FdInfo>;
 
     fn fd_cmd(&self, _cmd: u32, _arg: *const u8, _ret: *mut u8) -> Result<()> {
+        Ok(())
+    }
+
+    /// Set access/modification times; `None` leaves a field unchanged. Accepted without effect by
+    /// default: most kinds keep no timestamps, and utimensat on them should not fail tools.
+    fn set_times(&self, _accessed: Option<Duration>, _modified: Option<Duration>) -> Result<()> {
         Ok(())
     }
 
@@ -266,6 +273,12 @@ impl FileDesc {
         } else if cmd == FD_CMD_SYNC {
             self.file.flush()?;
             return Ok(());
+        } else if cmd == FD_CMD_SET_TIMES {
+            let st = unsafe { arg.cast::<fd_set_times>().read() };
+            let conv = |od: twizzler_rt_abi::bindings::option_duration| {
+                (od.is_some != 0).then(|| Duration::from(od.dur))
+            };
+            return self.file.set_times(conv(st.accessed), conv(st.modified));
         }
         self.file.fd_cmd(cmd, arg, ret).into()
     }

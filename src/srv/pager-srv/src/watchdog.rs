@@ -238,20 +238,31 @@ const QUEUE_DIAG_EVERY: Duration = Duration::from_secs(20);
 /// the same log.
 const PHASE_REPORT_EVERY: Duration = Duration::from_secs(2);
 
+/// Whether the `pager` diagnostic class was requested via `TWZ_DIAG` (comma list, or `all`).
+/// Same contract as `twizzler_net::diag_enabled`, which pager-srv does not depend on; init logs
+/// the value at boot, so a log without NVMEQ/PHASETICK heartbeats provably means "off".
+pub(crate) fn diag_enabled() -> bool {
+    static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
+    set.split(',').any(|c| c == "pager" || c == "all")
+}
+
 fn sampler_main() {
     let mut last_diag = Instant::now();
     let mut last_phase = Instant::now();
     loop {
         std::thread::sleep(SAMPLE_EVERY);
         let now = Instant::now();
-        if now.duration_since(last_diag) >= QUEUE_DIAG_EVERY {
+        // Heartbeats are opt-in (`--diag=pager`); the stall-triggered dumps below stay
+        // unconditional. Sweeps that need the healthy-boot control arm the class explicitly.
+        if now.duration_since(last_diag) >= QUEUE_DIAG_EVERY && diag_enabled() {
             last_diag = now;
             crate::nvme::queue_diag();
         }
         // Before the `try_lock`/`due` early-outs below: those skip most rounds, and a dump that
         // only appeared when something was already stuck would be missing for every healthy boot,
         // which is exactly the population being measured.
-        if now.duration_since(last_phase) >= PHASE_REPORT_EVERY {
+        if now.duration_since(last_phase) >= PHASE_REPORT_EVERY && diag_enabled() {
             last_phase = now;
             if let Some(delta) = phase_delta_report() {
                 tracing::info!("PHASETICK: {}", delta);

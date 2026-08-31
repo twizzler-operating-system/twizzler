@@ -435,17 +435,45 @@ impl ReferenceRuntime {
             let __t0 = std::time::Instant::now();
             let __res = sys_thread_sync(&mut wps, timeout);
             let __slept = __t0.elapsed();
+            // Age of the last read-readiness rising edge at the moment this sleep returned:
+            // isolates the kernel wake+schedule hop from kevent's post-wake bookkeeping (UDPRISE
+            // measures through to the app's recv). Deltas beyond 50ms are unrelated old rises
+            // (slice timeouts, other kqueues) and are skipped, not averaged in.
+            {
+                use crate::runtime::file::kinds::socket::engine::{READ_RISE_LAST_NS, RISE_CLOCK};
+                static SUM: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+                static CNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+                let rise = READ_RISE_LAST_NS.load(Ordering::Relaxed);
+                if rise != 0 {
+                    let d = (RISE_CLOCK.get().as_nanos() as u64).saturating_sub(rise);
+                    if d < 50_000_000 {
+                        SUM.fetch_add(d, Ordering::Relaxed);
+                        let n = CNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_power_of_two() && twizzler_net::diag_enabled("net") {
+                            println!(
+                                "KQWAKE n={} avg_us={}",
+                                n,
+                                SUM.load(Ordering::Relaxed) / n / 1000
+                            );
+                        }
+                    }
+                }
+            }
             // Denominator first: every timed sleep counts, so a silent report means "none were
             // short", never "the probe never ran".
             if timeout.is_some() {
                 KEV_SLEEPS.fetch_add(1, Ordering::Relaxed);
             }
-            // Fire on the anomaly itself -- returned in under a quarter of what was asked for --
-            // and name the return value, which is the whole discriminator. TIMED_OUT here means
-            // the timeout fired early (kernel fault); Ok means a wake arrived (kernel fine).
+            // Count every short return, but only *print* the error ones. An Ok short return is a
+            // wake arriving before the timeout -- normal event delivery, and the overwhelming
+            // population (4524/4524 KEVSHORT lines in a full sweep log were ret=0). TIMED_OUT
+            // returning early is the kernel fault this tripwire hunts, and it has never fired;
+            // when it does, the line still carries the sleeps/short counters as denominator.
             if let Some(t) = timeout {
                 if __slept * 4 < t {
                     KEV_SHORT.fetch_add(1, Ordering::Relaxed);
+                }
+                if __slept * 4 < t && __res.is_err() {
                     let __k = match &__res {
                         Ok(n) => *n as i64,
                         Err(e) if *e == TwzError::TIMED_OUT => -1,
@@ -485,6 +513,16 @@ impl ReferenceRuntime {
                         twizzler_abi::syscall::KernelConsoleWriteFlags::empty(),
                     );
                 }
+            }
+            // A long wait that genuinely timed out is what a bench stall looks like from inside
+            // this compartment (net_*_within retries on a 2s slice). Fire the engine probe here so
+            // the stall window carries ring-word samples -- POLLPROBE otherwise prints on
+            // power-of-two call counts, which a stalled compartment stops reaching. Diag-gated
+            // inside pollprobe; a healthy run's waits resolve in microseconds and never take this.
+            if matches!(__res, Err(TwzError::TIMED_OUT)) && timeout.is_some_and(|t| t.as_millis() >= 1000)
+            {
+                crate::runtime::file::kinds::socket::engine::sample_rings();
+                crate::runtime::file::kinds::socket::engine::pollprobe("kevtimeout");
             }
             match __res {
                 Ok(_) => {}

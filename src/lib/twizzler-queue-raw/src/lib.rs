@@ -267,6 +267,11 @@ pub struct RawQueueHdr {
     tail: CacheLine<AtomicU64>,
 }
 
+/// Rings that found a consumer armed (a wake was actually sent).
+pub static RING_WOKE: AtomicU64 = AtomicU64::new(0);
+/// Rings that found no consumer armed (the entry was queued, nobody woken).
+pub static RING_NO_WAITER: AtomicU64 = AtomicU64::new(0);
+
 impl RawQueueHdr {
     /// Construct a new raw queue header.
     pub fn new(l2len: usize, stride: usize) -> Self {
@@ -473,7 +478,15 @@ impl RawQueueHdr {
         self.bell.fetch_add(1, Ordering::SeqCst);
         sc_fence();
         if self.take_consumer_waiting() {
+            RING_WOKE.fetch_add(1, Ordering::Relaxed);
             ring(&self.bell.0)
+        } else {
+            // No consumer armed at the instant of the ring. A submission that lands here reaches
+            // the queue but wakes nobody: if the consumer is between poll passes it will see the
+            // entry on its next arm, and if it is parked on something else the entry waits. A high
+            // ratio here against a dormant consumer is the difference between "the wake was lost"
+            // and "there was no one to wake".
+            RING_NO_WAITER.fetch_add(1, Ordering::Relaxed);
         }
     }
 

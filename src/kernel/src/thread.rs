@@ -134,13 +134,14 @@ pub struct Thread {
     /// stuck.
     stuck_exit_scans: AtomicU32,
     /// Security context this thread must be running in for a pending force-exit to be delivered,
-    /// as (lo, hi); zero means unconditional. Written before THREAD_MUST_EXIT is set and read only
-    /// after observing it, so the pair is never torn from a reader's point of view.
+    /// as (lo, hi); zero means unconditional. Stamped once at spawn from
+    /// `ThreadSpawnArgs::home_sctx`, before the thread can run, so it is set before any
+    /// THREAD_MUST_EXIT could be.
     ///
     /// A gate call runs the caller's thread inside the callee compartment, holding that
     /// compartment's locks; a force-exit landing there kills the thread with those locks held and
-    /// wedges the callee for every compartment. The monitor names the victim's own instance here,
-    /// so the exit waits for it to come home. See `sys_thread_change_state_in_sctx`.
+    /// wedges the callee for every compartment. The spawner names the thread's own instance here,
+    /// so the exit waits for it to come home.
     exit_sctx: [AtomicU64; 2],
     /// `sync_sleep_gen` as of the last hang scan, and the time (nanos since boot, +1) it last
     /// differed. Written only by the scanning cpu. See `check_system_hang`.
@@ -153,7 +154,12 @@ pub struct Thread {
     /// (lo, hi, offset). Diagnostic only: the user ip of a blocked thread is always the same
     /// syscall wrapper, so it says the thread is in a thread-sync sleep and nothing about *which*
     /// word -- which is exactly what names the userspace lock it is waiting on.
-    sleep_word: [AtomicU64; 3],
+    sleep_word: [AtomicU64; 5],
+    /// (site, sync_sleep_gen) of the last winner of `reset_sync_sleep`. Diagnostic only: names
+    /// which path consumed the SYNC_SLEEP flag when a hang row shows a parked thread no wake can
+    /// claim. Sites: 1=wakeup_word claim, 2=SleepEntry::drop, 3=timeout callback, 4=self
+    /// (non-sleep path), 5=device-interrupt claim, 6=self post-sleep cleanup, 7=exit.
+    sync_consumer: [AtomicU64; 2],
     /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
     /// executing in userspace. A counter rather than a flag because a fault taken while already
     /// in the kernel must not report a return to user when only the inner handler finishes.
@@ -358,7 +364,8 @@ impl Thread {
             hang_gen: AtomicU64::new(0),
             hang_since: AtomicU64::new(0),
             hang_reports: AtomicU32::new(0),
-            sleep_word: [const { AtomicU64::new(0) }; 3],
+            sleep_word: [const { AtomicU64::new(0) }; 5],
+            sync_consumer: [const { AtomicU64::new(0) }; 2],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
@@ -948,11 +955,26 @@ impl Thread {
     }
 
     /// Record the word this thread is about to sleep on, for the wait table. Diagnostic only.
-    pub fn note_sleep_word(&self, obj: ObjID, offset: usize) {
+    ///
+    /// The armed compare value and op modifiers ride along so the table can re-evaluate the sleep
+    /// predicate against the word's *current* value: a parked thread whose predicate no longer
+    /// holds is a lost wake, caught in the transcript rather than argued about afterwards.
+    pub fn note_sleep_word(&self, obj: ObjID, offset: usize, value: u64, is32: bool, invert: bool) {
         let parts = obj.parts();
         self.sleep_word[0].store(parts[0], Ordering::Relaxed);
         self.sleep_word[1].store(parts[1], Ordering::Relaxed);
         self.sleep_word[2].store(offset as u64, Ordering::Relaxed);
+        self.sleep_word[3].store(value, Ordering::Relaxed);
+        self.sleep_word[4]
+            .store((is32 as u64) | ((invert as u64) << 1), Ordering::Relaxed);
+    }
+
+    /// Record which path just won `reset_sync_sleep` on this thread; see the field. Called by the
+    /// winner immediately after the win, so the (site, gen) pair identifies the consumer of the
+    /// park a hang row later shows as unclaimable.
+    pub fn note_sync_consumer(&self, site: u64) {
+        self.sync_consumer[0].store(site, Ordering::Relaxed);
+        self.sync_consumer[1].store(self.sync_sleep_gen(), Ordering::Relaxed);
     }
 
     /// Record the security context this thread must be running in before a pending force-exit is
@@ -1180,7 +1202,9 @@ pub fn exit(code: u64) -> ! {
     // ThreadRef, so it will run. Retire it here for the same reason the sleep paths do, rather than
     // relying on `schedule_thread_on_cpu`'s is_exiting() check to catch it downstream.
     th.end_sync_sleep();
-    th.reset_sync_sleep();
+    if th.reset_sync_sleep() {
+        th.note_sync_consumer(7);
+    }
     th.reset_sync_sleep_done();
     th.sync_links.clear_all_references();
     // Disable interrupts for the entire exit sequence including schedule(), to
@@ -1512,8 +1536,63 @@ pub fn check_system_hang() {
                     crate::obj::LookupResult::Found(obj) => obj.get_notes().summarize(&mut namebuf),
                     _ => 0,
                 };
+            // Re-evaluate the recorded sleep predicate against the word's current value. `lost`
+            // true on a row that is Sleeping with sync linked means the thread should be awake:
+            // the word moved past its armed value and no wake ever claimed it. `slprs` is the
+            // word object's sleeper count -- zero while this row is parked in its tree indicts
+            // `wakeup_word`'s sleepers==0 fast path specifically. Advisory (all loads racy);
+            // the raw values are printed so a transcript can be re-judged.
+            let sw_obj = ObjID::from_parts([
+                thread.sleep_word[0].load(Ordering::Relaxed),
+                thread.sleep_word[1].load(Ordering::Relaxed),
+            ]);
+            let sw_off = thread.sleep_word[2].load(Ordering::Relaxed) as usize;
+            let sw_val = thread.sleep_word[3].load(Ordering::Relaxed);
+            let sw_meta = thread.sleep_word[4].load(Ordering::Relaxed);
+            let (cur, slprs, cw, wt) = if sw_obj != 0.into() {
+                match crate::obj::lookup_object(sw_obj, crate::obj::LookupFlags::empty()) {
+                    crate::obj::LookupResult::Found(obj) => {
+                        let cur = if sw_meta & 1 != 0 {
+                            obj.read_atomic_32(sw_off).ok().map(|v| v as u64)
+                        } else {
+                            obj.read_atomic_64(sw_off).ok()
+                        };
+                        // Context words for a queue-bell sleeper: in RawQueueHdr the bell sits at
+                        // +0x100 with consumer_waiting at +0xC0 and waiters at +0x80, so bell-0x40
+                        // and bell-0x80 are the producer-visible arm state. For any other word
+                        // these are just nearby memory -- read them, label them, let the reader
+                        // decide; they only mean something when the offset is a known bell.
+                        let (cw, wt) = if sw_off >= 0x80 {
+                            (
+                                obj.read_atomic_32(sw_off - 0x40).ok(),
+                                obj.read_atomic_32(sw_off - 0x80).ok(),
+                            )
+                        } else {
+                            (None, None)
+                        };
+                        (cur, obj.sleeper_count() as i64, cw, wt)
+                    }
+                    _ => (None, -1, None, None),
+                }
+            } else {
+                (None, -1, None, None)
+            };
+            let lost = cur.is_some_and(|cur| {
+                // A 32-bit sleep compares only the low half; setup_sleep_word32 truncates the same
+                // way, so the judgment here must too or a benign high bit reads as a lost wake.
+                let armed = if sw_meta & 1 != 0 {
+                    sw_val & 0xffff_ffff
+                } else {
+                    sw_val
+                };
+                let eq = cur == armed;
+                let asleep_pred = if sw_meta & 2 != 0 { !eq } else { eq };
+                !asleep_pred
+                    && thread.sync_links.is_linked()
+                    && thread.get_state() == ExecutionState::Sleeping
+            });
             emerglogln!(
-                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
+                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} wv {:x} wvok {} av {:x} m {} slprs {} cw {} wt {} lost {} fl {:x} crit {} gen {} cs {} cg {} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
                 thread.id(),
                 thread.objid(),
                 core::str::from_utf8(&namebuf[..namelen]).unwrap_or("?"),
@@ -1522,11 +1601,21 @@ pub fn check_system_hang() {
                 thread.is_in_user(),
                 thread.must_exit(),
                 thread.read_ip(),
-                ObjID::from_parts([
-                    thread.sleep_word[0].load(Ordering::Relaxed),
-                    thread.sleep_word[1].load(Ordering::Relaxed),
-                ]),
-                thread.sleep_word[2].load(Ordering::Relaxed),
+                sw_obj,
+                sw_off,
+                cur.unwrap_or(u64::MAX),
+                cur.is_some(),
+                sw_val,
+                sw_meta,
+                slprs,
+                cw.map(|v| v as i64).unwrap_or(-1),
+                wt.map(|v| v as i64).unwrap_or(-1),
+                lost,
+                thread.flags.load(Ordering::Relaxed),
+                thread.is_critical(),
+                thread.sync_sleep_gen(),
+                thread.sync_consumer[0].load(Ordering::Relaxed),
+                thread.sync_consumer[1].load(Ordering::Relaxed),
                 thread.sync_links.is_linked(),
                 thread.pager_link.is_linked(),
                 thread.memwait_link.is_linked(),

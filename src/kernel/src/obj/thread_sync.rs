@@ -281,15 +281,21 @@ impl SleepEntry {
     ///
     /// Claiming is `reset_sync_sleep` plus the removal, both under the caller's `sleep_info` lock;
     /// scheduling the claimed threads is [Object::wakeup_word]'s job, once that lock is gone.
-    fn claim_n(&mut self, max_count: usize, batch: &mut WakeBatch) -> bool {
+    fn claim_n(&mut self, max_count: usize, batch: &mut WakeBatch, skipped: &mut usize) -> bool {
         let mut cursor = self.threads.front_mut();
         while !batch.is_full() && batch.len() < max_count && !cursor.is_null() {
             let thread = cursor.get().unwrap();
             if thread.reset_sync_sleep() {
+                thread.note_sync_consumer(1);
                 let thread = cursor.remove().unwrap();
                 // Safety: not full, checked above.
                 unsafe { batch.push_unchecked(thread) };
             } else {
+                // A linked entry whose SYNC_SLEEP flag was already consumed. Transiently benign
+                // (a concurrent wake on another of the thread's words won the flag first), but a
+                // wake that claims nobody *because of these* is the lost-wake fingerprint the
+                // caller reports -- see `wakeup_word`.
+                *skipped += 1;
                 cursor.move_next();
             }
         }
@@ -303,6 +309,7 @@ impl Drop for SleepEntry {
         while !cursor.is_null() {
             let thread = cursor.remove().unwrap();
             if thread.reset_sync_sleep() {
+                thread.note_sync_consumer(2);
                 add_to_requeue(thread);
             }
         }
@@ -371,9 +378,15 @@ impl SleepInfo {
         }
     }
 
-    fn claim_n(&mut self, offset: usize, max_count: usize, batch: &mut WakeBatch) -> bool {
+    fn claim_n(
+        &mut self,
+        offset: usize,
+        max_count: usize,
+        batch: &mut WakeBatch,
+        skipped: &mut usize,
+    ) -> bool {
         if let Some(se) = self.word(offset) {
-            se.claim_n(max_count, batch)
+            se.claim_n(max_count, batch, skipped)
         } else {
             false
         }
@@ -453,6 +466,7 @@ impl Object {
             }
         }
         let mut woken = 0;
+        let mut skipped = 0usize;
         while woken < count {
             let mut batch = WakeBatch::new();
             let maybe_more;
@@ -462,7 +476,7 @@ impl Object {
                     break;
                 };
                 let mut sleep_info = si.lock();
-                maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch);
+                maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch, &mut skipped);
                 current_thread_ref().map(|ct| ct.enter_critical())
             };
             if batch.is_empty() {
@@ -482,6 +496,25 @@ impl Object {
             // `count`; only a full one says there may be more waiting.
             if !maybe_more {
                 break;
+            }
+        }
+        // A wake that claimed nobody while threads sat linked on exactly this word is the
+        // lost-wake fingerprint: each such thread's SYNC_SLEEP flag was already consumed, so no
+        // wake can ever claim it again and it sleeps until something re-files it. Split from the
+        // benign silent return (empty tree) so a transcript can tell "the wake was issued and
+        // bounced" from "no wake was ever issued". Rate-limited on powers of two.
+        if woken == 0 && skipped > 0 {
+            static CLAIM_BOUNCED: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0);
+            let n = CLAIM_BOUNCED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_power_of_two() {
+                emerglogln!(
+                    "[wake] claim bounced: 0 of {} linked sleeper(s) claimable at {}+{:x} (n={})",
+                    skipped,
+                    self.id(),
+                    offset,
+                    n
+                );
             }
         }
         woken

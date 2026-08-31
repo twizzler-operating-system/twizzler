@@ -69,6 +69,9 @@ struct RawFileInner {
     /// Null until resolved: a fresh object has no `MEXT_SIZED` until the first write creates one,
     /// so this is filled in lazily and re-checked while it is still null.
     sized: AtomicPtr<MetaExt>,
+    /// The `MEXT_MTIME` extension, cached like `sized` and for the same reason: it is stamped on
+    /// every write.
+    mtimed: AtomicPtr<MetaExt>,
 }
 
 #[derive(Clone)]
@@ -128,6 +131,39 @@ impl RawFile {
         }
     }
 
+    /// Whether this object is backed by an external (ino-based) store file, where the store's
+    /// inode -- not the (synthesized) meta page -- is the mtime authority.
+    fn is_external(&self) -> bool {
+        crate::pager::objid_to_ino(self.handle.id().raw()).is_some()
+    }
+
+    /// Wall-clock seconds, floored to 1: `find_meta_ext` reads a zero value as an absent slot, so
+    /// 0 must never be stamped.
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .max(1)
+    }
+
+    /// Stamp `secs` into the object's `MEXT_MTIME`, creating the extension if absent. Requires a
+    /// write mapping.
+    fn stamp_mtime(&self, secs: u64) {
+        let cached = self.inner.mtimed.load(Ordering::Relaxed);
+        if let Some(me) = unsafe { cached.as_ref() } {
+            me.value.store(secs, Ordering::SeqCst);
+            return;
+        }
+        if unsafe { self.handle.set_meta_ext(MetaExt::new(MEXT_MTIME, secs)) }.is_ok() {
+            if let Some(me) = self.handle.find_meta_ext(MEXT_MTIME) {
+                self.inner
+                    .mtimed
+                    .store(me as *const MetaExt as *mut _, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
         let t_map = std::time::Instant::now();
         let handle = OUR_RUNTIME.map_object(obj_id, flags)?;
@@ -146,6 +182,10 @@ impl RawFile {
                 sized = handle
                     .find_meta_ext(MEXT_SIZED)
                     .map_or(null_mut(), |me| me as *const MetaExt as *mut MetaExt);
+                // A file getting its first MEXT_SIZED is a fresh native file: give it a creation
+                // mtime too, so it never stats as mtime 0 (external objects arrive with the
+                // pager-synthesized ext already present).
+                let _ = unsafe { handle.set_meta_ext(MetaExt::new(MEXT_MTIME, Self::now_secs())) };
             }
             0
         };
@@ -156,6 +196,7 @@ impl RawFile {
                 len: AtomicU64::new(len),
                 flags: AtomicU64::new(0),
                 sized: AtomicPtr::new(sized),
+                mtimed: AtomicPtr::new(null_mut()),
             }),
             handle,
         })
@@ -168,6 +209,14 @@ impl RawFile {
         self.inner.len.store(new_len, Ordering::SeqCst);
         let me = MetaExt::new(MEXT_SIZED, new_len);
         unsafe { self.handle.set_meta_ext(me)? };
+        let now = Self::now_secs();
+        self.stamp_mtime(now);
+        // Truncation is a content change the store must see: for an external file the meta page is
+        // re-synthesized from the inode on every page-in, so a resident-only stamp would not
+        // survive eviction. Best-effort -- the truncate itself already happened.
+        if self.is_external() {
+            let _ = crate::pager::set_mtime_external(self.handle.id(), now);
+        }
         self.maybe_set_needs_sync();
         Ok(())
     }
@@ -231,19 +280,29 @@ impl Fd for RawFile {
                 .pos
                 .store(offset + write_len as u64, Ordering::SeqCst);
         }
+        // Native objects only: their meta ext is the mtime authority. For external files it is a
+        // pager-synthesized copy of the store inode's, and a resident-only bump would roll
+        // backwards on eviction; those get stamped at create/truncate/utimensat instead.
+        if !self.is_external() {
+            self.stamp_mtime(Self::now_secs());
+        }
         self.maybe_set_needs_sync();
         Ok(write_len)
     }
 
     fn stat(&self) -> Result<FdInfo> {
         self.update_len();
-        // Externally-backed objects carry the store's mtime in a meta ext (pager-synthesized);
-        // native objects have none and report zero.
-        let modified = self
-            .handle
-            .find_meta_ext(MEXT_MTIME)
-            .map(|me| std::time::Duration::from_secs(me.value.load(Ordering::SeqCst)))
-            .unwrap_or(std::time::Duration::ZERO);
+        // External objects carry the store's mtime in a meta ext (pager-synthesized), native ones
+        // get theirs stamped at create/write. Floored to 1 second: files that predate mtime
+        // support would otherwise report 0, which mtime consumers (neatvi's no-clobber check)
+        // read as "no such file".
+        let modified = std::time::Duration::from_secs(
+            self.handle
+                .find_meta_ext(MEXT_MTIME)
+                .map(|me| me.value.load(Ordering::SeqCst))
+                .unwrap_or(0)
+                .max(1),
+        );
         Ok(FdInfo {
             kind: twizzler_rt_abi::fd::FdKind::Regular,
             size: self.inner.len.load(Ordering::SeqCst),
@@ -294,6 +353,32 @@ impl Fd for RawFile {
             }
             _ => Err(ArgumentError::InvalidArgument.into()),
         }
+    }
+
+    fn set_times(
+        &self,
+        _accessed: Option<std::time::Duration>,
+        modified: Option<std::time::Duration>,
+    ) -> Result<()> {
+        // Access times are not stored anywhere; accepted without effect.
+        let Some(modified) = modified else {
+            return Ok(());
+        };
+        if !self.handle.map_flags().contains(MapFlags::WRITE) {
+            return Err(twizzler_rt_abi::error::GenericError::AccessDenied.into());
+        }
+        let secs = modified.as_secs().max(1);
+        // Store first for external files -- the inode is the authority the meta page is
+        // re-synthesized from -- then mirror into the resident ext so stat sees it immediately.
+        // A backend that keeps no mtime accepts without effect, matching the trait default.
+        if self.is_external() {
+            match crate::pager::set_mtime_external(self.handle.id(), secs) {
+                Err(e) if e != TwzError::NOT_SUPPORTED => return Err(e),
+                _ => {}
+            }
+        }
+        self.stamp_mtime(secs);
+        Ok(())
     }
 
     fn get_config(&self, _reg: u32, _val: *mut std::ffi::c_void, _val_len: usize) -> Result<()> {

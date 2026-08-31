@@ -271,6 +271,9 @@ impl LaneStats {
         if !self.report_due.swap(false, Ordering::Relaxed) {
             return;
         }
+        if !crate::watchdog::diag_enabled() {
+            return;
+        }
         tracing::info!(
             "LANESTATS: {} page-data ({} pages); fast {} ({} pages, {} of them read-ahead tail); rejected {} flags / {} size / {} probe ({} len, {} no-extents, {} partial); would be fast at urgent limit 64: {}, 512: {}, unlimited: {}; on urgent segment alone: {}",
             self.page_data.load(Ordering::Relaxed),

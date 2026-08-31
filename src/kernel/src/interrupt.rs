@@ -584,6 +584,7 @@ pub fn external_interrupt_entry(number: u32) {
                 let mut cursor = waiters.front_mut();
                 while !batch.is_full() && !cursor.is_null() {
                     if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
+                        cursor.get().map(|t| t.note_sync_consumer(5));
                         let thread = cursor.remove().unwrap();
                         // Safety: not full, checked above.
                         unsafe { batch.push_unchecked(thread) };

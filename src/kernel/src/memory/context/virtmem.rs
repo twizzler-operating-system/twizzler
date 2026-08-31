@@ -2137,7 +2137,7 @@ impl VirtContext {
                     static LEAK_LOGS: core::sync::atomic::AtomicUsize =
                         core::sync::atomic::AtomicUsize::new(0);
                     if LEAK_LOGS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 64 {
-                        log::warn!(
+                        log::debug!(
                             "unmap leaves stuck mapcount: obj {} mapcount {} released {} visited {} members {:?}",
                             slot.object().id(),
                             mc,

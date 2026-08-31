@@ -1,4 +1,4 @@
-mod engine;
+pub(crate) mod engine;
 mod smoltcp;
 
 use std::{

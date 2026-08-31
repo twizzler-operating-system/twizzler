@@ -239,7 +239,8 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         // teardown firing for only ~112 of ~16k dead compartments — the rest sit at
         // use_count > 0, i.e. someone never dropped a handle. This says who and at what count.
         diag_tick += 1;
-        if diag_tick % 64 == 0 {
+        // Gated whole: skipping the census also skips its lock traffic, not just the lines.
+        if diag_tick % 64 == 0 && crate::diag_enabled() {
             let monitor = get_monitor();
             let key = happylock::ThreadKey::get().unwrap();
             let cmgr = crate::lockdiag::watched(monitor.comp_mgr.read(key));

@@ -6,7 +6,9 @@ use core::{
 use intrusive_collections::{KeyAdapter, RBTree, intrusive_adapter};
 use twizzler_abi::{
     object::ObjID,
-    syscall::{ThreadSync, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TimeSpan},
+    syscall::{
+        ThreadSync, ThreadSyncFlags, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TimeSpan,
+    },
     thread::ExecutionState,
     trace::{MAX_BLOCK_NAME, ThreadBlocked, ThreadResumed, TraceEntryFlags, TraceKind},
 };
@@ -408,18 +410,19 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
 /// to a peer that is exiting too, nothing ever does.
 ///
 /// Checked under the caller's critical guard, after set_sync_sleep_done, so it catches every
-/// force-exit that lands before we commit to blocking -- which is the case that occurs, since
-/// `ChangeState` only reaches a thread the monitor believes is still running. A force-exit against
-/// a thread that is *already* parked here is not covered: `force_exit` does not wake its target,
-/// and waking one from outside is not a flag poke (see the note there).
+/// force-exit that lands before we commit to blocking. A force-exit against a thread *already*
+/// parked here is `force_exit`'s own problem: it cannot wake the target directly (waking one from
+/// outside is not a flag poke -- see the note there), so it schedules a timeout-queue wake, and
+/// the woken thread takes its exit on the way out of `sys_thread_sync`.
 ///
 /// The caller treats a true here exactly like a claimed wakeup -- drop the guard, do not block --
 /// and its normal post-sleep cleanup (undo_sleep, remove_from_requeue, resetting the sleep flags)
 /// runs either way. The exit itself happens in `sys_thread_sync`, once that cleanup is done.
 ///
-/// A force-exit restricted to a security context (see `sys_thread_change_state_in_sctx`) is not one
-/// this thread can act on yet, so it must still be allowed to block: refusing would spin it against
-/// whatever it is waiting for until it happens to return to its own compartment.
+/// A force-exit not yet deliverable at this thread's security context (the spawn-stamped home
+/// context, `exit_sctx`) is not one this thread can act on, so it must still be allowed to block:
+/// refusing would spin it against whatever it is waiting for until it happens to return to its
+/// own compartment.
 fn must_not_block(thread: &ThreadRef) -> bool {
     thread.exit_deliverable()
 }
@@ -601,7 +604,13 @@ fn prep_sleep_with(
     let (obj, offset, vaddr) = resolved?;
     if first_sleep {
         if let Some(thread) = current_thread_ref() {
-            thread.note_sleep_word(obj.id(), offset);
+            thread.note_sleep_word(
+                obj.id(),
+                offset,
+                sleep.value,
+                matches!(sleep.reference, ThreadSyncReference::Virtual32(_)),
+                sleep.flags.contains(ThreadSyncFlags::INVERT),
+            );
         }
     }
 
@@ -737,6 +746,7 @@ pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
         return;
     }
     if thread.reset_sync_sleep() {
+        thread.note_sync_consumer(3);
         add_to_requeue(thread);
     }
     requeue_all();
@@ -771,7 +781,9 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     thread.end_sync_sleep();
     remove_from_requeue(&thread);
     timeout_key.release();
-    thread.reset_sync_sleep();
+    if thread.reset_sync_sleep() {
+        thread.note_sync_consumer(6);
+    }
     thread.reset_sync_sleep_done();
 }
 
@@ -796,7 +808,9 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     }
     let woke_up = trace_now();
     let _guard = thread.enter_critical();
-    thread.reset_sync_sleep();
+    if thread.reset_sync_sleep() {
+        thread.note_sync_consumer(6);
+    }
     thread.reset_sync_sleep_done();
     remove_from_requeue(&thread);
     drop(_guard);
@@ -857,7 +871,9 @@ fn optimized_single_sleep_timed(
     let _guard = thread.enter_critical();
     // Retire any outstanding timeout callback before touching the flags it would consume.
     thread.end_sync_sleep();
-    thread.reset_sync_sleep();
+    if thread.reset_sync_sleep() {
+        thread.note_sync_consumer(6);
+    }
     thread.reset_sync_sleep_done();
     drop(_guard);
     undo_sleep(&se);
@@ -1025,6 +1041,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
             thread.enter_critical()
         } else {
             if thread.reset_sync_sleep() {
+                thread.note_sync_consumer(4);
                 add_to_requeue(thread.clone());
             }
             requeue_all();
@@ -1043,7 +1060,9 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     // See simple_timed_sleep: retire any outstanding timeout callback before touching the flags it
     // would otherwise consume.
     thread.end_sync_sleep();
-    thread.reset_sync_sleep();
+    if thread.reset_sync_sleep() {
+        thread.note_sync_consumer(6);
+    }
     thread.reset_sync_sleep_done();
     drop(_guard);
     for op in &unsleeps {

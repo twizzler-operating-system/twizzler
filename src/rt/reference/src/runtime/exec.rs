@@ -1,6 +1,6 @@
 use std::{
     ffi::{c_char, c_void, CStr},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use monitor_api::{CompartmentLoader, NewCompartmentFlags};
@@ -41,19 +41,79 @@ fn find_id(name: impl AsRef<str>) -> Result<ObjID, TwzError> {
     let Ok(candidates) = std::env::var("PATH") else {
         return twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &name);
     };
-    let candidates = candidates.split(":");
-    for dir in candidates {
-        let mut dir = Path::new(dir).to_path_buf();
-        dir.push(path);
-
-        if let Ok(r) =
-            twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), dir.to_str().unwrap())
-        {
-            return Ok(r);
+    // Entries are expanded one at a time, in order, rather than all of them into a list up front:
+    // a name that hits on `/initrd` -- the first entry, and where everything in the boot image
+    // lives -- must not pay for enumerating `/pkg`. This is on the spawn path, so that cost would
+    // land on every program launch, hit or miss.
+    for entry in candidates.split(':') {
+        match expand_star(Path::new(entry)) {
+            Some(expanded) => {
+                for dir in expanded {
+                    if let Some(id) = try_dir(&dir, path) {
+                        return Ok(id);
+                    }
+                }
+            }
+            None => {
+                if let Some(id) = try_dir(Path::new(entry), path) {
+                    return Ok(id);
+                }
+            }
         }
     }
 
     Err(NamingError::NotFound.into())
+}
+
+fn try_dir(dir: &Path, name: &Path) -> Option<ObjID> {
+    let candidate = dir.join(name);
+    twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), candidate.to_str()?).ok()
+}
+
+/// Expands `<prefix>/*/<suffix>` into one path per entry of `<prefix>`.
+///
+/// `/pkg` gains a directory whenever a package is installed, so the set of program directories is
+/// not known when `init` sets PATH -- `/pkg/*/bin` names whatever is installed at the moment of
+/// the lookup instead. brush carries the same expansion for its own command search
+/// (`sys/twizzler/fs.rs`); this one covers everything else, i.e. any program spawned by bare name
+/// through the runtime, which is how rustc finds `ld.lld`.
+///
+/// `None` means "not a glob, use the entry as it is": both for an entry with no `*`, and for one
+/// whose prefix cannot be enumerated -- a missing prefix is what a PATH entry naming an
+/// uninstalled package already looked like, and the resolve attempt above handles it.
+///
+/// The expansion is not narrowed to directories that exist. That check is a naming call per
+/// package on every lookup, whereas an expansion naming a missing directory costs one failed
+/// resolve, and only on a lookup that gets that far.
+fn expand_star(entry: &Path) -> Option<Vec<PathBuf>> {
+    let mut components = entry.components();
+    let mut prefix = PathBuf::new();
+    loop {
+        let component = components.next()?;
+        if component.as_os_str() == "*" {
+            break;
+        }
+        prefix.push(component);
+    }
+    let suffix: PathBuf = components.collect();
+
+    // Enumerated through the naming handle rather than `std::fs::read_dir`, which would re-enter
+    // this crate through the `twz_rt_fd_*` symbols it exports.
+    let nsid = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), prefix.to_str()?).ok()?;
+    let session = crate::runtime::file::get_naming_handle()?;
+    // `usize::MAX` is "all of them": the handle pages through its buffer and stops early, so this
+    // asks for everything rather than silently truncating at some cap.
+    let names = session.enumerate_names_nsid(nsid, 0, usize::MAX).ok()?;
+
+    let mut expanded: Vec<PathBuf> = names
+        .iter()
+        .filter_map(|node| node.name().ok())
+        .map(|name| prefix.join(name).join(&suffix))
+        .collect();
+    // Enumeration order is not stable across boots, and PATH order is what decides which of two
+    // same-named programs runs.
+    expanded.sort();
+    Some(expanded)
 }
 
 impl ReferenceRuntime {
@@ -133,7 +193,9 @@ impl ReferenceRuntime {
             .filter(|b| {
                 let drop = b.fd > 2
                     && pipe_obj(b).is_some_and(|id| stdio_pipes.contains(&id));
-                if drop {
+                // Fires on every piped spawn, so the audit line is opt-in (`--diag=exec`); the
+                // drop itself is the validated behavior and stays.
+                if drop && twizzler_net::diag_enabled("exec") {
                     twizzler_abi::klog_println!("SPAWNDROP {} fd={} (stdio pipe dup)", name, b.fd);
                 }
                 !drop

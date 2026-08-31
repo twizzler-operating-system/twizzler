@@ -142,7 +142,7 @@ impl Unmapper {
                                     .is_ok();
                                     boosted_since = boosted.then(Instant::now);
                                     if boosted {
-                                        tracing::info!(
+                                        tracing::debug!(
                                             "unmapper boosted to User/127 (backlog {})",
                                             depth
                                         );
@@ -215,12 +215,12 @@ impl Unmapper {
                                     boosted_since = None;
                                     if expired {
                                         cooldown = BOOST_COOLDOWN_ITEMS;
-                                        tracing::info!(
+                                        tracing::debug!(
                                             "unmapper boost window expired (backlog {}), de-boosted",
                                             remaining
                                         );
                                     } else {
-                                        tracing::info!(
+                                        tracing::debug!(
                                             "unmapper backlog drained to {}, de-boosted",
                                             remaining
                                         );

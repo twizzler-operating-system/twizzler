@@ -41,8 +41,10 @@ const VIRGIN_RESERVE: usize = 16 * 1024 * 1024;
 /// agree.
 const TOP_OFFSET: usize = NULLPAGE_SIZE * 4;
 
-/// The virgin-region free that used to corrupt the early talc, now dropped instead. Proof
-/// counter for the fix's validation boot: nonzero DROPVIRGIN means the corrupting path fired.
+/// The virgin-region free that used to corrupt the early talc, now dropped instead. The fix is
+/// validated (its DROPVIRGIN proof line fired on the validation boots and is now retired); the
+/// counters remain because this runs inside the allocator's free path, where any print gate that
+/// reads the environment would allocate under the alloc lock.
 mod virgindrop {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -50,11 +52,8 @@ mod virgindrop {
     static BYTES: AtomicU64 = AtomicU64::new(0);
 
     pub fn record(size: usize) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let b = BYTES.fetch_add(size as u64, Ordering::Relaxed) + size as u64;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!("DROPVIRGIN: {} frees ({} KiB) dropped", n, b / 1024);
-        }
+        COUNT.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(size as u64, Ordering::Relaxed);
     }
 }
 

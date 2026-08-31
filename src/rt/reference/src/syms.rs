@@ -1333,11 +1333,18 @@ pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *m
 pub unsafe extern "C-unwind" fn __monitor_ready() {
     OUR_RUNTIME.set_runtime_ready();
     // Arm identity from the artifact, not the source (the ANON_FAULT_AROUND pattern): every
-    // monitor transcript names which allocator routing it actually booted with.
-    twizzler_abi::klog_println!(
-        "[monitor] alloc tunables: MONITOR_FERROC={}",
-        crate::runtime::alloc::MONITOR_FERROC
-    );
+    // monitor transcript names which allocator routing it actually booted with. Behind
+    // `--diag=monitor`, read from argv like the monitor's own gate — this runs in the monitor's
+    // process, whose environment predates init's TWZ_DIAG export.
+    if std::env::args().any(|a| {
+        a.strip_prefix("--diag=")
+            .is_some_and(|l| l.split(',').any(|c| c == "monitor" || c == "all"))
+    }) {
+        twizzler_abi::klog_println!(
+            "[monitor] alloc tunables: MONITOR_FERROC={}",
+            crate::runtime::alloc::MONITOR_FERROC
+        );
+    }
 }
 
 #[no_mangle]

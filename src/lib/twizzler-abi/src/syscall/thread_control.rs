@@ -299,26 +299,18 @@ pub fn sys_thread_send_message(target: ObjID, message: u64, flags: u64) -> Resul
 }
 
 /// Change the thread's state. If successful, returns the previous state.
+///
+/// A transition to [ExecutionState::Exited] is a force-exit, and it is asynchronous: the target
+/// notices it at its next poll point, which may be inside a cross-compartment call, holding that
+/// compartment's locks -- and dying there would leave them held forever, wedging that compartment
+/// for everyone. The kernel therefore defers delivery until the target is executing in its home
+/// security context, the one stamped at spawn from [ThreadSpawnArgs::home_sctx]. A zero home
+/// (kernel-spawned and statically-linked threads) means unrestricted delivery.
+///
+/// [ThreadSpawnArgs::home_sctx]: super::ThreadSpawnArgs
 pub fn sys_thread_change_state(
     target: ObjID,
     new_state: ExecutionState,
-) -> Result<ExecutionState, TwzError> {
-    sys_thread_change_state_in_sctx(target, new_state, ObjID::new(0))
-}
-
-/// Change the thread's state, restricting when a transition to
-/// [ExecutionState::Exited] may be delivered.
-///
-/// A force-exit is asynchronous: the target notices it at its next poll point, which may be inside
-/// a cross-compartment call, holding that compartment's locks -- and it dies there with no chance
-/// to release them, wedging that compartment for everyone. `sctx` names the security context the
-/// target must be running in for the exit to land, which for a compartment's own threads is that
-/// compartment's instance id: the exit is then delivered only once the target is back on its own
-/// code. Pass a zero id for the unconditional behavior.
-pub fn sys_thread_change_state_in_sctx(
-    target: ObjID,
-    new_state: ExecutionState,
-    sctx: ObjID,
 ) -> Result<ExecutionState, TwzError> {
     let (code, val) = unsafe {
         raw_syscall(
@@ -328,8 +320,6 @@ pub fn sys_thread_change_state_in_sctx(
                 target.parts()[1],
                 ThreadControl::ChangeState as u64,
                 new_state.to_status(),
-                sctx.parts()[0],
-                sctx.parts()[1],
             ],
         )
     };

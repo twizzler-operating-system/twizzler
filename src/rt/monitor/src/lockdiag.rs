@@ -249,8 +249,12 @@ pub fn start_watchdog() {
         .name("monlockwd".to_string())
         .spawn(|| {
             // Silence from this thread is only evidence if it is known to be running: the first
-            // wedge it was meant to catch produced no report and no way to tell why.
-            klog_println!("MONLOCK: watchdog running, {} slots", SLOTS);
+            // wedge it was meant to catch produced no report and no way to tell why. Under
+            // `--diag=monitor` only — a default-quiet boot gives up that proof, and a wedge hunt
+            // must arm the class to get it back.
+            if crate::diag_enabled() {
+                klog_println!("MONLOCK: watchdog running, {} slots", SLOTS);
+            }
             let mut last_seq = [0u64; SLOTS];
             let mut same = [0u32; SLOTS];
             let mut reports = 0u32;

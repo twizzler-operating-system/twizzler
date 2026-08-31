@@ -1393,6 +1393,13 @@ Note the staleness is structural, not an accident of this tree: the sysroot copy
 *only* by `--step rt`, and *only* in release, so an ordinary `build-all` — let alone a debug one —
 cannot update it. It is stale by construction between bootstraps.
 
+**New evidence (2026-08-30):** a fresh full bootstrap (toolchain_4ab785b) produced a sysroot with
+*no* `libtwz_rt.so` at all — the first `build-all` afterward failed linking `monitor`
+(`ld.lld: unable to find library -ltwz_rt`) until `bootstrap --step rt` was run by hand. So the
+copy is not merely stale between bootstraps; after a from-scratch bootstrap it is absent, and the
+OS cannot be built. Whichever design wins has to make first-build-after-bootstrap work without a
+manual step.
+
 ### Two candidate designs
 
 1. **Do not stage it at all.** Drop the copy in `build.rs`, drop the delete in `disk.rs`, let

@@ -97,6 +97,15 @@ impl NetClient {
         self.comp_deferred.then(|| self.rx.comp_space_waiter())
     }
 
+    /// Raw state of the tx submission ring -- the words net-srv's per-client thread consumes from
+    /// and parks on. `bell > tail` frozen while that thread sleeps is a submission it never woke
+    /// for; `bell == tail` while egress is stalled means this side never submitted. Which of those
+    /// two a stall is cannot be told from either compartment alone, which is why the probe carries
+    /// both sides' words.
+    pub fn tx_pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.tx.pending_parts()
+    }
+
     /// Raw state of the rx submission ring, for the case `has_rx_pending()` says false.
     ///
     /// Returns `(bell, tail, nonempty, turn)`. `has_rx_pending` is the AND of the last two, and
@@ -365,11 +374,52 @@ impl TxToken for NetClientTxToken<'_> {
         }
         let mem = self.nc.tx.packet_mem_mut(self.packet);
         let ret = f(&mut mem[0..len]);
+        udpstamp("devtx", &mem[0..len]);
         self.nc.tx.set_packet_len(self.packet, len);
         self.consumed = true;
         crate::DEV_TX_FRAMES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.nc.queue_tx(self.packet);
         ret
+    }
+}
+
+/// Latency-decomposition tap for sysbench's net_udp_latency: a UDP frame whose payload opens
+/// with the bench's magic carries a send timestamp on the shared kernel clock; the delta to now
+/// is how long the datagram took from the app's stamp to this compartment's device queue.
+/// Statics are per-compartment (each has its own copy of this crate), and the line names the
+/// frame's source octet, so bench and peer reports are distinguishable on the shared console.
+fn udpstamp(site: &str, frame: &[u8]) {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use twizzler_abi::syscall::{ClockSource, FastClock, ReadClockFlags};
+
+    // [0] = devtx, [1] = devrx sums/counts.
+    static SUM: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static CNT: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static CLOCK: FastClock = FastClock::new(ClockSource::BestMonotonic, ReadClockFlags::empty());
+    // eth(14) + ipv4 no-options (20) + udp (8): magic at 46..50, t_send at 50..58, proto at 23,
+    // src ip last octet at 29.
+    if frame.len() < 58
+        || frame[12..14] != [0x08, 0x00]
+        || frame[14] != 0x45
+        || frame[23] != 17
+        || &frame[46..50] != b"TSTM"
+    {
+        return;
+    }
+    let i = (site == "devrx") as usize;
+    let t = u64::from_le_bytes(frame[50..58].try_into().unwrap());
+    let now = CLOCK.get().as_nanos() as u64;
+    SUM[i].fetch_add(now.saturating_sub(t), Ordering::Relaxed);
+    let n = CNT[i].fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() && crate::diag_enabled("net") {
+        println!(
+            "UDPSTAMP {} src=.{} n={} avg_us={}",
+            site,
+            frame[29],
+            n,
+            SUM[i].load(Ordering::Relaxed) / n / 1000
+        );
     }
 }
 
@@ -380,6 +430,7 @@ impl RxToken for NetClientRxToken<'_> {
     {
         let len = self.nc.rx.packet_len(self.packet);
         let mem = self.nc.rx.packet_mem_mut(self.packet);
+        udpstamp("devrx", &mem[0..len]);
         f(&mem[0..len])
     }
 }

@@ -11,6 +11,10 @@ pub use client::{
     net_alloc_port, net_release_port,
 };
 pub use server::{NetServer, NetServerRxToken, NetServerTxToken};
+// Re-exported for the engine's POLLPROBE line: this compartment's own copy of the ring-wake
+// counters (statics are per-compartment). `RING_NO_WAITER` climbing during a stall while the
+// consumer's kernel row says it is parked armed is the wake-skip arm of the missed-wake split.
+pub use twizzler_queue::{RING_NO_WAITER, RING_WOKE};
 
 pub type PacketNum = u32;
 
@@ -50,13 +54,27 @@ pub static DEV_TX_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::At
 pub static POLLQ_TX_SUBMITTED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
-/// Print the queue-handoff totals, unconditionally.
+/// Whether the diagnostic class `class` was requested via `TWZ_DIAG` (comma-separated list, or
+/// `all`). Read once per compartment; init forwards the boot-line `--diag=<classes>` into the
+/// environment, and init logs the resulting value at boot so a silent log provably means "off",
+/// not "instrument broke".
+pub fn diag_enabled(class: &str) -> bool {
+    static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
+    set.split(',').any(|c| c == class || c == "all")
+}
+
+/// Print the queue-handoff totals.
 ///
-/// Deliberately not milestone-gated like [`note_pollq`]: the question these answer is whether a
-/// drop happened *at all*, and a counter that only prints when it is nonzero cannot distinguish
-/// "no drops" from "never reached". `POLLQ ... reached N` has never appeared in ~65,000 sweep
-/// logs, which is exactly that ambiguity.
+/// Not milestone-gated like [`note_pollq`]: the question these answer is whether a drop happened
+/// *at all*, and a counter that only prints when it is nonzero cannot distinguish "no drops" from
+/// "never reached". `POLLQ ... reached N` has never appeared in ~65,000 sweep logs, which is
+/// exactly that ambiguity. The silence-ambiguity role moved to init's one `TWZDIAG` boot line:
+/// with `net` listed there, no POLLQSTAT means the caller never ran, and without it, off.
 pub fn report_pollq() {
+    if !diag_enabled("net") {
+        return;
+    }
     twizzler_abi::klog_println!(
         "POLLQSTAT submitted={} tx_dropped={} comp_deferred={}",
         POLLQ_TX_SUBMITTED.load(core::sync::atomic::Ordering::Relaxed),

@@ -523,6 +523,9 @@ impl ThreadMgr {
             flags: twizzler_abi::syscall::ThreadSpawnFlags::empty(),
             vm_context_handle: None,
             upcall_target: UpcallTargetSpawnOption::SetTo(upcall_target),
+            // Force-exits are only ever delivered while the thread runs its own compartment's
+            // code; for the monitor's own threads this is zero (unrestricted).
+            home_sctx: self_ctx,
         })
     }
 

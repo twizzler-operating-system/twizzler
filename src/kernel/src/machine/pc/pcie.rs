@@ -307,7 +307,7 @@ fn init_segment(seg: u16, addr: PhysAddr) {
 }
 
 pub(super) fn init() {
-    logln!("[kernel::machine::pcie] init");
+    log::debug!("pcie init");
 
     let acpi = arch::acpi::get_acpi_root();
 

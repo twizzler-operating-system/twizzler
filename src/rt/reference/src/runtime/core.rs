@@ -320,12 +320,26 @@ impl ReferenceRuntime {
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
         let _t0 = std::time::Instant::now();
         // TODO: control this with env vars
-        tracing::subscriber::set_global_default(
+        // TWZ_LOG_TRACE promotes this compartment to TRACE *and* installs the `log` -> `tracing`
+        // bridge, which is what makes smoltcp's own `net_trace!` calls visible: they are
+        // `log::trace!` records, so the default `finish()` path drops them twice over (no bridge,
+        // and INFO would filter them anyway). Opt-in per compartment because it is a console write
+        // per packet on the delivery path -- enabling it everywhere would perturb the thing it is
+        // meant to observe, and 18 compartments at TRACE is unreadable besides.
+        if std::env::var("TWZ_LOG_TRACE").is_ok() {
+            use tracing_subscriber::util::SubscriberInitExt;
             tracing_subscriber::fmt()
-                .with_max_level(Level::INFO)
-                .finish(),
-        )
-        .unwrap();
+                .with_max_level(Level::TRACE)
+                .finish()
+                .init();
+        } else {
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_max_level(Level::INFO)
+                    .finish(),
+            )
+            .unwrap();
+        }
         let _t_sub = _t0.elapsed();
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();

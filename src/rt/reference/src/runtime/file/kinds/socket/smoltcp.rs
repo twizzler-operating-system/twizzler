@@ -32,6 +32,17 @@ use crate::runtime::file::kinds::socket::engine::{
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
+/// Which branch of `UdpSocket::read_from` produced a WouldBlock, and whether `recv()` itself
+/// failed after `can_recv()` said yes. The three together account for every read outcome.
+static UDP_RECV_OK: AtomicU64 = AtomicU64::new(0);
+static UDP_RECV_ERR: AtomicU64 = AtomicU64::new(0);
+static UDP_NOT_READY: AtomicU64 = AtomicU64::new(0);
+
+/// UDPNOTREADY socket-identity dump (readiness-loss hunt, resolved: the bug was in
+/// `net_test_peer`'s kevent receipt handling). It walks the whole socketset under the core lock,
+/// so keep it off for any measurement.
+const UDP_NOTREADY_DIAG: bool = false;
+
 const RX_BUF_SIZE: usize = 65536;
 /// Parity with rx, up from 8 KiB.
 ///
@@ -770,12 +781,47 @@ impl UdpSocket {
                 // ones and the wrong answer for the two UDP ones.
                 let r = match socket.recv() {
                     Ok((payload, meta)) => {
+                        let n_ok = UDP_RECV_OK.fetch_add(1, Ordering::Relaxed) + 1;
+                        // Age of the last read-readiness rising edge at the moment the app's
+                        // read succeeds: publication -> recv-return latency (wake + schedule +
+                        // recv), as opposed to ingest -> publication. Approximate under
+                        // concurrency (one global word), exact for the one-socket UDP bench.
+                        {
+                            use crate::runtime::file::kinds::socket::engine::{
+                                READ_RISE_LAST_NS, RISE_CLOCK,
+                            };
+                            static SUM: core::sync::atomic::AtomicU64 =
+                                core::sync::atomic::AtomicU64::new(0);
+                            let rise = READ_RISE_LAST_NS.load(Ordering::Relaxed);
+                            if rise != 0 {
+                                let d = (RISE_CLOCK.get().as_nanos() as u64).saturating_sub(rise);
+                                SUM.fetch_add(d, Ordering::Relaxed);
+                                if n_ok.is_power_of_two() && twizzler_net::diag_enabled("net") {
+                                    println!(
+                                        "UDPRISE n={} avg_us={}",
+                                        n_ok,
+                                        SUM.load(Ordering::Relaxed) / n_ok / 1000
+                                    );
+                                }
+                            }
+                        }
                         let n = payload.len().min(buf.len());
                         buf[..n].copy_from_slice(&payload[..n]);
                         (n, Some(meta))
                     }
                     // can_recv() said there was one; treat losing the race as "nothing yet".
-                    Err(_) => return Err(ErrorKind::WouldBlock.into()),
+                    //
+                    // This arm swallows the reason. Measured on the peer: 103 datagrams enqueued
+                    // into this socket, 3 dequeued -- so if the error is real and recurring rather
+                    // than a lost race, every counter downstream sees only WouldBlock and the
+                    // datagrams are unreachable. Name it before discarding it.
+                    Err(e) => {
+                        let n = UDP_RECV_ERR.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_power_of_two() {
+                            tracing::warn!("UDPRECVERR n={} err={:?} (can_recv was true)", n, e);
+                        }
+                        return Err(ErrorKind::WouldBlock.into());
+                    }
                 };
                 // This read may have taken the last queued datagram.
                 core.refresh_waiter(self.inner.socket_handle);
@@ -784,6 +830,35 @@ impl UdpSocket {
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok((0, None))
             } else {
+                let n = UDP_NOT_READY.fetch_add(1, Ordering::Relaxed) + 1;
+                if UDP_NOTREADY_DIAG && n.is_power_of_two() {
+                    // smoltcp's own trace names sockets by *endpoint*, so two sockets bound to the
+                    // same address print identically. If ingress enqueued into one handle and this
+                    // read polls another, can_recv() is honest and the datagrams are simply in a
+                    // socket nobody reads. Print the handle we are reading and every UDP socket in
+                    // the set with its endpoint, so the two can be compared directly.
+                    let me = self.inner.socket_handle;
+                    let mut others = Vec::new();
+                    for (h, sock) in core.socket_iter() {
+                        if let smoltcp::socket::Socket::Udp(u) = sock {
+                            others.push(format!(
+                                "{:?}{}={:?}/canrecv{}",
+                                h,
+                                if h == me { "*" } else { "" },
+                                u.endpoint(),
+                                u.can_recv() as u8
+                            ));
+                        }
+                    }
+                    tracing::warn!(
+                        "UDPNOTREADY n={} reading={:?} ok={} err={} udpsocks=[{}]",
+                        n,
+                        me,
+                        UDP_RECV_OK.load(Ordering::Relaxed),
+                        UDP_RECV_ERR.load(Ordering::Relaxed),
+                        others.join(" ")
+                    );
+                }
                 Err(ErrorKind::WouldBlock.into())
             }
         })

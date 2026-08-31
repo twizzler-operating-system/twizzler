@@ -106,8 +106,13 @@ const PORTS: &[(&str, &[&str], bool)] = &[
     ("curl", &["zlib", "openssl", "libssh2", "nghttp2"], true),
     ("libgit2", &["zlib", "openssl", "libssh2"], true),
     ("python3", &["zlib", "openssl", "ncurses"], true),
-    // In-progress support: buildable by name, but not part of @all.
-    ("rust", &[], false),
+    (
+        "rust",
+        &[
+            "zlib", "llvm", "openssl", "ncurses", "libgit2", "libssh2", "curl",
+        ],
+        true,
+    ),
 ];
 
 fn port_deps(name: &str) -> anyhow::Result<&'static [&'static str]> {

@@ -178,18 +178,20 @@ pub fn thread_ctrl(
                         // never from a mutex wait queue, and this is the only call site that can
                         // kill a thread mid-wait. `mutex_link` linked here says the target dies
                         // while still a member of some mutex's sleep queue.
-                        let exit_sctx = ObjID::from_parts([arg2, arg3]);
+                        //
+                        // Delivery is deferred to the thread's home security context, stamped at
+                        // spawn (`ThreadSpawnArgs::home_sctx`) -- dying mid-gate-call would leave
+                        // a foreign compartment's locks held forever, so that restriction is the
+                        // thread's invariant, not this caller's choice.
                         log::debug!(
-                            "force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}, active sctx {}, exit sctx {}",
+                            "force exit on thread {} ({}), state {:?}, mutex_linked {}, mutex_wait {}, active sctx {}",
                             thread.id(),
                             thread.objid(),
                             cur_state,
                             thread.mutex_link.is_linked(),
                             thread.get_mutex_wait(),
                             thread.active_sctx_id(),
-                            exit_sctx,
                         );
-                        thread.set_exit_sctx(exit_sctx);
                         thread.force_exit();
                     }
                     _ => {

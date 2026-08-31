@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 
-use object_store::{ExternalFile, ExternalFileSbHdr, ExternalFileStore, ExternalOpenFlags};
+use object_store::{
+    ExternalFile, ExternalFileSbHdr, ExternalFileStore, ExternalOpenFlags, PagedObjectStore,
+};
 use secgate::util::{Descriptor, SimpleBuffer};
 use twizzler::object::{ObjID, ObjectHandle};
 use twizzler_abi::{
@@ -97,7 +99,7 @@ mod bodystats {
     pub fn record(body: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let b = BODY.fetch_add(body, Ordering::Relaxed) + body;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::watchdog::diag_enabled() {
             twizzler_abi::klog_println!(
                 "OPENHANDLESTATS {} open-handle bodies: {} us total",
                 n,
@@ -211,7 +213,7 @@ mod lookupstats {
     pub fn record(store: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let s = STORE.fetch_add(store, Ordering::Relaxed) + store;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::watchdog::diag_enabled() {
             twizzler_abi::klog_println!(
                 "LOOKUPSTATS {} external lookups: store {} us (per lookup: {} us)",
                 n,
@@ -255,6 +257,15 @@ pub fn pager_create_external(
             write_external_file_to_sb(&mut pc.buffer, &file, 0)
         })
         .ok_or(TwzError::INVALID_ARGUMENT)
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_set_mtime_external(id: ObjID, mtime: u64) -> Result<(), TwzError> {
+    let pager = &PAGER_CTX.get().unwrap();
+    pager
+        .paged_ostore(None)?
+        .set_mtime(id.raw(), mtime as u32)?;
+    Ok(())
 }
 
 #[secgate::entry(lib = "pager")]

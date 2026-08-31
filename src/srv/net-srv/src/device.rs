@@ -82,7 +82,7 @@ pub fn device_thread(device: DeviceWrapper<TwizzlerTransport>) {
                 // affordable, and it cannot report a zero it did not observe.
                 let n = DEV_RX_FRAMES.load(Ordering::Relaxed);
                 if n > 0 && DEV_RX_REPORTED.swap(n, Ordering::Relaxed) != n {
-                    tracing::warn!(
+                    tracing::debug!(
                         "DEVRX frames={} copies={} targeted={} flooded={}",
                         n,
                         DEV_RX_COPIES.load(Ordering::Relaxed),

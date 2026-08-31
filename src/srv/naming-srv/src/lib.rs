@@ -259,7 +259,11 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 // How would this work if I changed the root while handles were open?
 #[secgate::entry(lib = "naming-core")]
 pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
-    heap_census_arm();
+    // The leak instruments below (census, track, NAMING-* reports, GETPHASE) are from the
+    // concluded ~134KB-per-spawn retention hunt; they stay available behind `--diag=naming`.
+    if diag_enabled() {
+        heap_census_arm();
+    }
     // Anyone can call this gate; a second call must not unwind out of an extern "C" entry.
     let _ = tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -270,8 +274,11 @@ pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
 
     // Build identity, not just configuration: a sweep can be handed an image built from another
     // session's source with the command line it asked for, and nothing else in the transcript
-    // distinguishes that from its own binaries.
-    twizzler_abi::klog_println!("NAMEMEMO {}", naming_core::memo_config());
+    // distinguishes that from its own binaries. Behind the gate now — a sweep auditing arms must
+    // pass `--diag=naming` to get the memo line.
+    if diag_enabled() {
+        twizzler_abi::klog_println!("NAMEMEMO {}", naming_core::memo_config());
+    }
 
     Ok(NAMINGSERVICE
         .get_or_create(|_| {
@@ -340,7 +347,7 @@ pub fn open_handle() -> Result<Descriptor> {
         *g = tid;
         rep
     };
-    if n % 32 == 0 {
+    if n % 32 == 0 && diag_enabled() {
         let (ns, names, order, pinned) = naming_core::cache_stats();
         heap_census_line();
         track_report();
@@ -725,7 +732,7 @@ mod getphase {
             + innerlock.saturating_sub(lookup);
         let g = GET.fetch_add(total.saturating_sub(innerlock), Ordering::Relaxed)
             + total.saturating_sub(innerlock);
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::diag_enabled() {
             twizzler_abi::klog_println!(
                 "GETPHASE {} calls: caller+handles {} ns, inner-lock {} ns, session-get {} ns \
                  (per call, means)",
@@ -780,6 +787,15 @@ mod srvenumstats {
 // Reported as a delta against the previous report, not a running total: a cumulative figure read
 // every 32 opens attributes all of history to the latest window, which is the same mistake as
 // reading a boot-long counter per op.
+
+/// Whether the `naming` diagnostic class was requested via `TWZ_DIAG` (comma list, or `all`).
+/// Same contract as `twizzler_net::diag_enabled`, which this crate does not depend on; init logs
+/// the value at boot, so a log without NAMING-* lines provably means "off".
+fn diag_enabled() -> bool {
+    static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
+    set.split(',').any(|c| c == "naming" || c == "all")
+}
 
 unsafe extern "C" {
     fn __twz_rt_diag_heap_census(out: *mut u64, n: usize) -> usize;

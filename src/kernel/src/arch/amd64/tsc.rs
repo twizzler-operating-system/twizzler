@@ -17,8 +17,8 @@ impl Tsc {
         // in other words the resolution at which ticks occur
         let tsc_freq = Tsc::get_tsc_frequency();
 
-        logln!(
-            "[kernel::arch::tsc] tsc frequency {} (Hz), {} fs",
+        log::debug!(
+            "tsc frequency {} (Hz), {} fs",
             tsc_freq,
             1_000_000_000_000_000 / tsc_freq
         );
@@ -42,12 +42,12 @@ impl Tsc {
         // attempt to calculate frequency using cpuid
         match feature_info_frequency() {
             Ok(freq) => return freq,
-            Err(e) => logln!("[kernel::arch::tsc] cpuid gave no frequency: {:?}", e),
+            Err(e) => log::debug!("cpuid gave no frequency: {:?}", e),
         }
 
         // the host's own answer, if kvmclock is up -- exact, and 200ms cheaper than the PIT
         if let Some(freq) = super::kvm::tsc_frequency() {
-            logln!("[kernel::arch::tsc] using kvmclock frequency");
+            log::debug!("using kvmclock frequency");
             return freq;
         }
 

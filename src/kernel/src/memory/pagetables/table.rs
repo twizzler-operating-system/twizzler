@@ -35,7 +35,7 @@ mod splits {
 
     pub fn record() {
         let n = SPLITS.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::kdiag_pager() {
             log::info!("SPLITS: {} large pages split back to 4 KiB", n);
         }
     }

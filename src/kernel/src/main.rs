@@ -144,6 +144,21 @@ pub fn is_diag_mode() -> bool {
     DIAG_MODE.load(Ordering::SeqCst)
 }
 
+static KDIAG_PAGER: AtomicBool = AtomicBool::new(false);
+static KDIAG_INVLS: AtomicBool = AtomicBool::new(false);
+
+/// `--diag=pager`: kernel-side pager/large-page milestone reports (PAGERWAIT, LARGEPAGE, SPLITS).
+pub fn kdiag_pager() -> bool {
+    KDIAG_PAGER.load(Ordering::SeqCst)
+}
+
+/// `--diag=invls`: per-object invalidation-latch reports (the `== invls latched object` lines).
+/// The latch itself and its counters are unaffected; the syscall-triggered summary stays
+/// unconditional.
+pub fn kdiag_invls() -> bool {
+    KDIAG_INVLS.load(Ordering::SeqCst)
+}
+
 static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
 
 pub fn get_boot_info() -> &'static dyn BootInfo {
@@ -180,7 +195,24 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     let boot_info = &**BOOT_INFO.call_once(|| Box::new(boot_info));
     arch::init();
     ::log::set_logger(&LOGGER).unwrap();
-    ::log::set_max_level(LevelFilter::Info);
+    // `--klog=<level>` scanned before the first log line, so boot narration demoted to debug is
+    // recoverable without a rebuild (`--kernel-arg=--klog=debug`). The chosen level is also what
+    // the post-initrd restore below returns to. `release_max_level_debug` caps release builds:
+    // trace! is compiled out there.
+    let klog_level = boot_info
+        .get_cmd_line()
+        .split(' ')
+        .find_map(|opt| opt.strip_prefix("--klog="))
+        .map(|l| match l {
+            "off" => LevelFilter::Off,
+            "error" => LevelFilter::Error,
+            "warn" => LevelFilter::Warn,
+            "debug" => LevelFilter::Debug,
+            "trace" => LevelFilter::Trace,
+            _ => LevelFilter::Info,
+        })
+        .unwrap_or(LevelFilter::Info);
+    ::log::set_max_level(klog_level);
     logln!("[kernel] boot with cmd `{}'", boot_info.get_cmd_line());
     logln!(
         "[kernel] lock sizes: spinlock<()> {} spinlock<u64> {} mutex<()> {} mutex<u64> {} object {} thread {}",
@@ -203,7 +235,6 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         crate::memory::context::virtmem::fault::FAULT_PROFILE,
         crate::memory::context::virtmem::fault::FAULT_SLOT_MEMO,
     );
-    ::log::warn!("TEST LOG");
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {
         if opt == "--tests" {
@@ -221,6 +252,20 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         if opt == "--diag" {
             DIAG_MODE.store(true, Ordering::SeqCst);
             memory::frame::enable_pt_zero_check();
+        }
+        // Kernel side of the classed `--diag=<list>` option (distinct from bare `--diag` above).
+        // Init parses the same option off this shared cmdline into the TWZ_DIAG env var, so one
+        // `--kernel-arg=--diag=pager` arms both kernel and userspace pager diagnostics. Classes
+        // the kernel does not know (net, naming) fall through harmlessly.
+        if let Some(list) = opt.strip_prefix("--diag=") {
+            for class in list.split(',') {
+                if class == "pager" || class == "all" {
+                    KDIAG_PAGER.store(true, Ordering::SeqCst);
+                }
+                if class == "invls" || class == "all" {
+                    KDIAG_INVLS.store(true, Ordering::SeqCst);
+                }
+            }
         }
         if opt == "--pt-zero-check" {
             memory::frame::enable_pt_zero_check();
@@ -246,11 +291,11 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     // constructed.
     #[cfg(target_arch = "x86_64")]
     arch::processor::init_pcid();
-    logln!("[kernel::mm] initializing memory management");
+    ::log::debug!("initializing memory management");
     memory::init(boot_info);
     arch::init_post_memory(boot_info);
 
-    logln!("[kernel::debug] parsing kernel debug image");
+    ::log::debug!("parsing kernel debug image");
     let (kernel_image_start, kernel_image_length) = boot_info.kernel_image_info();
     unsafe {
         let kernel_image =
@@ -259,7 +304,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         panic::init(kernel_image);
     }
 
-    logln!("[kernel::cpu] enumerating secondary CPUs");
+    ::log::debug!("enumerating secondary CPUs");
     let bsp_id = arch::processor::enumerate_cpus();
     init_cpu(image::get_tls(), bsp_id);
     arch::init_interrupts();
@@ -267,8 +312,8 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     arch::init_secondary();
     ::log::set_max_level(LevelFilter::Off);
     initrd::init(boot_info.get_modules());
-    ::log::set_max_level(LevelFilter::Info);
-    logln!("[kernel::cpu] booting secondary CPUs");
+    ::log::set_max_level(klog_level);
+    ::log::debug!("booting secondary CPUs");
     boot_all_secondaries(image::get_tls());
 
     clock::init();
@@ -397,10 +442,7 @@ pub fn idle_main() -> ! {
             0,
         );
     }
-    logln!(
-        "[kernel::main] processor {} entering main idle loop",
-        current_processor().id
-    );
+    ::log::debug!("processor {} entering main idle loop", current_processor().id);
     let mut iter = 0u32;
     loop {
         // Deliver wakeups parked on the requeue list. A signal that lands between a waiter's

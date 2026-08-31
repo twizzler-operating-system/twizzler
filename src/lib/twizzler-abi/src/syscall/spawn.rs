@@ -39,12 +39,22 @@ pub struct ThreadSpawnArgs {
     pub flags: ThreadSpawnFlags,
     pub vm_context_handle: Option<ObjID>,
     pub upcall_target: UpcallTargetSpawnOption,
+    /// The thread's home security context: a force-exit (see [sys_thread_change_state] with
+    /// [ExecutionState::Exited]) is only delivered while the thread executes in this context, so
+    /// it cannot die mid-gate-call holding another compartment's locks. Zero means unrestricted
+    /// delivery. Declared here, by the spawner, because it is a safety invariant of the thread,
+    /// not a per-kill choice.
+    ///
+    /// [sys_thread_change_state]: super::sys_thread_change_state
+    /// [ExecutionState::Exited]: crate::thread::ExecutionState::Exited
+    pub home_sctx: ObjID,
 }
 
 impl ThreadSpawnArgs {
     /// Construct a new ThreadSpawnArgs. If vm_context_handle is Some(handle), then spawn the thread
     /// in the VM context defined by handle. Otherwise spawn it in the same VM context as the
-    /// spawner.
+    /// spawner. The home security context is left unrestricted (see
+    /// [ThreadSpawnArgs::home_sctx]).
     #[warn(clippy::too_many_arguments)]
     pub fn new(
         entry: usize,
@@ -65,6 +75,7 @@ impl ThreadSpawnArgs {
             flags,
             vm_context_handle,
             upcall_target,
+            home_sctx: ObjID::new(0),
         }
     }
 }

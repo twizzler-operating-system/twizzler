@@ -69,9 +69,9 @@ pub fn enter_kernel() {
         // Through `maybe_exit`, not the raw flag: this is one of the two places a pending
         // force-exit is polled, and the restrictions the other one honours apply here too. A raw
         // check kills a thread that is mid-gate at its next syscall or fault -- in the callee's
-        // security context, holding the callee's locks -- which is exactly what
-        // `sys_thread_change_state_in_sctx` defers the exit to avoid. The flag is sticky, so
-        // declining here only delays it to the entry after the thread comes home.
+        // security context, holding the callee's locks -- which is exactly what the spawn-stamped
+        // home context (`exit_sctx`) defers the exit to avoid. The flag is sticky, so declining
+        // here only delays it to the entry after the thread comes home.
         thread.maybe_exit();
     }
 }

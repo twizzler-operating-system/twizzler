@@ -29,6 +29,19 @@ extern "C-unwind" {
     fn __monitor_ready();
 }
 
+/// Whether the `monitor` diagnostic class was requested. The monitor starts before init exports
+/// `TWZ_DIAG`, so unlike the servers it reads the boot line from its own argv (the kernel cmdline,
+/// the same words it forwards to init below): `--kernel-arg=--diag=monitor`.
+pub(crate) fn diag_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::args().any(|a| {
+            a.strip_prefix("--diag=")
+                .is_some_and(|l| l.split(',').any(|c| c == "monitor" || c == "all"))
+        })
+    })
+}
+
 pub fn main() {
     // For early init, if something breaks, we really want to see everything...
     std::env::set_var("RUST_BACKTRACE", "full");
@@ -124,7 +137,7 @@ fn monitor_init() -> miette::Result<()> {
         }
     }
 
-    info!("monitor early init completed, starting init",);
+    debug!("monitor early init completed, starting init");
     let mut args = vec!["init".to_string()];
     for arg in std::env::args() {
         args.push(arg);

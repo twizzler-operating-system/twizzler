@@ -149,6 +149,9 @@ pub(super) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
     tracking: Vec<(SocketHandle, u16, SockKind)>,
+    /// Reused readiness-aggregation scratch for `poll` — it ran on every productive pass with a
+    /// fresh alloc. Taken/returned around the borrow of `socketset`.
+    agg_scratch: HashMap<WaitKey, (bool, bool)>,
     // Listening sockets -> the listener group they belong to. Membership is also what marks a
     // socket as a listener, which is what selects listener_socket_ready over can_recv/can_send.
     groups: HashMap<SocketHandle, u64>,
@@ -338,10 +341,28 @@ static WD_SLEEP_EXIT: AtomicU64 = AtomicU64::new(0);
 /// separate: nothing was submitted, or entries are present with a turn bit the consumer does not
 /// accept -- which also hides them from `receive`, so no wake would help. Published as the two
 /// conjuncts plus the words behind them.
+static MARK_READ_CALLS: AtomicU64 = AtomicU64::new(0);
+static MARK_READ_RISE: AtomicU64 = AtomicU64::new(0);
+/// When the most recent read-readiness rising edge was published (kernel-epoch ns). A reader
+/// that measures its own wake against this splits "publication was late" from "the woken
+/// thread was scheduled late" — see UDPRISE in smoltcp.rs.
+pub(crate) static READ_RISE_LAST_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static RISE_CLOCK: twizzler_abi::syscall::FastClock =
+    twizzler_abi::syscall::FastClock::new(
+        twizzler_abi::syscall::ClockSource::BestMonotonic,
+        twizzler_abi::syscall::ReadClockFlags::empty(),
+    );
+static MARK_READ_LEVEL: AtomicU64 = AtomicU64::new(0);
+static MARK_NO_ENTRY: AtomicU64 = AtomicU64::new(0);
 static RX_BELL: AtomicU64 = AtomicU64::new(0);
 static RX_TAIL: AtomicU64 = AtomicU64::new(0);
 static RX_NONEMPTY: AtomicU64 = AtomicU64::new(2);
 static RX_TURN: AtomicU64 = AtomicU64::new(2);
+// The tx submission ring's words, sampled alongside the rx set: the producer side of the
+// .120->.122 stall split. `txbell > txtail` frozen = net-srv never consumed what this
+// compartment submitted; `txbell == txtail` under an egress stall = this side never submitted.
+static TX_BELL: AtomicU64 = AtomicU64::new(0);
+static TX_TAIL: AtomicU64 = AtomicU64::new(0);
 /// Entries to `TcpStreamInner::drop`, and the socket state seen there before `close()`.
 ///
 /// The lost-FIN population's decisive question. net-srv's per-destination frame counters show a
@@ -370,6 +391,12 @@ pub(super) fn note_tcp_close(
     before: State,
     after: State,
 ) {
+    // Count before the gate: TCPDROPS feeds the POLLPROBE line and must not stop when the
+    // per-close print is off.
+    let n = TCPDROPS.fetch_add(1, Ordering::Relaxed) + 1;
+    if !twizzler_net::diag_enabled("net") {
+        return;
+    }
     use core::fmt::Write;
     struct Line {
         b: [u8; 256],
@@ -393,7 +420,7 @@ pub(super) fn note_tcp_close(
         rport,
         before,
         after,
-        TCPDROPS.fetch_add(1, Ordering::Relaxed) + 1,
+        n,
     );
     twizzler_abi::syscall::sys_kernel_console_write(
         twizzler_abi::syscall::KernelConsoleSource::Console,
@@ -459,6 +486,9 @@ static GROUP_NOTREADY: AtomicU64 = AtomicU64::new(0);
 
 /// One line naming the backlog's per-state census when a listener group is not ready.
 fn groupcensus(site: &str, n: u64, c: &[u16; 11]) {
+    if !twizzler_net::diag_enabled("net") {
+        return;
+    }
     use core::fmt::Write;
     struct Line {
         b: [u8; 256],
@@ -522,6 +552,10 @@ static POLL_SUB: AtomicU64 = AtomicU64::new(0);
 /// candidate *cause* of the peer freeze, not merely noise, so a measurement taken with it on
 /// cannot distinguish the bug from the instrument. Flip it back to reproduce that hypothesis
 /// deliberately; do not leave it on for baselines.
+/// Whether the stall watchdog thread runs. See its spawn site: a wakeup every 2s per network
+/// compartment, forever, purely to diagnose a poll-thread stall.
+const STALL_WATCHDOG: bool = false;
+
 const PROBE_UNDER_LOCK: bool = false;
 
 /// Emit the engine's liveness counters from whatever thread calls this, plus the one thing the
@@ -568,7 +602,58 @@ pub(super) fn report_engine_liveness() {
     pollprobe("extern");
 }
 
-fn pollprobe(site: &str) {
+/// Time each poll-loop pass spends acquiring-plus-holding `core` (section 0 = the smoltcp poll,
+/// section 1 = the census/waiter-assembly pass). The kevent bookkeeping path re-checks levels
+/// through this same lock; if these run long, a woken waiter's readiness report convoys here.
+fn core_held_note(section: usize, d: std::time::Duration) {
+    static SUM: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static CNT: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    static MAX: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    let ns = d.as_nanos() as u64;
+    SUM[section].fetch_add(ns, Ordering::Relaxed);
+    MAX[section].fetch_max(ns, Ordering::Relaxed);
+    let n = CNT[section].fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() && twizzler_net::diag_enabled("net") {
+        println!(
+            "POLLHELD s{} n={} avg_us={} max_us={}",
+            section,
+            n,
+            SUM[section].load(Ordering::Relaxed) / n / 1000,
+            MAX[section].load(Ordering::Relaxed) / 1000
+        );
+    }
+}
+
+/// Refresh the ring-word statics the probe line reports, straight from the shared queue headers.
+///
+/// The poll loop samples them once per census pass, which is exactly the thread that stops moving
+/// in a stall -- so a probe fired from anywhere else would print words as old as the stall itself.
+/// `try_lock`, never `lock`: this is called from kevent's timeout path, which must not join a
+/// convoy on `core` (and must not deadlock if a future call site already holds it). A failed try
+/// leaves the last sample in place, which is the pre-existing behaviour.
+pub(crate) fn sample_rings() {
+    let Ok(core) = ENGINE.core.try_lock() else {
+        return;
+    };
+    if let Some(iface) = core.ifaceset.iter().next() {
+        let (bell, tail, nonempty, turn) = iface.device.rx_pending_parts();
+        RX_BELL.store(bell, Ordering::Relaxed);
+        RX_TAIL.store(tail, Ordering::Relaxed);
+        RX_NONEMPTY.store(nonempty as u64, Ordering::Relaxed);
+        RX_TURN.store(turn as u64, Ordering::Relaxed);
+        let (tbell, ttail, _, _) = iface.device.tx_pending_parts();
+        TX_BELL.store(tbell, Ordering::Relaxed);
+        TX_TAIL.store(ttail, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn pollprobe(site: &str) {
+    // Off unless the boot line asked for it (`--diag=net` -> TWZ_DIAG): every site funnels
+    // through here, including per-waitpoint "extern" probes that fire on ordinary interactive
+    // socket use. The counters it reports keep accumulating regardless.
+    if !twizzler_net::diag_enabled("net") {
+        return;
+    }
     // One console write for the whole line, rather than `klog_println!`.
     //
     // `klog_println!` drives `core::fmt` straight at `sys_kernel_console_write`, which issues a
@@ -602,7 +687,7 @@ fn pollprobe(site: &str) {
         // `sctx` joins this line to the kernel's `[hang]` records, which carry the same id. Without
         // it the two instruments describe the same frozen compartment in vocabularies that cannot
         // be matched up -- octet on one side, thread ids on the other.
-        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={} udpacc={} devtx={}",
+        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={} udpacc={} devtx={} mkcalls={} mkrise={} mklevel={} mknoent={} txbell={} txtail={} ringw={} ringnw={}",
         ENGINE_OCTET.load(Ordering::Relaxed),
         secgate::get_sctx_id().raw(),
         site,
@@ -642,6 +727,14 @@ fn pollprobe(site: &str) {
         RX_TURN.load(Ordering::Relaxed),
         twizzler_net::UDP_SEND_ACCEPTED.load(Ordering::Relaxed),
         twizzler_net::DEV_TX_FRAMES.load(Ordering::Relaxed),
+        MARK_READ_CALLS.load(Ordering::Relaxed),
+        MARK_READ_RISE.load(Ordering::Relaxed),
+        MARK_READ_LEVEL.load(Ordering::Relaxed),
+        MARK_NO_ENTRY.load(Ordering::Relaxed),
+        TX_BELL.load(Ordering::Relaxed),
+        TX_TAIL.load(Ordering::Relaxed),
+        twizzler_net::RING_WOKE.load(Ordering::Relaxed),
+        twizzler_net::RING_NO_WAITER.load(Ordering::Relaxed),
     );
     twizzler_abi::syscall::sys_kernel_console_write(
         twizzler_abi::syscall::KernelConsoleSource::Console,
@@ -781,11 +874,31 @@ impl Waiters {
     }
 
     fn mark_waiter(&self, key: WaitKey, read: bool, write: bool) {
-        if let Some(wait) = self.map.lock().unwrap().get(&key) {
+        // Accounting for the one path that can silently publish nothing: a key absent from the map
+        // updates no word and sends no wake, and every downstream counter would look identical to
+        // "the socket was simply not ready". MARK_READ_LEVEL is the rising-edge design's blind
+        // spot -- readiness re-asserted while already 1 sends no wake, which is only safe because
+        // a later arm re-reads the level.
+        if read {
+            MARK_READ_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+        let map = self.map.lock().unwrap();
+        if read && map.get(&key).is_none() {
+            MARK_NO_ENTRY.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(wait) = map.get(&key) {
             let mut rfell = false;
             let mut wfell = false;
             let rwake = if read {
-                wait.read.swap(1, Ordering::SeqCst) == 0
+                let rose = wait.read.swap(1, Ordering::SeqCst) == 0;
+                if rose {
+                    MARK_READ_RISE.fetch_add(1, Ordering::Relaxed);
+                    READ_RISE_LAST_NS
+                        .store(RISE_CLOCK.get().as_nanos() as u64, Ordering::Relaxed);
+                } else {
+                    MARK_READ_LEVEL.fetch_add(1, Ordering::Relaxed);
+                }
+                rose
             } else {
                 rfell = wait.read.swap(0, Ordering::SeqCst) == 1;
                 if rfell {
@@ -966,6 +1079,7 @@ impl Engine {
                 POLL_SUB.store(1, Ordering::Relaxed);
                 check_tracking();
                 POLL_PHASE.store(2, Ordering::Relaxed);
+                let __t_held = std::time::Instant::now();
                 let time = {
                     let mut inner = inner.lock().unwrap();
                     POLL_PHASE.store(3, Ordering::Relaxed);
@@ -1001,6 +1115,7 @@ impl Engine {
                         POLL_SUB.store(23, Ordering::Relaxed);
                         immediate_repolls += 1;
                         if immediate_repolls < MAX_IMMEDIATE_REPOLLS {
+                            core_held_note(0, __t_held.elapsed());
                             continue;
                         }
                         immediate_repolls = 0;
@@ -1012,8 +1127,10 @@ impl Engine {
                     POLL_SUB.store(25, Ordering::Relaxed);
                     time
                 };
+                core_held_note(0, __t_held.elapsed());
 
                 POLL_PHASE.store(4, Ordering::Relaxed);
+                let __t_held2 = std::time::Instant::now();
                 let core = inner.lock().unwrap();
                 // Time-spaced, not event-spaced: a stalled listener produces no events, which is
                 // exactly when its state matters.
@@ -1054,8 +1171,12 @@ impl Engine {
                     RX_TAIL.store(tail, Ordering::Relaxed);
                     RX_NONEMPTY.store(nonempty as u64, Ordering::Relaxed);
                     RX_TURN.store(turn as u64, Ordering::Relaxed);
+                    let (tbell, ttail, _, _) = iface.device.tx_pending_parts();
+                    TX_BELL.store(tbell, Ordering::Relaxed);
+                    TX_TAIL.store(ttail, Ordering::Relaxed);
                 }
                 drop(core);
+                core_held_note(1, __t_held2.elapsed());
                 let n = notify.swap(0, Ordering::SeqCst);
                 POLL_ITERS.fetch_add(1, Ordering::Relaxed);
                 if !any_ready && n == 0 {
@@ -1149,6 +1270,19 @@ impl Engine {
         // The heartbeat is the positive control: without it "never stalled" and "watchdog thread
         // never ran" are the same silence, which is the trap the phase reading above already set
         // once today.
+        // Diagnostic scaffolding from the UDP-loss investigation, off by default.
+        //
+        // This thread wakes every 2s for the life of the process, in *every* compartment with
+        // a network engine -- 18 of them in a bench boot. That is a permanent periodic wakeup
+        // on an otherwise idle machine, paid to watch for a stall whose cause is now known:
+        // `wait_ready` read an already-readable fd as a failed registration (net_test_peer).
+        // Nothing in the runtime depends on it.
+        //
+        // Turn it on to investigate a suspected poll-thread stall. Note its predicate needs
+        // `POLL_FALLBACK_MS` to be `Some` to mean anything: with the fallback `None` an idle
+        // engine legitimately sits still well past 2s, which is what made it emit 450 STALL
+        // lines in an 8-round sweep where every round passed.
+        if STALL_WATCHDOG {
         std::thread::spawn(|| {
             let mut last = u64::MAX;
             let mut ticks: u64 = 0;
@@ -1180,17 +1314,8 @@ impl Engine {
                 last = iters;
             }
         });
+        }
 
-        // Temporary (wedgehunt.md): every wedged transcript has five threads of one compartment
-        // queued on one word at a fixed object offset, and which word decides the story -- the core
-        // mutex means a dead lock holder, the condvar means the poll thread stopped notifying. The
-        // kernel's wait table prints the object offset, so printing these addresses names it.
-        twizzler_abi::klog_println!(
-            "ENGINEADDR core {:p} waiter {:p} notify {:p}",
-            &*core,
-            &*waiter,
-            &*notify,
-        );
         Self {
             core,
             waiter,
@@ -1383,6 +1508,7 @@ impl Core {
             socketset,
             ifaceset,
             tracking: Vec::new(),
+            agg_scratch: HashMap::new(),
             groups: HashMap::new(),
             live: HashSet::new(),
         }
@@ -1449,6 +1575,14 @@ impl Core {
     /// If `handle` refers to a UDP or DNS socket, or to a socket already removed from the set.
     pub fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
+    }
+
+    /// Every socket in the set, for identity checks: smoltcp's traces name sockets by endpoint,
+    /// which cannot distinguish two sockets bound to the same address.
+    pub fn socket_iter(
+        &self,
+    ) -> impl Iterator<Item = (SocketHandle, &smoltcp::socket::Socket<'static>)> {
+        self.socketset.iter()
     }
 
     pub fn get_mutable_udp_socket(&mut self, handle: SocketHandle) -> &mut SmolUdpSocket<'static> {
@@ -1644,7 +1778,8 @@ impl Core {
             // them one at a time would let a not-ready sibling clear a ready one's word (and count
             // a bogus falling edge while doing it).
             POLL_SUB.store(16, Ordering::Relaxed);
-            let mut agg: HashMap<WaitKey, (bool, bool)> = HashMap::new();
+            let mut agg = std::mem::take(&mut self.agg_scratch);
+            agg.clear();
             for (handle, sock) in self.socketset.iter() {
                 let (read, write) = self.socket_readiness(handle, sock);
                 let entry = agg.entry(self.wait_key(handle)).or_insert((false, false));
@@ -1652,9 +1787,10 @@ impl Core {
                 entry.1 |= write;
             }
             POLL_SUB.store(17, Ordering::Relaxed);
-            for (key, (read, write)) in agg {
+            for (key, (read, write)) in agg.drain() {
                 WAITERS.mark_waiter(key, read, write);
             }
+            self.agg_scratch = agg;
             POLL_SUB.store(18, Ordering::Relaxed);
             // Notify the CV so that other waiting threads can retry their blocking operations.
             waiter.notify_all();

@@ -394,7 +394,7 @@ mod waitstats {
             EARLY.fetch_add(1, Ordering::Relaxed);
         }
         let n = WAITS.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
+        if n.is_power_of_two() && crate::kdiag_pager() {
             log::info!(
                 "PAGERWAIT: {} waits, {} ended early on the required range, {} parks",
                 n,

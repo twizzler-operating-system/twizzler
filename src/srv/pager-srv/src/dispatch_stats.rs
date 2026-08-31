@@ -246,6 +246,9 @@ impl DispatchStats {
     }
 
     pub fn report(&self) {
+        if !crate::watchdog::diag_enabled() {
+            return;
+        }
         let batches = self.batches.load(Ordering::Relaxed).max(1);
         tracing::info!(
             "DISPATCH: {}; {}; {}; {}; {}; {}; {}; {}; {}; batches={} items/batch={} max={} \

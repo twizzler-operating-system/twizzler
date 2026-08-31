@@ -84,7 +84,7 @@ impl Drop for ReqGuard {
             stats.demand.fetch_sub(1, Ordering::AcqRel);
         }
         let done = stats.completed.fetch_add(1, Ordering::Relaxed) + 1;
-        if done.is_power_of_two() {
+        if done.is_power_of_two() && crate::watchdog::diag_enabled() {
             tracing::info!(
                 "REQSTATS: {} page-data requests done ({} prefetch declined); in flight now {} demand / {} prefetch; max {} demand, {} prefetch, {} total",
                 done,

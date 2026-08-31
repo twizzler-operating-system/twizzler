@@ -41,6 +41,13 @@ fn get_bench() -> Option<&'static Arc<dyn ClockHardware + Send + Sync>> {
     Some(BENCH_CLOCK.call_once(|| clock))
 }
 
+/// Monotonic nanoseconds from the bench clock, or 0 until one is registered. Cheap enough for
+/// interrupt paths: one clock read plus u128 math (`Ticks::as_nanos` — the femtos-per-tick rate
+/// of a fast clock is below 1e6, so the truncating u64 shortcut elsewhere would read 0 here).
+pub fn current_ns() -> u64 {
+    get_bench().map(|c| c.read().as_nanos() as u64).unwrap_or(0)
+}
+
 impl Instant {
     pub fn now() -> Instant {
         let ticks = { get_bench().map(|ts| ts.read()).unwrap_or(Ticks::default()) };

@@ -14,8 +14,8 @@ use secgate::util::Descriptor;
 use twizzler_abi::{
     object::{MAX_SIZE, NULLPAGE_SIZE},
     syscall::{
-        sys_object_preload_range, sys_thread_change_state_in_sctx, sys_thread_sync,
-        PreloadRangeSpec, ThreadSync, MAX_PRELOAD_RANGES,
+        sys_object_preload_range, sys_thread_change_state, sys_thread_sync, PreloadRangeSpec,
+        ThreadSync, MAX_PRELOAD_RANGES,
     },
 };
 use twizzler_rt_abi::{
@@ -329,15 +329,12 @@ impl CompartmentMgr {
         // per-thread lock across those would block every gate call in it behind the teardown.
         for thread in rc.thread_ids_including(also) {
             crate::lockdiag::note_killed(thread);
-            // Restricted to `instance`: a gate call runs this thread inside another compartment
-            // (this one included, which is why the wedge takes the whole system with it), and an
-            // exit landing there leaves that compartment's locks held by a corpse. The kernel holds
-            // the request until the thread is running its own code again.
-            let _ = sys_thread_change_state_in_sctx(
-                thread,
-                twizzler_abi::thread::ExecutionState::Exited,
-                instance,
-            );
+            // A gate call runs this thread inside another compartment (this one included, which
+            // is why the wedge takes the whole system with it), and an exit landing there leaves
+            // that compartment's locks held by a corpse. The kernel holds the request until the
+            // thread is running its own code again -- delivery is gated on the home context
+            // stamped at spawn (`ThreadSpawnArgs::home_sctx`).
+            let _ = sys_thread_change_state(thread, twizzler_abi::thread::ExecutionState::Exited);
         }
 
         for dep in rc.deps.clone() {
@@ -384,7 +381,7 @@ impl CompartmentMgr {
 
     /// Unload every queued compartment that has no threads left, and keep the rest queued.
     ///
-    /// `main_thread_exited` requests its threads' exits through `sys_thread_change_state_in_sctx`,
+    /// `main_thread_exited` requests its threads' exits through `sys_thread_change_state`,
     /// which the kernel holds until the target is running its own code again -- so a queued
     /// compartment can still have threads standing on it. Unloading it there dropped its
     /// `StackObject`'s handle, and the unmapper took a stack out from under a thread that was still

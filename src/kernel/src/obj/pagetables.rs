@@ -432,8 +432,10 @@ pub mod invl_overflow {
     const MAX_NAMED: usize = 24;
 
     pub fn note_object(id: crate::obj::ObjID, live: usize, len: usize) {
+        // Count regardless of the gate: `named()` vs `OBJECTS` is the coverage check the doc
+        // comment above describes, and it must hold whether or not the lines print.
         let n = NAMED.fetch_add(1, Ordering::Relaxed);
-        if n < MAX_NAMED {
+        if n < MAX_NAMED && crate::kdiag_invls() {
             emerglogln!(
                 "== invls latched object {}: {} live of {} targets",
                 id,

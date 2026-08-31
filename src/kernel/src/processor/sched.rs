@@ -827,7 +827,7 @@ pub fn reprioritize_queued_thread(thread: &Thread) -> bool {
     // context (caller may hold a mutex's queue spinlock) nests the console lock under it, which
     // is one-way and already done by warn-paths elsewhere; thrice per boot bounds the exposure.
     if !REPRIO_ANNOUNCED[idx].swap(true, Ordering::Relaxed) {
-        logln!(
+        log::debug!(
             "[sched] re-filed queued thread {} from {:?} at {:?}",
             th.id(),
             from,

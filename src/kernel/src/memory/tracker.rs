@@ -1527,8 +1527,9 @@ pub fn init(total: usize, idle: usize, kern: usize) {
     // counter-to-call-site trace instead of reading a line (see `zerofill.md` C3). Printed
     // unconditionally, with the value, rather than only when set: "enabled" appearing is evidence
     // only if its absence would have been evidence too, and a reader cannot tell a build that had
-    // the flag off from a build that predates the flag.
-    logln!(
+    // the flag off from a build that predates the flag. Debug level since the arm-audit story
+    // moved behind `--klog=debug`: a sweep that reads this line must boot with that flag.
+    log::debug!(
         "allocprofile: BULK_PRECHARGE={} FA_FREE_TO_POOL={} FA_ALLOC_FROM_POOL={} FA_NO_TAKE={} FA_POOL_WATERMARK={} FA_POOL_BULK_REFILL={} FA_UNPARK_OVERLAP_CHECK={} TIME_ALLOCS={}",
         allocprofile::BULK_PRECHARGE,
         allocprofile::FA_FREE_TO_POOL,
@@ -2794,10 +2795,7 @@ fn ensure_pool_provisioned() {
     // its own event. The counter is kept for a boot-wide dump; the line is what makes the log
     // answer the question.
     if installed {
-        logln!(
-            "allocprofile: pool provisioned, {} slots",
-            POOL_VEC_CAPACITY
-        );
+        log::debug!("allocprofile: pool provisioned, {} slots", POOL_VEC_CAPACITY);
     }
     // `buf` is now the old, empty buffer. Freed here, outside the region.
     drop(buf);

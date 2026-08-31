@@ -138,6 +138,20 @@ fn register(fd: RawFd, filter: i16, clear: bool) -> RawFd {
     if clear {
         flags |= EV_CLEAR;
     }
+    // ONE slot, deliberately, and do not enlarge it.
+    //
+    // EV_RECEIPT returns the receipt without waiting, but an fd that is *already* ready yields its
+    // readiness event from the same call. With room for both, that event is delivered *here* --
+    // and for an EV_CLEAR (edge-triggered) registration it is then gone, so the caller's following
+    // wait legitimately reports nothing. Enlarging this buffer to 4 broke
+    // `clear_stream_reports_writable_once` exactly that way. A single slot keeps the receipt the
+    // only thing this call can consume.
+    //
+    // The related bug in `net_test_peer` was the mirror image: a 4-slot buffer there *plus* an
+    // `n == 1` check, so an already-readable fd was read as a failed registration. Both come from
+    // treating the event count as meaningful; the count depends on the socket's state, not on
+    // whether the registration succeeded. Identify the receipt, and do not give the call room to
+    // swallow readiness.
     let mut out = [change(0, 0, 0); 1];
     let n = kevent_call(
         kq,
@@ -145,16 +159,22 @@ fn register(fd: RawFd, filter: i16, clear: bool) -> RawFd {
         &mut out,
         Some(Duration::ZERO),
     );
-    assert_eq!(n, 1, "expected a receipt for the registration");
-    assert_eq!(out[0].flags & EV_ERROR, EV_ERROR, "receipt is an EV_ERROR");
-    assert_eq!(out[0].data, 0, "registration failed: errno {}", out[0].data);
+    let receipt = out[..n.min(out.len())]
+        .iter()
+        .find(|e| e.flags & EV_ERROR == EV_ERROR)
+        .expect("expected a receipt for the registration");
+    assert_eq!(receipt.data, 0, "registration failed: errno {}", receipt.data);
     kq
 }
 
 /// Wait for one readiness report, returning false on timeout.
 fn wait_ready(kq: RawFd, timeout: Duration) -> bool {
     let mut out = [change(0, 0, 0); 4];
-    kevent_call(kq, &[], &mut out, Some(timeout)) > 0
+    let n = kevent_call(kq, &[], &mut out, Some(timeout));
+    // Identity, not count: an EV_ERROR returned here is not readiness.
+    out[..n.min(out.len())]
+        .iter()
+        .any(|e| e.flags & EV_ERROR == 0)
 }
 
 /// `accept()`, but fail rather than hang if nothing arrives.

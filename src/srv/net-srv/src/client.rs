@@ -163,6 +163,14 @@ fn classify(buf: &[u8], local_macs: &[EthernetAddress]) -> Dest {
     }
 }
 
+/// Frames this server took *from* a client's submission queue, before classification.
+///
+/// The one quantity nothing counted: every existing counter measures what happened to a frame
+/// after `classify` saw it (local/device/flood/nomatch), so a frame that never reached the
+/// classifier was invisible everywhere. Compare against the sender's own `DEV_TX_FRAMES` to tell
+/// "the client never transmitted it" from "the server never picked it up".
+static RX_FROM_CLIENT: AtomicU64 = AtomicU64::new(0);
+
 /// Frames dropped by `inject_local` because the target's rx pool had no free packet.
 ///
 /// Global rather than per-client: the warning names the target, and a per-client map would need a
@@ -267,6 +275,14 @@ fn tcp_fin_src_octet(frame: &[u8]) -> Option<(u8, u8)> {
 /// no conclusion may be drawn from an absent address** -- the instrument audits itself instead of
 /// relying on me to have enumerated the paths correctly, which I twice did not.
 static LOCAL_RX_ARP: AtomicU64 = AtomicU64::new(0);
+/// ARP split by opcode, and replies by target octet.
+///
+/// ~200 ARP frames per round move inversely with delivered datagrams, which is what an address
+/// that never resolves looks like: the sender re-requests forever and smoltcp discards the pending
+/// datagram each time. Requests without matching replies say resolution never completes; balanced
+/// request/reply pairs say the reply arrives and the neighbour entry still fails to stick.
+static LOCAL_RX_ARP_REQ: AtomicU64 = AtomicU64::new(0);
+static LOCAL_RX_ARP_REPLY: AtomicU64 = AtomicU64::new(0);
 static LOCAL_RX_NOT_ETH: AtomicU64 = AtomicU64::new(0);
 static LOCAL_RX_BAD_IPV4: AtomicU64 = AtomicU64::new(0);
 static LOCAL_RX_OTHER_ET: AtomicU64 = AtomicU64::new(0);
@@ -298,6 +314,36 @@ fn ipv4_src_dst_octets(frame: &[u8]) -> Option<(u8, u8)> {
         },
         EthernetProtocol::Arp => {
             LOCAL_RX_ARP.fetch_add(1, Ordering::Relaxed);
+            // Opcode lives at bytes 6..8 of the ARP payload: 1 = request, 2 = reply.
+            let p = eth.payload();
+            if p.len() >= 8 {
+                let op = u16::from_be_bytes([p[6], p[7]]);
+                match op {
+                    1 => LOCAL_RX_ARP_REQ.fetch_add(1, Ordering::Relaxed),
+                    2 => LOCAL_RX_ARP_REPLY.fetch_add(1, Ordering::Relaxed),
+                    _ => 0,
+                };
+                // Who is asking about whom. IPv4-over-Ethernet ARP: sender proto addr at 14..18,
+                // target proto addr at 24..28. Printed sparsely so the pairing is visible without
+                // putting a console write on the delivery path for every frame.
+                if p.len() >= 28 {
+                    let (spa, tpa) = (p[17], p[27]);
+                    let n = if op == 1 {
+                        LOCAL_RX_ARP_REQ.load(Ordering::Relaxed)
+                    } else {
+                        LOCAL_RX_ARP_REPLY.load(Ordering::Relaxed)
+                    };
+                    if REPORT_DELIVERY_TOTALS && n.is_power_of_two() {
+                        tracing::warn!(
+                            "ARPPAIR op={} .{} -> .{} (n={})",
+                            if op == 1 { "req" } else { "reply" },
+                            spa,
+                            tpa,
+                            n
+                        );
+                    }
+                }
+            }
             None
         }
         other => {
@@ -419,6 +465,15 @@ fn classify_frame(frame: &[u8]) -> FrameClass {
 /// round), so they cost nothing and must keep firing.
 const REPORT_DELIVERY_MILESTONES: bool = false;
 
+/// Aggregate delivery totals at a coarse stride -- the same counters as the milestones above, but
+/// a handful of lines per boot instead of 7,631.
+///
+/// The milestone gate must stay off: a console write per injection is a syscall on the delivery
+/// path, so enabling it to measure delivery would change delivery. This prints the same live
+/// counters every 256 frames, which answers "how many arrived" without perturbing "how many
+/// arrive".
+const REPORT_DELIVERY_TOTALS: bool = false;
+
 const REPORT_BATCH_SHAPE: bool = false;
 
 /// Frames by class, and the same restricted to frames that rode a **one-frame** message.
@@ -461,17 +516,42 @@ fn note_inject_ok(frame: &[u8], batch_len: usize, notes: &mut Vec<String>) {
         // global snapshot cannot answer "how much arrived from .X": whether .X appears depends on
         // when the round ended, and that once made a *passing* round look like proof of absence.
         let sv = LOCAL_RX_BY_SRC[src as usize].fetch_add(1, Ordering::Relaxed) + 1;
-        if sv.is_power_of_two() {
-            notes.push(format!("local src .{} reached {}", src, sv));
-        }
         let dv = LOCAL_RX_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed) + 1;
-        if dv.is_power_of_two() {
-            notes.push(format!("local dst .{} reached {}", dst, dv));
+        if twizzler_net::diag_enabled("net") {
+            if sv.is_power_of_two() {
+                notes.push(format!("local src .{} reached {}", src, sv));
+            }
+            if dv.is_power_of_two() {
+                notes.push(format!("local dst .{} reached {}", dst, dv));
+            }
         }
     }
     let n = LOCAL_RX_OK.fetch_add(1, Ordering::Relaxed) + 1;
     // Every 16, not only powers of two: a boot injects 250-500 frames, so a power-of-two stride
     // lands its last snapshot at 256 and truncates the tail this counter exists to measure.
+    if REPORT_DELIVERY_TOTALS && n % 256 == 0 {
+        tracing::warn!(
+            "DELIVERY total_ok={} ipv4={} arp={} arp_req={} arp_reply={} batch_frames={} rx_from_client={} rx_drops={} nomatch={} b120_tx={} b120_rx={} p123_tx={} p123_rx={} ring_woke={} ring_nowaiter={}",
+            n,
+            LOCAL_RX_IPV4.load(Ordering::Relaxed),
+            LOCAL_RX_ARP.load(Ordering::Relaxed),
+            LOCAL_RX_ARP_REQ.load(Ordering::Relaxed),
+            LOCAL_RX_ARP_REPLY.load(Ordering::Relaxed),
+            BATCH_FRAMES.load(Ordering::Relaxed),
+            RX_FROM_CLIENT.load(Ordering::Relaxed),
+            LOCAL_RX_DROPS.load(Ordering::Relaxed),
+            LOCAL_NOMATCH.load(Ordering::Relaxed),
+            // Per-pair accounting for the benchmark (.120) and its echo peer (.123): frames seen
+            // *from* each and *to* each. The aggregate counters mix in 16 other compartments'
+            // traffic, which is how a 3x swing in ARP requests sat next to a flat reply count.
+            LOCAL_RX_BY_SRC[120].load(Ordering::Relaxed),
+            LOCAL_RX_BY_DST[120].load(Ordering::Relaxed),
+            LOCAL_RX_BY_SRC[123].load(Ordering::Relaxed),
+            LOCAL_RX_BY_DST[123].load(Ordering::Relaxed),
+            twizzler_queue::RING_WOKE.load(Ordering::Relaxed),
+            twizzler_queue::RING_NO_WAITER.load(Ordering::Relaxed),
+        );
+    }
     if REPORT_DELIVERY_MILESTONES && (n % 16 == 0 || n.is_power_of_two()) {
         let (ipv4, arp, bad, other, noteth) = (
             LOCAL_RX_IPV4.load(Ordering::Relaxed),
@@ -644,6 +724,34 @@ fn deliver_local(pending: &[(Vec<u8>, Dest)], sender: EthernetAddress) {
     }
 }
 
+/// Latency-decomposition tap: age of a stamped net_udp_latency datagram (dst port 7721, the
+/// bench's NET_UDP_PORT — the outbound leg only) when this server first sees it. Counters only;
+/// this runs inside `rx.consume` under the `ep` lock, where a console write is forbidden. The
+/// report prints at the PQ_TICK stride below.
+static SRV_UDPSTAMP_SUM: AtomicU64 = AtomicU64::new(0);
+static SRV_UDPSTAMP_CNT: AtomicU64 = AtomicU64::new(0);
+static SRV_UDPSTAMP_CLOCK: twizzler_abi::syscall::FastClock =
+    twizzler_abi::syscall::FastClock::new(
+        twizzler_abi::syscall::ClockSource::BestMonotonic,
+        twizzler_abi::syscall::ReadClockFlags::empty(),
+    );
+
+fn srv_udpstamp(frame: &[u8]) {
+    if frame.len() < 58
+        || frame[12..14] != [0x08, 0x00]
+        || frame[14] != 0x45
+        || frame[23] != 17
+        || frame[36..38] != 7721u16.to_be_bytes()
+        || &frame[46..50] != b"TSTM"
+    {
+        return;
+    }
+    let t = u64::from_le_bytes(frame[50..58].try_into().unwrap());
+    let now = SRV_UDPSTAMP_CLOCK.get().as_nanos() as u64;
+    SRV_UDPSTAMP_SUM.fetch_add(now.saturating_sub(t), Ordering::Relaxed);
+    SRV_UDPSTAMP_CNT.fetch_add(1, Ordering::Relaxed);
+}
+
 fn client_thread(client: Arc<Client>) {
     let device = NETINFO.get().unwrap().device.clone();
     let tx_po = client.ep.lock().unwrap().client_tx_packet_object().clone();
@@ -653,6 +761,10 @@ fn client_thread(client: Arc<Client>) {
     // frame: this protocol carries no length, so both directions already hand smoltcp the full
     // slot and let the IP/ARP header lengths govern.
     let mut pending: Vec<(Vec<u8>, Dest)> = Vec::new();
+    // Recycled bodies for `pending`: the copy out of the client's tx packet has to outlive the
+    // `ep` lock (delivery logs, and a console write under that lock is forbidden -- see below),
+    // but the heap alloc/free per frame does not.
+    let mut spare: Vec<Vec<u8>> = Vec::new();
     let mut local_macs: Vec<EthernetAddress> = Vec::new();
     while client.active() {
         // Snapshot sibling MACs *before* taking our own `ep`. Reading them inside the frame loop
@@ -682,6 +794,7 @@ fn client_thread(client: Arc<Client>) {
                     eprintln!("client thread got {}", pp);
                 }
                 let dest = classify(buf, &local_macs);
+                srv_udpstamp(buf);
                 if let Some((src, dst)) = tcp_fin_src_octet(buf) {
                     TX_FIN_BY_SRC[src as usize].fetch_add(1, Ordering::Relaxed);
                     TX_FIN_BY_DST[dst as usize].fetch_add(1, Ordering::Relaxed);
@@ -714,7 +827,10 @@ fn client_thread(client: Arc<Client>) {
                     } else {
                         buf.len()
                     };
-                    pending.push((buf[..n].to_vec(), dest));
+                    let mut body = spare.pop().unwrap_or_default();
+                    body.clear();
+                    body.extend_from_slice(&buf[..n]);
+                    pending.push((body, dest));
                 }
             })
         }
@@ -730,8 +846,19 @@ fn client_thread(client: Arc<Client>) {
         // in for ~65,000 sweep logs.
         {
             static PQ_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            if PQ_TICK.fetch_add(1, Ordering::Relaxed) % 64 == 0 {
+            let tick = PQ_TICK.fetch_add(1, Ordering::Relaxed);
+            if tick % 64 == 0 {
                 twizzler_net::report_pollq();
+            }
+            if tick % 1024 == 0 && twizzler_net::diag_enabled("net") {
+                let c = SRV_UDPSTAMP_CNT.load(Ordering::Relaxed);
+                if c > 0 {
+                    tracing::warn!(
+                        "UDPSTAMP srv n={} avg_us={}",
+                        c,
+                        SRV_UDPSTAMP_SUM.load(Ordering::Relaxed) / c / 1000
+                    );
+                }
             }
         }
 
@@ -741,7 +868,10 @@ fn client_thread(client: Arc<Client>) {
             let fins = TX_FIN_LOCAL.load(Ordering::Relaxed)
                 + TX_FIN_DEVICE.load(Ordering::Relaxed)
                 + TX_FIN_FLOOD.load(Ordering::Relaxed);
-            if fins > 0 && TX_FIN_REPORTED.swap(fins, Ordering::Relaxed) != fins {
+            if fins > 0
+                && twizzler_net::diag_enabled("net")
+                && TX_FIN_REPORTED.swap(fins, Ordering::Relaxed) != fins
+            {
                 tracing::warn!(
                     "TXFIN total={} local={} device={} flood={} by_src .100={} .105={} \
                      nomatch={} nomatch_fin={} by_dst .105={} .100={}",
@@ -783,8 +913,17 @@ fn client_thread(client: Arc<Client>) {
 
         // One pass over the whole batch, grouped per target, rather than one pass per frame.
         // A flood matching nobody is the ordinary one-client case, not a loss.
+        let taken = RX_FROM_CLIENT.fetch_add(pending.len() as u64, Ordering::Relaxed)
+            + pending.len() as u64;
+        if REPORT_DELIVERY_TOTALS && !pending.is_empty() && taken.is_power_of_two() {
+            tracing::warn!("RXFROMCLIENT total={} this_batch={}", taken, pending.len());
+        }
         deliver_local(&pending, sender);
-        pending.clear();
+        for (body, _) in pending.drain(..) {
+            if spare.len() < 64 {
+                spare.push(body);
+            }
+        }
 
         if has_pending_msg {
             continue;
@@ -794,10 +933,16 @@ fn client_thread(client: Arc<Client>) {
         // (rx_waiter) and writes completions (comp_space_waiter, only while one is owed). It also
         // reads client_rx completions in `inject`, but never retries on them, so waking for a
         // packet reclaim would be churn with nothing to do -- `inject` drains them itself.
-        let mut sleeps = vec![ThreadSync::new_sleep(rx_waiter)];
-        if let Some(w) = comp_space_waiter {
-            sleeps.push(ThreadSync::new_sleep(w));
-        }
-        let _ = sys_thread_sync(&mut sleeps, None);
+        let mut sleeps = [
+            ThreadSync::new_sleep(rx_waiter),
+            ThreadSync::new_sleep(rx_waiter),
+        ];
+        let n = if let Some(w) = comp_space_waiter {
+            sleeps[1] = ThreadSync::new_sleep(w);
+            2
+        } else {
+            1
+        };
+        let _ = sys_thread_sync(&mut sleeps[..n], None);
     }
 }

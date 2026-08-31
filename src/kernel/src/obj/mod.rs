@@ -284,6 +284,14 @@ impl Object {
         self.map_count.load(Ordering::SeqCst)
     }
 
+    /// Current sleeper claim count, for the hang report. `wakeup_word`'s fast path returns without
+    /// waking when this reads zero, so a parked thread in this object's sleep tree alongside a zero
+    /// here is that skip's smoking gun; the count is biased upward (see the field), so zero is the
+    /// one value it must never show while anyone is parked.
+    pub fn sleeper_count(&self) -> usize {
+        self.sleepers.load(Ordering::SeqCst)
+    }
+
     /// Caller must hold this object's page-table lock; see the [`map_count`](Object::map_count)
     /// field. Paired one-for-one with [Object::dec_map_count] by the arch mapper's `took_ref`.
     pub fn inc_map_count(&self) {
