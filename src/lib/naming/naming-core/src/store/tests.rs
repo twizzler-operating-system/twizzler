@@ -144,9 +144,9 @@ fn remove_then_readd() {
 
 #[test]
 fn remove_nested_bottom_up() {
-    // `remove` only detaches the named entry from its immediate parent: there is no
-    // "refuse to remove a non-empty namespace" check anywhere in the store today, and no
-    // recursive-delete option (unlike the old, pre-rewrite naming-test crate this replaces).
+    // `remove` only detaches the named entry from its immediate parent -- there is no
+    // recursive-delete option (unlike the old, pre-rewrite naming-test crate this replaces), and
+    // a non-empty namespace is refused outright (`remove_refuses_a_non_empty_namespace`).
     // Tearing down a subtree means removing its contents first, bottom-up, which is what this
     // test exercises alongside confirming siblings are left alone.
     let store = NameStore::new();
@@ -226,6 +226,26 @@ fn rename_to_self_is_noop() {
         session.get("a", GetFlags::empty()).unwrap_err(),
         TwzError::Naming(NamingError::NotFound)
     );
+}
+
+#[test]
+fn remove_refuses_a_non_empty_namespace() {
+    let store = NameStore::new();
+    let session = store.root_session();
+    session.mkns("a", false).unwrap();
+    session.put("a/i", ObjID::new(1)).unwrap();
+
+    assert_eq!(
+        session.remove("a").unwrap_err(),
+        TwzError::Naming(NamingError::NotEmpty)
+    );
+    // Refused outright, not half-done: nothing here reclaims a namespace object, so a removal
+    // that detached the entry would have orphaned "a/i" with no way to reach it.
+    assert_eq!(get_ok(&session, "a").kind, NsNodeKind::Namespace);
+    assert_eq!(get_ok(&session, "a/i").id, ObjID::new(1));
+
+    session.remove("a/i").unwrap();
+    session.remove("a").unwrap();
 }
 
 #[test]

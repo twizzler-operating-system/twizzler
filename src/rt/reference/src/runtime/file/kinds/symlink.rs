@@ -6,11 +6,13 @@ use crate::runtime::file::Fd;
 
 pub struct SymLinkFile {
     obj_id: ObjID,
+    /// Length of the target path, reported as the size. See `symlink_target_len`.
+    target_len: u64,
 }
 
 impl SymLinkFile {
-    pub fn new(obj_id: ObjID) -> Result<Self> {
-        Ok(Self { obj_id })
+    pub fn new(obj_id: ObjID, target_len: u64) -> Result<Self> {
+        Ok(Self { obj_id, target_len })
     }
 }
 
@@ -37,7 +39,7 @@ impl Fd for SymLinkFile {
 
     fn stat(&self) -> Result<twizzler_rt_abi::fd::FdInfo> {
         Ok(twizzler_rt_abi::fd::FdInfo {
-            size: 0,
+            size: self.target_len,
             flags: twizzler_rt_abi::fd::FdFlags::empty(),
             kind: twizzler_rt_abi::fd::FdKind::SymLink,
             id: self.obj_id.raw(),

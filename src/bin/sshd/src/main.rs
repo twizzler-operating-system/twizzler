@@ -187,7 +187,13 @@ async fn shell(
     let (stdio, _stderr) = serv.stdio_stderr(ctx.chan_handle).await.into_diagnostic()?;
     let (mut stdin, mut stdout) = stdio.split();
 
-    let mut cmd = Command::new("/initrd/shell");
+    let shellpath = if std::fs::exists("/pkg/twizzler/bin/brush").is_ok_and(|x| x) {
+        "/pkg/twizzler/bin/brush"
+    } else {
+        "/initrd/shell"
+    };
+
+    let mut cmd = Command::new(shellpath);
 
     if let Some(command) = ctx.command.as_ref() {
         cmd.arg("-c");

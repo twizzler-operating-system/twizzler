@@ -473,7 +473,13 @@ trait Namespace {
     /// Bind `node`, evicting any entry of the same name. Atomic in the same sense as `insert`.
     fn replace(&self, node: NsNode) -> Result<()>;
 
-    fn remove(&self, name: &str) -> Option<NsNode>;
+    /// Unbind `name`, returning the node that was bound.
+    ///
+    /// A `Result` rather than an `Option` because the reasons a removal fails are not
+    /// interchangeable: an external namespace's backing store reports `NotEmpty` for a
+    /// non-empty directory, and callers -- `remove_dir_all` in libstd above all -- treat
+    /// that very differently from the `NotFound` an `Option` would have flattened it to.
+    fn remove(&self, name: &str) -> Result<NsNode>;
 
     fn parent(&self) -> Option<&ParentInfo>;
 
@@ -1046,11 +1052,27 @@ impl NameSession<'_> {
 
     pub fn remove<P: AsRef<Path>>(&self, name: P) -> Result<()> {
         let unlink = unlink_name(name.as_ref())?;
-        let (_node, container) = self.namei_exist(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
-        container
-            .remove(unlink)
-            .map(|_| ())
-            .ok_or(NamingError::NotFound.into())
+        let (node, container) = self.namei_exist(None, &name, Self::MAX_SYMLINK_DEREF, false)?;
+        // Removing a namespace must not orphan what is under it: nothing here deletes
+        // recursively, and nothing reclaims the namespace object once the last name for it is
+        // gone. An external namespace gets this refusal from its store
+        // (`Ext4Store::rmdir_child_locked`), so only native ones are checked here.
+        //
+        // Not in `Namespace::remove`: `rename` calls that to drop the old name after copying the
+        // entry to its new container, and renaming a populated directory has to keep working.
+        if node.kind == NsNodeKind::Namespace && !container.is_external() {
+            let ns = self.open_namespace(node.id, container.persist(), None)?;
+            // `.` and `..` are real entries -- `NamespaceObject::new` binds both, because
+            // traversal resolves through them -- so an empty namespace still lists two items.
+            let occupied = ns
+                .items(0, usize::MAX)
+                .iter()
+                .any(|n| !matches!(n.name(), Ok(".") | Ok("..")));
+            if occupied {
+                return Err(NamingError::NotEmpty.into());
+            }
+        }
+        container.remove(unlink).map(|_| ())
     }
 
     pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(&self, old: P, new: Q) -> Result<()> {
@@ -1095,10 +1117,7 @@ impl NameSession<'_> {
         );
         // Insert at new location, then remove from old location
         new_container.replace(new_entry)?;
-        old_container
-            .remove(old_name)
-            .map(|_| ())
-            .ok_or(NamingError::NotFound.into())
+        old_container.remove(old_name).map(|_| ())
     }
 
     pub fn link<P: AsRef<Path>, L: AsRef<Path>>(&self, name: P, link: L) -> Result<()> {

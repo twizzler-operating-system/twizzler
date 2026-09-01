@@ -12,6 +12,7 @@ use lru::LruCache;
 use pager_dynamic::{objid_to_ino, ExternalKind, PagerHandle};
 use secgate::TwzError;
 use twizzler::object::ObjID;
+use twizzler_rt_abi::error::NamingError;
 
 use super::{Namespace, NsNode, ParentInfo};
 use crate::{NsNodeKind, Result};
@@ -482,34 +483,37 @@ impl Namespace for ExtNamespace {
         self.insert(node)
     }
 
-    fn remove(&self, name: &str) -> Option<NsNode> {
+    fn remove(&self, name: &str) -> Result<NsNode> {
         tracing::debug!(
             "removing {} from external namespace {}, id = {}",
             name,
             self.id,
             self.id
         );
-        let node = self.find(name)?;
+        let node = self.find(name).ok_or(NamingError::NotFound)?;
         let mut guard = pager_handle();
         let Some(h) = guard.as_mut() else {
             tracing::warn!("failed to open handle to pager");
-            return None;
+            return Err(TwzError::NOT_SUPPORTED);
         };
-        if h.unlink_external(self.id, name).is_err() {
+        // The store's error is the answer, not just a failure signal: removing a non-empty
+        // directory comes back as `NotEmpty`, and flattening that to `NotFound` would have
+        // libstd's `remove_dir_all` ignore it and report a directory it did not remove.
+        h.unlink_external(self.id, name).inspect_err(|e| {
             tracing::warn!(
-                "failed to unlink external file {} in namespace {}",
+                "failed to unlink external file {} in namespace {}: {}",
                 name,
-                self.id
-            );
-            return None;
-        }
+                self.id,
+                e
+            )
+        })?;
         drop(guard);
 
         self.cache().invalidate_name(name);
         if node.kind == NsNodeKind::Namespace {
             GLOBAL_CACHE.forget(node.id);
         }
-        Some(node)
+        Ok(node)
     }
 
     fn id(&self) -> ObjID {

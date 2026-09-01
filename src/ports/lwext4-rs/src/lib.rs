@@ -520,12 +520,18 @@ impl Ext4Fs {
         if res.is_err() && flags & O_CREAT != 0 {
             // Match on the full S_IFMT field: a bare `mode & S_IFLNK != 0` also matches S_IFREG
             // (S_IFLNK == S_IFREG | S_IFCHR bit-wise), which typed regular files as symlinks.
-            // Directories work here because `ext4_link` fully initializes a dir child
-            // ('.'/'..'/link counts) when the inode type is directory.
+            //
+            // `EXT4_DE_*` (dirent filetype), not `EXT4_INODE_MODE_*`: `ext4_fs_alloc_inode`
+            // decides `is_dir` by `filetype == EXT4_DE_DIR` (2) and derives the inode mode from
+            // that. Passing the mode bits (0x4000) made every directory allocate as a regular
+            // file, so `ext4_link` then saw a non-directory child and skipped the '.'/'..'
+            // entries and the parent link-count bump it adds only for directories. The result
+            // looks like a working directory -- entries can be added and found -- until
+            // something walks '..', which is how removal resolves a path.
             let ft = match mode & libc::S_IFMT {
-                libc::S_IFDIR => lwext4::EXT4_INODE_MODE_DIRECTORY,
-                libc::S_IFLNK => lwext4::EXT4_INODE_MODE_SOFTLINK,
-                _ => lwext4::EXT4_INODE_MODE_FILE,
+                libc::S_IFDIR => lwext4::EXT4_DE_DIR,
+                libc::S_IFLNK => lwext4::EXT4_DE_SYMLINK,
+                _ => lwext4::EXT4_DE_REG_FILE,
             };
 
             let mut new_inode = MaybeUninit::uninit();
@@ -638,6 +644,14 @@ impl Ext4Fs {
         let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
         let path = CString::new(name).unwrap();
         errno_to_result(unsafe { lwext4::ext4_fremove(path.as_ptr()) })
+    }
+
+    /// Remove directory `name`. `ext4_dir_rm` is recursive -- it deletes the subtree, not just
+    /// an empty directory -- so callers wanting rmdir semantics must check emptiness first.
+    pub fn remove_dir(&mut self, name: &str) -> Result<()> {
+        let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
+        let path = CString::new(name).unwrap();
+        errno_to_result(unsafe { lwext4::ext4_dir_rm(path.as_ptr()) })
     }
 
     pub fn create_dir(&mut self, name: &str) -> Result<()> {

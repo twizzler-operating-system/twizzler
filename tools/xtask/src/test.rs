@@ -130,6 +130,14 @@ pub struct TestOptions {
         default_value_t = crate::qemu::DEFAULT_QEMU_PORT
     )]
     pub ssh_port: u16,
+    #[clap(
+        long,
+        help = "After the guest exits, check the ext4 data disk (the nvme one, --disk-image or \
+                target/disk-<triple>.img) with the host's e2fsck and report what it found. \
+                Read-only: nothing is repaired. Fails the run with exit 38 if the filesystem is \
+                not clean."
+    )]
+    pub fsck: bool,
 }
 
 impl TestOptions {
@@ -201,6 +209,51 @@ fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
     run_and_report(cli, run)
 }
 
+/// Exit code for "the run itself was fine, but the data disk did not survive it". Distinct from
+/// 33 (tests failed), 34 (no report) and 35-37 (guest death) so a sweep can tell them apart.
+const FSCK_EXIT: i32 = 38;
+
+/// Check the ext4 data disk the run just used, printing whatever e2fsck found. Returns whether it
+/// came back clean; anything that stops the check from happening at all counts as not clean, since
+/// the caller asked for the answer and there isn't one.
+fn check_disk(cli: &TestOptions) -> bool {
+    let image = crate::disk::image_path(&cli.config.twz_triple(), cli.disk_image.as_deref());
+    if cli.snapshot_disks {
+        println!(
+            "note: --snapshot-disks put this run's writes in a temporary overlay, so fsck sees \
+             {} as it was before the boot",
+            image.display()
+        );
+    }
+    if !image.is_file() {
+        eprintln!("FSCK FAILED: {} does not exist", image.display());
+        return false;
+    }
+
+    // Another invocation may be writing this same image right now (the default one is shared
+    // per-triple). Without the lock a check can read a half-written filesystem and call the writer
+    // corrupt.
+    let _lock = crate::imagelock::image_lock(&image)
+        .inspect_err(|e| eprintln!("warning: checking {} unlocked: {}", image.display(), e))
+        .ok();
+
+    match crate::disk::fsck(&image) {
+        Ok(report) if report.clean() => {
+            println!("fsck: {} is clean", image.display());
+            true
+        }
+        Ok(report) => {
+            eprintln!("FSCK FAILED: {}: {}", image.display(), report.describe());
+            eprint!("{}", report.output);
+            false
+        }
+        Err(e) => {
+            eprintln!("FSCK FAILED: could not check {}: {:#}", image.display(), e);
+            false
+        }
+    }
+}
+
 /// Boot `image` with `run` and report what the guest's test suite said. Shared by every scenario
 /// that just runs the normal test suite under a different `RunConfig`.
 fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
@@ -225,6 +278,10 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
         println!("serial log: {}", log.display());
     }
 
+    // Checked before anything below decides to exit: a guest that died or failed its tests is
+    // exactly the case where the state it left on disk is worth looking at.
+    let dirty_disk = cli.fsck && !check_disk(cli);
+
     // A dead guest is its own outcome, and a more useful one than "no report": the run did not
     // exhaust its budget, it died, and we stopped it.
     if let Some(death) = outcome.guest_death {
@@ -237,6 +294,13 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
     // missing report below.
     if let Some(autostart) = &cli.autostart {
         return match outcome.guest_code {
+            Some(0) if dirty_disk => {
+                eprintln!(
+                    "FAILED: autostart {} exited 0, but the data disk is not clean",
+                    autostart
+                );
+                std::process::exit(FSCK_EXIT);
+            }
             Some(0) => {
                 println!("autostart {} exited 0", autostart);
                 Ok(())
@@ -287,6 +351,13 @@ fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
                 outcome.guest_code
             );
             std::process::exit(33);
+        }
+        Some(_) if dirty_disk => {
+            eprintln!(
+                "FAILED: all {} tests passed, but the data disk is not clean",
+                report.tests.len()
+            );
+            std::process::exit(FSCK_EXIT);
         }
         Some(_) => {
             println!("all {} tests passed", report.tests.len());

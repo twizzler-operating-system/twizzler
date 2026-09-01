@@ -649,10 +649,25 @@ fn timing_on() -> bool {
     TIMING_ON.load(Ordering::Relaxed)
 }
 
+/// Will anything read a [`SyscallEntryEvent`] if we build one? Checked before building it, not
+/// after: the snapshot is ten loads, five spills and a `VirtAddr::new(pc).unwrap()` canonicality
+/// test (with its panic edge), and it is discarded unread on every syscall of a boot that is not
+/// being traced.
+#[inline]
+fn entry_snapshot_wanted() -> bool {
+    SYSCALL_PROFILE
+        || TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY)
+        || TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT)
+}
+
 pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
-    let data = SyscallEntryEvent {
+    // The counters want only the number, so it is read unconditionally and the rest is not.
+    let num: Syscall = context.num().into();
+    // Taken here rather than rebuilt at exit because it cannot be rebuilt: `set_return_values`
+    // writes the registers `num` and `arg2` are read back out of.
+    let data = entry_snapshot_wanted().then(|| SyscallEntryEvent {
         ip: context.pc().raw(),
-        num: context.num().into(),
+        num,
         args: [
             context.arg0(),
             context.arg1(),
@@ -661,13 +676,18 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             context.arg4(),
             context.arg5(),
         ],
-    };
-    trace_syscall_entry(data);
+    });
+    if let Some(data) = data {
+        trace_syscall_entry(data);
+    }
     let start = timing_on().then(Instant::now);
     do_syscall_entry(context);
     let (r1, r2) = context.get_return_values();
     let duration = start.map(|start| (Instant::now() - start).into());
-    trace_syscall_exit(data, [r1, r2], duration);
+    add_syscall_stat_sample(num, data.as_ref(), duration);
+    if let Some(data) = data {
+        trace_syscall_exit(data, [r1, r2], duration);
+    }
 }
 
 /// Per-syscall counts and timings.
@@ -777,8 +797,14 @@ impl SyscallProfile {
     }
 }
 
-fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>) {
-    let syscall: Syscall = entry.num;
+/// `entry` is present only when something asked for the full snapshot (see
+/// [`entry_snapshot_wanted`]); the counts need the number alone, which is why it is passed
+/// separately.
+fn add_syscall_stat_sample(
+    syscall: Syscall,
+    entry: Option<&SyscallEntryEvent>,
+    duration: Option<TimeSpan>,
+) {
     // The unconditional counts are lock-free; see [`SyscallCounts`]. This used to take the per-cpu
     // spinlock -- an interrupt mask and a ticket acquisition -- on every syscall exit to bump them.
     let counts = &current_processor().syscall_counts;
@@ -803,7 +829,10 @@ fn add_syscall_stat_sample(entry: &SyscallEntryEvent, duration: Option<TimeSpan>
         stats.per_syscall_stats[syscall as usize].add_sample(duration);
     }
     if SYSCALL_PROFILE {
-        stats.prof.note(entry, sctx);
+        // `entry_snapshot_wanted` returns true whenever SYSCALL_PROFILE is set, so this is Some.
+        if let Some(entry) = entry {
+            stats.prof.note(entry, sctx);
+        }
     }
 }
 
@@ -1013,7 +1042,6 @@ fn trace_syscall_entry(data: SyscallEntryEvent) {
 }
 
 fn trace_syscall_exit(entry: SyscallEntryEvent, ret: [u64; 2], duration: Option<TimeSpan>) {
-    add_syscall_stat_sample(&entry, duration);
     if TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT) {
         // A sink appeared since the last exit, so nothing timed this one. Report it as zero and
         // switch timing on; the next syscall carries a real duration.

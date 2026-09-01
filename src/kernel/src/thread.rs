@@ -11,7 +11,7 @@ use time::{SAMPLE_PERIOD_TICKS, ThreadSched, ThreadStats};
 use twizzler_abi::{
     object::{NULLPAGE_SIZE, ObjID, Protections},
     syscall::{PERTHREAD_TRACE_GEN_SAMPLE, ThreadSpawnArgs},
-    thread::{ExecutionState, ThreadRepr},
+    thread::{ExecutionState, ThreadRepr, ThreadReprFlags},
     trace::{ThreadSamplingEvent, TraceEntryFlags, TraceKind},
     upcall::{UPCALL_EXIT_CODE, UpcallFlags, UpcallInfo, UpcallMode, UpcallTarget},
 };
@@ -318,6 +318,14 @@ impl Thread {
         THREAD_NEWS.fetch_add(1, Ordering::Relaxed);
         /* TODO: guard page support */
         let kernel_stack = KernelStack::new();
+        // A thread with no user memory context runs only kernel code: `start_new_kernel` passes
+        // None, and both user paths (`start_new_user`, `start_new_init`) pass Some -- the former
+        // refuses to build a thread without one at all.
+        let repr_flags = if ctx.is_some() {
+            ThreadReprFlags::empty()
+        } else {
+            ThreadReprFlags::KERNEL
+        };
         let id = ID_COUNTER.next();
         let lock_tracker = Arc::new(LockTracker::new(id.value()));
         let lock_tracker_index = register_lock_tracker(lock_tracker.clone());
@@ -339,7 +347,7 @@ impl Thread {
             memory_context: ctx,
             slot_memo: SlotMemo::new(),
             spawn_args,
-            control_object: ControlObjectCacher::new(ThreadRepr::default()),
+            control_object: ControlObjectCacher::new(ThreadRepr::new(repr_flags)),
             sched_link: AtomicLink::default(),
             mutex_link: AtomicLink::default(),
             memwait_link: AtomicLink::default(),
@@ -991,6 +999,15 @@ impl Thread {
 
     /// Record the security context this thread must be running in before a pending force-exit is
     /// delivered. Zero clears the restriction.
+    /// The context stamped at spawn from `ThreadSpawnArgs::home_sctx`. Zero means the thread
+    /// belongs to no compartment (kernel-spawned, statically linked, or the monitor's own).
+    pub fn home_sctx_id(&self) -> ObjID {
+        ObjID::from_parts([
+            self.exit_sctx[0].load(Ordering::SeqCst),
+            self.exit_sctx[1].load(Ordering::SeqCst),
+        ])
+    }
+
     pub fn set_exit_sctx(&self, sctx: ObjID) {
         let parts = sctx.parts();
         self.exit_sctx[0].store(parts[0], Ordering::SeqCst);

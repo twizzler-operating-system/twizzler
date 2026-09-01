@@ -379,3 +379,94 @@ pub fn do_disk_image(opts: DiskImageOptions) -> anyhow::Result<()> {
         DiskCmd::Setup => copy_sysroot(&triple, &path, opts.force),
     }
 }
+
+/// Where `e2fsck` lives. It is an `sbin` program, so a normal user's PATH usually does not have
+/// it; try the usual locations before concluding it is not installed.
+const E2FSCK_CANDIDATES: [&str; 3] = ["e2fsck", "/usr/sbin/e2fsck", "/sbin/e2fsck"];
+
+/// What the host's `e2fsck` said about an ext4 image.
+#[derive(Debug)]
+pub struct FsckReport {
+    /// e2fsck's exit status, or `None` if a signal killed it.
+    pub code: Option<i32>,
+    /// stdout and stderr together: this is where e2fsck describes what it found.
+    pub output: String,
+}
+
+impl FsckReport {
+    /// e2fsck's exit status is a bitmask, and zero is the only value meaning "nothing to report".
+    pub fn clean(&self) -> bool {
+        self.code == Some(0)
+    }
+
+    /// One line naming what the exit status means, since the bits are not self-describing.
+    pub fn describe(&self) -> String {
+        let Some(code) = self.code else {
+            return "e2fsck was killed by a signal".to_string();
+        };
+        if code == 0 {
+            return "no errors".to_string();
+        }
+        let mut bits = Vec::new();
+        for (bit, what) in [
+            (1, "errors corrected"),
+            (2, "errors corrected, reboot advised"),
+            (4, "errors left uncorrected"),
+            (8, "operational error"),
+            (16, "usage error"),
+            (32, "cancelled"),
+            (128, "shared library error"),
+        ] {
+            if code & bit != 0 {
+                bits.push(what);
+            }
+        }
+        if bits.is_empty() {
+            format!("e2fsck exited {}", code)
+        } else {
+            format!("{} (e2fsck exit {})", bits.join(", "), code)
+        }
+    }
+}
+
+/// Check an ext4 image with the host's `e2fsck`, read-only.
+///
+/// `-n` answers every question with no, so nothing is repaired and the image is left exactly as
+/// the guest left it -- which is what makes the check safe to run against an image someone is
+/// still investigating. It also means a dirty journal is reported rather than replayed, since
+/// replaying it would be a write; the unreplayed journal itself is a finding worth seeing.
+///
+/// `-f` forces the check: the superblock's clean flag is set by whoever wrote the filesystem, so
+/// trusting it here would skip the check precisely when the writer is the thing under test.
+pub fn fsck(image: &Path) -> anyhow::Result<FsckReport> {
+    let mut last_err = None;
+    for prog in E2FSCK_CANDIDATES {
+        let out = match std::process::Command::new(prog)
+            .arg("-f")
+            .arg("-n")
+            .arg(image)
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("failed to run {}", prog)),
+        };
+
+        let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+        output.push_str(&String::from_utf8_lossy(&out.stderr));
+        return Ok(FsckReport {
+            code: out.status.code(),
+            output,
+        });
+    }
+    Err(anyhow::anyhow!(
+        "could not find e2fsck (tried {}): {}",
+        E2FSCK_CANDIDATES.join(", "),
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "not found".to_string())
+    ))
+}

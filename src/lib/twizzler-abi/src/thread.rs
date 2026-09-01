@@ -31,6 +31,19 @@ pub struct ThreadRepr {
 
 impl BaseType for ThreadRepr {}
 
+bitflags::bitflags! {
+    /// Flags in a [ThreadRepr], fixed at thread creation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ThreadReprFlags: u32 {
+        /// The thread runs only kernel code and has no user memory context. Distinguishes a
+        /// kernel thread from the userspace threads that also report a zero security context
+        /// (the monitor's own, bootstrap, and statically-linked programs), which the context
+        /// ids alone cannot tell apart -- the kernel context and the monitor instance are both
+        /// id zero.
+        const KERNEL = 1;
+    }
+}
+
 /// Possible execution states for a thread. The transitions available are:
 /// +------------+     +-----------+     +-------------+
 /// |  Sleeping  +<--->+  Running  +<--->+  Suspended  |
@@ -75,6 +88,23 @@ impl ExecutionState {
 }
 
 impl ThreadRepr {
+    /// Build a repr with the given flags. Everything else starts at its default; only the
+    /// creating kernel path knows the flags, and they never change afterwards.
+    pub fn new(flags: ThreadReprFlags) -> Self {
+        Self {
+            flags: flags.bits(),
+            ..Default::default()
+        }
+    }
+
+    pub fn flags(&self) -> ThreadReprFlags {
+        ThreadReprFlags::from_bits_truncate(self.flags)
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.flags().contains(ThreadReprFlags::KERNEL)
+    }
+
     pub fn get_state(&self) -> ExecutionState {
         let status = self.status.load(Ordering::Acquire);
         ExecutionState::from_status(status)

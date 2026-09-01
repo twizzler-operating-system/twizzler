@@ -803,11 +803,11 @@ Minimal secgate test server used to validate the secgate cross-compartment call 
 
 - `src/srv/sgtest-srv/src/lib.rs` — single secgate entry `foo(x: Foo) -> Result<u32, TwzError>`, a trivial round-trip test gate.
 
-## src/bin/async-test
+## src/test/async-test
 
 Tiny smoke test for the tokio runtime port. Package `async-test`; deps: `tokio` (multi-thread rt).
 
-- `src/bin/async-test/src/main.rs` — `#[tokio::main]` prints "Hello, world!", sleeps 1s via `tokio::time::sleep`, prints again — verifies tokio works on Twizzler.
+- `src/test/async-test/src/main.rs` — `#[tokio::main]` prints "Hello, world!", sleeps 1s via `tokio::time::sleep`, prints again — verifies tokio works on Twizzler.
 
 ## src/bin/bootstrap
 
@@ -820,12 +820,6 @@ The very first userspace program the kernel runs; loads the dynamic linker conte
 CLI client for cache-srv: hold/drop/preload/stat/list objects in the cache. Package `cache`; deps: `naming`, `twizzler`, `clap`.
 
 - `src/bin/cache/src/main.rs` — re-declares the cache-srv secgate client stubs (`hold`, `drop`, `preload`, `stat`, `list_nth`, `CachedStats`) and a `clap`-based `Command` enum (`Hold`, `Drop`, `Preload`, `Stat`, `List`) that resolves name-service paths (including recursing into namespaces) and invokes the corresponding cache-srv gate per argument.
-
-## src/bin/cat
-
-Minimal `cat`-like utility (not the uutils one — a standalone toy). Package `cat`, no deps.
-
-- `src/bin/cat/src/main.rs` — reads each CLI arg as a file path via `std::fs::File`, reads to a `String`, prints it.
 
 ## src/bin/debug
 
@@ -844,15 +838,15 @@ Minimal `cat`-like utility (not the uutils one — a standalone toy). Package `c
 
 ## src/bin/gadget
 
-"Twisted Gadget" interactive demo shell showcasing the Lethe provable-deletion filesystem, naming, and an embedded HTTP server, via a `noline`-based line editor over stdio. Package `gadget`; deps: `noline`, `embedded-io`, `naming`, `logboi`, `pager`, `tiny_http` (vendored, path dep on `../test-tiny-http/src/tiny-http-twizzler`), `virtio-net`.
+"Twisted Gadget" interactive demo shell showcasing the Lethe provable-deletion filesystem, naming, and an embedded HTTP server, via a `noline`-based line editor over stdio. **Currently disabled** — not a workspace member, not in the initrd, and does not build: its `setup_http` demo needs the vendored `tiny_http` port, which was removed with the `test-tiny-http` harness. Package `gadget`; deps: `noline`, `embedded-io`, `naming`, `logboi`, `pager`, `virtio-net`.
 
-- `src/bin/gadget/src/main.rs` — `TwzIo` (stdin/stdout `embedded_io` adapter); command loop (`show`, `intro`, `test`, `demo`, `new`, `write`, `read`, `del`, `lethe`, `quit`, `clear`) implementing file create/write/read/delete against the Lethe-backed pager, `lethe adv` to call `pager::adv_lethe()`, plus a `setup_http` thread serving an HTTP demo endpoint via `tiny_http`; `TestVecItem`/vector benchmarking commands (`append`/`read-all[-slices]`/`read`) for `VecObject` performance testing.
+- `src/bin/gadget/src/main.rs` — `TwzIo` (stdin/stdout `embedded_io` adapter); command loop (`show`, `intro`, `test`, `demo`, `new`, `write`, `read`, `del`, `lethe`, `quit`, `clear`) implementing file create/write/read/delete against the Lethe-backed pager, `lethe adv` to call `pager::adv_lethe()`, plus a `setup_http` thread serving an HTTP demo endpoint (dead code since `tiny_http` was removed); `TestVecItem`/vector benchmarking commands (`append`/`read-all[-slices]`/`read`) for `VecObject` performance testing.
 
-## src/bin/gfxtest
+## src/test/gfxtest
 
 Graphics smoke test: decodes a bundled PNG and blits it to a display-srv window. Package `gfxtest`; deps: `twizzler-display`, `image`.
 
-- `src/bin/gfxtest/src/main.rs` — decodes `img.png` (embedded via `include_bytes!`) with the `image` crate, opens a `twizzler_display::WindowHandle` sized to the image, writes RGB pixels into the window buffer, flips it, sleeps 3s.
+- `src/test/gfxtest/src/main.rs` — decodes `img.png` (embedded via `include_bytes!`) with the `image` crate, opens a `twizzler_display::WindowHandle` sized to the image, writes RGB pixels into the window buffer, flips it, sleeps 3s.
 
 ## src/bin/init
 
@@ -860,18 +854,18 @@ PID-1-style init process: boot-orchestrates all system servers, sets up the cons
 
 - `src/bin/init/src/main.rs` — `initialize_pager` (creates the two kernel<->pager queues, loads `libpager_srv.so` via `CompartmentLoader`, calls its `pager_start` dynamic gate), `initialize_namer` (loads `libnaming_srv.so`, calls `namer_start`), `initialize_devmgr`, `initialize_cache`, `initialize_display`, `initialize_network`, `initialize_sshd`; `main()` boot sequence: load logboi -> devmgr -> pager -> namer -> (symlink `/pkg`,`/sysroot`,`/etc`, cache library `.so` name->ObjID mappings via `monitor_api::libname_map`) -> cache-srv -> net-srv -> display-srv -> sshd -> (optionally run `unittest` if `--tests`/`--bench[es]`) -> symlink uuhelper multi-call binary as all the coreutils names -> set up a PTY (`twizzler_io::pty`) wired to the kernel console with ANSI terminal-size handshake interception -> loop launching `shell` (restarting it if it exits), or run a named `autostart` program once instead.
 
-## src/bin/lltest
+## src/test/lltest
 
 Dynamic-library-loading smoke test (`dlopen`/`dlsym` equivalent) plus a companion test shared library. Package `lltest`; deps: `libloading` (path dep to `src/ports/rust_libloading`).
 
-- `src/bin/lltest/src/main.rs` — loads `libllt.so` via `libloading::Library::new`, calls its exported `add_one` symbol, prints the result.
-- `src/bin/lltest/llt/src/lib.rs` — the companion `cdylib`: exports `add_one` (`extern "C"`) and a `.init_array` constructor (`___cons_test___ctor`) that sets `WAS_CTOR_RUN`, to verify ELF constructors run correctly when the library is dynamically loaded.
+- `src/test/lltest/src/main.rs` — loads `libllt.so` via `libloading::Library::new`, calls its exported `add_one` symbol, prints the result.
+- `src/test/lltest/llt/src/lib.rs` — the companion `cdylib`: exports `add_one` (`extern "C"`) and a `.init_array` constructor (`___cons_test___ctor`) that sets `WAS_CTOR_RUN`, to verify ELF constructors run correctly when the library is dynamically loaded.
 
-## src/bin/logboi-test
+## src/test/logboi-test
 
 Minimal logboi client smoke test. Package `logboi-test`; deps: `logboi`.
 
-- `src/bin/logboi-test/src/main.rs` — opens a `logboi::LogHandle` and logs one test message.
+- `src/test/logboi-test/src/main.rs` — opens a `logboi::LogHandle` and logs one test message.
 
 ## src/bin/ls
 
@@ -879,17 +873,17 @@ Minimal logboi client smoke test. Package `logboi-test`; deps: `logboi`.
 
 - `src/bin/ls/src/main.rs` — `Args` (clap: `--recursive`, optional `path`); uses `naming::static_naming_factory()`/`StaticNamingHandle` to `enumerate_names[_relative]`, sorting namespaces after entries; `recurse()` walks nested namespaces printing a tree-ish listing.
 
-## src/bin/naming-test
+## src/test/naming-test
 
 Standalone unit-test harness (run as a normal binary, not `#[test]`) exercising `naming-core`'s `NameStore`/`NameSession` directly, in-process. Package `naming-test`; deps: `naming-core`, `twizzler`.
 
-- `src/bin/naming-test/src/main.rs` — a series of `test_*`/`put_namespace`/`namespace_nested`/`traverse_namespace_nested_*`/`remove*`/`load_from_object` functions asserting put/get/rename/remove/enumerate/namespace-traversal/persistence-reload behavior of `NameStore`, invoked in sequence from `main()`.
+- `src/test/naming-test/src/main.rs` — a series of `test_*`/`put_namespace`/`namespace_nested`/`traverse_namespace_nested_*`/`remove*`/`load_from_object` functions asserting put/get/rename/remove/enumerate/namespace-traversal/persistence-reload behavior of `NameStore`, invoked in sequence from `main()`.
 
-## src/bin/object-store-test
+## src/test/object-store-test
 
 Standalone test/benchmark harness for the `object-store` crate (pager-srv's Lethe/ext4 backing store), exercising it directly rather than through pager-srv. Package `object-store-test`; deps: `object-store` (path dep to `srv/pager-srv/object-store`), `obliviate-core`.
 
-- `src/bin/object-store-test/src/main.rs` — `it_works`, `test_khf_serde`, `test_lfn`, `zero_length_file`, `get_all_ids` tests exercising `create_object`/`write_all`/`read_exact`/`unlink_object`/`advance_epoch`/`get_all_object_ids` and KHF (key-hierarchy-for-forgetting) load/serde round-tripping; `main()` runs them all and prints pass/fail.
+- `src/test/object-store-test/src/main.rs` — `it_works`, `test_khf_serde`, `test_lfn`, `zero_length_file`, `get_all_ids` tests exercising `create_object`/`write_all`/`read_exact`/`unlink_object`/`advance_epoch`/`get_all_object_ids` and KHF (key-hierarchy-for-forgetting) load/serde round-tripping; `main()` runs them all and prints pass/fail.
 
 ## src/bin/otop
 
@@ -897,38 +891,38 @@ Interactive terminal object-system monitor (like `top`, but for Twizzler objects
 
 - `src/bin/otop/src/main.rs` — `ObjectTracker` struct; raw-mode alternate-screen TUI using `crossterm`, polling `sys_enumerate`/`sys_object_stat[s]`/`sys_object_enumerate_notes`/`sys_object_get_note` on a timer to display live per-object statistics.
 
-## src/bin/persistent-hashmap-test
+## src/test/persistent-hashmap-test
 
 Benchmark/test for `twizzler::collections::hachage::PersistentHashMap`, comparing it against `std::collections::HashMap`/`BTreeMap`. Package `persistent-hashmap-test`; deps: `twizzler`, `naming`, `clap`, `rand_chacha`.
 
-- `src/bin/persistent-hashmap-test/src/main.rs` — `open_or_create_hashtable_object` resolves/creates a persistent, named, object-backed `PersistentHashMap` via the naming service; `clap`-driven CLI benchmarking insert/lookup throughput against in-memory `HashMap`/`BTreeMap` baselines using a seeded `ChaCha8Rng`.
+- `src/test/persistent-hashmap-test/src/main.rs` — `open_or_create_hashtable_object` resolves/creates a persistent, named, object-backed `PersistentHashMap` via the naming service; `clap`-driven CLI benchmarking insert/lookup throughput against in-memory `HashMap`/`BTreeMap` baselines using a seeded `ChaCha8Rng`.
 
-## src/bin/ptest
+## src/test/ptest
 
 "Persistence test" — exercises Twizzler's invariant-pointer persistent-object collections (`VecObject`, arena allocator, `InvBox`) directly and via secgate (`sgtest`), plus NUMA/topology info via `hwlocality`. Package `ptest`; deps: `twizzler` (collections/alloc APIs), `sgtest`, `hwlocality`, `naming`, `clap`.
 
-- `src/bin/ptest/src/main.rs` — `Foo` (`#[derive(Invariant)]` struct holding an `InvBox<u32, ArenaAllocator>`, with `Debug`/`Display` impls) used to test invariant-pointer boxing/arena allocation; `main()` drives various persistence/collection/allocator exercises plus topology queries.
+- `src/test/ptest/src/main.rs` — `Foo` (`#[derive(Invariant)]` struct holding an `InvBox<u32, ArenaAllocator>`, with `Debug`/`Display` impls) used to test invariant-pointer boxing/arena allocation; `main()` drives various persistence/collection/allocator exercises plus topology queries.
 
-## src/bin/random_validation
+## src/test/random_validation
 
 Statistical randomness-quality test suite ("diehardest", a lightweight reimplementation of dieharder-style tests) for validating the RNG (`getrandom`). Package `random_validation`; deps: `getrandom`, `diehardest`.
 
-- `src/bin/random_validation/src/main.rs` — `Rng` wraps `getrandom` as a `diehardest::Random`; runs `diehardest::analysis::Report::new(Rng)` and prints the aggregate score.
-- `src/bin/random_validation/src/diehardest/mod.rs` — `Random` trait, `_crush()` aggregate-test driver composing multiple transformed streams (13 tests total).
-- `src/bin/random_validation/src/diehardest/analysis.rs` — `Report`/`Score`: runs `LOOP_COUNT` samples computing cycle-length, collision count, bit-dependency matrix, and value-distribution statistics, then scores each against ideal values.
-- `src/bin/random_validation/src/diehardest/transform.rs` — stream transforms (`SkipOne`, `SkipTwo`, `Concatenate32`, `Xor`, `Add`, `Multiply`, `LastBit`, `MultiplyByThree`, `ModularDivideByThree`, `Hamming`, `ParitySkip`, `Rol7`) that wrap a `Random` to stress-test derived streams.
+- `src/test/random_validation/src/main.rs` — `Rng` wraps `getrandom` as a `diehardest::Random`; runs `diehardest::analysis::Report::new(Rng)` and prints the aggregate score.
+- `src/test/random_validation/src/diehardest/mod.rs` — `Random` trait, `_crush()` aggregate-test driver composing multiple transformed streams (13 tests total).
+- `src/test/random_validation/src/diehardest/analysis.rs` — `Report`/`Score`: runs `LOOP_COUNT` samples computing cycle-length, collision count, bit-dependency matrix, and value-distribution statistics, then scores each against ideal values.
+- `src/test/random_validation/src/diehardest/transform.rs` — stream transforms (`SkipOne`, `SkipTwo`, `Concatenate32`, `Xor`, `Add`, `Multiply`, `LastBit`, `MultiplyByThree`, `ModularDivideByThree`, `Hamming`, `ParitySkip`, `Rol7`) that wrap a `Random` to stress-test derived streams.
 
-## src/bin/randtest
+## src/test/randtest
 
 Tiny RNG smoke test comparing `core::random` and `getrandom`. Package `randtest`; deps: `getrandom`.
 
-- `src/bin/randtest/src/main.rs` — fills one buffer via `std::random::random()` (nightly `#![feature(random)]`) and another via `getrandom::getrandom`, prints both.
+- `src/test/randtest/src/main.rs` — fills one buffer via `std::random::random()` (nightly `#![feature(random)]`) and another via `getrandom::getrandom`, prints both.
 
-## src/bin/schedtest
+## src/test/schedtest
 
 Scheduler stress-test / benchmark: spawns worker threads doing CPU-bound work (and an alternate join/spawn-storm test) to exercise the kernel scheduler. Package name `st` (binary dir `schedtest`); deps: `rand`.
 
-- `src/bin/schedtest/src/main.rs` — `thread_main` (busy-loop summation for timing), `jointest` (repeatedly spawns/shuffles/joins batches of threads with randomized sleeps) — `main()` runs 4 CPU-bound threads and reports elapsed time per thread.
+- `src/test/schedtest/src/main.rs` — `thread_main` (busy-loop summation for timing), `jointest` (repeatedly spawns/shuffles/joins batches of threads with randomized sleeps) — `main()` runs 4 CPU-bound threads and reports elapsed time per thread.
 
 ## src/bin/sec
 
@@ -937,11 +931,11 @@ Scheduler stress-test / benchmark: spawns worker threads doing CPU-bound work (a
 - `src/bin/sec/src/args.rs` — clap arg types: `CliArgs`/`Commands` (`Ctx`, `Key`, `Obj` top-level subcommands), `CtxCommands`, `KeyCommands`, `CtxAddCommands`, `CapAddArgs`, `ObjCommands`, `NewObjectArgs`, `SealedObjectArgs`, `ObjInspectArgs`, `CtxInspectArgs`, `NewCtxArgs`, `AccessArgs`.
 - `src/bin/sec/src/main.rs` — dispatches the parsed CLI to `twizzler_security` operations (`SecCtx`, `Cap`, `SigningKey`/`SigningScheme`) — inspecting/creating security contexts, attaching (`sys_sctx_attach`), adding capabilities, creating/inspecting sealed objects; `MessageStoreObj` implements `BaseType` for a demo persistent-object payload.
 
-## src/bin/serialecho
+## src/test/serialecho
 
 Minimal serial-console echo test. Package `serialecho`; deps: `twizzler-abi`.
 
-- `src/bin/serialecho/src/main.rs` — `TwzIo` implements `Read` over the kernel console syscalls; `main()` echoes input back out, a basic serial I/O smoke test.
+- `src/test/serialecho/src/main.rs` — `TwzIo` implements `Read` over the kernel console syscalls; `main()` echoes input back out, a basic serial I/O smoke test.
 
 ## src/bin/shell
 
@@ -949,11 +943,11 @@ The interactive login shell — the primary user-facing program, launched in a l
 
 - `src/bin/shell/src/main.rs` — job control (`Job`/`Jobs`: `next_id`/`release_id`/`scan`/`try_wait`/`wait`), builtins module (`jobs`, `kill`, `wait`, `cd`, `pwd`, `echo`, `set`, `unset`, `env`, `stat`, `help`), `Redirect`/`ShellInvoke`/`ShellCommand`/`InvokeCtx` (parses and executes command lines, spawning compartments via `monitor-api` for external programs, piping/redirecting stdio), `TwzIo` (`embedded_io` stdin/stdout adapter feeding `noline`'s line editor) — the REPL loop lives in `main()`.
 
-## src/bin/sqlite_test
+## src/test/sqlite_test
 
 Benchmark comparing SQLite (`rusqlite`, bundled) running in-memory vs. against a custom Twizzler persistent-object virtual table (VTab) backend, transient and persistent. Package `sqlite_test`; deps: `rusqlite` (bundled+functions), `naming`.
 
-- `src/bin/sqlite_test/src/main.rs` — stub `__dlapi_*` symbols (dynamic-loader shims rusqlite's bundled build expects); `benchmark_transient_sqlite`/associated query/persistence benchmark functions comparing standard SQLite, a transient VTab, and a persistent (naming-service-registered) VTab across insert throughput, query time, and reopen/persistence; `cleanup()` removes the naming-service entry; `main()` runs the full comparison and prints a summary table.
+- `src/test/sqlite_test/src/main.rs` — stub `__dlapi_*` symbols (dynamic-loader shims rusqlite's bundled build expects); `benchmark_transient_sqlite`/associated query/persistence benchmark functions comparing standard SQLite, a transient VTab, and a persistent (naming-service-registered) VTab across insert throughput, query time, and reopen/persistence; `cleanup()` removes the naming-service entry; `main()` runs the full comparison and prints a summary table.
 
 ## src/bin/sshd
 
@@ -961,65 +955,17 @@ A minimal SSH server (using the `sunset`/`sunset-async` SSH implementation) that
 
 - `src/bin/sshd/src/main.rs` — `Reader`/`Writer` (`embedded_io_async` adapters over `TcpStream` halves); `main()` binds `TcpListener` on `0.0.0.0:5555` across a small pool of executor threads, `accept()`/`sunset_server()` negotiate the SSH session and spawn a shell process (`std::process::Command`) wired to a `PtyBase`/`PtyServerHandle` pair for the client's terminal.
 
-## src/bin/stdfs_demo
+## src/test/stdfs_demo
 
 Tiny demo of Twizzler's `std::fs` integration reading an object by its numeric ID as a filename. Package `stdfs_demo`, no extra deps.
 
-- `src/bin/stdfs_demo/src/main.rs` — creates/opens a file named by a hardcoded `u128` object ID via `std::fs::File`, reads and prints its contents.
+- `src/test/stdfs_demo/src/main.rs` — creates/opens a file named by a hardcoded `u128` object ID via `std::fs::File`, reads and prints its contents.
 
-## src/bin/stdnet_test
+## src/test/stdnet_test
 
 Networking smoke tests for both blocking `std::net` and the async (`async-net`) socket stack, doing real HTTP GETs against external hosts through the net-srv-backed TCP stack. Package `stdnet_test`; deps: `async-net`, `async-executor`, `futures-lite`.
 
-- `src/bin/stdnet_test/src/main.rs` — `async_test::async_stdnet_connect_test` (async HTTP GET via `async_net::TcpStream`) and a blocking `std::net::TcpStream` GET against a large test file, both run from `main()` to validate the network stack end-to-end.
-
-## src/bin/test-tiny-http
-
-Test/demo harness for the vendored `tiny_http` HTTP-server crate. Package `test-tiny-http`; deps: `tiny_http` (path dep to the vendored `src/tiny-http-twizzler`), `smoltcp`.
-
-- `src/bin/test-tiny-http/src/main.rs` — starts a `tiny_http::Server`, serves incoming requests in a loop as a basic HTTP smoke test.
-
-## src/bin/test-tiny-http/src/tiny-http-twizzler (vendored `tiny_http` crate, ported to Twizzler)
-
-A vendored/ported copy of the third-party `tiny_http` crate (lightweight HTTP/1.x server library), used by `gadget` and `test-tiny-http`. Content follows upstream `tiny_http`'s standard module layout; not Twizzler-specific business logic beyond porting I/O primitives.
-
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/lib.rs` — crate root: `Server`, request-accept loop, public API surface.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/client.rs` — per-connection client state machine parsing requests off the socket.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/common.rs` — shared types (HTTP methods, header parsing helpers, status codes).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/connection.rs` — connection wrapper abstracting over plain/TLS streams.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/log.rs` — small internal logging helpers.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/port.rs` — listening-socket/port setup.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/request.rs` — `Request` type: parsed HTTP request, body reader, `respond()` API.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/response.rs` — `Response` type: status/headers/body builder and writer.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/shim.rs` — Twizzler-specific portability shims bridging std/socket differences for this port.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/ssl.rs` — pluggable TLS backend selection/dispatch.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/ssl/native_tls.rs` — `native-tls`-backed TLS implementation (feature-gated).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/ssl/openssl.rs` — `openssl`-backed TLS implementation (feature-gated).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/ssl/rustls.rs` — `rustls`-backed TLS implementation (feature-gated).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/test.rs` — internal test helpers.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/mod.rs` — re-exports the util submodules.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/custom_stream.rs` — generic boxed-stream wrapper abstraction.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/equal_reader.rs` — reader that stops after exactly N bytes (fixed-length body reads).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/fused_reader.rs` — reader wrapper that fuses EOF/never re-reads after erroring.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/messages_queue.rs` — internal MPSC-style message queue used for connection handoff.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/refined_tcp_stream.rs` — TCP stream wrapper unifying plain/TLS reads and writes.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/sequential.rs` — sequential (single-threaded) request-processing executor strategy.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/src/util/task_pool.rs` — small worker task pool for concurrent request handling.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/benches/bench.rs` — micro-benchmark of request handling.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/hello-world.rs` — minimal usage example.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/php-cgi.rs` — example CGI-style request handling.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/readme-example.rs` — the example shown in the crate's README.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/serve-root.rs` — static file-serving example.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/ssl.rs` — TLS-enabled server example.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/examples/websockets.rs` — websocket upgrade example.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/input-tests.rs` — request-parsing input test cases.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/network.rs` — end-to-end network integration tests.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/non-chunked-buffering.rs` — tests around non-chunked response buffering behavior.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/promptness.rs` — tests that responses are sent promptly (no unwanted buffering delay).
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/simple-test.rs` — basic smoke test.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/support/mod.rs` — shared test helper utilities.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/unblock-test.rs` — tests around non-blocking/unblocking connection behavior.
-- `src/bin/test-tiny-http/src/tiny-http-twizzler/tests/unix-test.rs` — Unix-socket-specific tests.
+- `src/test/stdnet_test/src/main.rs` — `async_test::async_stdnet_connect_test` (async HTTP GET via `async_net::TcpStream`) and a blocking `std::net::TcpStream` GET against a large test file, both run from `main()` to validate the network stack end-to-end.
 
 ## src/bin/top
 
@@ -1054,11 +1000,11 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/bin/uuhelper/build.rs` — build script generating the `utils_map.rs` (`util_map()`) mapping utility name -> `uumain` entry point, via `phf_codegen`, included at compile time.
 - `src/bin/uuhelper/src/main.rs` — `main()` dispatches based on the invoked binary name (`binary_path`/`name`) or first argument to the matching uutils `uumain`, falling back to prefix matching; `usage()`, `gen_completions`/`gen_manpage`/`gen_coreutils_app` implement `--list`/`completion`/`manpage`/`--help` meta-commands.
 
-## src/bin/virtio
+## src/test/virtio
 
 Standalone virtio-net + smoltcp TCP echo-server smoke test, run directly against the virtio-net device (no net-srv involved). Package `virtio`; deps: `smoltcp`, `virtio-net`.
 
-- `src/bin/virtio/src/main.rs` — `test_echo_server()`: brings up a smoltcp `Interface` directly over `virtio_net::get_device()` with a hardcoded QEMU IP/gateway, runs a simple TCP echo server on port 5555.
+- `src/test/virtio/src/main.rs` — `test_echo_server()`: brings up a smoltcp `Interface` directly over `virtio_net::get_device()` with a hardcoded QEMU IP/gateway, runs a simple TCP echo server on port 5555.
 
 ## src/ports — third-party software ported to Twizzler (git submodules, mostly forked/patched to build against the Twizzler target; treated as vendored dependencies rather than original project code)
 
@@ -1112,7 +1058,7 @@ Host-only tool crate (`package.metadata.twizzler-build = "xtask"`); parses CLI s
 
 - `tools/image_builder/src/main.rs` — Standalone CLI (`clap`) that creates a disk image at a given path (used by xtask/`cargo make-image`).
 - `tools/initrd_gen/src/main.rs` — Standalone CLI that packs a set of files into a tar-based initrd for the boot image.
-- `tools/serialtest/src/main.rs` — Dev helper that runs `cargo start-qemu -p=release -q=-nographic --autostart serialecho` and drives the serial console programmatically (pairs with `src/bin/serialecho`).
+- `tools/serialtest/src/main.rs` — Dev helper that runs `cargo start-qemu -p=release -q=-nographic --autostart serialecho` and drives the serial console programmatically (pairs with `src/test/serialecho`).
 
 ## doc/ (mdBook source, `doc/src/SUMMARY.md` is the ToC)
 

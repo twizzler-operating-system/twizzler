@@ -43,8 +43,8 @@ impl Namespace for DevNamespace {
         Err(TwzError::NOT_SUPPORTED)
     }
 
-    fn remove(&self, _name: &str) -> Option<NsNode> {
-        None
+    fn remove(&self, _name: &str) -> Result<NsNode> {
+        Err(TwzError::NOT_SUPPORTED)
     }
 
     fn create_file(&self, _name: &str) -> Result<NsNode> {

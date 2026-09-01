@@ -347,7 +347,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             for bin in test_comp.tests.iter() {
                 let name = bin.unit.pkg.name();
                 // `net_test` asserts against wall-clock budgets -- a 15s peer timeout and a 20s
-                // hold cap that has to exceed it (`src/bin/net_test/src/main.rs`) -- and
+                // hold cap that has to exceed it (`src/test/net_test/src/main.rs`) -- and
                 // `full-debug` leaves dependencies unoptimized as well, so under emulation the
                 // binary needs ~26 minutes and a single exchange outlasts the holder's cap. What
                 // that measures is the profile, not the network stack. Announced rather than

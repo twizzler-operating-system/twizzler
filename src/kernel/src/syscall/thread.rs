@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
-    syscall::{SctxSwitchFlags, ThreadControl, ThreadSchedStats, ThreadSpawnArgs},
+    syscall::{SctxSwitchFlags, ThreadControl, ThreadSchedStats, ThreadSctxIds, ThreadSpawnArgs},
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
@@ -138,6 +138,25 @@ pub fn thread_ctrl(
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             }
 
+            return [0, 0];
+        }
+        ThreadControl::GetSctxIds => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let ptr = arg as usize as *mut ThreadSctxIds;
+            let Some(ptr) = (unsafe { ptr.as_mut() }) else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            // Read home first: it is written once before the thread can run, so an active id
+            // observed after it cannot belong to an earlier home.
+            ptr.home = thread.home_sctx_id();
+            ptr.active = thread.active_sctx_id();
             return [0, 0];
         }
         ThreadControl::ReadRegisters => {

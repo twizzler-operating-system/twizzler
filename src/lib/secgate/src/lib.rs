@@ -9,7 +9,7 @@
 
 use core::ffi::{c_char, CStr};
 use std::{
-    cell::{RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     fmt::Debug,
     marker::{PhantomData, Tuple},
     mem::MaybeUninit,
@@ -535,8 +535,13 @@ impl GateCallInfo {
         F: FnOnce(&mut Self) -> R,
     {
         // Stamped here rather than by the caller stubs: every gate call, static and dynamic, goes
-        // through this function, and this is the last point before the trampoline runs.
-        let call_start = twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+        // through this function, and this is the last point before the trampoline runs. Zero when
+        // the stats are off, which `inbound_transit_ns` already reads as "no stamp".
+        let call_start = if crate::statcadence::STATS_ON {
+            twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64
+        } else {
+            0
+        };
         alloca::alloca(|stack_space| {
             stack_space.write(Self {
                 thread_id,
@@ -631,15 +636,17 @@ pub fn get_sctx_id() -> ObjID {
 pub fn runtime_preentry(info: &GateCallInfo) -> Result<(), TwzError> {
     // Before the entry work, so `transit` is the transition alone and `entry` is what
     // `cross_compartment_entry` adds on top of it.
-    let transit_ns = info.inbound_transit_ns();
-    let t_entry = twizzler_rt_abi::time::twz_rt_get_monotonic_time();
+    // Three clock reads on the entry side of every gate call, static and dynamic, when
+    // unconditional -- `transitstats` is the only consumer and it is off.
+    let transit_ns = statcadence::STATS_ON.then(|| info.inbound_transit_ns()).flatten();
+    let t_entry = statcadence::STATS_ON.then(twizzler_rt_abi::time::twz_rt_get_monotonic_time);
     let res = twizzler_rt_abi::core::twz_rt_cross_compartment_entry();
-    let t_done = twizzler_rt_abi::time::twz_rt_get_monotonic_time();
+    let t_done = statcadence::STATS_ON.then(twizzler_rt_abi::time::twz_rt_get_monotonic_time);
     res?;
     // Reported only after the entry call has returned: a cold entry runs with no usable thread
     // pointer until then, and the report path is not worth auditing for that. The transit value is
     // still the one taken before it.
-    if let Some(transit) = transit_ns {
+    if let (Some(transit), Some(t_entry), Some(t_done)) = (transit_ns, t_entry, t_done) {
         transitstats::record(transit, t_done.saturating_sub(t_entry).as_nanos() as u64);
     }
     // Servers are busiest exactly when there is something to measure, so the interval check rides
@@ -659,6 +666,13 @@ pub mod transitstats {
     static ENTRY: AtomicU64 = AtomicU64::new(0);
 
     pub fn record(transit: u64, entry: u64) {
+        // The reporting below is compiled out when stats are off, but these accumulators are not:
+        // three lock-prefixed RMWs on adjacent statics, on every gate entry from every thread, for
+        // a total nothing reads. Gate them on the same switch so measurement and reporting go
+        // together.
+        if !super::statcadence::STATS_ON {
+            return;
+        }
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let t = TRANSIT.fetch_add(transit, Ordering::Relaxed) + transit;
         let e = ENTRY.fetch_add(entry, Ordering::Relaxed) + entry;
@@ -757,6 +771,11 @@ pub mod gatestats {
     static CALL: AtomicU64 = AtomicU64::new(0);
     static RESTORE: AtomicU64 = AtomicU64::new(0);
     pub fn record(frame: u64, call: u64, restore: u64) {
+        // See the note in `transitstats::record`: four RMWs on adjacent statics per dynamic gate
+        // call, whose sums this function then discards outright.
+        if !super::statcadence::STATS_ON {
+            return;
+        }
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let f = FRAME.fetch_add(frame, Ordering::Relaxed) + frame;
         let c = CALL.fetch_add(call, Ordering::Relaxed) + call;
@@ -772,10 +791,12 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
     target: DynamicSecGate<A, R>,
     args: A,
 ) -> Result<R, TwzError> {
-    let t_frame = std::time::Instant::now();
+    // Six clock reads per dynamic gate call when this is unconditional, none of them inlined.
+    // `gatestats::record` is the only consumer and it is off, so take them only when it is on.
+    let t_frame = statcadence::STATS_ON.then(std::time::Instant::now);
     let frame = frame();
-    let frame_ns = t_frame.elapsed().as_nanos() as u64;
-    let t_call = std::time::Instant::now();
+    let frame_ns = t_frame.map_or(0, |t| t.elapsed().as_nanos() as u64);
+    let t_call = statcadence::STATS_ON.then(std::time::Instant::now);
     // Allocate stack space for args + ret. Args::with_alloca also inits the memory.
     let ret = GateCallInfo::with_alloca(get_thread_id(), get_sctx_id(), |info| {
         Arguments::<A>::with_alloca(args, |args| {
@@ -792,15 +813,22 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
             })
         })
     });
-    let call_ns = t_call.elapsed().as_nanos() as u64;
-    let t_restore = std::time::Instant::now();
+    let call_ns = t_call.map_or(0, |t| t.elapsed().as_nanos() as u64);
+    let t_restore = statcadence::STATS_ON.then(std::time::Instant::now);
     restore_frame(frame);
-    gatestats::record(frame_ns, call_ns, t_restore.elapsed().as_nanos() as u64);
+    gatestats::record(
+        frame_ns,
+        call_ns,
+        t_restore.map_or(0, |t| t.elapsed().as_nanos() as u64),
+    );
     ret.ok_or(ResourceError::Unavailable)?
 }
 
+/// `Cell`, not `RefCell`: [`GateCallInfo`] is `Copy`, so the borrow flag bought nothing and cost a
+/// read-modify-write plus a `panic_already_borrowed` edge on every gate entry -- on a value only
+/// the owning thread can reach.
 #[thread_local]
-static CALLER_INFO: RefCell<Option<GateCallInfo>> = RefCell::new(None);
+static CALLER_INFO: Cell<Option<GateCallInfo>> = Cell::new(None);
 
 unsafe extern "C" {
     fn __is_monitor_ready() -> bool;
@@ -808,13 +836,13 @@ unsafe extern "C" {
 
 pub fn set_caller(info: GateCallInfo) {
     if unsafe { __is_monitor_ready() } {
-        CALLER_INFO.borrow_mut().replace(info);
+        CALLER_INFO.set(Some(info));
     }
 }
 
 fn _reset_caller() {
     if unsafe { __is_monitor_ready() } {
-        CALLER_INFO.borrow_mut().take();
+        CALLER_INFO.set(None);
     }
 }
 
@@ -822,8 +850,9 @@ pub fn get_caller() -> Option<GateCallInfo> {
     if !unsafe { __is_monitor_ready() } {
         return None;
     }
-    if CALLER_INFO.borrow().is_none() {
+    let info = CALLER_INFO.get();
+    if info.is_none() {
         panic!("..")
     }
-    CALLER_INFO.borrow().clone()
+    info
 }

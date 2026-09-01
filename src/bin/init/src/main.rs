@@ -388,6 +388,12 @@ fn main() {
     initialize_cache();
     initialize_network();
     initialize_display();
+
+    std::env::set_var(
+        "PS1",
+        "\\[\x1b[1;32m\\]root\x1b[1;35m@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
+    );
+
     initialize_sshd();
 
     if start_unittest {
@@ -570,12 +576,6 @@ fn main() {
     if let Some(autostart) = autostart {
         run_autostart(&autostart, &autostart_args);
     }
-
-    std::env::set_var(
-        "PS1",
-        "\\[\x1b[1;32m\\]root\x1b[1;35m@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
-    );
-
     loop {
         if run_brush(pty.id()).is_err() {
             warn!("failed to start brush");

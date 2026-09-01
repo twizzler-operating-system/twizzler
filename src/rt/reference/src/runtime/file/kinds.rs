@@ -6,7 +6,7 @@ use std::{
 };
 
 use monitor_api::CompartmentHandle;
-use naming_core::{DevFs, GetFlags, NsNodeKind};
+use naming_core::{DevFs, GetFlags, NsNode, NsNodeKind};
 use secgate::TwzError;
 use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
 use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
@@ -98,6 +98,16 @@ pub mod openstats {
     }
 }
 
+/// A symlink's `st_size` is the length of the path it holds -- the value callers size a
+/// `readlink` buffer from. Taken from the node the lookup already returned, since the open
+/// itself has no way back to the link text. Zero for anything that is not a symlink.
+fn symlink_target_len(node: &NsNode) -> u64 {
+    if node.kind != NsNodeKind::SymLink {
+        return 0;
+    }
+    node.readlink().map(|link| link.len() as u64).unwrap_or(0)
+}
+
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
     let t_start = std::time::Instant::now();
     let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
@@ -123,28 +133,28 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
         GetFlags::FOLLOW_SYMLINK
     };
     let t_get = std::time::Instant::now();
-    let (obj_id, did_create, kind) = match create_opt {
+    let (obj_id, did_create, kind, link_len) = match create_opt {
         CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
         CreateOptions::CreateKindExisting => {
             let n = session.get(path, get_flags)?;
-            (n.id, false, n.kind)
+            (n.id, false, n.kind, symlink_target_len(&n))
         }
         CreateOptions::CreateKindNew => {
             if session.get(path, GetFlags::empty()).is_ok() {
                 return Err(NamingError::AlreadyExists.into());
             }
             let node = session.get(path, GetFlags::CREATE)?;
-            (node.id, false, NsNodeKind::Object)
+            (node.id, false, NsNodeKind::Object, 0)
         }
         CreateOptions::CreateKindBind(id) => {
             if session.get(path, GetFlags::empty()).is_ok() {
                 return Err(NamingError::AlreadyExists.into());
             }
-            (id, true, NsNodeKind::Object)
+            (id, true, NsNodeKind::Object, 0)
         }
         CreateOptions::CreateKindEither => session
             .get(path, get_flags | GetFlags::CREATE)
-            .map(|x| (ObjID::from(x.id), false, x.kind))?,
+            .map(|x| (ObjID::from(x.id), false, x.kind, symlink_target_len(&x)))?,
     };
 
     let get_ns = t_get.elapsed().as_nanos() as u64;
@@ -170,7 +180,7 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             }
             Arc::new(file)
         }
-        NsNodeKind::SymLink => Arc::new(SymLinkFile::new(obj_id)?),
+        NsNodeKind::SymLink => Arc::new(SymLinkFile::new(obj_id, link_len)?),
         // A dev entry's id names the device, not an object.
         NsNodeKind::DevNode => match DevFs::try_from(obj_id.raw())? {
             DevFs::Null => Arc::new(NullFile) as FdImpl,

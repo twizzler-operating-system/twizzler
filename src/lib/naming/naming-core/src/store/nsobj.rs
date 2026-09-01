@@ -382,14 +382,14 @@ impl Namespace for NamespaceObject {
         res
     }
 
-    fn remove(&self, name: &str) -> Option<NsNode> {
+    fn remove(&self, name: &str) -> Result<NsNode> {
         let res = self.with_obj(|obj, index| {
-            let idx = find_idx(obj, index, name)?;
-            let entry = obj.remove(idx).ok()?;
+            let idx = find_idx(obj, index, name).ok_or(NamingError::NotFound)?;
+            let entry = obj.remove(idx)?;
             if let Some(index) = index {
                 index_removed(index, name, idx);
             }
-            Some(entry)
+            Ok(entry)
         });
         super::invalidate_memo();
         res

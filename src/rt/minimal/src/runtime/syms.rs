@@ -151,8 +151,8 @@ check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source, object_tie,
-    objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error, ZERO_MEMORY,
+    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source,
+    object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -595,6 +595,58 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_pwritev(
         .into()
 }
 check_ffi_type!(twz_rt_fd_pwritev, _, _, _, _);
+
+/// The static runtime has no naming service -- naming lives behind the monitor, which this
+/// runtime deliberately does not talk to. The one thing it does understand as a name is the
+/// decimal form of an object id, which is exactly what its `open` accepts, so resolve that set
+/// and reject everything else with `InvalidArgument`, as `open` does, rather than reporting
+/// the whole call unsupported.
+///
+/// Present at all because mlibc's `sys_access`/`sys_faccessat`/`sys_statvfs` call it to test
+/// existence. Note this does *not* merely mirror `open`: `open` maps the object and unwraps,
+/// so a well-formed id for an object that does not exist panicked there. Existence is the
+/// question actually being asked, so answer it.
+use twizzler_abi::{object::ObjID, syscall::sys_object_stat};
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_resolve_name(
+    _resolver: twizzler_rt_abi::bindings::name_resolver,
+    name: *const c_char,
+    name_len: usize,
+) -> objid_result {
+    let parsed = if name.is_null() {
+        None
+    } else {
+        let slice = unsafe { core::slice::from_raw_parts(name as *const u8, name_len) };
+        core::str::from_utf8(slice)
+            .ok()
+            .and_then(|s| s.parse::<u128>().ok())
+    };
+    let Some(id) = parsed else {
+        return objid_result {
+            err: TwzError::from(ArgumentError::InvalidArgument).raw(),
+            __bindgen_padding_0: 0,
+            val: 0,
+        };
+    };
+    // Parsing says the name is well formed, not that anything answers to it. Ask the kernel,
+    // because the caller is `access`/`statvfs` asking whether the thing exists and a bare parse
+    // would answer yes for every syntactically valid id. `stat` rather than a map: it settles
+    // existence without allocating a slot or faulting a page in.
+    match sys_object_stat(ObjID::new(id)) {
+        Ok(_) => objid_result {
+            err: RawTwzError::success().raw(),
+            __bindgen_padding_0: 0,
+            val: id,
+        },
+        Err(e) => objid_result {
+            err: e.raw(),
+            __bindgen_padding_0: 0,
+            val: 0,
+        },
+    }
+}
+check_ffi_type!(twz_rt_resolve_name, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_mkns(_name: *const c_char, _len: usize) -> twz_error {

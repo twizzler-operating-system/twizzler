@@ -2051,7 +2051,7 @@ mod benches {
         ));
     }
 
-    /// Path to the do-nothing compartment `compartment_spawn_exit` starts. `src/bin/nullexit` is
+    /// Path to the do-nothing compartment `compartment_spawn_exit` starts. `src/test/nullexit` is
     /// `fn main() {}` with no dependencies past the default runtime, so the number is the spawn
     /// machinery rather than the program.
     const NULL_PROG: &str = "/pkg/twizzler/bin/nullexit";

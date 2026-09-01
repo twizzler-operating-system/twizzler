@@ -1,3 +1,8 @@
+# DISABLED. Not a workspace member and not in the initrd; it does not build as-is.
+# Its HTTP demo (`setup_http`) needs the vendored `tiny_http` port, which was removed along
+# with the `test-tiny-http` harness that carried it as a submodule. Re-enabling means either
+# restoring that submodule or dropping `setup_http` and the `tiny_http` uses in main.rs.
+
 [package]
 name = "gadget"
 version = "0.1.0"
@@ -15,7 +20,7 @@ virtio-net = { path = "../../lib/virtio-net" }
 pager = { path = "../../lib/pager" }
 naming = { path = "../../lib/naming" }
 logboi = { path = "../../lib/logboi" }
-tiny_http = { path = "../test-tiny-http/src/tiny-http-twizzler" }
+#tiny_http = { path = "../../ports/tiny-http-twizzler" } # removed, see note above
 tracing-log = "*"
 arrayvec = "0.7.6"
 colored = "*"

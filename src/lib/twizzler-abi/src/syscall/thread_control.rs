@@ -71,6 +71,8 @@ pub enum ThreadControl {
     GetTraceEvents = 21,
     /// Read stats
     GetStats = 22,
+    /// Read the target's home and active security context ids.
+    GetSctxIds = 23,
 }
 
 /// Exit the thread. The code will be written to the [crate::thread::ThreadRepr] for the current
@@ -396,6 +398,49 @@ pub fn sys_thread_read_stats(target: ObjID, stats: &mut ThreadSchedStats) -> Res
                 target.parts()[1],
                 ThreadControl::GetStats as u64,
                 stats as *mut _ as usize as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// A thread's two security context ids.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct ThreadSctxIds {
+    /// The context the thread belongs to, stamped once at spawn from
+    /// [ThreadSpawnArgs::home_sctx]. Zero for kernel-spawned and statically-linked threads, and
+    /// for the monitor's own threads, none of which have a compartment to belong to.
+    ///
+    /// [ThreadSpawnArgs::home_sctx]: super::ThreadSpawnArgs
+    pub home: ObjID,
+    /// The context the thread is executing in right now. Differs from `home` exactly while the
+    /// thread is inside a cross-compartment (gate) call, running someone else's code.
+    pub active: ObjID,
+}
+
+impl ThreadSctxIds {
+    /// Whether the thread is currently executing outside its home context, i.e. in a gate call.
+    /// Always false for a zero home, which belongs to no compartment and so cannot leave one.
+    pub fn is_cross(&self) -> bool {
+        self.home.raw() != 0 && self.home != self.active
+    }
+}
+
+/// Read a thread's home and active security context ids.
+///
+/// Unlike [sys_thread_active_sctx_id], which only ever reports the caller's own active context,
+/// this reads a target thread -- the pair is only meaningful from outside, since a thread
+/// observing itself is by construction at home.
+pub fn sys_thread_read_sctx_ids(target: ObjID, ids: &mut ThreadSctxIds) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetSctxIds as u64,
+                ids as *mut _ as usize as u64,
             ],
         )
     };

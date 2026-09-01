@@ -586,7 +586,11 @@ const DEFAULT_CC: [libc::cc_t; NCCS] = {
 pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
     c_iflag: BRKINT | ISTRIP | ICRNL | IMAXBEL | IXON | IXANY,
     c_oflag: OPOST | ONLCR | XTABS,
-    c_cflag: CREAD | CS8 | HUPCL,
+    // The baud bits belong in `c_cflag`: `cfgetispeed`/`cfgetospeed` return `c_cflag & CBAUD` and
+    // never look at the `__c_?speed` fields below, which exist for arbitrary (BOTHER) rates. Left
+    // out, the speed reads back as `B0` -- which POSIX defines as "hang up", not "unset", so
+    // callers that branch on it see a dropped line rather than a pty with no line rate.
+    c_cflag: CREAD | CS8 | HUPCL | B9600,
     c_lflag: ECHO | ICANON | ISIG | IEXTEN | ECHOE | ECHOK | ECHOKE | ECHOCTL,
     c_cc: DEFAULT_CC,
     __c_ispeed: B9600,
@@ -597,7 +601,7 @@ pub const DEFAULT_TERMIOS: libc::termios = libc::termios {
 pub const DEFAULT_TERMIOS_RAW: libc::termios = libc::termios {
     c_iflag: 0,
     c_oflag: 0,
-    c_cflag: CREAD | CS8,
+    c_cflag: CREAD | CS8 | B9600,
     c_lflag: 0,
     c_cc: DEFAULT_CC,
     __c_ispeed: B9600,
